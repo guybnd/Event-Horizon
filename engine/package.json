@@ -1,0 +1,60 @@
+{
+  "name": "engine",
+  "version": "0.23.0",
+  "description": "",
+  "main": "dist/index.js",
+  "bin": "dist/index.js",
+  "scripts": {
+    "dev": "tsx src/dev-watcher.ts -- --workspace ..",
+    "dev:no-watch": "tsx src/index.ts --workspace ..",
+    "build": "node scripts/build.js",
+    "init": "tsx src/init.ts",
+    "init-group": "tsx src/init-group.ts",
+    "install-skill": "tsx src/skill-installer.ts",
+    "flux:release": "tsx src/release.ts",
+    "patch-ticket": "tsx src/patch-ticket.ts",
+    "package": "npm run build && node scripts/package-release.js",
+    "package:win": "npm run build && node scripts/package-release.js --platform win",
+    "package:mac": "npm run build && node scripts/package-release.js --platform mac",
+    "test": "vitest run"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "chokidar": "^5.0.0",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "gray-matter": "^4.0.3",
+    "systray": "^1.0.5",
+    "yaml": "^2.8.4",
+    "zod": "^4.4.3"
+  },
+  "pkg": {
+    "assets": [
+      "dist/portal/dist/**/*",
+      "dist/.docs/skills/**/*",
+      "dist/.docs/event-horizon/**/*",
+      "dist/.flux/skills/**/*",
+      "dist/traybin/**/*"
+    ],
+    "targets": [
+      "node18-win-x64",
+      "node18-macos-x64",
+      "node18-linux-x64"
+    ],
+    "outputPath": "dist"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.6.0",
+    "@yao-pkg/pkg": "^6.19.0",
+    "esbuild": "^0.27.7",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.6"
+  }
+}
