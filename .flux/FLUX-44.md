@@ -81,8 +81,27 @@ history:
       statuses while preserving the restore action when a configured workflow
       status is currently missing from the board.
     id: c-2026-05-07t00-03-05-5591314-10-00
+  - type: comment
+    user: Agent
+    date: '2026-05-07T00:09:15.2102107+10:00'
+    comment: >-
+      Completed the FLUX-44 follow-up. Workflow statuses now live together in
+      Settings, both specialized workflow selectors use existing board or hidden
+      statuses instead of free text, the user-input flow is configurable via
+      `requireInputStatus`, and the source plus installed Copilot workflow docs
+      were refreshed to match. Validated with `npm.cmd run build -w portal`, a
+      live `/api/tasks` check confirming FLUX-44 still parses after ticket
+      edits, and `npm.cmd run install-skill -- --target c:\GitHub\EventHorizon
+      --framework copilot`. Commit: `584ceb8` (`Tie workflow prompt settings to
+      existing statuses`).
+    id: c-2026-05-07t00-09-15-2102107-10-00
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-05-07T00:09:15.2102107+10:00'
 effort: None
-implementationLink: 'f789d8d'
+implementationLink: '584ceb8'
 subtasks: []
 ---
 we should add another user promptable stage, when a ticket is finished in progress state and is ready for user review, it goes into this status that is 'Ready'
