@@ -13,7 +13,7 @@ export function Board() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTask, setActiveTask] = useState<Task | null>(null);
-  const { refreshTrigger, config, currentUser, triggerRefresh, searchQuery } = useApp();
+  const { refreshTrigger, config, currentUser, triggerRefresh, searchQuery, sortOption, filterAssignee, filterPriority, filterTag } = useApp();
 
   const [pendingStatusChange, setPendingStatusChange] = useState<{taskId: string, newStatus: string, oldStatus: string} | null>(null);
   const [commentText, setCommentText] = useState('');
@@ -38,13 +38,36 @@ export function Board() {
 
   const allColumns = [...(config.columns?.map(c => c.name) || []), ...extraStatuses];
   const normalizedQuery = searchQuery.trim().toLowerCase();
-  const visibleTasks = normalizedQuery
-    ? tasks.filter((task) => {
-        const title = task.title?.toLowerCase() || '';
-        const body = task.body?.toLowerCase() || '';
-        return title.includes(normalizedQuery) || body.includes(normalizedQuery);
-      })
-    : tasks;
+  const priorityOrder = new Map(config.priorities.map((priority, index) => [priority.name, index]));
+  const getUpdatedTimestamp = (task: Task) => {
+    const lastEntry = task.history?.[task.history.length - 1]?.date;
+    return lastEntry ? new Date(lastEntry).getTime() : 0;
+  };
+  const visibleTasks = tasks
+    .filter((task) => {
+      const title = task.title?.toLowerCase() || '';
+      const body = task.body?.toLowerCase() || '';
+      const matchesQuery = !normalizedQuery || title.includes(normalizedQuery) || body.includes(normalizedQuery);
+      const matchesAssignee = filterAssignee === 'all' || (task.assignee || 'unassigned') === filterAssignee;
+      const matchesPriority = filterPriority === 'all' || (task.priority || 'None') === filterPriority;
+      const matchesTag = filterTag === 'all' || Boolean(task.tags?.includes(filterTag));
+      return matchesQuery && matchesAssignee && matchesPriority && matchesTag;
+    })
+    .sort((left, right) => {
+      switch (sortOption) {
+        case 'priority':
+          return (priorityOrder.get(left.priority || 'None') ?? Number.MAX_SAFE_INTEGER) - (priorityOrder.get(right.priority || 'None') ?? Number.MAX_SAFE_INTEGER);
+        case 'updated':
+          return getUpdatedTimestamp(right) - getUpdatedTimestamp(left);
+        case 'assignee':
+          return (left.assignee || 'unassigned').localeCompare(right.assignee || 'unassigned');
+        default:
+          if (left.status === right.status) {
+            return (left.order ?? 0) - (right.order ?? 0);
+          }
+          return 0;
+      }
+    });
 
   const handleDragStart = (event: DragStartEvent) => {
     const { active } = event;

@@ -4,6 +4,7 @@ import type { Task, Config } from './types';
 import { fetchConfig, fetchTasks, saveConfig as apiSaveConfig } from './api';
 
 type AppView = 'board' | 'backlog' | 'settings';
+export type TaskSortOption = 'default' | 'priority' | 'updated' | 'assignee';
 
 const VIEW_PATHS: Record<AppView, string> = {
   board: '/board',
@@ -24,6 +25,44 @@ function updateViewUrl(view: AppView, mode: 'push' | 'replace') {
   window.history[mode === 'push' ? 'pushState' : 'replaceState']({}, '', url);
 }
 
+function getTaskFiltersFromLocation() {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    searchQuery: params.get('search') || '',
+    sortOption: (params.get('sort') as TaskSortOption) || 'default',
+    filterAssignee: params.get('assignee') || 'all',
+    filterPriority: params.get('priority') || 'all',
+    filterTag: params.get('tag') || 'all',
+  };
+}
+
+function updateTaskFilterUrl(filters: {
+  searchQuery: string;
+  sortOption: TaskSortOption;
+  filterAssignee: string;
+  filterPriority: string;
+  filterTag: string;
+}) {
+  const url = new URL(window.location.href);
+  const entries: Array<[string, string, string]> = [
+    ['search', filters.searchQuery, ''],
+    ['sort', filters.sortOption, 'default'],
+    ['assignee', filters.filterAssignee, 'all'],
+    ['priority', filters.filterPriority, 'all'],
+    ['tag', filters.filterTag, 'all'],
+  ];
+
+  entries.forEach(([key, value, fallback]) => {
+    if (!value || value === fallback) {
+      url.searchParams.delete(key);
+    } else {
+      url.searchParams.set(key, value);
+    }
+  });
+
+  window.history.replaceState({}, '', url);
+}
+
 interface AppState {
   currentUser: string;
   setCurrentUser: (user: string) => void;
@@ -31,6 +70,15 @@ interface AppState {
   setCurrentProject: (proj: string) => void;
   searchQuery: string;
   setSearchQuery: (query: string) => void;
+  sortOption: TaskSortOption;
+  setSortOption: (option: TaskSortOption) => void;
+  filterAssignee: string;
+  setFilterAssignee: (value: string) => void;
+  filterPriority: string;
+  setFilterPriority: (value: string) => void;
+  filterTag: string;
+  setFilterTag: (value: string) => void;
+  clearTaskFilters: () => void;
   view: AppView;
   setView: (view: AppView) => void;
   modalTask: Partial<Task> | null;
@@ -47,9 +95,14 @@ interface AppState {
 const AppContext = createContext<AppState | undefined>(undefined);
 
 export function AppProvider({ children }: { children: ReactNode }) {
+  const initialFilters = getTaskFiltersFromLocation();
   const [currentUser, setCurrentUser] = useState('Guy');
   const [currentProject, setCurrentProject] = useState('FLUX');
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery, setSearchQuery] = useState(initialFilters.searchQuery);
+  const [sortOption, setSortOption] = useState<TaskSortOption>(initialFilters.sortOption);
+  const [filterAssignee, setFilterAssignee] = useState(initialFilters.filterAssignee);
+  const [filterPriority, setFilterPriority] = useState(initialFilters.filterPriority);
+  const [filterTag, setFilterTag] = useState(initialFilters.filterTag);
   const [view, setCurrentView] = useState<AppView>(() => getViewFromLocation());
   const [modalTask, setModalTask] = useState<Partial<Task> | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -61,6 +114,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const setView = (nextView: AppView) => {
     setCurrentView(nextView);
     updateViewUrl(nextView, 'push');
+  };
+
+  const clearTaskFilters = () => {
+    setSearchQuery('');
+    setSortOption('default');
+    setFilterAssignee('all');
+    setFilterPriority('all');
+    setFilterTag('all');
   };
 
   const openTaskModal = (task?: Partial<Task>) => {
@@ -91,6 +152,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     const handlePopState = () => {
       setCurrentView(getViewFromLocation());
+      const nextFilters = getTaskFiltersFromLocation();
+      setSearchQuery(nextFilters.searchQuery);
+      setSortOption(nextFilters.sortOption);
+      setFilterAssignee(nextFilters.filterAssignee);
+      setFilterPriority(nextFilters.filterPriority);
+      setFilterTag(nextFilters.filterTag);
     };
 
     window.addEventListener('popstate', handlePopState);
@@ -99,6 +166,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       window.removeEventListener('popstate', handlePopState);
     };
   }, []);
+
+  useEffect(() => {
+    updateTaskFilterUrl({ searchQuery, sortOption, filterAssignee, filterPriority, filterTag });
+  }, [searchQuery, sortOption, filterAssignee, filterPriority, filterTag]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -120,6 +191,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       currentUser, setCurrentUser,
       currentProject, setCurrentProject,
       searchQuery, setSearchQuery,
+      sortOption, setSortOption,
+      filterAssignee, setFilterAssignee,
+      filterPriority, setFilterPriority,
+      filterTag, setFilterTag,
+      clearTaskFilters,
       view, setView,
       modalTask, isModalOpen,
       openTaskModal,

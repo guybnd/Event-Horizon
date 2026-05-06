@@ -1,9 +1,10 @@
 ---
+id: FLUX-27
 title: add sort and fitlers to kanban and backlog view
-status: Todo
+status: Done
 priority: None
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 assignee: Guy
 tags: []
 history:
@@ -36,6 +37,20 @@ history:
     user: Guy
     date: '2026-05-06T09:28:20.476Z'
     comment: Response submitted
+  - type: status_change
+    from: Todo
+    to: Done
+    user: Agent
+    date: '2026-05-06T23:55:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-06T23:55:00.000Z'
+    comment: >-
+      Implemented shared sort and filter controls for board and backlog with
+      URL-backed state. Added filters for assignee, priority, and tag, plus sort
+      options for priority, recently updated, and assignee. Validated that the
+      selected state round-trips through the URL and that clearing controls
+      restores the default view.
 ---
 ## Groomed Scope
 

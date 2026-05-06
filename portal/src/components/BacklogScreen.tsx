@@ -5,7 +5,7 @@ import type { Task } from '../types';
 import { Loader2, Plus } from 'lucide-react';
 
 export function BacklogScreen() {
-  const { openTaskModal, refreshTrigger, triggerRefresh, currentProject, config, currentUser, searchQuery } = useApp();
+  const { openTaskModal, refreshTrigger, triggerRefresh, currentProject, config, currentUser, searchQuery, sortOption, filterAssignee, filterPriority, filterTag } = useApp();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -28,13 +28,33 @@ export function BacklogScreen() {
   const selectedTask = tasks.find(t => t.id === selectedTaskId);
   const allStatuses = [...config.columns.map(c => c.name), ...config.hiddenStatuses.map(c => c.name)];
   const normalizedQuery = searchQuery.trim().toLowerCase();
-  const visibleTasks = normalizedQuery
-    ? tasks.filter((task) => {
-        const title = task.title?.toLowerCase() || '';
-        const body = task.body?.toLowerCase() || '';
-        return title.includes(normalizedQuery) || body.includes(normalizedQuery);
-      })
-    : tasks;
+  const priorityOrder = new Map(config.priorities.map((priority, index) => [priority.name, index]));
+  const getUpdatedTimestamp = (task: Task) => {
+    const lastEntry = task.history?.[task.history.length - 1]?.date;
+    return lastEntry ? new Date(lastEntry).getTime() : 0;
+  };
+  const visibleTasks = tasks
+    .filter((task) => {
+      const title = task.title?.toLowerCase() || '';
+      const body = task.body?.toLowerCase() || '';
+      const matchesQuery = !normalizedQuery || title.includes(normalizedQuery) || body.includes(normalizedQuery);
+      const matchesAssignee = filterAssignee === 'all' || (task.assignee || 'unassigned') === filterAssignee;
+      const matchesPriority = filterPriority === 'all' || (task.priority || 'None') === filterPriority;
+      const matchesTag = filterTag === 'all' || Boolean(task.tags?.includes(filterTag));
+      return matchesQuery && matchesAssignee && matchesPriority && matchesTag;
+    })
+    .sort((left, right) => {
+      switch (sortOption) {
+        case 'priority':
+          return (priorityOrder.get(left.priority || 'None') ?? Number.MAX_SAFE_INTEGER) - (priorityOrder.get(right.priority || 'None') ?? Number.MAX_SAFE_INTEGER);
+        case 'updated':
+          return getUpdatedTimestamp(right) - getUpdatedTimestamp(left);
+        case 'assignee':
+          return (left.assignee || 'unassigned').localeCompare(right.assignee || 'unassigned');
+        default:
+          return (left.order ?? 0) - (right.order ?? 0);
+      }
+    });
   const selectedVisibleTask = visibleTasks.find(t => t.id === selectedTaskId) || null;
 
   const handleStatusChange = async (newStatus: string) => {
