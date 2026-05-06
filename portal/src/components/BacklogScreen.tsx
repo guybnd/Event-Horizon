@@ -53,9 +53,11 @@ export function BacklogScreen() {
   const allStatuses = [...config.columns.map(c => c.name), ...config.hiddenStatuses.map(c => c.name)];
   const normalizedQuery = searchQuery.trim().toLowerCase();
   const priorityOrder = new Map(config.priorities.map((priority, index) => [priority.name, index]));
-  const getUpdatedTimestamp = (task: Task) => {
-    const lastEntry = task.history?.[task.history.length - 1]?.date;
-    return lastEntry ? new Date(lastEntry).getTime() : 0;
+  const getActivityTimestamp = (task: Task) => {
+    return (task.history || []).reduce((latest, entry) => {
+      const timestamp = entry.date ? new Date(entry.date).getTime() : 0;
+      return Number.isNaN(timestamp) ? latest : Math.max(latest, timestamp);
+    }, 0);
   };
   const visibleTasks = tasks
     .filter((task) => {
@@ -69,14 +71,17 @@ export function BacklogScreen() {
     })
     .sort((left, right) => {
       switch (sortOption) {
-        case 'priority':
-          return (priorityOrder.get(left.priority || 'None') ?? Number.MAX_SAFE_INTEGER) - (priorityOrder.get(right.priority || 'None') ?? Number.MAX_SAFE_INTEGER);
+        case 'priority': {
+          const priorityDiff = (priorityOrder.get(left.priority || 'None') ?? Number.MAX_SAFE_INTEGER) - (priorityOrder.get(right.priority || 'None') ?? Number.MAX_SAFE_INTEGER);
+          return priorityDiff || getActivityTimestamp(right) - getActivityTimestamp(left) || left.id.localeCompare(right.id);
+        }
+        case 'assignee': {
+          const assigneeDiff = (left.assignee || 'unassigned').localeCompare(right.assignee || 'unassigned');
+          return assigneeDiff || getActivityTimestamp(right) - getActivityTimestamp(left) || left.id.localeCompare(right.id);
+        }
         case 'updated':
-          return getUpdatedTimestamp(right) - getUpdatedTimestamp(left);
-        case 'assignee':
-          return (left.assignee || 'unassigned').localeCompare(right.assignee || 'unassigned');
         default:
-          return (left.order ?? 0) - (right.order ?? 0);
+          return getActivityTimestamp(right) - getActivityTimestamp(left) || left.id.localeCompare(right.id);
       }
     });
   const selectedVisibleTask = visibleTasks.find(t => t.id === selectedTaskId) || null;

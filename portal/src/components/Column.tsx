@@ -44,7 +44,6 @@ export function Column({ id, title, tasks, parentByChildId }: ColumnProps) {
         {tasks.length > 0 && (
           <SortableContext items={tasks.map(t => t.id)} strategy={verticalListSortingStrategy}>
             {tasks
-              .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
               .map(task => (
                 <TaskCard key={task.id} task={task} parentTask={parentByChildId.get(task.id)} />
               ))}

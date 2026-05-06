@@ -115,10 +115,28 @@ function formatValue(value: unknown) {
   return String(value);
 }
 
+function normalizeTextContent(value: unknown) {
+  return typeof value === 'string' ? value.replace(/\r\n/g, '\n').trimEnd() : '';
+}
+
+function normalizeStringList(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter((item) => item != null && String(item).trim() !== '')
+    .map((item) => String(item));
+}
+
 function summarizeFieldChanges(previousTask: any, nextFrontmatter: any, nextBody: string | undefined) {
   const messages: string[] = [];
-  const previousBody = typeof previousTask.body === 'string' ? previousTask.body : '';
-  const normalizedNextBody = typeof nextBody === 'string' ? nextBody : '';
+  const previousBody = normalizeTextContent(previousTask.body);
+  const normalizedNextBody = normalizeTextContent(nextBody);
+  const previousTags = normalizeStringList(previousTask.tags);
+  const nextTags = normalizeStringList(nextFrontmatter.tags);
+  const previousSubtasks = normalizeStringList(previousTask.subtasks);
+  const nextSubtasks = normalizeStringList(nextFrontmatter.subtasks);
 
   if ((previousTask.title || '') !== (nextFrontmatter.title || '')) {
     messages.push('Updated title.');
@@ -132,8 +150,8 @@ function summarizeFieldChanges(previousTask: any, nextFrontmatter: any, nextBody
     messages.push(`Changed assignee from ${formatValue(previousTask.assignee || 'unassigned')} to ${formatValue(nextFrontmatter.assignee || 'unassigned')}.`);
   }
 
-  if (!valuesMatch(previousTask.tags || [], nextFrontmatter.tags || [])) {
-    messages.push(`Updated tags to ${formatValue(nextFrontmatter.tags || [])}.`);
+  if (!valuesMatch(previousTags, nextTags)) {
+    messages.push(`Updated tags to ${formatValue(nextTags)}.`);
   }
 
   if ((previousTask.priority || 'None') !== (nextFrontmatter.priority || 'None')) {
@@ -148,7 +166,7 @@ function summarizeFieldChanges(previousTask: any, nextFrontmatter: any, nextBody
     messages.push(nextFrontmatter.implementationLink ? 'Updated implementation link.' : 'Cleared implementation link.');
   }
 
-  if (!valuesMatch(previousTask.subtasks || [], nextFrontmatter.subtasks || [])) {
+  if (!valuesMatch(previousSubtasks, nextSubtasks)) {
     messages.push('Updated subtasks.');
   }
 
