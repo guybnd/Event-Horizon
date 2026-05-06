@@ -15,6 +15,7 @@ history:
       Re-groomed with a narrower first version. This still needs one product
       decision on whether sort/filter state should be global, per page, or URL
       encoded.
+    id: c-2026-05-06t19-20-00-000z
   - type: status_change
     from: Grooming
     to: Require Input
@@ -27,10 +28,12 @@ history:
       Requesting product choice in-ticket: should sort/filter state stay local
       to the current session, or be encoded in the URL so filtered views are
       shareable and reload-safe? URL state is more capable but adds scope.
+    id: c-2026-05-06t19-35-00-000z
   - type: comment
     user: Guy
     date: '2026-05-06T09:28:20.476Z'
     comment: url
+    id: c-2026-05-06t09-28-20-476z
   - type: status_change
     from: Require Input
     to: Todo
@@ -51,6 +54,7 @@ history:
       options for priority, recently updated, and assignee. Validated that the
       selected state round-trips through the URL and that clearing controls
       restores the default view.
+    id: c-2026-05-06t23-55-00-000z
 ---
 ## Groomed Scope
 

@@ -13,6 +13,7 @@ history:
     comment: >-
       Fleshed out with full spec covering config, data model, card UI, and modal
       UI. Ready to implement.
+    id: c-2026-05-06t07-32-00-000z
   - type: status_change
     from: In Progress
     to: Done
@@ -26,6 +27,7 @@ history:
       Priorities now exist in config and settings, persist through the engine,
       render on cards, support card-level quick changes, and are editable from
       the ticket modal.
+    id: c-2026-05-06t22-55-00-000z
 order: 1
 ---
 ## Summary

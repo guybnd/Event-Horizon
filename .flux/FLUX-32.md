@@ -1,10 +1,9 @@
 ---
-id: FLUX-32
 title: Implement Git-Atomic Task Syncing
 status: Todo
-priority: High
+priority: Medium
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
 tags:
   - feature
@@ -18,6 +17,7 @@ history:
       Captured from Guy's request. This ticket covers keeping ticket state and
       code changes in lockstep at the git layer so a task's completion status is
       committed atomically with the implementation it represents.
+    id: c-2026-05-06t12-05-00-000z
 effort: None
 implementationLink: ''
 ---

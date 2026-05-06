@@ -15,6 +15,7 @@ history:
       Re-groomed as a sizing-field ticket. The main remaining decision is the
       naming and scale: classic story points, T-shirt sizes, or a custom agent
       intensity scale.
+    id: c-2026-05-06t19-20-00-000z
   - type: status_change
     from: Grooming
     to: Require Input
@@ -28,10 +29,12 @@ history:
       modeled once. Please pick one label (`Story Points`, `Effort`, or
       `Intensity`) and one first-version scale (Fibonacci numbers or T-shirt
       sizes).
+    id: c-2026-05-06t19-35-00-000z
   - type: comment
     user: Guy
     date: '2026-05-06T09:27:49.201Z'
     comment: Effort and tshirt sizes
+    id: c-2026-05-06t09-27-49-201z
   - type: status_change
     from: Require Input
     to: Todo
@@ -49,12 +52,14 @@ history:
     comment: >-
       Implemented the chosen `Effort` field using T-shirt sizes and surfaced it
       in the modal editor plus task card display.
+    id: c-2026-05-06t22-00-00-000z
   - type: comment
     user: Guy
     date: '2026-05-06T09:41:04.018Z'
     comment: |-
       1. this field should appear in the pop up view, currently doesnt
       2. it should appear on the card in the kanban view.
+    id: c-2026-05-06t09-41-04-018z
   - type: status_change
     from: Done
     to: Todo
@@ -66,6 +71,7 @@ history:
     comment: >-
       also, should similarly to priority be dropdowanble from the card kanban
       view
+    id: c-2026-05-06t09-42-27-055z
   - type: status_change
     from: Todo
     to: Done
@@ -78,6 +84,7 @@ history:
       Completed the missing UI pieces from the follow-up note. `Effort` now
       appears in the popup quick-edit view and is editable directly from the
       kanban card, matching the priority interaction pattern.
+    id: c-2026-05-06t22-30-00-000z
 effort: None
 implementationLink: ''
 ---

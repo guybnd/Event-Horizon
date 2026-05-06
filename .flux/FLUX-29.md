@@ -17,6 +17,7 @@ history:
       the newer dedicated-status workflow with a focused response prompt,
       explicit post-response destination, and a notification count for open
       required-input items.
+    id: c-2026-05-06t19-50-00-000z
   - type: status_change
     from: Grooming
     to: Done
@@ -29,6 +30,7 @@ history:
       Implemented the focused Require Input response flow in the modal, added
       the header notification count, and validated the submit-and-route path
       end-to-end on a temporary task.
+    id: c-2026-05-06t21-25-00-000z
 ---
 ## Summary
 

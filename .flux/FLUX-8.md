@@ -15,6 +15,7 @@ history:
       Fleshed this out. This is tightly coupled with FLUX-6 (MCP integration).
       Need your input on whether to combine them and on the skill format — see
       Open Questions.
+    id: c-2026-05-06t07-29-00-000z
   - type: comment
     user: Guy
     date: '2026-05-06T07:31:41.808Z'
@@ -23,6 +24,7 @@ history:
       2. whatever is widely accepted as a good option
       3. both 
       4. have it as an option from the button
+    id: c-2026-05-06t07-31-41-808z
   - type: status_change
     from: Require Input
     to: Todo
@@ -42,12 +44,14 @@ history:
       `engine/src/skill-installer.ts`, exposed it through the workspace
       `install-skill` script, and installed the Copilot copy into
       `.github/skills/event-horizon/SKILL.md` for this repo.
+    id: c-2026-05-06t23-05-00-000z
   - type: comment
     user: Guy
     date: '2026-05-06T10:05:03.013Z'
     comment: >-
       we should have some sort of UI solution for this, as its hidden from the
       user. maybe also need to update the readme
+    id: c-2026-05-06t10-05-03-013z
   - type: status_change
     from: Done
     to: Todo
@@ -73,6 +77,7 @@ history:
       for both the Settings flow and the install command. Also tightened the
       skill's own task-finish protocol around descriptive completion comments
       and commit messages.
+    id: c-2026-05-06t11-40-00-000z
 order: 1
 priority: None
 effort: None

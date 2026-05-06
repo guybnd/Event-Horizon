@@ -3,7 +3,7 @@ title: Local executable / packaged app
 status: Todo
 createdBy: Guy
 updatedBy: Guy
-assignee: unassigned
+assignee: Agent
 tags:
   - feature
 history:
@@ -13,6 +13,7 @@ history:
     comment: >-
       Fleshed this out with packaging options. Need your input on the target
       platform and packaging approach — see Open Questions.
+    id: c-2026-05-06t07-33-00-000z
   - type: comment
     user: Guy
     date: '2026-05-06T07:37:17.476Z'
@@ -27,12 +28,15 @@ history:
       user to update it
 
       5. ye can have it later
+    id: c-2026-05-06t07-37-17-476z
   - type: status_change
     from: Require Input
     to: Todo
     user: Guy
     date: '2026-05-06T07:37:22.840Z'
 order: 5
+priority: Medium
+effort: L
 ---
 ## Summary
 

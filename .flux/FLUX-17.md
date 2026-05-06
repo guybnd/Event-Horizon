@@ -13,6 +13,7 @@ history:
     comment: >-
       Fleshed out with detailed layout spec inspired by Jira/Linear ticket
       views. Ready to implement.
+    id: c-2026-05-06t07-32-00-000z
   - type: status_change
     from: Todo
     to: In Progress
@@ -31,6 +32,7 @@ history:
       `TaskModal`. The current flow supports full-view toggle, back-to-board
       navigation, Escape handling, and full/popup URL state while preserving the
       ticket editing and comment functionality.
+    id: c-2026-05-06t22-56-00-000z
 order: 0
 ---
 ## Summary

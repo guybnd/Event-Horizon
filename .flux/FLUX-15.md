@@ -24,6 +24,7 @@ history:
       Implemented intra-column task reordering using @dnd-kit/sortable. Tasks
       now have an 'order' field that is updated on drag-and-drop and persisted
       to the filesystem. Verified with browser tests.
+    id: c-2026-05-06t18-02-00-000z
 order: 1
 ---
 ## Summary

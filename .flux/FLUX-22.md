@@ -1,6 +1,6 @@
 ---
 title: editable fields in kanban card
-status: Todo
+status: Grooming
 priority: Medium
 createdBy: Guy
 updatedBy: Guy
@@ -8,11 +8,23 @@ assignee: Agent
 tags: []
 history:
   - type: status_change
+  - type: comment
+    user: Guy
+    date: '2026-05-06T12:12:15.912Z'
+    comment: think this was done already?
+    id: c-2026-05-06t12-12-15-912z
+  - type: status_change
+    from: Todo
+    to: Grooming
+    user: Guy
+    date: '2026-05-06T12:13:55.138Z'
 from: Grooming
 to: Todo
 user: Agent
 date: '2026-05-06T19:20:00.000Z'
 effort: S
+implementationLink: ''
+order: 1
 ---
 ## Groomed Scope
 

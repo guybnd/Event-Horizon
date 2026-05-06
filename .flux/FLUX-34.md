@@ -18,6 +18,7 @@ history:
       Captured from Guy's request. This ticket adds deep links from Flux ticket
       content into the local IDE so file references become actionable instead of
       just informational.
+    id: c-2026-05-06t12-07-00-000z
 effort: None
 implementationLink: ''
 ---

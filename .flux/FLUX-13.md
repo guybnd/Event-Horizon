@@ -13,6 +13,7 @@ history:
     comment: >-
       Fleshed this out with full spec. This is self-contained and ready to work
       on — the "Require Input" status column already exists in config.
+    id: c-2026-05-06t07-30-00-000z
   - type: comment
     user: Guy
     date: '2026-05-06T08:21:48.950Z'
@@ -32,6 +33,7 @@ history:
       when finishing this answer it should transition the ticket back into a
       separate status of 'input granted' or something like this so the agents
       can know to pick it back up. need to think about this flow in more detail
+    id: c-2026-05-06t08-21-48-950z
   - type: status_change
     from: Done
     to: Grooming
@@ -45,6 +47,7 @@ history:
       implementation details, but it still needs a product decision on the
       post-response transition state and whether the board gets a dedicated
       "Require Input" section now or in a follow-up.
+    id: c-2026-05-06t19-20-00-000z
   - type: status_change
     from: Grooming
     to: Require Input
@@ -59,6 +62,7 @@ history:
       keep its prior workflow status or move to a new "Input Granted" status? 2)
       should the first version include a dedicated board section for
       input-needed tickets, or should that ship later as a follow-up?
+    id: c-2026-05-06t19-35-00-000z
   - type: comment
     user: Guy
     date: '2026-05-06T09:10:27.887Z'
@@ -78,6 +82,7 @@ history:
       be configured in the setting same as above we should also add like a
       notification ticker with amount of open required inputs like facebook
       notification style
+    id: c-2026-05-06t09-10-27-887z
   - type: status_change
     from: Require Input
     to: Grooming

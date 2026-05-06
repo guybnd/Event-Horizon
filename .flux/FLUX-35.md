@@ -18,6 +18,7 @@ history:
       Captured from Guy's request. This ticket separates durable ticket state
       from verbose agent reasoning so the repository stays readable without
       losing operational traceability.
+    id: c-2026-05-06t12-08-00-000z
 effort: None
 implementationLink: ''
 ---

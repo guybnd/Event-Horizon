@@ -1,10 +1,9 @@
 ---
-id: FLUX-33
 title: Automatic Definition of Done Verification
-status: Todo
+status: Grooming
 priority: High
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
 tags:
   - feature
@@ -18,8 +17,15 @@ history:
       Captured from Guy's request. This ticket introduces a secondary
       verification-only workflow that checks whether a task truly meets its
       definition of done before final closure.
+    id: c-2026-05-06t12-06-00-000z
+  - type: status_change
+    from: Todo
+    to: Grooming
+    user: Guy
+    date: '2026-05-06T12:52:25.028Z'
 effort: None
 implementationLink: ''
+subtasks: []
 ---
 ## Groomed Scope
 

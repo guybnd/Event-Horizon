@@ -16,6 +16,7 @@ history:
       This is also a good candidate for validating the updated agent skill
       workflow end-to-end because it touches UI behavior, state handling, and
       user-visible filtering.
+    id: c-2026-05-06t23-20-00-000z
   - type: status_change
     from: Grooming
     to: Todo
@@ -34,6 +35,7 @@ history:
       board and backlog views. Validated that FLUX-31 loads normally through the
       engine again, the board filters to matching tickets, and the backlog shows
       the expected empty state for unmatched queries.
+    id: c-2026-05-06t23-45-00-000z
 effort: None
 implementationLink: ''
 ---

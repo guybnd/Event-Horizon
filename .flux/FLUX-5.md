@@ -15,6 +15,7 @@ history:
       I've fleshed this out into a proper spec. I have a few questions for you
       before we start implementation — see the Open Questions section in the
       description.
+    id: c-2026-05-06t07-28-00-000z
   - type: comment
     user: Guy
     date: '2026-05-06T07:35:41.321Z'
@@ -29,6 +30,7 @@ history:
       after all
 
       5. idk
+    id: c-2026-05-06t07-35-41-321z
   - type: status_change
     from: Require Input
     to: Todo
@@ -41,7 +43,9 @@ history:
       Updated the spec with Guy's answers. Docs will be a top-level screen with
       a WYSIWYG single-page editor, a "New Doc" button, and a config setting for
       edit permissions.
+    id: c-2026-05-06t07-36-00-000z
 order: 4
+priority: High
 ---
 ## Summary
 

@@ -17,6 +17,7 @@ history:
       Captured from Guy's request. This ticket extends Flux beyond markdown by
       previewing linked art and config assets that commonly appear in Unity or
       Godot workflows.
+    id: c-2026-05-06t12-09-00-000z
 effort: None
 implementationLink: ''
 ---

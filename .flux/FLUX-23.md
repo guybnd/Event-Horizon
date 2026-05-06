@@ -17,6 +17,7 @@ history:
       Captured from Guy's feedback on the current popup view. The default modal
       feels visually heavy, wastes space above the description, and does not
       make good use of the viewport compared with the full view.
+    id: c-2026-05-06t08-41-00-000z
   - type: status_change
     from: Grooming
     to: Todo
@@ -35,7 +36,9 @@ history:
       popup header and content spacing are denser, the metadata uses a compact
       wrapping row instead of a tall side stack, and the description area now
       begins higher in the modal. Validated with a portal build and browser
-      measurement that the description starts within the upper half of the popup.
+      measurement that the description starts within the upper half of the
+      popup.
+    id: c-2026-05-06t11-50-00-000z
 ---
 ## Summary
 

@@ -1,8 +1,7 @@
 ---
-id: FLUX-30
 title: description view in popup card should be proper markdown view
 status: Grooming
-priority: None
+priority: Medium
 createdBy: Guy
 updatedBy: Guy
 assignee: unassigned

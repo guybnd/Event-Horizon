@@ -19,6 +19,7 @@ history:
     comment: >-
       I am planning the implementation for the Markdown editor, wide-mode
       toggle, and comment send button!
+    id: c-2026-05-06t16-51-00-10-00
   - type: comment
     user: Guy
     date: '2026-05-06T06:58:36.188Z'
@@ -28,10 +29,12 @@ history:
 
       2. fullscreen editor looks weird, it opens a big window but the actual
       text field is a small part of it and unscalable
+    id: c-2026-05-06t06-58-36-188z
   - type: comment
     user: Agent
     date: '2026-05-06T07:27:00.000Z'
     comment: Fleshing out this ticket with specific bugs and acceptance criteria based
+    id: c-2026-05-06t07-27-00-000z
   - type: status_change
     from: In Progress
     to: Done
@@ -44,10 +47,12 @@ history:
       Verified both bugs are fixed: Send button immediately shows comments in
       the activity feed, and fullscreen editor properly fills the viewport.
       Marking as Done. on Guy's feedback.
+    id: c-2026-05-06t07-43-00-000z
   - type: comment
     user: Guy
     date: '2026-05-06T07:42:44.061Z'
     comment: Testing the send button bug fix.
+    id: c-2026-05-06t07-42-44-061z
 order: 3
 ---
 ## Summary

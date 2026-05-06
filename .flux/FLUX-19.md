@@ -24,6 +24,7 @@ history:
       Implemented drag-and-drop column reordering in the Settings panel using
       @dnd-kit/sortable. Verified it correctly updates config.json and reflects
       on the board.
+    id: c-2026-05-06t17-56-00-10-00
 order: 5
 ---
 ## Summary
