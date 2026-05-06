@@ -144,7 +144,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   useEffect(() => {
-    fetchConfig().then(setConfig).catch(console.error);
+    let cancelled = false;
+    let retryTimeout: number | undefined;
+
+    const loadConfig = async () => {
+      try {
+        const loadedConfig = await fetchConfig();
+        if (cancelled) return;
+        setConfig(loadedConfig);
+      } catch (error) {
+        console.error(error);
+        if (cancelled) return;
+        retryTimeout = window.setTimeout(() => {
+          void loadConfig();
+        }, 3000);
+      }
+    };
+
+    void loadConfig();
+
+    return () => {
+      cancelled = true;
+      if (retryTimeout) {
+        window.clearTimeout(retryTimeout);
+      }
+    };
   }, []);
 
   useEffect(() => {

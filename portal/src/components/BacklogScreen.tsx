@@ -11,10 +11,34 @@ export function BacklogScreen() {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchTasks()
-      .then(data => setTasks(data.filter(t => t.status === 'Backlog' || t.status.toLowerCase() === 'backlog')))
-      .catch(console.error)
-      .finally(() => setLoading(false));
+    let cancelled = false;
+    let retryTimeout: number | undefined;
+
+    const loadTasks = async () => {
+      try {
+        const data = await fetchTasks();
+        if (cancelled) return;
+        setTasks(data.filter((task) => task.status === 'Backlog' || task.status.toLowerCase() === 'backlog'));
+        setLoading(false);
+      } catch (error) {
+        console.error(error);
+        if (cancelled) return;
+        setLoading(true);
+        retryTimeout = window.setTimeout(() => {
+          void loadTasks();
+        }, 3000);
+      }
+    };
+
+    setLoading(true);
+    void loadTasks();
+
+    return () => {
+      cancelled = true;
+      if (retryTimeout) {
+        window.clearTimeout(retryTimeout);
+      }
+    };
   }, [refreshTrigger]);
 
   if (loading || !config) {

@@ -5,6 +5,8 @@ export interface HistoryEntry {
   user: string;
   date: string;
   comment?: string;
+  id?: string;
+  replyTo?: string;
 }
 
 export interface Task {
@@ -21,6 +23,7 @@ export interface Task {
   priority?: string;
   effort?: string;
   implementationLink?: string;
+  subtasks?: string[];
 }
 
 export interface TagDef {
