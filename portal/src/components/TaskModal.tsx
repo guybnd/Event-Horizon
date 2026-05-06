@@ -980,6 +980,21 @@ export function TaskModal() {
                     </select>
                   </div>
 
+                  <div className={isWideMode ? 'w-28' : ''}>
+                    <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Effort</label>
+                    <select
+                      className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-1.5 font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
+                      value={effort}
+                      onChange={(event) => setEffort(event.target.value)}
+                    >
+                      {EFFORT_OPTIONS.map((item) => (
+                        <option key={item} value={item}>
+                          {item}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
                   <div className={isWideMode ? 'w-64' : ''}>
                     <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Tags</label>
                     <TagSelector tags={tags} onChange={setTags} availableTags={allTags} configTags={config.tags} />

@@ -7,11 +7,15 @@ import { useApp } from '../AppContext';
 import { updateTask } from '../api';
 
 export function TaskCard({ task, isOverlay }: { task: Task, isOverlay?: boolean }) {
+  const EFFORT_OPTIONS = ['None', 'XS', 'S', 'M', 'L', 'XL'];
   const { openTaskModal, config, currentUser, triggerRefresh } = useApp();
   const [priorityMenuOpen, setPriorityMenuOpen] = useState(false);
+  const [effortMenuOpen, setEffortMenuOpen] = useState(false);
   const [priorityName, setPriorityName] = useState(task.priority || 'None');
+  const [effortName, setEffortName] = useState(task.effort || 'None');
   const priorityMenuRef = useRef<HTMLDivElement | null>(null);
-  const effortLabel = task.effort && task.effort !== 'None' ? task.effort : null;
+  const effortMenuRef = useRef<HTMLDivElement | null>(null);
+  const effortLabel = effortName && effortName !== 'None' ? effortName : null;
   
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: task.id,
@@ -23,17 +27,25 @@ export function TaskCard({ task, isOverlay }: { task: Task, isOverlay?: boolean 
   }, [task.priority]);
 
   useEffect(() => {
-    if (!priorityMenuOpen) return undefined;
+    setEffortName(task.effort || 'None');
+  }, [task.effort]);
+
+  useEffect(() => {
+    if (!priorityMenuOpen && !effortMenuOpen) return undefined;
 
     const handlePointerDown = (event: MouseEvent) => {
       if (!priorityMenuRef.current?.contains(event.target as Node)) {
         setPriorityMenuOpen(false);
+      }
+      if (!effortMenuRef.current?.contains(event.target as Node)) {
+        setEffortMenuOpen(false);
       }
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setPriorityMenuOpen(false);
+        setEffortMenuOpen(false);
       }
     };
 
@@ -44,7 +56,7 @@ export function TaskCard({ task, isOverlay }: { task: Task, isOverlay?: boolean 
       document.removeEventListener('mousedown', handlePointerDown);
       document.removeEventListener('keydown', handleKeyDown);
     };
-  }, [priorityMenuOpen]);
+  }, [priorityMenuOpen, effortMenuOpen]);
 
   const style = {
     transform: CSS.Translate.toString(transform),
@@ -68,6 +80,7 @@ export function TaskCard({ task, isOverlay }: { task: Task, isOverlay?: boolean 
       case 'AlertCircle': return <AlertCircle className={`w-3.5 h-3.5 ${color}`} />;
       case 'ChevronUp': return <ChevronUp className={`w-3.5 h-3.5 ${color}`} />;
       case 'ChevronDown': return <ChevronDown className={`w-3.5 h-3.5 ${color}`} />;
+      case 'Equal':
       case 'Equals': return <Equal className={`w-3.5 h-3.5 ${color}`} />;
       default: return null;
     }
@@ -86,11 +99,24 @@ export function TaskCard({ task, isOverlay }: { task: Task, isOverlay?: boolean 
     }
   };
 
+  const handleEffortChange = async (nextEffort: string) => {
+    const previousEffort = effortName;
+    setEffortName(nextEffort);
+    setEffortMenuOpen(false);
+    try {
+      await updateTask(task.id, { effort: nextEffort, updatedBy: currentUser } as any);
+      triggerRefresh();
+    } catch (error) {
+      console.error('Failed to update effort:', error);
+      setEffortName(previousEffort);
+    }
+  };
+
   return (
     <div
       ref={setNodeRef}
       style={style}
-      className={`bg-white/80 dark:bg-[#252630]/80 backdrop-blur-md p-0 rounded-xl shadow-sm border hover:border-primary/50 hover:shadow-md transition-all mb-3 group flex flex-col relative ${priorityMenuOpen ? 'z-40' : ''} ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''} ${isRequireInput ? 'border-amber-300 dark:border-amber-500/40 ring-1 ring-amber-200/50 dark:ring-amber-500/20' : 'border-gray-200/50 dark:border-white/5'}`}
+      className={`bg-white/80 dark:bg-[#252630]/80 backdrop-blur-md p-0 rounded-xl shadow-sm border hover:border-primary/50 hover:shadow-md transition-all mb-3 group flex flex-col relative ${(priorityMenuOpen || effortMenuOpen) ? 'z-40' : ''} ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''} ${isRequireInput ? 'border-amber-300 dark:border-amber-500/40 ring-1 ring-amber-200/50 dark:ring-amber-500/20' : 'border-gray-200/50 dark:border-white/5'}`}
     >
       {isRequireInput && (
         <div className="absolute -top-1.5 -right-1.5 z-10">
@@ -119,21 +145,48 @@ export function TaskCard({ task, isOverlay }: { task: Task, isOverlay?: boolean 
             <h4 className="font-semibold text-gray-900 dark:text-gray-100 group-hover:text-primary transition-colors text-sm mb-0.5 leading-snug">
               {task.title || 'Untitled Task'}
             </h4>
-            <div ref={priorityMenuRef} className="flex items-center gap-1.5 relative">
+            <div className="flex items-center gap-1.5 relative">
               <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 tracking-wider">
                 {task.id}
               </span>
-              {effortLabel && (
-                <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-semibold text-sky-700 dark:bg-sky-500/10 dark:text-sky-300">
-                  {effortLabel}
-                </span>
+              {!isOverlay && (
+                <div ref={effortMenuRef} className="relative">
+                  <button
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setEffortMenuOpen((open) => !open);
+                      setPriorityMenuOpen(false);
+                    }}
+                    className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold transition-colors ${effortLabel ? 'bg-sky-100 text-sky-700 hover:bg-sky-200 dark:bg-sky-500/10 dark:text-sky-300 dark:hover:bg-sky-500/20' : 'bg-gray-100 text-gray-500 hover:bg-gray-200 dark:bg-black/20 dark:text-gray-400 dark:hover:bg-black/30'}`}
+                  >
+                    <span>{effortLabel || 'Effort'}</span>
+                  </button>
+                  {effortMenuOpen && (
+                    <div
+                      className="absolute left-0 top-full z-[90] mt-1 min-w-24 rounded-lg border border-gray-200 bg-white p-1 shadow-xl dark:border-white/10 dark:bg-[#252630]"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      {EFFORT_OPTIONS.map((option) => (
+                        <button
+                          key={option}
+                          onClick={() => handleEffortChange(option)}
+                          className="flex w-full items-center rounded-md px-2 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-white/5"
+                        >
+                          {option}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               )}
+              <div ref={priorityMenuRef} className="relative">
               {!isOverlay && config?.priorities?.length ? (
                 <>
                   <button
                     onClick={(event) => {
                       event.stopPropagation();
                       setPriorityMenuOpen(open => !open);
+                      setEffortMenuOpen(false);
                     }}
                     className="flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-600 transition-colors hover:bg-gray-200 dark:bg-black/20 dark:text-gray-300 dark:hover:bg-black/30"
                   >
@@ -161,6 +214,7 @@ export function TaskCard({ task, isOverlay }: { task: Task, isOverlay?: boolean 
               ) : (
                 getPriorityIcon(priorityName)
               )}
+              </div>
             </div>
           </div>
           

@@ -47,8 +47,39 @@ history:
     user: Agent
     date: '2026-05-06T22:00:00.000Z'
     comment: >-
-      Implemented the chosen `Effort` field using T-shirt sizes and surfaced
-      it in the modal editor plus task card display.
+      Implemented the chosen `Effort` field using T-shirt sizes and surfaced it
+      in the modal editor plus task card display.
+  - type: comment
+    user: Guy
+    date: '2026-05-06T09:41:04.018Z'
+    comment: |-
+      1. this field should appear in the pop up view, currently doesnt
+      2. it should appear on the card in the kanban view.
+  - type: status_change
+    from: Done
+    to: Todo
+    user: Guy
+    date: '2026-05-06T09:41:07.381Z'
+  - type: comment
+    user: Guy
+    date: '2026-05-06T09:42:27.055Z'
+    comment: >-
+      also, should similarly to priority be dropdowanble from the card kanban
+      view
+  - type: status_change
+    from: Todo
+    to: Done
+    user: Agent
+    date: '2026-05-06T22:30:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-06T22:30:00.000Z'
+    comment: >-
+      Completed the missing UI pieces from the follow-up note. `Effort` now
+      appears in the popup quick-edit view and is editable directly from the
+      kanban card, matching the priority interaction pattern.
+effort: None
+implementationLink: ''
 ---
 ## Groomed Scope
 
