@@ -8,22 +8,23 @@ updatedBy: Agent
 assignee: Agent
 tags: []
 history:
-	- type: status_change
-		from: Grooming
-		to: Todo
-		user: Agent
-		date: '2026-05-06T19:20:00.000Z'
-	- type: status_change
-		from: Todo
-		to: Done
-		user: Agent
-		date: '2026-05-06T22:00:00.000Z'
-	- type: comment
-		user: Agent
-		date: '2026-05-06T22:00:00.000Z'
-		comment: >-
-			Fixed the fullscreen description editor so it now expands to a usable
-			height in the main content pane instead of collapsing to a tiny field.
+  - type: status_change
+    from: Grooming
+    to: Todo
+    user: Agent
+    date: '2026-05-06T19:20:00.000Z'
+  - type: status_change
+    from: Todo
+    to: Done
+    user: Agent
+    date: '2026-05-06T22:00:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-06T22:00:00.000Z'
+    comment: >-
+      Fixed the fullscreen description editor so it now expands to a usable
+      height in the main content pane instead of collapsing to a tiny field.
+    id: c-2026-05-06t22-00-00-000z
 ---
 ## Groomed Scope
 

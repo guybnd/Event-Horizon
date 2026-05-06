@@ -1,8 +1,8 @@
 ---
 title: Comment box improvements
-status: Todo
+status: Done
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 assignee: unassigned
 tags:
   - task
@@ -13,6 +13,7 @@ history:
     comment: >-
       Fleshed this out. The nested/threaded comments feature has significant
       design implications — need your input on scope. See Open Questions.
+    id: c-2026-05-06t07-31-00-000z
   - type: comment
     user: Guy
     date: '2026-05-06T07:32:51.632Z'
@@ -24,6 +25,7 @@ history:
       3. yes
 
       4. split into ticket if you wish
+    id: c-2026-05-06t07-32-51-632z
   - type: status_change
     from: Require Input
     to: Todo
@@ -39,7 +41,21 @@ history:
     to: Todo
     user: Guy
     date: '2026-05-06T08:06:21.440Z'
-priority: Medium
+  - type: comment
+    user: Agent
+    date: '2026-05-06T13:15:00.000Z'
+    comment: >-
+      Implemented the first-pass comment improvements. Added an All Activity /
+      Comments Only filter, inline one-level replies with thread collapse,
+      comment ID support in the model, and server-side history normalization so
+      older comment entries continue to render cleanly.
+    id: c-2026-05-06t13-15-00-000z
+  - type: status_change
+    from: Todo
+    to: Done
+    user: Agent
+    date: '2026-05-06T13:15:00.000Z'
+priority: High
 effort: M
 implementationLink: ''
 ---

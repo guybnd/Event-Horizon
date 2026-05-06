@@ -8,22 +8,23 @@ updatedBy: Agent
 assignee: Agent
 tags: []
 history:
-	- type: status_change
-		from: Grooming
-		to: Todo
-		user: Agent
-		date: '2026-05-06T19:20:00.000Z'
-	- type: status_change
-		from: Todo
-		to: Done
-		user: Agent
-		date: '2026-05-06T22:00:00.000Z'
-	- type: comment
-		user: Agent
-		date: '2026-05-06T22:00:00.000Z'
-		comment: >-
-			Implemented `implementationLink` in the ticket model and modal editor,
-			with clickable display when present.
+  - type: status_change
+    from: Grooming
+    to: Todo
+    user: Agent
+    date: '2026-05-06T19:20:00.000Z'
+  - type: status_change
+    from: Todo
+    to: Done
+    user: Agent
+    date: '2026-05-06T22:00:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-06T22:00:00.000Z'
+    comment: >-
+      Implemented `implementationLink` in the ticket model and modal editor,
+      with clickable display when present.
+    id: c-2026-05-06t22-00-00-000z
 ---
 ## Groomed Scope
 
