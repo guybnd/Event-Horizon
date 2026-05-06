@@ -1,0 +1,10 @@
+{
+  "columns": [
+    "Todo",
+    "In Progress",
+    "Done"
+  ],
+  "hiddenStatuses": [
+    "Backlog"
+  ]
+}
