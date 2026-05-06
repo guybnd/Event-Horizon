@@ -1,0 +1,49 @@
+# Event Horizon Always-On Instructions
+
+These instructions apply to all agent work in this repository.
+
+## Scope
+
+- Treat the `.flux` ticket system as the canonical workflow for any task that changes repository files, advances ticket work, or closes implementation work.
+- Pure explanation, brainstorming, or read-only discussion does not require ticket state changes unless the user explicitly asks to operate on a ticket.
+
+## Ticket Resolution Rules
+
+- If the user references a ticket ID such as `FLUX-41`, use that ticket.
+- If the user uses a bare ticket number such as `41`, `do 41`, or `work on 41`, resolve it to the matching `FLUX-41` ticket when that match is unique.
+- If the user asks for repository changes without naming a ticket, first find the relevant existing ticket or create/groom one before treating the work as implementation.
+- Do not treat repo-changing work as complete without a ticket unless the user explicitly opts out of the ticket workflow.
+
+## Required Workflow For Ticket Work
+
+For any ticket-driven implementation task, the agent must follow this sequence:
+
+1. Read the full ticket, including history.
+2. Read the smallest nearby implementation surface before editing.
+3. Add a short plan comment to the ticket before substantial work.
+4. Move the ticket to `In Progress` before substantive code changes.
+5. Make focused changes and run narrow validation immediately after the first substantive edit.
+6. Add progress comments when scope changes, validation fails, or the user redirects the work.
+7. If blocked on a ticket-specific question, move the ticket to `Require Input` and record the question in ticket history instead of asking only in chat.
+8. If repository files changed and commits are expected, create a focused commit after validation passes and before closing the ticket.
+9. Before closing the ticket, add a completion comment that states what changed, what was validated, any caveats, and the commit hash when available.
+10. Move the ticket to `Done` only after the completion update is recorded.
+
+## Commit Rules
+
+- Prefer one focused commit per completed ticket or tightly related ticket slice.
+- Do not mix unrelated work into the same commit.
+- Use commit messages that describe shipped behavior, not vague activity.
+- If a ticket is intentionally left uncommitted because the user asked to batch commits later, record that explicitly in the ticket before considering the work wrapped.
+
+## Ticket File Safety
+
+- Treat `.flux/*.md` files as schema-sensitive documents.
+- Preserve valid YAML frontmatter and use spaces, not tabs, in `history` and nested fields.
+- Do not delete ticket history; append to it.
+- After editing a ticket file, validate that it still appears through the live engine API or other project ticket reader path.
+
+## Source Of Detailed Procedure
+
+- Follow `.github/skills/event-horizon/SKILL.md` for the detailed Event Horizon ticket conventions, comments, validation expectations, and project-specific workflow notes.
+- If these always-on instructions and the skill differ, follow the stricter rule.
