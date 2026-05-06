@@ -43,7 +43,7 @@ export const saveConfig = async (config: Config): Promise<Config> => {
   return response.json();
 };
 
-export const bulkRename = async (payload: { tags?: Record<string, string>, statuses?: Record<string, string>, users?: Record<string, string> }): Promise<{success: boolean, modifiedCount: number}> => {
+export const bulkRename = async (payload: { tags?: Record<string, string>, statuses?: Record<string, string>, users?: Record<string, string>, priorities?: Record<string, string> }): Promise<{success: boolean, modifiedCount: number}> => {
   const response = await fetch(`${API_URL}/bulk-rename`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

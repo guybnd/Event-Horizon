@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { DndContext, DragOverlay, pointerWithin } from '@dnd-kit/core';
 import type { DragEndEvent, DragStartEvent } from '@dnd-kit/core';
+import { arrayMove } from '@dnd-kit/sortable';
 import { Column } from './Column';
 import { TaskCard } from './TaskCard';
 import { fetchTasks, updateTask } from '../api';
@@ -33,9 +34,9 @@ export function Board() {
   }
 
   const extraStatuses = Array.from(new Set(tasks.map(t => t.status)))
-    .filter(s => !config.columns.find(c => c.name === s) && !config.hiddenStatuses.find(h => h.name === s));
+    .filter(s => !config.columns?.find(c => c.name === s) && !config.hiddenStatuses?.find(h => h.name === s));
 
-  const allColumns = [...config.columns.map(c => c.name), ...extraStatuses];
+  const allColumns = [...(config.columns?.map(c => c.name) || []), ...extraStatuses];
 
   const handleDragStart = (event: DragStartEvent) => {
     const { active } = event;
@@ -48,20 +49,63 @@ export function Board() {
     setActiveTask(null);
     if (!over) return;
 
-    const taskId = active.id as string;
-    const newStatus = over.id as string;
-    const task = tasks.find(t => t.id === taskId);
-    if (!task || task.status === newStatus) return;
+    const activeTaskId = active.id as string;
+    const overId = over.id as string;
+    
+    const activeTaskObj = tasks.find(t => t.id === activeTaskId);
+    if (!activeTaskObj) return;
 
-    if (config.requireCommentOnStatusChange) {
-      setPendingStatusChange({ taskId, newStatus, oldStatus: task.status });
-      return;
+    // Check if overId is a task or a column
+    const overTask = tasks.find(t => t.id === overId);
+    const targetStatus = overTask ? overTask.status : overId;
+
+    // Case 1: Moving to a DIFFERENT column
+    if (activeTaskObj.status !== targetStatus) {
+      if (config.requireCommentOnStatusChange) {
+        setPendingStatusChange({ taskId: activeTaskId, newStatus: targetStatus, oldStatus: activeTaskObj.status });
+        return;
+      }
+      
+      // Calculate order for the new column (append to end)
+      const targetColumnTasks = tasks.filter(t => t.status === targetStatus);
+      const maxOrder = targetColumnTasks.reduce((max, t) => Math.max(max, t.order ?? 0), -1);
+      const newOrder = maxOrder + 1;
+
+      await applyStatusChange(activeTaskId, targetStatus, activeTaskObj.status, undefined, newOrder);
+    } 
+    // Case 2: Reordering within SAME column
+    else if (overTask && activeTaskId !== overId) {
+      const columnTasks = tasks
+        .filter(t => t.status === targetStatus)
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      
+      const oldIndex = columnTasks.findIndex(t => t.id === activeTaskId);
+      const newIndex = columnTasks.findIndex(t => t.id === overId);
+      
+      const newOrderedTasks = arrayMove(columnTasks, oldIndex, newIndex);
+      
+      // Update local state optimistically
+      setTasks(prev => prev.map(t => {
+        const foundIdx = newOrderedTasks.findIndex(ot => ot.id === t.id);
+        if (foundIdx !== -1) {
+          return { ...t, order: foundIdx };
+        }
+        return t;
+      }));
+
+      // Persist changes
+      try {
+        await Promise.all(newOrderedTasks.map((t, index) => 
+          updateTask(t.id, { order: index, updatedBy: currentUser } as any)
+        ));
+      } catch (err) {
+        console.error('Failed to persist reorder:', err);
+        triggerRefresh();
+      }
     }
-
-    await applyStatusChange(taskId, newStatus, task.status);
   };
 
-  const applyStatusChange = async (taskId: string, newStatus: string, oldStatus: string, comment?: string) => {
+  const applyStatusChange = async (taskId: string, newStatus: string, oldStatus: string, comment?: string, newOrder?: number) => {
     const task = tasks.find(t => t.id === taskId);
     if (!task) return;
 
@@ -74,14 +118,16 @@ export function Board() {
       comment
     }];
 
-    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: newStatus, history: newHistory as any } : t));
+    const finalOrder = newOrder ?? (task.order || 0);
+
+    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: newStatus, order: finalOrder, history: newHistory as any } : t));
 
     try {
-      await updateTask(taskId, { status: newStatus, history: newHistory, updatedBy: currentUser } as any);
+      await updateTask(taskId, { status: newStatus, order: finalOrder, history: newHistory, updatedBy: currentUser } as any);
       triggerRefresh();
     } catch (err) {
       console.error(err);
-      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: oldStatus } : t));
+      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: oldStatus, order: task.order } : t));
     }
     setPendingStatusChange(null);
     setCommentText('');

@@ -1,8 +1,8 @@
 ---
 title: Full screen ticket view
-status: Todo
+status: In Progress
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: Agent
 tags:
   - feature
@@ -11,8 +11,14 @@ history:
     user: Agent
     date: '2026-05-06T07:32:00.000Z'
     comment: >-
-      Fleshed out with detailed layout spec inspired by Jira/Linear ticket views.
-      Ready to implement.
+      Fleshed out with detailed layout spec inspired by Jira/Linear ticket
+      views. Ready to implement.
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Guy
+    date: '2026-05-06T07:59:32.144Z'
+order: 0
 ---
 ## Summary
 

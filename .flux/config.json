@@ -1,22 +1,19 @@
 {
   "columns": [
     {
+      "name": "Grooming"
+    },
+    {
       "name": "Todo"
+    },
+    {
+      "name": "Require Input"
     },
     {
       "name": "In Progress"
     },
     {
       "name": "Done"
-    },
-    {
-      "name": "Require Input"
-    },
-    {
-      "name": "Grooming"
-    },
-    {
-      "name": "New Column"
     }
   ],
   "hiddenStatuses": [
@@ -52,6 +49,33 @@
     {
       "name": "task",
       "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    }
+  ],
+  "priorities": [
+    {
+      "name": "Critical",
+      "icon": "AlertCircle",
+      "color": "text-red-500"
+    },
+    {
+      "name": "High",
+      "icon": "ChevronUp",
+      "color": "text-orange-500"
+    },
+    {
+      "name": "Medium",
+      "icon": "Equal",
+      "color": "text-amber-500"
+    },
+    {
+      "name": "Low",
+      "icon": "ChevronDown",
+      "color": "text-emerald-500"
+    },
+    {
+      "name": "None",
+      "icon": "ChevronDown",
+      "color": "text-purple-500"
     }
   ],
   "projects": [

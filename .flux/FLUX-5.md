@@ -2,7 +2,7 @@
 title: Docs section
 status: Todo
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: Agent
 tags:
   - feature
@@ -39,8 +39,9 @@ history:
     date: '2026-05-06T07:36:00.000Z'
     comment: >-
       Updated the spec with Guy's answers. Docs will be a top-level screen with
-      a WYSIWYG single-page editor, a "New Doc" button, and a config setting
-      for edit permissions.
+      a WYSIWYG single-page editor, a "New Doc" button, and a config setting for
+      edit permissions.
+order: 4
 ---
 ## Summary
 

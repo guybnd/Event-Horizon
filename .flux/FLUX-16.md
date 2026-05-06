@@ -1,8 +1,8 @@
 ---
 title: Add priority field to tickets
-status: Todo
+status: In Progress
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: Agent
 tags:
   - feature
@@ -13,6 +13,7 @@ history:
     comment: >-
       Fleshed out with full spec covering config, data model, card UI, and modal
       UI. Ready to implement.
+order: 1
 ---
 ## Summary
 

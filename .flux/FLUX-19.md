@@ -1,18 +1,30 @@
 ---
 title: Allow ordering columns in kanban
-status: In Progress
+status: Done
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: Agent
 tags:
   - feature
 history:
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-06T17:49:00+10:00'
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-05-06T17:56:00+10:00'
   - type: comment
     user: Agent
-    date: '2026-05-06T07:37:00.000Z'
+    date: '2026-05-06T17:56:00+10:00'
     comment: >-
-      Fleshed this out. Straightforward feature — can be done via Settings or
-      drag-and-drop. Ready to implement.
+      Implemented drag-and-drop column reordering in the Settings panel using
+      @dnd-kit/sortable. Verified it correctly updates config.json and reflects
+      on the board.
+order: 5
 ---
 ## Summary
 

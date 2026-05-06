@@ -2,7 +2,7 @@
 title: 'Description view: rendered markdown with WYSIWYG editing'
 status: Todo
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: Agent
 tags:
   - feature
@@ -13,6 +13,7 @@ history:
     comment: >-
       Fleshed this out with implementation approach. This is self-contained and
       ready to work on.
+order: 3
 ---
 ## Summary
 

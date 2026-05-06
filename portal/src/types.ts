@@ -17,6 +17,8 @@ export interface Task {
   history?: HistoryEntry[];
   createdBy?: string;
   updatedBy?: string;
+  order?: number;
+  priority?: string;
 }
 
 export interface TagDef {
@@ -37,12 +39,20 @@ export interface UserDef {
   originalName?: string;
 }
 
+export interface PriorityDef {
+  name: string;
+  color: string;
+  icon?: string;
+  originalName?: string;
+}
+
 export interface Config {
   columns: StatusDef[];
   hiddenStatuses: StatusDef[];
-  projects: string[];
   users: UserDef[];
   tags: TagDef[];
+  priorities: PriorityDef[];
+  projects: string[];
   enableBacklogScreen: boolean;
   requireCommentOnStatusChange: boolean;
 }

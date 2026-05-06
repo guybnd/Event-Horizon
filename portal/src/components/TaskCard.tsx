@@ -1,27 +1,63 @@
-import { useDraggable } from '@dnd-kit/core';
+import { useEffect, useState } from 'react';
+import { useSortable } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import type { Task } from '../types';
-import { User, GripVertical, AlertCircle } from 'lucide-react';
+import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal } from 'lucide-react';
 import { useApp } from '../AppContext';
+import { updateTask } from '../api';
 
 export function TaskCard({ task, isOverlay }: { task: Task, isOverlay?: boolean }) {
-  const { openTaskModal, config } = useApp();
+  const { openTaskModal, config, currentUser, triggerRefresh } = useApp();
+  const [priorityMenuOpen, setPriorityMenuOpen] = useState(false);
+  const [priorityName, setPriorityName] = useState(task.priority || 'None');
   
-  const { attributes, listeners, setNodeRef, transform } = useDraggable({
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: task.id,
     data: task,
   });
 
-  const style = transform && !isOverlay ? {
-    transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`,
-  } : undefined;
+  useEffect(() => {
+    setPriorityName(task.priority || 'None');
+  }, [task.priority]);
+
+  const style = {
+    transform: CSS.Translate.toString(transform),
+    transition,
+    opacity: isDragging ? 0.3 : 1,
+  };
 
   const snippet = task.body?.split('\n').find(line => line.trim() && !line.startsWith('#')) || 'No description provided';
 
   const isRequireInput = task.status === 'Require Input';
 
   const getTagColor = (tagName: string) => {
-    const tagObj = config?.tags.find(t => t.name === tagName);
+    const tagObj = config?.tags?.find(t => t.name === tagName);
     return tagObj?.color || 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300';
+  };
+
+  const getPriorityIcon = (priorityName: string) => {
+    const p = config?.priorities?.find(p => p.name === priorityName);
+    const color = p?.color || 'text-gray-400';
+    switch (p?.icon) {
+      case 'AlertCircle': return <AlertCircle className={`w-3.5 h-3.5 ${color}`} />;
+      case 'ChevronUp': return <ChevronUp className={`w-3.5 h-3.5 ${color}`} />;
+      case 'ChevronDown': return <ChevronDown className={`w-3.5 h-3.5 ${color}`} />;
+      case 'Equals': return <Equal className={`w-3.5 h-3.5 ${color}`} />;
+      default: return null;
+    }
+  };
+
+  const handlePriorityChange = async (nextPriority: string) => {
+    const previousPriority = priorityName;
+    setPriorityName(nextPriority);
+    setPriorityMenuOpen(false);
+    try {
+      await updateTask(task.id, { priority: nextPriority, updatedBy: currentUser } as any);
+      triggerRefresh();
+    } catch (error) {
+      console.error('Failed to update priority:', error);
+      setPriorityName(previousPriority);
+    }
   };
 
   return (
@@ -57,9 +93,44 @@ export function TaskCard({ task, isOverlay }: { task: Task, isOverlay?: boolean 
             <h4 className="font-semibold text-gray-900 dark:text-gray-100 group-hover:text-primary transition-colors text-sm mb-0.5 leading-snug">
               {task.title || 'Untitled Task'}
             </h4>
-            <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 tracking-wider">
-              {task.id}
-            </span>
+            <div className="flex items-center gap-1.5 relative">
+              <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 tracking-wider">
+                {task.id}
+              </span>
+              {!isOverlay && config?.priorities?.length ? (
+                <>
+                  <button
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setPriorityMenuOpen(open => !open);
+                    }}
+                    className="flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-600 transition-colors hover:bg-gray-200 dark:bg-black/20 dark:text-gray-300 dark:hover:bg-black/30"
+                  >
+                    {getPriorityIcon(priorityName)}
+                    <span>{priorityName}</span>
+                  </button>
+                  {priorityMenuOpen && (
+                    <div
+                      className="absolute left-0 top-full z-20 mt-1 min-w-32 rounded-lg border border-gray-200 bg-white p-1 shadow-xl dark:border-white/10 dark:bg-[#252630]"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      {config.priorities.map(priority => (
+                        <button
+                          key={priority.name}
+                          onClick={() => handlePriorityChange(priority.name)}
+                          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-white/5"
+                        >
+                          {getPriorityIcon(priority.name)}
+                          <span>{priority.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : (
+                getPriorityIcon(priorityName)
+              )}
+            </div>
           </div>
           
           <p className="text-xs text-gray-600 dark:text-gray-400 mb-3 line-clamp-2">

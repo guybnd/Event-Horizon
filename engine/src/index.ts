@@ -23,6 +23,13 @@ let configCache: any = {
     { name: "feature", color: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" },
     { name: "docs", color: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400" }
   ],
+  priorities: [
+    { name: "Critical", icon: "AlertCircle", color: "text-red-500" },
+    { name: "High", icon: "ChevronUp", color: "text-orange-500" },
+    { name: "Medium", icon: "Equal", color: "text-amber-500" },
+    { name: "Low", icon: "ChevronDown", color: "text-emerald-500" },
+    { name: "None", icon: "Equal", color: "text-gray-400" }
+  ],
   enableBacklogScreen: true,
   requireCommentOnStatusChange: true
 };
@@ -40,6 +47,16 @@ async function loadConfig() {
       name: s,
       color: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300'
     }));
+    if (!loaded.priorities || !Array.isArray(loaded.priorities) || loaded.priorities.length === 0) {
+      loaded.priorities = configCache.priorities;
+    }
+    if (loaded.priorities?.length && typeof loaded.priorities[0] === 'string') {
+      loaded.priorities = loaded.priorities.map((name: string) => ({
+        name,
+        icon: 'Equal',
+        color: 'text-gray-400'
+      }));
+    }
 
     configCache = { ...configCache, ...loaded };
     console.log('Loaded config');
@@ -139,6 +156,7 @@ app.post('/api/tasks', async (req, res) => {
     id: nextId,
     title: title || 'New Task',
     status: status || 'Todo',
+    priority: rest.priority || 'None',
     createdBy: author || 'Unknown',
     updatedBy: author || 'Unknown',
     assignee: 'unassigned',
@@ -206,7 +224,7 @@ app.delete('/api/tasks/:id', async (req, res) => {
 });
 
 app.post('/api/bulk-rename', async (req, res) => {
-  const { tags = {}, statuses = {}, users = {} } = req.body;
+  const { tags = {}, statuses = {}, users = {}, priorities = {} } = req.body;
   let modifiedCount = 0;
 
   try {
@@ -233,6 +251,10 @@ app.post('/api/bulk-rename', async (req, res) => {
       // Rename users
       if (frontmatter.assignee && users[frontmatter.assignee]) {
         frontmatter.assignee = users[frontmatter.assignee];
+        changed = true;
+      }
+      if (frontmatter.priority && priorities[frontmatter.priority]) {
+        frontmatter.priority = priorities[frontmatter.priority];
         changed = true;
       }
       if (frontmatter.author && users[frontmatter.author]) {

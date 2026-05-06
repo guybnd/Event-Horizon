@@ -1,8 +1,8 @@
 ---
 title: 'Require Input: visual indicator and prompt UI'
-status: Done
+status: Grooming
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: Agent
 tags:
   - feature
@@ -13,6 +13,32 @@ history:
     comment: >-
       Fleshed this out with full spec. This is self-contained and ready to work
       on — the "Require Input" status column already exists in config.
+  - type: comment
+    user: Guy
+    date: '2026-05-06T08:21:48.950Z'
+    comment: >-
+      Lets refactor this
+
+
+      Require input shouldnt be a status but its own setting boolean on a ticket
+
+
+      if true, then show the signal. we should also make it so that require
+      input tickets are by default shown at the top of their respective list
+
+
+      the require input should show up as it's own section perhaps, with a
+      window that pops up with the questions, and the user can input the answer.
+      when finishing this answer it should transition the ticket back into a
+      separate status of 'input granted' or something like this so the agents
+      can know to pick it back up. need to think about this flow in more detail
+  - type: status_change
+    from: Done
+    to: Grooming
+    user: Guy
+    date: '2026-05-06T08:21:52.412Z'
+order: 1
+priority: High
 ---
 ## Summary
 

@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useApp } from '../AppContext';
-import { Save, Plus, X, GripVertical } from 'lucide-react';
+import { Save, Plus, X, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal } from 'lucide-react';
 import { bulkRename } from '../api';
-import type { TagDef, StatusDef, UserDef } from '../types';
+import type { TagDef, StatusDef, UserDef, PriorityDef } from '../types';
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
@@ -60,6 +60,79 @@ const TagEditor = ({ items, setItems }: { items: TagDef[], setItems: (items: Tag
         </div>
       ))}
       <button onClick={() => setItems([...items, { name: '', color: COLOR_PALETTE[0] }])} className="flex items-center gap-1 text-xs font-bold text-primary hover:text-primary-hover px-2 py-1"><Plus className="w-3 h-3" /> Add Tag</button>
+    </div>
+  );
+};
+
+const PriorityEditor = ({ items, setItems }: { items: PriorityDef[], setItems: (items: PriorityDef[]) => void }) => {
+  const PRIORITY_COLORS = ['text-red-500', 'text-orange-500', 'text-amber-500', 'text-emerald-500', 'text-blue-500', 'text-purple-500', 'text-gray-400'];
+  const PRIORITY_ICONS = ['AlertCircle', 'ChevronUp', 'Equals', 'ChevronDown'];
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const oldIndex = items.findIndex((_, i) => `priority-${i}` === active.id);
+    const newIndex = items.findIndex((_, i) => `priority-${i}` === over.id);
+    if (oldIndex !== -1 && newIndex !== -1) {
+      setItems(arrayMove(items, oldIndex, newIndex));
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <SortableContext items={items.map((_, i) => `priority-${i}`)} strategy={verticalListSortingStrategy}>
+          {items.map((item, idx) => (
+            <SortableRow key={`priority-${idx}`} id={`priority-${idx}`}>
+              <div className="flex flex-1 gap-4 items-center bg-gray-50 dark:bg-black/10 p-2 rounded-xl border border-gray-100 dark:border-white/5">
+                <input 
+                  value={item.name} 
+                  onChange={e => { const newArr = [...items]; newArr[idx].name = e.target.value; setItems(newArr); }}
+                  className="w-32 bg-white dark:bg-black/40 border border-gray-200 dark:border-white/10 rounded-lg px-3 py-1.5 outline-none focus:border-primary text-sm font-medium"
+                  placeholder="Priority Name"
+                />
+                
+                <div className="flex gap-1.5 border-l border-gray-200 dark:border-white/10 pl-4 items-center">
+                  {PRIORITY_ICONS.map(icon => (
+                    <button 
+                      key={icon} 
+                      onClick={() => { const newArr = [...items]; newArr[idx].icon = icon === 'Equals' ? 'Equal' : icon; setItems(newArr); }}
+                      className={`p-1.5 rounded transition-all ${item.icon === (icon === 'Equals' ? 'Equal' : icon) ? 'bg-primary/20 text-primary' : 'text-gray-400 hover:bg-gray-100 dark:hover:bg-white/5'}`}
+                    >
+                      {icon === 'AlertCircle' && <AlertCircle className="w-4 h-4" />}
+                      {icon === 'ChevronUp' && <ChevronUp className="w-4 h-4" />}
+                      {icon === 'Equals' && <Equal className="w-4 h-4" />}
+                      {icon === 'ChevronDown' && <ChevronDown className="w-4 h-4" />}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex gap-1.5 border-l border-gray-200 dark:border-white/10 pl-4">
+                  {PRIORITY_COLORS.map(color => (
+                    <button 
+                      key={color} 
+                      onClick={() => { const newArr = [...items]; newArr[idx].color = color; setItems(newArr); }}
+                      className={`w-6 h-6 rounded-full border-2 transition-all ${item.color === color ? 'border-primary shadow-sm scale-110' : 'border-transparent hover:scale-105'}`}
+                      style={{
+                        backgroundColor:
+                          color === 'text-red-500' ? '#ef4444' :
+                          color === 'text-orange-500' ? '#f97316' :
+                          color === 'text-amber-500' ? '#f59e0b' :
+                          color === 'text-emerald-500' ? '#10b981' :
+                          color === 'text-blue-500' ? '#3b82f6' :
+                          color === 'text-purple-500' ? '#8b5cf6' : '#9ca3af'
+                      }}
+                    />
+                  ))}
+                </div>
+                <button onClick={() => setItems(items.filter((_, i) => i !== idx))} className="p-1.5 ml-auto text-gray-400 hover:text-red-500 rounded"><X className="w-4 h-4" /></button>
+              </div>
+            </SortableRow>
+          ))}
+        </SortableContext>
+      </DndContext>
+      <button onClick={() => setItems([...items, { name: '', color: PRIORITY_COLORS[0], icon: PRIORITY_ICONS[0] }])} className="flex items-center gap-1 text-xs font-bold text-primary hover:text-primary-hover px-2 py-1"><Plus className="w-3 h-3" /> Add Priority</button>
     </div>
   );
 };
@@ -136,6 +209,7 @@ export function Settings() {
   const [hiddenStatuses, setHiddenStatuses] = useState<StatusDef[]>([]);
   const [users, setUsers] = useState<UserDef[]>([]);
   const [tags, setTags] = useState<TagDef[]>([]);
+  const [priorities, setPriorities] = useState<PriorityDef[]>([]);
   const [projects, setProjects] = useState('');
   const [enableBacklog, setEnableBacklog] = useState(true);
   const [requireComment, setRequireComment] = useState(true);
@@ -147,6 +221,7 @@ export function Settings() {
       setHiddenStatuses(config.hiddenStatuses.map(c => ({ ...c, originalName: c.name })));
       setUsers(config.users.map(u => ({ ...u, originalName: u.name })));
       setTags(config.tags.map(t => ({ ...t, originalName: t.name })));
+      setPriorities(config.priorities.map(p => ({ ...p, originalName: p.name })) || []);
       setProjects(config.projects.join(', '));
       setEnableBacklog(config.enableBacklogScreen);
       setRequireComment(config.requireCommentOnStatusChange);
@@ -167,21 +242,26 @@ export function Settings() {
     const statusRenames: Record<string, string> = {};
     [...columns, ...hiddenStatuses].forEach(s => { if (s.originalName && s.originalName !== s.name) statusRenames[s.originalName] = s.name; });
 
+    const priorityRenames: Record<string, string> = {};
+    priorities.forEach(p => { if (p.originalName && p.originalName !== p.name) priorityRenames[p.originalName] = p.name; });
+
     try {
-      if (Object.keys(tagRenames).length > 0 || Object.keys(userRenames).length > 0 || Object.keys(statusRenames).length > 0) {
-        await bulkRename({ tags: tagRenames, users: userRenames, statuses: statusRenames });
+      if (Object.keys(tagRenames).length > 0 || Object.keys(userRenames).length > 0 || Object.keys(statusRenames).length > 0 || Object.keys(priorityRenames).length > 0) {
+        await bulkRename({ tags: tagRenames, users: userRenames, statuses: statusRenames, priorities: priorityRenames });
       }
 
       const cleanTags = tags.filter(c => c.name.trim()).map(({originalName, ...rest}) => rest);
       const cleanColumns = columns.filter(c => c.name.trim()).map(({originalName, ...rest}) => rest);
       const cleanHidden = hiddenStatuses.filter(c => c.name.trim()).map(({originalName, ...rest}) => rest);
       const cleanUsers = users.filter(c => c.name.trim()).map(({originalName, ...rest}) => rest);
+      const cleanPriorities = priorities.filter(p => p.name.trim()).map(({ originalName, ...rest }) => rest);
 
       await saveConfig({
         columns: cleanColumns,
         hiddenStatuses: cleanHidden,
         users: cleanUsers,
         tags: cleanTags,
+        priorities: cleanPriorities,
         projects: projects.split(',').map(s => s.trim()).filter(Boolean),
         enableBacklogScreen: enableBacklog,
         requireCommentOnStatusChange: requireComment
@@ -204,6 +284,7 @@ export function Settings() {
     hiddenStatuses: hiddenStatuses.filter(c => c.name.trim()).map(({originalName, ...rest}) => rest),
     users: users.filter(c => c.name.trim()).map(({originalName, ...rest}) => rest),
     tags: tags.filter(c => c.name.trim()).map(({originalName, ...rest}) => rest),
+    priorities: priorities.filter(p => p.name.trim()).map(({ originalName, ...rest }) => rest),
     projects: projects.split(',').map(s => s.trim()).filter(Boolean),
     enableBacklogScreen: enableBacklog,
     requireCommentOnStatusChange: requireComment
@@ -214,6 +295,7 @@ export function Settings() {
     hiddenStatuses: config.hiddenStatuses,
     users: config.users,
     tags: config.tags,
+    priorities: config.priorities,
     projects: config.projects,
     enableBacklogScreen: config.enableBacklogScreen,
     requireCommentOnStatusChange: config.requireCommentOnStatusChange
@@ -263,6 +345,11 @@ export function Settings() {
             <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Global Tags</h3>
             <p className="text-xs text-gray-500 mb-4">Define available tags and their visual pill colors.</p>
             <TagEditor items={tags} setItems={setTags} />
+          </div>
+          <div className="col-span-2 border-t border-gray-200 dark:border-white/10 pt-10">
+            <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Priority Levels</h3>
+            <p className="text-xs text-gray-500 mb-4">Define task priority levels, icons, and colors.</p>
+            <PriorityEditor items={priorities} setItems={setPriorities} />
           </div>
         </div>
 

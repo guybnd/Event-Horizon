@@ -1,4 +1,5 @@
-import { createContext, useContext, useState, ReactNode, useEffect } from 'react';
+import { createContext, useContext, useState, useEffect } from 'react';
+import type { ReactNode } from 'react';
 import type { Task, Config } from './types';
 import { fetchConfig, saveConfig as apiSaveConfig } from './api';
 
@@ -17,7 +18,7 @@ interface AppState {
   refreshTrigger: number;
   triggerRefresh: () => void;
   config: Config | null;
-  saveConfig: (updates: Partial<Config>) => Promise<void>;
+  saveConfig: (updates: Config) => Promise<void>;
 }
 
 const AppContext = createContext<AppState | undefined>(undefined);

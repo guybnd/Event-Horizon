@@ -1,4 +1,5 @@
 import { useDroppable } from '@dnd-kit/core';
+import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { TaskCard } from './TaskCard';
 import type { Task } from '../types';
 import { Plus } from 'lucide-react';
@@ -39,9 +40,15 @@ export function Column({ id, title, tasks }: ColumnProps) {
           New Task
         </button>
 
-        {tasks.map(task => (
-          <TaskCard key={task.id} task={task} />
-        ))}
+        {tasks.length > 0 && (
+          <SortableContext items={tasks.map(t => t.id)} strategy={verticalListSortingStrategy}>
+            {tasks
+              .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+              .map(task => (
+                <TaskCard key={task.id} task={task} />
+              ))}
+          </SortableContext>
+        )}
       </div>
     </div>
   );
