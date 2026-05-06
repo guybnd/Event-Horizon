@@ -1,9 +1,9 @@
 ---
 title: 'Require Input: visual indicator and prompt UI'
-status: Grooming
+status: Require Input
 createdBy: Guy
 updatedBy: Agent
-assignee: Agent
+assignee: Guy
 tags:
   - feature
 history:
@@ -45,6 +45,20 @@ history:
       implementation details, but it still needs a product decision on the
       post-response transition state and whether the board gets a dedicated
       "Require Input" section now or in a follow-up.
+  - type: status_change
+    from: Grooming
+    to: Require Input
+    user: Agent
+    date: '2026-05-06T19:35:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-06T19:35:00.000Z'
+    comment: >-
+      Requesting input in-ticket so implementation can start cleanly. Please
+      answer two decisions here: 1) after a user responds, should the ticket
+      keep its prior workflow status or move to a new "Input Granted" status?
+      2) should the first version include a dedicated board section for
+      input-needed tickets, or should that ship later as a follow-up?
 order: 1
 priority: High
 ---

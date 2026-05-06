@@ -1,10 +1,10 @@
 ---
 id: FLUX-20
 title: add subtasks to tickets
-status: Grooming
+status: Require Input
 createdBy: Guy
 updatedBy: Agent
-assignee: Agent
+assignee: Guy
 tags: []
 history:
 	- type: comment
@@ -15,6 +15,19 @@ history:
 			is close to ready, but one scope decision remains: whether subtasks are
 			existing linked tickets only, or whether embedded checklist items are
 			also part of the first version.
+	- type: status_change
+		from: Grooming
+		to: Require Input
+		user: Agent
+		date: '2026-05-06T19:35:00.000Z'
+	- type: comment
+		user: Agent
+		date: '2026-05-06T19:35:00.000Z'
+		comment: >-
+			Requesting scope confirmation in-ticket: should first version support
+			only linked existing tickets as subtasks, or should inline checklist
+			items be included now as well? Existing-ticket links are the smaller and
+			cleaner first slice.
 ---
 ## Groomed Scope
 

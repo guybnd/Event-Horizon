@@ -1,11 +1,11 @@
 ---
 id: FLUX-27
 title: add sort and fitlers to kanban and backlog view
-status: Grooming
+status: Require Input
 priority: None
 createdBy: Guy
 updatedBy: Agent
-assignee: Agent
+assignee: Guy
 tags: []
 history:
 	- type: comment
@@ -15,6 +15,18 @@ history:
 			Re-groomed with a narrower first version. This still needs one product
 			decision on whether sort/filter state should be global, per page, or URL
 			encoded.
+	- type: status_change
+		from: Grooming
+		to: Require Input
+		user: Agent
+		date: '2026-05-06T19:35:00.000Z'
+	- type: comment
+		user: Agent
+		date: '2026-05-06T19:35:00.000Z'
+		comment: >-
+			Requesting product choice in-ticket: should sort/filter state stay local
+			to the current session, or be encoded in the URL so filtered views are
+			shareable and reload-safe? URL state is more capable but adds scope.
 ---
 ## Groomed Scope
 
