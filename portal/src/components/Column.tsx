@@ -9,9 +9,10 @@ interface ColumnProps {
   id: string;
   title: string;
   tasks: Task[];
+  parentByChildId: Map<string, Task>;
 }
 
-export function Column({ id, title, tasks }: ColumnProps) {
+export function Column({ id, title, tasks, parentByChildId }: ColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id });
   const { openTaskModal } = useApp();
 
@@ -45,7 +46,7 @@ export function Column({ id, title, tasks }: ColumnProps) {
             {tasks
               .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
               .map(task => (
-                <TaskCard key={task.id} task={task} />
+                <TaskCard key={task.id} task={task} parentTask={parentByChildId.get(task.id)} />
               ))}
           </SortableContext>
         )}

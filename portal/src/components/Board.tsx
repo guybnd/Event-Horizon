@@ -19,10 +19,34 @@ export function Board() {
   const [commentText, setCommentText] = useState('');
 
   useEffect(() => {
-    fetchTasks()
-      .then(setTasks)
-      .catch(console.error)
-      .finally(() => setLoading(false));
+    let cancelled = false;
+    let retryTimeout: number | undefined;
+
+    const loadTasks = async () => {
+      try {
+        const data = await fetchTasks();
+        if (cancelled) return;
+        setTasks(data);
+        setLoading(false);
+      } catch (error) {
+        console.error(error);
+        if (cancelled) return;
+        setLoading(true);
+        retryTimeout = window.setTimeout(() => {
+          void loadTasks();
+        }, 3000);
+      }
+    };
+
+    setLoading(true);
+    void loadTasks();
+
+    return () => {
+      cancelled = true;
+      if (retryTimeout) {
+        window.clearTimeout(retryTimeout);
+      }
+    };
   }, [refreshTrigger]);
 
   if (loading || !config) {
@@ -67,6 +91,17 @@ export function Board() {
           }
           return 0;
       }
+    });
+  const parentByChildId = new Map<string, Task>();
+
+  [...tasks]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .forEach((candidateParent) => {
+      candidateParent.subtasks?.forEach((childId) => {
+        if (!parentByChildId.has(childId)) {
+          parentByChildId.set(childId, candidateParent);
+        }
+      });
     });
 
   const handleDragStart = (event: DragStartEvent) => {
@@ -169,10 +204,10 @@ export function Board() {
       <DndContext onDragStart={handleDragStart} onDragEnd={handleDragEnd} collisionDetection={pointerWithin}>
         <div className="flex gap-6 overflow-x-auto h-full pb-4 items-start">
           {allColumns.map(columnId => (
-            <Column key={columnId} id={columnId} title={columnId} tasks={visibleTasks.filter(t => t.status === columnId)} />
+            <Column key={columnId} id={columnId} title={columnId} tasks={visibleTasks.filter(t => t.status === columnId)} parentByChildId={parentByChildId} />
           ))}
         </div>
-        <DragOverlay>{activeTask ? <TaskCard task={activeTask} isOverlay /> : null}</DragOverlay>
+        <DragOverlay>{activeTask ? <TaskCard task={activeTask} parentTask={parentByChildId.get(activeTask.id)} isOverlay /> : null}</DragOverlay>
       </DndContext>
 
       {pendingStatusChange && (

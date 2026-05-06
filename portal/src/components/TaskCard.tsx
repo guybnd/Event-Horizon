@@ -6,7 +6,7 @@ import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal } from '
 import { useApp } from '../AppContext';
 import { updateTask } from '../api';
 
-export function TaskCard({ task, isOverlay }: { task: Task, isOverlay?: boolean }) {
+export function TaskCard({ task, parentTask, isOverlay }: { task: Task, parentTask?: Task, isOverlay?: boolean }) {
   const EFFORT_OPTIONS = ['None', 'XS', 'S', 'M', 'L', 'XL'];
   const { openTaskModal, config, currentUser, triggerRefresh } = useApp();
   const [priorityMenuOpen, setPriorityMenuOpen] = useState(false);
@@ -266,6 +266,18 @@ export function TaskCard({ task, isOverlay }: { task: Task, isOverlay?: boolean 
               <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 tracking-wider">
                 {task.id}
               </span>
+              {parentTask && (
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    openTaskModal(parentTask);
+                  }}
+                  className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700 transition-colors hover:border-amber-300 hover:bg-amber-100 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300 dark:hover:bg-amber-500/15"
+                >
+                  -&gt; {parentTask.id}
+                </button>
+              )}
               {!isOverlay && (
                 <div ref={effortMenuRef} className="relative">
                   <button

@@ -24,8 +24,18 @@ import {
   X,
 } from 'lucide-react';
 import { useApp } from '../AppContext';
-import { createTask, deleteTask, updateTask } from '../api';
-import type { Config, TagDef } from '../types';
+import { createTask, deleteTask, fetchTasks, updateTask } from '../api';
+import type { Config, HistoryEntry, TagDef, Task } from '../types';
+
+const ACTIVITY_FILTER_STORAGE_KEY = 'flux.activityFilter';
+
+type ActivityFilter = 'all' | 'comments';
+
+function getInitialActivityFilter(): ActivityFilter {
+  if (typeof window === 'undefined') return 'all';
+  const stored = window.localStorage.getItem(ACTIVITY_FILTER_STORAGE_KEY);
+  return stored === 'comments' ? 'comments' : 'all';
+}
 
 function TagSelector({
   tags,
@@ -191,8 +201,10 @@ export function TaskModal() {
     closeModal,
     modalTask,
     setModalTask,
+    openTaskModal,
     currentProject,
     currentUser,
+    refreshTrigger,
     triggerRefresh,
     config,
   } = useApp();
@@ -207,12 +219,19 @@ export function TaskModal() {
   const [implementationLink, setImplementationLink] = useState('');
   const [saving, setSaving] = useState(false);
   const [newComment, setNewComment] = useState('');
+  const [activityFilter, setActivityFilter] = useState<ActivityFilter>(getInitialActivityFilter);
+  const [replyTargetId, setReplyTargetId] = useState<string | null>(null);
+  const [replyDraft, setReplyDraft] = useState('');
+  const [collapsedThreads, setCollapsedThreads] = useState<Record<string, boolean>>({});
   const [responseDestination, setResponseDestination] = useState('Todo');
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [isWideMode, setIsWideMode] = useState(false);
   const [isFullView, setIsFullView] = useState(false);
   const [isEditingDescription, setIsEditingDescription] = useState(false);
+  const [allTasks, setAllTasks] = useState<Task[]>([]);
+  const [subtasks, setSubtasks] = useState<string[]>([]);
+  const [subtaskToAdd, setSubtaskToAdd] = useState('');
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const commentRef = useRef<HTMLTextAreaElement>(null);
@@ -227,7 +246,11 @@ export function TaskModal() {
       setPriority(modalTask.priority || 'None');
       setEffort(modalTask.effort || 'None');
       setImplementationLink(modalTask.implementationLink || '');
+      setSubtasks(modalTask.subtasks || []);
       setNewComment('');
+      setReplyTargetId(null);
+      setReplyDraft('');
+      setCollapsedThreads({});
       setResponseDestination('Todo');
       setConfirmDiscard(false);
       setConfirmDelete(false);
@@ -236,6 +259,19 @@ export function TaskModal() {
       setIsEditingDescription(false);
     }
   }, [modalTask]);
+
+  useEffect(() => {
+    if (!isModalOpen) return;
+
+    fetchTasks()
+      .then(setAllTasks)
+      .catch(console.error);
+  }, [isModalOpen, refreshTrigger]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(ACTIVITY_FILTER_STORAGE_KEY, activityFilter);
+  }, [activityFilter]);
 
   useEffect(() => {
     if (!isModalOpen) return undefined;
@@ -293,9 +329,10 @@ export function TaskModal() {
     priority: modalTask?.priority || 'None',
     effort: modalTask?.effort || 'None',
     implementationLink: modalTask?.implementationLink || '',
+    subtasks: modalTask?.subtasks || [],
   });
 
-  const currentPayload = JSON.stringify({ title, body, status, assignee, tags, priority, effort, implementationLink });
+  const currentPayload = JSON.stringify({ title, body, status, assignee, tags, priority, effort, implementationLink, subtasks });
   const isDirty = originalPayload !== currentPayload || newComment.trim() !== '';
 
   useEffect(() => {
@@ -305,6 +342,31 @@ export function TaskModal() {
   }, [isRequireInput, requireInputDestinations, responseDestination]);
 
   if (!isModalOpen || !config) return null;
+
+  const activityHistory = modalTask?.history || [];
+  const filteredHistory = activityFilter === 'comments'
+    ? activityHistory.filter((entry) => entry.type === 'comment')
+    : activityHistory;
+  const repliesByParent = new Map<string, HistoryEntry[]>();
+  const topLevelEntries: HistoryEntry[] = [];
+
+  filteredHistory.forEach((entry) => {
+    if (entry.type === 'comment' && entry.replyTo) {
+      const replies = repliesByParent.get(entry.replyTo) || [];
+      replies.push(entry);
+      repliesByParent.set(entry.replyTo, replies);
+      return;
+    }
+    topLevelEntries.push(entry);
+  });
+
+  const linkedSubtasks = subtasks
+    .map((subtaskId) => allTasks.find((task) => task.id === subtaskId))
+    .filter((task): task is Task => Boolean(task));
+  const danglingSubtaskIds = subtasks.filter((subtaskId) => !linkedSubtasks.some((task) => task.id === subtaskId));
+  const availableSubtasks = allTasks
+    .filter((task) => task.id !== modalTask?.id && !subtasks.includes(task.id))
+    .sort((left, right) => left.id.localeCompare(right.id));
 
   const handleCloseAttempt = () => {
     if (isDirty) {
@@ -316,7 +378,7 @@ export function TaskModal() {
 
   const handleSave = async (customHistory?: any[], keepOpen = false) => {
     setSaving(true);
-    const payload = { title, body, status, assignee, tags, priority, effort, implementationLink: implementationLink.trim(), order: modalTask?.order };
+    const payload = { title, body, status, assignee, tags, priority, effort, implementationLink: implementationLink.trim(), subtasks, order: modalTask?.order };
     let historyUpdates: any[] = customHistory || [];
 
     if (!customHistory && newComment.trim()) {
@@ -388,6 +450,22 @@ export function TaskModal() {
 
     setNewComment('');
     await handleSave([commentEntry], true);
+  };
+
+  const sendReplyDirectly = async (parentId: string) => {
+    if (!replyDraft.trim() || !modalTask?.id) return;
+
+    const replyEntry = {
+      type: 'comment',
+      user: currentUser,
+      date: new Date().toISOString(),
+      comment: replyDraft.trim(),
+      replyTo: parentId,
+    };
+
+    setReplyDraft('');
+    setReplyTargetId(null);
+    await handleSave([replyEntry], true);
   };
 
   const submitRequireInputResponse = async () => {
@@ -538,6 +616,102 @@ export function TaskModal() {
     </div>
   );
 
+  const subtasksPanel = (
+    <div className="space-y-4 rounded-xl border border-gray-100 bg-white/70 p-4 dark:border-white/5 dark:bg-white/5">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Subtasks</p>
+          <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">Link existing tickets as child work items.</p>
+        </div>
+        <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-600 dark:bg-white/10 dark:text-gray-300">
+          {subtasks.length}
+        </span>
+      </div>
+
+      {modalTask?.id ? (
+        <div className="flex gap-2">
+          <select
+            className="flex-1 cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
+            value={subtaskToAdd}
+            onChange={(event) => setSubtaskToAdd(event.target.value)}
+          >
+            <option value="">Attach existing ticket...</option>
+            {availableSubtasks.map((task) => (
+              <option key={task.id} value={task.id}>
+                {task.id} - {task.title || 'Untitled Task'}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            disabled={!subtaskToAdd}
+            onClick={() => {
+              if (!subtaskToAdd) return;
+              setSubtasks((current) => [...current, subtaskToAdd]);
+              setSubtaskToAdd('');
+            }}
+            className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Attach
+          </button>
+        </div>
+      ) : (
+        <p className="text-sm text-gray-500">Save the ticket first, then attach existing subtasks.</p>
+      )}
+
+      {linkedSubtasks.length === 0 && danglingSubtaskIds.length === 0 ? (
+        <p className="text-sm italic text-gray-500">No subtasks linked yet.</p>
+      ) : (
+        <div className="space-y-2">
+          {linkedSubtasks.map((task) => (
+            <div
+              key={task.id}
+              role="button"
+              tabIndex={0}
+              onClick={() => openTaskModal(task)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  openTaskModal(task);
+                }
+              }}
+              className="flex cursor-pointer items-center gap-3 rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 transition-colors hover:border-primary/30 hover:bg-primary/5 dark:border-white/5 dark:bg-black/20 dark:hover:bg-white/5"
+            >
+              <div className="min-w-0 flex-1 text-left">
+                <p className="text-xs font-bold uppercase tracking-wider text-gray-400">{task.id}</p>
+                <p className="truncate text-sm font-medium text-gray-800 dark:text-gray-200">{task.title || 'Untitled Task'}</p>
+                <p className="mt-1 text-xs text-gray-500">{task.status} · {task.assignee || 'unassigned'} · {task.priority || 'None'}</p>
+              </div>
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setSubtasks((current) => current.filter((subtaskId) => subtaskId !== task.id));
+                }}
+                className="rounded-md p-1.5 text-gray-400 transition-colors hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/10"
+                title="Detach subtask"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          ))}
+          {danglingSubtaskIds.map((subtaskId) => (
+            <div key={subtaskId} className="flex items-center justify-between rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
+              <span>{subtaskId} is linked but not currently loaded.</span>
+              <button
+                type="button"
+                onClick={() => setSubtasks((current) => current.filter((id) => id !== subtaskId))}
+                className="rounded-md p-1.5 transition-colors hover:bg-amber-100 dark:hover:bg-amber-500/10"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
   const detailsPanel = (
     <div className="space-y-4 rounded-xl border border-gray-100 bg-white/70 p-4 dark:border-white/5 dark:bg-white/5">
       <div>
@@ -614,13 +788,44 @@ export function TaskModal() {
     </div>
   );
 
+  const activityFilterTabs = (
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        onClick={() => setActivityFilter('all')}
+        className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+          activityFilter === 'all'
+            ? 'bg-primary text-white'
+            : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-white/10 dark:text-gray-300 dark:hover:bg-white/15'
+        }`}
+      >
+        All Activity
+      </button>
+      <button
+        type="button"
+        onClick={() => setActivityFilter('comments')}
+        className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+          activityFilter === 'comments'
+            ? 'bg-primary text-white'
+            : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-white/10 dark:text-gray-300 dark:hover:bg-white/15'
+        }`}
+      >
+        Comments Only
+      </button>
+    </div>
+  );
+
   const historyList = (
     <div className="space-y-4">
-      {!modalTask?.history || modalTask.history.length === 0 ? (
+      {topLevelEntries.length === 0 ? (
         <p className="text-sm italic text-gray-500">No activity yet.</p>
       ) : (
-        [...modalTask.history].reverse().map((entry, index) => (
-          <div key={`${entry.date}-${index}`} className="flex gap-3">
+        [...topLevelEntries].reverse().map((entry, index) => {
+          const replies = entry.id ? repliesByParent.get(entry.id) || [] : [];
+          const isCollapsed = entry.id ? collapsedThreads[entry.id] : false;
+
+          return (
+          <div key={`${entry.id || entry.date}-${index}`} className="flex gap-3">
             <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10">
               {entry.type === 'status_change' ? (
                 <ArrowRight className="h-3 w-3 text-primary" />
@@ -630,7 +835,14 @@ export function TaskModal() {
             </div>
             <div className="flex-1 rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-white/5 dark:bg-black/20">
               <div className="mb-1 flex items-center justify-between">
-                <span className="text-xs font-semibold text-gray-800 dark:text-gray-200">{entry.user}</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-gray-800 dark:text-gray-200">{entry.user}</span>
+                  {entry.type === 'comment' && entry.id && (
+                    <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-gray-500 dark:bg-white/10 dark:text-gray-300">
+                      {entry.id}
+                    </span>
+                  )}
+                </div>
                 <span className="text-[10px] text-gray-500">{new Date(entry.date).toLocaleString()}</span>
               </div>
               {entry.type === 'status_change' && (
@@ -641,9 +853,86 @@ export function TaskModal() {
                 </div>
               )}
               {entry.comment && <p className="whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-300">{entry.comment}</p>}
+
+              {entry.type === 'comment' && !entry.replyTo && modalTask?.id && !isRequireInput && (
+                <div className="mt-3 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setReplyTargetId((current) => current === entry.id ? null : entry.id || null);
+                      setReplyDraft('');
+                    }}
+                    className="rounded-md px-2 py-1 text-xs font-semibold text-primary transition-colors hover:bg-primary/10"
+                  >
+                    Reply
+                  </button>
+                  {replies.length > 0 && entry.id && (
+                    <button
+                      type="button"
+                      onClick={() => setCollapsedThreads((current) => ({ ...current, [entry.id!]: !current[entry.id!] }))}
+                      className="rounded-md px-2 py-1 text-xs font-semibold text-gray-500 transition-colors hover:bg-gray-200 dark:hover:bg-white/10"
+                    >
+                      {isCollapsed ? `Show replies (${replies.length})` : `Hide replies (${replies.length})`}
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {replyTargetId === entry.id && !isRequireInput && (
+                <div className="mt-3 rounded-lg border border-primary/20 bg-white p-3 dark:border-primary/20 dark:bg-[#1f2028]">
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-primary">Replying inline</p>
+                  <textarea
+                    className="h-24 w-full resize-none rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm outline-none focus:border-primary dark:border-white/10 dark:bg-black/20"
+                    value={replyDraft}
+                    onChange={(event) => setReplyDraft(event.target.value)}
+                    placeholder="Write a reply..."
+                  />
+                  <div className="mt-2 flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setReplyTargetId(null);
+                        setReplyDraft('');
+                      }}
+                      className="rounded-md px-3 py-1.5 text-xs font-semibold text-gray-500 transition-colors hover:bg-gray-200 dark:hover:bg-white/10"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={saving || !replyDraft.trim()}
+                      onClick={() => entry.id && void sendReplyDirectly(entry.id)}
+                      className="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {saving ? 'Replying...' : 'Reply'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {replies.length > 0 && !isCollapsed && (
+                <div className="mt-4 space-y-3 border-l-2 border-primary/20 pl-4">
+                  {replies.map((reply) => (
+                    <div key={reply.id || reply.date} className="rounded-lg border border-gray-100 bg-white p-3 dark:border-white/5 dark:bg-[#1f2028]">
+                      <div className="mb-1 flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-semibold text-gray-800 dark:text-gray-200">{reply.user}</span>
+                          {reply.id && (
+                            <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-500 dark:bg-white/10 dark:text-gray-300">
+                              {reply.id}
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-[10px] text-gray-500">{new Date(reply.date).toLocaleString()}</span>
+                      </div>
+                      {reply.comment && <p className="whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-300">{reply.comment}</p>}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
-        ))
+        )})
       )}
     </div>
   );
@@ -823,7 +1112,10 @@ export function TaskModal() {
 
                 <div className="min-h-0 flex flex-[2] flex-col">
                   <div className="border-b border-gray-200 px-6 py-4 dark:border-white/10">
-                    <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Activity & Comments</p>
+                    <div className="flex items-center justify-between gap-4">
+                      <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Activity & Comments</p>
+                      {activityFilterTabs}
+                    </div>
                   </div>
                   <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">{historyList}</div>
                   <div className="border-t border-gray-200 px-6 py-4 dark:border-white/10">{isRequireInput ? requireInputPrompt : commentComposer}</div>
@@ -843,6 +1135,7 @@ export function TaskModal() {
                   />
                 </div>
                 {metadataFields}
+                {subtasksPanel}
                 <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 dark:border-white/5 dark:bg-black/10">
                   <div className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-200">
                     {getPriorityIcon(priority, config)}
@@ -1007,10 +1300,15 @@ export function TaskModal() {
                 {descriptionEditor}
               </div>
 
+              {subtasksPanel}
+
               <div className="border-t border-gray-200 pt-4 dark:border-white/10">
-                <h3 className="mb-3 flex items-center gap-2 text-sm font-bold text-gray-700 dark:text-gray-300">
-                  <MessageSquare className="h-4 w-4" /> Activity & Comments
-                </h3>
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                  <h3 className="flex items-center gap-2 text-sm font-bold text-gray-700 dark:text-gray-300">
+                    <MessageSquare className="h-4 w-4" /> Activity & Comments
+                  </h3>
+                  {activityFilterTabs}
+                </div>
                 <div className="mb-4">{historyList}</div>
                 {!isRequireInput && commentComposer}
               </div>
