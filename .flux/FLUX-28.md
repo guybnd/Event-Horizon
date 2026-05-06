@@ -8,26 +8,26 @@ updatedBy: Agent
 assignee: Guy
 tags: []
 history:
-	- type: comment
-		user: Agent
-		date: '2026-05-06T19:20:00.000Z'
-		comment: >-
-			Re-groomed as a sizing-field ticket. The main remaining decision is the
-			naming and scale: classic story points, T-shirt sizes, or a custom agent
-			intensity scale.
-	- type: status_change
-		from: Grooming
-		to: Require Input
-		user: Agent
-		date: '2026-05-06T19:35:00.000Z'
-	- type: comment
-		user: Agent
-		date: '2026-05-06T19:35:00.000Z'
-		comment: >-
-			Requesting naming and scale choice in-ticket so implementation can be
-			modeled once. Please pick one label (`Story Points`, `Effort`, or
-			`Intensity`) and one first-version scale (Fibonacci numbers or T-shirt
-			sizes).
+  - type: comment
+    user: Agent
+    date: '2026-05-06T19:20:00.000Z'
+    comment: >-
+      Re-groomed as a sizing-field ticket. The main remaining decision is the
+      naming and scale: classic story points, T-shirt sizes, or a custom agent
+      intensity scale.
+  - type: status_change
+    from: Grooming
+    to: Require Input
+    user: Agent
+    date: '2026-05-06T19:35:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-06T19:35:00.000Z'
+    comment: >-
+      Requesting naming and scale choice in-ticket so implementation can be
+      modeled once. Please pick one label (`Story Points`, `Effort`, or
+      `Intensity`) and one first-version scale (Fibonacci numbers or T-shirt
+      sizes).
 ---
 ## Groomed Scope
 

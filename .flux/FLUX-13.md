@@ -1,8 +1,8 @@
 ---
 title: 'Require Input: visual indicator and prompt UI'
-status: Require Input
+status: Done
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: Guy
 tags:
   - feature
@@ -56,10 +56,39 @@ history:
     comment: >-
       Requesting input in-ticket so implementation can start cleanly. Please
       answer two decisions here: 1) after a user responds, should the ticket
-      keep its prior workflow status or move to a new "Input Granted" status?
-      2) should the first version include a dedicated board section for
+      keep its prior workflow status or move to a new "Input Granted" status? 2)
+      should the first version include a dedicated board section for
       input-needed tickets, or should that ship later as a follow-up?
-order: 1
+  - type: comment
+    user: Guy
+    date: '2026-05-06T09:10:27.887Z'
+    comment: >-
+      1. we should have a window prompt open that basically shows just the
+      question part and  the answer input box, when the user wants to finish
+      responding he should be able to press where to send the ticket to like
+
+
+      * send to to-do,
+
+      * send to further grooming i.e maybe user wants to ask agent follow up
+      questions
+       in which case we probably need to be able to set a dedicated Grooming and To Do status in the settings so these are distinctively connected
+
+      2.  we should probably have a distinct Status of needing input that should
+      be configured in the setting same as above we should also add like a
+      notification ticker with amount of open required inputs like facebook
+      notification style
+  - type: status_change
+    from: Require Input
+    to: Grooming
+    user: Guy
+    date: '2026-05-06T09:10:34.475Z'
+  - type: status_change
+    from: Grooming
+    to: Done
+    user: Guy
+    date: '2026-05-06T09:14:45.949Z'
+order: 6
 priority: High
 ---
 ## Groomed Scope
