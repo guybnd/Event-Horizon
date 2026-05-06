@@ -33,6 +33,28 @@ export async function fetchConfig(): Promise<Config> {
   return res.json();
 }
 
+export interface SkillStatus {
+  sourcePath: string;
+  installedPath: string;
+  sourceExists: boolean;
+  installed: boolean;
+}
+
+export async function fetchSkillStatus(): Promise<SkillStatus> {
+  const res = await fetch(`${API_URL}/skill/status`);
+  if (!res.ok) throw new Error('Failed to fetch skill status');
+  return res.json();
+}
+
+export async function installWorkspaceSkill(): Promise<{ success: boolean; installedPath: string }> {
+  const res = await fetch(`${API_URL}/skill/install`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (!res.ok) throw new Error('Failed to install skill');
+  return res.json();
+}
+
 export const saveConfig = async (config: Config): Promise<Config> => {
   const response = await fetch(`${API_URL}/config`, {
     method: 'PUT',

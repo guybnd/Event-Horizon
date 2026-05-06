@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useApp } from '../AppContext';
 import { Save, Plus, X, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal } from 'lucide-react';
-import { bulkRename } from '../api';
+import { bulkRename, fetchSkillStatus, installWorkspaceSkill } from '../api';
 import type { TagDef, StatusDef, UserDef, PriorityDef } from '../types';
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
@@ -214,6 +214,11 @@ export function Settings() {
   const [enableBacklog, setEnableBacklog] = useState(true);
   const [requireComment, setRequireComment] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [skillInstalled, setSkillInstalled] = useState(false);
+  const [skillSourcePath, setSkillSourcePath] = useState('');
+  const [skillInstalledPath, setSkillInstalledPath] = useState('');
+  const [skillLoading, setSkillLoading] = useState(true);
+  const [skillInstalling, setSkillInstalling] = useState(false);
 
   useEffect(() => {
     if (config) {
@@ -227,6 +232,17 @@ export function Settings() {
       setRequireComment(config.requireCommentOnStatusChange);
     }
   }, [config]);
+
+  useEffect(() => {
+    fetchSkillStatus()
+      .then((status) => {
+        setSkillInstalled(status.installed);
+        setSkillSourcePath(status.sourcePath);
+        setSkillInstalledPath(status.installedPath);
+      })
+      .catch(console.error)
+      .finally(() => setSkillLoading(false));
+  }, []);
 
   const handleSave = async () => {
     if (!config) return;
@@ -274,6 +290,32 @@ export function Settings() {
       alert('Failed to save settings');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleInstallSkill = async () => {
+    setSkillInstalling(true);
+    try {
+      const result = await installWorkspaceSkill();
+      setSkillInstalled(true);
+      setSkillInstalledPath(result.installedPath);
+      alert(`Installed Event Horizon skill to ${result.installedPath}`);
+    } catch (error) {
+      console.error(error);
+      alert('Failed to install Event Horizon skill');
+    } finally {
+      setSkillInstalling(false);
+    }
+  };
+
+  const handleCopyInstallCommand = async () => {
+    const command = 'npm.cmd run install-skill -- --target c:\\GitHub\\EventHorizon --framework copilot';
+    try {
+      await navigator.clipboard.writeText(command);
+      alert('Copied skill install command to clipboard');
+    } catch (error) {
+      console.error(error);
+      alert(command);
     }
   };
 
@@ -396,6 +438,44 @@ export function Settings() {
               <span className="text-xs text-gray-500">Prompt for a comment pop-up when dragging a task to a new column on the board.</span>
             </div>
           </label>
+        </div>
+
+        <div className="border-t border-gray-200 dark:border-white/10 pt-10">
+          <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Agent Skill</h3>
+          <p className="text-xs text-gray-500 mb-4">Install and surface the Event Horizon Copilot skill for this workspace.</p>
+          <div className="rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
+            <div className="flex items-start justify-between gap-6">
+              <div className="space-y-3 text-sm text-gray-600 dark:text-gray-300">
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Status</div>
+                  <div className="mt-1 font-medium">{skillLoading ? 'Checking…' : skillInstalled ? 'Installed in this repo' : 'Not installed in this repo'}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Source Skill</div>
+                  <div className="mt-1 break-all">{skillSourcePath || '.flux/skills/event-horizon-agent.md'}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Workspace Install Path</div>
+                  <div className="mt-1 break-all">{skillInstalledPath || '.github/skills/event-horizon/SKILL.md'}</div>
+                </div>
+              </div>
+              <div className="flex shrink-0 flex-col gap-3">
+                <button
+                  onClick={handleInstallSkill}
+                  disabled={skillInstalling}
+                  className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${skillInstalling ? 'bg-gray-200 text-gray-400 dark:bg-white/10 dark:text-gray-500' : 'bg-primary text-white hover:bg-primary-hover'}`}
+                >
+                  {skillInstalling ? 'Installing…' : skillInstalled ? 'Reinstall Workspace Skill' : 'Install Workspace Skill'}
+                </button>
+                <button
+                  onClick={handleCopyInstallCommand}
+                  className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
+                >
+                  Copy Install Command
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>

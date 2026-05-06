@@ -1,6 +1,6 @@
 # Event Horizon Agent Skill
 
-Version: 1.2.0
+Version: 1.3.0
 
 ## Overview
 
@@ -74,8 +74,8 @@ When assigned a ticket, follow this sequence:
 5. Make small, local changes and validate immediately after the first substantive edit.
 6. Post progress comments when scope changes, validation fails, or the user redirects the work.
 7. If clarification is required for the ticket, do not ask only in chat. Move the ticket to `Require Input`, leave one explicit question in ticket history, and use the focused response flow so the user can answer through the system.
-8. If the work changes repository files and the user expects commits, create a focused commit before closing the ticket. The commit should be scoped to the ticket work and use a clear message that describes the implemented outcome.
-9. When finished, update the ticket body or summary as needed, add a completion comment with validation results and commit reference when available, and then move the ticket to `Done`.
+8. If the work changes repository files and the user expects commits, create a focused commit before closing the ticket. The commit should be scoped to the ticket work and use a clear, descriptive message that states the user-visible or system behavior that was shipped.
+9. When finished, update the ticket body or summary as needed, add a descriptive completion comment that explains what changed, what was validated, and any follow-up caveats, include the commit reference when available, and then move the ticket to `Done`.
 10. Re-read fresh user comments before assuming the ticket is complete.
 
 ## User Input Routing
@@ -90,7 +90,9 @@ When assigned a ticket, follow this sequence:
 - Prefer one focused commit per completed ticket or tightly related ticket slice.
 - Do not mix unrelated work into the same commit.
 - Commit after validation passes, not before.
-- Use a message that states the shipped behavior, for example: `Add ticket effort field editing`.
+- Use a message that states the shipped behavior, not just the touched file or a vague verb.
+- Prefer messages that would still make sense in a release note or git log skim, for example: `Add ticket effort field editing` or `Implement board and backlog ticket search`.
+- Avoid low-information messages like `fix stuff`, `updates`, or `work on ticket`.
 - If a ticket is intentionally left uncommitted because the user asked to batch commits later, record that in the completion comment instead of pretending the task is fully wrapped.
 
 ## Comment Conventions
@@ -99,7 +101,7 @@ When assigned a ticket, follow this sequence:
 - Record decisions, validation results, blockers, and follow-up needs.
 - Prefer comments that help the next agent continue without re-discovery.
 - When asking for input, end with a concrete question and proposed default if one exists.
-- When closing work, note the validation performed and the commit hash if one was created.
+- When closing work, write a completion comment that summarizes the implemented behavior, the key files or surfaces changed when relevant, the validation performed, and the commit hash if one was created.
 
 ## Editing Conventions
 
@@ -136,5 +138,5 @@ When assigned a ticket, follow this sequence:
 - Ticket markdown edits were checked for valid frontmatter when `.flux/*.md` files changed
 - Ticket-specific user questions went through `Require Input`, not only chat
 - Focused commit created for the finished code change, or the reason it was deferred was recorded
-- Ticket updated with completion notes
+- Ticket updated with descriptive completion notes
 - Status moved to `Done`

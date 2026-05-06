@@ -864,7 +864,7 @@ export function TaskModal() {
           className="pointer-events-auto"
         >
           <div className="flex h-full w-full flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl dark:border-white/10 dark:bg-[#1a1b23]">
-            <div className="modal-handle flex shrink-0 items-center justify-between cursor-move border-b border-gray-100 bg-gray-50 px-5 py-4 dark:border-white/5 dark:bg-black/20">
+            <div className="modal-handle flex shrink-0 items-center justify-between cursor-move border-b border-gray-100 bg-gray-50 px-4 py-3 dark:border-white/5 dark:bg-black/20">
               <div className="flex flex-col">
                 <span className="mb-0.5 text-[10px] font-bold uppercase tracking-wider text-gray-400">
                   {modalTask?.id ? modalTask.id : 'New Task'}{' '}
@@ -872,7 +872,7 @@ export function TaskModal() {
                 </span>
                 <h2 className="leading-none font-semibold text-gray-800 dark:text-gray-200">{title || 'Untitled Task'}</h2>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2.5">
                 {modalTask?.id && (
                   <button
                     onClick={() => setConfirmDelete(true)}
@@ -915,16 +915,16 @@ export function TaskModal() {
               </div>
             </div>
 
-            <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto p-6 text-sm text-gray-800 dark:text-gray-200">
+            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 text-sm text-gray-800 dark:text-gray-200">
               {isRequireInput ? requireInputPrompt : requireInputBanner}
 
-              <div className={isWideMode ? 'flex items-center gap-4 rounded-xl border border-gray-100 bg-gray-50 p-4 dark:border-white/5 dark:bg-black/10' : 'grid grid-cols-3 gap-6'}>
-                <div className={isWideMode ? 'mr-4 flex-1' : 'col-span-2 flex flex-col space-y-4'}>
+              <div className={isWideMode ? 'flex items-center gap-4 rounded-xl border border-gray-100 bg-gray-50 p-4 dark:border-white/5 dark:bg-black/10' : 'space-y-3 rounded-xl border border-gray-100 bg-gray-50 p-3 dark:border-white/5 dark:bg-black/10'}>
+                <div className={isWideMode ? 'mr-4 flex-1' : 'min-w-0'}>
                   <div>
                     <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Title</label>
                     <input
                       className={`w-full rounded-lg border border-gray-200 px-3 py-2 font-medium outline-none focus:border-primary dark:border-white/10 ${
-                        isWideMode ? 'bg-white text-sm dark:bg-black/40' : 'bg-gray-50 text-base dark:bg-black/20'
+                        isWideMode ? 'bg-white text-sm dark:bg-black/40' : 'bg-gray-50 text-[15px] dark:bg-black/20'
                       }`}
                       value={title}
                       onChange={(event) => setTitle(event.target.value)}
@@ -933,8 +933,8 @@ export function TaskModal() {
                   </div>
                 </div>
 
-                <div className={isWideMode ? 'flex items-end gap-4' : 'col-span-1 h-fit space-y-5 rounded-xl border border-gray-100 bg-gray-50 p-4 dark:border-white/5 dark:bg-black/10'}>
-                  <div className={isWideMode ? 'w-32' : ''}>
+                <div className={isWideMode ? 'flex items-end gap-4' : 'flex flex-wrap items-end gap-3'}>
+                  <div className={isWideMode ? 'w-32' : 'w-36'}>
                     <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Status</label>
                     <select
                       className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-1.5 font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
@@ -949,7 +949,7 @@ export function TaskModal() {
                     </select>
                   </div>
 
-                  <div className={isWideMode ? 'w-32' : ''}>
+                  <div className={isWideMode ? 'w-32' : 'w-40'}>
                     <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Assignee</label>
                     <select
                       className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-1.5 font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
@@ -965,7 +965,7 @@ export function TaskModal() {
                     </select>
                   </div>
 
-                  <div className={isWideMode ? 'w-40' : ''}>
+                  <div className={isWideMode ? 'w-40' : 'w-40'}>
                     <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Priority</label>
                     <select
                       className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-1.5 font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
@@ -980,7 +980,7 @@ export function TaskModal() {
                     </select>
                   </div>
 
-                  <div className={isWideMode ? 'w-28' : ''}>
+                  <div className={isWideMode ? 'w-28' : 'w-28'}>
                     <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Effort</label>
                     <select
                       className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-1.5 font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
@@ -995,23 +995,23 @@ export function TaskModal() {
                     </select>
                   </div>
 
-                  <div className={isWideMode ? 'w-64' : ''}>
+                  <div className={isWideMode ? 'w-64' : 'min-w-[240px] flex-1'}>
                     <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Tags</label>
                     <TagSelector tags={tags} onChange={setTags} availableTags={allTags} configTags={config.tags} />
                   </div>
                 </div>
               </div>
 
-              <div className="flex min-h-[300px] flex-1 flex-col">
+              <div className="flex min-h-[280px] flex-1 flex-col rounded-xl border border-gray-100 bg-gray-50/60 p-4 dark:border-white/5 dark:bg-black/10">
                 <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Description</label>
                 {descriptionEditor}
               </div>
 
-              <div className="mt-2 border-t border-gray-200 pt-6 dark:border-white/10">
-                <h3 className="mb-4 flex items-center gap-2 text-sm font-bold text-gray-700 dark:text-gray-300">
+              <div className="border-t border-gray-200 pt-4 dark:border-white/10">
+                <h3 className="mb-3 flex items-center gap-2 text-sm font-bold text-gray-700 dark:text-gray-300">
                   <MessageSquare className="h-4 w-4" /> Activity & Comments
                 </h3>
-                <div className="mb-6">{historyList}</div>
+                <div className="mb-4">{historyList}</div>
                 {!isRequireInput && commentComposer}
               </div>
             </div>
