@@ -8,6 +8,9 @@
     },
     {
       "name": "Done"
+    },
+    {
+      "name": "Require Input"
     }
   ],
   "hiddenStatuses": [
