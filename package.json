@@ -1,0 +1,12 @@
+{
+  "name": "event-horizon",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "engine",
+    "portal"
+  ],
+  "scripts": {
+    "dev": "npm run dev -ws --if-present"
+  }
+}
