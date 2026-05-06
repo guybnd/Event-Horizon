@@ -4,7 +4,8 @@ status: Todo
 createdBy: Guy
 updatedBy: Guy
 assignee: Guy
-tags: []
+tags:
+  - feature
 history:
   - type: comment
     user: Agent
@@ -40,6 +41,8 @@ history:
     user: Guy
     date: '2026-05-06T09:18:50.359Z'
 priority: None
+effort: None
+implementationLink: ''
 ---
 ## Groomed Scope
 

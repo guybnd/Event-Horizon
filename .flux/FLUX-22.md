@@ -1,18 +1,18 @@
 ---
-id: FLUX-22
 title: editable fields in kanban card
 status: Todo
 priority: Medium
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: Agent
 tags: []
 history:
-	- type: status_change
-		from: Grooming
-		to: Todo
-		user: Agent
-		date: '2026-05-06T19:20:00.000Z'
+  - type: status_change
+from: Grooming
+to: Todo
+user: Agent
+date: '2026-05-06T19:20:00.000Z'
+effort: S
 ---
 ## Groomed Scope
 

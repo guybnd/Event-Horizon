@@ -39,6 +39,9 @@ history:
     to: Todo
     user: Guy
     date: '2026-05-06T08:06:21.440Z'
+priority: Medium
+effort: M
+implementationLink: ''
 ---
 ## Summary
 

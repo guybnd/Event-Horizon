@@ -1,0 +1,71 @@
+---
+id: FLUX-33
+title: Automatic Definition of Done Verification
+status: Todo
+priority: High
+createdBy: Guy
+updatedBy: Agent
+assignee: unassigned
+tags:
+  - feature
+  - validation
+  - agent
+history:
+  - type: comment
+    user: Agent
+    date: '2026-05-06T12:06:00.000Z'
+    comment: >-
+      Captured from Guy's request. This ticket introduces a secondary
+      verification-only workflow that checks whether a task truly meets its
+      definition of done before final closure.
+effort: None
+implementationLink: ''
+---
+## Groomed Scope
+
+Create a verification loop that runs when a ticket enters `In-Review`. This
+secondary process should not edit product code; it should only validate the
+primary agent's work and record the result back into the ticket.
+
+## Requirements
+
+### 1. Trigger a verification-only flow
+- Add or formalize an `In-Review` state if needed by the workflow
+- Detect when a ticket transitions into that review state
+- Launch a secondary verification process that is read-only with respect to source code
+
+### 2. Run concrete local validation
+- Execute local test suites relevant to the repo, such as `npm test`, `npm run build`, or project-specific checks
+- Capture pass/fail results, skipped checks, and environment limitations
+- Scope validation to the ticket where possible instead of always running the broadest suite
+
+### 3. Review the actual change set
+- Analyze the diff between the active branch and `main` for the ticket's work
+- Check whether the implementation matches the ticket requirements and acceptance criteria
+- Flag missing validation, regressions, or obvious scope drift
+
+### 4. Write back a verification report
+- Post a `# Validation` section into the ticket body or equivalent visible surface
+- Summarize checks performed, findings, and residual risks
+- Keep the report separate from implementation comments so review history stays readable
+
+## Acceptance Criteria
+
+- [ ] Entering `In-Review` triggers a verification-only workflow
+- [ ] The verifier does not modify product code
+- [ ] Local tests or builds are executed and reported when available
+- [ ] The verifier analyzes the change diff for the ticket against `main`
+- [ ] A `# Validation` report is added to the ticket with results and caveats
+
+## Likely Affected Areas
+
+- `engine/src/index.ts`
+- `portal/src/components/TaskModal.tsx`
+- `portal/src/types.ts`
+- Agent workflow or verification runner modules
+- `.flux/skills/event-horizon-agent.md`
+
+## Notes
+
+- This ticket likely depends on how review states are represented in config and UI
+- The first version can focus on read-only verification and reporting, not auto-approval
