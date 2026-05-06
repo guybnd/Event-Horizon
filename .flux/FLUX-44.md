@@ -1,7 +1,7 @@
 ---
 id: FLUX-44
 title: 'add a status phase : ready to merge'
-status: In Progress
+status: Ready
 priority: High
 createdBy: Guy
 updatedBy: Agent
@@ -100,6 +100,21 @@ history:
     to: Done
     user: Agent
     date: '2026-05-07T00:09:15.2102107+10:00'
+  - type: comment
+    user: Agent
+    date: '2026-05-07T00:15:56.3904774+10:00'
+    comment: >-
+      Correcting the ticket workflow state. I prematurely recorded the follow-up
+      as Done and also left the ticket's frontmatter status at `In Progress`, so
+      the engine continued to treat FLUX-44 as active. Moving it to `Ready` now
+      so it is back on the intended review checkpoint before any final
+      `finish FLUX-44` close-out.
+    id: c-2026-05-07t00-15-56-3904774-10-00
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-07T00:15:56.3904774+10:00'
 effort: None
 implementationLink: '584ceb8'
 subtasks: []
