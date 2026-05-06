@@ -2,7 +2,7 @@
 title: 'Require Input: visual indicator and prompt UI'
 status: Grooming
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 assignee: Agent
 tags:
   - feature
@@ -37,66 +37,56 @@ history:
     to: Grooming
     user: Guy
     date: '2026-05-06T08:21:52.412Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-06T19:20:00.000Z'
+    comment: >-
+      Re-groomed around the new boolean flag approach. This is not blocked on
+      implementation details, but it still needs a product decision on the
+      post-response transition state and whether the board gets a dedicated
+      "Require Input" section now or in a follow-up.
 order: 1
 priority: High
 ---
-## Summary
+## Groomed Scope
 
-When a ticket is moved to "Require Input" status (by an agent or user), show a prominent visual indicator on the card in the kanban board, and when opening the ticket, highlight the pending question so the user can respond quickly.
+Refactor "Require Input" away from a ticket status and into a ticket-level boolean flag, then make flagged tickets visually obvious and easy for a human to answer.
 
-## Requirements
+## Proposed Implementation
 
-### 1. Kanban card indicator
-- Cards in the "Require Input" column show a red/orange exclamation mark badge (⚠️ or ❗)
-- The badge should be visible at a glance — positioned at the top-right corner of the card or next to the title
-- Optionally pulse/animate to draw attention
-- Use `lucide-react`'s `AlertCircle` or `AlertTriangle` icon
+### Data model
+- Add `requireInput: boolean` to the ticket/frontmatter model
+- Keep the normal workflow status independent from the input-needed state
+- Store enough history to show who requested input and when
 
-### 2. Latest question highlight in modal
-- When opening a "Require Input" ticket, display a prominent banner/callout at the top of the modal
-- The banner shows the **most recent comment** (which should contain the question)
-- Styled distinctly: yellow/amber background, exclamation icon, "Response Needed" label
-- Below the banner, the comment input is pre-focused so the user can reply immediately
+### Board behavior
+- Tickets with `requireInput: true` render a visible alert treatment on the card
+- Within a column, `requireInput: true` tickets sort above other tickets by default
+- If we later want a separate board section for these, that can build on the same flag
 
-### 3. Clearing the indicator
-- When the user replies (adds a comment), automatically move the ticket back to its previous status or to "Todo"
-- Alternatively, just leave it in "Require Input" and let the user manually change status — the indicator still serves its purpose
-
-### 4. Agent usage
-- Agents use `move_to_require_input` MCP tool (FLUX-6) or directly update status + add comment via REST API
-- The last comment on a "Require Input" ticket is treated as the pending question
-
-## Implementation Plan
-
-### TaskCard.tsx changes
-```tsx
-// Add to card when status === 'Require Input'
-<AlertCircle className="w-4 h-4 text-amber-500 animate-pulse" />
-```
-
-### TaskModal.tsx changes
-```tsx
-// At top of modal content, if status === 'Require Input'
-<div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-500/30 rounded-lg p-4 flex gap-3">
-  <AlertCircle className="text-amber-500 shrink-0" />
-  <div>
-    <p className="font-semibold text-amber-800 dark:text-amber-300 text-sm">Response Needed</p>
-    <p className="text-sm text-amber-700 dark:text-amber-400 mt-1">{lastComment}</p>
-  </div>
-</div>
-```
+### Ticket view behavior
+- Opening a flagged ticket shows a prominent "Response Needed" banner with the latest request/comment
+- The response field is focused by default
+- Submitting a response clears `requireInput`
 
 ## Acceptance Criteria
 
-- [ ] Cards in "Require Input" column show a visible exclamation/alert badge
-- [ ] Badge has a subtle animation (pulse) to draw attention
-- [ ] Opening a "Require Input" ticket shows a highlighted banner with the pending question
-- [ ] Comment input is focused when opening a "Require Input" ticket
-- [ ] Works correctly when ticket is moved to "Require Input" via drag-and-drop
-- [ ] Works correctly when moved via status dropdown in modal
+- [ ] Tickets can be flagged for required input without changing their workflow status
+- [ ] Flagged tickets are visually distinct on the board
+- [ ] Flagged tickets sort to the top of their current status list
+- [ ] Opening a flagged ticket highlights the pending request and focuses the response field
+- [ ] Responding clears the flag and records the response in history
 
-## Files to Modify
+## User Input Needed
 
-- `portal/src/components/TaskCard.tsx` — Add alert badge for "Require Input" status
-- `portal/src/components/TaskModal.tsx` — Add question banner and auto-focus comment input
+- After a response, should the ticket return to its previous normal status unchanged, or should we introduce a separate `Input Granted` status?
+- Do you want a dedicated board section for input-needed tickets in this ticket, or should that be a follow-up after the boolean flag lands?
+
+## Files Likely Affected
+
+- `engine/src/index.ts`
+- `portal/src/types.ts`
+- `portal/src/components/Board.tsx`
+- `portal/src/components/TaskCard.tsx`
+- `portal/src/components/TaskModal.tsx`
 
