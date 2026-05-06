@@ -34,10 +34,16 @@ export async function fetchConfig(): Promise<Config> {
 }
 
 export interface SkillStatus {
-  sourcePath: string;
-  installedPath: string;
-  sourceExists: boolean;
-  installed: boolean;
+  framework: 'copilot' | 'gemini' | 'generic';
+  skillSourcePath: string;
+  skillInstalledPath: string;
+  skillSourceExists: boolean;
+  skillInstalled: boolean;
+  instructionsSourcePath?: string;
+  instructionsInstalledPath?: string;
+  instructionsSourceExists: boolean;
+  instructionsInstalled: boolean;
+  workflowInstalled: boolean;
 }
 
 export async function fetchSkillStatus(): Promise<SkillStatus> {
@@ -46,7 +52,7 @@ export async function fetchSkillStatus(): Promise<SkillStatus> {
   return res.json();
 }
 
-export async function installWorkspaceSkill(): Promise<{ success: boolean; installedPath: string }> {
+export async function installWorkspaceSkill(): Promise<{ success: boolean; skillInstalledPath: string; instructionsInstalledPath?: string }> {
   const res = await fetch(`${API_URL}/skill/install`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

@@ -31,16 +31,26 @@ npm run dev
 ```
 *(The Portal UI runs on `http://localhost:5173`)*
 
-## Agent Skill
+## Agent Workflow Install
 
-Event Horizon includes a workspace skill for Copilot under `.github/skills/event-horizon/SKILL.md` and a source version under `.flux/skills/event-horizon-agent.md`.
+Event Horizon ships two Copilot-facing assets:
 
-You can install or refresh the workspace skill in two ways:
+- a workspace skill source under `.flux/skills/event-horizon-agent.md`
+- an always-on Copilot instructions template under `.flux/skills/event-horizon-copilot-instructions.md`
 
-- From the portal Settings screen using the `Install Workspace Skill` button.
+Installing the workflow refreshes both of these into the target workspace:
+
+- `.github/skills/event-horizon/SKILL.md`
+- `.github/copilot-instructions.md`
+
+You can install or refresh the workflow in two ways:
+
+- From the portal Settings screen using the `Install Workflow` button.
 - From the command line with `npm.cmd run install-skill -- --target c:\GitHub\EventHorizon --framework copilot`.
 
-The Settings screen also exposes the current source path, installed path, and a copyable install command so the skill is visible to the user rather than hidden in repo internals.
+The installer patches a marked Event Horizon block inside `.github/copilot-instructions.md` so reinstalling stays idempotent and unrelated user-owned instructions can remain in the same file.
+
+The Settings screen exposes the current source paths, installed paths, and a copyable install command so the workflow install remains visible instead of hidden in repo internals.
 
 ## The Data Schema (MVP)
 Tickets are stored as `.md` files inside the `.flux/` directory.

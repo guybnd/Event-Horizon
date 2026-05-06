@@ -214,9 +214,13 @@ export function Settings() {
   const [enableBacklog, setEnableBacklog] = useState(true);
   const [requireComment, setRequireComment] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [workflowInstalled, setWorkflowInstalled] = useState(false);
   const [skillInstalled, setSkillInstalled] = useState(false);
   const [skillSourcePath, setSkillSourcePath] = useState('');
   const [skillInstalledPath, setSkillInstalledPath] = useState('');
+  const [instructionsInstalled, setInstructionsInstalled] = useState(false);
+  const [instructionsSourcePath, setInstructionsSourcePath] = useState('');
+  const [instructionsInstalledPath, setInstructionsInstalledPath] = useState('');
   const [skillLoading, setSkillLoading] = useState(true);
   const [skillInstalling, setSkillInstalling] = useState(false);
 
@@ -236,9 +240,13 @@ export function Settings() {
   useEffect(() => {
     fetchSkillStatus()
       .then((status) => {
-        setSkillInstalled(status.installed);
-        setSkillSourcePath(status.sourcePath);
-        setSkillInstalledPath(status.installedPath);
+        setWorkflowInstalled(status.workflowInstalled);
+        setSkillInstalled(status.skillInstalled);
+        setSkillSourcePath(status.skillSourcePath);
+        setSkillInstalledPath(status.skillInstalledPath);
+        setInstructionsInstalled(status.instructionsInstalled);
+        setInstructionsSourcePath(status.instructionsSourcePath || '');
+        setInstructionsInstalledPath(status.instructionsInstalledPath || '');
       })
       .catch(console.error)
       .finally(() => setSkillLoading(false));
@@ -297,12 +305,15 @@ export function Settings() {
     setSkillInstalling(true);
     try {
       const result = await installWorkspaceSkill();
+      setWorkflowInstalled(true);
       setSkillInstalled(true);
-      setSkillInstalledPath(result.installedPath);
-      alert(`Installed Event Horizon skill to ${result.installedPath}`);
+      setInstructionsInstalled(Boolean(result.instructionsInstalledPath));
+      setSkillInstalledPath(result.skillInstalledPath);
+      setInstructionsInstalledPath(result.instructionsInstalledPath || '');
+      alert(`Installed Event Horizon workflow to ${result.skillInstalledPath}${result.instructionsInstalledPath ? `\nPatched Copilot instructions at ${result.instructionsInstalledPath}` : ''}`);
     } catch (error) {
       console.error(error);
-      alert('Failed to install Event Horizon skill');
+      alert('Failed to install Event Horizon workflow');
     } finally {
       setSkillInstalling(false);
     }
@@ -441,22 +452,38 @@ export function Settings() {
         </div>
 
         <div className="border-t border-gray-200 dark:border-white/10 pt-10">
-          <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Agent Skill</h3>
-          <p className="text-xs text-gray-500 mb-4">Install and surface the Event Horizon Copilot skill for this workspace.</p>
+          <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Agent Workflow</h3>
+          <p className="text-xs text-gray-500 mb-4">Install and refresh the Event Horizon skill plus the always-on Copilot instructions for this workspace.</p>
           <div className="rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
             <div className="flex items-start justify-between gap-6">
               <div className="space-y-3 text-sm text-gray-600 dark:text-gray-300">
                 <div>
                   <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Status</div>
-                  <div className="mt-1 font-medium">{skillLoading ? 'Checking…' : skillInstalled ? 'Installed in this repo' : 'Not installed in this repo'}</div>
+                  <div className="mt-1 font-medium">{skillLoading ? 'Checking…' : workflowInstalled ? 'Installed in this repo' : 'Not fully installed in this repo'}</div>
                 </div>
                 <div>
                   <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Source Skill</div>
                   <div className="mt-1 break-all">{skillSourcePath || '.flux/skills/event-horizon-agent.md'}</div>
                 </div>
                 <div>
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Workspace Install Path</div>
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Workspace Skill Path</div>
                   <div className="mt-1 break-all">{skillInstalledPath || '.github/skills/event-horizon/SKILL.md'}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Copilot Instructions Source</div>
+                  <div className="mt-1 break-all">{instructionsSourcePath || '.flux/skills/event-horizon-copilot-instructions.md'}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Copilot Instructions Path</div>
+                  <div className="mt-1 break-all">{instructionsInstalledPath || '.github/copilot-instructions.md'}</div>
+                </div>
+                <div className="flex flex-wrap gap-2 pt-1 text-xs font-medium">
+                  <span className={`rounded-full px-2.5 py-1 ${skillInstalled ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300'}`}>
+                    Skill: {skillInstalled ? 'Installed' : 'Missing'}
+                  </span>
+                  <span className={`rounded-full px-2.5 py-1 ${instructionsInstalled ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300'}`}>
+                    Instructions: {instructionsInstalled ? 'Installed' : 'Missing'}
+                  </span>
                 </div>
               </div>
               <div className="flex shrink-0 flex-col gap-3">
@@ -465,7 +492,7 @@ export function Settings() {
                   disabled={skillInstalling}
                   className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${skillInstalling ? 'bg-gray-200 text-gray-400 dark:bg-white/10 dark:text-gray-500' : 'bg-primary text-white hover:bg-primary-hover'}`}
                 >
-                  {skillInstalling ? 'Installing…' : skillInstalled ? 'Reinstall Workspace Skill' : 'Install Workspace Skill'}
+                  {skillInstalling ? 'Installing…' : workflowInstalled ? 'Reinstall Workflow' : 'Install Workflow'}
                 </button>
                 <button
                   onClick={handleCopyInstallCommand}

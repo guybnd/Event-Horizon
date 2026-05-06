@@ -1,4 +1,3 @@
-<!-- EVENT_HORIZON_MANAGED_INSTRUCTIONS:START -->
 ## Event Horizon Always-On Instructions
 
 These instructions apply to all agent work in this repository.
@@ -48,4 +47,3 @@ For any ticket-driven implementation task, the agent must follow this sequence:
 
 - Follow `.github/skills/event-horizon/SKILL.md` for the detailed Event Horizon ticket conventions, comments, validation expectations, and project-specific workflow notes.
 - If these always-on instructions and the skill differ, follow the stricter rule.
-<!-- EVENT_HORIZON_MANAGED_INSTRUCTIONS:END -->

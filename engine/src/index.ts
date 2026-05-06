@@ -4,6 +4,7 @@ import chokidar from 'chokidar';
 import fs from 'fs/promises';
 import path from 'path';
 import matter from 'gray-matter';
+import { getWorkflowInstallStatus, installWorkspaceWorkflow } from './workflow-installer';
 
 const app = express();
 app.use(cors());
@@ -12,8 +13,6 @@ app.use(express.json());
 const FLUX_DIR = path.join(__dirname, '../../.flux');
 const CONFIG_FILE = path.join(FLUX_DIR, 'config.json');
 const REPO_ROOT = path.resolve(FLUX_DIR, '..');
-const SKILL_SOURCE_PATH = path.join(FLUX_DIR, 'skills', 'event-horizon-agent.md');
-const WORKSPACE_SKILL_PATH = path.join(REPO_ROOT, '.github', 'skills', 'event-horizon', 'SKILL.md');
 
 let tasksCache: Record<string, any> = {};
 let configCache: any = {
@@ -217,17 +216,8 @@ app.get('/api/tasks', (req, res) => {
 
 app.get('/api/skill/status', async (req, res) => {
   try {
-    const [sourceExists, installedExists] = await Promise.all([
-      fs.access(SKILL_SOURCE_PATH).then(() => true).catch(() => false),
-      fs.access(WORKSPACE_SKILL_PATH).then(() => true).catch(() => false),
-    ]);
-
-    res.json({
-      sourcePath: SKILL_SOURCE_PATH,
-      installedPath: WORKSPACE_SKILL_PATH,
-      sourceExists,
-      installed: installedExists,
-    });
+    const status = await getWorkflowInstallStatus({ sourceRoot: REPO_ROOT, targetDir: REPO_ROOT, framework: 'copilot' });
+    res.json(status);
   } catch (error) {
     console.error('Failed to load skill status:', error);
     res.status(500).json({ error: 'Failed to load skill status' });
@@ -236,9 +226,8 @@ app.get('/api/skill/status', async (req, res) => {
 
 app.post('/api/skill/install', async (req, res) => {
   try {
-    await fs.mkdir(path.dirname(WORKSPACE_SKILL_PATH), { recursive: true });
-    await fs.copyFile(SKILL_SOURCE_PATH, WORKSPACE_SKILL_PATH);
-    res.json({ success: true, installedPath: WORKSPACE_SKILL_PATH });
+    const result = await installWorkspaceWorkflow({ sourceRoot: REPO_ROOT, targetDir: REPO_ROOT, framework: 'copilot' });
+    res.json({ success: true, ...result });
   } catch (error) {
     console.error('Failed to install skill:', error);
     res.status(500).json({ error: 'Failed to install skill' });
