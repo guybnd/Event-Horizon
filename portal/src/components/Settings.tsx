@@ -213,6 +213,7 @@ export function Settings() {
   const [projects, setProjects] = useState('');
   const [enableBacklog, setEnableBacklog] = useState(true);
   const [requireComment, setRequireComment] = useState(true);
+  const [readyForMergeStatus, setReadyForMergeStatus] = useState('Ready');
   const [saving, setSaving] = useState(false);
   const [workflowInstalled, setWorkflowInstalled] = useState(false);
   const [skillInstalled, setSkillInstalled] = useState(false);
@@ -234,6 +235,7 @@ export function Settings() {
       setProjects(config.projects.join(', '));
       setEnableBacklog(config.enableBacklogScreen);
       setRequireComment(config.requireCommentOnStatusChange);
+      setReadyForMergeStatus(config.readyForMergeStatus || 'Ready');
     }
   }, [config]);
 
@@ -255,6 +257,41 @@ export function Settings() {
   const handleSave = async () => {
     if (!config) return;
     setSaving(true);
+
+    const normalizedReadyForMergeStatus = readyForMergeStatus.trim() || 'Ready';
+    const currentReadyForMergeStatus = config.readyForMergeStatus || 'Ready';
+    const nextColumns = columns.map((column) => ({ ...column }));
+    const nextHiddenStatuses = hiddenStatuses.map((item) => ({ ...item }));
+
+    const renameExistingWorkflowStatus = (items: StatusDef[]) => {
+      const matchedItem = items.find((item) => item.name === currentReadyForMergeStatus || item.originalName === currentReadyForMergeStatus);
+      if (matchedItem) {
+        matchedItem.name = normalizedReadyForMergeStatus;
+        return true;
+      }
+      return false;
+    };
+
+    const statusExists = (statusName: string) => [...nextColumns, ...nextHiddenStatuses].some((item) => item.name === statusName);
+    const insertReadyStatus = () => {
+      if (statusExists(normalizedReadyForMergeStatus)) return;
+      const doneIndex = nextColumns.findIndex((item) => item.name === 'Done');
+      const readyStatus = { name: normalizedReadyForMergeStatus };
+      if (doneIndex === -1) {
+        nextColumns.push(readyStatus);
+      } else {
+        nextColumns.splice(doneIndex, 0, readyStatus);
+      }
+    };
+
+    if (currentReadyForMergeStatus !== normalizedReadyForMergeStatus) {
+      const renamed = renameExistingWorkflowStatus(nextColumns) || renameExistingWorkflowStatus(nextHiddenStatuses);
+      if (!renamed) {
+        insertReadyStatus();
+      }
+    } else {
+      insertReadyStatus();
+    }
     
     // Compute Renames
     const tagRenames: Record<string, string> = {};
@@ -264,7 +301,10 @@ export function Settings() {
     users.forEach(u => { if (u.originalName && u.originalName !== u.name) userRenames[u.originalName] = u.name; });
     
     const statusRenames: Record<string, string> = {};
-    [...columns, ...hiddenStatuses].forEach(s => { if (s.originalName && s.originalName !== s.name) statusRenames[s.originalName] = s.name; });
+    [...nextColumns, ...nextHiddenStatuses].forEach(s => { if (s.originalName && s.originalName !== s.name) statusRenames[s.originalName] = s.name; });
+    if (currentReadyForMergeStatus !== normalizedReadyForMergeStatus) {
+      statusRenames[currentReadyForMergeStatus] = normalizedReadyForMergeStatus;
+    }
 
     const priorityRenames: Record<string, string> = {};
     priorities.forEach(p => { if (p.originalName && p.originalName !== p.name) priorityRenames[p.originalName] = p.name; });
@@ -275,8 +315,8 @@ export function Settings() {
       }
 
       const cleanTags = tags.filter(c => c.name.trim()).map(({originalName, ...rest}) => rest);
-      const cleanColumns = columns.filter(c => c.name.trim()).map(({originalName, ...rest}) => rest);
-      const cleanHidden = hiddenStatuses.filter(c => c.name.trim()).map(({originalName, ...rest}) => rest);
+      const cleanColumns = nextColumns.filter(c => c.name.trim()).map(({originalName, ...rest}) => rest);
+      const cleanHidden = nextHiddenStatuses.filter(c => c.name.trim()).map(({originalName, ...rest}) => rest);
       const cleanUsers = users.filter(c => c.name.trim()).map(({originalName, ...rest}) => rest);
       const cleanPriorities = priorities.filter(p => p.name.trim()).map(({ originalName, ...rest }) => rest);
 
@@ -288,7 +328,8 @@ export function Settings() {
         priorities: cleanPriorities,
         projects: projects.split(',').map(s => s.trim()).filter(Boolean),
         enableBacklogScreen: enableBacklog,
-        requireCommentOnStatusChange: requireComment
+        requireCommentOnStatusChange: requireComment,
+        readyForMergeStatus: normalizedReadyForMergeStatus
       });
       
       triggerRefresh(); // Refresh tasks cache on frontend to show renamed items
@@ -340,7 +381,8 @@ export function Settings() {
     priorities: priorities.filter(p => p.name.trim()).map(({ originalName, ...rest }) => rest),
     projects: projects.split(',').map(s => s.trim()).filter(Boolean),
     enableBacklogScreen: enableBacklog,
-    requireCommentOnStatusChange: requireComment
+    requireCommentOnStatusChange: requireComment,
+    readyForMergeStatus: readyForMergeStatus.trim() || 'Ready'
   });
 
   const originalPayload = JSON.stringify({
@@ -351,7 +393,8 @@ export function Settings() {
     priorities: config.priorities,
     projects: config.projects,
     enableBacklogScreen: config.enableBacklogScreen,
-    requireCommentOnStatusChange: config.requireCommentOnStatusChange
+    requireCommentOnStatusChange: config.requireCommentOnStatusChange,
+    readyForMergeStatus: config.readyForMergeStatus || 'Ready'
   });
 
   const isDirty = currentSavedPayload !== originalPayload;
@@ -424,6 +467,19 @@ export function Settings() {
         </div>
 
         <div className="border-t border-gray-200 dark:border-white/10 pt-8 space-y-4">
+          <label className="flex items-center gap-4 p-4 bg-gray-50 dark:bg-black/10 rounded-xl border border-gray-200 dark:border-white/5">
+            <div className="min-w-0 flex-1">
+              <span className="block text-sm font-bold text-gray-800 dark:text-gray-200 mb-0.5">Ready for Merge Status</span>
+              <span className="text-xs text-gray-500">Tickets moved into this status become a user prompt for final review and the `finish &lt;ticket&gt;` handoff.</span>
+            </div>
+            <input
+              className="w-40 bg-white dark:bg-black/20 border border-gray-200 dark:border-white/10 rounded-lg px-3 py-2 outline-none focus:border-primary text-sm font-medium"
+              value={readyForMergeStatus}
+              onChange={e => setReadyForMergeStatus(e.target.value)}
+              placeholder="Ready"
+            />
+          </label>
+
           <label className="flex items-center gap-4 cursor-pointer p-4 bg-gray-50 dark:bg-black/10 rounded-xl border border-gray-200 dark:border-white/5 hover:border-primary transition-colors">
             <input 
               type="checkbox" 

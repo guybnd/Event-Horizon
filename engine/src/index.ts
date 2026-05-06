@@ -33,7 +33,8 @@ let configCache: any = {
     { name: 'None', icon: 'Equal', color: 'text-gray-400' }
   ],
   enableBacklogScreen: true,
-  requireCommentOnStatusChange: true
+  requireCommentOnStatusChange: true,
+  readyForMergeStatus: 'Ready'
 };
 
 function buildCommentId(seed: string, usedIds: Set<string>) {
@@ -48,6 +49,128 @@ function buildCommentId(seed: string, usedIds: Set<string>) {
 
   usedIds.add(candidate);
   return candidate;
+}
+
+function buildActivityEntry(comment: string, user: string, date: string) {
+  return {
+    type: 'activity',
+    user: user || 'Unknown',
+    date,
+    comment,
+  };
+}
+
+function getHistoryTimestamp(entry: any) {
+  if (!entry?.date) {
+    return 0;
+  }
+
+  const timestamp = new Date(entry.date).getTime();
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function findEarliestHistoryDate(history: any[] = []) {
+  const timestamps = history
+    .map((entry) => getHistoryTimestamp(entry))
+    .filter((timestamp) => timestamp > 0);
+
+  if (timestamps.length === 0) {
+    return undefined;
+  }
+
+  return new Date(Math.min(...timestamps)).toISOString();
+}
+
+function ensureCreationActivity(history: any[] = [], user: string, fallbackDate?: string) {
+  const hasCreationActivity = history.some((entry) => entry?.type === 'activity' && entry?.comment === 'Created ticket.');
+
+  if (hasCreationActivity) {
+    return { history, changed: false };
+  }
+
+  const createdAt = findEarliestHistoryDate(history) || fallbackDate || new Date().toISOString();
+  return {
+    history: [buildActivityEntry('Created ticket.', user || 'Unknown', createdAt), ...history],
+    changed: true,
+  };
+}
+
+function valuesMatch(left: unknown, right: unknown) {
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+}
+
+function formatValue(value: unknown) {
+  if (Array.isArray(value)) {
+    return value.length > 0 ? value.join(', ') : 'none';
+  }
+
+  if (typeof value === 'string') {
+    return value.trim() || 'none';
+  }
+
+  if (value == null) {
+    return 'none';
+  }
+
+  return String(value);
+}
+
+function summarizeFieldChanges(previousTask: any, nextFrontmatter: any, nextBody: string | undefined) {
+  const messages: string[] = [];
+  const previousBody = typeof previousTask.body === 'string' ? previousTask.body : '';
+  const normalizedNextBody = typeof nextBody === 'string' ? nextBody : '';
+
+  if ((previousTask.title || '') !== (nextFrontmatter.title || '')) {
+    messages.push('Updated title.');
+  }
+
+  if (previousBody !== normalizedNextBody) {
+    messages.push('Updated description.');
+  }
+
+  if ((previousTask.assignee || 'unassigned') !== (nextFrontmatter.assignee || 'unassigned')) {
+    messages.push(`Changed assignee from ${formatValue(previousTask.assignee || 'unassigned')} to ${formatValue(nextFrontmatter.assignee || 'unassigned')}.`);
+  }
+
+  if (!valuesMatch(previousTask.tags || [], nextFrontmatter.tags || [])) {
+    messages.push(`Updated tags to ${formatValue(nextFrontmatter.tags || [])}.`);
+  }
+
+  if ((previousTask.priority || 'None') !== (nextFrontmatter.priority || 'None')) {
+    messages.push(`Changed priority from ${formatValue(previousTask.priority || 'None')} to ${formatValue(nextFrontmatter.priority || 'None')}.`);
+  }
+
+  if ((previousTask.effort || 'None') !== (nextFrontmatter.effort || 'None')) {
+    messages.push(`Changed effort from ${formatValue(previousTask.effort || 'None')} to ${formatValue(nextFrontmatter.effort || 'None')}.`);
+  }
+
+  if ((previousTask.implementationLink || '') !== (nextFrontmatter.implementationLink || '')) {
+    messages.push(nextFrontmatter.implementationLink ? 'Updated implementation link.' : 'Cleared implementation link.');
+  }
+
+  if (!valuesMatch(previousTask.subtasks || [], nextFrontmatter.subtasks || [])) {
+    messages.push('Updated subtasks.');
+  }
+
+  return messages;
+}
+
+function historyPrefixMatches(existingHistory: any[] = [], nextHistory: any[] = []) {
+  if (nextHistory.length < existingHistory.length) {
+    return false;
+  }
+
+  return existingHistory.every((entry, index) => JSON.stringify(entry) === JSON.stringify(nextHistory[index]));
+}
+
+function hasAppendedStatusChange(existingHistory: any[] = [], nextHistory: any[] = [], from?: string, to?: string) {
+  if (!from || !to || !historyPrefixMatches(existingHistory, nextHistory)) {
+    return false;
+  }
+
+  return nextHistory.slice(existingHistory.length).some(
+    (entry) => entry?.type === 'status_change' && entry?.from === from && entry?.to === to,
+  );
 }
 
 function normalizeHistoryEntries(history: any[] = []) {
@@ -138,10 +261,17 @@ async function loadTask(filePath: string) {
   if (!isTopLevelTaskFile(filePath)) return;
 
   try {
+    const fileStats = await fs.stat(filePath);
     const content = await fs.readFile(filePath, 'utf-8');
     const parsed = matter(content);
     const id = parsed.data.id || path.basename(filePath, '.md');
-    const { history, changed } = normalizeHistoryEntries(parsed.data.history);
+    const normalizedHistory = normalizeHistoryEntries(parsed.data.history);
+    const fallbackCreatedAt = fileStats.birthtimeMs > 0 ? fileStats.birthtime.toISOString() : fileStats.mtime.toISOString();
+    const { history } = ensureCreationActivity(
+      normalizedHistory.history,
+      parsed.data.createdBy || parsed.data.updatedBy || 'Unknown',
+      fallbackCreatedAt,
+    );
     const normalizedFrontmatter = {
       ...parsed.data,
       history,
@@ -154,7 +284,7 @@ async function loadTask(filePath: string) {
       _path: filePath
     };
 
-    if (changed) {
+    if (normalizedHistory.changed) {
       const normalizedContent = matter.stringify(parsed.content, normalizedFrontmatter);
       await fs.writeFile(filePath, normalizedContent, 'utf-8');
     }
@@ -249,17 +379,19 @@ app.post('/api/tasks', async (req, res) => {
   const nextId = `${pKey}-${maxId + 1}`;
   const filePath = path.join(FLUX_DIR, `${nextId}.md`);
   const normalizedHistory = normalizeHistoryEntries(rest.history || []);
+  const createdAt = new Date().toISOString();
+  const historyWithCreation = ensureCreationActivity(normalizedHistory.history, author || 'Unknown', createdAt);
   const frontmatter = {
+    ...rest,
     id: nextId,
     title: title || 'New Task',
     status: status || 'Todo',
     priority: rest.priority || 'None',
     createdBy: author || 'Unknown',
     updatedBy: author || 'Unknown',
-    assignee: 'unassigned',
-    tags: [],
-    history: normalizedHistory.history,
-    ...rest
+    assignee: rest.assignee || 'unassigned',
+    tags: rest.tags || [],
+    history: historyWithCreation.history,
   };
 
   try {
@@ -283,11 +415,41 @@ app.put('/api/tasks/:id', async (req, res) => {
     return res.status(404).json({ error: 'Task not found' });
   }
 
+  const actor = updatedBy || task.updatedBy || 'Unknown';
+  const normalizedExistingHistory = normalizeHistoryEntries(task.history || []);
+  const existingHistory = ensureCreationActivity(
+    normalizedExistingHistory.history,
+    task.createdBy || actor,
+    findEarliestHistoryDate(normalizedExistingHistory.history),
+  ).history;
   const { body, _path, id: _id, ...frontmatter } = { ...task, ...updates };
   if (updatedBy) {
     frontmatter.updatedBy = updatedBy;
   }
-  frontmatter.history = normalizeHistoryEntries(frontmatter.history || []).history;
+  let nextHistory = normalizeHistoryEntries(frontmatter.history || []).history;
+  nextHistory = ensureCreationActivity(
+    nextHistory,
+    task.createdBy || actor,
+    findEarliestHistoryDate(existingHistory),
+  ).history;
+
+  const activityTimestamp = new Date().toISOString();
+  if (task.status !== frontmatter.status && !hasAppendedStatusChange(existingHistory, nextHistory, task.status, frontmatter.status)) {
+    nextHistory.push({
+      type: 'status_change',
+      from: task.status,
+      to: frontmatter.status,
+      user: actor,
+      date: activityTimestamp,
+    });
+  }
+
+  const fieldChangeMessages = summarizeFieldChanges(task, frontmatter, body);
+  if (fieldChangeMessages.length > 0) {
+    nextHistory.push(buildActivityEntry(fieldChangeMessages.join(' '), actor, activityTimestamp));
+  }
+
+  frontmatter.history = normalizeHistoryEntries(nextHistory).history;
 
   try {
     const fileContent = matter.stringify(body || '', frontmatter);

@@ -5,6 +5,7 @@ import type { Task } from '../types';
 import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal } from 'lucide-react';
 import { useApp } from '../AppContext';
 import { updateTask } from '../api';
+import { isPromptableStatus } from '../workflow';
 
 export function TaskCard({ task, parentTask, isOverlay }: { task: Task, parentTask?: Task, isOverlay?: boolean }) {
   const EFFORT_OPTIONS = ['None', 'XS', 'S', 'M', 'L', 'XL'];
@@ -104,7 +105,7 @@ export function TaskCard({ task, parentTask, isOverlay }: { task: Task, parentTa
 
   const snippet = task.body?.split('\n').find(line => line.trim() && !line.startsWith('#')) || 'No description provided';
 
-  const isRequireInput = task.status === 'Require Input';
+  const isPromptStatus = isPromptableStatus(task.status, config);
 
   const getTagColor = (tagName: string) => {
     const tagObj = config?.tags?.find(t => t.name === tagName);
@@ -199,9 +200,9 @@ export function TaskCard({ task, parentTask, isOverlay }: { task: Task, parentTa
     <div
       ref={setNodeRef}
       style={style}
-      className={`bg-white/80 dark:bg-[#252630]/80 backdrop-blur-md p-0 rounded-xl shadow-sm border hover:border-primary/50 hover:shadow-md transition-all mb-3 group flex flex-col relative ${(priorityMenuOpen || effortMenuOpen || assigneeMenuOpen || tagMenuOpen || isEditingTitle) ? 'z-40' : ''} ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''} ${isRequireInput ? 'border-amber-300 dark:border-amber-500/40 ring-1 ring-amber-200/50 dark:ring-amber-500/20' : 'border-gray-200/50 dark:border-white/5'}`}
+      className={`bg-white/80 dark:bg-[#252630]/80 backdrop-blur-md p-0 rounded-xl shadow-sm border hover:border-primary/50 hover:shadow-md transition-all mb-3 group flex flex-col relative ${(priorityMenuOpen || effortMenuOpen || assigneeMenuOpen || tagMenuOpen || isEditingTitle) ? 'z-40' : ''} ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''} ${isPromptStatus ? 'border-amber-300 dark:border-amber-500/40 ring-1 ring-amber-200/50 dark:ring-amber-500/20' : 'border-gray-200/50 dark:border-white/5'}`}
     >
-      {isRequireInput && (
+      {isPromptStatus && (
         <div className="absolute -top-1.5 -right-1.5 z-10">
           <div className="relative">
             <AlertCircle className="w-5 h-5 text-amber-500 fill-amber-50 dark:fill-amber-950" />

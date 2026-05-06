@@ -26,6 +26,7 @@ import {
 import { useApp } from '../AppContext';
 import { createTask, deleteTask, fetchTasks, updateTask } from '../api';
 import type { Config, HistoryEntry, TagDef, Task } from '../types';
+import { DEFAULT_READY_FOR_MERGE_STATUS, REQUIRE_INPUT_STATUS } from '../workflow';
 
 const ACTIVITY_FILTER_STORAGE_KEY = 'flux.activityFilter';
 
@@ -310,12 +311,16 @@ export function TaskModal() {
   const allUsers = config?.users.map((item) => item.name) || [];
   const allTags = config?.tags.map((item) => item.name) || [];
   const availablePriorities = config && config.priorities.length > 0 ? config.priorities : [{ name: 'None', icon: 'Equal', color: 'text-gray-400' }];
+  const readyForMergeStatus = config?.readyForMergeStatus?.trim() || DEFAULT_READY_FOR_MERGE_STATUS;
+  const promptableStatuses = Array.from(new Set([REQUIRE_INPUT_STATUS, readyForMergeStatus]));
   const preferredRequireInputDestinations = allStatuses.filter((item) => item === 'Todo' || item === 'Grooming');
   const requireInputDestinations = preferredRequireInputDestinations.length > 0
     ? preferredRequireInputDestinations
-    : allStatuses.filter((item) => item !== 'Require Input').slice(0, 2);
+    : allStatuses.filter((item) => !promptableStatuses.includes(item)).slice(0, 2);
 
-  const isRequireInput = status === 'Require Input';
+  const isRequireInput = status === REQUIRE_INPUT_STATUS;
+  const isReadyForMerge = status === readyForMergeStatus;
+  const isPromptStatus = isRequireInput || isReadyForMerge;
   const lastComment = modalTask?.history?.slice().reverse().find((entry) => entry.type === 'comment');
   const createdAt = modalTask?.history?.[0]?.date;
   const updatedAt = modalTask?.history?.[modalTask.history.length - 1]?.date;
@@ -973,6 +978,23 @@ export function TaskModal() {
     </div>
   ) : null;
 
+  const readyForMergeBanner = isReadyForMerge ? (
+    <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-900/20">
+      <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
+      <div className="min-w-0 flex-1">
+        <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-amber-800 dark:text-amber-300">Merge review requested</p>
+        <p className="whitespace-pre-wrap text-sm text-amber-700 dark:text-amber-400">
+          {lastComment?.comment || `This ticket is waiting in ${readyForMergeStatus} for user review and finalization.`}
+        </p>
+        {lastComment && (
+          <p className="mt-1.5 text-[10px] text-amber-500/70">
+            {lastComment.user} · {new Date(lastComment.date).toLocaleString()}
+          </p>
+        )}
+      </div>
+    </div>
+  ) : null;
+
   const requireInputPrompt = isRequireInput && modalTask?.id ? (
     <div className="rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 to-white p-5 shadow-sm dark:border-amber-500/30 dark:from-amber-900/20 dark:to-[#1a1b23]">
       <div className="mb-4 flex items-start gap-3">
@@ -1032,6 +1054,50 @@ export function TaskModal() {
               Open full ticket
             </button>
           </div>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
+  const readyForMergePrompt = isReadyForMerge && modalTask?.id ? (
+    <div className="rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 to-white p-5 shadow-sm dark:border-amber-500/30 dark:from-amber-900/20 dark:to-[#1a1b23]">
+      <div className="mb-4 flex items-start gap-3">
+        <div className="rounded-xl bg-amber-100 p-2 text-amber-600 dark:bg-amber-500/10 dark:text-amber-300">
+          <AlertCircle className="h-5 w-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Ready for final review</p>
+          <h3 className="mt-1 text-lg font-semibold text-gray-900 dark:text-gray-100">Review and finish the ticket</h3>
+          <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">After reviewing the diff and ticket details, tell the agent <span className="font-semibold text-gray-900 dark:text-gray-100">finish {modalTask.id}</span> to create the final commit and close the work.</p>
+        </div>
+      </div>
+
+      {readyForMergeBanner}
+
+      <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_220px]">
+        <div className="rounded-xl border border-gray-200 bg-white/80 p-4 text-sm text-gray-600 dark:border-white/10 dark:bg-black/20 dark:text-gray-300">
+          <p className="font-semibold text-gray-900 dark:text-gray-100">Suggested command</p>
+          <p className="mt-2 rounded-lg bg-gray-100 px-3 py-2 font-mono text-sm text-gray-800 dark:bg-black/30 dark:text-gray-200">finish {modalTask.id}</p>
+          <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">This status is configurable in Settings, but the finalization handoff is always driven by the agent command after your review.</p>
+        </div>
+
+        <div className="space-y-2 rounded-xl border border-gray-200 bg-white/80 p-4 dark:border-white/10 dark:bg-black/20">
+          <button
+            onClick={() => {
+              void navigator.clipboard.writeText(`finish ${modalTask.id}`);
+            }}
+            className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary-hover"
+          >
+            <SendHorizontal className="h-4 w-4" />
+            Copy finish command
+          </button>
+          <button
+            onClick={() => setIsFullView(true)}
+            className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
+          >
+            <Maximize2 className="h-4 w-4" />
+            Open full ticket
+          </button>
         </div>
       </div>
     </div>
@@ -1118,7 +1184,7 @@ export function TaskModal() {
                     </div>
                   </div>
                   <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">{historyList}</div>
-                  <div className="border-t border-gray-200 px-6 py-4 dark:border-white/10">{isRequireInput ? requireInputPrompt : commentComposer}</div>
+                  <div className="border-t border-gray-200 px-6 py-4 dark:border-white/10">{isRequireInput ? requireInputPrompt : isReadyForMerge ? readyForMergePrompt : commentComposer}</div>
                 </div>
               </div>
             </div>
@@ -1310,7 +1376,8 @@ export function TaskModal() {
                   {activityFilterTabs}
                 </div>
                 <div className="mb-4">{historyList}</div>
-                {!isRequireInput && commentComposer}
+                {!isPromptStatus && commentComposer}
+                {isReadyForMerge && readyForMergePrompt}
               </div>
             </div>
           </div>

@@ -1,5 +1,5 @@
 export interface HistoryEntry {
-  type: 'status_change' | 'comment';
+  type: 'status_change' | 'comment' | 'activity';
   from?: string;
   to?: string;
   user: string;
@@ -60,4 +60,5 @@ export interface Config {
   projects: string[];
   enableBacklogScreen: boolean;
   requireCommentOnStatusChange: boolean;
+  readyForMergeStatus?: string;
 }
