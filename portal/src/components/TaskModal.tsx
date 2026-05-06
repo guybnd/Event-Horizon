@@ -225,7 +225,7 @@ export function TaskModal() {
       setConfirmDiscard(false);
       setConfirmDelete(false);
       setIsWideMode(false);
-      setIsFullView(false);
+      setIsFullView(new URLSearchParams(window.location.search).get('view') === 'full');
       setIsEditingDescription(false);
     }
   }, [modalTask]);
@@ -245,6 +245,23 @@ export function TaskModal() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   });
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const hasPendingTicket = url.searchParams.has('ticket');
+
+    if (isModalOpen && modalTask?.id) {
+      url.searchParams.set('ticket', modalTask.id);
+      url.searchParams.set('view', isFullView ? 'full' : 'popup');
+    } else if (!modalTask?.id && hasPendingTicket) {
+      return;
+    } else {
+      url.searchParams.delete('ticket');
+      url.searchParams.delete('view');
+    }
+
+    window.history.replaceState({}, '', url);
+  }, [isModalOpen, isFullView, modalTask?.id]);
 
   if (!isModalOpen || !config) return null;
 

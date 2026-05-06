@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { Task } from '../types';
@@ -10,6 +10,7 @@ export function TaskCard({ task, isOverlay }: { task: Task, isOverlay?: boolean 
   const { openTaskModal, config, currentUser, triggerRefresh } = useApp();
   const [priorityMenuOpen, setPriorityMenuOpen] = useState(false);
   const [priorityName, setPriorityName] = useState(task.priority || 'None');
+  const priorityMenuRef = useRef<HTMLDivElement | null>(null);
   
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: task.id,
@@ -19,6 +20,30 @@ export function TaskCard({ task, isOverlay }: { task: Task, isOverlay?: boolean 
   useEffect(() => {
     setPriorityName(task.priority || 'None');
   }, [task.priority]);
+
+  useEffect(() => {
+    if (!priorityMenuOpen) return undefined;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!priorityMenuRef.current?.contains(event.target as Node)) {
+        setPriorityMenuOpen(false);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setPriorityMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [priorityMenuOpen]);
 
   const style = {
     transform: CSS.Translate.toString(transform),
@@ -64,7 +89,7 @@ export function TaskCard({ task, isOverlay }: { task: Task, isOverlay?: boolean 
     <div
       ref={setNodeRef}
       style={style}
-      className={`bg-white/80 dark:bg-[#252630]/80 backdrop-blur-md p-0 rounded-xl shadow-sm border hover:border-primary/50 hover:shadow-md transition-all mb-3 group flex flex-col relative ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''} ${isRequireInput ? 'border-amber-300 dark:border-amber-500/40 ring-1 ring-amber-200/50 dark:ring-amber-500/20' : 'border-gray-200/50 dark:border-white/5'}`}
+      className={`bg-white/80 dark:bg-[#252630]/80 backdrop-blur-md p-0 rounded-xl shadow-sm border hover:border-primary/50 hover:shadow-md transition-all mb-3 group flex flex-col relative ${priorityMenuOpen ? 'z-40' : ''} ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''} ${isRequireInput ? 'border-amber-300 dark:border-amber-500/40 ring-1 ring-amber-200/50 dark:ring-amber-500/20' : 'border-gray-200/50 dark:border-white/5'}`}
     >
       {isRequireInput && (
         <div className="absolute -top-1.5 -right-1.5 z-10">
@@ -93,7 +118,7 @@ export function TaskCard({ task, isOverlay }: { task: Task, isOverlay?: boolean 
             <h4 className="font-semibold text-gray-900 dark:text-gray-100 group-hover:text-primary transition-colors text-sm mb-0.5 leading-snug">
               {task.title || 'Untitled Task'}
             </h4>
-            <div className="flex items-center gap-1.5 relative">
+            <div ref={priorityMenuRef} className="flex items-center gap-1.5 relative">
               <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 tracking-wider">
                 {task.id}
               </span>
@@ -111,7 +136,7 @@ export function TaskCard({ task, isOverlay }: { task: Task, isOverlay?: boolean 
                   </button>
                   {priorityMenuOpen && (
                     <div
-                      className="absolute left-0 top-full z-20 mt-1 min-w-32 rounded-lg border border-gray-200 bg-white p-1 shadow-xl dark:border-white/10 dark:bg-[#252630]"
+                      className="absolute left-0 top-full z-[90] mt-1 min-w-32 rounded-lg border border-gray-200 bg-white p-1 shadow-xl dark:border-white/10 dark:bg-[#252630]"
                       onClick={(event) => event.stopPropagation()}
                     >
                       {config.priorities.map(priority => (

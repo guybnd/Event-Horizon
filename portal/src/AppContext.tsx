@@ -1,15 +1,36 @@
 import { createContext, useContext, useState, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import type { Task, Config } from './types';
-import { fetchConfig, saveConfig as apiSaveConfig } from './api';
+import { fetchConfig, fetchTasks, saveConfig as apiSaveConfig } from './api';
+
+type AppView = 'board' | 'backlog' | 'settings';
+
+const VIEW_PATHS: Record<AppView, string> = {
+  board: '/board',
+  backlog: '/backlog',
+  settings: '/settings',
+};
+
+function getViewFromLocation(): AppView {
+  const path = window.location.pathname.toLowerCase();
+  if (path === '/backlog') return 'backlog';
+  if (path === '/settings') return 'settings';
+  return 'board';
+}
+
+function updateViewUrl(view: AppView, mode: 'push' | 'replace') {
+  const url = new URL(window.location.href);
+  url.pathname = VIEW_PATHS[view];
+  window.history[mode === 'push' ? 'pushState' : 'replaceState']({}, '', url);
+}
 
 interface AppState {
   currentUser: string;
   setCurrentUser: (user: string) => void;
   currentProject: string;
   setCurrentProject: (proj: string) => void;
-  view: 'board' | 'backlog' | 'settings';
-  setView: (view: 'board' | 'backlog' | 'settings') => void;
+  view: AppView;
+  setView: (view: AppView) => void;
   modalTask: Partial<Task> | null;
   setModalTask: (task: Partial<Task> | null) => void;
   isModalOpen: boolean;
@@ -26,13 +47,18 @@ const AppContext = createContext<AppState | undefined>(undefined);
 export function AppProvider({ children }: { children: ReactNode }) {
   const [currentUser, setCurrentUser] = useState('Guy');
   const [currentProject, setCurrentProject] = useState('FLUX');
-  const [view, setView] = useState<'board' | 'backlog' | 'settings'>('board');
+  const [view, setCurrentView] = useState<AppView>(() => getViewFromLocation());
   const [modalTask, setModalTask] = useState<Partial<Task> | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [config, setConfig] = useState<Config | null>(null);
 
   const triggerRefresh = () => setRefreshTrigger(prev => prev + 1);
+
+  const setView = (nextView: AppView) => {
+    setCurrentView(nextView);
+    updateViewUrl(nextView, 'push');
+  };
 
   const openTaskModal = (task?: Partial<Task>) => {
     setModalTask(task || { status: 'Todo' });
@@ -55,6 +81,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     fetchConfig().then(setConfig).catch(console.error);
+  }, []);
+
+  useEffect(() => {
+    updateViewUrl(getViewFromLocation(), 'replace');
+
+    const handlePopState = () => {
+      setCurrentView(getViewFromLocation());
+    };
+
+    window.addEventListener('popstate', handlePopState);
+
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const ticketId = params.get('ticket');
+    if (!ticketId) return;
+
+    fetchTasks()
+      .then((tasks) => {
+        const task = tasks.find((item) => item.id === ticketId);
+        if (!task) return;
+        setModalTask(task);
+        setIsModalOpen(true);
+      })
+      .catch(console.error);
   }, []);
 
   return (
