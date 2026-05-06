@@ -1,9 +1,8 @@
 ---
-id: FLUX-20
 title: add subtasks to tickets
-status: Require Input
+status: Todo
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: Guy
 tags: []
 history:
@@ -11,10 +10,10 @@ history:
     user: Agent
     date: '2026-05-06T19:20:00.000Z'
     comment: >-
-      Re-groomed this into a parent/child ticket relationship proposal. This
-      is close to ready, but one scope decision remains: whether subtasks are
-      existing linked tickets only, or whether embedded checklist items are
-      also part of the first version.
+      Re-groomed this into a parent/child ticket relationship proposal. This is
+      close to ready, but one scope decision remains: whether subtasks are
+      existing linked tickets only, or whether embedded checklist items are also
+      part of the first version.
   - type: status_change
     from: Grooming
     to: Require Input
@@ -24,10 +23,23 @@ history:
     user: Agent
     date: '2026-05-06T19:35:00.000Z'
     comment: >-
-      Requesting scope confirmation in-ticket: should first version support
-      only linked existing tickets as subtasks, or should inline checklist
-      items be included now as well? Existing-ticket links are the smaller and
-      cleaner first slice.
+      Requesting scope confirmation in-ticket: should first version support only
+      linked existing tickets as subtasks, or should inline checklist items be
+      included now as well? Existing-ticket links are the smaller and cleaner
+      first slice.
+  - type: comment
+    user: Guy
+    date: '2026-05-06T09:18:44.135Z'
+    comment: >-
+      should first version support only linked existing tickets as subtasks, or
+      should inline checklist items be included now as well? Existing-ticket
+      links are the smaller and cleaner first slice. agreed
+  - type: status_change
+    from: Require Input
+    to: Todo
+    user: Guy
+    date: '2026-05-06T09:18:50.359Z'
+priority: None
 ---
 ## Groomed Scope
 

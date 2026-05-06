@@ -1,7 +1,7 @@
 ---
 id: FLUX-29
 title: 'Require Input: dedicated response workflow and notification ticker'
-status: Grooming
+status: Done
 priority: High
 createdBy: Agent
 updatedBy: Agent
@@ -17,6 +17,18 @@ history:
       the newer dedicated-status workflow with a focused response prompt,
       explicit post-response destination, and a notification count for open
       required-input items.
+  - type: status_change
+    from: Grooming
+    to: Done
+    user: Agent
+    date: '2026-05-06T21:25:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-06T21:25:00.000Z'
+    comment: >-
+      Implemented the focused Require Input response flow in the modal, added
+      the header notification count, and validated the submit-and-route path
+      end-to-end on a temporary task.
 ---
 ## Summary
 

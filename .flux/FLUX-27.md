@@ -1,10 +1,9 @@
 ---
-id: FLUX-27
 title: add sort and fitlers to kanban and backlog view
-status: Require Input
+status: Todo
 priority: None
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: Guy
 tags: []
 history:
@@ -27,6 +26,16 @@ history:
       Requesting product choice in-ticket: should sort/filter state stay local
       to the current session, or be encoded in the URL so filtered views are
       shareable and reload-safe? URL state is more capable but adds scope.
+  - type: comment
+    user: Guy
+    date: '2026-05-06T09:28:20.476Z'
+    comment: url
+  - type: status_change
+    from: Require Input
+    to: Todo
+    user: Guy
+    date: '2026-05-06T09:28:20.476Z'
+    comment: Response submitted
 ---
 ## Groomed Scope
 

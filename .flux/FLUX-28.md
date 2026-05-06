@@ -1,10 +1,9 @@
 ---
-id: FLUX-28
 title: add field for 'story points' or 'intensity'
-status: Require Input
+status: Todo
 priority: None
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: Guy
 tags: []
 history:
@@ -28,6 +27,16 @@ history:
       modeled once. Please pick one label (`Story Points`, `Effort`, or
       `Intensity`) and one first-version scale (Fibonacci numbers or T-shirt
       sizes).
+  - type: comment
+    user: Guy
+    date: '2026-05-06T09:27:49.201Z'
+    comment: Effort and tshirt sizes
+  - type: status_change
+    from: Require Input
+    to: Todo
+    user: Guy
+    date: '2026-05-06T09:27:49.201Z'
+    comment: Response submitted
 ---
 ## Groomed Scope
 

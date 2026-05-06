@@ -204,6 +204,7 @@ export function TaskModal() {
   const [priority, setPriority] = useState<string>('None');
   const [saving, setSaving] = useState(false);
   const [newComment, setNewComment] = useState('');
+  const [responseDestination, setResponseDestination] = useState('Todo');
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [isWideMode, setIsWideMode] = useState(false);
@@ -222,6 +223,7 @@ export function TaskModal() {
       setTags(modalTask.tags || []);
       setPriority(modalTask.priority || 'None');
       setNewComment('');
+      setResponseDestination('Todo');
       setConfirmDiscard(false);
       setConfirmDelete(false);
       setIsWideMode(false);
@@ -263,12 +265,14 @@ export function TaskModal() {
     window.history.replaceState({}, '', url);
   }, [isModalOpen, isFullView, modalTask?.id]);
 
-  if (!isModalOpen || !config) return null;
-
-  const allStatuses = [...config.columns, ...config.hiddenStatuses].map((item) => item.name);
-  const allUsers = config.users.map((item) => item.name);
-  const allTags = config.tags.map((item) => item.name);
-  const availablePriorities = config.priorities.length > 0 ? config.priorities : [{ name: 'None', icon: 'Equal', color: 'text-gray-400' }];
+  const allStatuses = config ? [...config.columns, ...config.hiddenStatuses].map((item) => item.name) : [];
+  const allUsers = config?.users.map((item) => item.name) || [];
+  const allTags = config?.tags.map((item) => item.name) || [];
+  const availablePriorities = config && config.priorities.length > 0 ? config.priorities : [{ name: 'None', icon: 'Equal', color: 'text-gray-400' }];
+  const preferredRequireInputDestinations = allStatuses.filter((item) => item === 'Todo' || item === 'Grooming');
+  const requireInputDestinations = preferredRequireInputDestinations.length > 0
+    ? preferredRequireInputDestinations
+    : allStatuses.filter((item) => item !== 'Require Input').slice(0, 2);
 
   const isRequireInput = status === 'Require Input';
   const lastComment = modalTask?.history?.slice().reverse().find((entry) => entry.type === 'comment');
@@ -286,6 +290,14 @@ export function TaskModal() {
 
   const currentPayload = JSON.stringify({ title, body, status, assignee, tags, priority });
   const isDirty = originalPayload !== currentPayload || newComment.trim() !== '';
+
+  useEffect(() => {
+    if (!isRequireInput) return;
+    if (requireInputDestinations.includes(responseDestination)) return;
+    setResponseDestination(requireInputDestinations[0] || 'Todo');
+  }, [isRequireInput, requireInputDestinations, responseDestination]);
+
+  if (!isModalOpen || !config) return null;
 
   const handleCloseAttempt = () => {
     if (isDirty) {
@@ -369,6 +381,56 @@ export function TaskModal() {
 
     setNewComment('');
     await handleSave([commentEntry], true);
+  };
+
+  const submitRequireInputResponse = async () => {
+    if (!modalTask?.id || !newComment.trim()) return;
+
+    const targetStatus = requireInputDestinations.includes(responseDestination)
+      ? responseDestination
+      : requireInputDestinations[0] || 'Todo';
+    const submittedAt = new Date().toISOString();
+    const responseComment = newComment.trim();
+    const historyUpdates = [
+      {
+        type: 'comment',
+        user: currentUser,
+        date: submittedAt,
+        comment: responseComment,
+      },
+      {
+        type: 'status_change',
+        from: status,
+        to: targetStatus,
+        user: currentUser,
+        date: submittedAt,
+        comment: 'Response submitted',
+      },
+    ];
+
+    setSaving(true);
+    try {
+      const updatedTask = await updateTask(modalTask.id, {
+        title,
+        body,
+        status: targetStatus,
+        assignee,
+        tags,
+        priority,
+        order: modalTask.order,
+        history: [...(modalTask.history || []), ...historyUpdates],
+        updatedBy: currentUser,
+      } as any);
+      setModalTask(updatedTask);
+      setNewComment('');
+      setStatus(targetStatus);
+      triggerRefresh();
+      closeModal();
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const insertMarkdown = (prefix: string, suffix = '') => {
@@ -569,6 +631,70 @@ export function TaskModal() {
     </div>
   ) : null;
 
+  const requireInputPrompt = isRequireInput && modalTask?.id ? (
+    <div className="rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 to-white p-5 shadow-sm dark:border-amber-500/30 dark:from-amber-900/20 dark:to-[#1a1b23]">
+      <div className="mb-4 flex items-start gap-3">
+        <div className="rounded-xl bg-amber-100 p-2 text-amber-600 dark:bg-amber-500/10 dark:text-amber-300">
+          <AlertCircle className="h-5 w-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Awaiting your input</p>
+          <h3 className="mt-1 text-lg font-semibold text-gray-900 dark:text-gray-100">Respond and route the ticket</h3>
+          <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">Answer the pending question, then choose where the ticket should go next.</p>
+        </div>
+      </div>
+
+      {requireInputBanner}
+
+      <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_180px]">
+        <div>
+          <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Your response</label>
+          <textarea
+            ref={commentRef}
+            autoFocus
+            className="h-44 w-full resize-none rounded-xl border border-amber-200 bg-white px-4 py-3 text-sm outline-none placeholder:text-gray-400 focus:border-primary dark:border-amber-500/20 dark:bg-black/30"
+            value={newComment}
+            onChange={(event) => setNewComment(event.target.value)}
+            placeholder="Type the answer you want to send back..."
+          />
+        </div>
+
+        <div className="space-y-4 rounded-xl border border-gray-200 bg-white/80 p-4 dark:border-white/10 dark:bg-black/20">
+          <div>
+            <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Send ticket to</label>
+            <select
+              className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
+              value={responseDestination}
+              onChange={(event) => setResponseDestination(event.target.value)}
+            >
+              {requireInputDestinations.map((item) => (
+                <option key={item} value={item}>{item}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="space-y-2">
+            <button
+              disabled={saving || !newComment.trim()}
+              onClick={submitRequireInputResponse}
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <SendHorizontal className="h-4 w-4" />
+              {saving ? 'Submitting...' : 'Send Response'}
+            </button>
+            <button
+              onClick={() => setIsFullView(true)}
+              className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
+            >
+              <Maximize2 className="h-4 w-4" />
+              Open full ticket
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
   return (
     <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center">
       <div
@@ -647,7 +773,7 @@ export function TaskModal() {
                     <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Activity & Comments</p>
                   </div>
                   <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">{historyList}</div>
-                  <div className="border-t border-gray-200 px-6 py-4 dark:border-white/10">{commentComposer}</div>
+                  <div className="border-t border-gray-200 px-6 py-4 dark:border-white/10">{isRequireInput ? requireInputPrompt : commentComposer}</div>
                 </div>
               </div>
             </div>
@@ -737,7 +863,7 @@ export function TaskModal() {
             </div>
 
             <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto p-6 text-sm text-gray-800 dark:text-gray-200">
-              {requireInputBanner}
+              {isRequireInput ? requireInputPrompt : requireInputBanner}
 
               <div className={isWideMode ? 'flex items-center gap-4 rounded-xl border border-gray-100 bg-gray-50 p-4 dark:border-white/5 dark:bg-black/10' : 'grid grid-cols-3 gap-6'}>
                 <div className={isWideMode ? 'mr-4 flex-1' : 'col-span-2 flex flex-col space-y-4'}>
@@ -818,7 +944,7 @@ export function TaskModal() {
                   <MessageSquare className="h-4 w-4" /> Activity & Comments
                 </h3>
                 <div className="mb-6">{historyList}</div>
-                {commentComposer}
+                {!isRequireInput && commentComposer}
               </div>
             </div>
           </div>
