@@ -11,6 +11,7 @@ export function TaskCard({ task, isOverlay }: { task: Task, isOverlay?: boolean 
   const [priorityMenuOpen, setPriorityMenuOpen] = useState(false);
   const [priorityName, setPriorityName] = useState(task.priority || 'None');
   const priorityMenuRef = useRef<HTMLDivElement | null>(null);
+  const effortLabel = task.effort && task.effort !== 'None' ? task.effort : null;
   
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: task.id,
@@ -122,6 +123,11 @@ export function TaskCard({ task, isOverlay }: { task: Task, isOverlay?: boolean 
               <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 tracking-wider">
                 {task.id}
               </span>
+              {effortLabel && (
+                <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-semibold text-sky-700 dark:bg-sky-500/10 dark:text-sky-300">
+                  {effortLabel}
+                </span>
+              )}
               {!isOverlay && config?.priorities?.length ? (
                 <>
                   <button

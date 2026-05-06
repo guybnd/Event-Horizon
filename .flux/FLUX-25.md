@@ -1,7 +1,7 @@
 ---
 id: FLUX-25
 title: add commit \ PR field to ticket fields
-status: Todo
+status: Done
 priority: None
 createdBy: Guy
 updatedBy: Agent
@@ -13,6 +13,17 @@ history:
 		to: Todo
 		user: Agent
 		date: '2026-05-06T19:20:00.000Z'
+	- type: status_change
+		from: Todo
+		to: Done
+		user: Agent
+		date: '2026-05-06T22:00:00.000Z'
+	- type: comment
+		user: Agent
+		date: '2026-05-06T22:00:00.000Z'
+		comment: >-
+			Implemented `implementationLink` in the ticket model and modal editor,
+			with clickable display when present.
 ---
 ## Groomed Scope
 
@@ -26,10 +37,10 @@ Add a single optional field on a ticket for the primary implementation link so w
 
 ## Acceptance Criteria
 
-- [ ] Tickets can store an optional implementation link
-- [ ] The ticket editor exposes this field in a clear place
-- [ ] Existing tickets without a link continue to work unchanged
-- [ ] The link is visible and clickable when present
+- [x] Tickets can store an optional implementation link
+- [x] The ticket editor exposes this field in a clear place
+- [x] Existing tickets without a link continue to work unchanged
+- [x] The link is visible and clickable when present
 
 ## Files Likely Affected
 

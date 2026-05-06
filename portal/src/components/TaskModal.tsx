@@ -185,6 +185,7 @@ function MarkdownPreview({ body }: { body: string }) {
 }
 
 export function TaskModal() {
+  const EFFORT_OPTIONS = ['None', 'XS', 'S', 'M', 'L', 'XL'];
   const {
     isModalOpen,
     closeModal,
@@ -202,6 +203,8 @@ export function TaskModal() {
   const [assignee, setAssignee] = useState('');
   const [tags, setTags] = useState<string[]>([]);
   const [priority, setPriority] = useState<string>('None');
+  const [effort, setEffort] = useState<string>('None');
+  const [implementationLink, setImplementationLink] = useState('');
   const [saving, setSaving] = useState(false);
   const [newComment, setNewComment] = useState('');
   const [responseDestination, setResponseDestination] = useState('Todo');
@@ -222,6 +225,8 @@ export function TaskModal() {
       setAssignee(modalTask.assignee || 'unassigned');
       setTags(modalTask.tags || []);
       setPriority(modalTask.priority || 'None');
+      setEffort(modalTask.effort || 'None');
+      setImplementationLink(modalTask.implementationLink || '');
       setNewComment('');
       setResponseDestination('Todo');
       setConfirmDiscard(false);
@@ -286,9 +291,11 @@ export function TaskModal() {
     assignee: modalTask?.assignee || 'unassigned',
     tags: modalTask?.tags || [],
     priority: modalTask?.priority || 'None',
+    effort: modalTask?.effort || 'None',
+    implementationLink: modalTask?.implementationLink || '',
   });
 
-  const currentPayload = JSON.stringify({ title, body, status, assignee, tags, priority });
+  const currentPayload = JSON.stringify({ title, body, status, assignee, tags, priority, effort, implementationLink });
   const isDirty = originalPayload !== currentPayload || newComment.trim() !== '';
 
   useEffect(() => {
@@ -309,7 +316,7 @@ export function TaskModal() {
 
   const handleSave = async (customHistory?: any[], keepOpen = false) => {
     setSaving(true);
-    const payload = { title, body, status, assignee, tags, priority, order: modalTask?.order };
+    const payload = { title, body, status, assignee, tags, priority, effort, implementationLink: implementationLink.trim(), order: modalTask?.order };
     let historyUpdates: any[] = customHistory || [];
 
     if (!customHistory && newComment.trim()) {
@@ -417,6 +424,8 @@ export function TaskModal() {
         assignee,
         tags,
         priority,
+        effort,
+        implementationLink: implementationLink.trim(),
         order: modalTask.order,
         history: [...(modalTask.history || []), ...historyUpdates],
         updatedBy: currentUser,
@@ -498,6 +507,31 @@ export function TaskModal() {
       </div>
 
       <div>
+        <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Effort</label>
+        <select
+          className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
+          value={effort}
+          onChange={(event) => setEffort(event.target.value)}
+        >
+          {EFFORT_OPTIONS.map((item) => (
+            <option key={item} value={item}>
+              {item}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div>
+        <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Implementation Link</label>
+        <input
+          className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
+          value={implementationLink}
+          onChange={(event) => setImplementationLink(event.target.value)}
+          placeholder="https://github.com/..."
+        />
+      </div>
+
+      <div>
         <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Tags</label>
         <TagSelector tags={tags} onChange={setTags} availableTags={allTags} configTags={config.tags} />
       </div>
@@ -526,6 +560,25 @@ export function TaskModal() {
         <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Last Activity</p>
         <p className="mt-1 text-sm text-gray-700 dark:text-gray-300">{updatedAt ? new Date(updatedAt).toLocaleString() : 'Not recorded'}</p>
       </div>
+      <div>
+        <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Effort</p>
+        <p className="mt-1 text-sm text-gray-700 dark:text-gray-300">{effort && effort !== 'None' ? effort : 'Not set'}</p>
+      </div>
+      <div>
+        <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Implementation Link</p>
+        {implementationLink.trim() ? (
+          <a
+            href={implementationLink.trim()}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-1 block break-all text-sm text-primary underline underline-offset-2"
+          >
+            {implementationLink.trim()}
+          </a>
+        ) : (
+          <p className="mt-1 text-sm text-gray-700 dark:text-gray-300">Not set</p>
+        )}
+      </div>
       {modalTask?.id && (
         <button
           onClick={() => setConfirmDelete(true)}
@@ -549,11 +602,11 @@ export function TaskModal() {
   );
 
   const descriptionEditor = (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-gray-200 bg-gray-50 dark:border-white/10 dark:bg-black/20">
+    <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-gray-200 bg-gray-50 dark:border-white/10 dark:bg-black/20">
       {editorToolbar}
       <textarea
         ref={textareaRef}
-        className="w-full flex-1 resize-none bg-transparent px-4 py-3 font-mono text-sm leading-relaxed outline-none"
+        className="h-full min-h-[320px] w-full flex-1 resize-none bg-transparent px-4 py-3 font-mono text-sm leading-relaxed outline-none"
         value={body}
         onChange={(event) => setBody(event.target.value)}
         placeholder="Markdown supported..."
@@ -749,7 +802,7 @@ export function TaskModal() {
               <div className="flex h-full min-h-0 flex-col">
                 {requireInputBanner && <div className="border-b border-gray-200 p-6 dark:border-white/10">{requireInputBanner}</div>}
 
-                <div className="min-h-0 flex-[3] border-b border-gray-200 dark:border-white/10">
+                <div className="min-h-0 flex-[3] border-b border-gray-200 dark:border-white/10 flex flex-col">
                   <div className="flex items-center justify-between px-6 py-4">
                     <div>
                       <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Description</p>
@@ -763,12 +816,12 @@ export function TaskModal() {
                       {isEditingDescription ? 'Preview' : 'Edit Description'}
                     </button>
                   </div>
-                  <div className="h-[calc(100%-72px)] overflow-y-auto px-6 pb-6">
+                  <div className={`min-h-0 flex-1 px-6 pb-6 ${isEditingDescription ? 'flex' : 'overflow-y-auto'}`}>
                     {isEditingDescription ? descriptionEditor : <MarkdownPreview body={body} />}
                   </div>
                 </div>
 
-                <div className="min-h-0 flex-[2] flex-col">
+                <div className="min-h-0 flex flex-[2] flex-col">
                   <div className="border-b border-gray-200 px-6 py-4 dark:border-white/10">
                     <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Activity & Comments</p>
                   </div>

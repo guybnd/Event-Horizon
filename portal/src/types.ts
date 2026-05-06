@@ -19,6 +19,8 @@ export interface Task {
   updatedBy?: string;
   order?: number;
   priority?: string;
+  effort?: string;
+  implementationLink?: string;
 }
 
 export interface TagDef {
