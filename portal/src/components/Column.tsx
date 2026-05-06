@@ -1,6 +1,8 @@
 import { useDroppable } from '@dnd-kit/core';
 import { TaskCard } from './TaskCard';
 import type { Task } from '../types';
+import { Plus } from 'lucide-react';
+import { useApp } from '../AppContext';
 
 interface ColumnProps {
   id: string;
@@ -10,6 +12,7 @@ interface ColumnProps {
 
 export function Column({ id, title, tasks }: ColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id });
+  const { openTaskModal } = useApp();
 
   return (
     <div className="flex flex-col w-[320px] shrink-0">
@@ -24,10 +27,18 @@ export function Column({ id, title, tasks }: ColumnProps) {
       
       <div
         ref={setNodeRef}
-        className={`flex-1 rounded-2xl p-3 min-h-[500px] transition-all border border-transparent ${
+        className={`flex-1 flex flex-col rounded-2xl p-3 min-h-[500px] transition-all border border-transparent ${
           isOver ? 'bg-primary/5 border-primary/30 ring-1 ring-primary/20' : 'bg-gray-100/50 dark:bg-black/20'
         }`}
       >
+        <button 
+          onClick={() => openTaskModal({ status: id })}
+          className="w-full flex items-center justify-center gap-2 py-2 mb-3 rounded-lg border border-dashed border-gray-300 dark:border-white/20 text-gray-500 dark:text-gray-400 hover:text-primary hover:border-primary hover:bg-primary/5 transition-colors text-sm font-medium cursor-pointer shrink-0"
+        >
+          <Plus className="w-4 h-4" />
+          New Task
+        </button>
+
         {tasks.map(task => (
           <TaskCard key={task.id} task={task} />
         ))}

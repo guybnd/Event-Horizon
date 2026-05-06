@@ -1,10 +1,53 @@
 {
   "columns": [
-    "Todo",
-    "In Progress",
-    "Done"
+    {
+      "name": "Todo"
+    },
+    {
+      "name": "In Progress"
+    },
+    {
+      "name": "Done"
+    }
   ],
   "hiddenStatuses": [
-    "Backlog"
-  ]
+    {
+      "name": "Backlog"
+    }
+  ],
+  "users": [
+    {
+      "name": "Guy"
+    },
+    {
+      "name": "Agent"
+    }
+  ],
+  "tags": [
+    {
+      "name": "bug",
+      "color": "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+    },
+    {
+      "name": "feature",
+      "color": "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
+    },
+    {
+      "name": "docs",
+      "color": "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+    },
+    {
+      "name": "mvp",
+      "color": "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
+    },
+    {
+      "name": "task",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    }
+  ],
+  "projects": [
+    "FLUX"
+  ],
+  "enableBacklogScreen": true,
+  "requireCommentOnStatusChange": false
 }
