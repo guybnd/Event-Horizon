@@ -223,9 +223,10 @@ export function TaskModal() {
         default={{ x: window.innerWidth / 2 - 400, y: Math.max(50, window.innerHeight / 2 - 400), width: 800, height: 'auto' }}
         minWidth={600}
         minHeight={600}
+        maxHeight={window.innerHeight * 0.95}
         bounds="window"
         dragHandleClassName="modal-handle"
-        className="bg-white dark:bg-[#1a1b23] border border-gray-200 dark:border-white/10 shadow-2xl rounded-xl flex flex-col pointer-events-auto overflow-hidden"
+        className="bg-white dark:bg-[#1a1b23] border border-gray-200 dark:border-white/10 shadow-2xl rounded-xl flex flex-col pointer-events-auto overflow-hidden max-h-[95vh]"
         style={isFullscreen ? { x: 0, y: 0, width: '100%', height: '100%', transform: 'none' } : undefined}
         disableDragging={isFullscreen}
         enableResizing={!isFullscreen}
@@ -277,7 +278,7 @@ export function TaskModal() {
           </div>
         )}
         
-        <div className={`flex-1 overflow-y-auto ${isFullscreen ? 'p-0' : 'p-6'} flex flex-col gap-6 text-sm text-gray-800 dark:text-gray-200`}>
+        <div style={{ maxHeight: isFullscreen ? 'none' : 'calc(90vh - 70px)' }} className={`flex-1 overflow-y-auto ${isFullscreen ? 'p-0' : 'p-6'} flex flex-col gap-6 text-sm text-gray-800 dark:text-gray-200`}>
           
           {/* Metadata Section - Rendered either as a sidebar or wide horizontal bar */}
           {!isFullscreen && (
@@ -378,7 +379,7 @@ export function TaskModal() {
                 {(!modalTask?.history || modalTask.history.length === 0) ? (
                   <p className="text-sm text-gray-500 italic">No activity yet.</p>
                 ) : (
-                  modalTask.history.map((entry, idx) => (
+                  [...modalTask.history].reverse().map((entry, idx) => (
                     <div key={idx} className="flex gap-3">
                       <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center shrink-0 mt-0.5">
                         {entry.type === 'status_change' ? <ArrowRight className="w-3 h-3 text-primary" /> : <MessageSquare className="w-3 h-3 text-primary" />}

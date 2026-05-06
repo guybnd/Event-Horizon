@@ -1,12 +1,17 @@
 ---
 id: FLUX-12
 title: allow scrollig
-status: Todo
+status: Done
 createdBy: Guy
-updatedBy: Guy
-assignee: unassigned
+updatedBy: Agent
+assignee: Agent
 tags:
   - feature
-history: []
+history:
+  - type: status_change
+    from: Todo
+    to: Done
+    user: Agent
+    date: '2026-05-06T17:09:00+10:00'
 ---
 if the ticket view is larger than the display then let me scroll down to see the bottom etc. now it jst cuts off
