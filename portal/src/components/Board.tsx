@@ -13,7 +13,7 @@ export function Board() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTask, setActiveTask] = useState<Task | null>(null);
-  const { refreshTrigger, config, currentUser, triggerRefresh } = useApp();
+  const { refreshTrigger, config, currentUser, triggerRefresh, searchQuery } = useApp();
 
   const [pendingStatusChange, setPendingStatusChange] = useState<{taskId: string, newStatus: string, oldStatus: string} | null>(null);
   const [commentText, setCommentText] = useState('');
@@ -37,6 +37,14 @@ export function Board() {
     .filter(s => !config.columns?.find(c => c.name === s) && !config.hiddenStatuses?.find(h => h.name === s));
 
   const allColumns = [...(config.columns?.map(c => c.name) || []), ...extraStatuses];
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const visibleTasks = normalizedQuery
+    ? tasks.filter((task) => {
+        const title = task.title?.toLowerCase() || '';
+        const body = task.body?.toLowerCase() || '';
+        return title.includes(normalizedQuery) || body.includes(normalizedQuery);
+      })
+    : tasks;
 
   const handleDragStart = (event: DragStartEvent) => {
     const { active } = event;
@@ -138,7 +146,7 @@ export function Board() {
       <DndContext onDragStart={handleDragStart} onDragEnd={handleDragEnd} collisionDetection={pointerWithin}>
         <div className="flex gap-6 overflow-x-auto h-full pb-4 items-start">
           {allColumns.map(columnId => (
-            <Column key={columnId} id={columnId} title={columnId} tasks={tasks.filter(t => t.status === columnId)} />
+            <Column key={columnId} id={columnId} title={columnId} tasks={visibleTasks.filter(t => t.status === columnId)} />
           ))}
         </div>
         <DragOverlay>{activeTask ? <TaskCard task={activeTask} isOverlay /> : null}</DragOverlay>

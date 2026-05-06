@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
-import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon } from 'lucide-react';
+import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, Search } from 'lucide-react';
 import { useApp } from '../AppContext';
 import { fetchTasks } from '../api';
 
 export function Header() {
-  const { view, setView, currentUser, setCurrentUser, currentProject, setCurrentProject, refreshTrigger } = useApp();
+  const { view, setView, currentUser, setCurrentUser, currentProject, setCurrentProject, searchQuery, setSearchQuery, refreshTrigger } = useApp();
   const [requireInputCount, setRequireInputCount] = useState(0);
 
   useEffect(() => {
@@ -52,7 +52,16 @@ export function Header() {
         </div>
       </div>
       
-      <div className="flex items-center gap-6">
+      <div className="flex items-center gap-4">
+        <div className="flex min-w-[280px] items-center gap-2 rounded-xl border border-gray-200 bg-white/70 px-3 py-2 text-sm text-gray-600 shadow-sm dark:border-white/10 dark:bg-white/5 dark:text-gray-300">
+          <Search className="h-4 w-4 text-gray-400" />
+          <input
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder="Search titles and descriptions"
+            className="w-full bg-transparent outline-none placeholder:text-gray-400"
+          />
+        </div>
         <button
           onClick={() => setView('board')}
           className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-left transition-colors ${requireInputCount > 0 ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300' : 'border-gray-200 bg-white/60 text-gray-500 dark:border-white/10 dark:bg-white/5 dark:text-gray-400'}`}

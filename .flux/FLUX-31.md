@@ -1,7 +1,7 @@
 ---
 id: FLUX-31
-title: add search box for ticket titles or descriptin
-status: Todo
+title: add search box for ticket titles or descriptions
+status: Done
 priority: None
 createdBy: Guy
 updatedBy: Agent
@@ -21,6 +21,19 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-06T23:20:00.000Z'
+  - type: status_change
+    from: Todo
+    to: Done
+    user: Agent
+    date: '2026-05-06T23:45:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-06T23:45:00.000Z'
+    comment: >-
+      Implemented shared title/body search in the header and applied it to the
+      board and backlog views. Validated that FLUX-31 loads normally through the
+      engine again, the board filters to matching tickets, and the backlog shows
+      the expected empty state for unmatched queries.
 effort: None
 implementationLink: ''
 ---

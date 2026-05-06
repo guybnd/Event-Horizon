@@ -29,6 +29,8 @@ interface AppState {
   setCurrentUser: (user: string) => void;
   currentProject: string;
   setCurrentProject: (proj: string) => void;
+  searchQuery: string;
+  setSearchQuery: (query: string) => void;
   view: AppView;
   setView: (view: AppView) => void;
   modalTask: Partial<Task> | null;
@@ -47,6 +49,7 @@ const AppContext = createContext<AppState | undefined>(undefined);
 export function AppProvider({ children }: { children: ReactNode }) {
   const [currentUser, setCurrentUser] = useState('Guy');
   const [currentProject, setCurrentProject] = useState('FLUX');
+  const [searchQuery, setSearchQuery] = useState('');
   const [view, setCurrentView] = useState<AppView>(() => getViewFromLocation());
   const [modalTask, setModalTask] = useState<Partial<Task> | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -116,6 +119,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     <AppContext.Provider value={{
       currentUser, setCurrentUser,
       currentProject, setCurrentProject,
+      searchQuery, setSearchQuery,
       view, setView,
       modalTask, isModalOpen,
       openTaskModal,
