@@ -1,9 +1,10 @@
 ---
+id: FLUX-23
 title: refine default popup ticket layout
-status: Todo
+status: Done
 priority: High
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 assignee: Agent
 tags:
   - bug
@@ -21,6 +22,20 @@ history:
     to: Todo
     user: Guy
     date: '2026-05-06T08:38:03.427Z'
+  - type: status_change
+    from: Todo
+    to: Done
+    user: Agent
+    date: '2026-05-06T11:50:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-06T11:50:00.000Z'
+    comment: >-
+      Refined the default popup modal layout without changing full view. The
+      popup header and content spacing are denser, the metadata uses a compact
+      wrapping row instead of a tall side stack, and the description area now
+      begins higher in the modal. Validated with a portal build and browser
+      measurement that the description starts within the upper half of the popup.
 ---
 ## Summary
 

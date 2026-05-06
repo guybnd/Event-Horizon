@@ -1,4 +1,5 @@
 ---
+id: FLUX-8
 title: Design agent skill document
 status: Done
 createdBy: Guy
@@ -41,7 +42,41 @@ history:
       `engine/src/skill-installer.ts`, exposed it through the workspace
       `install-skill` script, and installed the Copilot copy into
       `.github/skills/event-horizon/SKILL.md` for this repo.
-order: 0
+  - type: comment
+    user: Guy
+    date: '2026-05-06T10:05:03.013Z'
+    comment: >-
+      we should have some sort of UI solution for this, as its hidden from the
+      user. maybe also need to update the readme
+  - type: status_change
+    from: Done
+    to: Todo
+    user: Guy
+    date: '2026-05-06T10:05:07.599Z'
+  - type: status_change
+    from: Todo
+    to: Grooming
+    user: Guy
+    date: '2026-05-06T11:22:04.670Z'
+  - type: status_change
+    from: Grooming
+    to: Done
+    user: Agent
+    date: '2026-05-06T11:40:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-06T11:40:00.000Z'
+    comment: >-
+      Followed up on the reopen note by making the skill visible in-product.
+      Added a Settings panel section that shows skill status and paths, supports
+      workspace install/reinstall through the engine, and added README guidance
+      for both the Settings flow and the install command. Also tightened the
+      skill's own task-finish protocol around descriptive completion comments
+      and commit messages.
+order: 1
+priority: None
+effort: None
+implementationLink: ''
 ---
 ## Summary
 
