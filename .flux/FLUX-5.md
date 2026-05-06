@@ -1,8 +1,8 @@
 ---
 title: Docs section
-status: Todo
+status: In Progress
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 assignee: Agent
 tags:
   - feature
@@ -52,6 +52,20 @@ history:
     user: Guy
     date: '2026-05-06T13:42:22.429Z'
     comment: Changed effort from L to M.
+  - type: comment
+    user: Agent
+    date: '2026-05-06T14:15:33.918Z'
+    comment: >-
+      Plan: 1) add .docs indexing and CRUD APIs in the engine, 2) wire a Docs
+      top-level view with tree navigation and API client/types, 3) add
+      authoring, save flow, and wiki-link navigation, then validate portal and
+      engine builds.
+    id: c-2026-05-06t14-15-33-918z
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-06T14:15:33.918Z'
 order: 4
 priority: High
 effort: M

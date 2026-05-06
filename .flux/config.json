@@ -7,10 +7,10 @@
       "name": "Todo"
     },
     {
-      "name": "Require Input"
+      "name": "In Progress"
     },
     {
-      "name": "In Progress"
+      "name": "Require Input"
     },
     {
       "name": "Ready"
@@ -78,7 +78,7 @@
     {
       "name": "None",
       "icon": "ChevronDown",
-      "color": "text-purple-500"
+      "color": "text-blue-500"
     }
   ],
   "projects": [
