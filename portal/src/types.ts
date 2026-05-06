@@ -51,6 +51,17 @@ export interface PriorityDef {
   originalName?: string;
 }
 
+export type DocsEditPermissions = 'all' | 'specified';
+
+export interface Doc {
+  path: string;
+  title: string;
+  body: string;
+  slug: string;
+  directory: string;
+  order?: number;
+}
+
 export interface Config {
   columns: StatusDef[];
   hiddenStatuses: StatusDef[];
@@ -62,4 +73,6 @@ export interface Config {
   requireCommentOnStatusChange: boolean;
   requireInputStatus?: string;
   readyForMergeStatus?: string;
+  docsEditPermissions?: DocsEditPermissions;
+  docsAllowedUsers?: string[];
 }

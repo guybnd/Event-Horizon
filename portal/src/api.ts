@@ -1,6 +1,10 @@
-import type { Task, Config } from './types';
+import type { Task, Config, Doc } from './types';
 
 const API_URL = 'http://localhost:3001/api';
+
+function encodeDocPath(docPath: string) {
+  return docPath.split('/').map((segment) => encodeURIComponent(segment)).join('/');
+}
 
 export async function fetchTasks(): Promise<Task[]> {
   const res = await fetch(`${API_URL}/tasks`);
@@ -31,6 +35,45 @@ export async function fetchConfig(): Promise<Config> {
   const res = await fetch(`${API_URL}/config`);
   if (!res.ok) throw new Error('Failed to fetch config');
   return res.json();
+}
+
+export async function fetchDocs(): Promise<Doc[]> {
+  const res = await fetch(`${API_URL}/docs`);
+  if (!res.ok) throw new Error('Failed to fetch docs');
+  return res.json();
+}
+
+export async function fetchDoc(docPath: string): Promise<Doc> {
+  const res = await fetch(`${API_URL}/docs/${encodeDocPath(docPath)}`);
+  if (!res.ok) throw new Error('Failed to fetch doc');
+  return res.json();
+}
+
+export async function createDoc(payload: { path: string; title?: string; body?: string; order?: number }): Promise<Doc> {
+  const res = await fetch(`${API_URL}/docs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error('Failed to create doc');
+  return res.json();
+}
+
+export async function updateDoc(docPath: string, payload: { title?: string; body?: string; order?: number | null }): Promise<Doc> {
+  const res = await fetch(`${API_URL}/docs/${encodeDocPath(docPath)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error('Failed to save doc');
+  return res.json();
+}
+
+export async function deleteDoc(docPath: string): Promise<void> {
+  const res = await fetch(`${API_URL}/docs/${encodeDocPath(docPath)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error('Failed to delete doc');
 }
 
 export interface SkillStatus {

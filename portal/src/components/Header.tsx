@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, Search } from 'lucide-react';
+import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, Search, FileText } from 'lucide-react';
 import { useApp } from '../AppContext';
 import { fetchTasks } from '../api';
 import { getPromptableStatuses } from '../workflow';
@@ -28,6 +28,7 @@ export function Header() {
   } = useApp();
   const [promptCount, setPromptCount] = useState(0);
   const promptableStatuses = getPromptableStatuses(config);
+  const showTaskFilters = view === 'board' || view === 'backlog';
 
   useEffect(() => {
     fetchTasks()
@@ -66,6 +67,12 @@ export function Header() {
             <ListTodo className="w-4 h-4" /> Backlog
           </button>
           <button 
+            onClick={() => setView('docs')}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all cursor-pointer ${view === 'docs' ? 'bg-white dark:bg-[#2a2b36] shadow-sm text-primary' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+          >
+            <FileText className="w-4 h-4" /> Docs
+          </button>
+          <button 
             onClick={() => setView('settings')}
             className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all cursor-pointer ${view === 'settings' ? 'bg-white dark:bg-[#2a2b36] shadow-sm text-primary' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
           >
@@ -75,62 +82,66 @@ export function Header() {
       </div>
       
       <div className="flex items-center gap-3">
-        <div className="flex min-w-[260px] items-center gap-2 rounded-xl border border-gray-200 bg-white/70 px-3 py-2 text-sm text-gray-600 shadow-sm dark:border-white/10 dark:bg-white/5 dark:text-gray-300">
-          <Search className="h-4 w-4 text-gray-400" />
-          <input
-            value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
-            placeholder="Search titles and descriptions"
-            className="w-full bg-transparent outline-none placeholder:text-gray-400"
-          />
-        </div>
-        <select
-          value={sortOption}
-          onChange={(event) => setSortOption(event.target.value as any)}
-          className="rounded-xl border border-gray-200 bg-white/70 px-3 py-2 text-sm text-gray-600 shadow-sm outline-none dark:border-white/10 dark:bg-white/5 dark:text-gray-300"
-        >
-          <option value="default">Sort: Default</option>
-          <option value="priority">Sort: Priority</option>
-          <option value="updated">Sort: Recently updated</option>
-          <option value="assignee">Sort: Assignee</option>
-        </select>
-        <select
-          value={filterAssignee}
-          onChange={(event) => setFilterAssignee(event.target.value)}
-          className="rounded-xl border border-gray-200 bg-white/70 px-3 py-2 text-sm text-gray-600 shadow-sm outline-none dark:border-white/10 dark:bg-white/5 dark:text-gray-300"
-        >
-          <option value="all">Assignee: All</option>
-          {config?.users.map((user) => (
-            <option key={user.name} value={user.name}>{user.name}</option>
-          ))}
-          <option value="unassigned">Unassigned</option>
-        </select>
-        <select
-          value={filterPriority}
-          onChange={(event) => setFilterPriority(event.target.value)}
-          className="rounded-xl border border-gray-200 bg-white/70 px-3 py-2 text-sm text-gray-600 shadow-sm outline-none dark:border-white/10 dark:bg-white/5 dark:text-gray-300"
-        >
-          <option value="all">Priority: All</option>
-          {config?.priorities.map((priority) => (
-            <option key={priority.name} value={priority.name}>{priority.name}</option>
-          ))}
-        </select>
-        <select
-          value={filterTag}
-          onChange={(event) => setFilterTag(event.target.value)}
-          className="rounded-xl border border-gray-200 bg-white/70 px-3 py-2 text-sm text-gray-600 shadow-sm outline-none dark:border-white/10 dark:bg-white/5 dark:text-gray-300"
-        >
-          <option value="all">Tag: All</option>
-          {config?.tags.map((tag) => (
-            <option key={tag.name} value={tag.name}>{tag.name}</option>
-          ))}
-        </select>
-        <button
-          onClick={clearTaskFilters}
-          className="rounded-xl border border-gray-200 bg-white/70 px-3 py-2 text-sm text-gray-500 shadow-sm transition-colors hover:bg-gray-100 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
-        >
-          Clear
-        </button>
+        {showTaskFilters && (
+          <>
+            <div className="flex min-w-[260px] items-center gap-2 rounded-xl border border-gray-200 bg-white/70 px-3 py-2 text-sm text-gray-600 shadow-sm dark:border-white/10 dark:bg-white/5 dark:text-gray-300">
+              <Search className="h-4 w-4 text-gray-400" />
+              <input
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="Search titles and descriptions"
+                className="w-full bg-transparent outline-none placeholder:text-gray-400"
+              />
+            </div>
+            <select
+              value={sortOption}
+              onChange={(event) => setSortOption(event.target.value as any)}
+              className="rounded-xl border border-gray-200 bg-white/70 px-3 py-2 text-sm text-gray-600 shadow-sm outline-none dark:border-white/10 dark:bg-white/5 dark:text-gray-300"
+            >
+              <option value="default">Sort: Default</option>
+              <option value="priority">Sort: Priority</option>
+              <option value="updated">Sort: Recently updated</option>
+              <option value="assignee">Sort: Assignee</option>
+            </select>
+            <select
+              value={filterAssignee}
+              onChange={(event) => setFilterAssignee(event.target.value)}
+              className="rounded-xl border border-gray-200 bg-white/70 px-3 py-2 text-sm text-gray-600 shadow-sm outline-none dark:border-white/10 dark:bg-white/5 dark:text-gray-300"
+            >
+              <option value="all">Assignee: All</option>
+              {config?.users.map((user) => (
+                <option key={user.name} value={user.name}>{user.name}</option>
+              ))}
+              <option value="unassigned">Unassigned</option>
+            </select>
+            <select
+              value={filterPriority}
+              onChange={(event) => setFilterPriority(event.target.value)}
+              className="rounded-xl border border-gray-200 bg-white/70 px-3 py-2 text-sm text-gray-600 shadow-sm outline-none dark:border-white/10 dark:bg-white/5 dark:text-gray-300"
+            >
+              <option value="all">Priority: All</option>
+              {config?.priorities.map((priority) => (
+                <option key={priority.name} value={priority.name}>{priority.name}</option>
+              ))}
+            </select>
+            <select
+              value={filterTag}
+              onChange={(event) => setFilterTag(event.target.value)}
+              className="rounded-xl border border-gray-200 bg-white/70 px-3 py-2 text-sm text-gray-600 shadow-sm outline-none dark:border-white/10 dark:bg-white/5 dark:text-gray-300"
+            >
+              <option value="all">Tag: All</option>
+              {config?.tags.map((tag) => (
+                <option key={tag.name} value={tag.name}>{tag.name}</option>
+              ))}
+            </select>
+            <button
+              onClick={clearTaskFilters}
+              className="rounded-xl border border-gray-200 bg-white/70 px-3 py-2 text-sm text-gray-500 shadow-sm transition-colors hover:bg-gray-100 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
+            >
+              Clear
+            </button>
+          </>
+        )}
         <button
           onClick={() => setView('board')}
           className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-left transition-colors ${promptCount > 0 ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300' : 'border-gray-200 bg-white/60 text-gray-500 dark:border-white/10 dark:bg-white/5 dark:text-gray-400'}`}

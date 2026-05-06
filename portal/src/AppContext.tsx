@@ -3,18 +3,20 @@ import type { ReactNode } from 'react';
 import type { Task, Config } from './types';
 import { fetchConfig, fetchTasks, saveConfig as apiSaveConfig } from './api';
 
-type AppView = 'board' | 'backlog' | 'settings';
+type AppView = 'board' | 'backlog' | 'docs' | 'settings';
 export type TaskSortOption = 'default' | 'priority' | 'updated' | 'assignee';
 
 const VIEW_PATHS: Record<AppView, string> = {
   board: '/board',
   backlog: '/backlog',
+  docs: '/docs',
   settings: '/settings',
 };
 
 function getViewFromLocation(): AppView {
   const path = window.location.pathname.toLowerCase();
   if (path === '/backlog') return 'backlog';
+  if (path === '/docs') return 'docs';
   if (path === '/settings') return 'settings';
   return 'board';
 }

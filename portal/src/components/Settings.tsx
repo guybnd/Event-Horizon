@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useApp } from '../AppContext';
 import { Save, Plus, X, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal } from 'lucide-react';
 import { bulkRename, fetchSkillStatus, installWorkspaceSkill } from '../api';
-import type { TagDef, StatusDef, UserDef, PriorityDef } from '../types';
+import type { TagDef, StatusDef, UserDef, PriorityDef, DocsEditPermissions } from '../types';
 import { DEFAULT_READY_FOR_MERGE_STATUS, DEFAULT_REQUIRE_INPUT_STATUS } from '../workflow';
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
@@ -216,6 +216,8 @@ export function Settings() {
   const [requireComment, setRequireComment] = useState(true);
   const [requireInputStatus, setRequireInputStatus] = useState(DEFAULT_REQUIRE_INPUT_STATUS);
   const [readyForMergeStatus, setReadyForMergeStatus] = useState(DEFAULT_READY_FOR_MERGE_STATUS);
+  const [docsEditPermissions, setDocsEditPermissions] = useState<DocsEditPermissions>('all');
+  const [docsAllowedUsers, setDocsAllowedUsers] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [workflowInstalled, setWorkflowInstalled] = useState(false);
   const [skillInstalled, setSkillInstalled] = useState(false);
@@ -239,6 +241,8 @@ export function Settings() {
       setRequireComment(config.requireCommentOnStatusChange);
       setRequireInputStatus(config.requireInputStatus || DEFAULT_REQUIRE_INPUT_STATUS);
       setReadyForMergeStatus(config.readyForMergeStatus || DEFAULT_READY_FOR_MERGE_STATUS);
+      setDocsEditPermissions(config.docsEditPermissions || 'all');
+      setDocsAllowedUsers(config.docsAllowedUsers || []);
     }
   }, [config]);
 
@@ -344,6 +348,11 @@ export function Settings() {
       const cleanHidden = nextHiddenStatuses.filter(c => c.name.trim()).map(({originalName, ...rest}) => rest);
       const cleanUsers = users.filter(c => c.name.trim()).map(({originalName, ...rest}) => rest);
       const cleanPriorities = priorities.filter(p => p.name.trim()).map(({ originalName, ...rest }) => rest);
+      const cleanDocsAllowedUsers = docsEditPermissions === 'specified'
+        ? docsAllowedUsers
+            .map((userName) => userRenames[userName] || userName)
+            .filter((userName) => cleanUsers.some((user) => user.name === userName))
+        : [];
 
       await saveConfig({
         columns: cleanColumns,
@@ -355,7 +364,9 @@ export function Settings() {
         enableBacklogScreen: enableBacklog,
         requireCommentOnStatusChange: requireComment,
         requireInputStatus: normalizedRequireInputStatus,
-        readyForMergeStatus: normalizedReadyForMergeStatus
+        readyForMergeStatus: normalizedReadyForMergeStatus,
+        docsEditPermissions,
+        docsAllowedUsers: cleanDocsAllowedUsers
       });
       
       triggerRefresh(); // Refresh tasks cache on frontend to show renamed items
@@ -409,7 +420,9 @@ export function Settings() {
     enableBacklogScreen: enableBacklog,
     requireCommentOnStatusChange: requireComment,
     requireInputStatus: normalizedRequireInputStatus,
-    readyForMergeStatus: normalizedReadyForMergeStatus
+    readyForMergeStatus: normalizedReadyForMergeStatus,
+    docsEditPermissions,
+    docsAllowedUsers: docsEditPermissions === 'specified' ? docsAllowedUsers : []
   });
 
   const originalPayload = JSON.stringify({
@@ -422,7 +435,9 @@ export function Settings() {
     enableBacklogScreen: config.enableBacklogScreen,
     requireCommentOnStatusChange: config.requireCommentOnStatusChange,
     requireInputStatus: config.requireInputStatus || DEFAULT_REQUIRE_INPUT_STATUS,
-    readyForMergeStatus: config.readyForMergeStatus || DEFAULT_READY_FOR_MERGE_STATUS
+    readyForMergeStatus: config.readyForMergeStatus || DEFAULT_READY_FOR_MERGE_STATUS,
+    docsEditPermissions: config.docsEditPermissions || 'all',
+    docsAllowedUsers: config.docsEditPermissions === 'specified' ? (config.docsAllowedUsers || []) : []
   });
 
   const isDirty = currentSavedPayload !== originalPayload;
@@ -583,6 +598,66 @@ export function Settings() {
               className="w-full bg-gray-50 dark:bg-black/20 border border-gray-200 dark:border-white/10 rounded-lg px-3 py-2 outline-none focus:border-primary text-sm font-medium"
               value={projects} onChange={e => setProjects(e.target.value)} placeholder="FLUX, DEV..."
             />
+          </div>
+
+          <div className="col-span-2 rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
+            <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Docs Permissions</h3>
+            <p className="text-xs text-gray-500 mb-5">Control who can create, edit, and delete markdown files in the Docs screen.</p>
+
+            <div className="grid gap-6 lg:grid-cols-[220px,minmax(0,1fr)]">
+              <div>
+                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Edit Access</label>
+                <select
+                  value={docsEditPermissions}
+                  onChange={(event) => setDocsEditPermissions(event.target.value as DocsEditPermissions)}
+                  className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-black/20"
+                >
+                  <option value="all">All users</option>
+                  <option value="specified">Only specified users</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Allowed Editors</label>
+                {users.filter((user) => user.name.trim()).length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-gray-200 px-4 py-3 text-sm text-gray-500 dark:border-white/10">
+                    Add at least one user before restricting docs editing.
+                  </div>
+                ) : (
+                  <div className={`flex flex-wrap gap-2 rounded-xl border border-gray-200 bg-white p-3 dark:border-white/10 dark:bg-black/20 ${docsEditPermissions === 'all' ? 'opacity-60' : ''}`}>
+                    {users.filter((user) => user.name.trim()).map((user) => {
+                      const isSelected = docsAllowedUsers.includes(user.name);
+                      return (
+                        <label
+                          key={user.name}
+                          className={`flex cursor-pointer items-center gap-2 rounded-full border px-3 py-2 text-sm font-medium transition-colors ${isSelected ? 'border-primary bg-primary/10 text-primary' : 'border-gray-200 text-gray-600 dark:border-white/10 dark:text-gray-300'}`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            disabled={docsEditPermissions === 'all'}
+                            onChange={(event) => {
+                              if (event.target.checked) {
+                                setDocsAllowedUsers((current) => [...current, user.name]);
+                              } else {
+                                setDocsAllowedUsers((current) => current.filter((name) => name !== user.name));
+                              }
+                            }}
+                            className="h-4 w-4 rounded border-gray-300"
+                          />
+                          {user.name}
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+                <p className="mt-2 text-xs text-gray-500">
+                  {docsEditPermissions === 'all'
+                    ? 'Everyone can edit docs. The selected list is ignored.'
+                    : 'Only the checked users can edit docs. Other users see a read-only experience.'}
+                </p>
+              </div>
+            </div>
           </div>
         </div>
 

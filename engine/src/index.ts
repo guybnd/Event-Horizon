@@ -13,8 +13,23 @@ app.use(express.json());
 const FLUX_DIR = path.join(__dirname, '../../.flux');
 const CONFIG_FILE = path.join(FLUX_DIR, 'config.json');
 const REPO_ROOT = path.resolve(FLUX_DIR, '..');
+const DOCS_DIR = path.join(REPO_ROOT, '.docs');
+
+interface DocRecord {
+  path: string;
+  title: string;
+  body: string;
+  slug: string;
+  directory: string;
+  order?: number;
+}
+
+interface StoredDoc extends DocRecord {
+  _path: string;
+}
 
 let tasksCache: Record<string, any> = {};
+let docsCache: Record<string, StoredDoc> = {};
 let configCache: any = {
   columns: [{ name: 'Todo' }, { name: 'In Progress' }, { name: 'Done' }],
   hiddenStatuses: [{ name: 'Backlog' }],
@@ -35,7 +50,9 @@ let configCache: any = {
   enableBacklogScreen: true,
   requireCommentOnStatusChange: true,
   requireInputStatus: 'Require Input',
-  readyForMergeStatus: 'Ready'
+  readyForMergeStatus: 'Ready',
+  docsEditPermissions: 'all',
+  docsAllowedUsers: [],
 };
 
 function buildCommentId(seed: string, usedIds: Set<string>) {
@@ -276,6 +293,190 @@ function isTopLevelTaskFile(filePath: string) {
   return filePath.endsWith('.md') && path.dirname(filePath) === FLUX_DIR;
 }
 
+function normalizeRelativePath(filePath: string) {
+  return filePath.split(path.sep).join('/');
+}
+
+function normalizeDocPathInput(value: unknown) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value.replace(/\\/g, '/').trim().replace(/^\/+|\/+$/g, '');
+  if (!normalized) {
+    return null;
+  }
+
+  const withoutExtension = normalized.toLowerCase().endsWith('.md')
+    ? normalized.slice(0, -3)
+    : normalized;
+  const segments = withoutExtension.split('/').filter(Boolean);
+
+  if (segments.length === 0 || segments.some((segment) => segment === '.' || segment === '..')) {
+    return null;
+  }
+
+  return segments.join('/');
+}
+
+function getDocPathFromFile(filePath: string) {
+  const relativePath = normalizeRelativePath(path.relative(DOCS_DIR, filePath));
+
+  if (!relativePath || relativePath.startsWith('..')) {
+    return null;
+  }
+
+  return normalizeDocPathInput(relativePath);
+}
+
+function getDocFilePath(docPath: string) {
+  return path.join(DOCS_DIR, ...docPath.split('/')) + '.md';
+}
+
+function isDocFile(filePath: string) {
+  return filePath.toLowerCase().endsWith('.md') && getDocPathFromFile(filePath) !== null;
+}
+
+function titleFromDocPath(docPath: string) {
+  const basename = docPath.split('/').filter(Boolean).pop() || 'untitled';
+  return basename
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+function slugifyDocValue(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/\.md$/i, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function parseDocOrder(value: unknown) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsedValue = Number(value);
+    if (Number.isFinite(parsedValue)) {
+      return parsedValue;
+    }
+  }
+
+  return undefined;
+}
+
+function serializeDoc(doc: StoredDoc): DocRecord {
+  const { _path, ...publicDoc } = doc;
+  return publicDoc;
+}
+
+function getDocPathFromRequestPath(requestPath: string) {
+  const prefix = '/api/docs/';
+
+  if (!requestPath.startsWith(prefix)) {
+    return null;
+  }
+
+  try {
+    return normalizeDocPathInput(decodeURIComponent(requestPath.slice(prefix.length)));
+  } catch {
+    return null;
+  }
+}
+
+function buildDocFrontmatter(title: string, order: number | undefined) {
+  return {
+    title,
+    ...(order !== undefined ? { order } : {}),
+  };
+}
+
+function sortDocs(docs: DocRecord[]) {
+  return [...docs].sort((left, right) => left.path.localeCompare(right.path, undefined, { sensitivity: 'base' }));
+}
+
+async function writeDocFile(filePath: string, title: string, order: number | undefined, body: string) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const fileContent = matter.stringify(body, buildDocFrontmatter(title, order));
+  await fs.writeFile(filePath, fileContent, 'utf-8');
+}
+
+async function removeEmptyDocDirectories(startingFilePath: string) {
+  let currentDirectory = path.dirname(startingFilePath);
+  const docsRoot = path.resolve(DOCS_DIR);
+
+  while (path.resolve(currentDirectory) !== docsRoot) {
+    const entries = await fs.readdir(currentDirectory);
+    if (entries.length > 0) {
+      return;
+    }
+
+    await fs.rmdir(currentDirectory);
+    currentDirectory = path.dirname(currentDirectory);
+  }
+}
+
+async function loadDoc(filePath: string) {
+  if (!isDocFile(filePath)) return;
+
+  try {
+    const content = await fs.readFile(filePath, 'utf-8');
+    const parsed = matter(content);
+    const docPath = getDocPathFromFile(filePath);
+
+    if (!docPath) {
+      return;
+    }
+
+    const title = typeof parsed.data.title === 'string' && parsed.data.title.trim()
+      ? parsed.data.title.trim()
+      : titleFromDocPath(docPath);
+    const order = parseDocOrder(parsed.data.order);
+    const directory = docPath.includes('/') ? docPath.slice(0, docPath.lastIndexOf('/')) : '';
+    const slugSource = docPath.split('/').filter(Boolean).pop() || docPath;
+
+    docsCache[docPath] = {
+      path: docPath,
+      title,
+      body: parsed.content.replace(/\r\n/g, '\n'),
+      slug: slugifyDocValue(slugSource),
+      directory,
+      ...(order !== undefined ? { order } : {}),
+      _path: filePath,
+    };
+
+    console.log(`Loaded doc: ${docPath}`);
+  } catch (error) {
+    console.error(`Failed to load doc ${filePath}:`, error);
+  }
+}
+
+async function loadDocsDirectory(directoryPath: string) {
+  try {
+    const entries = await fs.readdir(directoryPath, { withFileTypes: true });
+
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) {
+        continue;
+      }
+
+      const entryPath = path.join(directoryPath, entry.name);
+      if (entry.isDirectory()) {
+        await loadDocsDirectory(entryPath);
+      } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
+        await loadDoc(entryPath);
+      }
+    }
+  } catch (error: any) {
+    if (error.code !== 'ENOENT') {
+      console.error(`Failed to read docs directory ${directoryPath}:`, error);
+    }
+  }
+}
+
 async function loadTask(filePath: string) {
   if (!isTopLevelTaskFile(filePath)) return;
 
@@ -317,6 +518,8 @@ async function loadTask(filePath: string) {
 async function initDir() {
   try {
     await fs.mkdir(FLUX_DIR, { recursive: true });
+    await fs.mkdir(DOCS_DIR, { recursive: true });
+    await loadDocsDirectory(DOCS_DIR);
   } catch {
     // ignore
   }
@@ -324,7 +527,7 @@ async function initDir() {
 }
 
 initDir().then(() => {
-  const watcher = chokidar.watch(FLUX_DIR, {
+  const fluxWatcher = chokidar.watch(FLUX_DIR, {
     ignored: (filePath: string) => {
       const basename = path.basename(filePath);
       return basename.startsWith('.') && basename !== '.flux';
@@ -332,7 +535,7 @@ initDir().then(() => {
     persistent: true
   });
 
-  watcher
+  fluxWatcher
     .on('add', (filePath) => {
       if (isTopLevelTaskFile(filePath)) {
         void loadTask(filePath);
@@ -357,10 +560,149 @@ initDir().then(() => {
         console.log(`Removed task: ${id}`);
       }
     });
+
+  const docsWatcher = chokidar.watch(DOCS_DIR, {
+    ignored: (filePath: string) => {
+      const basename = path.basename(filePath);
+      return basename.startsWith('.') && basename !== '.docs';
+    },
+    persistent: true
+  });
+
+  docsWatcher
+    .on('add', (filePath) => {
+      if (isDocFile(filePath)) {
+        void loadDoc(filePath);
+      }
+    })
+    .on('change', (filePath) => {
+      if (isDocFile(filePath)) {
+        void loadDoc(filePath);
+      }
+    })
+    .on('unlink', (filePath) => {
+      const docPath = getDocPathFromFile(filePath);
+      if (!docPath) {
+        return;
+      }
+
+      delete docsCache[docPath];
+      console.log(`Removed doc: ${docPath}`);
+    });
 });
 
 app.get('/api/tasks', (req, res) => {
   res.json(Object.values(tasksCache));
+});
+
+app.get('/api/docs', (req, res) => {
+  res.json(sortDocs(Object.values(docsCache).map(serializeDoc)));
+});
+
+app.post('/api/docs', async (req, res) => {
+  const docPath = normalizeDocPathInput(req.body?.path);
+
+  if (!docPath) {
+    return res.status(400).json({ error: 'Invalid doc path' });
+  }
+
+  if (docsCache[docPath]) {
+    return res.status(409).json({ error: 'Doc already exists' });
+  }
+
+  const title = typeof req.body?.title === 'string' && req.body.title.trim()
+    ? req.body.title.trim()
+    : titleFromDocPath(docPath);
+  const order = parseDocOrder(req.body?.order);
+  const body = typeof req.body?.body === 'string' ? req.body.body.replace(/\r\n/g, '\n') : '';
+  const filePath = getDocFilePath(docPath);
+
+  try {
+    await writeDocFile(filePath, title, order, body);
+    await loadDoc(filePath);
+
+    const createdDoc = docsCache[docPath];
+    if (!createdDoc) {
+      throw new Error('Doc was not loaded after creation');
+    }
+
+    res.status(201).json(serializeDoc(createdDoc));
+  } catch (error) {
+    console.error('Failed to create doc:', error);
+    res.status(500).json({ error: 'Failed to create doc' });
+  }
+});
+
+app.get(/^\/api\/docs\/.+$/, (req, res) => {
+  const docPath = getDocPathFromRequestPath(req.path);
+
+  if (!docPath) {
+    return res.status(400).json({ error: 'Invalid doc path' });
+  }
+
+  const doc = docsCache[docPath];
+  if (!doc) {
+    return res.status(404).json({ error: 'Doc not found' });
+  }
+
+  res.json(serializeDoc(doc));
+});
+
+app.put(/^\/api\/docs\/.+$/, async (req, res) => {
+  const docPath = getDocPathFromRequestPath(req.path);
+
+  if (!docPath) {
+    return res.status(400).json({ error: 'Invalid doc path' });
+  }
+
+  const existingDoc = docsCache[docPath];
+  if (!existingDoc) {
+    return res.status(404).json({ error: 'Doc not found' });
+  }
+
+  const title = typeof req.body?.title === 'string' && req.body.title.trim()
+    ? req.body.title.trim()
+    : existingDoc.title;
+  const order = req.body?.order === null ? undefined : parseDocOrder(req.body?.order) ?? existingDoc.order;
+  const body = typeof req.body?.body === 'string' ? req.body.body.replace(/\r\n/g, '\n') : existingDoc.body;
+
+  try {
+    await writeDocFile(existingDoc._path, title, order, body);
+    await loadDoc(existingDoc._path);
+
+    const updatedDoc = docsCache[docPath];
+    if (!updatedDoc) {
+      throw new Error('Doc was not loaded after update');
+    }
+
+    res.json(serializeDoc(updatedDoc));
+  } catch (error) {
+    console.error(`Failed to save doc ${docPath}:`, error);
+    res.status(500).json({ error: 'Failed to save doc' });
+  }
+});
+
+app.delete(/^\/api\/docs\/.+$/, async (req, res) => {
+  const docPath = getDocPathFromRequestPath(req.path);
+
+  if (!docPath) {
+    return res.status(400).json({ error: 'Invalid doc path' });
+  }
+
+  const doc = docsCache[docPath];
+  if (!doc) {
+    return res.status(404).json({ error: 'Doc not found' });
+  }
+
+  try {
+    await fs.unlink(doc._path);
+    delete docsCache[docPath];
+    await removeEmptyDocDirectories(doc._path);
+    res.json({ success: true });
+  } catch (error) {
+    console.error(`Failed to delete doc ${docPath}:`, error);
+    res.status(500).json({ error: 'Failed to delete doc' });
+  }
 });
 
 app.get('/api/skill/status', async (req, res) => {
