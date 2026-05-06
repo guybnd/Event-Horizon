@@ -1,8 +1,8 @@
 ---
 title: Add priority field to tickets
-status: In Progress
+status: Done
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 assignee: Agent
 tags:
   - feature
@@ -13,6 +13,19 @@ history:
     comment: >-
       Fleshed out with full spec covering config, data model, card UI, and modal
       UI. Ready to implement.
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-05-06T22:55:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-06T22:55:00.000Z'
+    comment: >-
+      Closing this out after verifying the implemented priority flow in code.
+      Priorities now exist in config and settings, persist through the engine,
+      render on cards, support card-level quick changes, and are editable from
+      the ticket modal.
 order: 1
 ---
 ## Summary

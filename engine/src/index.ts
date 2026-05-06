@@ -74,8 +74,12 @@ async function saveConfig(newConfig: any) {
   await fs.writeFile(CONFIG_FILE, JSON.stringify(configCache, null, 2), 'utf-8');
 }
 
+function isTopLevelTaskFile(filePath: string) {
+  return filePath.endsWith('.md') && path.dirname(filePath) === FLUX_DIR;
+}
+
 async function loadTask(filePath: string) {
-  if (!filePath.endsWith('.md')) return;
+  if (!isTopLevelTaskFile(filePath)) return;
   try {
     const content = await fs.readFile(filePath, 'utf-8');
     const parsed = matter(content);
@@ -114,16 +118,17 @@ initDir().then(() => {
 
   watcher
     .on('add', (filePath) => {
-      if (filePath.endsWith('.md')) loadTask(filePath);
+      if (isTopLevelTaskFile(filePath)) loadTask(filePath);
       if (filePath === CONFIG_FILE) loadConfig();
     })
     .on('change', (filePath) => {
-      if (filePath.endsWith('.md')) loadTask(filePath);
+      if (isTopLevelTaskFile(filePath)) loadTask(filePath);
       if (filePath === CONFIG_FILE) loadConfig();
     })
     .on('unlink', (filePath) => {
-      if (filePath.endsWith('.md')) {
-        const id = path.basename(filePath, '.md');
+      if (isTopLevelTaskFile(filePath)) {
+        const taskEntry = Object.entries(tasksCache).find(([, task]) => task._path === filePath);
+        const id = taskEntry?.[0] || path.basename(filePath, '.md');
         delete tasksCache[id];
         console.log(`Removed task: ${id}`);
       }

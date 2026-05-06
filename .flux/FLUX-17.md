@@ -1,8 +1,8 @@
 ---
 title: Full screen ticket view
-status: In Progress
+status: Done
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 assignee: Agent
 tags:
   - feature
@@ -18,6 +18,19 @@ history:
     to: In Progress
     user: Guy
     date: '2026-05-06T07:59:32.144Z'
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-05-06T22:56:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-06T22:56:00.000Z'
+    comment: >-
+      Closing this out after verifying the full-view implementation in
+      `TaskModal`. The current flow supports full-view toggle, back-to-board
+      navigation, Escape handling, and full/popup URL state while preserving the
+      ticket editing and comment functionality.
 order: 0
 ---
 ## Summary

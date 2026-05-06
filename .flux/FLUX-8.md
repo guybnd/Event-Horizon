@@ -1,8 +1,8 @@
 ---
 title: Design agent skill document
-status: Todo
+status: Done
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 assignee: unassigned
 tags:
   - mvp
@@ -27,6 +27,20 @@ history:
     to: Todo
     user: Guy
     date: '2026-05-06T07:31:53.477Z'
+  - type: status_change
+    from: Todo
+    to: Done
+    user: Agent
+    date: '2026-05-06T23:05:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-06T23:05:00.000Z'
+    comment: >-
+      Implemented the first-pass skill integration. Added the source skill doc
+      under `.flux/skills/event-horizon-agent.md`, added an installer CLI at
+      `engine/src/skill-installer.ts`, exposed it through the workspace
+      `install-skill` script, and installed the Copilot copy into
+      `.github/skills/event-horizon/SKILL.md` for this repo.
 order: 0
 ---
 ## Summary
