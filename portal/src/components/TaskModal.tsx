@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Rnd } from 'react-rnd';
-import { X, Save, MessageSquare, ArrowRight, Bold, Italic, Link as LinkIcon, List, Code, Maximize2, Minimize2, PanelRight, SendHorizontal, Trash2 } from 'lucide-react';
+import { X, Save, MessageSquare, ArrowRight, Bold, Italic, Link as LinkIcon, List, Code, Maximize2, Minimize2, PanelRight, SendHorizontal, Trash2, AlertCircle } from 'lucide-react';
 import { useApp } from '../AppContext';
 import { createTask, updateTask, deleteTask } from '../api';
 import type { TagDef } from '../types';
@@ -87,6 +87,7 @@ export function TaskModal() {
   const [isFullscreen, setIsFullscreen] = useState(false);
   
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const commentRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (modalTask) {
@@ -107,6 +108,9 @@ export function TaskModal() {
   const allStatuses = [...config.columns, ...config.hiddenStatuses].map(s => s.name);
   const allUsers = config.users.map(u => u.name);
   const allTags = config.tags.map(t => t.name);
+
+  const isRequireInput = status === 'Require Input';
+  const lastComment = modalTask?.history?.slice().reverse().find(h => h.type === 'comment');
 
   const originalPayload = JSON.stringify({
     title: modalTask?.title || '',
@@ -280,6 +284,18 @@ export function TaskModal() {
         
         <div className={`flex-1 min-h-0 overflow-y-auto ${isFullscreen ? 'p-0' : 'p-6'} flex flex-col gap-6 text-sm text-gray-800 dark:text-gray-200`}>
           
+          {/* Require Input Banner */}
+          {!isFullscreen && isRequireInput && lastComment && (
+            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-500/30 rounded-xl p-4 flex gap-3 animate-[fadeIn_0.3s_ease-out]">
+              <AlertCircle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold text-amber-800 dark:text-amber-300 text-xs uppercase tracking-wider mb-1">Response Needed</p>
+                <p className="text-sm text-amber-700 dark:text-amber-400 whitespace-pre-wrap">{lastComment.comment}</p>
+                <p className="text-[10px] text-amber-500/70 mt-1.5">{lastComment.user} · {new Date(lastComment.date).toLocaleString()}</p>
+              </div>
+            </div>
+          )}
+
           {/* Metadata Section - Rendered either as a sidebar or wide horizontal bar */}
           {!isFullscreen && (
             <div className={isWideMode ? "flex gap-4 bg-gray-50 dark:bg-black/10 p-4 rounded-xl border border-gray-100 dark:border-white/5 items-center" : "grid grid-cols-3 gap-6"}>
@@ -407,8 +423,10 @@ export function TaskModal() {
 
               <div className="relative">
                 <textarea 
+                  ref={commentRef}
+                  autoFocus={isRequireInput}
                   className="w-full bg-white dark:bg-black/40 border border-gray-200 dark:border-white/10 rounded-xl px-4 py-3 pb-12 outline-none focus:border-primary resize-none text-sm h-28 placeholder-gray-400"
-                  value={newComment} onChange={e => setNewComment(e.target.value)} placeholder="Add a comment..."
+                  value={newComment} onChange={e => setNewComment(e.target.value)} placeholder={isRequireInput ? 'Type your response...' : 'Add a comment...'}
                 />
                 <div className="absolute bottom-3 right-3 flex items-center">
                   <button 

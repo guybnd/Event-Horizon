@@ -1,8 +1,12 @@
 import { useState, useEffect } from 'react';
 import { useApp } from '../AppContext';
-import { Save, Plus, X } from 'lucide-react';
+import { Save, Plus, X, GripVertical } from 'lucide-react';
 import { bulkRename } from '../api';
 import type { TagDef, StatusDef, UserDef } from '../types';
+import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
+import type { DragEndEvent } from '@dnd-kit/core';
+import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 
 const COLOR_PALETTE = [
   'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300',
@@ -60,20 +64,66 @@ const TagEditor = ({ items, setItems }: { items: TagDef[], setItems: (items: Tag
   );
 };
 
-const SimpleEditor = ({ items, setItems, placeholder }: { items: {name: string, originalName?: string}[], setItems: (items: any[]) => void, placeholder: string }) => {
+function SortableRow({ id, children }: { id: string, children: React.ReactNode }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  };
+  return (
+    <div ref={setNodeRef} style={style} className="flex gap-2 items-center">
+      <button {...listeners} {...attributes} className="cursor-grab active:cursor-grabbing p-1 text-gray-300 hover:text-gray-500 dark:text-gray-600 dark:hover:text-gray-400 transition-colors">
+        <GripVertical className="w-4 h-4" />
+      </button>
+      {children}
+    </div>
+  );
+}
+
+const SimpleEditor = ({ items, setItems, placeholder, sortable = false }: { items: {name: string, originalName?: string}[], setItems: (items: any[]) => void, placeholder: string, sortable?: boolean }) => {
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const oldIndex = items.findIndex((_, i) => `item-${i}` === active.id);
+    const newIndex = items.findIndex((_, i) => `item-${i}` === over.id);
+    if (oldIndex !== -1 && newIndex !== -1) {
+      setItems(arrayMove(items, oldIndex, newIndex));
+    }
+  };
+
+  const rows = items.map((item, idx) => {
+    const row = (
+      <>
+        <input 
+          value={item.name} 
+          onChange={e => { const newArr = [...items]; newArr[idx].name = e.target.value; setItems(newArr); }}
+          className="flex-1 bg-gray-50 dark:bg-black/20 border border-gray-200 dark:border-white/10 rounded-lg px-3 py-1.5 outline-none focus:border-primary text-sm font-medium"
+          placeholder={placeholder}
+        />
+        <button onClick={() => setItems(items.filter((_, i) => i !== idx))} className="p-1.5 text-gray-400 hover:text-red-500 rounded"><X className="w-4 h-4" /></button>
+      </>
+    );
+
+    if (sortable) {
+      return <SortableRow key={`item-${idx}`} id={`item-${idx}`}>{row}</SortableRow>;
+    }
+    return <div key={idx} className="flex gap-2 items-center">{row}</div>;
+  });
+
+  const content = sortable ? (
+    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+      <SortableContext items={items.map((_, i) => `item-${i}`)} strategy={verticalListSortingStrategy}>
+        {rows}
+      </SortableContext>
+    </DndContext>
+  ) : <>{rows}</>;
+
   return (
     <div className="space-y-2">
-      {items.map((item, idx) => (
-        <div key={idx} className="flex gap-2 items-center">
-          <input 
-            value={item.name} 
-            onChange={e => { const newArr = [...items]; newArr[idx].name = e.target.value; setItems(newArr); }}
-            className="flex-1 bg-gray-50 dark:bg-black/20 border border-gray-200 dark:border-white/10 rounded-lg px-3 py-1.5 outline-none focus:border-primary text-sm font-medium"
-            placeholder={placeholder}
-          />
-          <button onClick={() => setItems(items.filter((_, i) => i !== idx))} className="p-1.5 text-gray-400 hover:text-red-500 rounded"><X className="w-4 h-4" /></button>
-        </div>
-      ))}
+      {content}
       <button onClick={() => setItems([...items, { name: '' }])} className="flex items-center gap-1 text-xs font-bold text-primary hover:text-primary-hover px-2 py-1"><Plus className="w-3 h-3" /> Add Item</button>
     </div>
   );
@@ -199,7 +249,7 @@ export function Settings() {
           <div>
             <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Board Columns</h3>
             <p className="text-xs text-gray-500 mb-4">Statuses that appear as lanes on your Kanban board.</p>
-            <SimpleEditor items={columns} setItems={setColumns as any} placeholder="Column Status Name" />
+            <SimpleEditor items={columns} setItems={setColumns as any} placeholder="Column Status Name" sortable />
           </div>
           <div>
             <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Hidden Statuses</h3>

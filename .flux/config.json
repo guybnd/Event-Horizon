@@ -11,6 +11,12 @@
     },
     {
       "name": "Require Input"
+    },
+    {
+      "name": "Grooming"
+    },
+    {
+      "name": "New Column"
     }
   ],
   "hiddenStatuses": [

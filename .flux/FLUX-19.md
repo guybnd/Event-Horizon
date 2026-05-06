@@ -1,6 +1,6 @@
 ---
 title: Allow ordering columns in kanban
-status: Todo
+status: In Progress
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent

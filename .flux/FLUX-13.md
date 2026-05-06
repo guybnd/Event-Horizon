@@ -1,6 +1,6 @@
 ---
 title: 'Require Input: visual indicator and prompt UI'
-status: Todo
+status: Done
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent

@@ -1,6 +1,6 @@
 ---
 title: Comment box improvements
-status: Todo
+status: Require Input
 createdBy: Guy
 updatedBy: Guy
 assignee: unassigned
@@ -29,6 +29,11 @@ history:
     to: Todo
     user: Guy
     date: '2026-05-06T07:32:56.983Z'
+  - type: status_change
+    from: Todo
+    to: Require Input
+    user: Guy
+    date: '2026-05-06T07:46:49.892Z'
 ---
 ## Summary
 

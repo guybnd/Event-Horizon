@@ -1,6 +1,6 @@
 import { useDraggable } from '@dnd-kit/core';
 import type { Task } from '../types';
-import { User, GripVertical } from 'lucide-react';
+import { User, GripVertical, AlertCircle } from 'lucide-react';
 import { useApp } from '../AppContext';
 
 export function TaskCard({ task, isOverlay }: { task: Task, isOverlay?: boolean }) {
@@ -17,6 +17,8 @@ export function TaskCard({ task, isOverlay }: { task: Task, isOverlay?: boolean 
 
   const snippet = task.body?.split('\n').find(line => line.trim() && !line.startsWith('#')) || 'No description provided';
 
+  const isRequireInput = task.status === 'Require Input';
+
   const getTagColor = (tagName: string) => {
     const tagObj = config?.tags.find(t => t.name === tagName);
     return tagObj?.color || 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300';
@@ -26,8 +28,18 @@ export function TaskCard({ task, isOverlay }: { task: Task, isOverlay?: boolean 
     <div
       ref={setNodeRef}
       style={style}
-      className={`bg-white/80 dark:bg-[#252630]/80 backdrop-blur-md p-0 rounded-xl shadow-sm border border-gray-200/50 dark:border-white/5 hover:border-primary/50 hover:shadow-md transition-all mb-3 group flex flex-col ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''}`}
+      className={`bg-white/80 dark:bg-[#252630]/80 backdrop-blur-md p-0 rounded-xl shadow-sm border hover:border-primary/50 hover:shadow-md transition-all mb-3 group flex flex-col relative ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''} ${isRequireInput ? 'border-amber-300 dark:border-amber-500/40 ring-1 ring-amber-200/50 dark:ring-amber-500/20' : 'border-gray-200/50 dark:border-white/5'}`}
     >
+      {isRequireInput && (
+        <div className="absolute -top-1.5 -right-1.5 z-10">
+          <div className="relative">
+            <AlertCircle className="w-5 h-5 text-amber-500 fill-amber-50 dark:fill-amber-950" />
+            <div className="absolute inset-0 animate-ping">
+              <AlertCircle className="w-5 h-5 text-amber-500 opacity-40" />
+            </div>
+          </div>
+        </div>
+      )}
       <div className="flex flex-1">
         <div 
           {...listeners} 

@@ -1,6 +1,6 @@
 ---
 title: 'Customize UI: Fix fullscreen editor & send button'
-status: In Progress
+status: Done
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent
@@ -32,8 +32,24 @@ history:
     user: Agent
     date: '2026-05-06T07:27:00.000Z'
     comment: >-
-      Fleshing out this ticket with specific bugs and acceptance criteria based on
-      Guy's feedback.
+      Fleshing out this ticket with specific bugs and acceptance criteria based
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-05-06T07:43:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-06T07:43:00.000Z'
+    comment: >-
+      Verified both bugs are fixed: Send button immediately shows comments in
+      the activity feed, and fullscreen editor properly fills the viewport.
+      Marking as Done.
+      on Guy's feedback.
+  - type: comment
+    user: Guy
+    date: '2026-05-06T07:42:44.061Z'
+    comment: Testing the send button bug fix.
 ---
 ## Summary
 
