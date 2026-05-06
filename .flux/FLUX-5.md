@@ -8,6 +8,10 @@ tags:
   - feature
   - mvp
 history:
+  - type: activity
+    user: Guy
+    date: '2026-05-06T07:28:00.000Z'
+    comment: Created ticket.
   - type: comment
     user: Agent
     date: '2026-05-06T07:28:00.000Z'
@@ -44,8 +48,15 @@ history:
       a WYSIWYG single-page editor, a "New Doc" button, and a config setting for
       edit permissions.
     id: c-2026-05-06t07-36-00-000z
+  - type: activity
+    user: Guy
+    date: '2026-05-06T13:42:22.429Z'
+    comment: Changed effort from L to M.
 order: 4
 priority: High
+effort: M
+implementationLink: ''
+subtasks: []
 ---
 ## Summary
 

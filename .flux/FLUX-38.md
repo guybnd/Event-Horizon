@@ -1,10 +1,9 @@
 ---
-id: FLUX-38
 title: define dual-mode execution bridge and executor lifecycle
-status: Todo
+status: Grooming
 priority: High
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
 tags:
   - feature
@@ -20,8 +19,14 @@ history:
       shared execution abstraction that allows Flux to either wait for an
       external agent or run an internal LLM orchestration path.
     id: c-2026-05-06t12-41-00-000z
+  - type: status_change
+    from: Todo
+    to: Grooming
+    user: Guy
+    date: '2026-05-06T13:18:50.889Z'
 effort: Large
 implementationLink: ''
+order: 2
 ---
 ## Summary
 

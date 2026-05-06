@@ -7,6 +7,10 @@ assignee: Agent
 tags:
   - feature
 history:
+  - type: activity
+    user: Guy
+    date: '2026-05-06T07:30:00.000Z'
+    comment: Created ticket.
   - type: comment
     user: Agent
     date: '2026-05-06T07:30:00.000Z'
@@ -14,8 +18,13 @@ history:
       Fleshed this out with implementation approach. This is self-contained and
       ready to work on.
     id: c-2026-05-06t07-30-00-000z
+  - type: activity
+    user: Guy
+    date: '2026-05-06T13:42:36.994Z'
+    comment: Changed effort from None to L.
 order: 3
 priority: Medium
+effort: L
 ---
 ## Summary
 

@@ -1,10 +1,9 @@
 ---
-id: FLUX-39
 title: build direct API orchestrator for internal execution mode
-status: Todo
+status: Backlog
 priority: High
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
 tags:
   - feature
@@ -20,8 +19,14 @@ history:
       execution path that gathers context, prompts an LLM, validates the result,
       and applies safe file changes locally.
     id: c-2026-05-06t12-42-00-000z
+  - type: status_change
+    from: Todo
+    to: Backlog
+    user: Guy
+    date: '2026-05-06T13:18:41.388Z'
 effort: Large
 implementationLink: ''
+subtasks: []
 ---
 ## Summary
 
