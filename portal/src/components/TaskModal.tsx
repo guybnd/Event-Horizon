@@ -26,7 +26,7 @@ import {
 import { useApp } from '../AppContext';
 import { createTask, deleteTask, fetchTasks, updateTask } from '../api';
 import type { Config, HistoryEntry, TagDef, Task } from '../types';
-import { DEFAULT_READY_FOR_MERGE_STATUS, REQUIRE_INPUT_STATUS } from '../workflow';
+import { DEFAULT_READY_FOR_MERGE_STATUS, getRequireInputStatus } from '../workflow';
 
 const ACTIVITY_FILTER_STORAGE_KEY = 'flux.activityFilter';
 
@@ -311,14 +311,15 @@ export function TaskModal() {
   const allUsers = config?.users.map((item) => item.name) || [];
   const allTags = config?.tags.map((item) => item.name) || [];
   const availablePriorities = config && config.priorities.length > 0 ? config.priorities : [{ name: 'None', icon: 'Equal', color: 'text-gray-400' }];
+  const requireInputStatus = getRequireInputStatus(config);
   const readyForMergeStatus = config?.readyForMergeStatus?.trim() || DEFAULT_READY_FOR_MERGE_STATUS;
-  const promptableStatuses = Array.from(new Set([REQUIRE_INPUT_STATUS, readyForMergeStatus]));
+  const promptableStatuses = Array.from(new Set([requireInputStatus, readyForMergeStatus]));
   const preferredRequireInputDestinations = allStatuses.filter((item) => item === 'Todo' || item === 'Grooming');
   const requireInputDestinations = preferredRequireInputDestinations.length > 0
     ? preferredRequireInputDestinations
     : allStatuses.filter((item) => !promptableStatuses.includes(item)).slice(0, 2);
 
-  const isRequireInput = status === REQUIRE_INPUT_STATUS;
+  const isRequireInput = status === requireInputStatus;
   const isReadyForMerge = status === readyForMergeStatus;
   const isPromptStatus = isRequireInput || isReadyForMerge;
   const lastComment = modalTask?.history?.slice().reverse().find((entry) => entry.type === 'comment');

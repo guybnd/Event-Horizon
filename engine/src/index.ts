@@ -34,6 +34,7 @@ let configCache: any = {
   ],
   enableBacklogScreen: true,
   requireCommentOnStatusChange: true,
+  requireInputStatus: 'Require Input',
   readyForMergeStatus: 'Ready'
 };
 

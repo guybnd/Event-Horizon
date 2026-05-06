@@ -73,7 +73,7 @@ When assigned a ticket, follow this sequence:
 4. Move the ticket to `In Progress` when implementation starts.
 5. Make small, local changes and validate immediately after the first substantive edit.
 6. Post progress comments when scope changes, validation fails, or the user redirects the work.
-7. If clarification is required for the ticket, do not ask only in chat. Move the ticket to `Require Input`, leave one explicit question in ticket history, and use the focused response flow so the user can answer through the system.
+7. If clarification is required for the ticket, do not ask only in chat. Move the ticket to the configured user-input status (`requireInputStatus` in `.flux/config.json`, default `Require Input`), leave one explicit question in ticket history, and use the focused response flow so the user can answer through the system.
 8. When a ticket enters the configured ready-for-merge status (`readyForMergeStatus` in `.flux/config.json`, default `Ready`), treat it as awaiting user review and finalization rather than as fully closed work.
 9. If the user says `finish FLUX-44` or otherwise asks to finish a ticket that is in the ready-for-merge status, perform the final ticket-close sequence: make the focused final commit if needed, record the completion update with validation and commit reference, set the implementation link, and then move the ticket to `Done`.
 10. If the work changes repository files and the user expects commits, create a focused commit before closing the ticket. The commit should be scoped to the ticket work and use a clear, descriptive message that states the user-visible or system behavior that was shipped.
@@ -84,7 +84,7 @@ When assigned a ticket, follow this sequence:
 
 - Use normal chat for broad discussion, planning, or non-ticket conversation.
 - Use the ticket system for ticket-specific clarification, approval, or decisions that should remain attached to the work item.
-- When a ticket is blocked on user input, the canonical path is: status `Require Input` -> history comment with one clear question -> user answers through the focused response UI -> ticket routed back to the next workflow status.
+- When a ticket is blocked on user input, the canonical path is: status `Require Input` (or the configured user-input alias) -> history comment with one clear question -> user answers through the focused response UI -> ticket routed back to the next workflow status.
 - When a ticket enters the configured ready-for-merge status, the human review path is: ticket moved to `Ready` (or the configured alias) -> user reviews the work -> user tells the agent `finish <ticket>` -> agent performs the final commit and closes the ticket.
 - Do not mark a blocked ticket `Done` while the question is still open.
 
@@ -139,7 +139,7 @@ When assigned a ticket, follow this sequence:
 - Code changed in the smallest owning surface
 - Focused validation passed
 - Ticket markdown edits were checked for valid frontmatter when `.flux/*.md` files changed
-- Ticket-specific user questions went through `Require Input`, not only chat
+- Ticket-specific user questions went through the configured user-input status, not only chat
 - Ready-for-merge tickets were only moved to `Done` after the explicit `finish <ticket>` handoff or equivalent user approval
 - Focused commit created for the finished code change, or the reason it was deferred was recorded
 - Ticket updated with descriptive completion notes

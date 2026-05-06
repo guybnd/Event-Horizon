@@ -1,7 +1,7 @@
 ---
 id: FLUX-44
 title: 'add a status phase : ready to merge'
-status: Done
+status: In Progress
 priority: High
 createdBy: Guy
 updatedBy: Agent
@@ -48,6 +48,39 @@ history:
     to: Done
     user: Agent
     date: '2026-05-06T14:08:00.000Z'
+  - type: comment
+    user: Guy
+    date: '2026-05-06T14:16:00.000Z'
+    comment: >-
+      Follow-up: status-related settings should live together, the user-input
+      status should be configurable and restorable, and the earlier change
+      should not feel like it is disturbing the rest of the board setup.
+    id: c-2026-05-06t14-16-00-000z
+  - type: comment
+    user: Agent
+    date: '2026-05-06T14:20:00.000Z'
+    comment: >-
+      Reopening for the follow-up. The FLUX-44 feature commit itself only added
+      `Ready` and `readyForMergeStatus`, but the workflow controls are still too
+      split and `Require Input` is still hardcoded. This follow-up will group
+      workflow statuses together in Settings and add a configurable, restorable
+      user-input status alongside the ready-for-merge status.
+    id: c-2026-05-06t14-20-00-000z
+  - type: status_change
+    from: Done
+    to: In Progress
+    user: Agent
+    date: '2026-05-06T14:20:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-07T00:03:05.5591314+10:00'
+    comment: >-
+      Refining the follow-up workflow settings UX: the specialized workflow
+      statuses should be selected from the existing status entities instead of
+      entered as free text. This keeps the workflow config tied to real board
+      statuses while preserving the restore action when a configured workflow
+      status is currently missing from the board.
+    id: c-2026-05-07t00-03-05-5591314-10-00
 effort: None
 implementationLink: 'f789d8d'
 subtasks: []

@@ -60,5 +60,6 @@ export interface Config {
   projects: string[];
   enableBacklogScreen: boolean;
   requireCommentOnStatusChange: boolean;
+  requireInputStatus?: string;
   readyForMergeStatus?: string;
 }

@@ -24,7 +24,7 @@ For any ticket-driven implementation task, the agent must follow this sequence:
 4. Move the ticket to `In Progress` before substantive code changes.
 5. Make focused changes and run narrow validation immediately after the first substantive edit.
 6. Add progress comments when scope changes, validation fails, or the user redirects the work.
-7. If blocked on a ticket-specific question, move the ticket to `Require Input` and record the question in ticket history instead of asking only in chat.
+7. If blocked on a ticket-specific question, move the ticket to the configured user-input status (`requireInputStatus`, default `Require Input`) and record the question in ticket history instead of asking only in chat.
 8. If a ticket enters the configured ready-for-merge status (`readyForMergeStatus`, default `Ready`), treat that as a user review checkpoint rather than as closed work.
 9. If the user says `finish <ticket>` for a ticket in the ready-for-merge status, perform the final commit and ticket-close sequence before moving it to `Done`.
 10. If repository files changed and commits are expected, create a focused commit after validation passes and before closing the ticket.

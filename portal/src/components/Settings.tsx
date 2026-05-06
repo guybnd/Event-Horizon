@@ -3,6 +3,7 @@ import { useApp } from '../AppContext';
 import { Save, Plus, X, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal } from 'lucide-react';
 import { bulkRename, fetchSkillStatus, installWorkspaceSkill } from '../api';
 import type { TagDef, StatusDef, UserDef, PriorityDef } from '../types';
+import { DEFAULT_READY_FOR_MERGE_STATUS, DEFAULT_REQUIRE_INPUT_STATUS } from '../workflow';
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
@@ -213,7 +214,8 @@ export function Settings() {
   const [projects, setProjects] = useState('');
   const [enableBacklog, setEnableBacklog] = useState(true);
   const [requireComment, setRequireComment] = useState(true);
-  const [readyForMergeStatus, setReadyForMergeStatus] = useState('Ready');
+  const [requireInputStatus, setRequireInputStatus] = useState(DEFAULT_REQUIRE_INPUT_STATUS);
+  const [readyForMergeStatus, setReadyForMergeStatus] = useState(DEFAULT_READY_FOR_MERGE_STATUS);
   const [saving, setSaving] = useState(false);
   const [workflowInstalled, setWorkflowInstalled] = useState(false);
   const [skillInstalled, setSkillInstalled] = useState(false);
@@ -235,9 +237,42 @@ export function Settings() {
       setProjects(config.projects.join(', '));
       setEnableBacklog(config.enableBacklogScreen);
       setRequireComment(config.requireCommentOnStatusChange);
-      setReadyForMergeStatus(config.readyForMergeStatus || 'Ready');
+      setRequireInputStatus(config.requireInputStatus || DEFAULT_REQUIRE_INPUT_STATUS);
+      setReadyForMergeStatus(config.readyForMergeStatus || DEFAULT_READY_FOR_MERGE_STATUS);
     }
   }, [config]);
+
+  const normalizedRequireInputStatus = requireInputStatus.trim() || DEFAULT_REQUIRE_INPUT_STATUS;
+  const normalizedReadyForMergeStatus = readyForMergeStatus.trim() || DEFAULT_READY_FOR_MERGE_STATUS;
+  const statusOptions = Array.from(
+    new Set([...columns, ...hiddenStatuses].map((item) => item.name.trim()).filter(Boolean))
+  );
+  const isRequireInputStatusMissing = !statusOptions.includes(normalizedRequireInputStatus);
+  const isReadyForMergeStatusMissing = !statusOptions.includes(normalizedReadyForMergeStatus);
+
+  const getWorkflowStatusLocation = (statusName: string) => {
+    if (columns.some((item) => item.name === statusName)) return 'Board';
+    if (hiddenStatuses.some((item) => item.name === statusName)) return 'Hidden';
+    return 'Missing';
+  };
+
+  const restoreWorkflowStatusToBoard = (statusName: string) => {
+    const normalizedStatusName = statusName.trim();
+    if (!normalizedStatusName) return;
+
+    setHiddenStatuses((current) => current.filter((item) => item.name !== normalizedStatusName));
+    setColumns((current) => {
+      if (current.some((item) => item.name === normalizedStatusName)) {
+        return current;
+      }
+
+      const next = [...current];
+      const doneIndex = next.findIndex((item) => item.name === 'Done');
+      const insertIndex = doneIndex === -1 ? next.length : doneIndex;
+      next.splice(insertIndex, 0, { name: normalizedStatusName });
+      return next;
+    });
+  };
 
   useEffect(() => {
     fetchSkillStatus()
@@ -258,40 +293,27 @@ export function Settings() {
     if (!config) return;
     setSaving(true);
 
-    const normalizedReadyForMergeStatus = readyForMergeStatus.trim() || 'Ready';
-    const currentReadyForMergeStatus = config.readyForMergeStatus || 'Ready';
+    const currentRequireInputStatus = config.requireInputStatus || DEFAULT_REQUIRE_INPUT_STATUS;
+    const currentReadyForMergeStatus = config.readyForMergeStatus || DEFAULT_READY_FOR_MERGE_STATUS;
     const nextColumns = columns.map((column) => ({ ...column }));
     const nextHiddenStatuses = hiddenStatuses.map((item) => ({ ...item }));
 
-    const renameExistingWorkflowStatus = (items: StatusDef[]) => {
-      const matchedItem = items.find((item) => item.name === currentReadyForMergeStatus || item.originalName === currentReadyForMergeStatus);
+    const renameExistingWorkflowStatus = (items: StatusDef[], currentStatusName: string, nextStatusName: string) => {
+      if (currentStatusName === nextStatusName) return false;
+
+      const matchedItem = items.find((item) => item.name === currentStatusName || item.originalName === currentStatusName);
       if (matchedItem) {
-        matchedItem.name = normalizedReadyForMergeStatus;
+        matchedItem.name = nextStatusName;
         return true;
       }
       return false;
     };
 
-    const statusExists = (statusName: string) => [...nextColumns, ...nextHiddenStatuses].some((item) => item.name === statusName);
-    const insertReadyStatus = () => {
-      if (statusExists(normalizedReadyForMergeStatus)) return;
-      const doneIndex = nextColumns.findIndex((item) => item.name === 'Done');
-      const readyStatus = { name: normalizedReadyForMergeStatus };
-      if (doneIndex === -1) {
-        nextColumns.push(readyStatus);
-      } else {
-        nextColumns.splice(doneIndex, 0, readyStatus);
-      }
-    };
+    renameExistingWorkflowStatus(nextColumns, currentRequireInputStatus, normalizedRequireInputStatus)
+      || renameExistingWorkflowStatus(nextHiddenStatuses, currentRequireInputStatus, normalizedRequireInputStatus);
 
-    if (currentReadyForMergeStatus !== normalizedReadyForMergeStatus) {
-      const renamed = renameExistingWorkflowStatus(nextColumns) || renameExistingWorkflowStatus(nextHiddenStatuses);
-      if (!renamed) {
-        insertReadyStatus();
-      }
-    } else {
-      insertReadyStatus();
-    }
+    renameExistingWorkflowStatus(nextColumns, currentReadyForMergeStatus, normalizedReadyForMergeStatus)
+      || renameExistingWorkflowStatus(nextHiddenStatuses, currentReadyForMergeStatus, normalizedReadyForMergeStatus);
     
     // Compute Renames
     const tagRenames: Record<string, string> = {};
@@ -302,6 +324,9 @@ export function Settings() {
     
     const statusRenames: Record<string, string> = {};
     [...nextColumns, ...nextHiddenStatuses].forEach(s => { if (s.originalName && s.originalName !== s.name) statusRenames[s.originalName] = s.name; });
+    if (currentRequireInputStatus !== normalizedRequireInputStatus) {
+      statusRenames[currentRequireInputStatus] = normalizedRequireInputStatus;
+    }
     if (currentReadyForMergeStatus !== normalizedReadyForMergeStatus) {
       statusRenames[currentReadyForMergeStatus] = normalizedReadyForMergeStatus;
     }
@@ -329,6 +354,7 @@ export function Settings() {
         projects: projects.split(',').map(s => s.trim()).filter(Boolean),
         enableBacklogScreen: enableBacklog,
         requireCommentOnStatusChange: requireComment,
+        requireInputStatus: normalizedRequireInputStatus,
         readyForMergeStatus: normalizedReadyForMergeStatus
       });
       
@@ -382,7 +408,8 @@ export function Settings() {
     projects: projects.split(',').map(s => s.trim()).filter(Boolean),
     enableBacklogScreen: enableBacklog,
     requireCommentOnStatusChange: requireComment,
-    readyForMergeStatus: readyForMergeStatus.trim() || 'Ready'
+    requireInputStatus: normalizedRequireInputStatus,
+    readyForMergeStatus: normalizedReadyForMergeStatus
   });
 
   const originalPayload = JSON.stringify({
@@ -394,7 +421,8 @@ export function Settings() {
     projects: config.projects,
     enableBacklogScreen: config.enableBacklogScreen,
     requireCommentOnStatusChange: config.requireCommentOnStatusChange,
-    readyForMergeStatus: config.readyForMergeStatus || 'Ready'
+    requireInputStatus: config.requireInputStatus || DEFAULT_REQUIRE_INPUT_STATUS,
+    readyForMergeStatus: config.readyForMergeStatus || DEFAULT_READY_FOR_MERGE_STATUS
   });
 
   const isDirty = currentSavedPayload !== originalPayload;
@@ -423,16 +451,108 @@ export function Settings() {
       </div>
 
       <div className="space-y-10">
-        <div className="grid grid-cols-2 gap-10">
-          <div>
-            <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Board Columns</h3>
-            <p className="text-xs text-gray-500 mb-4">Statuses that appear as lanes on your Kanban board.</p>
-            <SimpleEditor items={columns} setItems={setColumns as any} placeholder="Column Status Name" sortable />
-          </div>
-          <div>
-            <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Hidden Statuses</h3>
-            <p className="text-xs text-gray-500 mb-4">Statuses that don't appear as board columns (e.g. Backlog).</p>
-            <SimpleEditor items={hiddenStatuses} setItems={setHiddenStatuses as any} placeholder="Hidden Status Name" />
+        <div className="border-b border-gray-200 dark:border-white/10 pb-10">
+          <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Statuses & Workflow</h3>
+          <p className="text-xs text-gray-500 mb-6">Manage board columns, hidden statuses, and the special workflow stages used for user prompts and final review.</p>
+
+          <div className="grid grid-cols-2 gap-10">
+            <div>
+              <h4 className="text-sm font-bold text-gray-800 dark:text-gray-200 mb-1">Board Columns</h4>
+              <p className="text-xs text-gray-500 mb-4">Statuses that appear as lanes on your Kanban board.</p>
+              <SimpleEditor items={columns} setItems={setColumns as any} placeholder="Column Status Name" sortable />
+            </div>
+            <div>
+              <h4 className="text-sm font-bold text-gray-800 dark:text-gray-200 mb-1">Hidden Statuses</h4>
+              <p className="text-xs text-gray-500 mb-4">Statuses that don't appear as board columns (e.g. Backlog).</p>
+              <SimpleEditor items={hiddenStatuses} setItems={setHiddenStatuses as any} placeholder="Hidden Status Name" />
+            </div>
+            <div className="col-span-2 rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
+              <div className="grid grid-cols-2 gap-6">
+                <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-white/10 dark:bg-black/20">
+                  <div className="mb-3 flex items-start justify-between gap-3">
+                    <div>
+                      <h4 className="text-sm font-bold text-gray-800 dark:text-gray-200">User Input Status</h4>
+                      <p className="mt-1 text-xs text-gray-500">This replaces the old hardcoded `Require Input` workflow stage.</p>
+                    </div>
+                    <span className="rounded-full bg-gray-100 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-gray-600 dark:bg-white/10 dark:text-gray-300">
+                      {getWorkflowStatusLocation(normalizedRequireInputStatus)}
+                    </span>
+                  </div>
+                  <div className="flex gap-2">
+                    <select
+                      className="flex-1 bg-gray-50 dark:bg-black/20 border border-gray-200 dark:border-white/10 rounded-lg px-3 py-2 outline-none focus:border-primary text-sm font-medium"
+                      value={isRequireInputStatusMissing ? '__missing__' : normalizedRequireInputStatus}
+                      onChange={e => setRequireInputStatus(e.target.value)}
+                      disabled={statusOptions.length === 0}
+                    >
+                      {isRequireInputStatusMissing && (
+                        <option value="__missing__" disabled>
+                          {normalizedRequireInputStatus} (missing)
+                        </option>
+                      )}
+                      {statusOptions.length === 0 ? (
+                        <option value="">No statuses available</option>
+                      ) : (
+                        statusOptions.map((statusOption) => (
+                          <option key={statusOption} value={statusOption}>
+                            {statusOption}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => restoreWorkflowStatusToBoard(normalizedRequireInputStatus)}
+                      className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
+                    >
+                      Restore
+                    </button>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-white/10 dark:bg-black/20">
+                  <div className="mb-3 flex items-start justify-between gap-3">
+                    <div>
+                      <h4 className="text-sm font-bold text-gray-800 dark:text-gray-200">Ready for Merge Status</h4>
+                      <p className="mt-1 text-xs text-gray-500">Tickets in this status wait for review and the `finish &lt;ticket&gt;` handoff.</p>
+                    </div>
+                    <span className="rounded-full bg-gray-100 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-gray-600 dark:bg-white/10 dark:text-gray-300">
+                      {getWorkflowStatusLocation(normalizedReadyForMergeStatus)}
+                    </span>
+                  </div>
+                  <div className="flex gap-2">
+                    <select
+                      className="flex-1 bg-gray-50 dark:bg-black/20 border border-gray-200 dark:border-white/10 rounded-lg px-3 py-2 outline-none focus:border-primary text-sm font-medium"
+                      value={isReadyForMergeStatusMissing ? '__missing__' : normalizedReadyForMergeStatus}
+                      onChange={e => setReadyForMergeStatus(e.target.value)}
+                      disabled={statusOptions.length === 0}
+                    >
+                      {isReadyForMergeStatusMissing && (
+                        <option value="__missing__" disabled>
+                          {normalizedReadyForMergeStatus} (missing)
+                        </option>
+                      )}
+                      {statusOptions.length === 0 ? (
+                        <option value="">No statuses available</option>
+                      ) : (
+                        statusOptions.map((statusOption) => (
+                          <option key={statusOption} value={statusOption}>
+                            {statusOption}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => restoreWorkflowStatusToBoard(normalizedReadyForMergeStatus)}
+                      className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
+                    >
+                      Restore
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -467,19 +587,6 @@ export function Settings() {
         </div>
 
         <div className="border-t border-gray-200 dark:border-white/10 pt-8 space-y-4">
-          <label className="flex items-center gap-4 p-4 bg-gray-50 dark:bg-black/10 rounded-xl border border-gray-200 dark:border-white/5">
-            <div className="min-w-0 flex-1">
-              <span className="block text-sm font-bold text-gray-800 dark:text-gray-200 mb-0.5">Ready for Merge Status</span>
-              <span className="text-xs text-gray-500">Tickets moved into this status become a user prompt for final review and the `finish &lt;ticket&gt;` handoff.</span>
-            </div>
-            <input
-              className="w-40 bg-white dark:bg-black/20 border border-gray-200 dark:border-white/10 rounded-lg px-3 py-2 outline-none focus:border-primary text-sm font-medium"
-              value={readyForMergeStatus}
-              onChange={e => setReadyForMergeStatus(e.target.value)}
-              placeholder="Ready"
-            />
-          </label>
-
           <label className="flex items-center gap-4 cursor-pointer p-4 bg-gray-50 dark:bg-black/10 rounded-xl border border-gray-200 dark:border-white/5 hover:border-primary transition-colors">
             <input 
               type="checkbox" 

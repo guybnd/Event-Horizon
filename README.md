@@ -52,7 +52,7 @@ The installer patches a marked Event Horizon block inside `.github/copilot-instr
 
 The Settings screen exposes the current source paths, installed paths, and a copyable install command so the workflow install remains visible instead of hidden in repo internals.
 
-The workflow settings also include a configurable ready-for-merge status, defaulting to `Ready`. Tickets moved into that status become a user review prompt; after review, the intended agent handoff is `finish <ticket>` to create the final commit and move the ticket to `Done`.
+The workflow settings include a configurable user-input status and a configurable ready-for-merge status, defaulting to `Require Input` and `Ready`. Those selectors live together in Settings and are chosen from the existing board or hidden statuses so the workflow stays tied to real status entities. If one of those configured workflow statuses is currently missing from the board, Settings shows that state and offers a restore action. Tickets moved into the user-input status become response prompts, and tickets moved into the ready-for-merge status become review prompts; after review, the intended agent handoff is `finish <ticket>` to create the final commit and move the ticket to `Done`.
 
 ## The Data Schema (MVP)
 Tickets are stored as `.md` files inside the `.flux/` directory.
