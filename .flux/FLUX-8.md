@@ -4,7 +4,8 @@ status: Todo
 createdBy: Guy
 updatedBy: Guy
 assignee: unassigned
-tags: []
+tags:
+  - mvp
 history: []
 ---
 need to design a skill that we feed into the agent so it knows how to work with this tool i.e user tells it to work on a ticket an agent will

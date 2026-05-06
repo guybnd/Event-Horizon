@@ -220,19 +220,19 @@ export function TaskModal() {
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm pointer-events-auto" onClick={handleCloseAttempt} />
       
       <Rnd
-        default={{ x: window.innerWidth / 2 - 400, y: Math.max(50, window.innerHeight / 2 - 400), width: 800, height: 'auto' }}
+        default={{ x: window.innerWidth / 2 - 400, y: Math.max(30, window.innerHeight * 0.05), width: 800, height: window.innerHeight * 0.9 }}
         minWidth={600}
-        minHeight={600}
-        maxHeight={window.innerHeight * 0.95}
+        minHeight={400}
         bounds="window"
         dragHandleClassName="modal-handle"
-        className="bg-white dark:bg-[#1a1b23] border border-gray-200 dark:border-white/10 shadow-2xl rounded-xl flex flex-col pointer-events-auto overflow-hidden max-h-[95vh]"
+        className="pointer-events-auto"
         style={isFullscreen ? { x: 0, y: 0, width: '100%', height: '100%', transform: 'none' } : undefined}
         disableDragging={isFullscreen}
         enableResizing={!isFullscreen}
       >
+        <div className="h-full w-full flex flex-col bg-white dark:bg-[#1a1b23] border border-gray-200 dark:border-white/10 shadow-2xl rounded-xl overflow-hidden">
         {!isFullscreen && (
-          <div className="modal-handle flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-white/5 bg-gray-50 dark:bg-black/20 cursor-move">
+          <div className="modal-handle flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-white/5 bg-gray-50 dark:bg-black/20 cursor-move shrink-0">
             <div className="flex flex-col">
               <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-0.5">
                 {modalTask?.id ? modalTask.id : 'New Task'} {isDirty && <span className="text-amber-500 lowercase normal-case italic ml-1">(Unsaved changes)</span>}
@@ -278,7 +278,7 @@ export function TaskModal() {
           </div>
         )}
         
-        <div style={{ maxHeight: isFullscreen ? 'none' : 'calc(90vh - 70px)' }} className={`flex-1 overflow-y-auto ${isFullscreen ? 'p-0' : 'p-6'} flex flex-col gap-6 text-sm text-gray-800 dark:text-gray-200`}>
+        <div className={`flex-1 min-h-0 overflow-y-auto ${isFullscreen ? 'p-0' : 'p-6'} flex flex-col gap-6 text-sm text-gray-800 dark:text-gray-200`}>
           
           {/* Metadata Section - Rendered either as a sidebar or wide horizontal bar */}
           {!isFullscreen && (
@@ -423,6 +423,7 @@ export function TaskModal() {
               </div>
             </div>
           )}
+        </div>
         </div>
       </Rnd>
 

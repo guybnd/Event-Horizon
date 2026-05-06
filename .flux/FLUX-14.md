@@ -4,7 +4,8 @@ status: Todo
 createdBy: Guy
 updatedBy: Guy
 assignee: unassigned
-tags: []
+tags:
+  - task
 history: []
 ---
 
