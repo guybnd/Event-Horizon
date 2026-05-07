@@ -44,6 +44,9 @@ the board, backlog, header, and ticket views.
 - Board card clicks open the popup ticket view for quick board work, while
   header search links open the full-view ticket layout.
 - Ticket editing supports both popup and full-view layouts.
+- The full-view Back to Board action closes the ticket entirely and returns to
+  the underlying board state instead of reopening the same ticket in popup
+  mode.
 - The full-view mode preserves ticket editing and comments while adding back
   navigation and Escape-based exit behavior.
 

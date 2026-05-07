@@ -280,7 +280,7 @@ export function TaskModal() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       if (isFullView) {
-        setIsFullView(false);
+        handleCloseAttempt();
         return;
       }
       handleCloseAttempt();
@@ -1116,7 +1116,7 @@ export function TaskModal() {
           <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50 px-5 py-4 dark:border-white/5 dark:bg-black/20">
             <div className="flex min-w-0 items-center gap-4">
               <button
-                onClick={() => setIsFullView(false)}
+                onClick={handleCloseAttempt}
                 className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-200 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-white/5 dark:hover:text-white"
               >
                 <ArrowLeft className="h-4 w-4" />
