@@ -347,6 +347,7 @@ const SimpleEditor = ({ items, setItems, placeholder, sortable = false }: { item
 export function Settings() {
   const { config, saveConfig, triggerRefresh } = useApp();
   
+  const [activeTab, setActiveTab] = useState<'workflow' | 'attributes' | 'workspace' | 'preferences' | 'agent'>('workflow');
   const [columns, setColumns] = useState<StatusDef[]>([]);
   const [hiddenStatuses, setHiddenStatuses] = useState<StatusDef[]>([]);
   const [users, setUsers] = useState<UserDef[]>([]);
@@ -365,6 +366,8 @@ export function Settings() {
   const [docsRoot, setDocsRoot] = useState('.docs');
   const [hoverPopupsEnabled, setHoverPopupsEnabled] = useState(true);
   const [hoverPopupDelay, setHoverPopupDelay] = useState(1500);
+  const [generateDistinctFiles, setGenerateDistinctFiles] = useState(true);
+  const [releaseNotesPath, setReleaseNotesPath] = useState('release-notes');
   const [saving, setSaving] = useState(false);
   const [workflowInstalled, setWorkflowInstalled] = useState(false);
   const [skillInstalled, setSkillInstalled] = useState(false);
@@ -394,6 +397,10 @@ export function Settings() {
       setDocsRoot(config.docsRoot || '.docs');
       setHoverPopupsEnabled(config.hoverPopupsEnabled ?? true);
       setHoverPopupDelay(config.hoverPopupDelay ?? 1500);
+      if (config.releaseSettings) {
+        setGenerateDistinctFiles(config.releaseSettings.generateDistinctFiles);
+        setReleaseNotesPath(config.releaseSettings.releaseNotesPath || 'release-notes');
+      }
     }
   }, [config]);
 
@@ -523,7 +530,11 @@ export function Settings() {
         docsAllowedUsers: cleanDocsAllowedUsers,
         docsRoot,
         hoverPopupsEnabled,
-        hoverPopupDelay
+        hoverPopupDelay,
+        releaseSettings: {
+          generateDistinctFiles,
+          releaseNotesPath
+        }
       });
       
       triggerRefresh(); // Refresh tasks cache on frontend to show renamed items
@@ -607,32 +618,77 @@ export function Settings() {
   const isDirty = currentSavedPayload !== originalPayload;
 
   return (
-    <div className="max-w-4xl mx-auto bg-white/80 dark:bg-[#1a1b23]/80 backdrop-blur-xl border border-gray-200 dark:border-white/10 rounded-2xl shadow-xl p-8 mb-12">
-      <div className="flex items-center justify-between mb-8">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Project Settings</h2>
-          <p className="text-sm text-gray-500 mt-1">
-            Manage global settings, tags, users, and board columns.
-            {isDirty && <span className="text-amber-500 text-xs italic ml-2">(Unsaved changes)</span>}
-          </p>
+    <div className="max-w-5xl mx-auto mb-12 flex gap-6 items-start">
+      <div className="w-64 shrink-0 bg-white/80 dark:bg-[#1a1b23]/80 backdrop-blur-xl border border-gray-200 dark:border-white/10 rounded-2xl shadow-xl overflow-hidden sticky top-4">
+        <div className="p-5 border-b border-gray-200 dark:border-white/10">
+          <h2 className="text-lg font-bold text-gray-900 dark:text-gray-100 flex items-center justify-between">
+            Settings
+            {isDirty && <div className="w-2 h-2 rounded-full bg-amber-500" title="Unsaved changes" />}
+          </h2>
         </div>
-        <button 
-          onClick={handleSave}
-          disabled={saving || !isDirty}
-          className={`flex items-center gap-2 px-6 py-2 rounded-lg transition-colors font-medium shadow-sm ${
-            isDirty 
-              ? 'bg-primary hover:bg-primary-hover text-white shadow-primary/20 cursor-pointer'
-              : 'bg-gray-200 dark:bg-white/10 text-gray-400 cursor-not-allowed'
-          }`}
-        >
-          <Save className="w-4 h-4" /> {saving ? 'Saving...' : 'Save Configuration'}
-        </button>
+        <div className="py-2 flex flex-col gap-1">
+          <button 
+            onClick={() => setActiveTab('workflow')}
+            className={`w-full text-left px-5 py-2.5 text-sm font-medium transition-colors ${activeTab === 'workflow' ? 'bg-primary/10 text-primary border-r-2 border-primary' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-white/5 border-r-2 border-transparent'}`}
+          >
+            Workflow & Statuses
+          </button>
+          <button 
+            onClick={() => setActiveTab('attributes')}
+            className={`w-full text-left px-5 py-2.5 text-sm font-medium transition-colors ${activeTab === 'attributes' ? 'bg-primary/10 text-primary border-r-2 border-primary' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-white/5 border-r-2 border-transparent'}`}
+          >
+            Attributes
+          </button>
+          <button 
+            onClick={() => setActiveTab('workspace')}
+            className={`w-full text-left px-5 py-2.5 text-sm font-medium transition-colors ${activeTab === 'workspace' ? 'bg-primary/10 text-primary border-r-2 border-primary' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-white/5 border-r-2 border-transparent'}`}
+          >
+            Workspace
+          </button>
+          <button 
+            onClick={() => setActiveTab('preferences')}
+            className={`w-full text-left px-5 py-2.5 text-sm font-medium transition-colors ${activeTab === 'preferences' ? 'bg-primary/10 text-primary border-r-2 border-primary' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-white/5 border-r-2 border-transparent'}`}
+          >
+            Preferences
+          </button>
+          <button 
+            onClick={() => setActiveTab('agent')}
+            className={`w-full text-left px-5 py-2.5 text-sm font-medium transition-colors ${activeTab === 'agent' ? 'bg-primary/10 text-primary border-r-2 border-primary' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-white/5 border-r-2 border-transparent'}`}
+          >
+            Agent Integration
+          </button>
+        </div>
       </div>
 
-      <div className="space-y-10">
-        <div className="border-b border-gray-200 dark:border-white/10 pb-10">
-          <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Statuses & Workflow</h3>
-          <p className="text-xs text-gray-500 mb-6">Manage board columns, hidden statuses, and the special workflow stages used for user prompts and final review. Click any status badge below to pick its color.</p>
+      <div className="flex-1 bg-white/80 dark:bg-[#1a1b23]/80 backdrop-blur-xl border border-gray-200 dark:border-white/10 rounded-2xl shadow-xl flex flex-col min-h-[600px]">
+        <div className="p-8 flex-1">
+          <div className="flex items-center justify-between mb-8 pb-6 border-b border-gray-200 dark:border-white/10">
+            <div>
+              <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
+                {activeTab === 'workflow' && 'Workflow & Statuses'}
+                {activeTab === 'attributes' && 'Attributes'}
+                {activeTab === 'workspace' && 'Workspace'}
+                {activeTab === 'preferences' && 'Preferences'}
+                {activeTab === 'agent' && 'Agent Integration'}
+              </h2>
+            </div>
+            <button 
+              onClick={handleSave}
+              disabled={saving || !isDirty}
+              className={`flex items-center gap-2 px-6 py-2 rounded-lg transition-colors font-medium shadow-sm ${
+                isDirty 
+                  ? 'bg-primary hover:bg-primary-hover text-white shadow-primary/20 cursor-pointer'
+                  : 'bg-gray-200 dark:bg-white/10 text-gray-400 cursor-not-allowed'
+              }`}
+            >
+              <Save className="w-4 h-4" /> {saving ? 'Saving...' : 'Save Configuration'}
+            </button>
+          </div>
+
+          <div className="space-y-10">
+            {activeTab === 'workflow' && (
+              <div>
+                <p className="text-xs text-gray-500 mb-6">Manage board columns, hidden statuses, and the special workflow stages used for user prompts and final review. Click any status badge below to pick its color.</p>
 
           <div className="grid grid-cols-2 gap-10">
             <div>
@@ -732,10 +788,12 @@ export function Settings() {
                 </div>
               </div>
             </div>
-          </div>
-        </div>
+            </div>
+            </div>
+            )}
 
-        <div className="border-t border-gray-200 dark:border-white/10 pt-10 grid grid-cols-2 gap-10">
+            {activeTab === 'attributes' && (
+              <div className="grid grid-cols-2 gap-10">
           <div className="col-span-2">
             <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Global Tags</h3>
             <p className="text-xs text-gray-500 mb-4">Define available tags and their visual pill colors.</p>
@@ -747,8 +805,10 @@ export function Settings() {
             <PriorityEditor items={priorities} setItems={setPriorities} />
           </div>
         </div>
+            )}
 
-        <div className="border-t border-gray-200 dark:border-white/10 pt-10 grid grid-cols-2 gap-10">
+            {activeTab === 'workspace' && (
+        <div className="grid grid-cols-2 gap-10">
           <div>
             <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Users & Agents</h3>
             <p className="text-xs text-gray-500 mb-4">Available assignees for tickets.</p>
@@ -836,8 +896,53 @@ export function Settings() {
             </div>
           </div>
         </div>
+            )}
 
-        <div className="border-t border-gray-200 dark:border-white/10 pt-8 space-y-4">
+            {activeTab === 'preferences' && (
+        <div className="space-y-8">
+          <div className="space-y-6">
+          <div>
+            <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Release Settings</h3>
+            <p className="text-xs text-gray-500 mb-4 text-balance">Configure how release notes are generated when releasing Done tickets.</p>
+            <div className="space-y-4 max-w-lg">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-sm font-bold text-gray-700 dark:text-gray-300">Release Notes Output</label>
+                <div className="flex items-center gap-4 rounded-xl border border-gray-200 bg-white p-1 dark:border-white/10 dark:bg-black/20 w-fit">
+                  <button
+                    type="button"
+                    onClick={() => setGenerateDistinctFiles(true)}
+                    className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${generateDistinctFiles ? 'bg-primary text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/5'}`}
+                  >
+                    Distinct file per version
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setGenerateDistinctFiles(false)}
+                    className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${!generateDistinctFiles ? 'bg-primary text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/5'}`}
+                  >
+                    Append to single file
+                  </button>
+                </div>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-sm font-bold text-gray-700 dark:text-gray-300">Release Notes Sub-Folder / File Path</label>
+                <input 
+                  value={releaseNotesPath} 
+                  onChange={e => setReleaseNotesPath(e.target.value)}
+                  className="w-full bg-gray-50 dark:bg-black/20 border border-gray-200 dark:border-white/10 rounded-lg px-3 py-2 outline-none focus:border-primary text-sm"
+                  placeholder="e.g. release-notes"
+                />
+                <p className="text-[11px] text-gray-500">
+                  {generateDistinctFiles 
+                    ? `Will generate distinct files under .docs/${releaseNotesPath}/{version}.md`
+                    : `Will append to the single file .docs/${releaseNotesPath}/release_notes.md`}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-4">
           <div className="rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div>
@@ -953,8 +1058,11 @@ export function Settings() {
             </div>
           </label>
         </div>
+        </div>
+            )}
 
-        <div className="border-t border-gray-200 dark:border-white/10 pt-10">
+            {activeTab === 'agent' && (
+        <div className="space-y-4">
           <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Agent Workflow</h3>
           <p className="text-xs text-gray-500 mb-4">Install and refresh the Event Horizon skill plus the always-on Copilot instructions for this workspace.</p>
           <div className="rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
@@ -1005,6 +1113,9 @@ export function Settings() {
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+            )}
           </div>
         </div>
       </div>
