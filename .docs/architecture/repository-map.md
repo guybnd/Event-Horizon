@@ -16,16 +16,20 @@ This page is the quick orientation guide for where behavior lives today.
     
 -   `portal/src/App.tsx` wires the top-level screens.
     
--   `portal/src/AppContext.tsx` coordinates view state and routing-like context.
+-   `portal/src/AppContext.tsx` coordinates view state, routing-like context,
+	and the shared live task polling plus change-event state used by board,
+	backlog, and header surfaces.
     
 -   `portal/src/api.ts` is the portal's client for engine endpoints.
     
 
 ## Portal components to check first
 
--   `portal/src/components/Board.tsx` and `Column.tsx` render the board lanes.
+-   `portal/src/components/Board.tsx` and `Column.tsx` render the board lanes
+	and consume the live ticket arrival cues.
     
--   `portal/src/components/TaskCard.tsx` handles card-level interactions.
+-   `portal/src/components/TaskCard.tsx` handles card-level interactions and
+	the create/move animation treatment for live board updates.
     
 -   `portal/src/components/TaskModal.tsx` is the main full-ticket editing surface.
     

@@ -1,6 +1,6 @@
-import { createContext, useContext, useState, useEffect } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { Task, Config } from './types';
+import type { ColumnLiveEvent, Config, Task, TaskLiveEvent } from './types';
 import { fetchConfig, fetchTasks, saveConfig as apiSaveConfig } from './api';
 
 type AppView = 'board' | 'backlog' | 'docs' | 'settings';
@@ -12,6 +12,35 @@ const VIEW_PATHS: Record<AppView, string> = {
   docs: '/docs',
   settings: '/settings',
 };
+
+const LIVE_TASK_POLL_INTERVAL_MS = 3000;
+const LIVE_EVENT_DURATION_MS = 2200;
+
+function normalizeTaskList(tasks: Task[]) {
+  return [...tasks].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function buildTaskSignature(task: Task) {
+  return JSON.stringify({
+    ...task,
+    title: task.title || '',
+    body: task.body || '',
+    assignee: task.assignee || 'unassigned',
+    priority: task.priority || 'None',
+    effort: task.effort || 'None',
+    implementationLink: task.implementationLink || '',
+    order: task.order ?? null,
+    tags: task.tags || [],
+    subtasks: task.subtasks || [],
+    history: task.history || [],
+  });
+}
+
+function removeKey<TValue>(record: Record<string, TValue>, key: string) {
+  const next = { ...record };
+  delete next[key];
+  return next;
+}
 
 function getViewFromLocation(): AppView {
   const path = window.location.pathname.toLowerCase();
@@ -89,8 +118,14 @@ interface AppState {
   closeModal: () => void;
   openTaskModal: (task?: Partial<Task>) => void;
   openTaskFullView: (task: Partial<Task>) => void;
+  tasks: Task[];
+  tasksLoading: boolean;
+  taskLiveEvents: Record<string, TaskLiveEvent>;
+  columnLiveEvents: Record<string, ColumnLiveEvent>;
   refreshTrigger: number;
   triggerRefresh: () => void;
+  lastRefreshAt: number | null;
+  isWindowVisible: boolean;
   config: Config | null;
   saveConfig: (updates: Config) => Promise<void>;
 }
@@ -109,10 +144,197 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [view, setCurrentView] = useState<AppView>(() => getViewFromLocation());
   const [modalTask, setModalTask] = useState<Partial<Task> | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [tasksLoading, setTasksLoading] = useState(true);
+  const [taskLiveEvents, setTaskLiveEvents] = useState<Record<string, TaskLiveEvent>>({});
+  const [columnLiveEvents, setColumnLiveEvents] = useState<Record<string, ColumnLiveEvent>>({});
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [lastRefreshAt, setLastRefreshAt] = useState<number | null>(null);
+  const [isWindowVisible, setIsWindowVisible] = useState(() => (typeof document === 'undefined' ? true : !document.hidden));
   const [config, setConfig] = useState<Config | null>(null);
+  const tasksRef = useRef<Task[]>([]);
+  const isFetchingTasksRef = useRef(false);
+  const hasLoadedTasksRef = useRef(false);
+  const taskEventTimeoutsRef = useRef<Record<string, number>>({});
+  const columnEventTimeoutsRef = useRef<Record<string, number>>({});
+  const liveEventSequenceRef = useRef(0);
 
-  const triggerRefresh = () => setRefreshTrigger(prev => prev + 1);
+  const scheduleTaskEventClear = useCallback((taskId: string, sequence: number) => {
+    const existingTimeout = taskEventTimeoutsRef.current[taskId];
+    if (existingTimeout) {
+      window.clearTimeout(existingTimeout);
+    }
+
+    taskEventTimeoutsRef.current[taskId] = window.setTimeout(() => {
+      setTaskLiveEvents((current) => {
+        if (!current[taskId] || current[taskId].sequence !== sequence) {
+          return current;
+        }
+
+        return removeKey(current, taskId);
+      });
+      delete taskEventTimeoutsRef.current[taskId];
+    }, LIVE_EVENT_DURATION_MS);
+  }, []);
+
+  const scheduleColumnEventClear = useCallback((columnId: string, sequence: number) => {
+    const existingTimeout = columnEventTimeoutsRef.current[columnId];
+    if (existingTimeout) {
+      window.clearTimeout(existingTimeout);
+    }
+
+    columnEventTimeoutsRef.current[columnId] = window.setTimeout(() => {
+      setColumnLiveEvents((current) => {
+        if (!current[columnId] || current[columnId].sequence !== sequence) {
+          return current;
+        }
+
+        return removeKey(current, columnId);
+      });
+      delete columnEventTimeoutsRef.current[columnId];
+    }, LIVE_EVENT_DURATION_MS);
+  }, []);
+
+  const applyLiveEvents = useCallback((nextTaskEvents: Record<string, TaskLiveEvent>, nextColumnEvents: Record<string, ColumnLiveEvent>) => {
+    const taskEntries = Object.entries(nextTaskEvents);
+    if (taskEntries.length > 0) {
+      setTaskLiveEvents((current) => ({ ...current, ...nextTaskEvents }));
+      taskEntries.forEach(([taskId, event]) => scheduleTaskEventClear(taskId, event.sequence));
+    }
+
+    const columnEntries = Object.entries(nextColumnEvents);
+    if (columnEntries.length > 0) {
+      setColumnLiveEvents((current) => ({ ...current, ...nextColumnEvents }));
+      columnEntries.forEach(([columnId, event]) => scheduleColumnEventClear(columnId, event.sequence));
+    }
+  }, [scheduleColumnEventClear, scheduleTaskEventClear]);
+
+  const loadTasks = useCallback(async () => {
+    if (isFetchingTasksRef.current) {
+      return;
+    }
+
+    isFetchingTasksRef.current = true;
+
+    if (!hasLoadedTasksRef.current) {
+      setTasksLoading(true);
+    }
+
+    try {
+      const fetchedTasks = normalizeTaskList(await fetchTasks());
+      const previousTasks = tasksRef.current;
+      const previousTasksById = new Map(previousTasks.map((task) => [task.id, task]));
+      const nextTaskEvents: Record<string, TaskLiveEvent> = {};
+      const nextColumnEvents: Record<string, ColumnLiveEvent> = {};
+      const shouldEmitLiveEvents = previousTasks.length > 0;
+      let changed = previousTasks.length !== fetchedTasks.length;
+
+      const nextSequence = () => {
+        liveEventSequenceRef.current += 1;
+        return liveEventSequenceRef.current;
+      };
+
+      for (const task of fetchedTasks) {
+        const previousTask = previousTasksById.get(task.id);
+
+        if (!previousTask) {
+          changed = true;
+
+          if (shouldEmitLiveEvents) {
+            nextTaskEvents[task.id] = {
+              kind: 'created',
+              sequence: nextSequence(),
+              at: Date.now(),
+              toStatus: task.status,
+            };
+            nextColumnEvents[task.status] = {
+              kind: 'created',
+              sequence: nextSequence(),
+              at: Date.now(),
+              taskId: task.id,
+            };
+          }
+
+          continue;
+        }
+
+        if (previousTask.status !== task.status) {
+          changed = true;
+
+          if (shouldEmitLiveEvents) {
+            nextTaskEvents[task.id] = {
+              kind: 'moved',
+              sequence: nextSequence(),
+              at: Date.now(),
+              fromStatus: previousTask.status,
+              toStatus: task.status,
+            };
+            nextColumnEvents[task.status] = {
+              kind: 'received',
+              sequence: nextSequence(),
+              at: Date.now(),
+              taskId: task.id,
+            };
+          }
+
+          continue;
+        }
+
+        if (buildTaskSignature(previousTask) !== buildTaskSignature(task)) {
+          changed = true;
+
+          if (shouldEmitLiveEvents) {
+            nextTaskEvents[task.id] = {
+              kind: 'updated',
+              sequence: nextSequence(),
+              at: Date.now(),
+              toStatus: task.status,
+            };
+          }
+        }
+      }
+
+      if (!changed) {
+        const nextTaskIds = new Set(fetchedTasks.map((task) => task.id));
+        changed = previousTasks.some((task) => !nextTaskIds.has(task.id));
+      }
+
+      hasLoadedTasksRef.current = true;
+      setTasksLoading(false);
+
+      if (!changed && previousTasks.length > 0) {
+        return;
+      }
+
+      tasksRef.current = fetchedTasks;
+      setTasks(fetchedTasks);
+      setLastRefreshAt(Date.now());
+
+      if (shouldEmitLiveEvents) {
+        applyLiveEvents(nextTaskEvents, nextColumnEvents);
+      }
+    } catch (error) {
+      console.error(error);
+
+      if (!hasLoadedTasksRef.current) {
+        setTasksLoading(true);
+      }
+    } finally {
+      isFetchingTasksRef.current = false;
+    }
+  }, [applyLiveEvents]);
+
+  const triggerRefresh = useCallback(() => {
+    setRefreshTrigger((prev) => prev + 1);
+    void loadTasks();
+  }, [loadTasks]);
+
+  const updateTicketViewUrl = (taskId: string, viewMode: 'popup' | 'full') => {
+    const url = new URL(window.location.href);
+    url.searchParams.set('ticket', taskId);
+    url.searchParams.set('view', viewMode);
+    window.history.replaceState({}, '', url);
+  };
 
   const setView = (nextView: AppView) => {
     setCurrentView(nextView);
@@ -125,13 +347,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setFilterAssignee('all');
     setFilterPriority('all');
     setFilterTag('all');
-  };
-
-  const updateTicketViewUrl = (taskId: string, viewMode: 'popup' | 'full') => {
-    const url = new URL(window.location.href);
-    url.searchParams.set('ticket', taskId);
-    url.searchParams.set('view', viewMode);
-    window.history.replaceState({}, '', url);
   };
 
   const openTaskModal = (task?: Partial<Task>) => {
@@ -166,6 +381,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   useEffect(() => {
+    return () => {
+      Object.values(taskEventTimeoutsRef.current).forEach((timeoutId) => window.clearTimeout(timeoutId));
+      Object.values(columnEventTimeoutsRef.current).forEach((timeoutId) => window.clearTimeout(timeoutId));
+    };
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     let retryTimeout: number | undefined;
 
@@ -194,6 +416,45 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    void loadTasks();
+  }, [loadTasks]);
+
+  useEffect(() => {
+    const refreshIfVisible = () => {
+      if (document.hidden) {
+        return;
+      }
+
+      void loadTasks();
+    };
+
+    const handleVisibilityChange = () => {
+      const visible = !document.hidden;
+      setIsWindowVisible(visible);
+
+      if (visible) {
+        refreshIfVisible();
+      }
+    };
+
+    const handleFocus = () => {
+      setIsWindowVisible(!document.hidden);
+      refreshIfVisible();
+    };
+
+    const intervalId = window.setInterval(refreshIfVisible, LIVE_TASK_POLL_INTERVAL_MS);
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [loadTasks]);
+
+  useEffect(() => {
     updateViewUrl(getViewFromLocation(), 'replace');
 
     const handlePopState = () => {
@@ -220,17 +481,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const ticketId = params.get('ticket');
-    if (!ticketId) return;
+    if (!ticketId || tasksLoading) return;
+    if (isModalOpen && modalTask?.id === ticketId) return;
 
-    fetchTasks()
-      .then((tasks) => {
-        const task = tasks.find((item) => item.id === ticketId);
-        if (!task) return;
-        setModalTask(task);
-        setIsModalOpen(true);
-      })
-      .catch(console.error);
-  }, []);
+    const task = tasks.find((item) => item.id === ticketId);
+    if (!task) return;
+    setModalTask(task);
+    setIsModalOpen(true);
+  }, [isModalOpen, modalTask?.id, tasks, tasksLoading]);
 
   return (
     <AppContext.Provider value={{
@@ -248,7 +506,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       openTaskFullView,
       closeModal,
       setModalTask,
+      tasks,
+      tasksLoading,
+      taskLiveEvents,
+      columnLiveEvents,
       refreshTrigger, triggerRefresh,
+      lastRefreshAt,
+      isWindowVisible,
       config, saveConfig
     }}>
       {children}

@@ -46,7 +46,13 @@ Event Horizon is designed so the repository itself is the application's data sto
     
 2.  The engine reads or writes markdown files in the repository.
     
-3.  File watchers keep the UI state fresh when repo-backed content changes.
+3.  File watchers keep the engine caches current, and the portal uses
+	visibility-aware task polling against that API so board and backlog views
+	update without a manual page refresh.
+
+4.  When task data changes, the portal emits short-lived live-update events so
+	newly created and moved tickets can animate into place instead of feeling
+	like a hard rerender.
     
 
 ## Design implications

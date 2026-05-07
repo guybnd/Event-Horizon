@@ -26,6 +26,21 @@ export interface Task {
   subtasks?: string[];
 }
 
+export interface TaskLiveEvent {
+  kind: 'created' | 'moved' | 'updated';
+  sequence: number;
+  at: number;
+  fromStatus?: string;
+  toStatus?: string;
+}
+
+export interface ColumnLiveEvent {
+  kind: 'created' | 'received';
+  sequence: number;
+  at: number;
+  taskId: string;
+}
+
 export interface TagDef {
   name: string;
   color: string;

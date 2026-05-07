@@ -3,6 +3,8 @@ import { useApp } from '../AppContext';
 import { Save, Plus, X, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal } from 'lucide-react';
 import { bulkRename, fetchSkillStatus, installWorkspaceSkill } from '../api';
 import type { TagDef, StatusDef, UserDef, PriorityDef, DocsEditPermissions, BoardCardOpenMode } from '../types';
+import { StatusBadge } from './StatusBadge';
+import { getDefaultStatusColor, STATUS_COLOR_PALETTE } from '../statusStyles';
 import { DEFAULT_READY_FOR_MERGE_STATUS, DEFAULT_REQUIRE_INPUT_STATUS } from '../workflow';
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
@@ -19,6 +21,25 @@ const COLOR_PALETTE = [
   'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400',
   'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400',
 ];
+
+const SWATCH_COLORS: Record<string, string> = {
+  gray: '#9ca3af',
+  red: '#ef4444',
+  orange: '#f97316',
+  amber: '#f59e0b',
+  emerald: '#10b981',
+  blue: '#3b82f6',
+  sky: '#0ea5e9',
+  purple: '#8b5cf6',
+  pink: '#ec4899',
+};
+
+function getPaletteSwatchColor(colorClass: string) {
+  const match = colorClass.match(/(?:bg|text)-([a-z]+)-\d+/);
+  if (!match) return SWATCH_COLORS.gray;
+
+  return SWATCH_COLORS[match[1]] || SWATCH_COLORS.gray;
+}
 
 const TagEditor = ({ items, setItems }: { items: TagDef[], setItems: (items: TagDef[]) => void }) => {
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
@@ -53,7 +74,8 @@ const TagEditor = ({ items, setItems }: { items: TagDef[], setItems: (items: Tag
               <button 
                 key={color} 
                 onClick={() => { const newArr = [...items]; newArr[idx].color = color; setItems(newArr); }}
-                className={`w-6 h-6 rounded-full border-2 transition-all ${color.split(' ')[0]} ${item.color === color ? 'border-primary shadow-sm scale-110' : 'border-transparent hover:scale-105'}`}
+                className={`w-6 h-6 rounded-full border-2 transition-all ${item.color === color ? 'border-primary shadow-sm scale-110' : 'border-transparent hover:scale-105'}`}
+                style={{ backgroundColor: getPaletteSwatchColor(color) }}
               />
             ))}
           </div>
@@ -61,6 +83,125 @@ const TagEditor = ({ items, setItems }: { items: TagDef[], setItems: (items: Tag
         </div>
       ))}
       <button onClick={() => setItems([...items, { name: '', color: COLOR_PALETTE[0] }])} className="flex items-center gap-1 text-xs font-bold text-primary hover:text-primary-hover px-2 py-1"><Plus className="w-3 h-3" /> Add Tag</button>
+    </div>
+  );
+};
+
+const StatusColorPicker = ({
+  status,
+  color,
+  onChange,
+}: {
+  status: string;
+  color?: string;
+  onChange: (color: string) => void;
+}) => {
+  const [open, setOpen] = useState(false);
+  const resolvedColor = color || getDefaultStatusColor(status);
+
+  return (
+    <div
+      className="relative shrink-0"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setOpen(false);
+        }
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        className="flex h-11 w-44 items-center overflow-hidden rounded-xl border border-gray-200 bg-white px-2.5 transition-colors hover:border-primary/60 hover:bg-gray-50 dark:border-white/10 dark:bg-black/20 dark:hover:bg-white/5"
+      >
+        <StatusBadge
+          status={status}
+          colorClass={resolvedColor}
+          className="max-w-full overflow-hidden text-[10px] font-bold uppercase tracking-[0.16em]"
+        />
+      </button>
+
+      {open && (
+        <div className="absolute left-0 top-full z-20 mt-2 w-44 rounded-2xl border border-gray-200 bg-white p-3 shadow-lg dark:border-white/10 dark:bg-[#1a1b23]">
+          <div className="mb-2 text-[10px] font-bold uppercase tracking-[0.16em] text-gray-500 dark:text-gray-400">
+            Status Color
+          </div>
+          <div className="grid grid-cols-4 gap-2">
+            {STATUS_COLOR_PALETTE.map((paletteColor) => (
+              <button
+                key={paletteColor}
+                type="button"
+                onClick={() => {
+                  onChange(paletteColor);
+                  setOpen(false);
+                }}
+                className={`h-8 rounded-full border-2 transition-all ${resolvedColor === paletteColor ? 'border-primary shadow-sm scale-105' : 'border-transparent hover:scale-105'}`}
+                style={{ backgroundColor: getPaletteSwatchColor(paletteColor) }}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const StatusEditor = ({ items, setItems, placeholder, sortable = false }: { items: StatusDef[], setItems: (items: StatusDef[]) => void, placeholder: string, sortable?: boolean }) => {
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    if (!sortable) return;
+
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const oldIndex = items.findIndex((_, i) => `status-${i}` === active.id);
+    const newIndex = items.findIndex((_, i) => `status-${i}` === over.id);
+    if (oldIndex !== -1 && newIndex !== -1) {
+      setItems(arrayMove(items, oldIndex, newIndex));
+    }
+  };
+
+  const rows = items.map((item, idx) => {
+    const row = (
+      <div className="flex flex-1 min-w-0 gap-3 items-center bg-gray-50 dark:bg-black/10 p-2 rounded-xl border border-gray-100 dark:border-white/5">
+        <StatusColorPicker
+          status={item.name || 'Unnamed Status'}
+          color={item.color}
+          onChange={(color) => {
+            const newArr = [...items];
+            newArr[idx].color = color;
+            setItems(newArr);
+          }}
+        />
+        <input
+          value={item.name}
+          onChange={e => { const newArr = [...items]; newArr[idx].name = e.target.value; setItems(newArr); }}
+          className="min-w-0 flex-1 bg-white dark:bg-black/40 border border-gray-200 dark:border-white/10 rounded-lg px-3 py-1.5 outline-none focus:border-primary text-sm font-medium"
+          placeholder={placeholder}
+        />
+        <button onClick={() => setItems(items.filter((_, i) => i !== idx))} className="p-1.5 ml-auto text-gray-400 hover:text-red-500 rounded"><X className="w-4 h-4" /></button>
+      </div>
+    );
+
+    if (sortable) {
+      return <SortableRow key={`status-${idx}`} id={`status-${idx}`}>{row}</SortableRow>;
+    }
+
+    return <div key={`status-${idx}`}>{row}</div>;
+  });
+
+  const content = sortable ? (
+    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+      <SortableContext items={items.map((_, i) => `status-${i}`)} strategy={verticalListSortingStrategy}>
+        {rows}
+      </SortableContext>
+    </DndContext>
+  ) : <>{rows}</>;
+
+  return (
+    <div className="space-y-3">
+      <p className="text-[11px] text-gray-500 dark:text-gray-400">Click a status badge to change its color.</p>
+      {content}
+      <button onClick={() => setItems([...items, { name: '', color: STATUS_COLOR_PALETTE[0] }])} className="flex items-center gap-1 text-xs font-bold text-primary hover:text-primary-hover px-2 py-1"><Plus className="w-3 h-3" /> Add Status</button>
     </div>
   );
 };
@@ -473,18 +614,18 @@ export function Settings() {
       <div className="space-y-10">
         <div className="border-b border-gray-200 dark:border-white/10 pb-10">
           <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Statuses & Workflow</h3>
-          <p className="text-xs text-gray-500 mb-6">Manage board columns, hidden statuses, and the special workflow stages used for user prompts and final review.</p>
+          <p className="text-xs text-gray-500 mb-6">Manage board columns, hidden statuses, and the special workflow stages used for user prompts and final review. Click any status badge below to pick its color.</p>
 
           <div className="grid grid-cols-2 gap-10">
             <div>
               <h4 className="text-sm font-bold text-gray-800 dark:text-gray-200 mb-1">Board Columns</h4>
               <p className="text-xs text-gray-500 mb-4">Statuses that appear as lanes on your Kanban board.</p>
-              <SimpleEditor items={columns} setItems={setColumns as any} placeholder="Column Status Name" sortable />
+              <StatusEditor items={columns} setItems={setColumns} placeholder="Column Status Name" sortable />
             </div>
             <div>
               <h4 className="text-sm font-bold text-gray-800 dark:text-gray-200 mb-1">Hidden Statuses</h4>
               <p className="text-xs text-gray-500 mb-4">Statuses that don't appear as board columns (e.g. Backlog).</p>
-              <SimpleEditor items={hiddenStatuses} setItems={setHiddenStatuses as any} placeholder="Hidden Status Name" />
+              <StatusEditor items={hiddenStatuses} setItems={setHiddenStatuses} placeholder="Hidden Status Name" />
             </div>
             <div className="col-span-2 rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
               <div className="grid grid-cols-2 gap-6">
@@ -727,7 +868,7 @@ export function Settings() {
               <div className="space-y-3 text-sm text-gray-600 dark:text-gray-300">
                 <div>
                   <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Status</div>
-                  <div className="mt-1 font-medium">{skillLoading ? 'CheckingΓÇª' : workflowInstalled ? 'Installed in this repo' : 'Not fully installed in this repo'}</div>
+                  <div className="mt-1 font-medium">{skillLoading ? 'Checking…' : workflowInstalled ? 'Installed in this repo' : 'Not fully installed in this repo'}</div>
                 </div>
                 <div>
                   <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Source Skill</div>
@@ -760,7 +901,7 @@ export function Settings() {
                   disabled={skillInstalling}
                   className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${skillInstalling ? 'bg-gray-200 text-gray-400 dark:bg-white/10 dark:text-gray-500' : 'bg-primary text-white hover:bg-primary-hover'}`}
                 >
-                  {skillInstalling ? 'InstallingΓÇª' : workflowInstalled ? 'Reinstall Workflow' : 'Install Workflow'}
+                  {skillInstalling ? 'Installing…' : workflowInstalled ? 'Reinstall Workflow' : 'Install Workflow'}
                 </button>
                 <button
                   onClick={handleCopyInstallCommand}

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, Search, FileText } from 'lucide-react';
 import { useApp } from '../AppContext';
-import { fetchTasks } from '../api';
+import { StatusBadge } from './StatusBadge';
+import { getStatusColorClass } from '../statusStyles';
 import { getPromptableStatuses } from '../workflow';
 import type { Task } from '../types';
 import { searchTasks } from '../taskSearch';
@@ -14,16 +15,17 @@ export function Header() {
     setCurrentUser,
     currentProject,
     setCurrentProject,
-    refreshTrigger,
+    tasks,
     config,
   } = useApp();
-  const [tasks, setTasks] = useState<Task[]>([]);
   const [globalSearchQuery, setGlobalSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [isPromptPulseActive, setIsPromptPulseActive] = useState(false);
   const searchContainerRef = useRef<HTMLDivElement | null>(null);
   const promptableStatuses = getPromptableStatuses(config);
   const promptCount = tasks.filter((task) => promptableStatuses.includes(task.status)).length;
   const searchResults = globalSearchQuery.trim() ? searchTasks(tasks, globalSearchQuery, 7) : [];
+  const previousPromptCountRef = useRef(promptCount);
 
   const getTaskHref = (task: Task) => {
     const path = task.status.toLowerCase() === 'backlog' ? '/backlog' : '/board';
@@ -41,12 +43,20 @@ export function Header() {
   };
 
   useEffect(() => {
-    fetchTasks()
-      .then((nextTasks) => {
-        setTasks(nextTasks);
-      })
-      .catch(console.error);
-  }, [refreshTrigger]);
+    if (promptCount === previousPromptCountRef.current) {
+      return;
+    }
+
+    previousPromptCountRef.current = promptCount;
+    setIsPromptPulseActive(true);
+    const timeoutId = window.setTimeout(() => {
+      setIsPromptPulseActive(false);
+    }, 1600);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [promptCount]);
 
   useEffect(() => {
     const handlePointerDown = (event: PointerEvent) => {
@@ -154,9 +164,11 @@ export function Header() {
                   >
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-semibold text-gray-900 dark:text-white">{task.title || 'Untitled ticket'}</span>
-                      <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.16em] text-gray-500 dark:bg-white/10 dark:text-gray-300">
-                        {task.status}
-                      </span>
+                      <StatusBadge
+                        status={task.status}
+                        colorClass={getStatusColorClass(config, task.status)}
+                        className="text-[10px] font-bold uppercase tracking-[0.16em]"
+                      />
                     </div>
                     <div className="text-xs font-semibold tracking-[0.18em] text-gray-400">{task.id}</div>
                     <div className="text-sm text-gray-500 dark:text-gray-400">{getResultPreview(task)}</div>
@@ -172,7 +184,7 @@ export function Header() {
         </div>
         <button
           onClick={() => setView('board')}
-          className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-left transition-colors ${promptCount > 0 ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300' : 'border-gray-200 bg-white/60 text-gray-500 dark:border-white/10 dark:bg-white/5 dark:text-gray-400'}`}
+          className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-left transition-colors ${promptCount > 0 ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300' : 'border-gray-200 bg-white/60 text-gray-500 dark:border-white/10 dark:bg-white/5 dark:text-gray-400'} ${isPromptPulseActive ? 'header-live-prompts' : ''}`}
           title="Open board to review tickets waiting for input or merge review"
         >
           <div className="relative">

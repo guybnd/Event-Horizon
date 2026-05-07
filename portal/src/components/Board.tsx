@@ -3,55 +3,42 @@ import { DndContext, DragOverlay, pointerWithin } from '@dnd-kit/core';
 import type { DragEndEvent, DragStartEvent } from '@dnd-kit/core';
 import { arrayMove } from '@dnd-kit/sortable';
 import { Column } from './Column';
+import { StatusBadge } from './StatusBadge';
 import { TaskCard } from './TaskCard';
-import { fetchTasks, updateTask } from '../api';
+import { updateTask } from '../api';
 import { useApp } from '../AppContext';
 import type { Task } from '../types';
 import { Loader2 } from 'lucide-react';
 import { TaskViewControls } from './TaskViewControls';
 import { filterAndSortTasks } from '../taskSearch';
+import { getStatusColorClass } from '../statusStyles';
 
 export function Board() {
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [loading, setLoading] = useState(true);
   const [activeTask, setActiveTask] = useState<Task | null>(null);
-  const { refreshTrigger, config, currentUser, triggerRefresh, searchQuery, sortOption, filterAssignee, filterPriority, filterTag } = useApp();
+  const {
+    tasks: liveTasks,
+    tasksLoading,
+    taskLiveEvents,
+    columnLiveEvents,
+    config,
+    currentUser,
+    triggerRefresh,
+    searchQuery,
+    sortOption,
+    filterAssignee,
+    filterPriority,
+    filterTag,
+  } = useApp();
 
   const [pendingStatusChange, setPendingStatusChange] = useState<{taskId: string, newStatus: string, oldStatus: string} | null>(null);
   const [commentText, setCommentText] = useState('');
 
   useEffect(() => {
-    let cancelled = false;
-    let retryTimeout: number | undefined;
+    setTasks(liveTasks);
+  }, [liveTasks]);
 
-    const loadTasks = async () => {
-      try {
-        const data = await fetchTasks();
-        if (cancelled) return;
-        setTasks(data);
-        setLoading(false);
-      } catch (error) {
-        console.error(error);
-        if (cancelled) return;
-        setLoading(true);
-        retryTimeout = window.setTimeout(() => {
-          void loadTasks();
-        }, 3000);
-      }
-    };
-
-    setLoading(true);
-    void loadTasks();
-
-    return () => {
-      cancelled = true;
-      if (retryTimeout) {
-        window.clearTimeout(retryTimeout);
-      }
-    };
-  }, [refreshTrigger]);
-
-  if (loading || !config) {
+  if ((tasksLoading && tasks.length === 0) || !config) {
     return (
       <div className="flex items-center justify-center h-full">
         <Loader2 className="w-8 h-8 animate-spin text-primary" />
@@ -64,6 +51,7 @@ export function Board() {
     .filter(s => !config.columns?.find(c => c.name === s) && !config.hiddenStatuses?.find(h => h.name === s));
 
   const allColumns = [...(config.columns?.map(c => c.name) || []), ...extraStatuses];
+  const columnOrder = new Map(allColumns.map((columnId, index) => [columnId, index]));
   const visibleTasks = filterAndSortTasks(boardTasks, config, {
     searchQuery,
     sortOption,
@@ -82,6 +70,22 @@ export function Board() {
         }
       });
     });
+
+  const getTaskTravelDirection = (taskId: string) => {
+    const liveEvent = taskLiveEvents[taskId];
+    if (!liveEvent || liveEvent.kind !== 'moved' || !liveEvent.fromStatus || !liveEvent.toStatus) {
+      return 0;
+    }
+
+    const fromIndex = columnOrder.get(liveEvent.fromStatus);
+    const toIndex = columnOrder.get(liveEvent.toStatus);
+
+    if (fromIndex == null || toIndex == null) {
+      return 0;
+    }
+
+    return Math.sign(toIndex - fromIndex) as -1 | 0 | 1;
+  };
 
   const handleDragStart = (event: DragStartEvent) => {
     const { active } = event;
@@ -193,7 +197,16 @@ export function Board() {
           <DndContext onDragStart={handleDragStart} onDragEnd={handleDragEnd} collisionDetection={pointerWithin}>
             <div className="flex h-full min-h-0 gap-6 overflow-x-auto pb-4 items-start">
               {allColumns.map(columnId => (
-                <Column key={columnId} id={columnId} title={columnId} tasks={visibleTasks.filter(t => t.status === columnId)} parentByChildId={parentByChildId} />
+                <Column
+                  key={columnId}
+                  id={columnId}
+                  title={columnId}
+                  tasks={visibleTasks.filter(t => t.status === columnId)}
+                  parentByChildId={parentByChildId}
+                  liveEvent={columnLiveEvents[columnId]}
+                  taskLiveEvents={taskLiveEvents}
+                  getTaskTravelDirection={getTaskTravelDirection}
+                />
               ))}
             </div>
             <DragOverlay>{activeTask ? <TaskCard task={activeTask} parentTask={parentByChildId.get(activeTask.id)} isOverlay /> : null}</DragOverlay>
@@ -205,7 +218,15 @@ export function Board() {
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm pointer-events-auto">
           <div className="bg-white dark:bg-[#1a1b23] p-6 rounded-xl shadow-2xl w-[400px] border border-gray-200 dark:border-white/10">
             <h3 className="text-lg font-bold mb-2">Update Status</h3>
-            <p className="text-sm text-gray-500 mb-4">Moving task to <span className="font-bold text-primary">{pendingStatusChange.newStatus}</span>. Add a quick note?</p>
+            <p className="mb-4 flex flex-wrap items-center gap-2 text-sm text-gray-500">
+              <span>Moving task to</span>
+              <StatusBadge
+                status={pendingStatusChange.newStatus}
+                colorClass={getStatusColorClass(config, pendingStatusChange.newStatus)}
+                className="text-[10px] font-bold uppercase tracking-[0.16em]"
+              />
+              <span>Add a quick note?</span>
+            </p>
             <textarea 
               autoFocus
               className="w-full bg-gray-50 dark:bg-black/20 border border-gray-200 dark:border-white/10 rounded-lg px-3 py-2 outline-none focus:border-primary resize-none text-sm mb-4 h-24"

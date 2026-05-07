@@ -31,8 +31,12 @@ interface StoredDoc extends DocRecord {
 let tasksCache: Record<string, any> = {};
 let docsCache: Record<string, StoredDoc> = {};
 let configCache: any = {
-  columns: [{ name: 'Todo' }, { name: 'In Progress' }, { name: 'Done' }],
-  hiddenStatuses: [{ name: 'Backlog' }],
+  columns: [
+    { name: 'Todo', color: 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300' },
+    { name: 'In Progress', color: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' },
+    { name: 'Done', color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' },
+  ],
+  hiddenStatuses: [{ name: 'Backlog', color: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300' }],
   projects: ['FLUX'],
   users: [{ name: 'Guy' }, { name: 'Agent' }],
   tags: [

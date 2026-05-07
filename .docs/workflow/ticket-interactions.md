@@ -55,10 +55,18 @@ the board, backlog, header, and ticket views.
 
 - Require-input tickets are intended to be easy to spot from the app chrome and
   the ticket surface.
+- Status colors are configurable in Settings and follow the ticket anywhere the
+  UI renders a status badge, including search results, board lanes, and ticket
+  headers/history.
 - Parent and child hierarchy cues show up directly in ticket views and board
   cards when subtask relationships exist.
 - Recently updated sorting reflects all activity, including ticket creation and
   field edits, not only comments.
+- Board, backlog, and header ticket data update in place while the portal is
+  visible instead of requiring a manual reload.
+- Newly created tickets animate into their destination lane, and tickets that
+  move between statuses land in the target column with a stronger arrival
+  bounce so live board changes are easier to notice.
 
 ## Related docs
 
