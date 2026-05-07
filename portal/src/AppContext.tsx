@@ -156,6 +156,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [isWindowVisible, setIsWindowVisible] = useState(() => (typeof document === 'undefined' ? true : !document.hidden));
   const [isConnected, setIsConnected] = useState(true);
   const [config, setConfig] = useState<Config | null>(null);
+  const configRef = useRef<Config | null>(null);
   const tasksRef = useRef<Task[]>([]);
   const isFetchingTasksRef = useRef(false);
   const hasLoadedTasksRef = useRef(false);
@@ -279,6 +280,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
               at: Date.now(),
               taskId: task.id,
             };
+            
+            if (task.status.toLowerCase() === 'done') {
+              const fireworksEnabled = configRef.current?.enableFireworks !== false;
+              const animationsEnabled = configRef.current?.animationsEnabled !== false;
+              if (fireworksEnabled && animationsEnabled) {
+                import('canvas-confetti').then((module) => {
+                  module.default({
+                    particleCount: 150,
+                    spread: 80,
+                    origin: { y: 0.6 }
+                  });
+                }).catch(console.error);
+              }
+            }
           }
 
           continue;
@@ -379,6 +394,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     try {
       const updated = await apiSaveConfig(newConfig);
       setConfig(updated);
+      configRef.current = updated;
     } catch (err) {
       console.error(err);
     }
@@ -400,6 +416,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const loadedConfig = await fetchConfig();
         if (cancelled) return;
         setConfig(loadedConfig);
+        configRef.current = loadedConfig;
       } catch (error) {
         console.error(error);
         if (cancelled) return;

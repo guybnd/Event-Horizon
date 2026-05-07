@@ -105,4 +105,6 @@ export interface Config {
     generateDistinctFiles: boolean;
     releaseNotesPath: string;
   };
+  enableFireworks?: boolean;
 }
+

@@ -66,6 +66,8 @@ let configCache: any = {
   enableBacklogScreen: true,
   requireCommentOnStatusChange: true,
   boardCardOpenMode: 'full',
+  animationsEnabled: true,
+  enableFireworks: true,
   requireInputStatus: 'Require Input',
   readyForMergeStatus: 'Ready',
   docsEditPermissions: 'all',

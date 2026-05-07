@@ -395,6 +395,7 @@ export function Settings() {
   const [requireComment, setRequireComment] = useState(true);
   const [boardCardOpenMode, setBoardCardOpenMode] = useState<BoardCardOpenMode>('full');
   const [animationsEnabled, setAnimationsEnabled] = useState(true);
+  const [enableFireworks, setEnableFireworks] = useState(true);
   const [animationSpeed, setAnimationSpeed] = useState<'fast' | 'normal' | 'slow'>('normal');
   const [requireInputStatus, setRequireInputStatus] = useState(DEFAULT_REQUIRE_INPUT_STATUS);
   const [readyForMergeStatus, setReadyForMergeStatus] = useState(DEFAULT_READY_FOR_MERGE_STATUS);
@@ -427,8 +428,11 @@ export function Settings() {
       setProjects(config.projects.join(', '));
       setEnableBacklog(config.enableBacklogScreen);
       setRequireComment(config.requireCommentOnStatusChange);
-      setBoardCardOpenMode(config.boardCardOpenMode || 'full');      setAnimationsEnabled(config.animationsEnabled ?? true);
-      setAnimationSpeed(config.animationSpeed || 'normal');      setRequireInputStatus(config.requireInputStatus || DEFAULT_REQUIRE_INPUT_STATUS);
+      setBoardCardOpenMode(config.boardCardOpenMode || 'full');
+      setAnimationsEnabled(config.animationsEnabled ?? true);
+      setEnableFireworks(config.enableFireworks ?? true);
+      setAnimationSpeed(config.animationSpeed || 'normal');
+      setRequireInputStatus(config.requireInputStatus || DEFAULT_REQUIRE_INPUT_STATUS);
       setReadyForMergeStatus(config.readyForMergeStatus || DEFAULT_READY_FOR_MERGE_STATUS);
       setDocsEditPermissions(config.docsEditPermissions || 'all');
       setDocsAllowedUsers(config.docsAllowedUsers || []);
@@ -562,6 +566,7 @@ export function Settings() {
         requireCommentOnStatusChange: requireComment,
         boardCardOpenMode,
         animationsEnabled,
+        enableFireworks,
         animationSpeed,
         requireInputStatus: normalizedRequireInputStatus,
         readyForMergeStatus: normalizedReadyForMergeStatus,
@@ -628,6 +633,7 @@ export function Settings() {
     requireCommentOnStatusChange: requireComment,
     boardCardOpenMode,
     animationsEnabled,
+    enableFireworks,
     animationSpeed,
     requireInputStatus: normalizedRequireInputStatus,
     readyForMergeStatus: normalizedReadyForMergeStatus,
@@ -648,6 +654,9 @@ export function Settings() {
     enableBacklogScreen: config.enableBacklogScreen,
     requireCommentOnStatusChange: config.requireCommentOnStatusChange,
     boardCardOpenMode: config.boardCardOpenMode || 'full',
+    animationsEnabled: config.animationsEnabled ?? true,
+    enableFireworks: config.enableFireworks ?? true,
+    animationSpeed: config.animationSpeed || 'normal',
     requireInputStatus: config.requireInputStatus || DEFAULT_REQUIRE_INPUT_STATUS,
     readyForMergeStatus: config.readyForMergeStatus || DEFAULT_READY_FOR_MERGE_STATUS,
     docsEditPermissions: config.docsEditPermissions || 'all',
@@ -668,6 +677,7 @@ export function Settings() {
     setRequireComment(config.requireCommentOnStatusChange);
     setBoardCardOpenMode(config.boardCardOpenMode || 'full');      
     setAnimationsEnabled(config.animationsEnabled ?? true);
+    setEnableFireworks(config.enableFireworks ?? true);
     setAnimationSpeed(config.animationSpeed || 'normal');      
     setRequireInputStatus(config.requireInputStatus || DEFAULT_REQUIRE_INPUT_STATUS);
     setReadyForMergeStatus(config.readyForMergeStatus || DEFAULT_READY_FOR_MERGE_STATUS);
@@ -1040,6 +1050,13 @@ export function Settings() {
               </select>
             )}
           </SettingToggleCard>
+
+          <SettingToggleCard
+            title="Celebrate Done Tickets"
+            description="Show fireworks when moving a ticket into the Done column."
+            checked={enableFireworks}
+            onChange={setEnableFireworks}
+          />
 
           <SettingToggleCard
             title="Card Hover Preview"
