@@ -1,10 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useApp } from '../AppContext';
 import { updateTask } from '../api';
 import { Loader2, Plus } from 'lucide-react';
 import { TaskViewControls } from './TaskViewControls';
 import { filterAndSortTasks } from '../taskSearch';
-import { TaskMarkdown } from './TaskMarkdown';
+import { normalizeTaskMarkdownBody, TaskDescriptionSurface } from './TaskDescriptionSurface';
 
 export function BacklogScreen() {
   const {
@@ -23,8 +23,28 @@ export function BacklogScreen() {
     taskLiveEvents,
   } = useApp();
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [descriptionDraft, setDescriptionDraft] = useState('');
+  const [descriptionNotice, setDescriptionNotice] = useState<{ tone: 'error' | 'success'; message: string } | null>(null);
+  const [isSavingDescription, setIsSavingDescription] = useState(false);
 
   const tasks = liveTasks.filter((task) => task.status === 'Backlog' || task.status.toLowerCase() === 'backlog');
+
+  const selectedTask = tasks.find(t => t.id === selectedTaskId);
+  const allStatuses = config ? [...config.columns.map(c => c.name), ...config.hiddenStatuses.map(c => c.name)] : [];
+  const visibleTasks = config ? filterAndSortTasks(tasks, config, {
+    searchQuery,
+    sortOption,
+    filterAssignee,
+    filterPriority,
+    filterTag,
+  }) : tasks;
+  const selectedVisibleTask = visibleTasks.find(t => t.id === selectedTaskId) || null;
+  const isDescriptionDirty = normalizeTaskMarkdownBody(descriptionDraft) !== normalizeTaskMarkdownBody(selectedVisibleTask?.body || '');
+
+  useEffect(() => {
+    setDescriptionDraft(selectedVisibleTask?.body || '');
+    setDescriptionNotice(null);
+  }, [selectedVisibleTask?.id, selectedVisibleTask?.body]);
 
   if ((tasksLoading && liveTasks.length === 0) || !config) {
     return (
@@ -33,17 +53,6 @@ export function BacklogScreen() {
       </div>
     );
   }
-
-  const selectedTask = tasks.find(t => t.id === selectedTaskId);
-  const allStatuses = [...config.columns.map(c => c.name), ...config.hiddenStatuses.map(c => c.name)];
-  const visibleTasks = filterAndSortTasks(tasks, config, {
-    searchQuery,
-    sortOption,
-    filterAssignee,
-    filterPriority,
-    filterTag,
-  });
-  const selectedVisibleTask = visibleTasks.find(t => t.id === selectedTaskId) || null;
 
   const handleStatusChange = async (newStatus: string) => {
     if (!selectedTask) return;
@@ -63,6 +72,37 @@ export function BacklogScreen() {
     } catch(err) {
       console.error(err);
     }
+  };
+
+  const handleSaveDescription = async () => {
+    if (!selectedVisibleTask || !isDescriptionDirty) {
+      return;
+    }
+
+    setIsSavingDescription(true);
+    setDescriptionNotice(null);
+
+    try {
+      const updatedTask = await updateTask(selectedVisibleTask.id, {
+        body: descriptionDraft,
+        updatedBy: currentUser,
+      });
+
+      setDescriptionDraft(updatedTask.body || '');
+      setDescriptionNotice({ tone: 'success', message: `Saved ${selectedVisibleTask.id} description.` });
+      triggerRefresh();
+    } catch (error) {
+      console.error(error);
+      setDescriptionNotice({ tone: 'error', message: 'Failed to save the backlog description.' });
+      throw error;
+    } finally {
+      setIsSavingDescription(false);
+    }
+  };
+
+  const handleCancelDescription = () => {
+    setDescriptionDraft(selectedVisibleTask?.body || '');
+    setDescriptionNotice(null);
   };
 
   return (
@@ -169,8 +209,26 @@ export function BacklogScreen() {
               
               <div>
                 <span className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">Description</span>
-                <div className="rounded-xl border border-gray-100 bg-gray-50 p-4 dark:border-white/5 dark:bg-black/20">
-                  <TaskMarkdown body={selectedVisibleTask.body || ''} taskId={selectedVisibleTask.id} compact emptyMessage="No description provided." />
+                <div className="space-y-3">
+                  {descriptionNotice && (
+                    <div className={`rounded-xl border px-4 py-3 text-sm ${descriptionNotice.tone === 'error' ? 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-200' : 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/20 dark:bg-emerald-500/10 dark:text-emerald-200'}`}>
+                      {descriptionNotice.message}
+                    </div>
+                  )}
+                  <TaskDescriptionSurface
+                    key={`${selectedVisibleTask.id}-backlog`}
+                    value={descriptionDraft}
+                    onChange={setDescriptionDraft}
+                    taskId={selectedVisibleTask.id}
+                    mode="backlog"
+                    compact
+                    emptyMessage="No description provided."
+                    onSave={handleSaveDescription}
+                    onCancel={handleCancelDescription}
+                    saveDisabled={!isDescriptionDirty}
+                    saveLabel="Save description"
+                    isSaving={isSavingDescription}
+                  />
                 </div>
               </div>
             </div>

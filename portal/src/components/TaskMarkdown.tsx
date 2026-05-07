@@ -22,7 +22,7 @@ function normalizeTicketRelativePath(taskId: string, href: string) {
   }
 }
 
-function resolveTaskMarkdownHref(taskId: string | undefined, href: string | undefined) {
+export function resolveTaskMarkdownHref(taskId: string | undefined, href: string | undefined) {
   if (!href || !taskId || isPassthroughHref(href)) {
     return href;
   }

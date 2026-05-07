@@ -4,34 +4,28 @@ import {
   AlertCircle,
   ArrowLeft,
   ArrowRight,
-  Bold,
   ChevronDown,
   ChevronUp,
-  Code,
   Equal,
-  Eye,
-  Link as LinkIcon,
-  List,
   Maximize2,
   MessageSquare,
   PanelRight,
-  Pencil,
   Save,
   SendHorizontal,
   Trash2,
   X,
 } from 'lucide-react';
 import { useApp } from '../AppContext';
-import { createTask, deleteTask, fetchTasks, updateTask, uploadTaskAsset } from '../api';
+import { createTask, deleteTask, fetchTasks, updateTask } from '../api';
 import type { Config, HistoryEntry, TagDef, Task } from '../types';
 import { StatusBadge } from './StatusBadge';
 import { getStatusColorClass } from '../statusStyles';
+import { buildUnsupportedImageMessage, uploadTaskImageMarkdownLinks } from '../taskAssetUploads';
+import { normalizeTaskMarkdownBody, TaskDescriptionSurface } from './TaskDescriptionSurface';
 import { TaskMarkdown } from './TaskMarkdown';
 import { DEFAULT_READY_FOR_MERGE_STATUS, getRequireInputStatus } from '../workflow';
 
 const ACTIVITY_FILTER_STORAGE_KEY = 'flux.activityFilter';
-const SUPPORTED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/svg+xml']);
-const SUPPORTED_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.svg']);
 
 type ActivityFilter = 'all' | 'comments';
 
@@ -39,44 +33,6 @@ function getInitialActivityFilter(): ActivityFilter {
   if (typeof window === 'undefined') return 'all';
   const stored = window.localStorage.getItem(ACTIVITY_FILTER_STORAGE_KEY);
   return stored === 'comments' ? 'comments' : 'all';
-}
-
-function getFileExtension(fileName: string) {
-  return fileName.includes('.') ? fileName.slice(fileName.lastIndexOf('.')).toLowerCase() : '';
-}
-
-function isSupportedImageFile(file: File) {
-  return SUPPORTED_IMAGE_MIME_TYPES.has(file.type.toLowerCase()) || SUPPORTED_IMAGE_EXTENSIONS.has(getFileExtension(file.name || ''));
-}
-
-function buildUnsupportedImageMessage(files: File[]) {
-  const labels = files.map((file) => file.name || 'clipboard image');
-  return `Only PNG, JPG, and SVG images are supported. Skipped ${labels.join(', ')}.`;
-}
-
-function buildImageMarkdownLink(assetPath: string, fileName: string) {
-  const rawAltText = fileName.replace(/\.[^.]+$/, '').trim();
-  const altText = rawAltText.replace(/[\[\]]+/g, ' ').trim() || 'image';
-  return `![${altText}](${assetPath})`;
-}
-
-function readFileAsBase64(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-
-    reader.onerror = () => reject(new Error(`Failed to read ${file.name || 'image'}.`));
-    reader.onload = () => {
-      if (typeof reader.result !== 'string') {
-        reject(new Error(`Failed to read ${file.name || 'image'}.`));
-        return;
-      }
-
-      const commaIndex = reader.result.indexOf(',');
-      resolve(commaIndex >= 0 ? reader.result.slice(commaIndex + 1) : reader.result);
-    };
-
-    reader.readAsDataURL(file);
-  });
 }
 
 function TagSelector({
@@ -227,10 +183,6 @@ export function TaskModal() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [isWideMode, setIsWideMode] = useState(false);
   const [isFullView, setIsFullView] = useState(false);
-  const [isEditingDescription, setIsEditingDescription] = useState(false);
-  const [assetError, setAssetError] = useState('');
-  const [isUploadingAsset, setIsUploadingAsset] = useState(false);
-  const [isAssetDragOver, setIsAssetDragOver] = useState(false);
   const [commentAssetError, setCommentAssetError] = useState('');
   const [replyAssetError, setReplyAssetError] = useState('');
   const [isUploadingCommentAsset, setIsUploadingCommentAsset] = useState(false);
@@ -239,7 +191,6 @@ export function TaskModal() {
   const [subtasks, setSubtasks] = useState<string[]>([]);
   const [subtaskToAdd, setSubtaskToAdd] = useState('');
 
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const commentRef = useRef<HTMLTextAreaElement>(null);
   const replyTextareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -263,10 +214,6 @@ export function TaskModal() {
       setConfirmDelete(false);
       setIsWideMode(false);
       setIsFullView(new URLSearchParams(window.location.search).get('view') === 'full');
-      setIsEditingDescription(false);
-      setAssetError('');
-      setIsUploadingAsset(false);
-      setIsAssetDragOver(false);
       setCommentAssetError('');
       setReplyAssetError('');
       setIsUploadingCommentAsset(false);
@@ -341,7 +288,7 @@ export function TaskModal() {
 
   const originalPayload = JSON.stringify({
     title: modalTask?.title || '',
-    body: modalTask?.body || '',
+    body: normalizeTaskMarkdownBody(modalTask?.body || ''),
     status: modalTask?.status || 'Todo',
     assignee: modalTask?.assignee || 'unassigned',
     tags: modalTask?.tags || [],
@@ -351,7 +298,17 @@ export function TaskModal() {
     subtasks: modalTask?.subtasks || [],
   });
 
-  const currentPayload = JSON.stringify({ title, body, status, assignee, tags, priority, effort, implementationLink, subtasks });
+  const currentPayload = JSON.stringify({
+    title,
+    body: normalizeTaskMarkdownBody(body),
+    status,
+    assignee,
+    tags,
+    priority,
+    effort,
+    implementationLink,
+    subtasks,
+  });
   const isDirty = originalPayload !== currentPayload || newComment.trim() !== '';
 
   useEffect(() => {
@@ -539,22 +496,6 @@ export function TaskModal() {
     }
   };
 
-  const insertMarkdown = (prefix: string, suffix = '') => {
-    if (!textareaRef.current) return;
-    const start = textareaRef.current.selectionStart;
-    const end = textareaRef.current.selectionEnd;
-    const selectedText = body.substring(start, end);
-
-    const nextBody = body.substring(0, start) + prefix + selectedText + suffix + body.substring(end);
-    setBody(nextBody);
-
-    setTimeout(() => {
-      if (!textareaRef.current) return;
-      textareaRef.current.focus();
-      textareaRef.current.setSelectionRange(start + prefix.length, end + prefix.length);
-    }, 0);
-  };
-
   const insertTextIntoDraft = (
     currentValue: string,
     setValue: (value: string) => void,
@@ -608,28 +549,15 @@ export function TaskModal() {
       return;
     }
 
-    const supportedFiles = files.filter((file) => isSupportedImageFile(file));
-    const unsupportedFiles = files.filter((file) => !isSupportedImageFile(file));
-
-    if (supportedFiles.length === 0) {
-      setError(buildUnsupportedImageMessage(unsupportedFiles));
-      return;
-    }
-
     setUploading(true);
     setError('');
 
     try {
-      const markdownLinks: string[] = [];
+      const { markdownLinks, unsupportedFiles } = await uploadTaskImageMarkdownLinks(modalTask.id, files);
 
-      for (const file of supportedFiles) {
-        const content = await readFileAsBase64(file);
-        const uploadedAsset = await uploadTaskAsset(modalTask.id, {
-          fileName: file.name || 'image',
-          mimeType: file.type,
-          content,
-        });
-        markdownLinks.push(buildImageMarkdownLink(uploadedAsset.path, file.name || uploadedAsset.fileName));
+      if (markdownLinks.length === 0) {
+        setError(buildUnsupportedImageMessage(unsupportedFiles));
+        return;
       }
 
       insertTextIntoDraft(currentValue, setValue, targetTextArea, markdownLinks.join('\n\n'), selectionStart, selectionEnd);
@@ -643,19 +571,6 @@ export function TaskModal() {
     } finally {
       setUploading(false);
     }
-  };
-
-  const attachImageFiles = async (files: File[], selectionStart?: number, selectionEnd?: number) => {
-    await attachImageFilesToDraft({
-      files,
-      currentValue: body,
-      setValue: setBody,
-      targetTextArea: textareaRef.current,
-      selectionStart,
-      selectionEnd,
-      setError: setAssetError,
-      setUploading: setIsUploadingAsset,
-    });
   };
 
   const attachCommentImageFiles = async (files: File[], selectionStart?: number, selectionEnd?: number) => {
@@ -682,43 +597,6 @@ export function TaskModal() {
       setError: setReplyAssetError,
       setUploading: setIsUploadingReplyAsset,
     });
-  };
-
-  const handleDescriptionPaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = Array.from(event.clipboardData.files || []);
-    if (files.length === 0) {
-      return;
-    }
-
-    event.preventDefault();
-    void attachImageFiles(files, event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
-  };
-
-  const handleDescriptionDragOver = (event: React.DragEvent<HTMLTextAreaElement>) => {
-    const hasFiles = Array.from(event.dataTransfer.types || []).includes('Files');
-    if (!hasFiles) {
-      return;
-    }
-
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'copy';
-    setIsAssetDragOver(true);
-  };
-
-  const handleDescriptionDragLeave = () => {
-    setIsAssetDragOver(false);
-  };
-
-  const handleDescriptionDrop = (event: React.DragEvent<HTMLTextAreaElement>) => {
-    const files = Array.from(event.dataTransfer.files || []);
-    if (files.length === 0) {
-      setIsAssetDragOver(false);
-      return;
-    }
-
-    event.preventDefault();
-    setIsAssetDragOver(false);
-    void attachImageFiles(files, event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
   };
 
   const handleCommentPaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -1012,46 +890,6 @@ export function TaskModal() {
           Delete Task
         </button>
       )}
-    </div>
-  );
-
-  const editorToolbar = (
-    <div className="flex items-center gap-1 border-b border-gray-200 bg-gray-100/50 p-2 dark:border-white/10 dark:bg-white/5">
-      <button onClick={() => insertMarkdown('**', '**')} title="Bold" className="rounded p-1.5 text-gray-500 hover:bg-gray-200 hover:text-gray-900 dark:hover:bg-white/10 dark:hover:text-white"><Bold className="h-4 w-4" /></button>
-      <button onClick={() => insertMarkdown('*', '*')} title="Italic" className="rounded p-1.5 text-gray-500 hover:bg-gray-200 hover:text-gray-900 dark:hover:bg-white/10 dark:hover:text-white"><Pencil className="h-4 w-4" /></button>
-      <button onClick={() => insertMarkdown('- ')} title="Bullet List" className="rounded p-1.5 text-gray-500 hover:bg-gray-200 hover:text-gray-900 dark:hover:bg-white/10 dark:hover:text-white"><List className="h-4 w-4" /></button>
-      <button onClick={() => insertMarkdown('`', '`')} title="Code" className="rounded p-1.5 text-gray-500 hover:bg-gray-200 hover:text-gray-900 dark:hover:bg-white/10 dark:hover:text-white"><Code className="h-4 w-4" /></button>
-      <button onClick={() => insertMarkdown('[', '](url)')} title="Link" className="rounded p-1.5 text-gray-500 hover:bg-gray-200 hover:text-gray-900 dark:hover:bg-white/10 dark:hover:text-white"><LinkIcon className="h-4 w-4" /></button>
-    </div>
-  );
-
-  const descriptionEditor = (
-    <div className={`flex h-full min-h-0 flex-1 flex-col overflow-hidden rounded-lg border ${
-      isAssetDragOver
-        ? 'border-primary bg-primary/5 dark:border-primary/70 dark:bg-primary/10'
-        : 'border-gray-200 bg-gray-50 dark:border-white/10 dark:bg-black/20'
-    }`}>
-      {editorToolbar}
-      <div className="flex items-center justify-between gap-3 border-b border-gray-200 px-4 py-2 text-xs text-gray-500 dark:border-white/10 dark:text-gray-400">
-        <span>{modalTask?.id ? 'Paste or drop PNG, JPG, or SVG images to attach them.' : 'Save the ticket first to attach images.'}</span>
-        {isUploadingAsset && <span className="font-semibold text-primary">Uploading image...</span>}
-      </div>
-      {assetError && (
-        <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
-          {assetError}
-        </div>
-      )}
-      <textarea
-        ref={textareaRef}
-        className="h-full min-h-[320px] w-full flex-1 resize-none bg-transparent px-4 py-3 font-mono text-sm leading-relaxed outline-none"
-        value={body}
-        onChange={(event) => setBody(event.target.value)}
-        onPaste={handleDescriptionPaste}
-        onDragOver={handleDescriptionDragOver}
-        onDragLeave={handleDescriptionDragLeave}
-        onDrop={handleDescriptionDrop}
-        placeholder="Markdown supported..."
-      />
     </div>
   );
 
@@ -1432,13 +1270,6 @@ export function TaskModal() {
             </div>
             <div className="flex items-center gap-3">
               <button
-                onClick={() => setIsEditingDescription((current) => !current)}
-                className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-200 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-white/5 dark:hover:text-white"
-              >
-                {isEditingDescription ? <Eye className="h-4 w-4" /> : <Pencil className="h-4 w-4" />}
-                {isEditingDescription ? 'Preview' : 'Edit'}
-              </button>
-              <button
                 disabled={saving || !isDirty}
                 onClick={() => handleSave(undefined, true)}
                 className={`flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-semibold shadow-sm ${
@@ -1457,8 +1288,8 @@ export function TaskModal() {
           </div>
 
           <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_340px]">
-            <div className="min-h-0 border-r border-gray-200 dark:border-white/10">
-              <div className="flex h-full min-h-0 flex-col">
+            <div className="min-h-0 border-r border-gray-200 dark:border-white/10 lg:flex lg:flex-col">
+              <div className="flex min-h-0 flex-col lg:flex-1">
                 {requireInputBanner && <div className="border-b border-gray-200 p-6 dark:border-white/10">{requireInputBanner}</div>}
 
                 <div className="min-h-0 flex-[3] border-b border-gray-200 dark:border-white/10 flex flex-col">
@@ -1467,16 +1298,16 @@ export function TaskModal() {
                       <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Description</p>
                       <p className="text-sm text-gray-500">Rendered markdown by default, editable in place.</p>
                     </div>
-                    <button
-                      onClick={() => setIsEditingDescription((current) => !current)}
-                      className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-white/5 dark:hover:text-white"
-                    >
-                      {isEditingDescription ? <Eye className="h-4 w-4" /> : <Pencil className="h-4 w-4" />}
-                      {isEditingDescription ? 'Preview' : 'Edit Description'}
-                    </button>
                   </div>
-                  <div className={`min-h-0 flex-1 px-6 pb-6 ${isEditingDescription ? 'flex' : 'overflow-y-auto'}`}>
-                    {isEditingDescription ? descriptionEditor : <TaskMarkdown body={body} taskId={modalTask?.id} emptyMessage="No description yet." />}
+                  <div className="min-h-0 flex flex-1 px-6 pb-6">
+                    <TaskDescriptionSurface
+                      key={`${modalTask?.id || 'new-task'}-full`}
+                      value={body}
+                      onChange={setBody}
+                      taskId={modalTask?.id}
+                      mode="full"
+                      emptyMessage="No description yet."
+                    />
                   </div>
                 </div>
 
@@ -1672,9 +1503,16 @@ export function TaskModal() {
                 </div>
               </div>
 
-              <div className="flex min-h-[280px] flex-1 flex-col rounded-xl border border-gray-100 bg-gray-50/60 p-4 dark:border-white/5 dark:bg-black/10">
+              <div className="flex min-h-[280px] flex-1 flex-col gap-2">
                 <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Description</label>
-                {descriptionEditor}
+                <TaskDescriptionSurface
+                  key={`${modalTask?.id || 'new-task'}-popup`}
+                  value={body}
+                  onChange={setBody}
+                  taskId={modalTask?.id}
+                  mode="popup"
+                  emptyMessage="No description yet."
+                />
               </div>
 
               {subtasksPanel}

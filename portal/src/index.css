@@ -129,6 +129,19 @@ body {
   @apply overflow-hidden;
 }
 
+.task-description-editor-shell {
+  /* removed overscroll-behavior to fix backlog scroll chaining */
+}
+
+.task-description-readonly-surface {
+  pointer-events: none;
+}
+
+.task-description-readonly-surface a,
+.task-description-readonly-surface img {
+  pointer-events: auto;
+}
+
 .docs-editor-content > *:first-child {
   margin-top: 0;
 }
@@ -203,6 +216,22 @@ body {
 
 .docs-editor-content a[href^='broken:'] {
   @apply rounded-full bg-rose-100 px-2 py-0.5 text-rose-700 no-underline dark:bg-rose-500/10 dark:text-rose-300;
+}
+
+.docs-editor-content img {
+  @apply my-4 max-h-[32rem] w-full rounded-2xl border border-gray-200 bg-white object-contain dark:border-white/10 dark:bg-black/20;
+}
+
+.docs-editor-content table {
+  @apply my-4 w-full border-collapse overflow-hidden rounded-2xl;
+}
+
+.docs-editor-content th {
+  @apply border border-gray-200 bg-gray-100 px-3 py-2 text-left font-semibold dark:border-white/10 dark:bg-white/5;
+}
+
+.docs-editor-content td {
+  @apply border border-gray-200 px-3 py-2 dark:border-white/10;
 }
 
 .docs-editor-content p.is-editor-empty:first-child::before {
