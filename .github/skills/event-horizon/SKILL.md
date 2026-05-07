@@ -1,6 +1,6 @@
 # Event Horizon Agent Skill
 
-Version: 1.4.0
+Version: 1.4.1
 
 ## Overview
 
@@ -72,8 +72,8 @@ When assigned a ticket, follow this sequence:
 
 1. Read the full ticket, including all history comments and status changes.
 2. Read the relevant docs to understand scope and touchpoints before editing. Start with `.docs/`, then `README.md`, then `.flux/skills/*.md` when the task touches workflow behavior or installer output.
-3. If the ticket is in `Grooming`, treat that as a planning phase rather than implied implementation. Tighten the ticket body into a concrete plan, capture likely touchpoints and intended validation, and list any implementation-critical choices that still need a user decision.
-4. If those implementation-critical choices are unresolved, do not silently pick a direction. Move the ticket to the configured user-input status (`requireInputStatus` in `.flux/config.json`, default `Require Input`), leave one explicit question in ticket history, and wait for the answer to route the ticket back to `Grooming` or `Todo`.
+3. If the ticket is in `Grooming`, treat that as a planning phase rather than implied implementation. Tighten the ticket body into a concrete plan, capture likely touchpoints and intended validation, review the applicable ticket metadata, and fill anything that is already inferable from the current context. Applicable fields can include `priority`, `effort`, `tags`, hierarchy links, and related-ticket references when they matter for the work.
+4. If those implementation-critical choices or applicable metadata values are unresolved, do not silently pick a direction. Move the ticket to the configured user-input status (`requireInputStatus` in `.flux/config.json`, default `Require Input`), leave one explicit question in ticket history, include the proposed fill values or defaults for the missing fields, and wait for the answer to route the ticket back to `Grooming` or `Todo`.
 5. Read nearby implementation files before editing. Prefer the smallest owning surface.
 6. Post a short plan comment to the ticket before substantial work.
 7. Move the ticket to `Todo` when grooming is complete but coding is not starting yet, or to `In Progress` when implementation starts.
@@ -91,7 +91,7 @@ When assigned a ticket, follow this sequence:
 
 - Use normal chat for broad discussion, planning, or non-ticket conversation.
 - Use the ticket system for ticket-specific clarification, approval, or decisions that should remain attached to the work item.
-- Use `Require Input` during grooming when a material implementation choice is still open. After the user answers, route the ticket back to `Grooming` to finish planning or to `Todo` when the plan is ready for pickup.
+- Use `Require Input` during grooming when a material implementation choice or applicable metadata value is still open. Include the proposed fill values in that question. After the user answers, route the ticket back to `Grooming` to finish planning or to `Todo` when the plan is ready for pickup.
 - When a ticket is blocked on user input, the canonical path is: status `Require Input` (or the configured user-input alias) -> history comment with one clear question -> user answers through the focused response UI -> ticket routed back to the next workflow status.
 - When a ticket enters the configured ready-for-merge status, the human review path is: ticket moved to `Ready` (or the configured alias) -> user reviews the work -> user tells the agent `finish <ticket>` -> agent performs the final commit and closes the ticket.
 - Do not mark a blocked ticket `Done` while the question is still open.
@@ -146,6 +146,7 @@ When assigned a ticket, follow this sequence:
 - Ticket was read fully
 - Relevant docs were reviewed during grooming or task start-up
 - Grooming tickets were turned into a concrete plan before coding started
+- Applicable ticket metadata was filled or proposed during grooming
 - Implementation-critical choices were clarified with the user before coding when they materially affected the solution
 - Plan comment added
 - Status moved to `Todo` or `In Progress` at the right time for the ticket state

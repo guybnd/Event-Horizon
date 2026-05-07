@@ -27,9 +27,9 @@ Event Horizon treats the ticket file as the canonical workflow record. Chat can 
     
 2.  Review the relevant docs so the scope and touchpoints are grounded before code changes. Start with `.docs/`, then `README.md`, then the workflow asset templates if the change touches agent behavior.
     
-3.  If the ticket is in `Grooming`, turn the ticket body into a concrete plan before coding. Tighten the summary and requirements, capture likely touchpoints, note the intended validation shape, and list any implementation-critical choices that still need a user decision.
+3.  If the ticket is in `Grooming`, turn the ticket body into a concrete plan before coding. Tighten the summary and requirements, capture likely touchpoints, note the intended validation shape, review the applicable ticket metadata, and fill any metadata that can already be inferred from the current ticket context. Applicable fields can include `priority`, `effort`, `tags`, hierarchy links, and related-ticket references when those are relevant to the work.
     
-4.  If one of those implementation-critical choices is unresolved, move the ticket to `Require Input` and record the question in history instead of silently picking a direction. Route the answer back to `Grooming` if more planning is needed or to `Todo` when the plan is clarified.
+4.  If one of those implementation-critical choices or applicable metadata values is unresolved, move the ticket to `Require Input` and record the question in history instead of silently picking a direction. Include the proposed fill values in that question. Route the answer back to `Grooming` if more planning is needed or to `Todo` when the plan is clarified.
     
 5.  Read the smallest nearby implementation surface once the ticket is concrete enough to support a specific change.
     

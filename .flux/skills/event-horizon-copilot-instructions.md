@@ -20,8 +20,8 @@ For any ticket-driven implementation task, the agent must follow this sequence:
 
 1. Read the full ticket, including history.
 2. Read the relevant docs and the smallest nearby implementation surface before editing. Start with `.docs/`, then `README.md`, then `.flux/skills/*.md` when the task touches workflow behavior or installer output.
-3. If the ticket is in `Grooming`, treat that as a planning phase rather than implicit permission to code. Tighten the ticket body into a concrete plan and capture any implementation-critical choices that still need a user decision.
-4. If those implementation-critical choices are unresolved, move the ticket to the configured user-input status (`requireInputStatus`, default `Require Input`) and record the question in ticket history instead of silently picking a direction.
+3. If the ticket is in `Grooming`, treat that as a planning phase rather than implicit permission to code. Tighten the ticket body into a concrete plan, review the applicable ticket metadata, fill anything that is already inferable from the current context, and capture any implementation-critical choices that still need a user decision. Applicable fields can include `priority`, `effort`, `tags`, hierarchy links, and related-ticket references when they are relevant to the work.
+4. If those implementation-critical choices or applicable metadata values are unresolved, move the ticket to the configured user-input status (`requireInputStatus`, default `Require Input`) and record the question in ticket history instead of silently picking a direction. Include the proposed fill values or defaults for the missing fields in that question.
 5. Add a short plan comment to the ticket before substantial work.
 6. Move the ticket to `Todo` when grooming is complete but implementation is not starting yet, and move it to `In Progress` before substantive code changes.
 7. Make focused changes and run narrow validation immediately after the first substantive edit.
@@ -51,7 +51,7 @@ For any ticket-driven implementation task, the agent must follow this sequence:
 ### Documentation Expectations
 
 - Use `.docs/` as the primary durable project knowledge base when grooming or starting ticket work.
-- Use grooming to improve the ticket body itself so another agent could pick up the clarified plan without rediscovery.
+- Use grooming to improve the ticket body itself so another agent could pick up the clarified plan without rediscovery, and fill applicable metadata instead of leaving inferable values blank.
 - Update `README.md` when repository-wide setup, architecture, or workflow behavior changes.
 - If the task changes agent workflow or workflow installation behavior, update `.flux/skills/event-horizon-agent.md` and `.flux/skills/event-horizon-copilot-instructions.md`, then refresh the installed workspace copies.
 
