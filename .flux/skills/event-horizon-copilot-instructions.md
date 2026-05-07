@@ -20,17 +20,19 @@ For any ticket-driven implementation task, the agent must follow this sequence:
 
 1. Read the full ticket, including history.
 2. Read the relevant docs and the smallest nearby implementation surface before editing. Start with `.docs/`, then `README.md`, then `.flux/skills/*.md` when the task touches workflow behavior or installer output.
-3. Add a short plan comment to the ticket before substantial work.
-4. Move the ticket to `In Progress` before substantive code changes.
-5. Make focused changes and run narrow validation immediately after the first substantive edit.
-6. Add progress comments when scope changes, validation fails, or the user redirects the work.
-7. If blocked on a ticket-specific question, move the ticket to the configured user-input status (`requireInputStatus`, default `Require Input`) and record the question in ticket history instead of asking only in chat.
-8. If a ticket enters the configured ready-for-merge status (`readyForMergeStatus`, default `Ready`), treat that as a user review checkpoint rather than as closed work.
-9. Before moving a ticket to `Ready` or `Done`, review and update the relevant docs when behavior, workflow expectations, or touchpoints changed.
-10. If the user says `finish <ticket>` for a ticket in the ready-for-merge status, perform the final commit and ticket-close sequence before moving it to `Done`.
-11. If repository files changed and commits are expected, create a focused commit after validation passes and after any required docs refresh before closing the ticket.
-12. Before closing the ticket, add a completion comment that states what changed, what was validated, any caveats, and the commit hash when available.
-13. Move the ticket to `Done` only after the completion update is recorded.
+3. If the ticket is in `Grooming`, treat that as a planning phase rather than implicit permission to code. Tighten the ticket body into a concrete plan and capture any implementation-critical choices that still need a user decision.
+4. If those implementation-critical choices are unresolved, move the ticket to the configured user-input status (`requireInputStatus`, default `Require Input`) and record the question in ticket history instead of silently picking a direction.
+5. Add a short plan comment to the ticket before substantial work.
+6. Move the ticket to `Todo` when grooming is complete but implementation is not starting yet, and move it to `In Progress` before substantive code changes.
+7. Make focused changes and run narrow validation immediately after the first substantive edit.
+8. Add progress comments when scope changes, validation fails, or the user redirects the work.
+9. If blocked on a ticket-specific question during implementation, move the ticket to the configured user-input status (`requireInputStatus`, default `Require Input`) and record the question in ticket history instead of asking only in chat.
+10. If a ticket enters the configured ready-for-merge status (`readyForMergeStatus`, default `Ready`), treat that as a user review checkpoint rather than as closed work.
+11. Before moving a ticket to `Ready` or `Done`, review and update the relevant docs when behavior, workflow expectations, or touchpoints changed.
+12. If the user says `finish <ticket>` for a ticket in the ready-for-merge status, perform the final commit and ticket-close sequence before moving it to `Done`.
+13. If repository files changed and commits are expected, create a focused commit after validation passes and after any required docs refresh before closing the ticket.
+14. Before closing the ticket, add a completion comment that states what changed, what was validated, any caveats, and the commit hash when available.
+15. Move the ticket to `Done` only after the completion update is recorded.
 
 ### Commit Rules
 
@@ -49,6 +51,7 @@ For any ticket-driven implementation task, the agent must follow this sequence:
 ### Documentation Expectations
 
 - Use `.docs/` as the primary durable project knowledge base when grooming or starting ticket work.
+- Use grooming to improve the ticket body itself so another agent could pick up the clarified plan without rediscovery.
 - Update `README.md` when repository-wide setup, architecture, or workflow behavior changes.
 - If the task changes agent workflow or workflow installation behavior, update `.flux/skills/event-horizon-agent.md` and `.flux/skills/event-horizon-copilot-instructions.md`, then refresh the installed workspace copies.
 

@@ -8,9 +8,9 @@ Event Horizon treats the ticket file as the canonical workflow record. Chat can 
 
 ## Status model
 
--   `Grooming`: clarify the request, scope the work, and capture the likely touchpoints before implementation.
+-   `Grooming`: clarify the request, shape it into a concrete plan, and capture any implementation choices that still need user input before coding.
     
--   `Todo`: queued, understood work that is ready to be picked up.
+-   `Todo`: queued, groomed work whose implementation details are sufficiently clarified to be picked up without rediscovery.
     
 -   `In Progress`: active implementation.
     
@@ -27,21 +27,25 @@ Event Horizon treats the ticket file as the canonical workflow record. Chat can 
     
 2.  Review the relevant docs so the scope and touchpoints are grounded before code changes. Start with `.docs/`, then `README.md`, then the workflow asset templates if the change touches agent behavior.
     
-3.  Read the smallest nearby implementation surface.
+3.  If the ticket is in `Grooming`, turn the ticket body into a concrete plan before coding. Tighten the summary and requirements, capture likely touchpoints, note the intended validation shape, and list any implementation-critical choices that still need a user decision.
     
-4.  Add a short plan comment.
+4.  If one of those implementation-critical choices is unresolved, move the ticket to `Require Input` and record the question in history instead of silently picking a direction. Route the answer back to `Grooming` if more planning is needed or to `Todo` when the plan is clarified.
     
-5.  Move the ticket to `In Progress` before substantive edits.
+5.  Read the smallest nearby implementation surface once the ticket is concrete enough to support a specific change.
     
-6.  Make focused changes and run a narrow validation as soon as the first real edit lands.
+6.  Add a short plan comment when transitioning from grooming into implementation.
     
-7.  If blocked on a ticket-specific question, move the ticket to `Require Input` and record the question in history.
+7.  Move the ticket to `Todo` when grooming is complete but coding is not starting yet, or move it to `In Progress` when implementation is actually starting.
     
-8.  When implementation is ready for human review, move the ticket to `Ready`.
+8.  Make focused changes and run a narrow validation as soon as the first real edit lands.
     
-9.  Before moving to `Ready` or `Done`, refresh any docs whose described behavior, workflow, or touchpoints changed.
+9.  If blocked on a ticket-specific question during implementation, move the ticket to `Require Input` and record the question in history.
     
-10.  When the user says `finish <ticket>`, perform the final commit and close-out sequence, then move the ticket to `Done`.
+10.  When implementation is ready for human review, move the ticket to `Ready`.
+    
+11.  Before moving to `Ready` or `Done`, refresh any docs whose described behavior, workflow, or touchpoints changed.
+    
+12.  When the user says `finish <ticket>`, perform the final commit and close-out sequence, then move the ticket to `Done`.
      
 
 ## Documentation touchpoints

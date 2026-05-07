@@ -73,6 +73,11 @@ Agents are expected to read the relevant docs during grooming or task start-up,
 then review and refresh those docs again before moving a ticket to `Ready` or
 `Done` when durable behavior or workflow expectations changed.
 
+During `Grooming`, the expected output is a better ticket, not early coding.
+The agent should tighten the description into a concrete plan, call out any
+implementation-critical choices, and route unresolved decisions through
+`Require Input` before the work moves to `Todo` or `In Progress`.
+
 ## The Data Schema (MVP)
 Tickets are stored as `.md` files inside the `.flux/` directory.
 
