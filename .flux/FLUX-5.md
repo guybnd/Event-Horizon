@@ -1,6 +1,6 @@
 ---
 title: Docs section
-status: In Progress
+status: Done
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent
@@ -32,21 +32,6 @@ history:
 
       4. have a setting for this, default is all can edit as its just files
       after all
-    - type: comment
-      user: Agent
-      date: '2026-05-07T01:50:24.669Z'
-      comment: >-
-        Stabilized the docs editor pass. Dirty tracking now compares against the
-        loaded editor document snapshot instead of markdown byte equality, which
-        removed the false `Unsaved` state on clean loads. The docs editor also now
-        renders formatted content with explicit heading/list/code/link styling,
-        supports wiki and external links in the Tiptap link mark, and internal
-        article links navigate correctly from the live editor surface. Validated
-        with `npm.cmd run build -w portal`, a clean `/docs` load showing no
-        `Unsaved` badge, and live navigation from `Architecture Overview` to
-        `Project Overview` through a wiki link.
-      id: c-2026-05-07t01-50-24-669z
-
       5. idk
     id: c-2026-05-06t07-35-41-321z
   - type: status_change
@@ -170,10 +155,29 @@ history:
       `Unsaved` badge, and live navigation from `Architecture Overview` to
       `Project Overview` through a wiki link.
     id: c-2026-05-07t01-50-24-669z
+  - type: comment
+    user: Agent
+    date: '2026-05-07T12:13:27.3068907+10:00'
+    comment: >-
+      Completed the docs section across focused implementation slices: `ac9f8e6`
+      added repo-backed docs APIs, the top-level Docs screen, and permissions;
+      `3070431` refined drag-ordering and inline title editing in the wiki rail;
+      `f6d640b` stabilized dirty tracking and WYSIWYG link rendering; and
+      `14850b0` added cross-links between the core docs pages. Validated across
+      those passes with repeated `npm.cmd run build -w portal`, live docs API
+      checks, drag-order persistence, clean `/docs` loads, and live wiki-link
+      navigation. The later docs-architecture follow-up was split out and
+      completed separately under FLUX-49.
+    id: c-2026-05-07t12-13-27-3068907-10-00-flux-5
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-05-07T12:13:27.3068907+10:00'
 order: 4
 priority: High
 effort: M
-implementationLink: ''
+implementationLink: 14850b0
 subtasks: []
 ---
 ## Summary

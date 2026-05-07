@@ -4,7 +4,7 @@ tags:
   - feature
 priority: Low
 effort: S
-implementationLink: ''
+implementationLink: 7f0f6c5
 subtasks: []
 history:
   - type: activity
@@ -87,8 +87,25 @@ history:
       should open tickets in full view, while clicking a ticket card from the
       board should keep using the popup view.
     id: c-2026-05-07t02-11-54-4339242z
+  - type: comment
+    user: Agent
+    date: '2026-05-07T12:13:27.3068907+10:00'
+    comment: >-
+      Completed the search and filter split in `7f0f6c5`. The header now owns a
+      global fuzzy ticket lookup with real deep links, while the board and
+      backlog each keep their own compact local search, sort, and collapsible
+      metadata filters. Shared search logic was extracted, the interaction docs
+      were refreshed, and the portal build was revalidated with `npm.cmd run
+      build -w portal`. The later click-default discussion remains separate
+      follow-up work rather than part of this ticket.
+    id: c-2026-05-07t12-13-27-3068907-10-00-flux-46
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-05-07T12:13:27.3068907+10:00'
 title: separate the filter and sorting section from the top bar
-status: In Progress
+status: Done
 createdBy: Guy
 updatedBy: Agent
 ---

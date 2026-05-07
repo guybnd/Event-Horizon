@@ -3,7 +3,7 @@ assignee: unassigned
 tags: []
 priority: None
 effort: None
-implementationLink: ''
+implementationLink: d6d6e60
 subtasks: []
 history:
   - type: activity
@@ -28,8 +28,24 @@ history:
     to: In Progress
     user: Agent
     date: '2026-05-07T01:56:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-07T12:13:27.3068907+10:00'
+    comment: >-
+      Completed the docs editor toolbar pass in `d6d6e60`. The formatting bar
+      now stays sticky while long docs scroll, and formatting controls only
+      render as active when the editor has a live text selection instead of
+      showing stale pressed states. Validated with `npm.cmd run build -w
+      portal`, a live browser check on `/docs`, and live docs API confirmation
+      for the updated Docs Workspace page.
+    id: c-2026-05-07t12-13-27-3068907-10-00-flux-52
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-05-07T12:13:27.3068907+10:00'
 title: fix\improve edit bar in docs
-status: In Progress
+status: Done
 createdBy: Guy
 updatedBy: Agent
 ---

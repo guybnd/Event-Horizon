@@ -1,6 +1,6 @@
 ---
 title: expand docs coverage from completed tickets
-status: In Progress
+status: Done
 priority: Medium
 createdBy: Guy
 updatedBy: Agent
@@ -81,8 +81,24 @@ history:
     to: In Progress
     user: Agent
     date: '2026-05-07T01:53:52.3296579Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-07T12:13:27.3068907+10:00'
+    comment: >-
+      Completed the reopened docs coverage follow-up. The docs set now includes
+      durable ticket-model and interaction pages from `497d16c`, plus a
+      dedicated Docs Workspace architecture page and updated discoverability
+      links from `171d3be`. Validated with live docs API checks confirming the
+      new pages, including `architecture/docs-workspace`, parse through the
+      engine.
+    id: c-2026-05-07t12-13-27-3068907-10-00-flux-49
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-05-07T12:13:27.3068907+10:00'
 effort: S
-implementationLink: 497d16c
+implementationLink: 171d3be
 subtasks: []
 order: 8
 ---
