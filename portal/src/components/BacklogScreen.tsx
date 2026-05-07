@@ -23,22 +23,22 @@ function BacklogRow({
   const { config } = useApp();
   const [isHovering, setIsHovering] = useState(false);
   const [popupDirection, setPopupDirection] = useState<'right' | 'left'>('right');
-  const [popupVAlign, setPopupVAlign] = useState<'top' | 'bottom'>('top');
+  const [popupOffset, setPopupOffset] = useState(0);
   const hoverTimeout = useRef<number | null>(null);
 
   const handleMouseEnter = (event: any) => {
     if (!config?.hoverPopupsEnabled) return;
     const currentCard = event.currentTarget.getBoundingClientRect();
-    if (currentCard.right + 600 + 32 > window.innerWidth) {
+    if (currentCard.right + 640 + 32 > window.innerWidth) {
       setPopupDirection('left');
     } else {
       setPopupDirection('right');
     }
 
-    if (currentCard.top + 400 > window.innerHeight) {
-      setPopupVAlign('bottom');
+    if (currentCard.top > 180) {
+      setPopupOffset(-(currentCard.top - 180));
     } else {
-      setPopupVAlign('top');
+      setPopupOffset(0);
     }
     
     if (hoverTimeout.current !== null) {
@@ -86,11 +86,12 @@ function BacklogRow({
       <AnimatePresence>
         {isHovering && task.body?.trim() && (
           <motion.div
-            initial={{ opacity: 0, y: popupVAlign === 'top' ? 10 : -10, scale: 0.95 }}
+            initial={{ opacity: 0, y: 10, scale: 0.95 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, scale: 0.95 }}
             transition={{ duration: 0.15 }}
-            className={`absolute ${popupVAlign === 'top' ? 'top-0' : 'bottom-0'} w-[600px] max-h-[85vh] overflow-y-auto z-[100] rounded-xl border border-gray-200/80 bg-white/95 p-6 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:bg-[#1a1b23]/95 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 dark:[&::-webkit-scrollbar-thumb]:bg-gray-600 [&::-webkit-scrollbar-track]:bg-transparent ${popupDirection === 'right' ? 'left-full ml-4' : 'right-full mr-4'}`}
+            style={{ marginTop: popupOffset }}
+            className={`absolute top-0 w-[640px] max-h-[85vh] overflow-y-auto z-[100] rounded-xl border border-gray-200/80 bg-white/95 p-6 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:bg-[#1a1b23]/95 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 dark:[&::-webkit-scrollbar-thumb]:bg-gray-600 [&::-webkit-scrollbar-track]:bg-transparent ${popupDirection === 'right' ? 'left-full ml-4' : 'right-full mr-4'}`}
             onClick={(e) => e.stopPropagation()}
             onMouseEnter={() => setIsHovering(true)}
             onMouseLeave={handleMouseLeave}

@@ -10,6 +10,10 @@ subtasks: []
 history:
   - type: activity
     user: Agent
+    date: '2026-05-07T09:01:20.310Z'
+    comment: User approved and closed out. Changes committed.
+  - type: activity
+    user: Agent
     date: '2026-05-07T08:56:05.212Z'
     comment: Implementation complete. Moved to Ready for user review.
   - type: activity
@@ -48,7 +52,7 @@ history:
     date: '2026-05-07T08:07:13.020Z'
     comment: Changed assignee from unassigned to Agent.
 title: Show full description popup on card hover (1.5s)
-status: Ready
+status: Done
 createdBy: Guy
 updatedBy: Guy
 order: 10
