@@ -2,11 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import TurndownService from 'turndown';
 import { marked } from 'marked';
-import { AlertCircle, Bold, Code, Eye, FileText, Heading1, Heading2, Info, Italic, Link as LinkIcon, List, ListOrdered, Pencil, Save, Trash2 } from 'lucide-react';
+import { AlertCircle, Bold, Code, FileText, Heading1, Heading2, Info, Italic, Link as LinkIcon, List, ListOrdered, Save, Trash2 } from 'lucide-react';
 import { createDoc, deleteDoc, fetchDoc, fetchDocs, updateDoc } from '../api';
 import { useApp } from '../AppContext';
 import type { Doc } from '../types';
@@ -50,18 +48,39 @@ function normalizeMarkdownBody(markdown: string) {
   return normalized ? `${normalized}\n` : '';
 }
 
-function renderMarkdownToHtml(markdown: string) {
-  const rendered = marked.parse(markdown) as string;
-  return rendered || '<p></p>';
+function createTurndownService() {
+  const service = new TurndownService({
+    headingStyle: 'atx',
+    codeBlockStyle: 'fenced',
+    bulletListMarker: '-',
+  });
+
+  service.addRule('wiki-links', {
+    filter: (node) => {
+      if (!(node instanceof HTMLElement) || node.tagName !== 'A') {
+        return false;
+      }
+
+      const href = node.getAttribute('href') || '';
+      return href.startsWith('wiki:') || href.startsWith('broken:');
+    },
+    replacement: (content, node) => {
+      const href = (node as HTMLElement).getAttribute('href') || '';
+
+      if (href.startsWith('broken:')) {
+        return `[[${decodeURIComponent(href.slice(7)) || content}]]`;
+      }
+
+      return `[[${content || decodeURIComponent(href.slice(5))}]]`;
+    },
+  });
+
+  return service;
 }
 
-function parseOrderValue(value: string) {
-  if (!value.trim()) {
-    return undefined;
-  }
-
-  const parsedValue = Number(value);
-  return Number.isFinite(parsedValue) ? parsedValue : undefined;
+function renderMarkdownToHtml(markdown: string, docs: Doc[]) {
+  const rendered = marked.parse(injectWikiLinks(markdown, docs)) as string;
+  return rendered || '<p></p>';
 }
 
 function getFolderAncestors(docPath: string) {
@@ -113,6 +132,25 @@ function injectWikiLinks(markdown: string, docs: Doc[]) {
   });
 }
 
+function getBrokenWikiLinks(markdown: string, docs: Doc[]) {
+  const brokenTargets = new Set<string>();
+
+  markdown.replace(/\[\[([^\]]+)\]\]/g, (_match, rawTarget: string) => {
+    const label = rawTarget.trim();
+    if (label && !resolveWikiDocPath(label, docs)) {
+      brokenTargets.add(label);
+    }
+
+    return _match;
+  });
+
+  return Array.from(brokenTargets);
+}
+
+function getBreadcrumbs(docPath: string) {
+  return docPath.split('/').filter(Boolean);
+}
+
 function ToolbarButton({
   label,
   active = false,
@@ -139,81 +177,6 @@ function ToolbarButton({
   );
 }
 
-function DocsMarkdown({
-  markdown,
-  docs,
-  onOpenDoc,
-}: {
-  markdown: string;
-  docs: Doc[];
-  onOpenDoc: (path: string) => void;
-}) {
-  return (
-    <div className="prose prose-gray max-w-none text-gray-700 dark:prose-invert dark:text-gray-200">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          h1: ({ children }) => <h1 className="mb-4 text-3xl font-bold text-gray-900 dark:text-gray-100">{children}</h1>,
-          h2: ({ children }) => <h2 className="mb-3 mt-8 text-2xl font-semibold text-gray-900 dark:text-gray-100">{children}</h2>,
-          h3: ({ children }) => <h3 className="mb-2 mt-6 text-xl font-semibold text-gray-900 dark:text-gray-100">{children}</h3>,
-          p: ({ children }) => <p className="mb-4 leading-7">{children}</p>,
-          ul: ({ children }) => <ul className="mb-4 list-disc space-y-1 pl-6">{children}</ul>,
-          ol: ({ children }) => <ol className="mb-4 list-decimal space-y-1 pl-6">{children}</ol>,
-          blockquote: ({ children }) => <blockquote className="mb-4 rounded-r-2xl border-l-4 border-primary/40 bg-gray-50/70 px-4 py-3 italic dark:bg-white/5">{children}</blockquote>,
-          code: ({ children, className }) => {
-            const isBlockCode = Boolean(className?.includes('language-'));
-            if (isBlockCode) {
-              return <code className="block overflow-x-auto rounded-2xl bg-black/90 p-4 text-sm text-gray-100">{children}</code>;
-            }
-
-            return <code className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-800 dark:bg-black/30 dark:text-gray-100">{children}</code>;
-          },
-          pre: ({ children }) => <pre className="mb-4 overflow-x-auto rounded-2xl bg-black/90">{children}</pre>,
-          a: ({ children, href }) => {
-            if (!href) {
-              return <span>{children}</span>;
-            }
-
-            if (href.startsWith('wiki:')) {
-              const targetPath = decodeURIComponent(href.slice(5));
-              return (
-                <button
-                  type="button"
-                  onClick={() => onOpenDoc(targetPath)}
-                  className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-sm font-semibold text-primary transition-colors hover:bg-primary/20"
-                >
-                  {children}
-                </button>
-              );
-            }
-
-            if (href.startsWith('broken:')) {
-              const brokenTarget = decodeURIComponent(href.slice(7));
-              return (
-                <span
-                  title={`Broken doc link: ${brokenTarget}`}
-                  className="inline-flex items-center gap-1 rounded-full bg-rose-100 px-2 py-0.5 text-sm font-semibold text-rose-700 dark:bg-rose-500/10 dark:text-rose-300"
-                >
-                  {children}
-                  <AlertCircle className="h-3.5 w-3.5" />
-                </span>
-              );
-            }
-
-            return (
-              <a className="inline-flex items-center gap-1 text-primary underline underline-offset-2" href={href} target="_blank" rel="noreferrer">
-                {children}
-              </a>
-            );
-          },
-        }}
-      >
-        {injectWikiLinks(markdown || 'No content yet.', docs)}
-      </ReactMarkdown>
-    </div>
-  );
-}
-
 export function DocsScreen() {
   const { currentUser, config } = useApp();
   const [docs, setDocs] = useState<Doc[]>([]);
@@ -221,13 +184,11 @@ export function DocsScreen() {
   const [selectedDoc, setSelectedDoc] = useState<Doc | null>(null);
   const [loadingDocs, setLoadingDocs] = useState(true);
   const [loadingDoc, setLoadingDoc] = useState(false);
-  const [isEditing, setIsEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState('');
-  const [draftOrder, setDraftOrder] = useState('');
   const [draftBody, setDraftBody] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
-  const [isCreateFormOpen, setIsCreateFormOpen] = useState(false);
+  const [createTargetFolder, setCreateTargetFolder] = useState<string | null>(null);
   const [newDocPath, setNewDocPath] = useState('');
   const [newDocTitle, setNewDocTitle] = useState('');
   const [creating, setCreating] = useState(false);
@@ -235,20 +196,27 @@ export function DocsScreen() {
   const [deleting, setDeleting] = useState(false);
   const [docsRefreshKey, setDocsRefreshKey] = useState(0);
   const [notice, setNotice] = useState<{ tone: 'error' | 'success'; message: string } | null>(null);
-  const turndownServiceRef = useRef(
-    new TurndownService({
-      headingStyle: 'atx',
-      codeBlockStyle: 'fenced',
-      bulletListMarker: '-',
-    })
-  );
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const turndownServiceRef = useRef<TurndownService | null>(null);
+  const titleInputRef = useRef<HTMLInputElement | null>(null);
+
+  if (!turndownServiceRef.current) {
+    turndownServiceRef.current = createTurndownService();
+  }
 
   const canEditDocs = (config?.docsEditPermissions ?? 'all') === 'all'
     || (config?.docsAllowedUsers ?? []).includes(currentUser);
+  const brokenWikiLinks = selectedDoc ? getBrokenWikiLinks(draftBody, docs) : [];
+  const breadcrumbs = selectedDoc ? getBreadcrumbs(selectedDoc.path) : [];
 
   const editor = useEditor({
     extensions: [
-      StarterKit,
+      StarterKit.configure({
+        link: {
+          openOnClick: false,
+          defaultProtocol: 'https',
+        },
+      }),
       Placeholder.configure({ placeholder: 'Start writing. Use [[doc-name]] for internal links.' }),
     ],
     content: '<p></p>',
@@ -260,24 +228,29 @@ export function DocsScreen() {
       },
     },
     onUpdate: ({ editor: activeEditor }) => {
-      const nextMarkdown = normalizeMarkdownBody(turndownServiceRef.current.turndown(activeEditor.getHTML()));
+      const nextMarkdown = normalizeMarkdownBody(turndownServiceRef.current?.turndown(activeEditor.getHTML()) || '');
       setDraftBody(nextMarkdown);
     },
   });
 
-  const currentOrder = parseOrderValue(draftOrder);
   const normalizedDraftTitle = draftTitle.trim() || (selectedDoc ? humanizeDocPath(selectedDoc.path) : 'Untitled');
   const draftMarkdown = normalizeMarkdownBody(draftBody);
   const isDirty = Boolean(
     selectedDoc
     && (
       normalizedDraftTitle !== selectedDoc.title
-      || currentOrder !== selectedDoc.order
       || draftMarkdown !== normalizeMarkdownBody(selectedDoc.body)
     )
   );
-  const previewTitle = selectedDoc ? normalizedDraftTitle : 'Docs';
-  const previewBody = draftMarkdown || selectedDoc?.body || '';
+
+  useEffect(() => {
+    if (!isEditingTitle) {
+      return;
+    }
+
+    titleInputRef.current?.focus();
+    titleInputRef.current?.select();
+  }, [isEditingTitle]);
 
   useEffect(() => {
     let cancelled = false;
@@ -308,9 +281,8 @@ export function DocsScreen() {
           setSelectedPath(null);
           setSelectedDoc(null);
           setDraftTitle('');
-          setDraftOrder('');
           setDraftBody('');
-          setIsEditing(false);
+          setIsEditingTitle(false);
           return;
         }
 
@@ -340,8 +312,8 @@ export function DocsScreen() {
     if (!selectedPath) {
       setSelectedDoc(null);
       setDraftTitle('');
-      setDraftOrder('');
       setDraftBody('');
+      setIsEditingTitle(false);
       setLoadingDoc(false);
       return;
     }
@@ -358,9 +330,8 @@ export function DocsScreen() {
 
         setSelectedDoc(loadedDoc);
         setDraftTitle(loadedDoc.title);
-        setDraftOrder(loadedDoc.order?.toString() ?? '');
         setDraftBody(normalizeMarkdownBody(loadedDoc.body));
-        setIsEditing(false);
+        setIsEditingTitle(false);
       } catch (error) {
         console.error(error);
         if (!cancelled) {
@@ -385,15 +356,15 @@ export function DocsScreen() {
       return;
     }
 
-    editor.setEditable(isEditing && canEditDocs);
+    editor.setEditable(Boolean(selectedDoc) && canEditDocs);
 
     if (!selectedDoc) {
       editor.commands.setContent('<p></p>');
       return;
     }
 
-    editor.commands.setContent(renderMarkdownToHtml(draftMarkdown || selectedDoc.body));
-  }, [editor, selectedDoc?.path, isEditing, canEditDocs]);
+    editor.commands.setContent(renderMarkdownToHtml(normalizeMarkdownBody(selectedDoc.body), docs));
+  }, [editor, selectedDoc?.path, selectedDoc?.body, canEditDocs, docs]);
 
   useEffect(() => {
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -432,13 +403,30 @@ export function DocsScreen() {
     setSelectedPath(docPath);
   };
 
+  const handleOpenCreateForm = (folderPath: string) => {
+    if (!confirmDiscardChanges()) {
+      return;
+    }
+
+    setCreateTargetFolder(folderPath);
+    setNewDocPath('');
+    setNewDocTitle('');
+    setNotice(null);
+  };
+
   const handleCreateDoc = async () => {
     if (!canEditDocs) {
       return;
     }
 
     const requestedPath = newDocPath.trim() || slugify(newDocTitle);
-    const normalizedPath = normalizeDocPathInput(requestedPath);
+    const normalizedRelativePath = normalizeDocPathInput(requestedPath);
+    const normalizedPath = normalizeDocPathInput(
+      createTargetFolder && createTargetFolder.length > 0
+        ? `${createTargetFolder}/${normalizedRelativePath || ''}`
+        : requestedPath,
+    );
+
     if (!normalizedPath) {
       setNotice({ tone: 'error', message: 'Enter a valid doc path before creating a page.' });
       return;
@@ -454,7 +442,7 @@ export function DocsScreen() {
         body: '',
       });
 
-      setIsCreateFormOpen(false);
+      setCreateTargetFolder(null);
       setNewDocPath('');
       setNewDocTitle('');
       setSelectedPath(createdDoc.path);
@@ -465,6 +453,44 @@ export function DocsScreen() {
       setNotice({ tone: 'error', message: 'Failed to create the new doc.' });
     } finally {
       setCreating(false);
+    }
+  };
+
+  const handleReorderDocs = async (_directory: string, orderedPaths: string[]) => {
+    if (!canEditDocs || orderedPaths.length < 2) {
+      return;
+    }
+
+    const previousDocs = docs;
+    const previousSelectedDoc = selectedDoc;
+    const orderByPath = new Map(orderedPaths.map((path, index) => [path, index + 1] as const));
+
+    setDocs((currentDocs) => currentDocs.map((doc) => (
+      orderByPath.has(doc.path)
+        ? { ...doc, order: orderByPath.get(doc.path) }
+        : doc
+    )));
+
+    if (selectedDoc && orderByPath.has(selectedDoc.path)) {
+      setSelectedDoc({ ...selectedDoc, order: orderByPath.get(selectedDoc.path) });
+    }
+
+    try {
+      const updatedDocs = await Promise.all(
+        orderedPaths.map((path, index) => updateDoc(path, { order: index + 1 }))
+      );
+      const updatedDocMap = new Map(updatedDocs.map((doc) => [doc.path, doc]));
+
+      setDocs((currentDocs) => currentDocs.map((doc) => updatedDocMap.get(doc.path) || doc));
+
+      if (selectedPath && updatedDocMap.has(selectedPath)) {
+        setSelectedDoc(updatedDocMap.get(selectedPath) || null);
+      }
+    } catch (error) {
+      console.error(error);
+      setDocs(previousDocs);
+      setSelectedDoc(previousSelectedDoc);
+      setNotice({ tone: 'error', message: 'Failed to save the new sidebar order.' });
     }
   };
 
@@ -479,15 +505,14 @@ export function DocsScreen() {
     try {
       const updatedDoc = await updateDoc(selectedDoc.path, {
         title: normalizedDraftTitle,
-        order: currentOrder ?? null,
         body: draftMarkdown,
       });
 
       setSelectedDoc(updatedDoc);
       setDocs((currentDocs) => currentDocs.map((doc) => doc.path === updatedDoc.path ? updatedDoc : doc));
       setDraftTitle(updatedDoc.title);
-      setDraftOrder(updatedDoc.order?.toString() ?? '');
       setDraftBody(normalizeMarkdownBody(updatedDoc.body));
+      setIsEditingTitle(false);
       setNotice({ tone: 'success', message: `Saved ${updatedDoc.title}.` });
     } catch (error) {
       console.error(error);
@@ -533,23 +558,14 @@ export function DocsScreen() {
     }
 
     setDraftTitle(selectedDoc.title);
-    setDraftOrder(selectedDoc.order?.toString() ?? '');
     setDraftBody(normalizeMarkdownBody(selectedDoc.body));
-    setIsEditing(false);
-    setNotice(null);
-  };
-
-  const handleStartCreateForm = () => {
-    if (!confirmDiscardChanges()) {
-      return;
-    }
-
-    setIsCreateFormOpen(true);
+    editor?.commands.setContent(renderMarkdownToHtml(normalizeMarkdownBody(selectedDoc.body), docs));
+    setIsEditingTitle(false);
     setNotice(null);
   };
 
   const handleCancelCreateForm = () => {
-    setIsCreateFormOpen(false);
+    setCreateTargetFolder(null);
     setNewDocPath('');
     setNewDocTitle('');
   };
@@ -559,6 +575,60 @@ export function DocsScreen() {
       ...currentFolders,
       [folderPath]: currentFolders[folderPath] === false,
     }));
+  };
+
+  const handleEditorClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    const anchor = (event.target as HTMLElement).closest('a');
+    if (!anchor) {
+      return;
+    }
+
+    const href = anchor.getAttribute('href') || '';
+    if (href.startsWith('wiki:')) {
+      event.preventDefault();
+      handleOpenDoc(decodeURIComponent(href.slice(5)));
+      return;
+    }
+
+    if (href.startsWith('broken:')) {
+      event.preventDefault();
+      setNotice({ tone: 'error', message: `No doc found for ${decodeURIComponent(href.slice(7))}.` });
+    }
+  };
+
+  const handleInsertWikiLink = () => {
+    if (!editor || !canEditDocs) {
+      return;
+    }
+
+    const selectionText = editor.state.doc.textBetween(editor.state.selection.from, editor.state.selection.to, ' ');
+    const nextTarget = window.prompt('Enter the doc path or title to link with wiki syntax.', selectionText || '');
+    if (!nextTarget || !nextTarget.trim()) {
+      return;
+    }
+
+    editor.chain().focus().insertContent(`[[${nextTarget.trim()}]]`).run();
+  };
+
+  const stopEditingTitle = (mode: 'save' | 'cancel' = 'save') => {
+    if (mode === 'cancel' && selectedDoc) {
+      setDraftTitle(selectedDoc.title);
+    }
+
+    setIsEditingTitle(false);
+  };
+
+  const handleTitleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      stopEditingTitle('save');
+      return;
+    }
+
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      stopEditingTitle('cancel');
+    }
   };
 
   const handleSetLink = () => {
@@ -581,7 +651,7 @@ export function DocsScreen() {
   };
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[340px,minmax(0,1fr)]">
+    <div className="grid gap-6 xl:grid-cols-[minmax(18rem,20%)_minmax(0,1fr)]">
       <DocsSidebar
         docs={docs}
         selectedPath={selectedPath}
@@ -591,14 +661,15 @@ export function DocsScreen() {
         expandedFolders={expandedFolders}
         onToggleFolder={handleToggleFolder}
         canCreate={canEditDocs}
-        isCreateFormOpen={isCreateFormOpen}
+        createTargetFolder={createTargetFolder}
         newDocPath={newDocPath}
         onNewDocPathChange={setNewDocPath}
         newDocTitle={newDocTitle}
         onNewDocTitleChange={setNewDocTitle}
-        onOpenCreateForm={handleStartCreateForm}
+        onOpenCreateForm={handleOpenCreateForm}
         onCancelCreate={handleCancelCreateForm}
         onCreateDoc={handleCreateDoc}
+        onReorderDocs={handleReorderDocs}
         creating={creating}
       />
 
@@ -609,22 +680,51 @@ export function DocsScreen() {
               <FileText className="h-4 w-4" />
               Documentation
             </div>
-            <h1 className="truncate text-3xl font-bold tracking-tight text-gray-900 dark:text-gray-100">{selectedDoc ? previewTitle : 'Documentation'}</h1>
+            {selectedDoc ? (
+              isEditingTitle && canEditDocs ? (
+                <input
+                  ref={titleInputRef}
+                  value={draftTitle}
+                  onChange={(event) => setDraftTitle(event.target.value)}
+                  onBlur={() => stopEditingTitle('save')}
+                  onKeyDown={handleTitleKeyDown}
+                  className="w-full max-w-2xl rounded-2xl border border-gray-200 bg-white px-4 py-2 text-3xl font-bold tracking-tight text-gray-900 outline-none focus:border-primary dark:border-white/10 dark:bg-black/20 dark:text-gray-100"
+                />
+              ) : (
+                <h1 className="truncate text-3xl font-bold tracking-tight text-gray-900 dark:text-gray-100">
+                  {canEditDocs ? (
+                    <button
+                      type="button"
+                      onClick={() => setIsEditingTitle(true)}
+                      className="-ml-2 rounded-xl px-2 py-1 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5"
+                    >
+                      {normalizedDraftTitle}
+                    </button>
+                  ) : (
+                    normalizedDraftTitle
+                  )}
+                </h1>
+              )
+            ) : (
+              <h1 className="truncate text-3xl font-bold tracking-tight text-gray-900 dark:text-gray-100">Documentation</h1>
+            )}
             <p className="mt-2 text-sm text-gray-500">
               {selectedDoc ? `${selectedDoc.path}.md` : 'Select a document from the sidebar or create the first one.'}
             </p>
+            {selectedDoc && breadcrumbs.length > 0 && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400">
+                {breadcrumbs.map((segment, index) => (
+                  <span key={`${segment}-${index}`} className="flex items-center gap-2">
+                    {index > 0 && <span className="text-gray-300 dark:text-gray-600">/</span>}
+                    <span>{segment}</span>
+                  </span>
+                ))}
+                {isDirty && <span className="rounded-full bg-amber-100 px-2 py-1 text-[10px] text-amber-700 dark:bg-amber-500/10 dark:text-amber-200">Unsaved</span>}
+              </div>
+            )}
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setIsEditing((current) => !current)}
-              disabled={!selectedDoc || !canEditDocs}
-              className={`flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-semibold transition-colors ${selectedDoc && canEditDocs ? 'border border-gray-200 text-gray-700 hover:bg-gray-100 dark:border-white/10 dark:text-gray-200 dark:hover:bg-white/5' : 'bg-gray-200 text-gray-400 dark:bg-white/10 dark:text-gray-500'}`}
-            >
-              {isEditing ? <Eye className="h-4 w-4" /> : <Pencil className="h-4 w-4" />}
-              {isEditing ? 'Preview' : 'Edit'}
-            </button>
             <button
               type="button"
               onClick={handleSave}
@@ -656,36 +756,11 @@ export function DocsScreen() {
           {!canEditDocs && (
             <div className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200">
               <Info className="mt-0.5 h-4 w-4 shrink-0" />
-              Docs are read-only for {currentUser}. Switch Docs Permissions to `all` or add this user to the allowed list in Settings.
+              Docs are read-only for {currentUser}. The wiki editor stays visible, but only users allowed by Docs Permissions can change or save content.
             </div>
           )}
 
-          {selectedDoc && (
-            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr),140px]">
-              <div>
-                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Title</label>
-                <input
-                  value={draftTitle}
-                  onChange={(event) => setDraftTitle(event.target.value)}
-                  disabled={!canEditDocs}
-                  className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-primary disabled:bg-gray-100 disabled:text-gray-500 dark:border-white/10 dark:bg-black/20 dark:disabled:bg-white/5"
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Order</label>
-                <input
-                  type="number"
-                  value={draftOrder}
-                  onChange={(event) => setDraftOrder(event.target.value)}
-                  disabled={!canEditDocs}
-                  placeholder="Optional"
-                  className="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold outline-none focus:border-primary disabled:bg-gray-100 disabled:text-gray-500 dark:border-white/10 dark:bg-black/20 dark:disabled:bg-white/5"
-                />
-              </div>
-            </div>
-          )}
-
-          {selectedDoc && isEditing && canEditDocs && (
+          {selectedDoc && canEditDocs && (
             <div className="flex flex-wrap items-center gap-2 rounded-[24px] border border-gray-200 bg-gray-50/80 px-4 py-3 dark:border-white/10 dark:bg-black/10">
               <ToolbarButton label="Bold" active={Boolean(editor?.isActive('bold'))} disabled={!editor} onClick={() => editor?.chain().focus().toggleBold().run()}>
                 <Bold className="h-4 w-4" />
@@ -708,7 +783,10 @@ export function DocsScreen() {
               <ToolbarButton label="Code Block" active={Boolean(editor?.isActive('codeBlock'))} disabled={!editor} onClick={() => editor?.chain().focus().toggleCodeBlock().run()}>
                 <Code className="h-4 w-4" />
               </ToolbarButton>
-              <ToolbarButton label="Link" active={Boolean(editor?.isActive('link'))} disabled={!editor} onClick={handleSetLink}>
+              <ToolbarButton label="Wiki Link" disabled={!editor} onClick={handleInsertWikiLink}>
+                <FileText className="h-4 w-4" />
+              </ToolbarButton>
+              <ToolbarButton label="External Link" active={Boolean(editor?.isActive('link'))} disabled={!editor} onClick={handleSetLink}>
                 <LinkIcon className="h-4 w-4" />
               </ToolbarButton>
               {isDirty && (
@@ -731,16 +809,22 @@ export function DocsScreen() {
             <div className="rounded-[28px] border border-dashed border-gray-200 px-6 py-12 text-center text-sm text-gray-500 dark:border-white/10">
               Select a document from the sidebar or create a new one.
             </div>
-          ) : isEditing && canEditDocs ? (
+          ) : (
             <div className="space-y-3">
               <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800 dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-200">
-                Type `[[doc-name]]` to create internal wiki links. They will resolve to other docs when you switch back to preview mode.
+                This editor is always live. Use the wiki-link button or type `[[doc-name]]` to reference other docs, then click the rendered link to navigate.
               </div>
-              <EditorContent editor={editor} />
-            </div>
-          ) : (
-            <div className="rounded-[28px] border border-gray-200 bg-gray-50/70 px-6 py-6 dark:border-white/10 dark:bg-black/10">
-              <DocsMarkdown markdown={previewBody} docs={docs} onOpenDoc={handleOpenDoc} />
+              {brokenWikiLinks.length > 0 && (
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-200">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>Broken wiki links: {brokenWikiLinks.join(', ')}.</span>
+                  </div>
+                </div>
+              )}
+              <div className="rounded-[28px] border border-gray-200 bg-gray-50/70 px-6 py-6 dark:border-white/10 dark:bg-black/10" onClickCapture={handleEditorClick}>
+                <EditorContent editor={editor} />
+              </div>
             </div>
           )}
         </div>
