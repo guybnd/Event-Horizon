@@ -3,7 +3,7 @@ assignee: unassigned
 tags: []
 priority: None
 effort: None
-implementationLink: ''
+implementationLink: '7dbd52f'
 subtasks: []
 history:
   - type: activity
@@ -83,8 +83,23 @@ history:
       picker, and align the Global Tags swatch palette with the saved tag chip
       colors so the picker no longer looks muted or misleading.
     id: c-2026-05-07t13-29-51-8493553-10-00
+  - type: comment
+    user: Agent
+    date: '2026-05-07T13:44:00.8522304+10:00'
+    comment: >-
+      Finalized in mixed commit `7dbd52f` per user instruction to clear the
+      board. The commit ships the status-color defaults, the shared status
+      badge rendering, and the settings follow-up that turns status color
+      selection into a cleaner badge-triggered popup flow. Validated with
+      `npm.cmd run build -w portal` before commit.
+    id: c-2026-05-07t13-44-00-8522304-10-00-flux-53
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-05-07T13:44:00.8522304+10:00'
 title: colors for statuses
-status: In Progress
+status: Done
 createdBy: Guy
 updatedBy: Agent
 order: 0
@@ -118,11 +133,11 @@ consistently anywhere a status label is rendered.
 
 ## Acceptance Criteria
 
-- [ ] Settings lets the user assign colors to board and hidden statuses
-- [ ] Status colors persist in config and survive rename or reorder operations
-- [ ] Shipped default statuses have useful default colors
-- [ ] Status colors appear anywhere the UI currently renders a status name
-- [ ] Workflow behavior continues to use status names, not color values
+- [x] Settings lets the user assign colors to board and hidden statuses
+- [x] Status colors persist in config and survive rename or reorder operations
+- [x] Shipped default statuses have useful default colors
+- [x] Status colors appear anywhere the UI currently renders a status name
+- [x] Workflow behavior continues to use status names, not color values
 
 ## Likely Affected Areas
 

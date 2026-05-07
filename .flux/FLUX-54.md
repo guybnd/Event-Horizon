@@ -3,7 +3,7 @@ assignee: unassigned
 tags: []
 priority: None
 effort: None
-implementationLink: ''
+implementationLink: '7dbd52f'
 subtasks: []
 history:
   - type: activity
@@ -67,9 +67,24 @@ history:
     to: Ready
     user: Guy
     date: '2026-05-07T03:18:16.787Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-07T13:44:00.8522304+10:00'
+    comment: >-
+      Finalized in mixed commit `7dbd52f` per user instruction to clear the
+      board. The board card click behavior setting now ships with a full-view
+      default and routes card clicks through the saved mode. Validated with
+      `npm.cmd run build -w portal` before commit.
+    id: c-2026-05-07t13-44-00-8522304-10-00-flux-54
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-07T13:44:00.8522304+10:00'
 title: 'add setting, click card default to fullview'
-status: Ready
+status: Done
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 order: 0
 ---
+
