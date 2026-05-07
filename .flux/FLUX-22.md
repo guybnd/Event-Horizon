@@ -1,6 +1,6 @@
 ---
 title: editable fields in kanban card
-status: Done
+status: Released
 priority: Medium
 createdBy: Guy
 updatedBy: Guy
@@ -52,10 +52,18 @@ history:
     date: '2026-05-07T03:11:00.289Z'
     comment: closed
     id: c-2026-05-07t03-11-00-289z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.922Z'
 effort: S
 implementationLink: ''
 order: 9
 subtasks: []
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.922Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Groomed Scope
 

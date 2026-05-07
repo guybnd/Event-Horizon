@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, Search, FileText } from 'lucide-react';
+import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, Search, FileText, Tag } from 'lucide-react';
 import { useApp } from '../AppContext';
 import { StatusBadge } from './StatusBadge';
 import { getStatusColorClass } from '../statusStyles';
@@ -100,6 +100,12 @@ export function Header() {
             className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all cursor-pointer ${view === 'backlog' ? 'bg-white dark:bg-[#2a2b36] shadow-sm text-primary' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
           >
             <ListTodo className="w-4 h-4" /> Backlog
+          </button>
+          <button 
+            onClick={() => setView('releases')}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all cursor-pointer ${view === 'releases' ? 'bg-white dark:bg-[#2a2b36] shadow-sm text-primary' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+          >
+            <Tag className="w-4 h-4" /> Releases
           </button>
           <button 
             onClick={() => setView('docs')}

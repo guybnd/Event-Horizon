@@ -5,7 +5,7 @@ tags:
   - feature
 priority: Medium
 effort: M
-implementationLink: '881ac3e0cc4810ad72c2efc79285aa475bdbeef8'
+implementationLink: 881ac3e0cc4810ad72c2efc79285aa475bdbeef8
 subtasks: []
 history:
   - type: activity
@@ -38,11 +38,19 @@ history:
     user: Guy
     date: '2026-05-07T05:49:11.174Z'
     comment: Response submitted
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.977Z'
 title: card full view improvements
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
 order: 14
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.977Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 

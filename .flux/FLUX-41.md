@@ -1,7 +1,7 @@
 ---
 id: FLUX-41
 title: subtask improvements
-status: Done
+status: Released
 priority: None
 createdBy: Guy
 updatedBy: Agent
@@ -14,8 +14,8 @@ history:
     date: '2026-05-06T23:58:00.000Z'
     comment: >-
       Planned the first slice in two parts: make linked subtask rows open the
-      child ticket from the modal, and derive parent relationships from
-      subtask links so board cards can show a clickable parent badge.
+      child ticket from the modal, and derive parent relationships from subtask
+      links so board cards can show a clickable parent badge.
     id: c-2026-05-06t23-58-00-000z
   - type: status_change
     from: Grooming
@@ -38,10 +38,18 @@ history:
     to: Done
     user: Agent
     date: '2026-05-07T00:05:00.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.939Z'
 effort: None
-implementationLink: 'f15f858'
+implementationLink: f15f858
 subtasks:
   - FLUX-42
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.939Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 
 1. clicking on a subtask inside a ticket should open that ticket, not unattach t he subtask

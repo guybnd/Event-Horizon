@@ -1,6 +1,6 @@
 ---
 title: Settings Page Polish - Sticky Save/Action Bar
-status: Todo
+status: Ready
 createdBy: Agent
 updatedBy: Agent
 assignee: unassigned
@@ -12,7 +12,34 @@ history:
   - type: activity
     user: Agent
     date: '2026-05-07T12:00:00.000Z'
+    comment: Created ticket.
+  - type: activity
+    user: Agent
+    date: '2026-05-07T12:00:00.000Z'
     comment: Created ticket based on user feedback to polish settings page.
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-08T10:00:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-08T10:00:00.000Z'
+    comment: Starting implementation of the sticky save/action bar.
+    id: c-2026-05-08t10-00-00-000z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-08T10:05:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-08T10:05:00.000Z'
+    comment: >-
+      Implemented the sticky bottom action bar handling `isDirty` state with
+      options to Save or Discard changes. Type `finish FLUX-89` when ready to
+      sign off.
+    id: c-2026-05-08t10-05-00-000z
 ---
 
 The "Save Configuration" button is located at the top. If a user edits "Agent Workflow" or preferences at the very bottom, they have to scroll all the way back up to save.

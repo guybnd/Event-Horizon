@@ -6,7 +6,7 @@ tags:
   - mvp
 priority: Medium
 effort: S
-implementationLink: '5b7c440743757e07cf4d3772a5ce22d1ce2abda4'
+implementationLink: 5b7c440743757e07cf4d3772a5ce22d1ce2abda4
 subtasks: []
 history:
   - type: activity
@@ -18,7 +18,10 @@ history:
     date: '2026-05-07T06:13:20.000Z'
     id: c-workon
     comment: >
-      Added `/api/health` endpoint, integrated health polling in `AppProvider`, introduced `isConnected` state alongside offline error banners for the modal's save/delete actions, and added the subtle connected / prominent offline visual indicator to `Header.tsx`.
+      Added `/api/health` endpoint, integrated health polling in `AppProvider`,
+      introduced `isConnected` state alongside offline error banners for the
+      modal's save/delete actions, and added the subtle connected / prominent
+      offline visual indicator to `Header.tsx`.
   - type: status_change
     user: GitHub Copilot
     date: '2026-05-07T06:13:20.001Z'
@@ -30,18 +33,29 @@ history:
     date: '2026-05-07T06:16:00.000Z'
     id: c-completion
     comment: >
-      Finalized completion of work. The connectivity indicator, `isConnection` flag, health endpoint and error boundaries are operating perfectly. The changes were scoped, validated, and successfully committed as `5b7c440743757e07cf4d3772a5ce22d1ce2abda4`.
+      Finalized completion of work. The connectivity indicator, `isConnection`
+      flag, health endpoint and error boundaries are operating perfectly. The
+      changes were scoped, validated, and successfully committed as
+      `5b7c440743757e07cf4d3772a5ce22d1ce2abda4`.
   - type: status_change
     user: GitHub Copilot
     date: '2026-05-07T06:16:00.001Z'
     from: Ready
     to: Done
     comment: Closing ticket.
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.983Z'
 id: FLUX-69
 title: Add engine connectivity indicator to portal UI
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: GitHub Copilot
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.983Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 

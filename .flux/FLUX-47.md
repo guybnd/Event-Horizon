@@ -1,7 +1,7 @@
 ---
 id: FLUX-47
 title: document implemented features and fold docs into ticket workflow
-status: Done
+status: Released
 priority: High
 createdBy: Guy
 updatedBy: Agent
@@ -15,10 +15,10 @@ history:
     date: '2026-05-07T11:04:22.6881555+10:00'
     comment: >-
       Captured from the request to start proper project documentation by
-      harvesting completed ticket work into the docs set, and to update both
-      the Event Horizon skill and Copilot instructions so agents review
-      relevant docs when grooming a task and refresh docs before marking work
-      ready for review or done.
+      harvesting completed ticket work into the docs set, and to update both the
+      Event Horizon skill and Copilot instructions so agents review relevant
+      docs when grooming a task and refresh docs before marking work ready for
+      review or done.
     id: c-2026-05-07t11-04-22-6881555-10-00
   - type: comment
     user: Agent
@@ -43,13 +43,12 @@ history:
       repository touchpoints, ticket lifecycle, and workflow installation;
       updated the source skill and always-on Copilot instructions so agents
       review docs during grooming or task start-up and refresh docs before
-      moving work to `Ready` or `Done`; refreshed the installed workspace
-      copies through the installer and updated the README to point at the docs
-      surface. Validated with a live `GET /api/docs` check confirming the new
-      docs tree, `npm.cmd run install-skill -- --target c:\GitHub\EventHorizon
-      --framework copilot`, and spot checks of the installed `.github` workflow
-      files. Commit: `0140d15` (`Document workflow touchpoints and doc update
-      rules`).
+      moving work to `Ready` or `Done`; refreshed the installed workspace copies
+      through the installer and updated the README to point at the docs surface.
+      Validated with a live `GET /api/docs` check confirming the new docs tree,
+      `npm.cmd run install-skill -- --target c:\GitHub\EventHorizon --framework
+      copilot`, and spot checks of the installed `.github` workflow files.
+      Commit: `0140d15` (`Document workflow touchpoints and doc update rules`).
     id: c-2026-05-07t11-12-48-9513605-10-00
   - type: status_change
     from: In Progress
@@ -72,9 +71,17 @@ history:
     to: Done
     user: Agent
     date: '2026-05-07T11:34:54.8016874+10:00'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.948Z'
 effort: M
-implementationLink: '0140d15'
+implementationLink: 0140d15
 subtasks: []
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.948Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 

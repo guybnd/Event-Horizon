@@ -1,7 +1,7 @@
 ---
 id: FLUX-55
 title: require clarification of implementation details during grooming
-status: Done
+status: Released
 priority: High
 createdBy: Guy
 updatedBy: Agent
@@ -66,9 +66,17 @@ history:
     to: Done
     user: Agent
     date: '2026-05-07T12:55:35.2876774+10:00'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.966Z'
 effort: S
 implementationLink: c43c278
 subtasks: []
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.965Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 

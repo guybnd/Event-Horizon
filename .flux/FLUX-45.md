@@ -1,7 +1,7 @@
 ---
 id: FLUX-45
 title: fix sorting
-status: Done
+status: Released
 priority: None
 createdBy: Guy
 updatedBy: Agent
@@ -44,9 +44,17 @@ history:
     to: Done
     user: Agent
     date: '2026-05-06T23:45:40.2757530+10:00'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.945Z'
 effort: None
 implementationLink: 07f89ad
 subtasks: []
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.945Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 1. sort default should be most recent goes on top
 2. most recent sorting doesnt seem to account for ticket creation or field editing, just to comments, need to  fix it to nay activity

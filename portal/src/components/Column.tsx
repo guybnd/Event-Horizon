@@ -24,14 +24,24 @@ export function Column({ id, title, tasks, parentByChildId, liveEvent, taskLiveE
   return (
     <div className="flex flex-col w-[320px] shrink-0">
       <div className="flex items-center justify-between mb-4 px-1">
-        <StatusBadge
-          status={title}
-          colorClass={getStatusColorClass(config, title)}
-          className="text-[10px] font-bold uppercase tracking-[0.16em]"
-        />
-        <span className={`bg-gray-200 dark:bg-white/10 text-gray-600 dark:text-gray-400 text-xs px-2.5 py-0.5 rounded-full font-medium ${liveEvent ? 'column-live-badge' : ''}`}>
-          {tasks.length}
-        </span>
+        <div className="flex items-center gap-2">
+          <StatusBadge
+            status={title}
+            colorClass={getStatusColorClass(config, title)}
+            className="text-[10px] font-bold uppercase tracking-[0.16em]"
+          />
+          <span className={`bg-gray-200 dark:bg-white/10 text-gray-600 dark:text-gray-400 text-xs px-2.5 py-0.5 rounded-full font-medium ${liveEvent ? 'column-live-badge' : ''}`}>
+            {tasks.length}
+          </span>
+        </div>
+        {id === 'Done' && tasks.length > 0 && (
+          <button
+            onClick={() => window.dispatchEvent(new CustomEvent('flux:open-release-modal', { detail: { tasks } }))}
+            className="text-xs font-bold bg-primary/10 text-primary hover:bg-primary/20 px-2 py-1 rounded"
+          >
+            Release
+          </button>
+        )}
       </div>
       
       <div

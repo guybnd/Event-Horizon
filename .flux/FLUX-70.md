@@ -5,7 +5,7 @@ tags:
   - agent
 priority: High
 effort: M
-implementationLink: 'aa978f8d791b9326d7070abb82bb1aa97e31afd1'
+implementationLink: aa978f8d791b9326d7070abb82bb1aa97e31afd1
 subtasks: []
 history:
   - type: activity
@@ -15,7 +15,9 @@ history:
   - type: activity
     user: GitHub Copilot
     date: '2026-05-07T06:30:00.000Z'
-    comment: Started work on ticket. Moving docs to clarify atomic commit flow on finish.
+    comment: >-
+      Started work on ticket. Moving docs to clarify atomic commit flow on
+      finish.
   - type: status_change
     from: Todo
     to: In Progress
@@ -24,7 +26,10 @@ history:
   - type: activity
     user: GitHub Copilot
     date: '2026-05-07T06:40:00.000Z'
-    comment: Completed documentation updates for the ticket finishing workflow. Skipping backfill mechanism for this ticket as recommended in the notes. Marking as Ready for review.
+    comment: >-
+      Completed documentation updates for the ticket finishing workflow.
+      Skipping backfill mechanism for this ticket as recommended in the notes.
+      Marking as Ready for review.
   - type: status_change
     from: In Progress
     to: Ready
@@ -33,17 +38,27 @@ history:
   - type: activity
     user: GitHub Copilot
     date: '2026-05-07T06:45:00.000Z'
-    comment: Finalizing ticket. Commits were created and backfill logic split to ticket FLUX-71.
+    comment: >-
+      Finalizing ticket. Commits were created and backfill logic split to ticket
+      FLUX-71.
   - type: status_change
     from: Ready
     to: Done
     user: GitHub Copilot
     date: '2026-05-07T06:45:01.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.986Z'
 id: FLUX-70
 title: Improve ticket finishing flow instructions
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: GitHub Copilot
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.986Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 

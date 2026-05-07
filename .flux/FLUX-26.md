@@ -1,7 +1,7 @@
 ---
 id: FLUX-26
 title: fix edit view of description in fullscreen mode
-status: Done
+status: Released
 priority: None
 createdBy: Guy
 updatedBy: Agent
@@ -25,6 +25,14 @@ history:
       Fixed the fullscreen description editor so it now expands to a usable
       height in the main content pane instead of collapsing to a tiny field.
     id: c-2026-05-06t22-00-00-000z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.929Z'
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.929Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Groomed Scope
 

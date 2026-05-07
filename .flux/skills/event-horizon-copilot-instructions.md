@@ -34,6 +34,10 @@ For any ticket-driven implementation task, the agent must follow this sequence:
 14. Before closing the ticket, add a completion comment that states what changed, what was validated, any caveats, and the commit hash when available.
 15. Move the ticket to `Done` only after the completion update is recorded.
 
+### Release Orchestration
+
+- When asked to orchestrate a release or create a new version, use `npm run flux:release <version>` in `engine` to automatically transition `Done` tickets to `Released` and generate `.docs` release notes. Ensure you coordinate the version number with the user beforehand.
+
 ### Commit Rules
 
 - Prefer one focused commit per completed ticket or tightly related ticket slice.

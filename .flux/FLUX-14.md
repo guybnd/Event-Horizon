@@ -1,6 +1,6 @@
 ---
 title: Comment box improvements
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 assignee: unassigned
@@ -55,9 +55,17 @@ history:
     to: Done
     user: Agent
     date: '2026-05-06T13:15:00.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.909Z'
 priority: High
 effort: M
 implementationLink: ''
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.909Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 

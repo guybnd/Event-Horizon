@@ -3,7 +3,7 @@ assignee: unassigned
 tags: []
 priority: Medium
 effort: None
-implementationLink: '76d3314'
+implementationLink: 76d3314
 subtasks: []
 history:
   - type: activity
@@ -117,11 +117,19 @@ history:
     to: Done
     user: Agent
     date: '2026-05-07T13:47:25.6568799+10:00'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.950Z'
 title: make stuff update in real time without refreshing the page
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 order: 0
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.950Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 
 ## Summary

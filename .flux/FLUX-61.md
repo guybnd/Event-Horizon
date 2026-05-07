@@ -1,6 +1,6 @@
 ---
 title: require grooming to complete ticket metadata
-status: Done
+status: Released
 priority: High
 createdBy: Guy
 updatedBy: Guy
@@ -50,10 +50,18 @@ history:
     to: Done
     user: Guy
     date: '2026-05-07T04:18:31.076Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.973Z'
 effort: S
 implementationLink: 347a69f
 subtasks: []
 order: 10
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.973Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 

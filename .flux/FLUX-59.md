@@ -1,6 +1,6 @@
 ---
 title: Attach images to a ticket
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
 assignee: unassigned
@@ -135,7 +135,15 @@ history:
     to: Done
     user: Guy
     date: '2026-05-07T04:58:36.377Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.969Z'
 order: 12
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.969Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 

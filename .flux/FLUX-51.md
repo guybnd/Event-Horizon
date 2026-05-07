@@ -1,6 +1,6 @@
 ---
 title: Unify markdown description editor across ticket surfaces
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent
@@ -66,9 +66,9 @@ history:
     user: Agent
     date: '2026-05-07T05:20:00.000Z'
     comment: >-
-      Starting implementation from the shared ticket-description surface.
-      Plan: extract one reusable markdown preview/editor component that keeps
-      the current image attachment flow, switch popup/full-view/backlog to that
+      Starting implementation from the shared ticket-description surface. Plan:
+      extract one reusable markdown preview/editor component that keeps the
+      current image attachment flow, switch popup/full-view/backlog to that
       shared surface, then validate with a focused portal build and live UI
       checks.
     id: c-2026-05-07t05-20-00-000z-flux-51
@@ -81,15 +81,15 @@ history:
     user: Agent
     date: '2026-05-07T05:35:00.000Z'
     comment: >-
-      Implemented the shared ticket-description surface across popup,
-      full-view, and backlog detail. Ticket descriptions now default to rendered
-      markdown everywhere, clicking the description enters the shared editor,
-      and the same toolbar plus image-attachment flow is reused across those
-      surfaces. Backlog detail now uses the same editor shell with local save
-      and cancel actions, while popup and full-view keep the existing ticket
-      draft/save flow. The docs editor stays intact; this slice kept the ticket
-      description path on the existing markdown renderer/editor model so image
-      and markdown round-tripping stay stable.
+      Implemented the shared ticket-description surface across popup, full-view,
+      and backlog detail. Ticket descriptions now default to rendered markdown
+      everywhere, clicking the description enters the shared editor, and the
+      same toolbar plus image-attachment flow is reused across those surfaces.
+      Backlog detail now uses the same editor shell with local save and cancel
+      actions, while popup and full-view keep the existing ticket draft/save
+      flow. The docs editor stays intact; this slice kept the ticket description
+      path on the existing markdown renderer/editor model so image and markdown
+      round-tripping stay stable.
 
       Validation: `npm.cmd run build -w portal` after the final backlog fix,
       live full-view and popup checks confirming rendered markdown by default
@@ -107,8 +107,8 @@ history:
     date: '2026-05-07T05:42:00.000Z'
     comment: >-
       User review redirected this back into implementation. The current shared
-      ticket-description surface still switches into raw markdown editing,
-      which does not match the docs WYSIWYG experience. Next slice: replace the
+      ticket-description surface still switches into raw markdown editing, which
+      does not match the docs WYSIWYG experience. Next slice: replace the
       task-surface raw textarea with the docs-style formatted editor model and
       return to rendered view on outside click instead of leaving the ticket in
       source-markdown mode.
@@ -150,10 +150,10 @@ history:
       User review reopened this ticket. The shared ticket-description surface
       still differs from Docs in one important way: it swaps from a rendered
       markdown preview DOM into a separate editor DOM. That reset breaks scroll
-      continuity while editing and prevents click-to-edit from placing the
-      caret at the clicked spot. Next slice: keep one editor surface mounted in
-      the same scroll container, toggle read-only vs editable behavior in
-      place, and validate the popup, full-view, and backlog flows again.
+      continuity while editing and prevents click-to-edit from placing the caret
+      at the clicked spot. Next slice: keep one editor surface mounted in the
+      same scroll container, toggle read-only vs editable behavior in place, and
+      validate the popup, full-view, and backlog flows again.
     id: c-2026-05-07t15-34-38-5470320-10-00-flux-51
   - type: status_change
     from: Ready
@@ -166,25 +166,36 @@ history:
     comment: >-
       Reverted the last broken scroll-target experiment that moved overflow onto
       the inner editor node, and tightened the read-only interaction model so
-      the ticket description shell owns scroll and click-to-edit entry while
-      the same editor DOM stays mounted underneath. Validation so far:
-      `npm.cmd run build -w portal` passes and the popup shell again reports a
-      live scroll range after the revert. Remaining blocker: after reloading
-      fresh localhost board pages, the targeted ticket modal no longer reopens
-      in automation, so full popup/full-view runtime confirmation is still
-      pending before this can move out of `In Progress`.
+      the ticket description shell owns scroll and click-to-edit entry while the
+      same editor DOM stays mounted underneath. Validation so far: `npm.cmd run
+      build -w portal` passes and the popup shell again reports a live scroll
+      range after the revert. Remaining blocker: after reloading fresh localhost
+      board pages, the targeted ticket modal no longer reopens in automation, so
+      full popup/full-view runtime confirmation is still pending before this can
+      move out of `In Progress`.
     id: c-2026-05-07t15-54-41-3067028-10-00-flux-51
   - type: comment
     user: Agent
     date: '2026-05-07T16:24:29.610Z'
     comment: >-
-      Final UI refactor for the shared ticket description editor. Made the formatting toolbar 50% smaller, constrained its width, and replaced the redundant text row with proper button highlighting to perfectly match the Docs screen functionality and display. Ticket is resolved.
+      Final UI refactor for the shared ticket description editor. Made the
+      formatting toolbar 50% smaller, constrained its width, and replaced the
+      redundant text row with proper button highlighting to perfectly match the
+      Docs screen functionality and display. Ticket is resolved.
     id: c-c54292cb-c6b9-4dc3-8603-729cff689f16
   - type: status_change
     from: In Progress
     to: Done
     user: Agent
     date: '2026-05-07T16:24:29.610Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.958Z'
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.958Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 

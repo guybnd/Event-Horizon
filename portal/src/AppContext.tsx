@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import type { ColumnLiveEvent, Config, Task, TaskLiveEvent } from './types';
 import { fetchConfig, fetchTasks, fetchHealth, saveConfig as apiSaveConfig } from './api';
 
-type AppView = 'board' | 'backlog' | 'docs' | 'settings';
+type AppView = 'board' | 'backlog' | 'docs' | 'settings' | 'releases';
 export type TaskSortOption = 'default' | 'priority' | 'updated' | 'assignee';
 
 const VIEW_PATHS: Record<AppView, string> = {
@@ -11,6 +11,7 @@ const VIEW_PATHS: Record<AppView, string> = {
   backlog: '/backlog',
   docs: '/docs',
   settings: '/settings',
+  releases: '/releases',
 };
 
 const LIVE_TASK_POLL_INTERVAL_MS = 3000;
@@ -47,6 +48,7 @@ function getViewFromLocation(): AppView {
   if (path === '/backlog') return 'backlog';
   if (path === '/docs') return 'docs';
   if (path === '/settings') return 'settings';
+  if (path === '/releases') return 'releases';
   return 'board';
 }
 

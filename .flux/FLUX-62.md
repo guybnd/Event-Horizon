@@ -55,11 +55,19 @@ history:
     user: Guy
     date: '2026-05-07T08:07:13.020Z'
     comment: Changed assignee from unassigned to Agent.
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.975Z'
 title: Show full description popup on card hover (1.5s)
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
 order: 10
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.975Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 

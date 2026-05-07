@@ -1,6 +1,6 @@
 ---
 title: fancy animations
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
 assignee: unassigned
@@ -11,7 +11,7 @@ tags:
   - config
 priority: Medium
 effort: M
-implementationLink: '3a56127'
+implementationLink: 3a56127
 subtasks: []
 order: 100
 history:
@@ -20,7 +20,10 @@ history:
     to: Done
     user: Agent
     date: '2026-05-07T08:42:39.988Z'
-    comment: 'Finished implementation of framer-motion ticket layout animations, handling scaling safely in the DOM with AnimatePresence. Tested and validated the exit/enter physics with user feedback.'
+    comment: >-
+      Finished implementation of framer-motion ticket layout animations,
+      handling scaling safely in the DOM with AnimatePresence. Tested and
+      validated the exit/enter physics with user feedback.
   - type: activity
     user: Guy
     date: '2026-05-07T08:03:42.226Z'
@@ -55,6 +58,14 @@ history:
     user: Guy
     date: '2026-05-07T08:09:42.150Z'
     comment: Response submitted
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.988Z'
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.988Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 Add smooth scaling animations when opening a ticket card into a modal or full-screen view, and when closing it back down. Give users control over animation toggle and speed via Settings.

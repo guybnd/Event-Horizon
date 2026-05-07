@@ -1,7 +1,7 @@
 ---
 id: FLUX-43
 title: extend workspace installer to patch copilot instructions
-status: Done
+status: Released
 priority: High
 createdBy: Guy
 updatedBy: Agent
@@ -44,19 +44,27 @@ history:
       block, the Settings screen reports both assets, and the README documents
       the combined workflow install. Validated with `npm.cmd run install-skill
       -- --target c:\GitHub\EventHorizon --framework copilot --dry-run`,
-      `npm.cmd run install-skill -- --target c:\GitHub\EventHorizon
-      --framework copilot`, `npm.cmd run build -w portal`, and the live
-      `/api/skill/status` response showing both assets installed. Commit:
-      `a089edc` (`Install Copilot workflow instructions with the skill`).
+      `npm.cmd run install-skill -- --target c:\GitHub\EventHorizon --framework
+      copilot`, `npm.cmd run build -w portal`, and the live `/api/skill/status`
+      response showing both assets installed. Commit: `a089edc` (`Install
+      Copilot workflow instructions with the skill`).
     id: c-2026-05-06t13-42-00-000z
   - type: status_change
     from: In Progress
     to: Done
     user: Agent
     date: '2026-05-06T13:42:00.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.940Z'
 effort: M
-implementationLink: 'a089edc'
+implementationLink: a089edc
 subtasks: []
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.940Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 

@@ -12,10 +12,12 @@ import { Loader2 } from 'lucide-react';
 import { TaskViewControls } from './TaskViewControls';
 import { filterAndSortTasks } from '../taskSearch';
 import { getStatusColorClass } from '../statusStyles';
+import { ReleaseModal } from './ReleaseModal';
 
 export function Board() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [activeTask, setActiveTask] = useState<Task | null>(null);
+  const [releaseModalTasks, setReleaseModalTasks] = useState<Task[] | null>(null);
   const {
     tasks: liveTasks,
     tasksLoading,
@@ -38,6 +40,14 @@ export function Board() {
     setTasks(liveTasks);
   }, [liveTasks]);
 
+  useEffect(() => {
+    const fn = (e: any) => {
+      setReleaseModalTasks(e.detail.tasks);
+    };
+    window.addEventListener('flux:open-release-modal', fn);
+    return () => window.removeEventListener('flux:open-release-modal', fn);
+  }, []);
+
   if ((tasksLoading && tasks.length === 0) || !config) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -46,7 +56,10 @@ export function Board() {
     );
   }
 
-  const boardTasks = tasks.filter((task) => !config.hiddenStatuses?.some((hiddenStatus) => hiddenStatus.name === task.status));
+  const boardTasks = tasks.filter((task) => 
+    task.status !== 'Released' && 
+    !config.hiddenStatuses?.some((hiddenStatus) => hiddenStatus.name === task.status)
+  );
   const extraStatuses = Array.from(new Set(boardTasks.map(t => t.status)))
     .filter(s => !config.columns?.find(c => c.name === s) && !config.hiddenStatuses?.find(h => h.name === s));
 
@@ -245,7 +258,9 @@ export function Board() {
             </div>
           </div>
         </div>
-      )}
-    </>
+      )}      
+      {releaseModalTasks && (
+        <ReleaseModal tasks={releaseModalTasks} onClose={() => setReleaseModalTasks(null)} />
+      )}    </>
   );
 }

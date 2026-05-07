@@ -1,6 +1,6 @@
 ---
 title: Add priority field to tickets
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent
@@ -28,7 +28,15 @@ history:
       render on cards, support card-level quick changes, and are editable from
       the ticket modal.
     id: c-2026-05-06t22-55-00-000z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.912Z'
 order: 1
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.912Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 

@@ -1,6 +1,6 @@
 ---
 title: Fix prompt full-view flow and response routing
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
 assignee: unassigned
@@ -9,7 +9,7 @@ tags:
   - bug
 priority: High
 effort: L
-implementationLink: '881ac3e0cc4810ad72c2efc79285aa475bdbeef8'
+implementationLink: 881ac3e0cc4810ad72c2efc79285aa475bdbeef8
 subtasks: []
 history:
   - type: activity
@@ -51,7 +51,15 @@ history:
     to: Grooming
     user: Guy
     date: '2026-05-07T05:48:38.578Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.968Z'
 order: 8
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.968Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 

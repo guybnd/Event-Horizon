@@ -135,10 +135,18 @@ history:
     to: Done
     user: Agent
     date: '2026-05-07T02:17:45.1650310Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.946Z'
 title: separate the filter and sorting section from the top bar
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.946Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 need a nicer distinct page layout.. lets consider how it will look best.
 we can keep the search in the top bar and it can return actual results like a jira ticket search so it can also return for me stuff from the backlog etc. with a fuzzy search, and separately have a filter search bar in the board itself along with the sorting and filters

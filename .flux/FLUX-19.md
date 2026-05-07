@@ -1,6 +1,6 @@
 ---
 title: Allow ordering columns in kanban
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
 assignee: Agent
@@ -25,7 +25,15 @@ history:
       @dnd-kit/sortable. Verified it correctly updates config.json and reflects
       on the board.
     id: c-2026-05-06t17-56-00-10-00
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.915Z'
 order: 5
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.915Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 

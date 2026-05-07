@@ -3,7 +3,7 @@ assignee: unassigned
 tags: []
 priority: None
 effort: None
-implementationLink: '7dbd52f'
+implementationLink: 7dbd52f
 subtasks: []
 history:
   - type: activity
@@ -81,10 +81,18 @@ history:
     to: Done
     user: Agent
     date: '2026-05-07T13:44:00.8522304+10:00'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.963Z'
 title: 'add setting, click card default to fullview'
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 order: 0
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.963Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 

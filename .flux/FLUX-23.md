@@ -1,7 +1,7 @@
 ---
 id: FLUX-23
 title: refine default popup ticket layout
-status: Done
+status: Released
 priority: High
 createdBy: Guy
 updatedBy: Agent
@@ -39,6 +39,14 @@ history:
       measurement that the description starts within the upper half of the
       popup.
     id: c-2026-05-06t11-50-00-000z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.924Z'
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.924Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 

@@ -1,6 +1,6 @@
 ---
 title: Settings Page Polish - Tabbed Navigation or Sidebar
-status: Done
+status: Released
 createdBy: Agent
 updatedBy: Agent
 assignee: unassigned
@@ -53,6 +53,14 @@ history:
       Completed tabbed navigation for Settings page. Verified build using npm.
       Changes committed in a29328510f890dddb4f27d4205ad03e036ac9e9f.
     id: c-2026-05-07t12-20-00-000z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.993Z'
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.993Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 
 Currently, the settings page is one very long continuous scroll. We can break it down into logical tabs (or a left-side navigation menu) to reduce cognitive load:

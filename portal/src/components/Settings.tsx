@@ -654,8 +654,33 @@ export function Settings() {
 
   const isDirty = currentSavedPayload !== originalPayload;
 
+  const handleDiscard = () => {
+    if (!config) return;
+    setColumns(config.columns.map(c => ({ ...c, originalName: c.name })));
+    setHiddenStatuses(config.hiddenStatuses.map(c => ({ ...c, originalName: c.name })));
+    setUsers(config.users.map(u => ({ ...u, originalName: u.name })));
+    setTags(config.tags.map(t => ({ ...t, originalName: t.name })));
+    setPriorities(config.priorities.map(p => ({ ...p, originalName: p.name })) || []);
+    setProjects(config.projects.join(', '));
+    setEnableBacklog(config.enableBacklogScreen);
+    setRequireComment(config.requireCommentOnStatusChange);
+    setBoardCardOpenMode(config.boardCardOpenMode || 'full');      
+    setAnimationsEnabled(config.animationsEnabled ?? true);
+    setAnimationSpeed(config.animationSpeed || 'normal');      
+    setRequireInputStatus(config.requireInputStatus || DEFAULT_REQUIRE_INPUT_STATUS);
+    setReadyForMergeStatus(config.readyForMergeStatus || DEFAULT_READY_FOR_MERGE_STATUS);
+    setDocsEditPermissions(config.docsEditPermissions || 'all');
+    setDocsAllowedUsers(config.docsAllowedUsers || []);
+    setDocsRoot(config.docsRoot || '.docs');
+    setHoverPopupsEnabled(config.hoverPopupsEnabled ?? true);
+    setHoverPopupDelay(config.hoverPopupDelay ?? 1500);
+    setGenerateDistinctFiles(config.releaseSettings?.generateDistinctFiles ?? true);
+    setReleaseNotesPath(config.releaseSettings?.releaseNotesPath || 'release-notes');
+  };
+
   return (
-    <div className="max-w-5xl mx-auto mb-12 flex gap-6 items-start">
+    <>
+      <div className="max-w-5xl mx-auto mb-12 flex gap-6 items-start">
       <div className="w-64 shrink-0 bg-white/80 dark:bg-[#1a1b23]/80 backdrop-blur-xl border border-gray-200 dark:border-white/10 rounded-2xl shadow-xl overflow-hidden sticky top-4">
         <div className="p-5 border-b border-gray-200 dark:border-white/10">
           <h2 className="text-lg font-bold text-gray-900 dark:text-gray-100 flex items-center justify-between">
@@ -709,17 +734,7 @@ export function Settings() {
                 {activeTab === 'agent' && 'Agent Integration'}
               </h2>
             </div>
-            <button 
-              onClick={handleSave}
-              disabled={saving || !isDirty}
-              className={`flex items-center gap-2 px-6 py-2 rounded-lg transition-colors font-medium shadow-sm ${
-                isDirty 
-                  ? 'bg-primary hover:bg-primary-hover text-white shadow-primary/20 cursor-pointer'
-                  : 'bg-gray-200 dark:bg-white/10 text-gray-400 cursor-not-allowed'
-              }`}
-            >
-              <Save className="w-4 h-4" /> {saving ? 'Saving...' : 'Save Configuration'}
-            </button>
+            {/* Action bar is now sticky at the bottom */}
           </div>
 
           <div className="space-y-10">
@@ -1121,5 +1136,35 @@ export function Settings() {
         </div>
       </div>
     </div>
+
+    {/* Sticky Save/Action Bar */}
+    <div 
+      className={`fixed bottom-0 left-0 right-0 p-4 transition-transform duration-300 pointer-events-none z-50 ${isDirty ? 'translate-y-0' : 'translate-y-full'}`}
+    >
+      <div className="absolute inset-0 bg-gradient-to-t from-white/80 via-white/50 to-transparent dark:from-black/80 dark:via-black/50 dark:to-transparent pointer-events-none" />
+      <div className="max-w-2xl mx-auto flex items-center justify-between bg-white dark:bg-[#1a1b23] border border-gray-200 dark:border-white/10 rounded-2xl shadow-2xl p-4 pointer-events-auto relative">
+        <div className="flex flex-col">
+          <span className="text-sm font-bold text-gray-900 dark:text-gray-100">Unsaved Changes</span>
+          <span className="text-xs text-gray-500">You have modified your workspace settings.</span>
+        </div>
+        <div className="flex items-center gap-3">
+          <button 
+            onClick={handleDiscard}
+            disabled={saving}
+            className="px-4 py-2 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/5 transition-colors"
+          >
+            Discard
+          </button>
+          <button 
+            onClick={handleSave}
+            disabled={saving}
+            className="flex items-center gap-2 px-6 py-2 rounded-lg bg-primary hover:bg-primary-hover text-white shadow-sm shadow-primary/20 transition-colors text-sm font-medium"
+          >
+            <Save className="w-4 h-4" /> {saving ? 'Saving...' : 'Save Changes'}
+          </button>
+        </div>
+      </div>
+    </div>
+    </>
   );
 }

@@ -1,7 +1,7 @@
 ---
 id: FLUX-28
 title: add field for 'story points' or 'intensity'
-status: Done
+status: Released
 priority: None
 createdBy: Guy
 updatedBy: Agent
@@ -85,8 +85,16 @@ history:
       appears in the popup quick-edit view and is editable directly from the
       kanban card, matching the priority interaction pattern.
     id: c-2026-05-06t22-30-00-000z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.932Z'
 effort: None
 implementationLink: ''
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.932Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Groomed Scope
 

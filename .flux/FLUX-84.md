@@ -1,6 +1,6 @@
 ---
-title: "Bug: New task window shows blurred screen on top of modal"
-status: Done
+title: 'Bug: New task window shows blurred screen on top of modal'
+status: Released
 createdBy: User
 updatedBy: Agent
 assignee: ''
@@ -16,9 +16,9 @@ history:
     user: Agent
     date: '2026-05-07T09:34:00.000Z'
     comment: >-
-      Completed ticket. Added !z-[60] to TaskModal.tsx Rnd component to render the 
-      modal window correctly above the background blur overlay instead of below it. 
-      Committed as d837682.
+      Completed ticket. Added !z-[60] to TaskModal.tsx Rnd component to render
+      the  modal window correctly above the background blur overlay instead of
+      below it.  Committed as d837682.
   - type: activity
     user: Agent
     date: '2026-05-07T09:32:11.220Z'
@@ -27,7 +27,15 @@ history:
     user: User
     date: '2026-05-07T09:28:19.000Z'
     comment: Created ticket.
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.990Z'
 order: 84
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.990Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 

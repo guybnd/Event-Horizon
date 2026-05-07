@@ -1,6 +1,6 @@
 ---
 title: Docs section
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent
@@ -31,8 +31,7 @@ history:
       3. WISYWIG single page editor
 
       4. have a setting for this, default is all can edit as its just files
-      after all
-      5. idk
+      after all 5. idk
     id: c-2026-05-06t07-35-41-321z
   - type: status_change
     from: Require Input
@@ -174,11 +173,19 @@ history:
     to: Done
     user: Agent
     date: '2026-05-07T12:13:27.3068907+10:00'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.955Z'
 order: 4
 priority: High
 effort: M
 implementationLink: 14850b0
 subtasks: []
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.955Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 

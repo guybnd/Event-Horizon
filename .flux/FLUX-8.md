@@ -1,7 +1,7 @@
 ---
 id: FLUX-8
 title: Design agent skill document
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 assignee: unassigned
@@ -78,10 +78,18 @@ history:
       skill's own task-finish protocol around descriptive completion comments
       and commit messages.
     id: c-2026-05-06t11-40-00-000z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.987Z'
 order: 1
 priority: None
 effort: None
 implementationLink: ''
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.987Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 

@@ -1,6 +1,6 @@
 ---
 title: Allow reordering tickets in kanban columns
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent
@@ -25,7 +25,15 @@ history:
       now have an 'order' field that is updated on drag-and-drop and persisted
       to the filesystem. Verified with browser tests.
     id: c-2026-05-06t18-02-00-000z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.911Z'
 order: 1
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.911Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 

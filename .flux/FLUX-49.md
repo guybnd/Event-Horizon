@@ -1,6 +1,6 @@
 ---
 title: expand docs coverage from completed tickets
-status: Done
+status: Released
 priority: Medium
 createdBy: Guy
 updatedBy: Agent
@@ -97,10 +97,18 @@ history:
     to: Done
     user: Agent
     date: '2026-05-07T12:13:27.3068907+10:00'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.952Z'
 effort: S
 implementationLink: 171d3be
 subtasks: []
 order: 8
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.952Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 

@@ -1,7 +1,7 @@
 ---
 id: FLUX-27
 title: add sort and fitlers to kanban and backlog view
-status: Done
+status: Released
 priority: None
 createdBy: Guy
 updatedBy: Agent
@@ -55,6 +55,14 @@ history:
       selected state round-trips through the URL and that clearing controls
       restores the default view.
     id: c-2026-05-06t23-55-00-000z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.931Z'
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.931Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Groomed Scope
 

@@ -3,7 +3,7 @@ assignee: unassigned
 tags: []
 priority: None
 effort: None
-implementationLink: '7dbd52f'
+implementationLink: 7dbd52f
 subtasks: []
 history:
   - type: activity
@@ -88,21 +88,29 @@ history:
     date: '2026-05-07T13:44:00.8522304+10:00'
     comment: >-
       Finalized in mixed commit `7dbd52f` per user instruction to clear the
-      board. The commit ships the status-color defaults, the shared status
-      badge rendering, and the settings follow-up that turns status color
-      selection into a cleaner badge-triggered popup flow. Validated with
-      `npm.cmd run build -w portal` before commit.
+      board. The commit ships the status-color defaults, the shared status badge
+      rendering, and the settings follow-up that turns status color selection
+      into a cleaner badge-triggered popup flow. Validated with `npm.cmd run
+      build -w portal` before commit.
     id: c-2026-05-07t13-44-00-8522304-10-00-flux-53
   - type: status_change
     from: In Progress
     to: Done
     user: Agent
     date: '2026-05-07T13:44:00.8522304+10:00'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.961Z'
 title: colors for statuses
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 order: 0
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.961Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 

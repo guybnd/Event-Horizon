@@ -44,10 +44,18 @@ history:
     to: Done
     user: Agent
     date: '2026-05-07T12:13:27.3068907+10:00'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.960Z'
 title: fix\improve edit bar in docs
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.960Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 the top bar with the editing stuff (header, bold e tc.) should follow the page so if user scrolls down its still visible. 
 it also need to fix its context for example even if im not marking any text it could show some 'buttons' as pressed, like list or bold or link but its not actually since im not selecting any text...

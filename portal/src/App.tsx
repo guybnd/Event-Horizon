@@ -5,6 +5,7 @@ import { BacklogScreen } from './components/BacklogScreen';
 import { DocsScreen } from './components/DocsScreen';
 import { TaskModal } from './components/TaskModal';
 import { Settings } from './components/Settings';
+import { ReleasesScreen } from './components/ReleasesScreen';
 
 function AppContent() {
   const { view } = useApp();
@@ -18,6 +19,7 @@ function AppContent() {
           {view === 'backlog' && <BacklogScreen />}
           {view === 'docs' && <DocsScreen />}
           {view === 'settings' && <Settings />}
+          {view === 'releases' && <ReleasesScreen />}
         </main>
         <TaskModal />
       </div>

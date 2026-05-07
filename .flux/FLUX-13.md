@@ -1,6 +1,6 @@
 ---
 title: 'Require Input: visual indicator and prompt UI'
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
 assignee: Guy
@@ -93,8 +93,16 @@ history:
     to: Done
     user: Guy
     date: '2026-05-06T09:14:45.949Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.906Z'
 order: 6
 priority: High
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.906Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Groomed Scope
 

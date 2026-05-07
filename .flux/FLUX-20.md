@@ -1,6 +1,6 @@
 ---
 title: add subtasks to tickets
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 assignee: Guy
@@ -57,9 +57,17 @@ history:
     to: Done
     user: Agent
     date: '2026-05-06T13:15:00.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.917Z'
 priority: Critical
 effort: None
 implementationLink: ''
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.917Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Groomed Scope
 

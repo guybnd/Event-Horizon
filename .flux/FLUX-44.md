@@ -1,6 +1,6 @@
 ---
 title: 'add a status phase : ready to merge'
-status: Done
+status: Released
 priority: High
 createdBy: Guy
 updatedBy: Guy
@@ -123,10 +123,18 @@ history:
     to: Done
     user: Guy
     date: '2026-05-07T01:38:33.908Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.942Z'
 effort: None
 implementationLink: 584ceb8
 subtasks: []
 order: 7
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.942Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 we should add another user promptable stage, when a ticket is finished in progress state and is ready for user review, it goes into this status that is 'Ready'
 

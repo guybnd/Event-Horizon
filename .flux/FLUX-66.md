@@ -5,7 +5,7 @@ tags:
   - navigation
 priority: Medium
 effort: S
-implementationLink: '0f75338b21c2871e7206aca5f23b2925eb8a021b'
+implementationLink: 0f75338b21c2871e7206aca5f23b2925eb8a021b
 subtasks: []
 history:
   - type: activity
@@ -40,7 +40,11 @@ history:
   - type: activity
     user: GitHub Copilot
     date: '2026-05-07T07:05:00.000Z'
-    comment: Moved the TaskModal inside the `main` layout block in `App.tsx` and changed its CSS positioning wrapper to absolute inset. This perfectly maintains the top navigation bar at all times in both popups and full task view inside the content scroll area.
+    comment: >-
+      Moved the TaskModal inside the `main` layout block in `App.tsx` and
+      changed its CSS positioning wrapper to absolute inset. This perfectly
+      maintains the top navigation bar at all times in both popups and full task
+      view inside the content scroll area.
   - type: status_change
     from: In Progress
     to: Ready
@@ -49,17 +53,27 @@ history:
   - type: activity
     user: GitHub Copilot
     date: '2026-05-07T07:15:00.000Z'
-    comment: Received finalization confirmation. Committed UI fixes and wrapped up task.
+    comment: >-
+      Received finalization confirmation. Committed UI fixes and wrapped up
+      task.
   - type: status_change
     from: Ready
     to: Done
     user: GitHub Copilot
     date: '2026-05-07T07:15:01.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.979Z'
 title: ticket view should keep top bar
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: GitHub Copilot
 order: 12
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.979Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 

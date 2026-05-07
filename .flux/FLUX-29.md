@@ -1,7 +1,7 @@
 ---
 id: FLUX-29
 title: 'Require Input: dedicated response workflow and notification ticker'
-status: Done
+status: Released
 priority: High
 createdBy: Agent
 updatedBy: Agent
@@ -31,6 +31,14 @@ history:
       the header notification count, and validated the submit-and-route path
       end-to-end on a temporary task.
     id: c-2026-05-06t21-25-00-000z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.934Z'
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.934Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 

@@ -6,7 +6,7 @@ tags:
   - mvp
 priority: Medium
 effort: S
-implementationLink: '7c63adfbaff730d1a724f5b6c0867bd2f9a38a83'
+implementationLink: 7c63adfbaff730d1a724f5b6c0867bd2f9a38a83
 subtasks: []
 history:
   - type: activity
@@ -21,7 +21,10 @@ history:
   - type: activity
     user: GitHub Copilot
     date: '2026-05-07T07:05:00.000Z'
-    comment: Added `autoRegisterUnknownTags` into engine `api/tasks` endpoints (POST and PUT) to update `config.json` dynamically when a ticket contains new tags, satisfying all logic requirements.
+    comment: >-
+      Added `autoRegisterUnknownTags` into engine `api/tasks` endpoints (POST
+      and PUT) to update `config.json` dynamically when a ticket contains new
+      tags, satisfying all logic requirements.
   - type: status_change
     from: In Progress
     to: Ready
@@ -30,17 +33,27 @@ history:
   - type: activity
     user: GitHub Copilot
     date: '2026-05-07T07:15:00.000Z'
-    comment: Finalization triggered. Included startup watcher scan hook as requested via comments. Committing and closing.
+    comment: >-
+      Finalization triggered. Included startup watcher scan hook as requested
+      via comments. Committing and closing.
   - type: status_change
     from: Ready
     to: Done
     user: GitHub Copilot
     date: '2026-05-07T07:15:01.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.981Z'
 id: FLUX-68
 title: Auto-register unknown tags into project settings
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: GitHub Copilot
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.981Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 

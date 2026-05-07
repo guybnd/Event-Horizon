@@ -24,6 +24,9 @@ export interface Task {
   effort?: string;
   implementationLink?: string;
   subtasks?: string[];
+  version?: string;
+  releasedAt?: string;
+  releaseDocPath?: string;
 }
 
 export interface TaskLiveEvent {
@@ -98,4 +101,8 @@ export interface Config {
   animationSpeed?: 'fast' | 'normal' | 'slow';
   hoverPopupsEnabled?: boolean;
   hoverPopupDelay?: number;
+  releaseSettings?: {
+    generateDistinctFiles: boolean;
+    releaseNotesPath: string;
+  };
 }

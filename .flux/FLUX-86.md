@@ -1,6 +1,6 @@
 ---
 title: Decouple Event Horizon internal documentation from host project docs space
-status: Done
+status: Released
 createdBy: User
 updatedBy: Guy
 assignee: unassigned
@@ -31,7 +31,15 @@ history:
       single folder but still viewable and useable from the docs tool. user can
       then delete this folder if he so wishes
     id: c-2026-05-07t10-40-58-407z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.992Z'
 order: 86
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.992Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 # Context
 Event Horizon provides a repo-backed wiki feature that defaults to reading and writing from a top-level `.docs/` folder. This is intended to act as the *host project's* documentation space.

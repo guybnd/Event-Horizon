@@ -1,7 +1,7 @@
 ---
 id: FLUX-31
 title: add search box for ticket titles or descriptions
-status: Done
+status: Released
 priority: None
 createdBy: Guy
 updatedBy: Agent
@@ -36,8 +36,16 @@ history:
       engine again, the board filters to matching tickets, and the backlog shows
       the expected empty state for unmatched queries.
     id: c-2026-05-06t23-45-00-000z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.935Z'
 effort: None
 implementationLink: ''
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.935Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 
 ## Summary

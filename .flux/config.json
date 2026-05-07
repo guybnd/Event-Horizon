@@ -130,6 +130,10 @@
     {
       "name": "documentation",
       "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "ui-polish",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     }
   ],
   "priorities": [
@@ -171,6 +175,11 @@
   "readyForMergeStatus": "Ready",
   "docsEditPermissions": "all",
   "docsAllowedUsers": [],
+  "docsRoot": ".docs",
   "hoverPopupsEnabled": true,
-  "hoverPopupDelay": 250
+  "hoverPopupDelay": 250,
+  "releaseSettings": {
+    "generateDistinctFiles": true,
+    "releaseNotesPath": "release-notes"
+  }
 }

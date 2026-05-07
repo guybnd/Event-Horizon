@@ -1,15 +1,15 @@
 ---
 title: Add Releases surface and released-status workflow
-status: Todo
+status: Done
 createdBy: Guy
-updatedBy: Guy
-assignee: unassigned
+updatedBy: Agent
+assignee: Agent
 tags:
   - feature
   - workflow
 priority: Medium
 effort: L
-implementationLink: ''
+implementationLink: 5d989d9dd00853625a0ef3848e3ec81863ffc3a1
 subtasks: []
 history:
   - type: activity
@@ -60,6 +60,41 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-07T03:53:39.4816199Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-07T13:36:22.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-07T14:00:00.000Z'
+    comment: >-
+      Implemented the remaining scope for FLUX-50: - Added 'Release Settings' to
+      the global settings pane (strategy and path). - Added multi-select Release
+      functionality to the 'Done' column in Board.tsx. - Implemented
+      ReleaseModal to batch update chosen tickets to Released status and
+      generate docs based on the configured strategy. - Updated agent
+      instructions (`.flux/skills/event-horizon-agent.md`) with the `Release
+      Orchestration` procedure. Ready for review and final commit.
+    id: c-2026-05-07t14-00-00-000z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-07T14:00:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-07T14:15:00.000Z'
+    comment: >-
+      User confirmed missing Release Tab, added to App.tsx and Header.tsx.
+      Tested and verified `v0.1.0` release creation via CLI. Committed changes
+      as 5d989d9 and moving to Done.
+    id: c-2026-05-07t14-15-00-000z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-07T14:15:00.000Z'
 order: 6
 ---
 ## Summary
@@ -102,16 +137,24 @@ orchestrate releases and batch-update tickets.
 - Provide a CLI tool or script (e.g., `npm run flux:release <version>`) that the AI agent can execute to orchestrate a release programmatically.
 - The process must automatically gather all eligible `Done` tickets, apply the target version to them, generate aggregated release notes from ticket summaries, and safely transition their statuses to `Released`.
 - Include explicit agent instructions on how to decide version numbers, trigger the release script, and finalize the release workflow.
+- Generate release notes and store them as a Markdown file in the Docs (`.docs/release-notes/`).
+- Tickets should store a `releaseDocPath` linking directly to the specific release notes doc.
+
+### 7. Release Settings
+- Add a new Release Settings section to determine whether to generate a distinct changelog file for each version or to aggregate all releases into a single file.
+- Add an option to specify the path/directory for release notes.
 
 ## Acceptance Criteria
 
-- [ ] Tickets can store release metadata such as version and release date
-- [ ] A hidden `Released` status exists and released tickets move into it
-- [ ] Users can select `Done` tickets and assign them to a versioned release
-- [ ] Released tickets disappear from the active board but remain accessible through search and the Releases surface
-- [ ] The Releases surface groups tickets by version and opens the underlying ticket details correctly
-- [ ] Agent tooling/script exists to reliably batch-release tickets and generate release notes via CLI
-- [ ] Agent instructions clearly define the procedure to orchestrate a new version release
+- [x] Tickets can store release metadata such as version, release date, and `releaseDocPath`
+- [x] A hidden `Released` status exists and released tickets move into it
+- [x] Users can select `Done` tickets and assign them to a versioned release
+- [x] Released tickets disappear from the active board but remain accessible through search and the Releases surface
+- [x] The Releases surface groups tickets by version and opens the underlying ticket details correctly
+- [x] Agent tooling/script exists to reliably batch-release tickets and generate release notes via CLI
+- [x] Agent instructions clearly define the procedure to orchestrate a new version release
+- [x] Generated release notes are saved as a Markdown file in the `.docs` system according to Release Settings
+- [x] Settings page includes options to configure the release notes output strategy
 
 ## Likely Affected Areas
 

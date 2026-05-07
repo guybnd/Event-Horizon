@@ -1,7 +1,7 @@
 ---
 id: FLUX-25
 title: add commit \ PR field to ticket fields
-status: Done
+status: Released
 priority: None
 createdBy: Guy
 updatedBy: Agent
@@ -25,6 +25,14 @@ history:
       Implemented `implementationLink` in the ticket model and modal editor,
       with clickable display when present.
     id: c-2026-05-06t22-00-00-000z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.927Z'
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.927Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Groomed Scope
 

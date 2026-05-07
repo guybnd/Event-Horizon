@@ -1,6 +1,6 @@
 ---
 title: 'Customize UI: Fix fullscreen editor & send button'
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
 assignee: Agent
@@ -53,7 +53,15 @@ history:
     date: '2026-05-06T07:42:44.061Z'
     comment: Testing the send button bug fix.
     id: c-2026-05-06t07-42-44-061z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-07T13:54:26.937Z'
 order: 3
+version: v0.1.0
+releasedAt: '2026-05-07T13:54:26.937Z'
+releaseDocPath: release-notes/v0.1.0
 ---
 ## Summary
 

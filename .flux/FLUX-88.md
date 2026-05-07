@@ -1,6 +1,6 @@
 ---
 title: Settings Page Polish - Unify Settings Toggle UI
-status: In Progress
+status: Done
 createdBy: Agent
 updatedBy: Agent
 assignee: unassigned
@@ -8,7 +8,12 @@ tags:
   - ui-polish
 priority: Medium
 effort: XS
+implementationLink: 601fa76f882e1a8149ae7105b11c9a6aa418608d
 history:
+  - type: activity
+    user: Agent
+    date: '2026-05-07T12:00:00.000Z'
+    comment: Created ticket.
   - type: activity
     user: Agent
     date: '2026-05-07T12:00:00.000Z'
@@ -21,7 +26,35 @@ history:
   - type: comment
     user: Agent
     date: '2026-05-07T12:21:00.000Z'
-    comment: Starting work to unify the toggle UI on the settings page preferences section.
+    comment: >-
+      Starting work to unify the toggle UI on the settings page preferences
+      section.
+    id: c-2026-05-07t12-21-00-000z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-07T12:25:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-07T12:25:00.000Z'
+    comment: >-
+      Extracted a `SettingToggleCard` component and unified all 4 boolean
+      preference toggles under the new style. Ready for review, type `finish
+      FLUX-88` when ready.
+    id: c-2026-05-07t12-25-00-000z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-08T10:00:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-08T10:00:00.000Z'
+    comment: >-
+      User confirmed completion. Changes committed in
+      601fa76f882e1a8149ae7105b11c9a6aa418608d.
+    id: c-2026-05-08t10-00-00-000z
 ---
 
 The boolean preferences at the bottom of the page use mixed UI patterns.
