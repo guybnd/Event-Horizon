@@ -1,6 +1,6 @@
 ---
 title: Fix prompt full-view flow and response routing
-status: Todo
+status: Done
 createdBy: Guy
 updatedBy: Guy
 assignee: unassigned
@@ -9,7 +9,7 @@ tags:
   - bug
 priority: High
 effort: L
-implementationLink: ''
+implementationLink: '881ac3e0cc4810ad72c2efc79285aa475bdbeef8'
 subtasks: []
 history:
   - type: activity
@@ -104,3 +104,5 @@ the ticket page.
 
 - FLUX-60 is folded into this ticket as the narrower full-screen prompt bug report
 - See screenshot in Guy's comment showing the current broken layout
+
+

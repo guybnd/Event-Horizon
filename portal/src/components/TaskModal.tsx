@@ -184,6 +184,10 @@ export function TaskModal() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [isWideMode, setIsWideMode] = useState(false);
   const [isFullView, setIsFullView] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(340);
+  const [isDraggingSidebar, setIsDraggingSidebar] = useState(false);
+  const [isPromptModalOpen, setIsPromptModalOpen] = useState(true);
+  const [isCommentBoxVisible, setIsCommentBoxVisible] = useState(false);
   const [commentAssetError, setCommentAssetError] = useState('');
   const [replyAssetError, setReplyAssetError] = useState('');
   const [isUploadingCommentAsset, setIsUploadingCommentAsset] = useState(false);
@@ -194,6 +198,36 @@ export function TaskModal() {
 
   const commentRef = useRef<HTMLTextAreaElement>(null);
   const replyTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const commentSectionRef = useRef<HTMLDivElement>(null);
+  const promptModalRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleOutsideClick = (event: MouseEvent) => {
+      if (isPromptModalOpen && promptModalRef.current && !promptModalRef.current.contains(event.target as Node)) {
+        setIsPromptModalOpen(false);
+      }
+    };
+    
+    if (isPromptModalOpen) {
+      document.addEventListener('mousedown', handleOutsideClick);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick);
+    };
+  }, [isPromptModalOpen]);
+
+  useEffect(() => {
+    if (!isFullView) return;
+    const currentRef = commentSectionRef.current;
+    if (!currentRef) return;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) {
+        setIsCommentBoxVisible(true);
+      }
+    }, { threshold: 0.1, rootMargin: '0px 0px -50px 0px' });
+    observer.observe(currentRef);
+    return () => observer.disconnect();
+  }, [isFullView, modalTask?.id]);
 
   useEffect(() => {
     if (modalTask) {
@@ -247,8 +281,30 @@ export function TaskModal() {
       handleCloseAttempt();
     };
 
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDraggingSidebar) return;
+      setSidebarWidth((prev) => Math.max(250, Math.min(window.innerWidth * 0.5, window.innerWidth - e.clientX)));
+    };
+    
+    const handleMouseUp = () => {
+      setIsDraggingSidebar(false);
+    };
+
+    if (isDraggingSidebar) {
+      document.body.style.cursor = 'col-resize';
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+    } else {
+      document.body.style.cursor = '';
+    }
+
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+    };
   });
 
   useEffect(() => {
@@ -275,10 +331,7 @@ export function TaskModal() {
   const requireInputStatus = getRequireInputStatus(config);
   const readyForMergeStatus = config?.readyForMergeStatus?.trim() || DEFAULT_READY_FOR_MERGE_STATUS;
   const promptableStatuses = Array.from(new Set([requireInputStatus, readyForMergeStatus]));
-  const preferredRequireInputDestinations = allStatuses.filter((item) => item === 'Todo' || item === 'Grooming');
-  const requireInputDestinations = preferredRequireInputDestinations.length > 0
-    ? preferredRequireInputDestinations
-    : allStatuses.filter((item) => !promptableStatuses.includes(item)).slice(0, 2);
+  const requireInputDestinations = allStatuses.filter((item) => !promptableStatuses.includes(item));
 
   const isRequireInput = status === requireInputStatus;
   const isReadyForMerge = status === readyForMergeStatus;
@@ -757,7 +810,7 @@ export function TaskModal() {
       {modalTask?.id ? (
         <div className="flex gap-2">
           <select
-            className="flex-1 cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
+            className="flex-1 min-w-0 cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
             value={subtaskToAdd}
             onChange={(event) => setSubtaskToAdd(event.target.value)}
           >
@@ -930,7 +983,7 @@ export function TaskModal() {
       {topLevelEntries.length === 0 ? (
         <p className="text-sm italic text-gray-500">No activity yet.</p>
       ) : (
-        [...topLevelEntries].reverse().map((entry, index) => {
+        [...topLevelEntries].map((entry, index) => {
           const replies = entry.id ? repliesByParent.get(entry.id) || [] : [];
           const isCollapsed = entry.id ? collapsedThreads[entry.id] : false;
 
@@ -1070,13 +1123,16 @@ export function TaskModal() {
       <textarea
         ref={commentRef}
         autoFocus={isRequireInput}
-        className="h-28 w-full resize-none rounded-xl border border-gray-200 bg-white px-4 py-3 pb-12 text-sm outline-none placeholder:text-gray-400 focus:border-primary dark:border-white/10 dark:bg-black/40"
+        style={{ minHeight: '80px' }}
+        className="w-full resize-none overflow-hidden rounded-xl border border-gray-200 bg-white px-4 py-3 pb-12 text-sm outline-none placeholder:text-gray-400 focus:border-primary dark:border-white/10 dark:bg-black/40 transition-all"
         value={newComment}
         onChange={(event) => {
           setNewComment(event.target.value);
           if (commentAssetError) {
             setCommentAssetError('');
           }
+          event.target.style.height = 'auto';
+          event.target.style.height = event.target.scrollHeight + 'px';
         }}
         onPaste={handleCommentPaste}
         onDragOver={handleCommentDragOver}
@@ -1124,13 +1180,8 @@ export function TaskModal() {
       <div className="min-w-0 flex-1">
         <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-amber-800 dark:text-amber-300">Merge review requested</p>
         <p className="whitespace-pre-wrap text-sm text-amber-700 dark:text-amber-400">
-          {lastComment?.comment || `This ticket is waiting in ${readyForMergeStatus} for user review and finalization.`}
+          This ticket is waiting in {readyForMergeStatus} for your review and finalization. Look over the ticket and diffs, then type the finish command in chat.
         </p>
-        {lastComment && (
-          <p className="mt-1.5 text-[10px] text-amber-500/70">
-            {lastComment.user} · {new Date(lastComment.date).toLocaleString()}
-          </p>
-        )}
       </div>
     </div>
   ) : null;
@@ -1298,19 +1349,55 @@ export function TaskModal() {
             </div>
           </div>
 
-          <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,1fr)_340px]">
-            <div className="min-h-0 border-r border-gray-200 dark:border-white/10 lg:flex lg:flex-col">
-              <div className="flex min-h-0 flex-col lg:flex-1">
+          <div className="grid min-h-0 flex-1 relative" style={{ gridTemplateColumns: `minmax(0,1fr) ${sidebarWidth}px` }}>
+            {isFullView && isPromptStatus && (
+              <>
+                <div 
+                  ref={promptModalRef}
+                  className={`absolute top-6 left-6 z-50 rounded-2xl bg-white/95 backdrop-blur-md shadow-2xl dark:bg-[#1a1b23]/95 border border-amber-200 dark:border-amber-500/30 transition-all duration-300 origin-top-right ${isPromptModalOpen ? 'opacity-100 scale-100 translate-y-0 pointer-events-auto' : 'opacity-0 scale-50 -translate-y-4 pointer-events-none'}`}
+                  style={{ right: `${sidebarWidth + 24}px` }}
+                >
+                   <div className="flex justify-between items-center border-b border-gray-100 px-4 py-2 dark:border-white/5">
+                      <span className="text-xs font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">Prompt Active</span>
+                      <button onClick={() => setIsPromptModalOpen(false)} className="p-1 hover:bg-gray-100 rounded dark:hover:bg-white/10 text-gray-500 transition-colors">
+                        <X className="w-4 h-4"/>
+                      </button>
+                   </div>
+                   <div className="p-2 max-h-[80vh] overflow-y-auto">
+                     {isRequireInput ? requireInputPrompt : readyForMergePrompt}
+                   </div>
+                </div>
+              
+                <div 
+                   className={`absolute top-6 z-40 transition-all duration-300 pointer-events-auto ${!isPromptModalOpen ? 'opacity-100 scale-100' : 'opacity-0 scale-90 pointer-events-none'}`}
+                   style={{ right: `${sidebarWidth + 24}px` }}
+                >
+                  <button 
+                     onClick={() => setIsPromptModalOpen(true)} 
+                     className="relative flex items-center justify-center p-[2px] overflow-hidden rounded-full shadow-lg hover:scale-105 transition-transform"
+                   >
+                     <span className="absolute top-1/2 left-1/2 block aspect-square w-[300px] -translate-x-1/2 -translate-y-1/2 animate-[spin_2s_linear_infinite] bg-[conic-gradient(from_0deg,transparent_0_340deg,rgba(255,255,255,0.8)_360deg)]"></span>
+                     <div className="relative flex items-center gap-2 bg-amber-500 text-white px-4 py-2 rounded-full font-bold hover:bg-amber-600 transition-colors w-full h-full">
+                       <MessageSquare className="w-4 h-4" />
+                       Prompt Pending
+                     </div>
+                  </button>
+                </div>
+              </>
+            )}
+
+            <div className="min-h-0 border-r border-gray-200 dark:border-white/10 overflow-y-auto relative">
+              <div className="flex flex-col min-h-full">
                 {requireInputBanner && <div className="border-b border-gray-200 p-6 dark:border-white/10">{requireInputBanner}</div>}
 
-                <div className="min-h-0 flex-[3] border-b border-gray-200 dark:border-white/10 flex flex-col">
+                <div className="flex-1 flex flex-col border-b border-gray-200 dark:border-white/10">
                   <div className="flex items-center justify-between px-6 py-4">
                     <div>
                       <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Description</p>
                       <p className="text-sm text-gray-500">Rendered markdown by default, editable in place.</p>
                     </div>
                   </div>
-                  <div className="min-h-0 flex flex-1 px-6 pb-6">
+                  <div className="flex-1 px-6 pb-6 min-h-[200px]">
                     <TaskDescriptionSurface
                       key={`${modalTask?.id || 'new-task'}-full`}
                       value={body}
@@ -1322,27 +1409,60 @@ export function TaskModal() {
                   </div>
                 </div>
 
-                <div className="min-h-0 flex flex-[2] flex-col">
-                  <div className="border-b border-gray-200 px-6 py-4 dark:border-white/10">
-                    <div className="flex items-center justify-between gap-4">
-                      <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Activity & Comments</p>
-                      {activityFilterTabs}
-                    </div>
+                <div ref={commentSectionRef} className="px-6 py-4 flex flex-col relative pb-8">
+                  <div className="flex items-center justify-between gap-4 mb-4">
+                    <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Activity & Comments</p>
+                    {activityFilterTabs}
                   </div>
-                  <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">{historyList}</div>
-                  <div className="border-t border-gray-200 px-6 py-4 dark:border-white/10">{isRequireInput ? requireInputPrompt : isReadyForMerge ? readyForMergePrompt : commentComposer}</div>
+                  
+                  <div className="flex-1 mb-8">{historyList}</div>
+                  
+                  {(!isPromptStatus) && (
+                    <div className="sticky bottom-0 mt-8 pt-4 pb-2 z-10 w-full bg-gradient-to-t from-gray-50/95 via-gray-50/95 to-transparent dark:from-[#1a1b23]/95 dark:via-[#1a1b23]/95 dark:to-transparent pointer-events-none">
+                      <div className="pointer-events-auto">
+                        {!isCommentBoxVisible ? (
+                           <div className="flex justify-end">
+                             <button
+                               onClick={() => setIsCommentBoxVisible(true)}
+                               className="bg-primary text-white px-4 py-2 rounded-full font-bold shadow-md hover:bg-primary-hover text-sm"
+                             >
+                               Reply
+                             </button>
+                           </div>
+                        ) : (
+                          <div className="rounded-xl shadow-lg border border-gray-200 bg-white dark:bg-[#1f2028] dark:border-white/10 backdrop-blur-md w-full">
+                            {commentComposer}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
 
-            <aside className="min-h-0 overflow-y-auto bg-gray-50/80 p-6 dark:bg-black/10">
-              <div className="space-y-6">
+            <div
+              className="absolute top-0 bottom-0 z-40 w-2 cursor-col-resize hover:bg-primary/20 hover:backdrop-blur-sm transition-colors"
+              style={{ right: `${sidebarWidth - 4}px` }}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                setIsDraggingSidebar(true);
+              }}
+            />
+
+            <aside className="min-h-0 min-w-0 overflow-y-auto bg-gray-50/80 p-6 dark:bg-black/10" style={{ width: `${sidebarWidth}px`, overflowX: 'hidden' }}>
+              <div className="space-y-6 w-full">
                 <div>
                   <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Title</label>
-                  <input
-                    className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-base font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-black/40"
+                  <textarea
+                    rows={1}
+                    className="w-full resize-none overflow-hidden rounded-lg border border-gray-200 bg-white px-3 py-2 text-base font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-black/40"
                     value={title}
-                    onChange={(event) => setTitle(event.target.value)}
+                    onChange={(event) => {
+                      setTitle(event.target.value);
+                      event.target.style.height = 'auto';
+                      event.target.style.height = event.target.scrollHeight + 'px';
+                    }}
                     placeholder="Task title..."
                   />
                 </div>
@@ -1440,12 +1560,17 @@ export function TaskModal() {
                 <div className={isWideMode ? 'mr-4 flex-1' : 'min-w-0'}>
                   <div>
                     <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Title</label>
-                    <input
-                      className={`w-full rounded-lg border border-gray-200 px-3 py-2 font-medium outline-none focus:border-primary dark:border-white/10 ${
+                    <textarea
+                      rows={1}
+                      className={`w-full resize-none overflow-hidden rounded-lg border border-gray-200 px-3 py-2 font-medium outline-none focus:border-primary dark:border-white/10 ${
                         isWideMode ? 'bg-white text-sm dark:bg-black/40' : 'bg-gray-50 text-[15px] dark:bg-black/20'
                       }`}
                       value={title}
-                      onChange={(event) => setTitle(event.target.value)}
+                      onChange={(event) => {
+                        setTitle(event.target.value);
+                        event.target.style.height = 'auto';
+                        event.target.style.height = event.target.scrollHeight + 'px';
+                      }}
                       placeholder="Task title..."
                     />
                   </div>
