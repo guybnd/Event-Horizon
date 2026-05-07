@@ -17,6 +17,7 @@ export function Header() {
     setCurrentProject,
     tasks,
     config,
+    isConnected,
   } = useApp();
   const [globalSearchQuery, setGlobalSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -196,6 +197,21 @@ export function Header() {
             <span className="mt-1 text-sm font-semibold">{promptCount}</span>
           </div>
         </button>
+
+        <div className={`flex items-center gap-2 rounded-xl border px-3 py-2 transition-colors ${!isConnected ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300' : 'border-transparent bg-transparent text-gray-500 dark:text-gray-400'}`}>
+          <div className="relative flex items-center justify-center">
+            {isConnected ? (
+              <div className="h-2 w-2 rounded-full bg-emerald-500/70" />
+            ) : (
+              <div className="h-2.5 w-2.5 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)] animate-pulse" />
+            )}
+          </div>
+          <div className="flex flex-col items-start leading-none">
+            <span className="text-[10px] font-bold uppercase tracking-wider">{!isConnected ? 'Engine Status' : 'Engine'}</span>
+            <span className="mt-1 text-sm font-semibold">{isConnected ? 'Connected' : 'Offline'}</span>
+          </div>
+        </div>
+
         <div className="flex flex-col items-end">
           <label className="text-[10px] text-gray-400 font-bold uppercase tracking-wider mb-1">Project Key</label>
           <input 

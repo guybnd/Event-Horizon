@@ -63,6 +63,12 @@ export async function deleteTask(id: string): Promise<void> {
   if (!res.ok) throw new Error('Failed to delete task');
 }
 
+export async function fetchHealth(): Promise<{ status: string }> {
+  const res = await fetch(`${API_URL}/health`);
+  if (!res.ok) throw new Error('Failed to fetch health');
+  return res.json();
+}
+
 export async function fetchConfig(): Promise<Config> {
   const res = await fetch(`${API_URL}/config`);
   if (!res.ok) throw new Error('Failed to fetch config');

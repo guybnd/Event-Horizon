@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { ColumnLiveEvent, Config, Task, TaskLiveEvent } from './types';
-import { fetchConfig, fetchTasks, saveConfig as apiSaveConfig } from './api';
+import { fetchConfig, fetchTasks, fetchHealth, saveConfig as apiSaveConfig } from './api';
 
 type AppView = 'board' | 'backlog' | 'docs' | 'settings';
 export type TaskSortOption = 'default' | 'priority' | 'updated' | 'assignee';
@@ -126,6 +126,7 @@ interface AppState {
   triggerRefresh: () => void;
   lastRefreshAt: number | null;
   isWindowVisible: boolean;
+  isConnected: boolean;
   config: Config | null;
   saveConfig: (updates: Config) => Promise<void>;
 }
@@ -151,6 +152,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [lastRefreshAt, setLastRefreshAt] = useState<number | null>(null);
   const [isWindowVisible, setIsWindowVisible] = useState(() => (typeof document === 'undefined' ? true : !document.hidden));
+  const [isConnected, setIsConnected] = useState(true);
   const [config, setConfig] = useState<Config | null>(null);
   const tasksRef = useRef<Task[]>([]);
   const isFetchingTasksRef = useRef(false);
@@ -420,6 +422,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [loadTasks]);
 
   useEffect(() => {
+    let checkTimeout: number;
+    let cancelled = false;
+
+    const checkHealth = async () => {
+      try {
+        await fetchHealth();
+        if (!cancelled) setIsConnected(true);
+      } catch (err) {
+        if (!cancelled) setIsConnected(false);
+      }
+      
+      if (!cancelled) {
+        checkTimeout = window.setTimeout(checkHealth, 10000);
+      }
+    };
+
+    void checkHealth();
+
+    return () => {
+      cancelled = true;
+      if (checkTimeout) window.clearTimeout(checkTimeout);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isConnected) {
+      void loadTasks();
+    }
+  }, [isConnected, loadTasks]);
+
+  useEffect(() => {
     const refreshIfVisible = () => {
       if (document.hidden) {
         return;
@@ -513,6 +546,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       refreshTrigger, triggerRefresh,
       lastRefreshAt,
       isWindowVisible,
+      isConnected,
       config, saveConfig
     }}>
       {children}
