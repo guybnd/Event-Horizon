@@ -254,8 +254,32 @@ export function TaskCard({
   const isThisTaskOpen = isModalOpen && modalTask?.id === task.id;
   const [isAnimatingZ, setIsAnimatingZ] = useState(false);
   const [isHovering, setIsHovering] = useState(false);
-  const [popupPos, setPopupPos] = useState({ top: 0, left: 'auto' as number | string, right: 'auto' as number | string });
+  const [popupPos, setPopupPos] = useState({ cardTop: 0, cardHeight: 0, top: 0, left: 'auto' as number | string, right: 'auto' as number | string });
   const hoverTimeout = useRef<number | null>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (isHovering && popupRef.current) {
+      const rect = popupRef.current.getBoundingClientRect();
+      const popupHeight = rect.height;
+      const windowHeight = window.innerHeight;
+      
+      let finalTop = popupPos.top; // Default logic fallback
+      const isSmall = popupHeight < (windowHeight / 3);
+      
+      if (isSmall) {
+        const cardCenterY = popupPos.cardTop + (popupPos.cardHeight / 2);
+        finalTop = cardCenterY - (popupHeight / 2);
+      }
+      
+      // Keep within screen bounds (16px from edges)
+      const minTop = 16;
+      const maxTop = Math.max(minTop, windowHeight - popupHeight - 16);
+      finalTop = Math.max(minTop, Math.min(finalTop, maxTop));
+      
+      popupRef.current.style.top = `${finalTop}px`;
+    }
+  }, [isHovering, popupPos]);
 
   const handleMouseEnter = (event: any) => {
     if (!config?.hoverPopupsEnabled) return;
@@ -280,7 +304,13 @@ export function TaskCard({
       topVal = 180;
     }
 
-    setPopupPos({ top: topVal, left, right });
+    setPopupPos({ 
+      cardTop: currentCard.top,
+      cardHeight: currentCard.height,
+      top: topVal, 
+      left, 
+      right 
+    });
     
     if (hoverTimeout.current !== null) {
       window.clearTimeout(hoverTimeout.current);
@@ -588,6 +618,7 @@ export function TaskCard({
         <AnimatePresence>
           {isHovering && !isOverlay && !isThisTaskOpen && task.body?.trim() && (
             <motion.div
+              ref={popupRef}
               key={`popup-${task.id}`}
               initial={{ opacity: 0, y: 10, scale: 0.95 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
