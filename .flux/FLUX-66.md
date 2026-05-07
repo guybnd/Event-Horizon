@@ -1,10 +1,9 @@
 ---
-id: FLUX-66
 title: refresh docs for recent settings surfaces
-status: Ready
+status: Done
 priority: Medium
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: Agent
 tags:
   - docs
@@ -40,8 +39,8 @@ history:
       workflow controls that only existed in the README. Updated
       `workflow/workflow-install` to document the workflow source and installed
       paths, the copyable install command, and the configurable user-input and
-      ready-for-merge status selectors. Validated with a live
-      `GET http://localhost:3001/api/docs` check confirming the updated section
+      ready-for-merge status selectors. Validated with a live `GET
+      http://localhost:3001/api/docs` check confirming the updated section
       parses through the docs API. No focused commit was created because the
       current worktree still contains unrelated in-flight changes.
     id: c-2026-05-07t14-52-00-000-10-00-flux-66
@@ -50,9 +49,15 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-07T14:52:00.000+10:00'
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Guy
+    date: '2026-05-07T05:00:32.073Z'
 effort: XS
 implementationLink: ''
 subtasks: []
+order: 13
 ---
 ## Summary
 
