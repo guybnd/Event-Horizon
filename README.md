@@ -82,28 +82,66 @@ You can install or refresh the workflow in two ways:
 
 *(The installer makes sure to only patch designated Event Horizon instruction blocks, preserving your unrelated custom instructions).*
 
-### Lifecycle & Prompts
-* **Workflow Status Prompts:** Configured statuses (defaulting to `Require Input` and `Ready`) trigger prompts.
-  * Moving a ticket to `Require Input` initiates an agent-to-human question flow.
-  * Moving a ticket to `Ready` signifies a review checkpoint before final merge.
-  * *Handoff:* Upon review approval, run `finish <ticket>` to automatically commit files and close the task out to `Done`.
-* **Grooming:** Agents operating on a ticket in `Grooming` should **not** begin raw implementation. They must instead refine the task description, flesh out required metadata (`tags`, `effort`, `priority`), and ask blocking questions via the `Require Input` lane first.
+### Example Agent Workflow
+Event Horizon shines when acting as an asynchronous handoff medium between you and your AI agent. Here is an example of an end-to-step lifecycle:
+
+1. **Creation:** You swiftly drop a ticket onto the board (e.g., `FLUX-42: Add dark mode`) and place it in the **Grooming** column.
+2. **Planning (Grooming):** You instruct your agent in chat: *"Please groom FLUX-42."* 
+   - The agent reads the ticket, fleshes out the requirements, deduces effort/priority, and identifies a missing requirement.
+3. **Prompting (Require Input):** Because the agent needs clarification (e.g., *"Should we use standard slate or a custom hex?"*), it modifies the ticket's history with the question and moves its status to **Require Input**.
+4. **Answering:** You see the ticket flagged on your board. You drop a comment on the ticket in the UI answering, *"Use Tailwind's slate colors"*. The portal automatically moves it into **Todo** or **In Progress**.
+5. **Implementation:** The agent writes the code, referencing the verified requirements.
+6. **Review (Ready):** Once the code is complete, the agent leaves the files unstaged and moves the ticket to **Ready**.
+7. **Finish:** You review the changes locally. If everything looks good, you type *"finish FLUX-42"* in chat. The agent automatically commits the code, updates the ticket with the commit hash, and moves it safely to **Done**.
 
 ---
 
-## 📝 The Data Schema (MVP)
+## 📝 The Data Schema 
 
-Tickets are stored natively as `.md` files within the `.flux/` directory using simple metadata.
+Tickets are stored natively as `.md` files within the `.flux/` directory using comprehensive YAML frontmatter. This allows both the portal and autonomous agents to easily query, track history, and trace implementation details.
 
-**Example `TEST-1.md`:**
+**Example `FLUX-42.md`:**
 ```yaml
 ---
-id: TEST-1
-status: Todo
+title: "Feature: Add dark mode toggle"
+status: Done
+createdBy: User
+updatedBy: Agent
 assignee: unassigned
-tags: [setup, mvp]
+tags:
+  - feature
+  - ui
+priority: High
+effort: M
+implementationLink: a488a47f1234567890abcdef
+subtasks: []
+history:
+  - type: activity
+    user: User
+    date: '2026-05-07T09:00:00.000Z'
+    comment: Created ticket.
+  - type: comment
+    user: Agent
+    date: '2026-05-07T09:10:00.000Z'
+    comment: Moved to Require Input. Do we want to use standard slate or a custom hex?
+  - type: comment
+    user: User
+    date: '2026-05-07T09:15:00.000Z'
+    comment: Let's use Tailwind's standard slate colors.
+  - type: activity
+    user: Agent
+    date: '2026-05-07T09:40:00.000Z'
+    comment: >-
+      Completed ticket. Implemented slate dark mode via Tailwind and updated the header UI. 
+      Committed in a488a47.
+order: 42
 ---
 
-# Initial Setup Task
-Body of the task goes here.
+# Objective
+Implement a dark mode toggle in the application's header that persists user preference via local storage.
+
+# Tasks
+- [x] Add Dark/Light toggle icon to Header
+- [x] Wire up context provider for theme persistence
+- [x] Test layout with slate color palette
 ```
