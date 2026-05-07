@@ -27,10 +27,10 @@ For any ticket-driven implementation task, the agent must follow this sequence:
 7. Make focused changes and run narrow validation immediately after the first substantive edit.
 8. Add progress comments when scope changes, validation fails, or the user redirects the work.
 9. If blocked on a ticket-specific question during implementation, move the ticket to the configured user-input status (`requireInputStatus`, default `Require Input`) and record the question in ticket history instead of asking only in chat.
-10. If a ticket enters the configured ready-for-merge status (`readyForMergeStatus`, default `Ready`), treat that as a user review checkpoint rather than as closed work.
+10. If a ticket enters the configured ready-for-merge status (`readyForMergeStatus`, default `Ready`), treat that as a user review checkpoint rather than as closed work. Maintain files uncommitted or on a working branch at this stage.
 11. Before moving a ticket to `Ready` or `Done`, review and update the relevant docs when behavior, workflow expectations, or touchpoints changed.
-12. If the user says `finish <ticket>` for a ticket in the ready-for-merge status, perform the final commit and ticket-close sequence before moving it to `Done`.
-13. If repository files changed and commits are expected, create a focused commit after validation passes and after any required docs refresh before closing the ticket.
+12. If the user says `finish <ticket>` for a ticket in the ready-for-merge status, stage all files relevant to the ticket and perform the final commit and ticket-close sequence. Do not attempt to commit before this confirmation.
+13. If repository files changed and commits are expected, the commit creation, recording its hash in `implementationLink`, and moving the ticket to `Done` must happen as one atomic step only upon final user confirmation.
 14. Before closing the ticket, add a completion comment that states what changed, what was validated, any caveats, and the commit hash when available.
 15. Move the ticket to `Done` only after the completion update is recorded.
 
