@@ -67,6 +67,21 @@ the board, backlog, header, and ticket views.
 - Missing image assets render a lightweight unavailable state instead of
   breaking the ticket view.
 
+## Comment image attachments
+
+- The main comment composer and inline reply composer both accept pasted or
+  dropped supported image files on saved tickets.
+- Comment and reply image uploads reuse the same
+  `.flux/assets/<ticket-id>/...` storage model as description attachments and
+  insert relative markdown image links into the draft automatically.
+- In comment history, image markdown renders as a compact clickable affordance
+  instead of a full-width inline image block so the activity stream stays
+  readable.
+- Hovering a comment-image affordance shows a bounded in-page preview.
+- Clicking a comment-image affordance opens a larger popup preview.
+- Missing comment-image assets render an unavailable state instead of breaking
+  the thread UI.
+
 ## Triage cues
 
 - Require-input tickets are intended to be easy to spot from the app chrome and

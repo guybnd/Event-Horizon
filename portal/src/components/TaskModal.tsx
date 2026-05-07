@@ -231,12 +231,17 @@ export function TaskModal() {
   const [assetError, setAssetError] = useState('');
   const [isUploadingAsset, setIsUploadingAsset] = useState(false);
   const [isAssetDragOver, setIsAssetDragOver] = useState(false);
+  const [commentAssetError, setCommentAssetError] = useState('');
+  const [replyAssetError, setReplyAssetError] = useState('');
+  const [isUploadingCommentAsset, setIsUploadingCommentAsset] = useState(false);
+  const [isUploadingReplyAsset, setIsUploadingReplyAsset] = useState(false);
   const [allTasks, setAllTasks] = useState<Task[]>([]);
   const [subtasks, setSubtasks] = useState<string[]>([]);
   const [subtaskToAdd, setSubtaskToAdd] = useState('');
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const commentRef = useRef<HTMLTextAreaElement>(null);
+  const replyTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (modalTask) {
@@ -262,6 +267,10 @@ export function TaskModal() {
       setAssetError('');
       setIsUploadingAsset(false);
       setIsAssetDragOver(false);
+      setCommentAssetError('');
+      setReplyAssetError('');
+      setIsUploadingCommentAsset(false);
+      setIsUploadingReplyAsset(false);
     }
   }, [modalTask]);
 
@@ -546,29 +555,56 @@ export function TaskModal() {
     }, 0);
   };
 
-  const insertTextAtSelection = (text: string, selectionStart?: number, selectionEnd?: number) => {
-    const currentTextArea = textareaRef.current;
-    const start = selectionStart ?? currentTextArea?.selectionStart ?? body.length;
-    const end = selectionEnd ?? currentTextArea?.selectionEnd ?? body.length;
+  const insertTextIntoDraft = (
+    currentValue: string,
+    setValue: (value: string) => void,
+    targetTextArea: HTMLTextAreaElement | null,
+    text: string,
+    selectionStart?: number,
+    selectionEnd?: number,
+  ) => {
+    const start = selectionStart ?? targetTextArea?.selectionStart ?? currentValue.length;
+    const end = selectionEnd ?? targetTextArea?.selectionEnd ?? currentValue.length;
+    const nextValue = currentValue.substring(0, start) + text + currentValue.substring(end);
 
-    const nextBody = body.substring(0, start) + text + body.substring(end);
-    setBody(nextBody);
+    setValue(nextValue);
 
     setTimeout(() => {
-      if (!textareaRef.current) return;
+      if (!targetTextArea) {
+        return;
+      }
+
       const nextCursorPosition = start + text.length;
-      textareaRef.current.focus();
-      textareaRef.current.setSelectionRange(nextCursorPosition, nextCursorPosition);
+      targetTextArea.focus();
+      targetTextArea.setSelectionRange(nextCursorPosition, nextCursorPosition);
     }, 0);
   };
 
-  const attachImageFiles = async (files: File[], selectionStart?: number, selectionEnd?: number) => {
+  const attachImageFilesToDraft = async ({
+    files,
+    currentValue,
+    setValue,
+    targetTextArea,
+    selectionStart,
+    selectionEnd,
+    setError,
+    setUploading,
+  }: {
+    files: File[];
+    currentValue: string;
+    setValue: (value: string) => void;
+    targetTextArea: HTMLTextAreaElement | null;
+    selectionStart?: number;
+    selectionEnd?: number;
+    setError: (value: string) => void;
+    setUploading: (value: boolean) => void;
+  }) => {
     if (files.length === 0) {
       return;
     }
 
     if (!modalTask?.id) {
-      setAssetError('Save the ticket before attaching images.');
+      setError('Save the ticket before attaching images.');
       return;
     }
 
@@ -576,12 +612,12 @@ export function TaskModal() {
     const unsupportedFiles = files.filter((file) => !isSupportedImageFile(file));
 
     if (supportedFiles.length === 0) {
-      setAssetError(buildUnsupportedImageMessage(unsupportedFiles));
+      setError(buildUnsupportedImageMessage(unsupportedFiles));
       return;
     }
 
-    setIsUploadingAsset(true);
-    setAssetError('');
+    setUploading(true);
+    setError('');
 
     try {
       const markdownLinks: string[] = [];
@@ -596,17 +632,56 @@ export function TaskModal() {
         markdownLinks.push(buildImageMarkdownLink(uploadedAsset.path, file.name || uploadedAsset.fileName));
       }
 
-      insertTextAtSelection(markdownLinks.join('\n\n'), selectionStart, selectionEnd);
+      insertTextIntoDraft(currentValue, setValue, targetTextArea, markdownLinks.join('\n\n'), selectionStart, selectionEnd);
 
       if (unsupportedFiles.length > 0) {
-        setAssetError(buildUnsupportedImageMessage(unsupportedFiles));
+        setError(buildUnsupportedImageMessage(unsupportedFiles));
       }
     } catch (error) {
       console.error(error);
-      setAssetError(error instanceof Error ? error.message : 'Failed to attach image.');
+      setError(error instanceof Error ? error.message : 'Failed to attach image.');
     } finally {
-      setIsUploadingAsset(false);
+      setUploading(false);
     }
+  };
+
+  const attachImageFiles = async (files: File[], selectionStart?: number, selectionEnd?: number) => {
+    await attachImageFilesToDraft({
+      files,
+      currentValue: body,
+      setValue: setBody,
+      targetTextArea: textareaRef.current,
+      selectionStart,
+      selectionEnd,
+      setError: setAssetError,
+      setUploading: setIsUploadingAsset,
+    });
+  };
+
+  const attachCommentImageFiles = async (files: File[], selectionStart?: number, selectionEnd?: number) => {
+    await attachImageFilesToDraft({
+      files,
+      currentValue: newComment,
+      setValue: setNewComment,
+      targetTextArea: commentRef.current,
+      selectionStart,
+      selectionEnd,
+      setError: setCommentAssetError,
+      setUploading: setIsUploadingCommentAsset,
+    });
+  };
+
+  const attachReplyImageFiles = async (files: File[], selectionStart?: number, selectionEnd?: number) => {
+    await attachImageFilesToDraft({
+      files,
+      currentValue: replyDraft,
+      setValue: setReplyDraft,
+      targetTextArea: replyTextareaRef.current,
+      selectionStart,
+      selectionEnd,
+      setError: setReplyAssetError,
+      setUploading: setIsUploadingReplyAsset,
+    });
   };
 
   const handleDescriptionPaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -644,6 +719,64 @@ export function TaskModal() {
     event.preventDefault();
     setIsAssetDragOver(false);
     void attachImageFiles(files, event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
+  };
+
+  const handleCommentPaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.clipboardData.files || []);
+    if (files.length === 0) {
+      return;
+    }
+
+    event.preventDefault();
+    void attachCommentImageFiles(files, event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
+  };
+
+  const handleCommentDragOver = (event: React.DragEvent<HTMLTextAreaElement>) => {
+    if (!Array.from(event.dataTransfer.types || []).includes('Files')) {
+      return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  };
+
+  const handleCommentDrop = (event: React.DragEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.dataTransfer.files || []);
+    if (files.length === 0) {
+      return;
+    }
+
+    event.preventDefault();
+    void attachCommentImageFiles(files, event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
+  };
+
+  const handleReplyPaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.clipboardData.files || []);
+    if (files.length === 0) {
+      return;
+    }
+
+    event.preventDefault();
+    void attachReplyImageFiles(files, event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
+  };
+
+  const handleReplyDragOver = (event: React.DragEvent<HTMLTextAreaElement>) => {
+    if (!Array.from(event.dataTransfer.types || []).includes('Files')) {
+      return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  };
+
+  const handleReplyDrop = (event: React.DragEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.dataTransfer.files || []);
+    if (files.length === 0) {
+      return;
+    }
+
+    event.preventDefault();
+    void attachReplyImageFiles(files, event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
   };
 
   const metadataFields = (
@@ -986,7 +1119,7 @@ export function TaskModal() {
                   <StatusBadge status={entry.to || 'Unknown'} colorClass={getStatusColorClass(config, entry.to || '')} className="text-[10px] font-bold uppercase tracking-[0.16em]" />
                 </div>
               )}
-              {entry.comment && <p className="whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-300">{entry.comment}</p>}
+              {entry.comment && <TaskMarkdown body={entry.comment} taskId={modalTask?.id} compact imageMode={entry.type === 'comment' ? 'comment' : 'inline'} emptyMessage="" />}
 
               {entry.type === 'comment' && !entry.replyTo && modalTask?.id && !isRequireInput && (
                 <div className="mt-3 flex items-center gap-2">
@@ -1016,11 +1149,29 @@ export function TaskModal() {
                 <div className="mt-3 rounded-lg border border-primary/20 bg-white p-3 dark:border-primary/20 dark:bg-[#1f2028]">
                   <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-primary">Replying inline</p>
                   <textarea
+                    ref={replyTextareaRef}
                     className="h-24 w-full resize-none rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm outline-none focus:border-primary dark:border-white/10 dark:bg-black/20"
                     value={replyDraft}
-                    onChange={(event) => setReplyDraft(event.target.value)}
+                    onChange={(event) => {
+                      setReplyDraft(event.target.value);
+                      if (replyAssetError) {
+                        setReplyAssetError('');
+                      }
+                    }}
+                    onPaste={handleReplyPaste}
+                    onDragOver={handleReplyDragOver}
+                    onDrop={handleReplyDrop}
                     placeholder="Write a reply..."
                   />
+                  <div className="mt-2 flex items-center justify-between gap-3 text-[11px] text-gray-500 dark:text-gray-400">
+                    <span>Paste or drop PNG, JPG, or SVG images.</span>
+                    {isUploadingReplyAsset && <span className="font-semibold text-primary">Uploading image...</span>}
+                  </div>
+                  {replyAssetError && (
+                    <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
+                      {replyAssetError}
+                    </div>
+                  )}
                   <div className="mt-2 flex justify-end gap-2">
                     <button
                       type="button"
@@ -1034,7 +1185,7 @@ export function TaskModal() {
                     </button>
                     <button
                       type="button"
-                      disabled={saving || !replyDraft.trim()}
+                      disabled={saving || isUploadingReplyAsset || !replyDraft.trim()}
                       onClick={() => entry.id && void sendReplyDirectly(entry.id)}
                       className="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
                     >
@@ -1059,7 +1210,7 @@ export function TaskModal() {
                         </div>
                         <span className="text-[10px] text-gray-500">{new Date(reply.date).toLocaleString()}</span>
                       </div>
-                      {reply.comment && <p className="whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-300">{reply.comment}</p>}
+                      {reply.comment && <TaskMarkdown body={reply.comment} taskId={modalTask?.id} compact imageMode="comment" emptyMessage="" />}
                     </div>
                   ))}
                 </div>
@@ -1078,12 +1229,29 @@ export function TaskModal() {
         autoFocus={isRequireInput}
         className="h-28 w-full resize-none rounded-xl border border-gray-200 bg-white px-4 py-3 pb-12 text-sm outline-none placeholder:text-gray-400 focus:border-primary dark:border-white/10 dark:bg-black/40"
         value={newComment}
-        onChange={(event) => setNewComment(event.target.value)}
+        onChange={(event) => {
+          setNewComment(event.target.value);
+          if (commentAssetError) {
+            setCommentAssetError('');
+          }
+        }}
+        onPaste={handleCommentPaste}
+        onDragOver={handleCommentDragOver}
+        onDrop={handleCommentDrop}
         placeholder={isRequireInput ? 'Type your response...' : 'Add a comment...'}
       />
+      <div className="mt-2 flex items-center justify-between gap-3 px-1 text-[11px] text-gray-500 dark:text-gray-400">
+        <span>Paste or drop PNG, JPG, or SVG images to attach them.</span>
+        {isUploadingCommentAsset && <span className="font-semibold text-primary">Uploading image...</span>}
+      </div>
+      {commentAssetError && (
+        <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
+          {commentAssetError}
+        </div>
+      )}
       <div className="absolute bottom-3 right-3 flex items-center">
         <button
-          disabled={saving || !newComment.trim() || !modalTask?.id}
+          disabled={saving || isUploadingCommentAsset || !newComment.trim() || !modalTask?.id}
           onClick={sendCommentDirectly}
           className="flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-4 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-primary-hover disabled:opacity-50"
         >
