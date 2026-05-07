@@ -317,6 +317,7 @@ export function DocsScreen() {
     titleInputRef.current?.select();
   }, [isEditingTitle]);
 
+  useEffect(() => {
     const handleCustomNavigation = () => {
       const initialDoc = new URLSearchParams(window.location.search).get('doc');
       if (initialDoc && loadedDocsRef.current.some(d => d.path === initialDoc)) {

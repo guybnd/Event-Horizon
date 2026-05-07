@@ -1,6 +1,6 @@
 ---
 title: Support docs deep-linking via URL param query
-status: In Progress
+status: Done
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent
@@ -9,7 +9,7 @@ tags:
   - ux
 priority: Medium
 effort: S
-implementationLink: ''
+implementationLink: 8d6b010bb3149971d91618409e88d347e765bf13
 subtasks: []
 history:
   - type: activity
@@ -35,6 +35,22 @@ history:
     to: In Progress
     user: Agent
     date: '2026-05-08T00:02:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-08T00:15:00.000Z'
+    comment: >-
+      Implemented URL query param support for Docs: - Reads `doc` param from URL
+      via `window.location.search` during component initialization. - Uses
+      `flux:navigate` window event to seamlessly transport link requests from
+      `ReleasesScreen.tsx` straight to `DocsScreen.tsx` and re-mount. -
+      Automatically sets/reads history state cleanly. - Batched commit in
+      `8d6b010`.
+    id: c-2026-05-08t00-15-00-000z
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-05-08T00:15:00.000Z'
 order: 7
 ---
 
@@ -44,6 +60,6 @@ The Releases screen generates release notes in the `.docs` system and links to t
 
 ## Acceptance Criteria
 
-- [ ] Updating the browser path to `/docs?doc=path/to/my-doc.md` automatically selects that document when navigating to the Docs view.
-- [ ] If the `doc` parameter isn't present, the Docs view falls back to selecting the first document in the hierarchy as it does currently.
-- [ ] AppContext navigation functions handle routing to the Docs view seamlessly when the payload includes a document path.
+- [x] Updating the browser path to `/docs?doc=path/to/my-doc.md` automatically selects that document when navigating to the Docs view.
+- [x] If the `doc` parameter isn't present, the Docs view falls back to selecting the first document in the hierarchy as it does currently.
+- [x] AppContext navigation functions handle routing to the Docs view seamlessly when the payload includes a document path.
