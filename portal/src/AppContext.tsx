@@ -370,7 +370,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const closeModal = () => {
     setIsModalOpen(false);
-    setTimeout(() => setModalTask(null), 200);
+    setTimeout(() => setModalTask(null), 1000);
   };
 
   const saveConfig = async (newConfig: Config) => {

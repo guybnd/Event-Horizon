@@ -7,6 +7,7 @@ import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal } from '
 import { useApp } from '../AppContext';
 import { updateTask } from '../api';
 import { isPromptableStatus } from '../workflow';
+import { motion } from 'framer-motion';
 
 export function TaskCard({
   task,
@@ -237,13 +238,43 @@ export function TaskCard({
     openTaskModal(nextTask);
   };
 
+  const animationsEnabled = config?.animationsEnabled ?? true;
+  const speedMap = { fast: 0.2, normal: 0.4, slow: 0.7 };
+  const duration = speedMap[config?.animationSpeed || 'normal'];
+
+  const CardContainer = animationsEnabled && !isDragging && !isOverlay ? motion.div : 'div';
+  const layoutProps = animationsEnabled && !isDragging && !isOverlay ? { 
+    layoutId: `ticket-${task.id}`,
+    transition: { type: 'spring' as const, bounce: 0.15, duration: duration + 0.3 } 
+  } : {};
+
+  const { isModalOpen, modalTask } = useApp();
+  const isThisTaskOpen = isModalOpen && modalTask?.id === task.id;
+  const [isAnimatingZ, setIsAnimatingZ] = useState(false);
+
+  useEffect(() => {
+    if (isThisTaskOpen) {
+      setIsAnimatingZ(true);
+    } else if (isAnimatingZ) {
+      const t = setTimeout(() => setIsAnimatingZ(false), (duration + 0.3) * 1000);
+      return () => clearTimeout(t);
+    }
+  }, [isThisTaskOpen, duration, isAnimatingZ]);
+
+  const contentAnimation = animationsEnabled ? {
+    initial: false,
+    animate: { opacity: isThisTaskOpen ? 0 : 1 },
+    transition: isThisTaskOpen ? { duration: 0.1 } : { duration: 0.2, delay: duration }
+  } : {};
+
   return (
-    <div
+    <CardContainer
+      {...layoutProps}
       ref={setNodeRef}
-      style={style}
+      style={{ ...style, zIndex: isThisTaskOpen || isAnimatingZ ? 60 : undefined }}
       className={`mb-3 group flex flex-col relative ${(priorityMenuOpen || effortMenuOpen || assigneeMenuOpen || tagMenuOpen || isEditingTitle) ? 'z-40' : ''}`}
     >
-      <div className={`relative flex flex-col rounded-xl border bg-white/80 dark:bg-[#252630]/80 backdrop-blur-md p-0 shadow-sm hover:border-primary/50 hover:shadow-md transition-all ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''} ${isPromptStatus ? 'border-amber-300 dark:border-amber-500/40 ring-1 ring-amber-200/50 dark:ring-amber-500/20' : 'border-gray-200/50 dark:border-white/5'} ${liveAnimationClass} ${liveAccentClass}`}>
+      <motion.div {...contentAnimation} className={`relative flex flex-col rounded-xl border bg-white/80 dark:bg-[#252630]/80 backdrop-blur-md p-0 shadow-sm hover:border-primary/50 hover:shadow-md transition-all ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''} ${isPromptStatus ? 'border-amber-300 dark:border-amber-500/40 ring-1 ring-amber-200/50 dark:ring-amber-500/20' : 'border-gray-200/50 dark:border-white/5'} ${liveAnimationClass} ${liveAccentClass}`}>
         {isPromptStatus && (
           <div className="absolute -top-1.5 -right-1.5 z-10">
             <div className="relative">
@@ -493,7 +524,7 @@ export function TaskCard({
             </div>
           </div>
         </div>
-      </div>
-    </div>
+      </motion.div>
+    </CardContainer>
   );
 }

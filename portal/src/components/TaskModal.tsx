@@ -24,6 +24,7 @@ import { buildUnsupportedImageMessage, uploadTaskImageMarkdownLinks } from '../t
 import { normalizeTaskMarkdownBody, TaskDescriptionSurface } from './TaskDescriptionSurface';
 import { TaskMarkdown } from './TaskMarkdown';
 import { DEFAULT_READY_FOR_MERGE_STATUS, getRequireInputStatus } from '../workflow';
+import { motion, AnimatePresence } from 'framer-motion';
 
 const ACTIVITY_FILTER_STORAGE_KEY = 'flux.activityFilter';
 
@@ -283,7 +284,7 @@ export function TaskModal() {
 
     const handleMouseMove = (e: MouseEvent) => {
       if (!isDraggingSidebar) return;
-      setSidebarWidth((prev) => Math.max(250, Math.min(window.innerWidth * 0.5, window.innerWidth - e.clientX)));
+      setSidebarWidth(() => Math.max(250, Math.min(window.innerWidth * 0.5, window.innerWidth - e.clientX)));
     };
     
     const handleMouseUp = () => {
@@ -371,7 +372,7 @@ export function TaskModal() {
     setResponseDestination(requireInputDestinations[0] || 'Todo');
   }, [isRequireInput, requireInputDestinations, responseDestination]);
 
-  if (!isModalOpen || !config) return null;
+  if (!config || (!isModalOpen && !modalTask)) return null;
 
   const activityHistory = modalTask?.history || [];
   const filteredHistory = activityFilter === 'comments'
@@ -1294,15 +1295,44 @@ export function TaskModal() {
     </div>
   ) : null;
 
-  return (
-    <div className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center">
-      <div
-        className="pointer-events-auto absolute inset-0 bg-black/40 backdrop-blur-sm"
-        onClick={isFullView ? undefined : handleCloseAttempt}
-      />
+  const animationsEnabled = config?.animationsEnabled ?? true;
+  const speedMap = { fast: 0.2, normal: 0.4, slow: 0.7 };
+  const duration = speedMap[config?.animationSpeed || 'normal'];
 
-      {isFullView ? (
-        <div className="pointer-events-auto absolute inset-3 flex flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-white/10 dark:bg-[#1a1b23]">
+  const Container = animationsEnabled ? motion.div : 'div';
+  const layoutProps = animationsEnabled ? { 
+    layoutId: `ticket-${modalTask?.id}`,
+    transition: { type: 'spring' as const, bounce: 0.15, duration: duration + 0.3 },
+    style: { zIndex: 60 }
+  } : {};
+
+  const contentAnimation = animationsEnabled ? {
+    initial: { opacity: 0 },
+    animate: { opacity: 1, transition: { duration: 0.2, delay: duration * 0.4 } },
+    exit: { opacity: 0, transition: { duration: 0.05, delay: 0 } },
+  } : {};
+
+  return (
+    <AnimatePresence>
+      {isModalOpen && config && (
+        <motion.div
+          key="modal-overlay"
+          initial={animationsEnabled ? { opacity: 0 } : undefined}
+          animate={animationsEnabled ? { opacity: 1 } : undefined}
+          exit={animationsEnabled ? { opacity: 0 } : undefined}
+          transition={{ duration: 0.2 }}
+          className="pointer-events-auto fixed inset-0 z-[55] bg-black/40 backdrop-blur-sm"
+          onClick={isFullView ? undefined : handleCloseAttempt}
+        />
+      )}
+
+      {isModalOpen && config && isFullView && (
+        <Container 
+          key="modal-content-full"
+          {...layoutProps}
+          className="pointer-events-auto fixed inset-3 z-[60] flex flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-white/10 dark:bg-[#1a1b23]"
+        >
+          <motion.div {...contentAnimation} className="flex h-full w-full flex-col overflow-hidden">
           {saveError && (
             <div className="bg-red-500/10 text-red-600 dark:text-red-400 px-5 py-3 text-sm font-medium border-b border-red-500/20 text-center flex items-center justify-center gap-2">
               <AlertCircle className="w-4 h-4" />
@@ -1478,9 +1508,14 @@ export function TaskModal() {
               </div>
             </aside>
           </div>
-        </div>
-      ) : (
+          </motion.div>
+        </Container>
+      )}
+
+      {isModalOpen && config && !isFullView && (
         <Rnd
+          key="modal-content-popup"
+          enableUserSelectHack={false}
           default={{ x: window.innerWidth / 2 - 400, y: Math.max(30, window.innerHeight * 0.05), width: 800, height: window.innerHeight * 0.9 }}
           minWidth={640}
           minHeight={420}
@@ -1488,7 +1523,10 @@ export function TaskModal() {
           dragHandleClassName="modal-handle"
           className="pointer-events-auto"
         >
-          <div className="flex h-full w-full flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl dark:border-white/10 dark:bg-[#1a1b23]">
+          <Container 
+            {...layoutProps}
+            className="flex h-full w-full flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl dark:border-white/10 dark:bg-[#1a1b23]">
+            <motion.div {...contentAnimation} className="flex h-full w-full flex-col overflow-hidden">
             {saveError && (
               <div className="bg-red-500/10 text-red-600 dark:text-red-400 px-4 py-2.5 text-sm font-medium border-b border-red-500/20 text-center flex items-center justify-center gap-2">
                 <AlertCircle className="w-4 h-4" />
@@ -1671,7 +1709,8 @@ export function TaskModal() {
                 {isReadyForMerge && readyForMergePrompt}
               </div>
             </div>
-          </div>
+            </motion.div>
+          </Container>
         </Rnd>
       )}
 
@@ -1735,6 +1774,6 @@ export function TaskModal() {
           </div>
         </div>
       )}
-    </div>
+    </AnimatePresence>
   );
 }

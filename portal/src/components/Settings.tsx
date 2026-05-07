@@ -356,6 +356,8 @@ export function Settings() {
   const [enableBacklog, setEnableBacklog] = useState(true);
   const [requireComment, setRequireComment] = useState(true);
   const [boardCardOpenMode, setBoardCardOpenMode] = useState<BoardCardOpenMode>('full');
+  const [animationsEnabled, setAnimationsEnabled] = useState(true);
+  const [animationSpeed, setAnimationSpeed] = useState<'fast' | 'normal' | 'slow'>('normal');
   const [requireInputStatus, setRequireInputStatus] = useState(DEFAULT_REQUIRE_INPUT_STATUS);
   const [readyForMergeStatus, setReadyForMergeStatus] = useState(DEFAULT_READY_FOR_MERGE_STATUS);
   const [docsEditPermissions, setDocsEditPermissions] = useState<DocsEditPermissions>('all');
@@ -381,8 +383,8 @@ export function Settings() {
       setProjects(config.projects.join(', '));
       setEnableBacklog(config.enableBacklogScreen);
       setRequireComment(config.requireCommentOnStatusChange);
-      setBoardCardOpenMode(config.boardCardOpenMode || 'full');
-      setRequireInputStatus(config.requireInputStatus || DEFAULT_REQUIRE_INPUT_STATUS);
+      setBoardCardOpenMode(config.boardCardOpenMode || 'full');      setAnimationsEnabled(config.animationsEnabled ?? true);
+      setAnimationSpeed(config.animationSpeed || 'normal');      setRequireInputStatus(config.requireInputStatus || DEFAULT_REQUIRE_INPUT_STATUS);
       setReadyForMergeStatus(config.readyForMergeStatus || DEFAULT_READY_FOR_MERGE_STATUS);
       setDocsEditPermissions(config.docsEditPermissions || 'all');
       setDocsAllowedUsers(config.docsAllowedUsers || []);
@@ -507,6 +509,8 @@ export function Settings() {
         enableBacklogScreen: enableBacklog,
         requireCommentOnStatusChange: requireComment,
         boardCardOpenMode,
+        animationsEnabled,
+        animationSpeed,
         requireInputStatus: normalizedRequireInputStatus,
         readyForMergeStatus: normalizedReadyForMergeStatus,
         docsEditPermissions,
@@ -564,6 +568,8 @@ export function Settings() {
     enableBacklogScreen: enableBacklog,
     requireCommentOnStatusChange: requireComment,
     boardCardOpenMode,
+    animationsEnabled,
+    animationSpeed,
     requireInputStatus: normalizedRequireInputStatus,
     readyForMergeStatus: normalizedReadyForMergeStatus,
     docsEditPermissions,
@@ -829,6 +835,37 @@ export function Settings() {
                 >
                   Popup View
                 </button>
+              </div>
+            </div>
+          </div>
+          
+          <div className="rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10 space-y-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <span className="block text-sm font-bold text-gray-800 dark:text-gray-200 mb-0.5">Ticket Animations</span>
+                <span className="text-xs text-gray-500">Enable fluid layout animations when opening and closing tickets.</span>
+              </div>
+              <div className="flex items-center gap-3">
+                {animationsEnabled && (
+                  <select
+                    value={animationSpeed}
+                    onChange={(e) => setAnimationSpeed(e.target.value as 'fast' | 'normal' | 'slow')}
+                    className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
+                  >
+                    <option value="fast">Fast</option>
+                    <option value="normal">Normal</option>
+                    <option value="slow">Slow</option>
+                  </select>
+                )}
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="sr-only peer"
+                    checked={animationsEnabled}
+                    onChange={(e) => setAnimationsEnabled(e.target.checked)}
+                  />
+                  <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
+                </label>
               </div>
             </div>
           </div>
