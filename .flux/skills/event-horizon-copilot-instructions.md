@@ -19,7 +19,7 @@ These instructions apply to all agent work in this repository.
 For any ticket-driven implementation task, the agent must follow this sequence:
 
 1. Read the full ticket, including history.
-2. Read the relevant docs and the smallest nearby implementation surface before editing. Start with `.docs/`, then `README.md`, then `.flux/skills/*.md` when the task touches workflow behavior or installer output.
+2. Read the relevant docs and the smallest nearby implementation surface before editing. Start with `.docs/`, then `README.md`, then `.docs/skills/*.md` when the task touches workflow behavior or installer output.
 3. If the ticket is in `Grooming`, treat that as a planning phase rather than implicit permission to code. Tighten the ticket body into a concrete plan, review the applicable ticket metadata, fill anything that is already inferable from the current context, and capture any implementation-critical choices that still need a user decision. Applicable fields can include `priority`, `effort`, `tags`, hierarchy links, and related-ticket references when they are relevant to the work.
 4. If those implementation-critical choices or applicable metadata values are unresolved, move the ticket to the configured user-input status (`requireInputStatus`, default `Require Input`) and record the question in ticket history instead of silently picking a direction. Include the proposed fill values or defaults for the missing fields in that question.
 5. Add a short plan comment to the ticket before substantial work.
@@ -57,9 +57,16 @@ For any ticket-driven implementation task, the agent must follow this sequence:
 - Use `.docs/` as the primary durable project knowledge base when grooming or starting ticket work.
 - Use grooming to improve the ticket body itself so another agent could pick up the clarified plan without rediscovery, and fill applicable metadata instead of leaving inferable values blank.
 - Update `README.md` when repository-wide setup, architecture, or workflow behavior changes.
-- If the task changes agent workflow or workflow installation behavior, update `.flux/skills/event-horizon-agent.md` and `.flux/skills/event-horizon-copilot-instructions.md`, then refresh the installed workspace copies.
+- If the task changes agent workflow or workflow installation behavior, update the relevant files in `.docs/skills/` and `.flux/skills/event-horizon-copilot-instructions.md`, then refresh the installed workspace copies.
 
 ### Source Of Detailed Procedure
 
 - Follow `.github/skills/event-horizon/SKILL.md` for the detailed Event Horizon ticket conventions, comments, validation expectations, and project-specific workflow notes.
 - If these always-on instructions and the skill differ, follow the stricter rule.
+
+### Source Of Phase-Specific Skills
+
+- Follow `.github/skills/event-horizon/orchestrator.md` for skill routing and ticket model reference.
+- Follow `.github/skills/event-horizon/grooming.md` when the active ticket is in `Grooming` or `Require Input`.
+- Follow `.github/skills/event-horizon/implementation.md` when the active ticket is in `Todo` or `In Progress`.
+- Follow `.github/skills/event-horizon/release.md` when performing release orchestration.

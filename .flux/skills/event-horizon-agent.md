@@ -1,3 +1,9 @@
+> ℹ️ DEPRECATED — This file is no longer used by the Event Horizon engine installer.
+> Active skills are now managed in `.docs/skills/` (four phase-specific files).
+> You may safely delete this file once you have verified your new setup is working.
+
+---
+
 # Event Horizon Agent Skill
 
 Version: 1.4.1

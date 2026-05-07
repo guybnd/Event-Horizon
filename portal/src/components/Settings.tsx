@@ -382,7 +382,7 @@ const SimpleEditor = ({ items, setItems, placeholder, sortable = false }: { item
 };
 
 export function Settings() {
-  const { config, saveConfig, triggerRefresh } = useApp();
+  const { config, saveConfig, triggerRefresh, setView } = useApp();
   
   const [activeTab, setActiveTab] = useState<'workflow' | 'attributes' | 'workspace' | 'preferences' | 'agent'>('workflow');
   const [columns, setColumns] = useState<StatusDef[]>([]);
@@ -410,6 +410,7 @@ export function Settings() {
   const [workflowInstalled, setWorkflowInstalled] = useState(false);
   const [skillInstalled, setSkillInstalled] = useState(false);
   const [skillSourcePath, setSkillSourcePath] = useState('');
+  const [skillSourcePaths, setSkillSourcePaths] = useState<string[]>([]);
   const [skillInstalledPath, setSkillInstalledPath] = useState('');
   const [instructionsInstalled, setInstructionsInstalled] = useState(false);
   const [instructionsSourcePath, setInstructionsSourcePath] = useState('');
@@ -485,6 +486,7 @@ export function Settings() {
         setWorkflowInstalled(status.workflowInstalled);
         setSkillInstalled(status.skillInstalled);
         setSkillSourcePath(status.skillSourcePath);
+        setSkillSourcePaths(status.skillSourcePaths || []);
         setSkillInstalledPath(status.skillInstalledPath);
         setInstructionsInstalled(status.instructionsInstalled);
         setInstructionsSourcePath(status.instructionsSourcePath || '');
@@ -1127,12 +1129,45 @@ export function Settings() {
                   <div className="mt-1 font-medium">{skillLoading ? 'Checking…' : workflowInstalled ? 'Installed in this repo' : 'Not fully installed in this repo'}</div>
                 </div>
                 <div>
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Source Skill</div>
-                  <div className="mt-1 break-all">{skillSourcePath || '.flux/skills/event-horizon-agent.md'}</div>
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Source Skills</div>
+                  <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">Edit these files to customise the agent workflow; re-run Install to propagate.</p>
+                  <div className="mt-2 space-y-1.5">
+                    {(skillSourcePaths.length > 0 ? skillSourcePaths : [
+                      '.docs/skills/event-horizon-orchestrator.md',
+                      '.docs/skills/event-horizon-grooming.md',
+                      '.docs/skills/event-horizon-implementation.md',
+                      '.docs/skills/event-horizon-release.md',
+                    ]).map((p) => {
+                      const basename = p.split('/').pop()?.replace('.md', '') ?? p;
+                      const normalized = p.replace(/\\/g, '/');
+                      const docsIdx = normalized.indexOf('/.docs/');
+                      const docsRelative = docsIdx !== -1 ? normalized.slice(docsIdx + 7) : (normalized.split('/').pop() ?? p);
+                      const docParam = docsRelative.replace(/\.md$/, '');
+                      return (
+                        <button
+                          key={p}
+                          type="button"
+                          title={p}
+                          onClick={() => {
+                            const url = new URL(window.location.href);
+                            url.pathname = '/docs';
+                            url.searchParams.set('doc', docParam);
+                            window.history.pushState({}, '', url.toString());
+                            window.dispatchEvent(new CustomEvent('flux:navigate'));
+                            setView('docs');
+                          }}
+                          className="flex w-full items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-left text-xs text-gray-700 transition-colors hover:border-primary/40 hover:bg-primary/5 dark:border-white/10 dark:bg-black/20 dark:text-gray-300 dark:hover:bg-white/5"
+                        >
+                          <span className="min-w-0 flex-1 truncate font-mono">{basename}</span>
+                          <svg className="h-3.5 w-3.5 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
                 <div>
                   <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Workspace Skill Path</div>
-                  <div className="mt-1 break-all">{skillInstalledPath || '.github/skills/event-horizon/SKILL.md'}</div>
+                  <div className="mt-1 break-all">{skillInstalledPath || '.github/skills/event-horizon/orchestrator.md'}</div>
                 </div>
                 {instructionsSourcePath && (
                   <div>

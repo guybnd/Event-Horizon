@@ -8,6 +8,13 @@ type ResolvedFramework = Exclude<Framework, 'auto'>;
 export const EVENT_HORIZON_INSTRUCTIONS_START = '<!-- EVENT_HORIZON_MANAGED_INSTRUCTIONS:START -->';
 export const EVENT_HORIZON_INSTRUCTIONS_END = '<!-- EVENT_HORIZON_MANAGED_INSTRUCTIONS:END -->';
 
+/** Frameworks that receive one file per skill module (Option B). */
+const MODULAR_FRAMEWORKS: ResolvedFramework[] = ['copilot', 'cline'];
+
+/** Ordered skill module names sourced from .docs/skills/. */
+const SKILL_MODULES = ['orchestrator', 'grooming', 'implementation', 'release'] as const;
+type SkillModule = typeof SKILL_MODULES[number];
+
 interface WorkflowInstallerOptions {
   sourceRoot: string;
   targetDir: string;
@@ -16,7 +23,11 @@ interface WorkflowInstallerOptions {
 
 export interface WorkflowInstallStatus {
   framework: ResolvedFramework;
+  /** Primary source path (orchestrator) — kept for backwards-compat. */
   skillSourcePath: string;
+  /** All four phase-specific source skill paths. */
+  skillSourcePaths: string[];
+  /** Primary installed skill path (orchestrator for Copilot/Cline, single file for others). */
   skillInstalledPath: string;
   skillSourceExists: boolean;
   skillInstalled: boolean;
@@ -61,16 +72,17 @@ function resolveFramework(targetDir: string, requested: Framework): ResolvedFram
   return 'generic';
 }
 
-function skillDestinationFor(targetDir: string, framework: ResolvedFramework) {
+/** Returns the primary/representative installed path for status display. */
+function skillDestinationFor(targetDir: string, framework: ResolvedFramework): string {
   switch (framework) {
     case 'copilot':
-      return path.join(targetDir, '.github', 'skills', 'event-horizon', 'SKILL.md');
+      return path.join(targetDir, '.github', 'skills', 'event-horizon', 'orchestrator.md');
+    case 'cline':
+      return path.join(targetDir, '.cline', 'skills', 'event-horizon-orchestrator.md');
     case 'gemini':
       return path.join(targetDir, '.gemini', 'skills', 'event-horizon.md');
     case 'cursor':
       return path.join(targetDir, '.cursor', 'rules', 'event-horizon.mdc');
-    case 'cline':
-      return path.join(targetDir, '.cline', 'rules', 'event-horizon.md');
     case 'windsurf':
       return path.join(targetDir, '.windsurf', 'rules', 'event-horizon.md');
     case 'claude':
@@ -78,6 +90,18 @@ function skillDestinationFor(targetDir: string, framework: ResolvedFramework) {
     case 'generic':
     default:
       return path.join(targetDir, '.event-horizon', 'skills', 'event-horizon.md');
+  }
+}
+
+/** Returns the installed path for a specific skill module. Only meaningful for modular frameworks. */
+function skillModuleDestinationFor(targetDir: string, framework: ResolvedFramework, module: SkillModule): string {
+  switch (framework) {
+    case 'copilot':
+      return path.join(targetDir, '.github', 'skills', 'event-horizon', `${module}.md`);
+    case 'cline':
+      return path.join(targetDir, '.cline', 'skills', `event-horizon-${module}.md`);
+    default:
+      return skillDestinationFor(targetDir, framework);
   }
 }
 
@@ -99,10 +123,27 @@ function instructionsDestinationFor(targetDir: string, framework: ResolvedFramew
 }
 
 function getSourcePaths(sourceRoot: string) {
+  const skillsDir = path.join(sourceRoot, '.docs', 'skills');
+  const skillSourcePaths = SKILL_MODULES.map(m => path.join(skillsDir, `event-horizon-${m}.md`));
   return {
-    skillSourcePath: path.join(sourceRoot, '.flux', 'skills', 'event-horizon-agent.md'),
+    /** Primary source path (orchestrator) — kept for backwards-compat. */
+    skillSourcePath: skillSourcePaths[0],
+    skillSourcePaths,
     instructionsSourcePath: path.join(sourceRoot, '.flux', 'skills', 'event-horizon-copilot-instructions.md'),
   };
+}
+
+/** Concatenates skill modules into one file, wrapping each in XML tags for LLM navigation. */
+async function buildConcatenatedSkill(skillSourcePaths: readonly string[]): Promise<string> {
+  const parts: string[] = [];
+  for (const [index, sourcePath] of skillSourcePaths.entries()) {
+    const module = SKILL_MODULES[index];
+    const content = await fs.readFile(sourcePath, 'utf-8');
+    parts.push(`<skill_module name="event-horizon-${module}">
+${content.trim()}
+</skill_module>`);
+  }
+  return parts.join('\n\n');
 }
 
 async function pathExists(targetPath: string) {
@@ -143,7 +184,7 @@ export function patchCopilotInstructions(existingContent: string | undefined, ma
 
 export async function getWorkflowInstallStatus({ sourceRoot, targetDir, framework = 'auto' }: WorkflowInstallerOptions): Promise<WorkflowInstallStatus> {
   const resolvedFramework = resolveFramework(targetDir, framework);
-  const { skillSourcePath, instructionsSourcePath } = getSourcePaths(sourceRoot);
+  const { skillSourcePath, skillSourcePaths, instructionsSourcePath } = getSourcePaths(sourceRoot);
   const skillInstalledPath = skillDestinationFor(targetDir, resolvedFramework);
   const instructionsInstalledPath = instructionsDestinationFor(targetDir, resolvedFramework);
   const skillSourceExists = await pathExists(skillSourcePath);
@@ -159,6 +200,7 @@ export async function getWorkflowInstallStatus({ sourceRoot, targetDir, framewor
   return {
     framework: resolvedFramework,
     skillSourcePath,
+    skillSourcePaths,
     skillInstalledPath,
     skillSourceExists,
     skillInstalled,
@@ -172,7 +214,7 @@ export async function getWorkflowInstallStatus({ sourceRoot, targetDir, framewor
 
 export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framework = 'auto' }: WorkflowInstallerOptions): Promise<WorkflowInstallResult> {
   const resolvedFramework = resolveFramework(targetDir, framework);
-  const { skillSourcePath, instructionsSourcePath } = getSourcePaths(sourceRoot);
+  const { skillSourcePath, skillSourcePaths, instructionsSourcePath } = getSourcePaths(sourceRoot);
   const skillInstalledPath = skillDestinationFor(targetDir, resolvedFramework);
   const instructionsInstalledPath = instructionsDestinationFor(targetDir, resolvedFramework);
 
@@ -180,8 +222,20 @@ export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framewor
     throw new Error(`Skill source file not found: ${skillSourcePath}`);
   }
 
-  await fs.mkdir(path.dirname(skillInstalledPath), { recursive: true });
-  await fs.copyFile(skillSourcePath, skillInstalledPath);
+  if (MODULAR_FRAMEWORKS.includes(resolvedFramework)) {
+    // Option B: install one file per skill module
+    for (const [index, module] of SKILL_MODULES.entries()) {
+      const src = skillSourcePaths[index];
+      const dest = skillModuleDestinationFor(targetDir, resolvedFramework, module);
+      await fs.mkdir(path.dirname(dest), { recursive: true });
+      await fs.copyFile(src, dest);
+    }
+  } else {
+    // Option A: concatenate all modules wrapped in XML tags
+    await fs.mkdir(path.dirname(skillInstalledPath), { recursive: true });
+    const concatenated = await buildConcatenatedSkill(skillSourcePaths);
+    await fs.writeFile(skillInstalledPath, concatenated, 'utf-8');
+  }
 
   if (instructionsInstalledPath) {
     if (!await pathExists(instructionsSourcePath)) {
