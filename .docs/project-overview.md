@@ -30,10 +30,12 @@ instructions, and the product code all live together in version control.
 
 ## Current capabilities worth knowing
 
-- File-backed ticket board with configurable statuses, tags, priorities, and
-  workflow prompt stages.
+- File-backed ticket board with configurable statuses, column order, tags,
+  priorities, effort sizing, subtask hierarchy, and workflow prompt stages.
 - In-product docs tree backed by `.docs/`, including hierarchy, editing, and
   wiki-oriented navigation.
+- Shared search, sort, and filter controls across the board and backlog, with
+  URL-backed state for shareable ticket views.
 - Workflow installation that keeps both the skill and Copilot instructions in
   sync inside a target workspace.
 - Activity-aware task history so sorting and audit trails reflect more than
@@ -43,5 +45,7 @@ instructions, and the product code all live together in version control.
 
 1. Architecture Overview
 2. Repository Map
-3. Ticket Lifecycle
-4. Workflow Install
+3. Ticket Model
+4. Ticket Interactions
+5. Ticket Lifecycle
+6. Workflow Install
