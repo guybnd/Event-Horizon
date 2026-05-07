@@ -5,7 +5,7 @@ tags:
   - settings
 priority: Medium
 effort: Small
-implementationLink: ''
+implementationLink: 'e90e38b3e32c7fb4e725067056c12077ca9c7397'
 subtasks:
   - Add framework parameter to /api/skill/install endpoint
   - Update Settings.tsx with an intelligent default/selectable IDE picker
@@ -50,8 +50,14 @@ history:
     user: GitHub Copilot
     date: '2026-05-08T12:00:01.000Z'
     comment: Completed implementation for Cursor, Cline, Windsurf, Claude Code, and Gemini. Updated settings UI and installer mapping. Docs updated. Ready for merge.
+  - type: status_change
+    from: Ready
+    to: Done
+    user: GitHub Copilot
+    date: '2026-05-08T12:05:00.000Z'
+    comment: Shipped framework-specific ticket rules installation to Cursor, Cline, Windsurf, and Claude Code (along with generic and Gemini formats). Re-added framework mapping logic in UI and installer APIs. Validated by CLI build. Revisions committed cleanly.
 title: support integration to various IDE from t he settings integration button
-status: Ready
+status: Done
 createdBy: Guy
 updatedBy: Guy
 ---
