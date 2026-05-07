@@ -11,6 +11,23 @@ body {
   @apply bg-gray-50 text-gray-900 dark:bg-bg-dark dark:text-gray-100;
 }
 
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-gray-300 dark:bg-white/10 rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-gray-400 dark:bg-white/20;
+}
+
 @keyframes task-materialize {
   0% {
     opacity: 0;
