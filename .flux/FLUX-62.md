@@ -5,9 +5,13 @@ tags:
   - feature
 priority: High
 effort: S
-implementationLink: ''
+implementationLink: a488a4700ce4b0624fdd220f991be1990fe43d34
 subtasks: []
 history:
+  - type: activity
+    user: Agent
+    date: '2026-05-07T09:17:07.343Z'
+    comment: Implementation complete and user validated. Closing ticket. Commit a488a47
   - type: activity
     user: Agent
     date: '2026-05-07T09:01:20.310Z'
@@ -52,7 +56,7 @@ history:
     date: '2026-05-07T08:07:13.020Z'
     comment: Changed assignee from unassigned to Agent.
 title: Show full description popup on card hover (1.5s)
-status: In Progress
+status: Done
 createdBy: Guy
 updatedBy: Guy
 order: 10
