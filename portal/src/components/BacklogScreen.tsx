@@ -3,6 +3,8 @@ import { useApp } from '../AppContext';
 import { fetchTasks, updateTask } from '../api';
 import type { Task } from '../types';
 import { Loader2, Plus } from 'lucide-react';
+import { TaskViewControls } from './TaskViewControls';
+import { filterAndSortTasks } from '../taskSearch';
 
 export function BacklogScreen() {
   const { openTaskModal, refreshTrigger, triggerRefresh, currentProject, config, currentUser, searchQuery, sortOption, filterAssignee, filterPriority, filterTag } = useApp();
@@ -51,39 +53,13 @@ export function BacklogScreen() {
 
   const selectedTask = tasks.find(t => t.id === selectedTaskId);
   const allStatuses = [...config.columns.map(c => c.name), ...config.hiddenStatuses.map(c => c.name)];
-  const normalizedQuery = searchQuery.trim().toLowerCase();
-  const priorityOrder = new Map(config.priorities.map((priority, index) => [priority.name, index]));
-  const getActivityTimestamp = (task: Task) => {
-    return (task.history || []).reduce((latest, entry) => {
-      const timestamp = entry.date ? new Date(entry.date).getTime() : 0;
-      return Number.isNaN(timestamp) ? latest : Math.max(latest, timestamp);
-    }, 0);
-  };
-  const visibleTasks = tasks
-    .filter((task) => {
-      const title = task.title?.toLowerCase() || '';
-      const body = task.body?.toLowerCase() || '';
-      const matchesQuery = !normalizedQuery || title.includes(normalizedQuery) || body.includes(normalizedQuery);
-      const matchesAssignee = filterAssignee === 'all' || (task.assignee || 'unassigned') === filterAssignee;
-      const matchesPriority = filterPriority === 'all' || (task.priority || 'None') === filterPriority;
-      const matchesTag = filterTag === 'all' || Boolean(task.tags?.includes(filterTag));
-      return matchesQuery && matchesAssignee && matchesPriority && matchesTag;
-    })
-    .sort((left, right) => {
-      switch (sortOption) {
-        case 'priority': {
-          const priorityDiff = (priorityOrder.get(left.priority || 'None') ?? Number.MAX_SAFE_INTEGER) - (priorityOrder.get(right.priority || 'None') ?? Number.MAX_SAFE_INTEGER);
-          return priorityDiff || getActivityTimestamp(right) - getActivityTimestamp(left) || left.id.localeCompare(right.id);
-        }
-        case 'assignee': {
-          const assigneeDiff = (left.assignee || 'unassigned').localeCompare(right.assignee || 'unassigned');
-          return assigneeDiff || getActivityTimestamp(right) - getActivityTimestamp(left) || left.id.localeCompare(right.id);
-        }
-        case 'updated':
-        default:
-          return getActivityTimestamp(right) - getActivityTimestamp(left) || left.id.localeCompare(right.id);
-      }
-    });
+  const visibleTasks = filterAndSortTasks(tasks, config, {
+    searchQuery,
+    sortOption,
+    filterAssignee,
+    filterPriority,
+    filterTag,
+  });
   const selectedVisibleTask = visibleTasks.find(t => t.id === selectedTaskId) || null;
 
   const handleStatusChange = async (newStatus: string) => {
@@ -107,9 +83,18 @@ export function BacklogScreen() {
   };
 
   return (
-    <div className="flex h-full gap-6">
+    <div className="flex h-full min-h-0 flex-col gap-6">
+      <TaskViewControls
+        title="Backlog filters"
+        searchPlaceholder="Filter backlog items"
+        visibleCount={visibleTasks.length}
+        totalCount={tasks.length}
+        itemLabel="backlog tickets"
+      />
+
+      <div className="flex min-h-0 flex-1 gap-6">
       {/* List View */}
-      <div className="w-1/3 flex flex-col bg-white/50 dark:bg-[#1f2028]/50 rounded-2xl border border-gray-200 dark:border-white/5 overflow-hidden">
+      <div className="w-1/3 min-h-0 flex flex-col bg-white/50 dark:bg-[#1f2028]/50 rounded-2xl border border-gray-200 dark:border-white/5 overflow-hidden">
         <div className="p-4 border-b border-gray-200 dark:border-white/5 flex items-center justify-between bg-white/80 dark:bg-[#252630]/80">
           <h2 className="font-semibold text-gray-800 dark:text-gray-200">Backlog Items ({visibleTasks.length})</h2>
           <button 
@@ -121,7 +106,7 @@ export function BacklogScreen() {
         </div>
         <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-2">
           {visibleTasks.length === 0 && (
-            <p className="text-sm text-gray-500 text-center mt-10">{normalizedQuery ? 'No backlog items match the current search.' : 'No backlog items.'}</p>
+            <p className="text-sm text-gray-500 text-center mt-10">{searchQuery.trim() ? 'No backlog items match the current filters.' : 'No backlog items.'}</p>
           )}
           {visibleTasks.map(task => (
             <div 
@@ -141,7 +126,7 @@ export function BacklogScreen() {
       </div>
 
       {/* Details View */}
-      <div className="flex-1 bg-white/50 dark:bg-[#1f2028]/50 rounded-2xl border border-gray-200 dark:border-white/5 flex flex-col overflow-hidden">
+      <div className="flex-1 min-h-0 bg-white/50 dark:bg-[#1f2028]/50 rounded-2xl border border-gray-200 dark:border-white/5 flex flex-col overflow-hidden">
         {selectedVisibleTask ? (
           <div className="flex flex-col h-full">
             <div className="p-6 border-b border-gray-200 dark:border-white/5 flex justify-between items-start bg-white/80 dark:bg-[#252630]/80">
@@ -199,6 +184,7 @@ export function BacklogScreen() {
             <p>Select a task to view details</p>
           </div>
         )}
+      </div>
       </div>
     </div>
   );

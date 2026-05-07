@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, Search, FileText } from 'lucide-react';
 import { useApp } from '../AppContext';
 import { fetchTasks } from '../api';
 import { getPromptableStatuses } from '../workflow';
+import type { Task } from '../types';
+import { searchTasks } from '../taskSearch';
 
 export function Header() {
   const {
@@ -12,35 +14,57 @@ export function Header() {
     setCurrentUser,
     currentProject,
     setCurrentProject,
-    searchQuery,
-    setSearchQuery,
-    sortOption,
-    setSortOption,
-    filterAssignee,
-    setFilterAssignee,
-    filterPriority,
-    setFilterPriority,
-    filterTag,
-    setFilterTag,
-    clearTaskFilters,
     refreshTrigger,
     config,
   } = useApp();
-  const [promptCount, setPromptCount] = useState(0);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [globalSearchQuery, setGlobalSearchQuery] = useState('');
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const searchContainerRef = useRef<HTMLDivElement | null>(null);
   const promptableStatuses = getPromptableStatuses(config);
-  const showTaskFilters = view === 'board' || view === 'backlog';
+  const promptCount = tasks.filter((task) => promptableStatuses.includes(task.status)).length;
+  const searchResults = globalSearchQuery.trim() ? searchTasks(tasks, globalSearchQuery, 7) : [];
+
+  const getTaskHref = (task: Task) => {
+    const path = task.status.toLowerCase() === 'backlog' ? '/backlog' : '/board';
+    const params = new URLSearchParams({ ticket: task.id, view: 'full' });
+    return `${path}?${params.toString()}`;
+  };
+
+  const getResultPreview = (task: Task) => {
+    const body = (task.body || '').replace(/\s+/g, ' ').trim();
+    if (!body) {
+      return 'Open ticket details';
+    }
+
+    return body.length > 96 ? `${body.slice(0, 96).trimEnd()}...` : body;
+  };
 
   useEffect(() => {
     fetchTasks()
-      .then((tasks) => {
-        setPromptCount(tasks.filter((task) => promptableStatuses.includes(task.status)).length);
+      .then((nextTasks) => {
+        setTasks(nextTasks);
       })
       .catch(console.error);
-  }, [promptableStatuses, refreshTrigger]);
+  }, [refreshTrigger]);
+
+  useEffect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!searchContainerRef.current?.contains(event.target as Node)) {
+        setIsSearchOpen(false);
+      }
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+    };
+  }, []);
 
   return (
-    <header className="px-8 py-4 border-b border-gray-200 dark:border-white/5 bg-white/50 dark:bg-black/20 backdrop-blur-md flex items-center justify-between sticky top-0 z-10">
-      <div className="flex items-center gap-6">
+    <header className="sticky top-0 z-10 border-b border-gray-200 bg-white/65 px-8 py-4 backdrop-blur-md dark:border-white/5 dark:bg-black/20">
+      <div className="flex flex-col gap-4 2xl:flex-row 2xl:items-center 2xl:justify-between">
+      <div className="flex flex-wrap items-center gap-4 xl:gap-6">
         <div className="flex items-center gap-3">
           <div className="bg-primary/10 p-2 rounded-lg">
             <Rocket className="w-5 h-5 text-primary" />
@@ -81,67 +105,71 @@ export function Header() {
         </div>
       </div>
       
-      <div className="flex items-center gap-3">
-        {showTaskFilters && (
-          <>
-            <div className="flex min-w-[260px] items-center gap-2 rounded-xl border border-gray-200 bg-white/70 px-3 py-2 text-sm text-gray-600 shadow-sm dark:border-white/10 dark:bg-white/5 dark:text-gray-300">
-              <Search className="h-4 w-4 text-gray-400" />
-              <input
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-                placeholder="Search titles and descriptions"
-                className="w-full bg-transparent outline-none placeholder:text-gray-400"
-              />
+      <div className="flex flex-wrap items-center gap-3">
+        <div ref={searchContainerRef} className="relative min-w-[320px] flex-1 2xl:w-[420px] 2xl:flex-none">
+          <div className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white/80 px-3 py-2 text-sm text-gray-600 shadow-sm dark:border-white/10 dark:bg-white/5 dark:text-gray-300">
+            <Search className="h-4 w-4 text-gray-400" />
+            <input
+              value={globalSearchQuery}
+              onChange={(event) => setGlobalSearchQuery(event.target.value)}
+              onFocus={() => setIsSearchOpen(true)}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  setIsSearchOpen(false);
+                  return;
+                }
+
+                if (event.key === 'Enter' && searchResults.length > 0) {
+                  event.preventDefault();
+                  window.location.assign(getTaskHref(searchResults[0].task));
+                }
+              }}
+              placeholder="Search any ticket, backlog item, or ID"
+              className="w-full bg-transparent outline-none placeholder:text-gray-400"
+            />
+            {globalSearchQuery && (
+              <button
+                onClick={() => {
+                  setGlobalSearchQuery('');
+                  setIsSearchOpen(false);
+                }}
+                className="rounded-full px-2 py-1 text-xs font-medium text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/10 dark:hover:text-gray-200"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+
+          {isSearchOpen && globalSearchQuery.trim() && (
+            <div className="absolute left-0 right-0 top-[calc(100%+0.5rem)] z-20 overflow-hidden rounded-2xl border border-gray-200 bg-white/95 shadow-xl dark:border-white/10 dark:bg-[#15161d]/95">
+              <div className="border-b border-gray-200 px-4 py-3 text-xs font-medium text-gray-500 dark:border-white/10 dark:text-gray-400">
+                Fuzzy search across all tickets. Results deep-link into full view, so browser tab actions work normally.
+              </div>
+              <div className="max-h-[420px] overflow-y-auto p-2">
+                {searchResults.length > 0 ? searchResults.map(({ task }) => (
+                  <a
+                    key={task.id}
+                    href={getTaskHref(task)}
+                    className="flex w-full flex-col gap-1 rounded-xl px-3 py-3 text-left transition-colors hover:bg-gray-100 focus:bg-gray-100 focus:outline-none dark:hover:bg-white/5 dark:focus:bg-white/5"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold text-gray-900 dark:text-white">{task.title || 'Untitled ticket'}</span>
+                      <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.16em] text-gray-500 dark:bg-white/10 dark:text-gray-300">
+                        {task.status}
+                      </span>
+                    </div>
+                    <div className="text-xs font-semibold tracking-[0.18em] text-gray-400">{task.id}</div>
+                    <div className="text-sm text-gray-500 dark:text-gray-400">{getResultPreview(task)}</div>
+                  </a>
+                )) : (
+                  <div className="px-4 py-6 text-sm text-gray-500 dark:text-gray-400">
+                    No matching tickets.
+                  </div>
+                )}
+              </div>
             </div>
-            <select
-              value={sortOption}
-              onChange={(event) => setSortOption(event.target.value as any)}
-              className="rounded-xl border border-gray-200 bg-white/70 px-3 py-2 text-sm text-gray-600 shadow-sm outline-none dark:border-white/10 dark:bg-white/5 dark:text-gray-300"
-            >
-              <option value="default">Sort: Default</option>
-              <option value="priority">Sort: Priority</option>
-              <option value="updated">Sort: Recently updated</option>
-              <option value="assignee">Sort: Assignee</option>
-            </select>
-            <select
-              value={filterAssignee}
-              onChange={(event) => setFilterAssignee(event.target.value)}
-              className="rounded-xl border border-gray-200 bg-white/70 px-3 py-2 text-sm text-gray-600 shadow-sm outline-none dark:border-white/10 dark:bg-white/5 dark:text-gray-300"
-            >
-              <option value="all">Assignee: All</option>
-              {config?.users.map((user) => (
-                <option key={user.name} value={user.name}>{user.name}</option>
-              ))}
-              <option value="unassigned">Unassigned</option>
-            </select>
-            <select
-              value={filterPriority}
-              onChange={(event) => setFilterPriority(event.target.value)}
-              className="rounded-xl border border-gray-200 bg-white/70 px-3 py-2 text-sm text-gray-600 shadow-sm outline-none dark:border-white/10 dark:bg-white/5 dark:text-gray-300"
-            >
-              <option value="all">Priority: All</option>
-              {config?.priorities.map((priority) => (
-                <option key={priority.name} value={priority.name}>{priority.name}</option>
-              ))}
-            </select>
-            <select
-              value={filterTag}
-              onChange={(event) => setFilterTag(event.target.value)}
-              className="rounded-xl border border-gray-200 bg-white/70 px-3 py-2 text-sm text-gray-600 shadow-sm outline-none dark:border-white/10 dark:bg-white/5 dark:text-gray-300"
-            >
-              <option value="all">Tag: All</option>
-              {config?.tags.map((tag) => (
-                <option key={tag.name} value={tag.name}>{tag.name}</option>
-              ))}
-            </select>
-            <button
-              onClick={clearTaskFilters}
-              className="rounded-xl border border-gray-200 bg-white/70 px-3 py-2 text-sm text-gray-500 shadow-sm transition-colors hover:bg-gray-100 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
-            >
-              Clear
-            </button>
-          </>
-        )}
+          )}
+        </div>
         <button
           onClick={() => setView('board')}
           className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-left transition-colors ${promptCount > 0 ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300' : 'border-gray-200 bg-white/60 text-gray-500 dark:border-white/10 dark:bg-white/5 dark:text-gray-400'}`}
@@ -172,6 +200,7 @@ export function Header() {
             className="bg-transparent text-sm font-semibold outline-none text-right w-32 text-gray-700 dark:text-gray-200 border-b border-transparent focus:border-primary transition-colors"
           />
         </div>
+      </div>
       </div>
     </header>
   );

@@ -34,8 +34,9 @@ instructions, and the product code all live together in version control.
   priorities, effort sizing, subtask hierarchy, and workflow prompt stages.
 - In-product docs tree backed by `.docs/`, including hierarchy, editing, and
   wiki-oriented navigation.
-- Shared search, sort, and filter controls across the board and backlog, with
-  URL-backed state for shareable ticket views.
+- Global fuzzy ticket search in the header, with separate compact board and
+  backlog controls for local search, sorting, and collapsible metadata
+  filters backed by the URL.
 - Workflow installation that keeps both the skill and Copilot instructions in
   sync inside a target workspace.
 - Activity-aware task history so sorting and audit trails reflect more than

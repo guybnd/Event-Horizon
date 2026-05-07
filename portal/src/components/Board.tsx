@@ -8,6 +8,8 @@ import { fetchTasks, updateTask } from '../api';
 import { useApp } from '../AppContext';
 import type { Task } from '../types';
 import { Loader2 } from 'lucide-react';
+import { TaskViewControls } from './TaskViewControls';
+import { filterAndSortTasks } from '../taskSearch';
 
 export function Board() {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -57,43 +59,18 @@ export function Board() {
     );
   }
 
-  const extraStatuses = Array.from(new Set(tasks.map(t => t.status)))
+  const boardTasks = tasks.filter((task) => !config.hiddenStatuses?.some((hiddenStatus) => hiddenStatus.name === task.status));
+  const extraStatuses = Array.from(new Set(boardTasks.map(t => t.status)))
     .filter(s => !config.columns?.find(c => c.name === s) && !config.hiddenStatuses?.find(h => h.name === s));
 
   const allColumns = [...(config.columns?.map(c => c.name) || []), ...extraStatuses];
-  const normalizedQuery = searchQuery.trim().toLowerCase();
-  const priorityOrder = new Map(config.priorities.map((priority, index) => [priority.name, index]));
-  const getActivityTimestamp = (task: Task) => {
-    return (task.history || []).reduce((latest, entry) => {
-      const timestamp = entry.date ? new Date(entry.date).getTime() : 0;
-      return Number.isNaN(timestamp) ? latest : Math.max(latest, timestamp);
-    }, 0);
-  };
-  const visibleTasks = tasks
-    .filter((task) => {
-      const title = task.title?.toLowerCase() || '';
-      const body = task.body?.toLowerCase() || '';
-      const matchesQuery = !normalizedQuery || title.includes(normalizedQuery) || body.includes(normalizedQuery);
-      const matchesAssignee = filterAssignee === 'all' || (task.assignee || 'unassigned') === filterAssignee;
-      const matchesPriority = filterPriority === 'all' || (task.priority || 'None') === filterPriority;
-      const matchesTag = filterTag === 'all' || Boolean(task.tags?.includes(filterTag));
-      return matchesQuery && matchesAssignee && matchesPriority && matchesTag;
-    })
-    .sort((left, right) => {
-      switch (sortOption) {
-        case 'priority': {
-          const priorityDiff = (priorityOrder.get(left.priority || 'None') ?? Number.MAX_SAFE_INTEGER) - (priorityOrder.get(right.priority || 'None') ?? Number.MAX_SAFE_INTEGER);
-          return priorityDiff || getActivityTimestamp(right) - getActivityTimestamp(left) || left.id.localeCompare(right.id);
-        }
-        case 'assignee': {
-          const assigneeDiff = (left.assignee || 'unassigned').localeCompare(right.assignee || 'unassigned');
-          return assigneeDiff || getActivityTimestamp(right) - getActivityTimestamp(left) || left.id.localeCompare(right.id);
-        }
-        case 'updated':
-        default:
-          return getActivityTimestamp(right) - getActivityTimestamp(left) || left.id.localeCompare(right.id);
-      }
-    });
+  const visibleTasks = filterAndSortTasks(boardTasks, config, {
+    searchQuery,
+    sortOption,
+    filterAssignee,
+    filterPriority,
+    filterTag,
+  });
   const parentByChildId = new Map<string, Task>();
 
   [...tasks]
@@ -203,14 +180,26 @@ export function Board() {
 
   return (
     <>
-      <DndContext onDragStart={handleDragStart} onDragEnd={handleDragEnd} collisionDetection={pointerWithin}>
-        <div className="flex gap-6 overflow-x-auto h-full pb-4 items-start">
-          {allColumns.map(columnId => (
-            <Column key={columnId} id={columnId} title={columnId} tasks={visibleTasks.filter(t => t.status === columnId)} parentByChildId={parentByChildId} />
-          ))}
+      <div className="flex h-full min-h-0 flex-col gap-6">
+        <TaskViewControls
+          title="Board filters"
+          searchPlaceholder="Filter cards in this board"
+          visibleCount={visibleTasks.length}
+          totalCount={boardTasks.length}
+          itemLabel="board tickets"
+        />
+
+        <div className="min-h-0 flex-1">
+          <DndContext onDragStart={handleDragStart} onDragEnd={handleDragEnd} collisionDetection={pointerWithin}>
+            <div className="flex h-full min-h-0 gap-6 overflow-x-auto pb-4 items-start">
+              {allColumns.map(columnId => (
+                <Column key={columnId} id={columnId} title={columnId} tasks={visibleTasks.filter(t => t.status === columnId)} parentByChildId={parentByChildId} />
+              ))}
+            </div>
+            <DragOverlay>{activeTask ? <TaskCard task={activeTask} parentTask={parentByChildId.get(activeTask.id)} isOverlay /> : null}</DragOverlay>
+          </DndContext>
         </div>
-        <DragOverlay>{activeTask ? <TaskCard task={activeTask} parentTask={parentByChildId.get(activeTask.id)} isOverlay /> : null}</DragOverlay>
-      </DndContext>
+      </div>
 
       {pendingStatusChange && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm pointer-events-auto">

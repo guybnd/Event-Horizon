@@ -10,10 +10,17 @@ the board, backlog, header, and ticket views.
 
 ## Search, sort, and filters
 
-- The header search matches ticket title and body text.
-- Search is case-insensitive and applies to both the board and backlog views.
-- Sort and filter state is URL-backed so filtered views are reload-safe and
-  shareable.
+- The header search is a global fuzzy ticket lookup that matches ids, titles,
+  and body text across both board and backlog work.
+- Header search results are real deep links, so standard browser actions like
+  open in new tab, middle-click, and link context menus work as expected, and
+  those links open the full ticket view.
+- Board and backlog each keep their own local filter search so narrowing one
+  page does not overwrite the global lookup box.
+- Sort and filter state is URL-backed so local filtered views are reload-safe
+  and shareable.
+- Advanced board and backlog filters are collapsible to keep the working view
+  compact until sort or metadata filtering is needed.
 - First-pass filters cover assignee, priority, and tag.
 - First-pass sort modes cover priority, recently updated, and assignee.
 - Clearing the controls restores the default unfiltered view.
@@ -34,6 +41,8 @@ the board, backlog, header, and ticket views.
 
 - Ticket state can be represented in the URL so a specific open ticket and its
   view mode can be reopened or shared.
+- Board card clicks open the popup ticket view for quick board work, while
+  header search links open the full-view ticket layout.
 - Ticket editing supports both popup and full-view layouts.
 - The full-view mode preserves ticket editing and comments while adding back
   navigation and Escape-based exit behavior.
