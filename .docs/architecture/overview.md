@@ -58,6 +58,8 @@ Event Horizon is designed so the repository itself is the application's data sto
 ## Related docs
 
 -   [[Project Overview]]
+
+-   [[Docs Workspace]]
     
 -   [[Repository Map]]
     

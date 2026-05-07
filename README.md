@@ -20,6 +20,7 @@ through the portal's Docs screen. The current core pages are:
 
 - `project-overview` for the high-level system shape and shipped capabilities
 - `architecture/overview` for the runtime and storage model
+- `architecture/docs-workspace` for how the docs tree, editor, links, and permissions work
 - `architecture/repository-map` for the quickest route to the main code surfaces
 - `workflow/ticket-lifecycle` for the status model and execution rules
 - `workflow/workflow-install` for how the skill and always-on instructions are installed

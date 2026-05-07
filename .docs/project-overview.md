@@ -44,14 +44,16 @@ instructions, and the product code all live together in version control.
 ## Recommended reading order
 
 1. [[Architecture Overview]]
-2. [[Repository Map]]
-3. [[Ticket Model]]
-4. [[Ticket Interactions]]
-5. [[Ticket Lifecycle]]
-6. [[Workflow Install]]
+2. [[Docs Workspace]]
+3. [[Repository Map]]
+4. [[Ticket Model]]
+5. [[Ticket Interactions]]
+6. [[Ticket Lifecycle]]
+7. [[Workflow Install]]
 
 ## Related docs
 
 - [[Architecture Overview]]
+- [[Docs Workspace]]
 - [[Ticket Model]]
 - [[Ticket Interactions]]
