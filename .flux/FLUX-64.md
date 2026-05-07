@@ -1,9 +1,9 @@
 ---
 title: Attach images to comments with popup preview
-status: Ready
+status: Done
 priority: High
 createdBy: Agent
-updatedBy: Agent
+updatedBy: Guy
 assignee: Agent
 tags:
   - feature
@@ -38,26 +38,31 @@ history:
     user: Agent
     date: '2026-05-07T05:10:00.000Z'
     comment: >-
-      Implemented comment-image attachments across the threaded comment UI.
-      The main comment box and inline reply composer now accept pasted or
-      dropped PNG/JPG/SVG files, reuse the existing ticket-asset upload path,
-      and insert relative markdown image links automatically. Comment markdown
-      now renders images as compact clickable affordances with bounded hover
-      previews and a larger popup preview on click, while missing assets fail
-      gracefully.
+      Implemented comment-image attachments across the threaded comment UI. The
+      main comment box and inline reply composer now accept pasted or dropped
+      PNG/JPG/SVG files, reuse the existing ticket-asset upload path, and insert
+      relative markdown image links automatically. Comment markdown now renders
+      images as compact clickable affordances with bounded hover previews and a
+      larger popup preview on click, while missing assets fail gracefully.
 
-      Validation: clean editor diagnostics on the touched files,
-      `npm.cmd run build -w portal`, and a live portal check covering paste into
-      the comment composer plus hover and click preview behavior.
+      Validation: clean editor diagnostics on the touched files, `npm.cmd run
+      build -w portal`, and a live portal check covering paste into the comment
+      composer plus hover and click preview behavior.
     id: c-2026-05-07t05-10-00-000z-flux-64
   - type: status_change
     from: In Progress
     to: Ready
     user: Agent
     date: '2026-05-07T05:10:00.000Z'
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Guy
+    date: '2026-05-07T04:58:34.895Z'
 effort: M
 implementationLink: ''
 subtasks: []
+order: 11
 ---
 ## Summary
 

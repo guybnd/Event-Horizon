@@ -1,9 +1,8 @@
 ---
-id: FLUX-51
 title: Unify markdown description editor across ticket surfaces
 status: Todo
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
 tags: []
 priority: None
@@ -56,6 +55,13 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-07T03:53:39.4816199Z'
+  - type: comment
+    user: Guy
+    date: '2026-05-07T04:49:32.788Z'
+    comment: >-
+      since ticket created, add options for inline images and stuff like that,
+      need to have this supported as well properly across
+    id: c-2026-05-07t04-49-32-788z
 ---
 ## Summary
 

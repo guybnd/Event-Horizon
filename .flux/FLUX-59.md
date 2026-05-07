@@ -1,8 +1,8 @@
 ---
 title: Attach images to a ticket
-status: Ready
+status: Done
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
 tags: []
 priority: None
@@ -118,18 +118,24 @@ history:
 
       This slice is implemented and validated: ticket descriptions now accept
       pasted or dropped PNG/JPG/SVG images, assets are written under
-      `.flux/assets/<ticket-id>/...`, relative markdown image links are
-      inserted automatically, and popup/full-view/backlog description rendering
-      resolves those assets consistently with graceful missing-image handling.
+      `.flux/assets/<ticket-id>/...`, relative markdown image links are inserted
+      automatically, and popup/full-view/backlog description rendering resolves
+      those assets consistently with graceful missing-image handling.
 
-      Validation: `npm.cmd run build -w portal`, clean editor diagnostics on
-      the touched files, and live API/browser checks during implementation.
+      Validation: `npm.cmd run build -w portal`, clean editor diagnostics on the
+      touched files, and live API/browser checks during implementation.
     id: c-2026-05-07t04-45-00-000z-flux-59
   - type: status_change
     from: Todo
     to: Ready
     user: Agent
     date: '2026-05-07T04:45:00.000Z'
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Guy
+    date: '2026-05-07T04:58:36.377Z'
+order: 12
 ---
 ## Summary
 

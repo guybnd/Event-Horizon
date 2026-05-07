@@ -27,6 +27,14 @@ Event Horizon installs two Copilot-facing assets into a target repository so the
 -   From the CLI with `npm.cmd run install-skill -- --target <repo> --framework copilot`.
     
 
+## Settings-driven workflow controls
+
+-   The Settings screen also shows the current workflow source paths, installed target paths, and a copyable CLI command so refresh behavior stays visible from the product.
+    
+-   The same workflow settings area lets the user choose which status acts as the user-input stage and which status acts as the ready-for-merge review stage.
+    
+-   Those selectors are backed by the existing board or hidden statuses. If a configured workflow status is missing, Settings surfaces that mismatch and offers a restore action instead of silently leaving the workflow half-configured.
+
 ## Why both assets matter
 
 -   The skill explains the workflow in detail and gives agents a discoverable reference surface.
