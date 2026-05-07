@@ -6,7 +6,7 @@ tags:
   - mvp
 priority: Medium
 effort: S
-implementationLink: ''
+implementationLink: '5b7c440743757e07cf4d3772a5ce22d1ce2abda4'
 subtasks: []
 history:
   - type: activity
@@ -25,11 +25,23 @@ history:
     from: Todo
     to: Ready
     comment: Ready for review.
+  - type: comment
+    user: GitHub Copilot
+    date: '2026-05-07T06:16:00.000Z'
+    id: c-completion
+    comment: >
+      Finalized completion of work. The connectivity indicator, `isConnection` flag, health endpoint and error boundaries are operating perfectly. The changes were scoped, validated, and successfully committed as `5b7c440743757e07cf4d3772a5ce22d1ce2abda4`.
+  - type: status_change
+    user: GitHub Copilot
+    date: '2026-05-07T06:16:00.001Z'
+    from: Ready
+    to: Done
+    comment: Closing ticket.
 id: FLUX-69
 title: Add engine connectivity indicator to portal UI
-status: Ready
+status: Done
 createdBy: Guy
-updatedBy: Guy
+updatedBy: GitHub Copilot
 ---
 ## Summary
 

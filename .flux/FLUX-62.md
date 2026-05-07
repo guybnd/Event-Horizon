@@ -1,13 +1,17 @@
 ---
-assignee: unassigned
+assignee: Agent
 tags:
   - ui
   - feature
-priority: Low
+priority: High
 effort: S
 implementationLink: ''
 subtasks: []
 history:
+  - type: activity
+    user: Agent
+    date: '2026-05-07T08:46:10.766Z'
+    comment: Started implementation. Moved to In Progress.
   - type: activity
     user: Guy
     date: '2026-05-07T04:23:22.373Z'
@@ -31,8 +35,16 @@ history:
     user: Guy
     date: '2026-05-07T05:33:59.974Z'
     comment: Response submitted
+  - type: activity
+    user: Guy
+    date: '2026-05-07T08:07:03.153Z'
+    comment: Changed priority from Low to High.
+  - type: activity
+    user: Guy
+    date: '2026-05-07T08:07:13.020Z'
+    comment: Changed assignee from unassigned to Agent.
 title: Show full description popup on card hover (1.5s)
-status: Todo
+status: In Progress
 createdBy: Guy
 updatedBy: Guy
 order: 10

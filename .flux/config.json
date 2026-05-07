@@ -26,9 +26,6 @@
       "name": "Backlog"
     }
   ],
-  "projects": [
-    "FLUX"
-  ],
   "users": [
     {
       "name": "Guy"
@@ -113,6 +110,14 @@
     {
       "name": "ui",
       "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "animation",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "config",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     }
   ],
   "priorities": [
@@ -142,9 +147,14 @@
       "color": "text-gray-400"
     }
   ],
+  "projects": [
+    "FLUX"
+  ],
   "enableBacklogScreen": true,
   "requireCommentOnStatusChange": false,
   "boardCardOpenMode": "full",
+  "animationsEnabled": true,
+  "animationSpeed": "fast",
   "requireInputStatus": "Require Input",
   "readyForMergeStatus": "Ready",
   "docsEditPermissions": "all",
