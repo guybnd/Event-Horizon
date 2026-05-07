@@ -1,6 +1,6 @@
 ---
 title: Unify markdown description editor across ticket surfaces
-status: In Progress
+status: Done
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent
@@ -174,6 +174,17 @@ history:
       in automation, so full popup/full-view runtime confirmation is still
       pending before this can move out of `In Progress`.
     id: c-2026-05-07t15-54-41-3067028-10-00-flux-51
+  - type: comment
+    user: Agent
+    date: '2026-05-07T16:24:29.610Z'
+    comment: >-
+      Final UI refactor for the shared ticket description editor. Made the formatting toolbar 50% smaller, constrained its width, and replaced the redundant text row with proper button highlighting to perfectly match the Docs screen functionality and display. Ticket is resolved.
+    id: c-c54292cb-c6b9-4dc3-8603-729cff689f16
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-05-07T16:24:29.610Z'
 ---
 ## Summary
 
