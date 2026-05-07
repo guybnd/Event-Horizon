@@ -1,10 +1,9 @@
 ---
-id: FLUX-61
 title: require grooming to complete ticket metadata
-status: Ready
+status: Done
 priority: High
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: Agent
 tags:
   - docs
@@ -21,9 +20,8 @@ history:
       Plan: tighten the grooming workflow so agents must review applicable
       ticket metadata, fill fields they can infer during grooming, and move the
       ticket to `Require Input` with proposed values for anything still missing.
-      Update the lifecycle docs, source workflow assets, and refreshed
-      installed copies, then validate the installed text plus live ticket
-      parsing.
+      Update the lifecycle docs, source workflow assets, and refreshed installed
+      copies, then validate the installed text plus live ticket parsing.
     id: c-2026-05-07t14-02-19-7917592-10-00
   - type: status_change
     from: Grooming
@@ -34,8 +32,8 @@ history:
     user: Agent
     date: '2026-05-07T14:05:41.9889413+10:00'
     comment: >-
-      Grooming now explicitly includes a metadata-completeness pass. Updated
-      the lifecycle doc, README, workflow skill, and always-on instructions so
+      Grooming now explicitly includes a metadata-completeness pass. Updated the
+      lifecycle doc, README, workflow skill, and always-on instructions so
       agents must fill inferable metadata during grooming and include proposed
       values when routing missing fields through `Require Input`. Refreshed the
       installed `.github` workflow copies and validated the new guidance by
@@ -47,9 +45,15 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-07T14:05:41.9889413+10:00'
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Guy
+    date: '2026-05-07T04:18:31.076Z'
 effort: S
 implementationLink: 347a69f
 subtasks: []
+order: 10
 ---
 ## Summary
 
