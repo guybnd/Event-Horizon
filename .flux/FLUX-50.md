@@ -24,11 +24,27 @@ history:
     to: Require Input
     user: Agent
     date: '2026-05-07T13:01:33.5429940+10:00'
-id: FLUX-50
+  - type: comment
+    user: Guy
+    date: '2026-05-07T03:07:37.337Z'
+    comment: >-
+      probably Both, we want to have a new field for tickets of 'version' that
+      releasing them will apply this fields input
+
+      they should also move to 'released' status which will remove them from the
+      Done column and entirely from the board, being viewable only from search
+      or releases menu
+    id: c-2026-05-07t03-07-37-337z
+  - type: status_change
+    from: Require Input
+    to: Grooming
+    user: Guy
+    date: '2026-05-07T03:07:37.337Z'
+    comment: Response submitted
 title: '"Releases" feature'
-status: Require Input
+status: Grooming
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 ---
 need to add a 'releases' section that acts as version control of sorts
 

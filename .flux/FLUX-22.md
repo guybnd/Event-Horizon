@@ -1,9 +1,9 @@
 ---
 title: editable fields in kanban card
-status: Require Input
+status: Done
 priority: Medium
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: Agent
 tags: []
 history:
@@ -31,8 +31,8 @@ history:
     date: '2026-05-07T13:01:33.5429940+10:00'
     comment: >-
       This no longer looks like a normal grooming candidate. The current board
-      card implementation already supports inline title, assignee, priority,
-      and tag editing in `TaskCard`, so the remaining decision is whether this
+      card implementation already supports inline title, assignee, priority, and
+      tag editing in `TaskCard`, so the remaining decision is whether this
       ticket should be closed as already shipped or kept as a smaller follow-up
       for any missing inline gaps such as effort or status behavior. Which do
       you want?
@@ -42,9 +42,20 @@ history:
     to: Require Input
     user: Agent
     date: '2026-05-07T13:01:33.5429940+10:00'
+  - type: status_change
+    from: Require Input
+    to: Done
+    user: Guy
+    date: '2026-05-07T03:10:53.402Z'
+  - type: comment
+    user: Guy
+    date: '2026-05-07T03:11:00.289Z'
+    comment: closed
+    id: c-2026-05-07t03-11-00-289z
 effort: S
 implementationLink: ''
-order: 2
+order: 9
+subtasks: []
 ---
 ## Groomed Scope
 

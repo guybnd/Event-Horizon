@@ -24,11 +24,24 @@ history:
     to: Require Input
     user: Agent
     date: '2026-05-07T13:01:33.5429940+10:00'
-id: FLUX-51
+  - type: comment
+    user: Guy
+    date: '2026-05-07T03:26:13.694Z'
+    comment: >-
+      i feel like all description surfaces should be the same unified component
+      that maybe can simply operate in different modes but shared component
+      code. LMK if this is not a correct approach
+    id: c-2026-05-07t03-26-13-694z
+  - type: status_change
+    from: Require Input
+    to: Grooming
+    user: Guy
+    date: '2026-05-07T03:26:13.694Z'
+    comment: Response submitted
 title: extend docs WYSIWIG editor to other sections
-status: Require Input
+status: Grooming
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 ---
 as this editor view serves the main functionality we should use the same code and edit style and page style across all 'decription' sections in the project, from backlog, to ticket description full screen, to pop up view
 we should have one centralized repurposed code for this instead of separate one in each area that just inefficient

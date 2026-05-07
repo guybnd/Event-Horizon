@@ -1,9 +1,9 @@
 ---
 title: subtasks should appear under the upper task in the hierarchy
-status: Require Input
+status: Todo
 priority: None
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
 tags: []
 history:
@@ -25,6 +25,17 @@ history:
     to: Require Input
     user: Agent
     date: '2026-05-07T13:01:33.5429940+10:00'
+  - type: comment
+    user: Guy
+    date: '2026-05-07T03:15:44.640Z'
+    comment: must appear in its relevant status column
+    id: c-2026-05-07t03-15-44-640z
+  - type: status_change
+    from: Require Input
+    to: Todo
+    user: Guy
+    date: '2026-05-07T03:15:44.640Z'
+    comment: Response submitted
 effort: None
 implementationLink: ''
 subtasks: []

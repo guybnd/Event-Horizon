@@ -1,13 +1,16 @@
 ---
-id: FLUX-44
 title: 'add a status phase : ready to merge'
-status: Ready
+status: Done
 priority: High
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: Agent
 tags: []
 history:
+  - type: activity
+    user: Guy
+    date: '2026-05-06T13:26:34.107Z'
+    comment: Created ticket.
   - type: comment
     user: Guy
     date: '2026-05-06T13:26:34.107Z'
@@ -34,10 +37,10 @@ history:
     comment: >-
       Added the ready-for-merge review workflow. Config now includes a
       configurable `readyForMergeStatus` defaulting to `Ready`, the board
-      notification count now treats both Require Input and Ready tickets as
-      user prompts, the task modal surfaces a dedicated ready-for-review prompt
-      with a `finish <ticket>` handoff, and the skill plus Copilot instructions
-      were updated so agents understand the finalization flow. Validated with
+      notification count now treats both Require Input and Ready tickets as user
+      prompts, the task modal surfaces a dedicated ready-for-review prompt with
+      a `finish <ticket>` handoff, and the skill plus Copilot instructions were
+      updated so agents understand the finalization flow. Validated with
       `npm.cmd run build -w portal`, `npm.cmd run install-skill -- --target
       c:\GitHub\EventHorizon --framework copilot`, and live API checks for
       `/api/config` and the refreshed installed workflow files. Commit:
@@ -107,17 +110,23 @@ history:
       Correcting the ticket workflow state. I prematurely recorded the follow-up
       as Done and also left the ticket's frontmatter status at `In Progress`, so
       the engine continued to treat FLUX-44 as active. Moving it to `Ready` now
-      so it is back on the intended review checkpoint before any final
-      `finish FLUX-44` close-out.
+      so it is back on the intended review checkpoint before any final `finish
+      FLUX-44` close-out.
     id: c-2026-05-07t00-15-56-3904774-10-00
   - type: status_change
     from: In Progress
     to: Ready
     user: Agent
     date: '2026-05-07T00:15:56.3904774+10:00'
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Guy
+    date: '2026-05-07T01:38:33.908Z'
 effort: None
-implementationLink: '584ceb8'
+implementationLink: 584ceb8
 subtasks: []
+order: 7
 ---
 we should add another user promptable stage, when a ticket is finished in progress state and is ready for user review, it goes into this status that is 'Ready'
 

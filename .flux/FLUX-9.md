@@ -1,8 +1,8 @@
 ---
 title: 'Description view: rendered markdown with WYSIWYG editing'
-status: Require Input
+status: Grooming
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: Agent
 tags:
   - feature
@@ -46,6 +46,31 @@ history:
     to: Require Input
     user: Agent
     date: '2026-05-07T13:01:33.5429940+10:00'
+  - type: comment
+    user: Guy
+    date: '2026-05-07T03:17:53.275Z'
+    comment: >-
+      i think this is mostly implemented but we just need to ensure consistency
+      across all product sections:
+
+
+      1. always show a WYSIWYG display in full markdown formatting. 
+
+      2. pressing on the desciption section , the text, will switch to edit
+      mode. dont need a dedicated button for that.
+
+      3. have the same follower edit bar like in the docs section
+
+      4. code and features should be unified across all 'description' editors to
+      avoid unnecesary duplication: full screen ticket view, backlog, popup
+      ticket view, docs section
+    id: c-2026-05-07t03-17-53-275z
+  - type: status_change
+    from: Require Input
+    to: Grooming
+    user: Guy
+    date: '2026-05-07T03:17:53.275Z'
+    comment: Response submitted
 order: 3
 priority: Medium
 effort: L
