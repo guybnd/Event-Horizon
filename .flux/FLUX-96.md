@@ -26,9 +26,27 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-08T00:00:00.000Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-08T12:00:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-08T12:00:00.000Z'
+    comment: >-
+      Added `docsRoot`, `hoverPopupsEnabled`, and `hoverPopupDelay` to
+      `originalPayload` in Settings.tsx with matching fallback defaults. The
+      `isDirty` flag is now false on fresh load.
+    id: c-flux96-done
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-08T12:00:00.000Z'
 id: FLUX-96
 title: settings save button always show as dirty
-status: Todo
+status: Ready
 createdBy: Guy
 updatedBy: Agent
 ---

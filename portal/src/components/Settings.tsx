@@ -662,7 +662,10 @@ export function Settings() {
     requireInputStatus: config.requireInputStatus || DEFAULT_REQUIRE_INPUT_STATUS,
     readyForMergeStatus: config.readyForMergeStatus || DEFAULT_READY_FOR_MERGE_STATUS,
     docsEditPermissions: config.docsEditPermissions || 'all',
-    docsAllowedUsers: config.docsEditPermissions === 'specified' ? (config.docsAllowedUsers || []) : []
+    docsAllowedUsers: config.docsEditPermissions === 'specified' ? (config.docsAllowedUsers || []) : [],
+    docsRoot: config.docsRoot || '.docs',
+    hoverPopupsEnabled: config.hoverPopupsEnabled ?? true,
+    hoverPopupDelay: config.hoverPopupDelay ?? 1500
   });
 
   const isDirty = currentSavedPayload !== originalPayload;
