@@ -1,7 +1,7 @@
 ---
 id: FLUX-61
 title: require grooming to complete ticket metadata
-status: In Progress
+status: Ready
 priority: High
 createdBy: Guy
 updatedBy: Agent
@@ -30,8 +30,25 @@ history:
     to: In Progress
     user: Agent
     date: '2026-05-07T14:02:19.7917592+10:00'
+  - type: comment
+    user: Agent
+    date: '2026-05-07T14:05:41.9889413+10:00'
+    comment: >-
+      Grooming now explicitly includes a metadata-completeness pass. Updated
+      the lifecycle doc, README, workflow skill, and always-on instructions so
+      agents must fill inferable metadata during grooming and include proposed
+      values when routing missing fields through `Require Input`. Refreshed the
+      installed `.github` workflow copies and validated the new guidance by
+      checking the updated source and installed assets plus the live task API.
+      Commit: `347a69f` (`Require grooming metadata completion`).
+    id: c-2026-05-07t14-05-41-9889413-10-00
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-07T14:05:41.9889413+10:00'
 effort: S
-implementationLink: ''
+implementationLink: 347a69f
 subtasks: []
 ---
 ## Summary
@@ -66,12 +83,12 @@ still needed.
 
 ## Acceptance Criteria
 
-- [ ] Workflow docs explicitly require a grooming metadata-completeness pass
-- [ ] Source workflow assets require agents to fill inferable metadata during
+- [x] Workflow docs explicitly require a grooming metadata-completeness pass
+- [x] Source workflow assets require agents to fill inferable metadata during
   grooming
-- [ ] Source workflow assets require proposed values for missing metadata when
+- [x] Source workflow assets require proposed values for missing metadata when
   routing to `Require Input`
-- [ ] Installed workflow assets are refreshed after the source updates
+- [x] Installed workflow assets are refreshed after the source updates
 
 ## Likely Affected Areas
 
