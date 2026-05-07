@@ -36,7 +36,7 @@ For any ticket-driven implementation task, the agent must follow this sequence:
 
 ### Release Orchestration
 
-- When asked to orchestrate a release or create a new version, use `npm run flux:release <version>` in `engine` to automatically transition `Done` tickets to `Released` and generate `.docs` release notes. Ensure you coordinate the version number with the user beforehand.
+- When asked to orchestrate a release or create a new version, use `npm run flux:release <version>` in `engine` to automatically transition `Done` tickets to `Released` and generate `.docs` release notes. Ensure you coordinate the version number with the user beforehand. After the release files are generated, ALWAYS create a git commit (e.g. `git add . && git commit -m "Release <version>"`) to clean up the git status immediately.
 
 ### Commit Rules
 
