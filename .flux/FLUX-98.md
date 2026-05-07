@@ -5,7 +5,7 @@ tags:
   - ux
 priority: Low
 effort: XS
-implementationLink: 2bbe1866f9ef647cea252a2a6d1ccaf77446b252
+implementationLink: ''
 subtasks: []
 history:
   - type: activity
@@ -43,13 +43,8 @@ history:
     user: Agent
     date: '2026-05-08T00:00:00.000Z'
     comment: >-
-      Implemented sticky 'New Task' button using \sticky top-3 z-10\ in \Column.tsx\. Added global 'New ticket' button in \Header.tsx\ next to the search bar. Both functional. Committed as 2bbe186.
+      Implemented sticky 'New Task' button using \sticky top-3 z-10\ in \Column.tsx\. Added global 'New ticket' button in \Header.tsx\ next to the search bar using the \openTaskModal({ status: 'Grooming' })\ context function.
     id: c-agent-implementation-sticky
-  - type: status_change
-    from: Ready
-    to: Done
-    user: Agent
-    date: '2026-05-08T00:00:00.000Z'
 id: FLUX-98
 title: new task button should only be for grooming and not the other tabs in board
 status: Done

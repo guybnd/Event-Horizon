@@ -18,6 +18,7 @@ export function Header() {
     tasks,
     config,
     isConnected,
+    openTaskModal,
   } = useApp();
   const [globalSearchQuery, setGlobalSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -124,7 +125,7 @@ export function Header() {
       
       <div className="flex flex-wrap items-center gap-3">
         <button
-          onClick={() => window.dispatchEvent(new CustomEvent('flux:open-task-modal', { detail: { task: { status: 'Grooming' } } }))}
+          onClick={() => openTaskModal({ status: 'Grooming' })}
           className="flex h-[38px] items-center justify-center gap-2 rounded-2xl bg-primary px-4 text-sm font-semibold text-white shadow-sm transition-all hover:bg-primary-hover focus:outline-none cursor-pointer"
         >
           <Plus className="h-4 w-4" />
