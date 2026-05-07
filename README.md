@@ -1,88 +1,101 @@
-# Event Horizon
+# 🌌 Event Horizon
 
-Event Horizon is a local-first, agent-centric management layer that replaces traditional cloud-based ticketing with a high-performance, filesystem-based integration pool. It is designed to be the "central nervous system" for solo developers and small teams working with AI coding agents.
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D%2018-green.svg)](https://nodejs.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Status: MVP](https://img.shields.io/badge/Status-MVP-blue.svg)]()
 
-## Core Principles
-- **Filesystem as Database:** All state lives in the repository. If you clone the repo, you clone the entire management system.
-- **Agent-First & Human-Friendly:** Data structures are instantly parseable by LLMs while remaining easily editable in tools like Obsidian or VS Code.
-- **Zero Latency:** No cloud APIs. The UI reacts at the speed of the local disk.
-- **Schema Flexibility:** You dictate the schema to the project using standard Markdown files with YAML Frontmatter.
+> A local-first, agent-centric management layer designed to serve as the central nervous system for solo developers and teams building alongside AI and LLM coding agents.
 
-## Architecture
-- **Engine (Backend):** A local Node.js/TypeScript server managing file watching and providing the local REST API (and eventually the MCP server).
-- **Portal (Frontend):** A reactive, customizable Web UI built with Vite, React, and Tailwind CSS v4.
-- **Data Layer:** A `.flux/` directory containing ticket files.
+Event Horizon replaces traditional cloud-based ticketing with a high-performance, **filesystem-based integration pool**. By storing all state in the repository, you clone the entire management system right along with your code.
 
-## Project Docs
+---
 
-Event Horizon now has a repo-backed docs tree under `.docs/` that is also served
-through the portal's Docs screen. The current core pages are:
+## ✨ Core Principles
 
-- `project-overview` for the high-level system shape and shipped capabilities
-- `architecture/overview` for the runtime and storage model
-- `architecture/docs-workspace` for how the docs tree, editor, links, and permissions work
-- `architecture/repository-map` for the quickest route to the main code surfaces
-- `workflow/ticket-lifecycle` for the status model and execution rules
-- `workflow/workflow-install` for how the skill and always-on instructions are installed
+* **🗂️ Filesystem as Database:** All state lives locally in the repository. Version control your management system just like your source code.
+* **🤖 Agent-First & Human-Friendly:** Data structures (Markdown + YAML Frontmatter) are instantly parseable by LLMs while remaining effortlessly editable in tools like Obsidian or VS Code.
+* **⚡ Zero Latency:** No cloud APIs. The UI reacts at the exact speed of your local disk.
+* **📐 Schema Flexibility:** You dictate the structure and schema of your project via standard Markdown.
 
-When shipped behavior changes, update the nearest durable docs page instead of
-leaving the knowledge only in ticket history.
+---
 
-## Getting Started
+## 🏗️ Architecture
+
+The project is split into three main areas:
+
+* **Engine (`/engine`):** A local Node.js/TypeScript backend that watches files, manages state, and exposes a flexible local REST API. *(Future: Model Context Protocol (MCP) server support).*
+* **Portal (`/portal`):** A lightning-fast, reactive Web UI built with **Vite, React, and Tailwind CSS v4**.
+* **Data Layer (`.flux/`):** A directory inside the root repository acting as the persistent store containing ticket files.
+
+---
+
+## 🚀 Getting Started
 
 To run the full stack during development, you will need two terminal windows:
 
-**1. Start the Backend Engine**
+### 1. Start the Backend Engine
 ```bash
 cd engine
+npm install
 npm run dev
 ```
-*(The Engine runs on `http://localhost:3001`)*
+> The Engine runs locally on `http://localhost:3001`
 
-**2. Start the Frontend Portal**
+### 2. Start the Frontend Portal
 ```bash
 cd portal
+npm install
 npm run dev
 ```
-*(The Portal UI runs on `http://localhost:5173`)*
+> The Portal UI runs locally on `http://localhost:5173`
 
-## Agent Workflow Install
+---
 
-Event Horizon ships two Copilot-facing assets:
+## 📚 Project Documentation
 
-- a workspace skill source under `.flux/skills/event-horizon-agent.md`
-- an always-on Copilot instructions template under `.flux/skills/event-horizon-copilot-instructions.md`
+Event Horizon ships with a repo-backed documentation tree under `.docs/` which is natively served through the Portal's interactive **Docs screen**. Core materials include:
 
-Installing the workflow refreshes both of these into the target workspace:
+* 🧭 **[project-overview](.docs/project-overview.md):** High-level system shape and shipped capabilities.
+* 🔩 **[architecture/overview](.docs/architecture/overview.md):** Runtime logic and storage models.
+* 📝 **[architecture/docs-workspace](.docs/architecture/docs-workspace.md):** How the docs tree, live editor, and permissions function.
+* 🗺️ **[architecture/repository-map](.docs/architecture/repository-map.md):** Visual map to key codebase surfaces.
+* 🔄 **[workflow/ticket-lifecycle](.docs/workflow/ticket-lifecycle.md):** Status model and rigid agent execution rules.
+* 🔌 **[workflow/workflow-install](.docs/workflow/workflow-install.md):** Installation of skills and always-on instructions.
 
-- `.github/skills/event-horizon/SKILL.md`
-- `.github/copilot-instructions.md`
+> **Note for Contributors & Agents:** When shipped behavior changes, update the nearest durable `.docs/` markdown page instead of leaving context buried in a ticket's history.
+
+---
+
+## 🤖 Agent Workflow & Instructions
+
+Event Horizon provides powerful Copilot-facing assets explicitly tailored for agentic capabilities:
+
+1. **Workspace Skill:** `.flux/skills/event-horizon-agent.md`
+2. **Copilot Instructions:** `.flux/skills/event-horizon-copilot-instructions.md`
+
+### Installing the Workflows
+Installing the workflow patches these templates directly into the target `.github/` directory natively supported by GitHub Copilot (`.github/skills/event-horizon/SKILL.md` & `.github/copilot-instructions.md`).
 
 You can install or refresh the workflow in two ways:
+* **Via Portal:** Navigate to the **Settings** screen in the Portal and click `Install Workflow`.
+* **Via CLI:** Run `npm.cmd run install-skill -- --target c:\GitHub\EventHorizon --framework copilot`.
 
-- From the portal Settings screen using the `Install Workflow` button.
-- From the command line with `npm.cmd run install-skill -- --target c:\GitHub\EventHorizon --framework copilot`.
+*(The installer makes sure to only patch designated Event Horizon instruction blocks, preserving your unrelated custom instructions).*
 
-The installer patches a marked Event Horizon block inside `.github/copilot-instructions.md` so reinstalling stays idempotent and unrelated user-owned instructions can remain in the same file.
+### Lifecycle & Prompts
+* **Workflow Status Prompts:** Configured statuses (defaulting to `Require Input` and `Ready`) trigger prompts.
+  * Moving a ticket to `Require Input` initiates an agent-to-human question flow.
+  * Moving a ticket to `Ready` signifies a review checkpoint before final merge.
+  * *Handoff:* Upon review approval, run `finish <ticket>` to automatically commit files and close the task out to `Done`.
+* **Grooming:** Agents operating on a ticket in `Grooming` should **not** begin raw implementation. They must instead refine the task description, flesh out required metadata (`tags`, `effort`, `priority`), and ask blocking questions via the `Require Input` lane first.
 
-The Settings screen exposes the current source paths, installed paths, and a copyable install command so the workflow install remains visible instead of hidden in repo internals.
+---
 
-The workflow settings include a configurable user-input status and a configurable ready-for-merge status, defaulting to `Require Input` and `Ready`. Those selectors live together in Settings and are chosen from the existing board or hidden statuses so the workflow stays tied to real status entities. If one of those configured workflow statuses is currently missing from the board, Settings shows that state and offers a restore action. Tickets moved into the user-input status become response prompts, and tickets moved into the ready-for-merge status become review prompts; after review, the intended agent handoff is `finish <ticket>` to create the final commit and move the ticket to `Done`.
+## 📝 The Data Schema (MVP)
 
-Agents are expected to read the relevant docs during grooming or task start-up,
-then review and refresh those docs again before moving a ticket to `Ready` or
-`Done` when durable behavior or workflow expectations changed.
+Tickets are stored natively as `.md` files within the `.flux/` directory using simple metadata.
 
-During `Grooming`, the expected output is a better ticket, not early coding.
-The agent should tighten the description into a concrete plan, review the
-applicable metadata fields, fill values that are already inferable, and route
-unresolved implementation or metadata decisions through `Require Input` with
-proposed values before the work moves to `Todo` or `In Progress`.
-
-## The Data Schema (MVP)
-Tickets are stored as `.md` files inside the `.flux/` directory.
-
-Example `TEST-1.md`:
+**Example `TEST-1.md`:**
 ```yaml
 ---
 id: TEST-1
