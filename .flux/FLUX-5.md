@@ -88,10 +88,10 @@ history:
     user: Agent
     date: '2026-05-06T14:41:26.976Z'
     comment: >-
-      Committed the first docs phase in ac9f8e6: `.docs` watching and CRUD
-      APIs, the top-level Docs screen, tree navigation, wiki-link resolution,
-      and docs permissions. Re-scoping the next pass to match Guy's latest note:
-      a persistent wiki layout with an approximately 20/80 split, create actions
+      Committed the first docs phase in ac9f8e6: `.docs` watching and CRUD APIs,
+      the top-level Docs screen, tree navigation, wiki-link resolution, and docs
+      permissions. Re-scoping the next pass to match Guy's latest note: a
+      persistent wiki layout with an approximately 20/80 split, create actions
       from the hierarchy itself, and an always-on WYSIWYG editor. Additional
       docs features worth fleshing out here are breadcrumbs, rename/move flows,
       backlinks, and a heading outline.
@@ -116,6 +116,32 @@ history:
       portal`, live browser checks on `/docs`, inline title activation, and a
       drag reorder that persisted through the docs API.
     id: c-2026-05-07t01-12-17-064z
+  - type: comment
+    user: Agent
+    date: '2026-05-07T01:19:08.633Z'
+    comment: >-
+      Next FLUX-5 pass is stabilizing the editor itself: fix the false dirty
+      state on doc load, wire a real Tiptap link mark so wiki and external links
+      survive inside the WYSIWYG surface, and add explicit editor content
+      styling so headings, lists, code, and links actually render as formatted
+      content instead of looking like plain text.
+    id: c-2026-05-07t01-19-08-633z
+  - type: comment
+    user: Guy
+    date: '2026-05-07T01:23:59.817Z'
+    comment: add links to trelevant docs in the relevant pages
+    id: c-2026-05-07t01-23-59-817z
+  - type: comment
+    user: Agent
+    date: '2026-05-07T11:25:50.1063925+10:00'
+    comment: >-
+      Following up on the cross-linking note by wiring wiki links between the
+      current docs pages themselves so readers can move between overview,
+      architecture, ticket-model, interaction, lifecycle, and workflow-install
+      pages without going back to the sidebar each time. After the markdown
+      updates I will validate that the docs still parse through the live docs
+      API.
+    id: c-2026-05-07t11-25-50-1063925-10-00
 order: 4
 priority: High
 effort: M

@@ -54,3 +54,13 @@ Event Horizon is designed so the repository itself is the application's data sto
 -   The fastest way to understand behavior is often to inspect the repo-backed source of truth first, not just the rendered UI.
     
 -   Documentation, workflow rules, and product state are all versioned together, which makes ticket work easier to audit and easier for agents to continue.
+
+## Related docs
+
+-   [[Project Overview]]
+    
+-   [[Repository Map]]
+    
+-   [[Ticket Model]]
+    
+-   [[Workflow Install]]

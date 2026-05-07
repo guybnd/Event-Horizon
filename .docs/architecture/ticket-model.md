@@ -50,5 +50,12 @@ the portal mostly renders and edits that repo-backed state.
 - High-frequency metadata such as priority and effort can be changed directly
   from the card surface.
 - Full ticket editing lives in the popup or full-view ticket surface.
-- URL-backed ticket navigation and triage behaviors are covered in the Ticket
-  Interactions page.
+- URL-backed ticket navigation and triage behaviors are covered in
+  [[Ticket Interactions]].
+
+## Related docs
+
+- [[Project Overview]]
+- [[Repository Map]]
+- [[Ticket Interactions]]
+- [[Ticket Lifecycle]]

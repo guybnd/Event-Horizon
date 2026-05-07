@@ -46,3 +46,10 @@ the board, backlog, header, and ticket views.
   cards when subtask relationships exist.
 - Recently updated sorting reflects all activity, including ticket creation and
   field edits, not only comments.
+
+## Related docs
+
+- [[Project Overview]]
+- [[Ticket Model]]
+- [[Ticket Lifecycle]]
+- [[Repository Map]]

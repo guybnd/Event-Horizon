@@ -43,9 +43,15 @@ instructions, and the product code all live together in version control.
 
 ## Recommended reading order
 
-1. Architecture Overview
-2. Repository Map
-3. Ticket Model
-4. Ticket Interactions
-5. Ticket Lifecycle
-6. Workflow Install
+1. [[Architecture Overview]]
+2. [[Repository Map]]
+3. [[Ticket Model]]
+4. [[Ticket Interactions]]
+5. [[Ticket Lifecycle]]
+6. [[Workflow Install]]
+
+## Related docs
+
+- [[Architecture Overview]]
+- [[Ticket Model]]
+- [[Ticket Interactions]]
