@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import type { CSSProperties } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -253,8 +254,7 @@ export function TaskCard({
   const isThisTaskOpen = isModalOpen && modalTask?.id === task.id;
   const [isAnimatingZ, setIsAnimatingZ] = useState(false);
   const [isHovering, setIsHovering] = useState(false);
-  const [popupDirection, setPopupDirection] = useState<'right' | 'left'>('right');
-  const [popupOffset, setPopupOffset] = useState(0);
+  const [popupPos, setPopupPos] = useState({ top: 0, left: 'auto' as number | string, right: 'auto' as number | string });
   const hoverTimeout = useRef<number | null>(null);
 
   const handleMouseEnter = (event: any) => {
@@ -264,18 +264,23 @@ export function TaskCard({
     
     // Calculate direction before showing
     const currentCard = event.currentTarget.getBoundingClientRect();
-    // Assuming popup width of ~ 640px
-    if (currentCard.right + 640 + 32 > window.innerWidth) {
-      setPopupDirection('left');
-    } else {
-      setPopupDirection('right');
+    const margin = 16;
+    const popupWidth = 640;
+    
+    let left: number | string = currentCard.right + margin;
+    let right: number | string = 'auto';
+
+    if (currentCard.right + popupWidth + margin > window.innerWidth) {
+      left = 'auto';
+      right = window.innerWidth - currentCard.left + margin;
     }
 
-    if (currentCard.top > 180) {
-      setPopupOffset(-(currentCard.top - 180));
-    } else {
-      setPopupOffset(0);
+    let topVal = currentCard.top;
+    if (topVal > 180) {
+      topVal = 180;
     }
+
+    setPopupPos({ top: topVal, left, right });
     
     if (hoverTimeout.current !== null) {
       window.clearTimeout(hoverTimeout.current);
@@ -580,14 +585,20 @@ export function TaskCard({
       </motion.div>
 
       <AnimatePresence>
-        {isHovering && !isOverlay && !isThisTaskOpen && task.body?.trim() && (
+        {isHovering && !isOverlay && !isThisTaskOpen && task.body?.trim() && createPortal(
           <motion.div
             initial={{ opacity: 0, y: 10, scale: 0.95 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, scale: 0.95 }}
             transition={{ duration: 0.15 }}
-            style={{ marginTop: popupOffset }}
-            className={`absolute top-0 w-[640px] max-h-[85vh] overflow-y-auto z-[100] rounded-xl border border-gray-200/80 bg-white/95 p-6 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:bg-[#1a1b23]/95 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 dark:[&::-webkit-scrollbar-thumb]:bg-gray-600 [&::-webkit-scrollbar-track]:bg-transparent ${popupDirection === 'right' ? 'left-full ml-4' : 'right-full mr-4'}`}
+            style={{ 
+              position: 'fixed',
+              top: popupPos.top,
+              left: popupPos.left !== 'auto' ? popupPos.left : undefined,
+              right: popupPos.right !== 'auto' ? popupPos.right : undefined,
+              zIndex: 999999
+            }}
+            className={`w-[640px] max-h-[85vh] overflow-y-auto rounded-xl border border-gray-200/80 bg-white/95 p-6 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:bg-[#1a1b23]/95 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 dark:[&::-webkit-scrollbar-thumb]:bg-gray-600 [&::-webkit-scrollbar-track]:bg-transparent`}
             onClick={(e) => e.stopPropagation()}
             onMouseEnter={() => setIsHovering(true)}
             onMouseLeave={handleMouseLeave}
@@ -595,7 +606,8 @@ export function TaskCard({
             <div className="prose prose-sm dark:prose-invert max-w-none">
               <TaskMarkdown body={task.body} taskId={task.id} compact />
             </div>
-          </motion.div>
+          </motion.div>,
+          document.body
         )}
       </AnimatePresence>
     </CardContainer>
