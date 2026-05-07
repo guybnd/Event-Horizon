@@ -1521,7 +1521,7 @@ export function TaskModal() {
           minHeight={420}
           bounds="window"
           dragHandleClassName="modal-handle"
-          className="pointer-events-auto"
+          className="pointer-events-auto !z-[60]"
         >
           <Container 
             {...layoutProps}
