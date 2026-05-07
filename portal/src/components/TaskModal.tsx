@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import { Rnd } from 'react-rnd';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import {
   AlertCircle,
   ArrowLeft,
@@ -24,13 +22,16 @@ import {
   X,
 } from 'lucide-react';
 import { useApp } from '../AppContext';
-import { createTask, deleteTask, fetchTasks, updateTask } from '../api';
+import { createTask, deleteTask, fetchTasks, updateTask, uploadTaskAsset } from '../api';
 import type { Config, HistoryEntry, TagDef, Task } from '../types';
 import { StatusBadge } from './StatusBadge';
 import { getStatusColorClass } from '../statusStyles';
+import { TaskMarkdown } from './TaskMarkdown';
 import { DEFAULT_READY_FOR_MERGE_STATUS, getRequireInputStatus } from '../workflow';
 
 const ACTIVITY_FILTER_STORAGE_KEY = 'flux.activityFilter';
+const SUPPORTED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/svg+xml']);
+const SUPPORTED_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.svg']);
 
 type ActivityFilter = 'all' | 'comments';
 
@@ -38,6 +39,44 @@ function getInitialActivityFilter(): ActivityFilter {
   if (typeof window === 'undefined') return 'all';
   const stored = window.localStorage.getItem(ACTIVITY_FILTER_STORAGE_KEY);
   return stored === 'comments' ? 'comments' : 'all';
+}
+
+function getFileExtension(fileName: string) {
+  return fileName.includes('.') ? fileName.slice(fileName.lastIndexOf('.')).toLowerCase() : '';
+}
+
+function isSupportedImageFile(file: File) {
+  return SUPPORTED_IMAGE_MIME_TYPES.has(file.type.toLowerCase()) || SUPPORTED_IMAGE_EXTENSIONS.has(getFileExtension(file.name || ''));
+}
+
+function buildUnsupportedImageMessage(files: File[]) {
+  const labels = files.map((file) => file.name || 'clipboard image');
+  return `Only PNG, JPG, and SVG images are supported. Skipped ${labels.join(', ')}.`;
+}
+
+function buildImageMarkdownLink(assetPath: string, fileName: string) {
+  const rawAltText = fileName.replace(/\.[^.]+$/, '').trim();
+  const altText = rawAltText.replace(/[\[\]]+/g, ' ').trim() || 'image';
+  return `![${altText}](${assetPath})`;
+}
+
+function readFileAsBase64(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.onerror = () => reject(new Error(`Failed to read ${file.name || 'image'}.`));
+    reader.onload = () => {
+      if (typeof reader.result !== 'string') {
+        reject(new Error(`Failed to read ${file.name || 'image'}.`));
+        return;
+      }
+
+      const commaIndex = reader.result.indexOf(',');
+      resolve(commaIndex >= 0 ? reader.result.slice(commaIndex + 1) : reader.result);
+    };
+
+    reader.readAsDataURL(file);
+  });
 }
 
 function TagSelector({
@@ -154,49 +193,6 @@ function getPriorityIcon(priorityName: string, config: Config | null, className 
   }
 }
 
-function MarkdownPreview({ body }: { body: string }) {
-  return (
-    <div className="max-w-none text-sm leading-7 text-gray-700 dark:text-gray-300">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          h1: ({ children }) => <h1 className="mb-4 text-3xl font-bold text-gray-900 dark:text-gray-100">{children}</h1>,
-          h2: ({ children }) => <h2 className="mb-3 mt-8 text-2xl font-semibold text-gray-900 dark:text-gray-100">{children}</h2>,
-          h3: ({ children }) => <h3 className="mb-2 mt-6 text-xl font-semibold text-gray-900 dark:text-gray-100">{children}</h3>,
-          p: ({ children }) => <p className="mb-4 whitespace-pre-wrap">{children}</p>,
-          ul: ({ children }) => <ul className="mb-4 list-disc space-y-1 pl-6">{children}</ul>,
-          ol: ({ children }) => <ol className="mb-4 list-decimal space-y-1 pl-6">{children}</ol>,
-          li: ({ children }) => <li>{children}</li>,
-          a: ({ children, href }) => (
-            <a className="text-primary underline underline-offset-2" href={href} target="_blank" rel="noreferrer">
-              {children}
-            </a>
-          ),
-          code: ({ children, className }) => {
-            const isBlock = className?.includes('language-');
-            if (isBlock) {
-              return <code className="block overflow-x-auto rounded-lg bg-black/90 p-4 text-sm text-gray-100">{children}</code>;
-            }
-            return <code className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-800 dark:bg-black/30 dark:text-gray-100">{children}</code>;
-          },
-          pre: ({ children }) => <pre className="mb-4 overflow-x-auto rounded-lg bg-black/90">{children}</pre>,
-          blockquote: ({ children }) => (
-            <blockquote className="mb-4 border-l-4 border-primary/40 pl-4 italic text-gray-600 dark:text-gray-400">
-              {children}
-            </blockquote>
-          ),
-          table: ({ children }) => <table className="mb-4 w-full border-collapse overflow-hidden rounded-lg">{children}</table>,
-          thead: ({ children }) => <thead className="bg-gray-100 dark:bg-white/5">{children}</thead>,
-          th: ({ children }) => <th className="border border-gray-200 px-3 py-2 text-left dark:border-white/10">{children}</th>,
-          td: ({ children }) => <td className="border border-gray-200 px-3 py-2 dark:border-white/10">{children}</td>,
-        }}
-      >
-        {body || 'No description yet.'}
-      </ReactMarkdown>
-    </div>
-  );
-}
-
 export function TaskModal() {
   const EFFORT_OPTIONS = ['None', 'XS', 'S', 'M', 'L', 'XL'];
   const {
@@ -232,6 +228,9 @@ export function TaskModal() {
   const [isWideMode, setIsWideMode] = useState(false);
   const [isFullView, setIsFullView] = useState(false);
   const [isEditingDescription, setIsEditingDescription] = useState(false);
+  const [assetError, setAssetError] = useState('');
+  const [isUploadingAsset, setIsUploadingAsset] = useState(false);
+  const [isAssetDragOver, setIsAssetDragOver] = useState(false);
   const [allTasks, setAllTasks] = useState<Task[]>([]);
   const [subtasks, setSubtasks] = useState<string[]>([]);
   const [subtaskToAdd, setSubtaskToAdd] = useState('');
@@ -260,6 +259,9 @@ export function TaskModal() {
       setIsWideMode(false);
       setIsFullView(new URLSearchParams(window.location.search).get('view') === 'full');
       setIsEditingDescription(false);
+      setAssetError('');
+      setIsUploadingAsset(false);
+      setIsAssetDragOver(false);
     }
   }, [modalTask]);
 
@@ -544,6 +546,106 @@ export function TaskModal() {
     }, 0);
   };
 
+  const insertTextAtSelection = (text: string, selectionStart?: number, selectionEnd?: number) => {
+    const currentTextArea = textareaRef.current;
+    const start = selectionStart ?? currentTextArea?.selectionStart ?? body.length;
+    const end = selectionEnd ?? currentTextArea?.selectionEnd ?? body.length;
+
+    const nextBody = body.substring(0, start) + text + body.substring(end);
+    setBody(nextBody);
+
+    setTimeout(() => {
+      if (!textareaRef.current) return;
+      const nextCursorPosition = start + text.length;
+      textareaRef.current.focus();
+      textareaRef.current.setSelectionRange(nextCursorPosition, nextCursorPosition);
+    }, 0);
+  };
+
+  const attachImageFiles = async (files: File[], selectionStart?: number, selectionEnd?: number) => {
+    if (files.length === 0) {
+      return;
+    }
+
+    if (!modalTask?.id) {
+      setAssetError('Save the ticket before attaching images.');
+      return;
+    }
+
+    const supportedFiles = files.filter((file) => isSupportedImageFile(file));
+    const unsupportedFiles = files.filter((file) => !isSupportedImageFile(file));
+
+    if (supportedFiles.length === 0) {
+      setAssetError(buildUnsupportedImageMessage(unsupportedFiles));
+      return;
+    }
+
+    setIsUploadingAsset(true);
+    setAssetError('');
+
+    try {
+      const markdownLinks: string[] = [];
+
+      for (const file of supportedFiles) {
+        const content = await readFileAsBase64(file);
+        const uploadedAsset = await uploadTaskAsset(modalTask.id, {
+          fileName: file.name || 'image',
+          mimeType: file.type,
+          content,
+        });
+        markdownLinks.push(buildImageMarkdownLink(uploadedAsset.path, file.name || uploadedAsset.fileName));
+      }
+
+      insertTextAtSelection(markdownLinks.join('\n\n'), selectionStart, selectionEnd);
+
+      if (unsupportedFiles.length > 0) {
+        setAssetError(buildUnsupportedImageMessage(unsupportedFiles));
+      }
+    } catch (error) {
+      console.error(error);
+      setAssetError(error instanceof Error ? error.message : 'Failed to attach image.');
+    } finally {
+      setIsUploadingAsset(false);
+    }
+  };
+
+  const handleDescriptionPaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.clipboardData.files || []);
+    if (files.length === 0) {
+      return;
+    }
+
+    event.preventDefault();
+    void attachImageFiles(files, event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
+  };
+
+  const handleDescriptionDragOver = (event: React.DragEvent<HTMLTextAreaElement>) => {
+    const hasFiles = Array.from(event.dataTransfer.types || []).includes('Files');
+    if (!hasFiles) {
+      return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+    setIsAssetDragOver(true);
+  };
+
+  const handleDescriptionDragLeave = () => {
+    setIsAssetDragOver(false);
+  };
+
+  const handleDescriptionDrop = (event: React.DragEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.dataTransfer.files || []);
+    if (files.length === 0) {
+      setIsAssetDragOver(false);
+      return;
+    }
+
+    event.preventDefault();
+    setIsAssetDragOver(false);
+    void attachImageFiles(files, event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
+  };
+
   const metadataFields = (
     <div className="space-y-5 rounded-xl border border-gray-100 bg-gray-50 p-4 dark:border-white/5 dark:bg-black/10">
       <div>
@@ -791,13 +893,30 @@ export function TaskModal() {
   );
 
   const descriptionEditor = (
-    <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-gray-200 bg-gray-50 dark:border-white/10 dark:bg-black/20">
+    <div className={`flex h-full min-h-0 flex-1 flex-col overflow-hidden rounded-lg border ${
+      isAssetDragOver
+        ? 'border-primary bg-primary/5 dark:border-primary/70 dark:bg-primary/10'
+        : 'border-gray-200 bg-gray-50 dark:border-white/10 dark:bg-black/20'
+    }`}>
       {editorToolbar}
+      <div className="flex items-center justify-between gap-3 border-b border-gray-200 px-4 py-2 text-xs text-gray-500 dark:border-white/10 dark:text-gray-400">
+        <span>{modalTask?.id ? 'Paste or drop PNG, JPG, or SVG images to attach them.' : 'Save the ticket first to attach images.'}</span>
+        {isUploadingAsset && <span className="font-semibold text-primary">Uploading image...</span>}
+      </div>
+      {assetError && (
+        <div className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
+          {assetError}
+        </div>
+      )}
       <textarea
         ref={textareaRef}
         className="h-full min-h-[320px] w-full flex-1 resize-none bg-transparent px-4 py-3 font-mono text-sm leading-relaxed outline-none"
         value={body}
         onChange={(event) => setBody(event.target.value)}
+        onPaste={handleDescriptionPaste}
+        onDragOver={handleDescriptionDragOver}
+        onDragLeave={handleDescriptionDragLeave}
+        onDrop={handleDescriptionDrop}
         placeholder="Markdown supported..."
       />
     </div>
@@ -1189,7 +1308,7 @@ export function TaskModal() {
                     </button>
                   </div>
                   <div className={`min-h-0 flex-1 px-6 pb-6 ${isEditingDescription ? 'flex' : 'overflow-y-auto'}`}>
-                    {isEditingDescription ? descriptionEditor : <MarkdownPreview body={body} />}
+                    {isEditingDescription ? descriptionEditor : <TaskMarkdown body={body} taskId={modalTask?.id} emptyMessage="No description yet." />}
                   </div>
                 </div>
 

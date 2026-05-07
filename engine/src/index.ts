@@ -8,12 +8,21 @@ import { getWorkflowInstallStatus, installWorkspaceWorkflow } from './workflow-i
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 const FLUX_DIR = path.join(__dirname, '../../.flux');
 const CONFIG_FILE = path.join(FLUX_DIR, 'config.json');
 const REPO_ROOT = path.resolve(FLUX_DIR, '..');
 const DOCS_DIR = path.join(REPO_ROOT, '.docs');
+const TASK_ASSETS_DIR = path.join(FLUX_DIR, 'assets');
+
+const SUPPORTED_IMAGE_TYPES = new Map<string, string>([
+  ['image/png', '.png'],
+  ['image/jpeg', '.jpg'],
+  ['image/svg+xml', '.svg'],
+]);
+
+const SUPPORTED_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.svg']);
 
 interface DocRecord {
   path: string;
@@ -302,6 +311,114 @@ function normalizeRelativePath(filePath: string) {
   return filePath.split(path.sep).join('/');
 }
 
+function encodeAssetPath(assetPath: string) {
+  return assetPath.split('/').map((segment) => encodeURIComponent(segment)).join('/');
+}
+
+function normalizeAssetPathInput(value: unknown) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value.replace(/\\/g, '/').trim().replace(/^\/+|\/+$/g, '');
+  if (!normalized) {
+    return null;
+  }
+
+  const segments = normalized.split('/').filter(Boolean);
+
+  if (segments.length === 0 || segments.some((segment) => segment === '.' || segment === '..')) {
+    return null;
+  }
+
+  return segments.join('/');
+}
+
+function getAssetPathFromRequestPath(requestPath: string) {
+  const prefix = '/api/assets/';
+
+  if (!requestPath.startsWith(prefix)) {
+    return null;
+  }
+
+  try {
+    return normalizeAssetPathInput(decodeURIComponent(requestPath.slice(prefix.length)));
+  } catch {
+    return null;
+  }
+}
+
+function getAssetFilePath(assetPath: string) {
+  return path.join(TASK_ASSETS_DIR, ...assetPath.split('/'));
+}
+
+function isPathInsideRoot(rootPath: string, targetPath: string) {
+  const relativePath = path.relative(path.resolve(rootPath), path.resolve(targetPath));
+  return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
+}
+
+function getExtensionFromFileName(fileName: string) {
+  const extension = path.extname(fileName || '').toLowerCase();
+  if (extension === '.jpeg') {
+    return '.jpg';
+  }
+  return extension;
+}
+
+function sanitizeAssetBaseName(fileName: string) {
+  const baseName = path.basename(fileName, path.extname(fileName));
+  const normalized = baseName
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^[-._]+|[-._]+$/g, '');
+
+  return normalized || 'image';
+}
+
+function resolveSupportedImageExtension(fileName: string, mimeType: string) {
+  const normalizedMimeType = typeof mimeType === 'string' ? mimeType.trim().toLowerCase() : '';
+  if (SUPPORTED_IMAGE_TYPES.has(normalizedMimeType)) {
+    return SUPPORTED_IMAGE_TYPES.get(normalizedMimeType)!;
+  }
+
+  const extension = getExtensionFromFileName(fileName);
+  if (SUPPORTED_IMAGE_EXTENSIONS.has(extension)) {
+    return extension === '.jpeg' ? '.jpg' : extension;
+  }
+
+  return null;
+}
+
+function normalizeBase64Content(content: string) {
+  const trimmedContent = content.trim();
+  const match = trimmedContent.match(/^data:[^;]+;base64,(.+)$/i);
+  return (match ? match[1] : trimmedContent).replace(/\s+/g, '');
+}
+
+async function createUniqueAssetFileName(directoryPath: string, requestedFileName: string) {
+  const extension = path.extname(requestedFileName);
+  const baseName = path.basename(requestedFileName, extension);
+  let suffix = 1;
+  let candidate = requestedFileName;
+
+  while (true) {
+    const candidatePath = path.join(directoryPath, candidate);
+
+    try {
+      await fs.access(candidatePath);
+      suffix += 1;
+      candidate = `${baseName}-${suffix}${extension}`;
+    } catch (error: any) {
+      if (error.code === 'ENOENT') {
+        return candidate;
+      }
+      throw error;
+    }
+  }
+}
+
 function normalizeDocPathInput(value: unknown) {
   if (typeof value !== 'string') {
     return null;
@@ -524,6 +641,7 @@ async function initDir() {
   try {
     await fs.mkdir(FLUX_DIR, { recursive: true });
     await fs.mkdir(DOCS_DIR, { recursive: true });
+    await fs.mkdir(TASK_ASSETS_DIR, { recursive: true });
     await loadDocsDirectory(DOCS_DIR);
   } catch {
     // ignore
@@ -707,6 +825,89 @@ app.delete(/^\/api\/docs\/.+$/, async (req, res) => {
   } catch (error) {
     console.error(`Failed to delete doc ${docPath}:`, error);
     res.status(500).json({ error: 'Failed to delete doc' });
+  }
+});
+
+app.get(/^\/api\/assets\/.+$/, async (req, res) => {
+  const assetPath = getAssetPathFromRequestPath(req.path);
+
+  if (!assetPath) {
+    return res.status(400).json({ error: 'Invalid asset path' });
+  }
+
+  const filePath = getAssetFilePath(assetPath);
+  if (!isPathInsideRoot(TASK_ASSETS_DIR, filePath)) {
+    return res.status(400).json({ error: 'Invalid asset path' });
+  }
+
+  try {
+    const fileStats = await fs.stat(filePath);
+    if (!fileStats.isFile()) {
+      return res.status(404).json({ error: 'Asset not found' });
+    }
+
+    const fileBuffer = await fs.readFile(filePath);
+    res.type(path.extname(filePath));
+    res.send(fileBuffer);
+  } catch (error: any) {
+    if (error.code === 'ENOENT') {
+      return res.status(404).json({ error: 'Asset not found' });
+    }
+
+    console.error(`Failed to read asset ${assetPath}:`, error);
+    res.status(500).json({ error: 'Failed to read asset' });
+  }
+});
+
+app.post('/api/tasks/:id/assets', async (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+
+  if (!task) {
+    return res.status(404).json({ error: 'Task not found' });
+  }
+
+  const fileName = typeof req.body?.fileName === 'string' ? req.body.fileName.trim() : '';
+  const mimeType = typeof req.body?.mimeType === 'string' ? req.body.mimeType.trim() : '';
+  const content = typeof req.body?.content === 'string' ? req.body.content : '';
+  const normalizedContent = normalizeBase64Content(content);
+
+  if (!normalizedContent) {
+    return res.status(400).json({ error: 'Missing asset content' });
+  }
+
+  const extension = resolveSupportedImageExtension(fileName, mimeType);
+  if (!extension) {
+    return res.status(400).json({ error: 'Only PNG, JPG, and SVG images are supported in this first version.' });
+  }
+
+  const safeBaseName = sanitizeAssetBaseName(fileName || 'image');
+  const taskAssetDirectory = path.join(TASK_ASSETS_DIR, id);
+
+  try {
+    await fs.mkdir(taskAssetDirectory, { recursive: true });
+
+    const requestedFileName = `${safeBaseName}${extension}`;
+    const storedFileName = await createUniqueAssetFileName(taskAssetDirectory, requestedFileName);
+    const filePath = path.join(taskAssetDirectory, storedFileName);
+    const fileBuffer = Buffer.from(normalizedContent, 'base64');
+
+    if (fileBuffer.length === 0) {
+      return res.status(400).json({ error: 'Invalid asset content' });
+    }
+
+    await fs.writeFile(filePath, fileBuffer);
+
+    const assetPath = normalizeRelativePath(path.relative(FLUX_DIR, filePath));
+    const apiAssetPath = normalizeRelativePath(path.relative(TASK_ASSETS_DIR, filePath));
+    res.status(201).json({
+      path: assetPath,
+      fileName: storedFileName,
+      url: `/api/assets/${encodeAssetPath(apiAssetPath)}`,
+    });
+  } catch (error) {
+    console.error(`Failed to write asset for task ${id}:`, error);
+    res.status(500).json({ error: 'Failed to save asset' });
   }
 });
 

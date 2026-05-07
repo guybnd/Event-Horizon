@@ -1,6 +1,6 @@
 import type { Task, Config, Doc } from './types';
 
-const API_URL = 'http://localhost:3001/api';
+export const API_URL = 'http://localhost:3001/api';
 
 function encodeDocPath(docPath: string) {
   return docPath.split('/').map((segment) => encodeURIComponent(segment)).join('/');
@@ -21,6 +21,38 @@ export async function updateTask(id: string, updates: Partial<Task>): Promise<Ta
     body: JSON.stringify(updates)
   });
   if (!res.ok) throw new Error('Failed to update task');
+  return res.json();
+}
+
+export interface TaskAssetUploadResult {
+  path: string;
+  fileName: string;
+  url: string;
+}
+
+export async function uploadTaskAsset(id: string, payload: { fileName: string; mimeType: string; content: string }): Promise<TaskAssetUploadResult> {
+  const res = await fetch(`${API_URL}/tasks/${id}/assets`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    let message = 'Failed to upload task asset';
+    try {
+      const errorPayload = await res.json();
+      if (typeof errorPayload?.error === 'string' && errorPayload.error.trim()) {
+        message = errorPayload.error.trim();
+      }
+    } catch {
+      // Ignore JSON parse failures and fall back to the default message.
+    }
+
+    throw new Error(message);
+  }
+
   return res.json();
 }
 

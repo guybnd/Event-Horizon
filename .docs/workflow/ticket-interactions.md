@@ -51,6 +51,22 @@ the board, backlog, header, and ticket views.
 - The full-view mode preserves ticket editing and comments while adding back
   navigation and Escape-based exit behavior.
 
+## Description attachments
+
+- Ticket descriptions render through the shared markdown surface in popup,
+  full-view, and backlog detail layouts, so image links behave consistently
+  across those ticket views.
+- When editing a saved ticket description, users can paste or drag and drop
+  supported image files (`.png`, `.jpg`, `.jpeg`, `.svg`) directly into the
+  editor.
+- Attached images are written under `.flux/assets/<ticket-id>/...`, and the
+  editor inserts a relative markdown image link into the ticket body at the
+  current selection.
+- Unsupported dropped or pasted files show a clear warning instead of silently
+  failing.
+- Missing image assets render a lightweight unavailable state instead of
+  breaking the ticket view.
+
 ## Triage cues
 
 - Require-input tickets are intended to be easy to spot from the app chrome and

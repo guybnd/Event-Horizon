@@ -4,6 +4,7 @@ import { updateTask } from '../api';
 import { Loader2, Plus } from 'lucide-react';
 import { TaskViewControls } from './TaskViewControls';
 import { filterAndSortTasks } from '../taskSearch';
+import { TaskMarkdown } from './TaskMarkdown';
 
 export function BacklogScreen() {
   const {
@@ -168,8 +169,8 @@ export function BacklogScreen() {
               
               <div>
                 <span className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">Description</span>
-                <div className="prose prose-sm dark:prose-invert max-w-none font-mono text-sm bg-gray-50 dark:bg-black/20 p-4 rounded-xl border border-gray-100 dark:border-white/5 whitespace-pre-wrap">
-                  {selectedVisibleTask.body || 'No description provided.'}
+                <div className="rounded-xl border border-gray-100 bg-gray-50 p-4 dark:border-white/5 dark:bg-black/20">
+                  <TaskMarkdown body={selectedVisibleTask.body || ''} taskId={selectedVisibleTask.id} compact emptyMessage="No description provided." />
                 </div>
               </div>
             </div>

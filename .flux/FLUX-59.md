@@ -1,7 +1,6 @@
 ---
-id: FLUX-59
 title: Attach images to a ticket
-status: Todo
+status: Ready
 createdBy: Guy
 updatedBy: Agent
 assignee: unassigned
@@ -48,6 +47,89 @@ history:
       Accepted the repo-managed ticket-asset storage model and tightened this
       into a concrete implementation plan. This is now a normal `Todo` ticket.
     id: c-2026-05-07t04-01-46-0405379z-flux-59
+  - type: comment
+    user: Agent
+    date: '2026-05-07T12:00:00.000Z'
+    comment: >-
+      Starting implementation in three slices: add engine support to write and
+      serve `.flux/assets/<ticket-id>/...`, move ticket markdown rendering onto
+      a shared renderer that resolves ticket asset URLs, then wire paste and
+      drag/drop image insertion into the ticket description editor with clear
+      unsupported-file feedback.
+    id: c-2026-05-07t12-00-00-000z-flux-59
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-07T12:00:00.000Z'
+  - type: comment
+    user: Guy
+    date: '2026-05-07T04:31:43.918Z'
+    comment: >-
+      we should be able to include a picture in a comment. when showing picture
+      in comment or inline in ticket, default view of it in comment should be
+      that its a link to a popup image display and not taking up the actual
+      entire space
+
+      . hovering on it we should be able to give it some in-page dimensions
+    id: c-2026-05-07t04-31-43-918z
+  - type: comment
+    user: Agent
+    date: '2026-05-07T12:20:00.000Z'
+    comment: >-
+      Implemented the first description-attachment slice: the engine now writes
+      and serves ticket images under `.flux/assets/<ticket-id>/...`, the ticket
+      description editor accepts pasted or dropped PNG/JPG/SVG images and
+      inserts relative markdown links automatically, and the shared ticket
+      markdown renderer now shows those images inline with clear
+      unsupported-file warnings. Validated with clean diagnostics on the touched
+      files, a live asset upload API check, and a live portal paste plus preview
+      check.
+
+      Your latest note adds comment-image upload and comment-specific display
+      behavior. Do you want that folded into FLUX-59 now, or split into a
+      follow-up ticket? Recommended default: keep FLUX-59 scoped to description
+      attachments and track comment-image behavior separately because it adds a
+      distinct comment rendering and interaction design surface.
+    id: c-2026-05-07t12-20-00-000z-flux-59
+  - type: status_change
+    from: In Progress
+    to: Require Input
+    user: Agent
+    date: '2026-05-07T12:20:00.000Z'
+  - type: comment
+    user: Guy
+    date: '2026-05-07T04:35:58.604Z'
+    comment: 'ok as you suggested, open the next ticket and work on that immediately'
+    id: c-2026-05-07t04-35-58-604z
+  - type: status_change
+    from: Require Input
+    to: Todo
+    user: Guy
+    date: '2026-05-07T04:35:58.604Z'
+    comment: Response submitted
+  - type: comment
+    user: Agent
+    date: '2026-05-07T04:45:00.000Z'
+    comment: >-
+      Closed the scope split as requested. FLUX-64 now tracks comment-image
+      upload and compact preview behavior, while FLUX-59 stays scoped to
+      description attachments.
+
+      This slice is implemented and validated: ticket descriptions now accept
+      pasted or dropped PNG/JPG/SVG images, assets are written under
+      `.flux/assets/<ticket-id>/...`, relative markdown image links are
+      inserted automatically, and popup/full-view/backlog description rendering
+      resolves those assets consistently with graceful missing-image handling.
+
+      Validation: `npm.cmd run build -w portal`, clean editor diagnostics on
+      the touched files, and live API/browser checks during implementation.
+    id: c-2026-05-07t04-45-00-000z-flux-59
+  - type: status_change
+    from: Todo
+    to: Ready
+    user: Agent
+    date: '2026-05-07T04:45:00.000Z'
 ---
 ## Summary
 
