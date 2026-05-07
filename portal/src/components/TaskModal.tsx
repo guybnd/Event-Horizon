@@ -173,6 +173,7 @@ export function TaskModal() {
   const [effort, setEffort] = useState<string>('None');
   const [implementationLink, setImplementationLink] = useState('');
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [newComment, setNewComment] = useState('');
   const [activityFilter, setActivityFilter] = useState<ActivityFilter>(getInitialActivityFilter);
   const [replyTargetId, setReplyTargetId] = useState<string | null>(null);
@@ -354,6 +355,7 @@ export function TaskModal() {
 
   const handleSave = async (customHistory?: any[], keepOpen = false) => {
     setSaving(true);
+    setSaveError(null);
     const payload = { title, body, status, assignee, tags, priority, effort, implementationLink: implementationLink.trim(), subtasks, order: modalTask?.order };
     let historyUpdates: any[] = customHistory || [];
 
@@ -393,8 +395,9 @@ export function TaskModal() {
 
       triggerRefresh();
       if (!keepOpen && !customHistory) closeModal();
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
+      setSaveError(error.message || 'Failed to save changes. Make sure the engine is running.');
     } finally {
       setSaving(false);
     }
@@ -403,12 +406,14 @@ export function TaskModal() {
   const handleDelete = async () => {
     if (!modalTask?.id) return;
     setSaving(true);
+    setSaveError(null);
     try {
       await deleteTask(modalTask.id);
       triggerRefresh();
       closeModal();
-    } catch (error) {
+    } catch (error: any) {
       console.error(error);
+      setSaveError(error.message || 'Failed to delete task. Make sure the engine is running.');
     } finally {
       setSaving(false);
     }
@@ -1239,14 +1244,20 @@ export function TaskModal() {
   ) : null;
 
   return (
-    <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center">
+    <div className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center">
       <div
         className="pointer-events-auto absolute inset-0 bg-black/40 backdrop-blur-sm"
         onClick={isFullView ? undefined : handleCloseAttempt}
       />
 
       {isFullView ? (
-        <div className="pointer-events-auto fixed inset-3 flex flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-white/10 dark:bg-[#1a1b23]">
+        <div className="pointer-events-auto absolute inset-3 flex flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-white/10 dark:bg-[#1a1b23]">
+          {saveError && (
+            <div className="bg-red-500/10 text-red-600 dark:text-red-400 px-5 py-3 text-sm font-medium border-b border-red-500/20 text-center flex items-center justify-center gap-2">
+              <AlertCircle className="w-4 h-4" />
+              {saveError}
+            </div>
+          )}
           <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50 px-5 py-4 dark:border-white/5 dark:bg-black/20">
             <div className="flex min-w-0 items-center gap-4">
               <button
@@ -1358,6 +1369,12 @@ export function TaskModal() {
           className="pointer-events-auto"
         >
           <div className="flex h-full w-full flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl dark:border-white/10 dark:bg-[#1a1b23]">
+            {saveError && (
+              <div className="bg-red-500/10 text-red-600 dark:text-red-400 px-4 py-2.5 text-sm font-medium border-b border-red-500/20 text-center flex items-center justify-center gap-2">
+                <AlertCircle className="w-4 h-4" />
+                {saveError}
+              </div>
+            )}
             <div className="modal-handle flex shrink-0 items-center justify-between cursor-move border-b border-gray-100 bg-gray-50 px-4 py-3 dark:border-white/5 dark:bg-black/20">
               <div className="flex flex-col">
                 <div className="mb-0.5 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-gray-400">
