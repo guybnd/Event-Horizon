@@ -1,6 +1,6 @@
 # Event Horizon Agent Skill
 
-Version: 1.3.0
+Version: 1.4.0
 
 ## Overview
 
@@ -43,6 +43,9 @@ History entries use one of these shapes:
 
 - `.flux/*.md`: ticket source files
 - `.flux/config.json`: board configuration and configured priorities/tags/users
+- `.docs/**/*.md`: project documentation served in the Docs screen
+- `README.md`: repo-level overview and workflow install guidance
+- `.flux/skills/*.md`: source workflow asset templates
 - `engine/src/index.ts`: Express API that reads and writes tickets
 - `portal/src/`: React portal UI for board, backlog, settings, and ticket modal flows
 
@@ -68,17 +71,19 @@ Default local URLs used by this project:
 When assigned a ticket, follow this sequence:
 
 1. Read the full ticket, including all history comments and status changes.
-2. Read nearby implementation files before editing. Prefer the smallest owning surface.
-3. Post a short plan comment to the ticket before substantial work.
-4. Move the ticket to `In Progress` when implementation starts.
-5. Make small, local changes and validate immediately after the first substantive edit.
-6. Post progress comments when scope changes, validation fails, or the user redirects the work.
-7. If clarification is required for the ticket, do not ask only in chat. Move the ticket to the configured user-input status (`requireInputStatus` in `.flux/config.json`, default `Require Input`), leave one explicit question in ticket history, and use the focused response flow so the user can answer through the system.
-8. When a ticket enters the configured ready-for-merge status (`readyForMergeStatus` in `.flux/config.json`, default `Ready`), treat it as awaiting user review and finalization rather than as fully closed work.
-9. If the user says `finish FLUX-44` or otherwise asks to finish a ticket that is in the ready-for-merge status, perform the final ticket-close sequence: make the focused final commit if needed, record the completion update with validation and commit reference, set the implementation link, and then move the ticket to `Done`.
-10. If the work changes repository files and the user expects commits, create a focused commit before closing the ticket. The commit should be scoped to the ticket work and use a clear, descriptive message that states the user-visible or system behavior that was shipped.
-11. When finished, update the ticket body or summary as needed, add a descriptive completion comment that explains what changed, what was validated, and any follow-up caveats, include the commit reference when available, and then move the ticket to `Done`.
-12. Re-read fresh user comments before assuming the ticket is complete.
+2. Read the relevant docs to understand scope and touchpoints before editing. Start with `.docs/`, then `README.md`, then `.flux/skills/*.md` when the task touches workflow behavior or installer output.
+3. Read nearby implementation files before editing. Prefer the smallest owning surface.
+4. Post a short plan comment to the ticket before substantial work.
+5. Move the ticket to `In Progress` when implementation starts.
+6. Make small, local changes and validate immediately after the first substantive edit.
+7. Post progress comments when scope changes, validation fails, or the user redirects the work.
+8. If clarification is required for the ticket, do not ask only in chat. Move the ticket to the configured user-input status (`requireInputStatus` in `.flux/config.json`, default `Require Input`), leave one explicit question in ticket history, and use the focused response flow so the user can answer through the system.
+9. When a ticket enters the configured ready-for-merge status (`readyForMergeStatus` in `.flux/config.json`, default `Ready`), treat it as awaiting user review and finalization rather than as fully closed work.
+10. Before moving a ticket to `Ready` or `Done`, review whether `.docs/`, `README.md`, or `.flux/skills/*.md` should be updated and refresh the relevant docs when behavior, workflow expectations, or touchpoints changed.
+11. If the user says `finish FLUX-44` or otherwise asks to finish a ticket that is in the ready-for-merge status, perform the final ticket-close sequence: make the focused final commit if needed, record the completion update with validation and commit reference, set the implementation link, and then move the ticket to `Done`.
+12. If the work changes repository files and the user expects commits, create a focused commit before closing the ticket. The commit should be scoped to the ticket work and use a clear, descriptive message that states the user-visible or system behavior that was shipped.
+13. When finished, update the ticket body or summary as needed, add a descriptive completion comment that explains what changed, what was validated, any follow-up caveats, include the commit reference when available, and then move the ticket to `Done`.
+14. Re-read fresh user comments before assuming the ticket is complete.
 
 ## User Input Routing
 
@@ -112,6 +117,7 @@ When assigned a ticket, follow this sequence:
 - Use spaces, not tabs, in YAML frontmatter. Tab indentation in `history`, lists, or nested fields can make a ticket disappear from the board.
 - Keep `updatedBy` accurate for the last actor.
 - Do not delete history; append new entries instead.
+- Promote durable behavior changes into the nearest project docs instead of leaving the context only in ticket history.
 - Prefer root-cause fixes over purely visual patches.
 - Validate with the narrowest check available before widening scope.
 
@@ -127,6 +133,7 @@ When assigned a ticket, follow this sequence:
 ## Common Project Patterns
 
 - Ticket persistence is handled by the engine, not directly by the portal.
+- Repo-backed docs live under `.docs/` and should be the first stop for project-level context.
 - Card-level interactions usually live in `portal/src/components/TaskCard.tsx`.
 - Full ticket editing lives in `portal/src/components/TaskModal.tsx`.
 - URL/view state is coordinated through `portal/src/AppContext.tsx`.
@@ -134,10 +141,12 @@ When assigned a ticket, follow this sequence:
 ## End-to-End Checklist
 
 - Ticket was read fully
+- Relevant docs were reviewed during grooming or task start-up
 - Plan comment added
 - Status moved to `In Progress`
 - Code changed in the smallest owning surface
 - Focused validation passed
+- Relevant docs were refreshed before `Ready` or `Done` when behavior changed
 - Ticket markdown edits were checked for valid frontmatter when `.flux/*.md` files changed
 - Ticket-specific user questions went through the configured user-input status, not only chat
 - Ready-for-merge tickets were only moved to `Done` after the explicit `finish <ticket>` handoff or equivalent user approval

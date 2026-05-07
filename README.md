@@ -13,6 +13,20 @@ Event Horizon is a local-first, agent-centric management layer that replaces tra
 - **Portal (Frontend):** A reactive, customizable Web UI built with Vite, React, and Tailwind CSS v4.
 - **Data Layer:** A `.flux/` directory containing ticket files.
 
+## Project Docs
+
+Event Horizon now has a repo-backed docs tree under `.docs/` that is also served
+through the portal's Docs screen. The current core pages are:
+
+- `project-overview` for the high-level system shape and shipped capabilities
+- `architecture/overview` for the runtime and storage model
+- `architecture/repository-map` for the quickest route to the main code surfaces
+- `workflow/ticket-lifecycle` for the status model and execution rules
+- `workflow/workflow-install` for how the skill and always-on instructions are installed
+
+When shipped behavior changes, update the nearest durable docs page instead of
+leaving the knowledge only in ticket history.
+
 ## Getting Started
 
 To run the full stack during development, you will need two terminal windows:
@@ -53,6 +67,10 @@ The installer patches a marked Event Horizon block inside `.github/copilot-instr
 The Settings screen exposes the current source paths, installed paths, and a copyable install command so the workflow install remains visible instead of hidden in repo internals.
 
 The workflow settings include a configurable user-input status and a configurable ready-for-merge status, defaulting to `Require Input` and `Ready`. Those selectors live together in Settings and are chosen from the existing board or hidden statuses so the workflow stays tied to real status entities. If one of those configured workflow statuses is currently missing from the board, Settings shows that state and offers a restore action. Tickets moved into the user-input status become response prompts, and tickets moved into the ready-for-merge status become review prompts; after review, the intended agent handoff is `finish <ticket>` to create the final commit and move the ticket to `Done`.
+
+Agents are expected to read the relevant docs during grooming or task start-up,
+then review and refresh those docs again before moving a ticket to `Ready` or
+`Done` when durable behavior or workflow expectations changed.
 
 ## The Data Schema (MVP)
 Tickets are stored as `.md` files inside the `.flux/` directory.

@@ -19,17 +19,18 @@ These instructions apply to all agent work in this repository.
 For any ticket-driven implementation task, the agent must follow this sequence:
 
 1. Read the full ticket, including history.
-2. Read the smallest nearby implementation surface before editing.
+2. Read the relevant docs and the smallest nearby implementation surface before editing. Start with `.docs/`, then `README.md`, then `.flux/skills/*.md` when the task touches workflow behavior or installer output.
 3. Add a short plan comment to the ticket before substantial work.
 4. Move the ticket to `In Progress` before substantive code changes.
 5. Make focused changes and run narrow validation immediately after the first substantive edit.
 6. Add progress comments when scope changes, validation fails, or the user redirects the work.
 7. If blocked on a ticket-specific question, move the ticket to the configured user-input status (`requireInputStatus`, default `Require Input`) and record the question in ticket history instead of asking only in chat.
 8. If a ticket enters the configured ready-for-merge status (`readyForMergeStatus`, default `Ready`), treat that as a user review checkpoint rather than as closed work.
-9. If the user says `finish <ticket>` for a ticket in the ready-for-merge status, perform the final commit and ticket-close sequence before moving it to `Done`.
-10. If repository files changed and commits are expected, create a focused commit after validation passes and before closing the ticket.
-11. Before closing the ticket, add a completion comment that states what changed, what was validated, any caveats, and the commit hash when available.
-12. Move the ticket to `Done` only after the completion update is recorded.
+9. Before moving a ticket to `Ready` or `Done`, review and update the relevant docs when behavior, workflow expectations, or touchpoints changed.
+10. If the user says `finish <ticket>` for a ticket in the ready-for-merge status, perform the final commit and ticket-close sequence before moving it to `Done`.
+11. If repository files changed and commits are expected, create a focused commit after validation passes and after any required docs refresh before closing the ticket.
+12. Before closing the ticket, add a completion comment that states what changed, what was validated, any caveats, and the commit hash when available.
+13. Move the ticket to `Done` only after the completion update is recorded.
 
 ### Commit Rules
 
@@ -44,6 +45,12 @@ For any ticket-driven implementation task, the agent must follow this sequence:
 - Preserve valid YAML frontmatter and use spaces, not tabs, in `history` and nested fields.
 - Do not delete ticket history; append to it.
 - After editing a ticket file, validate that it still appears through the live engine API or other project ticket reader path.
+
+### Documentation Expectations
+
+- Use `.docs/` as the primary durable project knowledge base when grooming or starting ticket work.
+- Update `README.md` when repository-wide setup, architecture, or workflow behavior changes.
+- If the task changes agent workflow or workflow installation behavior, update `.flux/skills/event-horizon-agent.md` and `.flux/skills/event-horizon-copilot-instructions.md`, then refresh the installed workspace copies.
 
 ### Source Of Detailed Procedure
 
