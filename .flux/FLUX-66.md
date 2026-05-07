@@ -1,95 +1,10 @@
 ---
-title: refresh docs for recent settings surfaces
-status: Done
-priority: Medium
-createdBy: Guy
-updatedBy: Guy
-assignee: Agent
-tags:
-  - docs
-  - task
-history:
-  - type: activity
-    user: Guy
-    date: '2026-05-07T14:46:00.000+10:00'
-    comment: Created ticket.
-  - type: comment
-    user: Agent
-    date: '2026-05-07T14:46:00.000+10:00'
-    comment: >-
-      Captured from the request to review the latest completed tickets for any
-      remaining docs gaps. The attachment flow is already covered in Ticket
-      Interactions, but the newer Settings-backed workflow and interaction
-      controls are still scattered across the README and isolated doc mentions.
-      Plan: refresh the in-product docs so Settings behavior is easier to find,
-      then validate the docs through the live API or portal build.
-    id: c-2026-05-07t14-46-00-000-10-00-flux-66
-  - type: status_change
-    from: Grooming
-    to: In Progress
-    user: Agent
-    date: '2026-05-07T14:46:00.000+10:00'
-  - type: comment
-    user: Agent
-    date: '2026-05-07T14:52:00.000+10:00'
-    comment: >-
-      Reviewed the latest completed tickets against the current docs set. The
-      attachment flow and recent interaction changes were already covered in
-      `Ticket Interactions`, so the remaining gap was the Settings-driven
-      workflow controls that only existed in the README. Updated
-      `workflow/workflow-install` to document the workflow source and installed
-      paths, the copyable install command, and the configurable user-input and
-      ready-for-merge status selectors. Validated with a live `GET
-      http://localhost:3001/api/docs` check confirming the updated section
-      parses through the docs API. No focused commit was created because the
-      current worktree still contains unrelated in-flight changes.
-    id: c-2026-05-07t14-52-00-000-10-00-flux-66
-  - type: status_change
-    from: In Progress
-    to: Ready
-    user: Agent
-    date: '2026-05-07T14:52:00.000+10:00'
-  - type: status_change
-    from: Ready
-    to: Done
-    user: Guy
-    date: '2026-05-07T05:00:32.073Z'
-effort: XS
-implementationLink: ''
-subtasks: []
-order: 13
----
-## Summary
-
-Review the latest completed tickets and refresh the repo docs where recent
-Settings-backed behavior is still under-documented.
-
-## Requirements
-
-### 1. Confirm the real gaps from recent completed work
-- Re-check the most recent `Done` tickets rather than assuming every recent UI
-  change needs docs
-- Keep features that are already clearly documented out of scope for this pass
-
-### 2. Promote remaining Settings behavior into the docs tree
-- Update the nearest existing docs pages so the portal's Settings surface is
-  easier to understand from `.docs/`
-- Cover the durable workflow and interaction controls that now live in
-  Settings, rather than leaving them discoverable only through the README or
-  ticket history
-
-### 3. Revalidate the docs after editing
-- Confirm the updated docs still parse cleanly through the project surfaces
-
-## Acceptance Criteria
-
-- [ ] Recent completed tickets have been checked for doc coverage gaps
-- [ ] The real remaining Settings-related docs gap is covered in `.docs/`
-- [ ] The updated docs still parse cleanly after the refresh---
 assignee: unassigned
-tags: []
-priority: None
-effort: None
+tags:
+  - ui
+  - navigation
+priority: Medium
+effort: S
 implementationLink: ''
 subtasks: []
 history:
@@ -97,10 +12,61 @@ history:
     user: Guy
     date: '2026-05-07T04:50:17.787Z'
     comment: Created ticket.
-id: FLUX-66
+  - type: comment
+    user: Agent
+    date: '2026-05-07T05:23:46.190Z'
+    comment: >-
+      Grooming check: The implementation plan is defined in the description
+      below.  Proposed Metadata: Priority: Medium, Effort: S, Tags: ui,
+      navigation. Does this plan and metadata look correct? Please confirm or
+      adjust.
+    id: c-1778131426196-flux-66.md
+  - type: comment
+    user: Guy
+    date: '2026-05-07T05:32:27.590Z'
+    comment: confirm
+    id: c-2026-05-07t05-32-27-590z
+  - type: status_change
+    from: Require Input
+    to: Todo
+    user: Guy
+    date: '2026-05-07T05:32:27.590Z'
+    comment: Response submitted
 title: ticket view should keep top bar
-status: Grooming
+status: Todo
 createdBy: Guy
 updatedBy: Guy
+order: 12
 ---
-both popup and full ticket view should still keep the top bar navigation, to allow search to go to other  ticket, and navigate to specific windows from there if wanted.
+## Summary
+
+Ensure the top navigation bar remains visible in both popup and full ticket
+view modes so users can search, navigate to other tickets, and switch between
+views without closing the current ticket first.
+
+## Requirements
+
+### 1. Persistent top bar in full ticket view
+- Full ticket view should render within the existing layout shell that includes the top navigation bar
+- Search, view switching, and navigation controls remain accessible at all times
+- The top bar should not scroll away with the ticket content
+
+### 2. Persistent top bar in popup ticket view
+- Popup ticket view overlay should not obscure the top bar
+- Users should be able to interact with search and navigation without closing the popup first
+
+## Acceptance Criteria
+
+- [ ] Top navigation bar is visible in full ticket view
+- [ ] Top navigation bar is visible and accessible in popup ticket view
+- [ ] Search works from within ticket views
+- [ ] Navigation to other views works without closing the ticket first
+
+## Likely Affected Areas
+
+- `portal/src/App.tsx` (routing/layout)
+- `portal/src/components/TaskModal.tsx`
+- `portal/src/components/Header.tsx`
+
+## Original Request
+both popup and full ticket view should still keep the top bar navigation, to allow search to go to other ticket, and navigate to specific windows from there if wanted.

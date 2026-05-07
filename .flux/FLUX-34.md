@@ -1,16 +1,19 @@
 ---
-id: FLUX-34
 title: Protocol Handler for IDE Navigation
 status: Todo
 priority: Medium
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
 tags:
   - feature
   - ux
   - integration
 history:
+  - type: activity
+    user: Guy
+    date: '2026-05-06T12:07:00.000Z'
+    comment: Created ticket.
   - type: comment
     user: Agent
     date: '2026-05-06T12:07:00.000Z'
@@ -19,8 +22,9 @@ history:
       content into the local IDE so file references become actionable instead of
       just informational.
     id: c-2026-05-06t12-07-00-000z
-effort: None
+effort: M
 implementationLink: ''
+order: 2
 ---
 ## Groomed Scope
 

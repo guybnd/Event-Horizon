@@ -1,9 +1,9 @@
 ---
 title: Unify markdown description editor across ticket surfaces
-status: Todo
+status: In Progress
 createdBy: Guy
-updatedBy: Guy
-assignee: unassigned
+updatedBy: Agent
+assignee: Agent
 tags: []
 priority: None
 effort: None
@@ -62,6 +62,118 @@ history:
       since ticket created, add options for inline images and stuff like that,
       need to have this supported as well properly across
     id: c-2026-05-07t04-49-32-788z
+  - type: comment
+    user: Agent
+    date: '2026-05-07T05:20:00.000Z'
+    comment: >-
+      Starting implementation from the shared ticket-description surface.
+      Plan: extract one reusable markdown preview/editor component that keeps
+      the current image attachment flow, switch popup/full-view/backlog to that
+      shared surface, then validate with a focused portal build and live UI
+      checks.
+    id: c-2026-05-07t05-20-00-000z-flux-51
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-07T05:20:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-07T05:35:00.000Z'
+    comment: >-
+      Implemented the shared ticket-description surface across popup,
+      full-view, and backlog detail. Ticket descriptions now default to rendered
+      markdown everywhere, clicking the description enters the shared editor,
+      and the same toolbar plus image-attachment flow is reused across those
+      surfaces. Backlog detail now uses the same editor shell with local save
+      and cancel actions, while popup and full-view keep the existing ticket
+      draft/save flow. The docs editor stays intact; this slice kept the ticket
+      description path on the existing markdown renderer/editor model so image
+      and markdown round-tripping stay stable.
+
+      Validation: `npm.cmd run build -w portal` after the final backlog fix,
+      live full-view and popup checks confirming rendered markdown by default
+      and click-to-edit behavior, a live backlog check confirming the shared
+      editor plus local save/cancel actions, and a live `/api/docs` check
+      confirming the refreshed `workflow/ticket-interactions` page still parses.
+    id: c-2026-05-07t05-35-00-000z-flux-51
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-07T05:35:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-07T05:42:00.000Z'
+    comment: >-
+      User review redirected this back into implementation. The current shared
+      ticket-description surface still switches into raw markdown editing,
+      which does not match the docs WYSIWYG experience. Next slice: replace the
+      task-surface raw textarea with the docs-style formatted editor model and
+      return to rendered view on outside click instead of leaving the ticket in
+      source-markdown mode.
+    id: c-2026-05-07t05-42-00-000z-flux-51
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Agent
+    date: '2026-05-07T05:42:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-07T15:30:40.8520942+10:00'
+    comment: >-
+      Completed the docs-style shared description editor slice. Popup,
+      full-view, and backlog detail now all enter a formatted TipTap editor
+      instead of a raw markdown textarea, clicking outside the editor returns
+      the surface to rendered markdown preview, and task asset links/images now
+      resolve inside both preview and edit modes. Backlog local save/cancel and
+      popup/full unsaved-state handling were tightened so opening and closing
+      the editor without edits does not create false dirty state.
+
+      Validation: `npm.cmd run build -w portal`; live preview checks on
+      `http://127.0.0.1:4173/board?ticket=FLUX-59&view=full`,
+      `http://127.0.0.1:4173/board?ticket=FLUX-51&view=popup`, and
+      `http://127.0.0.1:4173/backlog` confirming formatted edit mode, zero
+      ticket-description source textareas, and outside-click return to preview;
+      plus a localhost dev-server sanity check confirming the shared editor now
+      loads without the prior Vite import-analysis overlay.
+    id: c-2026-05-07t15-30-40-8520942-10-00-flux-51
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-07T15:30:40.8520942+10:00'
+  - type: comment
+    user: Agent
+    date: '2026-05-07T15:34:38.5470320+10:00'
+    comment: >-
+      User review reopened this ticket. The shared ticket-description surface
+      still differs from Docs in one important way: it swaps from a rendered
+      markdown preview DOM into a separate editor DOM. That reset breaks scroll
+      continuity while editing and prevents click-to-edit from placing the
+      caret at the clicked spot. Next slice: keep one editor surface mounted in
+      the same scroll container, toggle read-only vs editable behavior in
+      place, and validate the popup, full-view, and backlog flows again.
+    id: c-2026-05-07t15-34-38-5470320-10-00-flux-51
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Agent
+    date: '2026-05-07T15:34:38.5470320+10:00'
+  - type: comment
+    user: Agent
+    date: '2026-05-07T15:54:41.3067028+10:00'
+    comment: >-
+      Reverted the last broken scroll-target experiment that moved overflow onto
+      the inner editor node, and tightened the read-only interaction model so
+      the ticket description shell owns scroll and click-to-edit entry while
+      the same editor DOM stays mounted underneath. Validation so far:
+      `npm.cmd run build -w portal` passes and the popup shell again reports a
+      live scroll range after the revert. Remaining blocker: after reloading
+      fresh localhost board pages, the targeted ticket modal no longer reopens
+      in automation, so full popup/full-view runtime confirmation is still
+      pending before this can move out of `In Progress`.
+    id: c-2026-05-07t15-54-41-3067028-10-00-flux-51
 ---
 ## Summary
 
@@ -95,11 +207,11 @@ description content.
 
 ## Acceptance Criteria
 
-- [ ] Popup, full-view, and backlog ticket descriptions render markdown by default
-- [ ] Clicking a description enters edit mode consistently across the ticket surfaces
-- [ ] The shared editor/view code is centralized instead of duplicated per surface
-- [ ] Markdown still round-trips cleanly to the ticket files on disk
-- [ ] Existing docs-editor behavior remains intact or is refactored safely onto the shared base without regression
+- [x] Popup, full-view, and backlog ticket descriptions render markdown by default
+- [x] Clicking a description enters edit mode consistently across the ticket surfaces
+- [x] The shared editor/view code is centralized instead of duplicated per surface
+- [x] Markdown still round-trips cleanly to the ticket files on disk
+- [x] Existing docs-editor behavior remains intact or is refactored safely onto the shared base without regression
 
 ## Likely Affected Areas
 

@@ -1,12 +1,13 @@
 ---
-id: FLUX-42
-title: "Subtasks should appear under the parent task in the hierarchy"
+title: Subtasks should appear under the parent task in the hierarchy
 status: Todo
-priority: None
+priority: Medium
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
-tags: []
+tags:
+  - ui
+  - feature
 history:
   - type: activity
     user: Guy
@@ -43,13 +44,13 @@ history:
     comment: >-
       Tightened this around the current implementation surface: parents already
       store `subtasks`, cards can already show parent context, and the missing
-      work is nested rendering, cross-column behavior, and ordering. This is
-      now concrete enough to stay in `Todo`.
+      work is nested rendering, cross-column behavior, and ordering. This is now
+      concrete enough to stay in `Todo`.
     id: c-2026-05-07t03-53-39-4816199z-flux-42
-effort: None
+effort: L
 implementationLink: ''
 subtasks: []
-order: 1
+order: 15
 ---
 ## Summary
 

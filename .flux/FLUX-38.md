@@ -1,10 +1,9 @@
 ---
-id: FLUX-38
 title: define dual-mode execution bridge and executor lifecycle
 status: Todo
 priority: High
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
 tags:
   - feature
@@ -74,7 +73,7 @@ history:
     date: '2026-05-07T03:53:39.4816199Z'
 effort: Large
 implementationLink: ''
-order: 2
+order: 16
 ---
 ## Summary
 

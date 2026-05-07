@@ -10,6 +10,10 @@ tags:
   - ux
   - assets
 history:
+  - type: activity
+    user: Guy
+    date: '2026-05-06T12:09:00.000Z'
+    comment: Created ticket.
   - type: comment
     user: Agent
     date: '2026-05-06T12:09:00.000Z'
@@ -18,8 +22,9 @@ history:
       previewing linked art and config assets that commonly appear in Unity or
       Godot workflows.
     id: c-2026-05-06t12-09-00-000z
-effort: None
+effort: M
 implementationLink: ''
+order: 4
 ---
 ## Groomed Scope
 

@@ -1,16 +1,19 @@
 ---
-id: FLUX-35
 title: Separate Permanent State from Agent Reasoning
 status: Todo
 priority: Medium
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
 tags:
   - feature
   - architecture
   - logs
 history:
+  - type: activity
+    user: Guy
+    date: '2026-05-06T12:08:00.000Z'
+    comment: Created ticket.
   - type: comment
     user: Agent
     date: '2026-05-06T12:08:00.000Z'
@@ -19,8 +22,9 @@ history:
       from verbose agent reasoning so the repository stays readable without
       losing operational traceability.
     id: c-2026-05-06t12-08-00-000z
-effort: None
+effort: M
 implementationLink: ''
+order: 3
 ---
 ## Groomed Scope
 

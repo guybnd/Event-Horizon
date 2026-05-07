@@ -1,13 +1,14 @@
 ---
-id: FLUX-58
 title: Add initial keyboard shortcuts
 status: Todo
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
-tags: []
+tags:
+  - ui
+  - feature
 priority: Low
-effort: None
+effort: S
 implementationLink: ''
 subtasks: []
 history:
@@ -32,6 +33,7 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-07T03:53:39.4816199Z'
+order: 9
 ---
 ## Summary
 

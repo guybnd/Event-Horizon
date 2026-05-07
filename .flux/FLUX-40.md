@@ -1,10 +1,9 @@
 ---
-id: FLUX-40
 title: add execution mode controls and status UX to the portal
 status: Todo
 priority: Medium
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
 tags:
   - feature
@@ -12,6 +11,10 @@ tags:
   - portal
   - agent
 history:
+  - type: activity
+    user: Guy
+    date: '2026-05-06T12:43:00.000Z'
+    comment: Created ticket.
   - type: comment
     user: Agent
     date: '2026-05-06T12:43:00.000Z'
@@ -48,6 +51,7 @@ history:
     date: '2026-05-07T03:53:39.4816199Z'
 effort: Medium
 implementationLink: ''
+order: 5
 ---
 ## Summary
 

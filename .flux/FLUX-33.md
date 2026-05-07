@@ -1,10 +1,9 @@
 ---
-id: FLUX-33
 title: Automatic Definition of Done Verification
 status: Todo
 priority: High
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
 tags:
   - feature
@@ -71,9 +70,10 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-07T03:53:39.4816199Z'
-effort: None
+effort: XL
 implementationLink: ''
 subtasks: []
+order: 1
 ---
 ## Groomed Scope
 

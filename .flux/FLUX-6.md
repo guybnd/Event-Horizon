@@ -1,16 +1,19 @@
 ---
-id: FLUX-6
 title: implement MCP context and command server for passive execution mode
 status: Todo
 priority: High
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
 tags:
   - feature
   - integration
   - agent
 history:
+  - type: activity
+    user: Guy
+    date: '2026-05-06T06:56:11.085Z'
+    comment: Created ticket.
   - type: comment
     user: Guy
     date: '2026-05-06T06:56:11.085Z'
@@ -50,7 +53,8 @@ history:
       retrieval, ticket-status updates, and real-time board sync for external
       agents.
     id: c-2026-05-06t12-40-00-000z
-order: 2
+order: 17
+effort: XL
 ---
 ## Summary
 

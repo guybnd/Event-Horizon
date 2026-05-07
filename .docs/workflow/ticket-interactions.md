@@ -56,6 +56,15 @@ the board, backlog, header, and ticket views.
 - Ticket descriptions render through the shared markdown surface in popup,
   full-view, and backlog detail layouts, so image links behave consistently
   across those ticket views.
+- Those ticket-description surfaces default to rendered markdown, and clicking
+  the description switches that surface into the same formatted editor model
+  used by Docs rather than a raw markdown textarea.
+- Clicking outside a ticket description editor returns that surface to rendered
+  markdown preview.
+- Popup and full-view description edits stay inside the normal ticket draft and
+  save flow, while backlog detail editing uses the same shared editor shell with
+  local save and cancel actions that only appear once the description actually
+  changed.
 - When editing a saved ticket description, users can paste or drag and drop
   supported image files (`.png`, `.jpg`, `.jpeg`, `.svg`) directly into the
   editor.

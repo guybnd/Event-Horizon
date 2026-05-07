@@ -1,13 +1,14 @@
 ---
-id: FLUX-50
 title: Add Releases surface and released-status workflow
 status: Todo
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
-tags: []
-priority: None
-effort: None
+tags:
+  - feature
+  - workflow
+priority: Medium
+effort: L
 implementationLink: ''
 subtasks: []
 history:
@@ -59,6 +60,7 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-07T03:53:39.4816199Z'
+order: 6
 ---
 ## Summary
 

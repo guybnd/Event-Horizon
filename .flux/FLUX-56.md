@@ -1,13 +1,14 @@
 ---
-id: FLUX-56
 title: Add ticket deep links with hover preview
 status: Todo
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
-tags: []
-priority: None
-effort: None
+tags:
+  - ui
+  - feature
+priority: Low
+effort: M
 implementationLink: ''
 subtasks: []
 history:
@@ -32,6 +33,7 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-07T03:53:39.4816199Z'
+order: 7
 ---
 ## Summary
 

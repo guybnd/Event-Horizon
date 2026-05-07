@@ -1,13 +1,16 @@
 ---
-id: FLUX-18
 title: Local executable / packaged app
 status: Todo
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: Agent
 tags:
   - feature
 history:
+  - type: activity
+    user: Guy
+    date: '2026-05-06T07:33:00.000Z'
+    comment: Created ticket.
   - type: comment
     user: Agent
     date: '2026-05-06T07:33:00.000Z'
@@ -44,7 +47,7 @@ history:
       prerequisite, and update prompts rather than full auto-update. This is
       concrete enough to stay in `Todo`.
     id: c-2026-05-07t03-53-39-4816199z-flux-18
-order: 5
+order: 18
 priority: Medium
 effort: L
 implementationLink: ''

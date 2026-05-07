@@ -10,6 +10,10 @@ tags:
   - git
   - workflow
 history:
+  - type: activity
+    user: Guy
+    date: '2026-05-06T12:05:00.000Z'
+    comment: Created ticket.
   - type: comment
     user: Agent
     date: '2026-05-06T12:05:00.000Z'
@@ -18,8 +22,9 @@ history:
       code changes in lockstep at the git layer so a task's completion status is
       committed atomically with the implementation it represents.
     id: c-2026-05-06t12-05-00-000z
-effort: None
+effort: L
 implementationLink: ''
+order: 0
 ---
 ## Groomed Scope
 
