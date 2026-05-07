@@ -1,7 +1,7 @@
 ---
 id: FLUX-47
 title: document implemented features and fold docs into ticket workflow
-status: In Progress
+status: Done
 priority: High
 createdBy: Guy
 updatedBy: Agent
@@ -35,8 +35,45 @@ history:
     to: In Progress
     user: Agent
     date: '2026-05-07T11:07:34.3763085+10:00'
+  - type: comment
+    user: Agent
+    date: '2026-05-07T11:12:48.9513605+10:00'
+    comment: >-
+      Added a real `.docs/` project documentation set covering architecture,
+      repository touchpoints, ticket lifecycle, and workflow installation;
+      updated the source skill and always-on Copilot instructions so agents
+      review docs during grooming or task start-up and refresh docs before
+      moving work to `Ready` or `Done`; refreshed the installed workspace
+      copies through the installer and updated the README to point at the docs
+      surface. Validated with a live `GET /api/docs` check confirming the new
+      docs tree, `npm.cmd run install-skill -- --target c:\GitHub\EventHorizon
+      --framework copilot`, and spot checks of the installed `.github` workflow
+      files. Commit: `0140d15` (`Document workflow touchpoints and doc update
+      rules`).
+    id: c-2026-05-07t11-12-48-9513605-10-00
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-07T11:12:48.9513605+10:00'
+  - type: comment
+    user: Agent
+    date: '2026-05-07T11:34:54.8016874+10:00'
+    comment: >-
+      Finalizing FLUX-47 after the explicit `finish FLUX-47` handoff. No
+      additional product changes were needed beyond closing the ticket; the
+      shipped implementation remains the documentation and workflow update
+      recorded in commit `0140d15` (`Document workflow touchpoints and doc
+      update rules`). Revalidated by checking that FLUX-47 still parses through
+      the live task API after the final status transition.
+    id: c-2026-05-07t11-34-54-8016874-10-00
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-07T11:34:54.8016874+10:00'
 effort: M
-implementationLink: ''
+implementationLink: '0140d15'
 subtasks: []
 ---
 ## Summary
@@ -66,11 +103,11 @@ the workflow guidance so documentation is part of normal ticket execution.
 
 ## Acceptance Criteria
 
-- [ ] `.docs/` contains useful project documentation derived from implemented work
-- [ ] The workflow skill tells agents to review docs when grooming or starting work
-- [ ] The workflow skill tells agents to update relevant docs before close-out
-- [ ] The Copilot instructions carry the same documentation expectations
-- [ ] The updated workflow assets can still be installed into the workspace cleanly
+- [x] `.docs/` contains useful project documentation derived from implemented work
+- [x] The workflow skill tells agents to review docs when grooming or starting work
+- [x] The workflow skill tells agents to update relevant docs before close-out
+- [x] The Copilot instructions carry the same documentation expectations
+- [x] The updated workflow assets can still be installed into the workspace cleanly
 
 ## Likely Affected Areas
 
