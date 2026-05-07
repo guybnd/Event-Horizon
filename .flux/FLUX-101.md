@@ -31,8 +31,51 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-08T00:00:00.000Z'
+  - type: comment
+    user: Guy
+    date: '2026-05-07T23:49:22.389Z'
+    comment: >-
+      responding to a user prompt should also return the ticket to the previous
+      status it was in before it went to user queryable status. Ready status
+      excluded from this ofc. for ready we should have a button for 'Return to
+      work' or something like that to be able to 'reject' a ready ticket but
+      this should be a separate ticket you should create and not in the scope of
+      this task
+    id: c-2026-05-07t23-49-22-389z
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-08T12:01:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-08T12:01:00.000Z'
+    comment: >-
+      Plan: (1) In `submitRequireInputResponse`, find the last comment entry
+      with an `id` in `modalTask.history` and set `replyTo` on the new user
+      comment. (2) Change `targetStatus` to use the ticket's status immediately
+      before it entered Require Input — found by scanning history for the most
+      recent status_change whose `to` equals the requireInputStatus and reading
+      its `from` field. Ready status is excluded as per Guy's note.
+    id: c-flux101-inprogress
+  - type: comment
+    user: Agent
+    date: '2026-05-08T12:02:00.000Z'
+    comment: >-
+      Implemented. Added `useMemo` to compute `preRequireInputStatus` from
+      history. Effect now sets `responseDestination` to that status on
+      ticket load (if valid), falling back to the first non-promptable status.
+      Response comment now carries `replyTo: lastAgentComment.id` when a
+      parent comment with an id exists. Created FLUX-106 for the "Return to work"
+      button on Ready tickets as Guy requested.
+    id: c-flux101-done
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-08T12:02:00.000Z'
 title: user prompt answer should be an inline comment reply
-status: Todo
+status: Ready
 createdBy: Guy
 updatedBy: Agent
 ---

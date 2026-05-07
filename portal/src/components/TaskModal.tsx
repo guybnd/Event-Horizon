@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Rnd } from 'react-rnd';
 import {
   AlertCircle,
@@ -366,11 +366,26 @@ export function TaskModal() {
   });
   const isDirty = originalPayload !== currentPayload || newComment.trim() !== '';
 
+  // When the ticket enters Require Input, default the destination to whatever status it was in before.
+  // Ready is excluded from requireInputDestinations so it's naturally filtered out.
+  const preRequireInputStatus = useMemo(() => {
+    const history = modalTask?.history || [];
+    const idx = [...history].reverse().findIndex(
+      (e) => e.type === 'status_change' && e.to === requireInputStatus
+    );
+    if (idx === -1) return null;
+    const entry = [...history].reverse()[idx];
+    return (entry as any).from as string | undefined;
+  }, [modalTask?.history, requireInputStatus]);
+
   useEffect(() => {
     if (!isRequireInput) return;
-    if (requireInputDestinations.includes(responseDestination)) return;
-    setResponseDestination(requireInputDestinations[0] || 'Todo');
-  }, [isRequireInput, requireInputDestinations, responseDestination]);
+    const preferred = preRequireInputStatus && requireInputDestinations.includes(preRequireInputStatus)
+      ? preRequireInputStatus
+      : requireInputDestinations[0] || 'Todo';
+    setResponseDestination(preferred);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isRequireInput, requireInputStatus, modalTask?.id]);
 
   if (!config || (!isModalOpen && !modalTask)) return null;
 
@@ -511,12 +526,18 @@ export function TaskModal() {
       : requireInputDestinations[0] || 'Todo';
     const submittedAt = new Date().toISOString();
     const responseComment = newComment.trim();
+
+    const lastAgentComment = [...(modalTask.history || [])].reverse().find(
+      (e) => e.type === 'comment' && e.id
+    );
+
     const historyUpdates = [
       {
         type: 'comment',
         user: currentUser,
         date: submittedAt,
         comment: responseComment,
+        ...(lastAgentComment?.id ? { replyTo: lastAgentComment.id } : {}),
       },
       {
         type: 'status_change',
