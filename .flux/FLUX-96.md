@@ -44,9 +44,22 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-08T12:00:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-08T12:15:00.000Z'
+    comment: >-
+      Validated via FLUX-108 test ticket. Closed and committed as a3f0de5.
+      Settings save bar no longer appears on fresh load.
+    id: c-flux96-close
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-08T12:15:00.000Z'
 id: FLUX-96
 title: settings save button always show as dirty
-status: Ready
+status: Done
+implementationLink: 'a3f0de5'
 createdBy: Guy
 updatedBy: Agent
 ---

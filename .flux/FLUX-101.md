@@ -74,8 +74,21 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-08T12:02:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-08T12:15:00.000Z'
+    comment: >-
+      Validated via FLUX-108: reply threaded under agent question, status
+      auto-returned to In Progress. Committed as 3a8b14a.
+    id: c-flux101-close
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-08T12:15:00.000Z'
 title: user prompt answer should be an inline comment reply
-status: Ready
+status: Done
+implementationLink: '3a8b14a'
 createdBy: Guy
 updatedBy: Agent
 ---
