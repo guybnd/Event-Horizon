@@ -50,13 +50,15 @@ export function Column({ id, title, tasks, parentByChildId, liveEvent, taskLiveE
           isOver ? 'bg-primary/5 border-primary/30 ring-1 ring-primary/20' : 'bg-gray-100/50 dark:bg-black/20'
         } ${liveEvent ? 'column-live-receiving' : ''}`}
       >
-        <button 
-          onClick={() => openTaskModal({ status: id })}
-          className="w-full flex items-center justify-center gap-2 py-2 mb-3 rounded-lg border border-dashed border-gray-300 dark:border-white/20 text-gray-500 dark:text-gray-400 hover:text-primary hover:border-primary hover:bg-primary/5 transition-colors text-sm font-medium cursor-pointer shrink-0"
-        >
-          <Plus className="w-4 h-4" />
-          New Task
-        </button>
+        {id === 'Grooming' && (
+          <button 
+            onClick={() => openTaskModal({ status: id })}
+            className="sticky top-3 z-10 w-full flex items-center justify-center gap-2 py-2 mb-3 rounded-lg border border-dashed border-gray-300 dark:border-white/20 text-gray-500 dark:text-gray-400 hover:text-primary hover:border-primary shadow-sm backdrop-blur-md bg-white/80 dark:bg-black/60 transition-colors text-sm font-medium cursor-pointer shrink-0"
+          >
+            <Plus className="w-4 h-4" />
+            New Task
+          </button>
+        )}
 
         {tasks.length > 0 && (
           <SortableContext items={tasks.map(t => t.id)} strategy={verticalListSortingStrategy}>

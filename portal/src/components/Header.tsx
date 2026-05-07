@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, Search, FileText, Tag } from 'lucide-react';
+import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, Search, FileText, Tag, Plus } from 'lucide-react';
 import { useApp } from '../AppContext';
 import { StatusBadge } from './StatusBadge';
 import { getStatusColorClass } from '../statusStyles';
@@ -123,6 +123,13 @@ export function Header() {
       </div>
       
       <div className="flex flex-wrap items-center gap-3">
+        <button
+          onClick={() => window.dispatchEvent(new CustomEvent('flux:open-task-modal', { detail: { task: { status: 'Grooming' } } }))}
+          className="flex h-[38px] items-center justify-center gap-2 rounded-2xl bg-primary px-4 text-sm font-semibold text-white shadow-sm transition-all hover:bg-primary-hover focus:outline-none cursor-pointer"
+        >
+          <Plus className="h-4 w-4" />
+          <span className="hidden sm:inline">New ticket</span>
+        </button>
         <div ref={searchContainerRef} className="relative min-w-[320px] flex-1 2xl:w-[420px] 2xl:flex-none">
           <div className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white/80 px-3 py-2 text-sm text-gray-600 shadow-sm dark:border-white/10 dark:bg-white/5 dark:text-gray-300">
             <Search className="h-4 w-4 text-gray-400" />
