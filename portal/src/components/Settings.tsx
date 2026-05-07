@@ -296,6 +296,43 @@ function SortableRow({ id, children }: { id: string, children: React.ReactNode }
   );
 }
 
+function SettingToggleCard({
+  title,
+  description,
+  checked,
+  onChange,
+  children
+}: {
+  title: string;
+  description: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <span className="block text-sm font-bold text-gray-800 dark:text-gray-200 mb-0.5" onClick={() => onChange(!checked)} style={{ cursor: 'pointer' }}>{title}</span>
+          <span className="text-xs text-gray-500 text-balance pr-4">{description}</span>
+        </div>
+        <div className="flex items-center gap-3 shrink-0">
+          {children}
+          <label className="relative inline-flex items-center cursor-pointer">
+            <input
+              type="checkbox"
+              className="sr-only peer"
+              checked={checked}
+              onChange={(e) => onChange(e.target.checked)}
+            />
+            <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
+          </label>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const SimpleEditor = ({ items, setItems, placeholder, sortable = false }: { items: {name: string, originalName?: string}[], setItems: (items: any[]) => void, placeholder: string, sortable?: boolean }) => {
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
@@ -968,95 +1005,59 @@ export function Settings() {
             </div>
           </div>
           
-          <div className="rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10 space-y-4">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-              <div>
-                <span className="block text-sm font-bold text-gray-800 dark:text-gray-200 mb-0.5">Ticket Animations</span>
-                <span className="text-xs text-gray-500">Enable fluid layout animations when opening and closing tickets.</span>
-              </div>
-              <div className="flex items-center gap-3">
-                {animationsEnabled && (
-                  <select
-                    value={animationSpeed}
-                    onChange={(e) => setAnimationSpeed(e.target.value as 'fast' | 'normal' | 'slow')}
-                    className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
-                  >
-                    <option value="fast">Fast</option>
-                    <option value="normal">Normal</option>
-                    <option value="slow">Slow</option>
-                  </select>
-                )}
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    className="sr-only peer"
-                    checked={animationsEnabled}
-                    onChange={(e) => setAnimationsEnabled(e.target.checked)}
-                  />
-                  <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
-                </label>
-              </div>
-            </div>
-          </div>
+          <SettingToggleCard
+            title="Ticket Animations"
+            description="Enable fluid layout animations when opening and closing tickets."
+            checked={animationsEnabled}
+            onChange={setAnimationsEnabled}
+          >
+            {animationsEnabled && (
+              <select
+                value={animationSpeed}
+                onChange={(e) => setAnimationSpeed(e.target.value as 'fast' | 'normal' | 'slow')}
+                className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
+              >
+                <option value="fast">Fast</option>
+                <option value="normal">Normal</option>
+                <option value="slow">Slow</option>
+              </select>
+            )}
+          </SettingToggleCard>
 
-          <div className="rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10 space-y-4">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-              <div>
-                <span className="block text-sm font-bold text-gray-800 dark:text-gray-200 mb-0.5">Card Hover Preview</span>
-                <span className="text-xs text-gray-500">Show full description popup on hover. Optionally configure the delay in ms.</span>
+          <SettingToggleCard
+            title="Card Hover Preview"
+            description="Show full description popup on hover. Optionally configure the delay in ms."
+            checked={hoverPopupsEnabled}
+            onChange={setHoverPopupsEnabled}
+          >
+            {hoverPopupsEnabled && (
+              <div className="flex items-center gap-2">
+                 <span className="text-xs text-gray-500 font-medium">Delay (ms)</span>
+                 <input
+                  type="number"
+                  value={hoverPopupDelay}
+                  onChange={(e) => setHoverPopupDelay(Number(e.target.value) || 1500)}
+                  className="w-20 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
+                  min="0"
+                  step="100"
+                />
               </div>
-              <div className="flex items-center gap-3">
-                {hoverPopupsEnabled && (
-                  <div className="flex items-center gap-2">
-                     <span className="text-xs text-gray-500 font-medium">Delay (ms)</span>
-                     <input
-                      type="number"
-                      value={hoverPopupDelay}
-                      onChange={(e) => setHoverPopupDelay(Number(e.target.value) || 1500)}
-                      className="w-20 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
-                      min="0"
-                      step="100"
-                    />
-                  </div>
-                )}
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    className="sr-only peer"
-                    checked={hoverPopupsEnabled}
-                    onChange={(e) => setHoverPopupsEnabled(e.target.checked)}
-                  />
-                  <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
-                </label>
-              </div>
-            </div>
-          </div>
+            )}
+          </SettingToggleCard>
 
-          <label className="flex items-center gap-4 cursor-pointer p-4 bg-gray-50 dark:bg-black/10 rounded-xl border border-gray-200 dark:border-white/5 hover:border-primary transition-colors">
-            <input 
-              type="checkbox" 
-              checked={enableBacklog} 
-              onChange={e => setEnableBacklog(e.target.checked)}
-              className="w-5 h-5 text-primary bg-white border-gray-300 rounded outline-none cursor-pointer"
-            />
-            <div>
-              <span className="block text-sm font-bold text-gray-800 dark:text-gray-200 mb-0.5">Enable Backlog Screen</span>
-              <span className="text-xs text-gray-500">If disabled, the backlog will simply appear as a normal column on the board (if not listed in Hidden Statuses).</span>
-            </div>
-          </label>
+          <SettingToggleCard
+            title="Enable Backlog Screen"
+            description="If disabled, the backlog will simply appear as a normal column on the board (if not listed in Hidden Statuses)."
+            checked={enableBacklog}
+            onChange={setEnableBacklog}
+          />
 
-          <label className="flex items-center gap-4 cursor-pointer p-4 bg-gray-50 dark:bg-black/10 rounded-xl border border-gray-200 dark:border-white/5 hover:border-primary transition-colors">
-            <input 
-              type="checkbox" 
-              checked={requireComment} 
-              onChange={e => setRequireComment(e.target.checked)}
-              className="w-5 h-5 text-primary bg-white border-gray-300 rounded outline-none cursor-pointer"
-            />
-            <div>
-              <span className="block text-sm font-bold text-gray-800 dark:text-gray-200 mb-0.5">Require Comment on Status Change</span>
-              <span className="text-xs text-gray-500">Prompt for a comment pop-up when dragging a task to a new column on the board.</span>
-            </div>
-          </label>
+          <SettingToggleCard
+            title="Require Comment on Status Change"
+            description="Prompt for a comment pop-up when dragging a task to a new column on the board."
+            checked={requireComment}
+            onChange={setRequireComment}
+          />
         </div>
         </div>
             )}
