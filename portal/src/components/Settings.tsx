@@ -362,6 +362,7 @@ export function Settings() {
   const [readyForMergeStatus, setReadyForMergeStatus] = useState(DEFAULT_READY_FOR_MERGE_STATUS);
   const [docsEditPermissions, setDocsEditPermissions] = useState<DocsEditPermissions>('all');
   const [docsAllowedUsers, setDocsAllowedUsers] = useState<string[]>([]);
+  const [docsRoot, setDocsRoot] = useState('.docs');
   const [hoverPopupsEnabled, setHoverPopupsEnabled] = useState(true);
   const [hoverPopupDelay, setHoverPopupDelay] = useState(1500);
   const [saving, setSaving] = useState(false);
@@ -390,6 +391,7 @@ export function Settings() {
       setReadyForMergeStatus(config.readyForMergeStatus || DEFAULT_READY_FOR_MERGE_STATUS);
       setDocsEditPermissions(config.docsEditPermissions || 'all');
       setDocsAllowedUsers(config.docsAllowedUsers || []);
+      setDocsRoot(config.docsRoot || '.docs');
       setHoverPopupsEnabled(config.hoverPopupsEnabled ?? true);
       setHoverPopupDelay(config.hoverPopupDelay ?? 1500);
     }
@@ -519,6 +521,7 @@ export function Settings() {
         readyForMergeStatus: normalizedReadyForMergeStatus,
         docsEditPermissions,
         docsAllowedUsers: cleanDocsAllowedUsers,
+        docsRoot,
         hoverPopupsEnabled,
         hoverPopupDelay
       });
@@ -580,6 +583,7 @@ export function Settings() {
     readyForMergeStatus: normalizedReadyForMergeStatus,
     docsEditPermissions,
     docsAllowedUsers: docsEditPermissions === 'specified' ? docsAllowedUsers : [],
+    docsRoot,
     hoverPopupsEnabled,
     hoverPopupDelay
   });
@@ -761,8 +765,20 @@ export function Settings() {
           </div>
 
           <div className="col-span-2 rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
-            <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Docs Permissions</h3>
-            <p className="text-xs text-gray-500 mb-5">Control who can create, edit, and delete markdown files in the Docs screen.</p>
+            <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Docs Workspace</h3>
+            <p className="text-xs text-gray-500 mb-5">Configure the active docs storage path and control who can create, edit, and delete markdown files.</p>
+
+            <div className="mb-6">
+              <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Docs Root Path</label>
+              <input
+                type="text"
+                value={docsRoot}
+                onChange={(event) => setDocsRoot(event.target.value)}
+                placeholder=".docs"
+                className="w-full max-w-sm rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm transition-colors focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary dark:border-white/20 dark:bg-black/20 dark:text-white"
+              />
+              <p className="text-[11px] text-gray-500 mt-1">The path relative to your repository root where wiki markdown files are stored.</p>
+            </div>
 
             <div className="grid gap-6 lg:grid-cols-[220px,minmax(0,1fr)]">
               <div>

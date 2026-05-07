@@ -602,7 +602,7 @@ export function DocsScreen() {
       return;
     }
 
-    const confirmed = window.confirm(`Delete ${selectedDoc.title}? This removes the markdown file from .docs.`);
+    const confirmed = window.confirm(`Delete ${selectedDoc.title}? This removes the markdown file from the workspace.`);
     if (!confirmed) {
       return;
     }

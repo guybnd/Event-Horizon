@@ -93,6 +93,7 @@ export interface Config {
   readyForMergeStatus?: string;
   docsEditPermissions?: DocsEditPermissions;
   docsAllowedUsers?: string[];
+  docsRoot?: string;
   animationsEnabled?: boolean;
   animationSpeed?: 'fast' | 'normal' | 'slow';
   hoverPopupsEnabled?: boolean;

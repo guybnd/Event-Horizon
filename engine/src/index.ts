@@ -13,7 +13,7 @@ app.use(express.json({ limit: '10mb' }));
 const FLUX_DIR = path.join(__dirname, '../../.flux');
 const CONFIG_FILE = path.join(FLUX_DIR, 'config.json');
 const REPO_ROOT = path.resolve(FLUX_DIR, '..');
-const DOCS_DIR = path.join(REPO_ROOT, '.docs');
+function getDocsDir() { return path.join(REPO_ROOT, configCache.docsRoot || '.docs'); }
 const TASK_ASSETS_DIR = path.join(FLUX_DIR, 'assets');
 
 const SUPPORTED_IMAGE_TYPES = new Map<string, string>([
@@ -468,7 +468,7 @@ function normalizeDocPathInput(value: unknown) {
 }
 
 function getDocPathFromFile(filePath: string) {
-  const relativePath = normalizeRelativePath(path.relative(DOCS_DIR, filePath));
+  const relativePath = normalizeRelativePath(path.relative(getDocsDir(), filePath));
 
   if (!relativePath || relativePath.startsWith('..')) {
     return null;
@@ -478,7 +478,7 @@ function getDocPathFromFile(filePath: string) {
 }
 
 function getDocFilePath(docPath: string) {
-  return path.join(DOCS_DIR, ...docPath.split('/')) + '.md';
+  return path.join(getDocsDir(), ...docPath.split('/')) + '.md';
 }
 
 function isDocFile(filePath: string) {
@@ -554,7 +554,7 @@ async function writeDocFile(filePath: string, title: string, order: number | und
 
 async function removeEmptyDocDirectories(startingFilePath: string) {
   let currentDirectory = path.dirname(startingFilePath);
-  const docsRoot = path.resolve(DOCS_DIR);
+  const docsRoot = path.resolve(getDocsDir());
 
   while (path.resolve(currentDirectory) !== docsRoot) {
     const entries = await fs.readdir(currentDirectory);
@@ -670,9 +670,9 @@ async function loadTask(filePath: string) {
 async function initDir() {
   try {
     await fs.mkdir(FLUX_DIR, { recursive: true });
-    await fs.mkdir(DOCS_DIR, { recursive: true });
+    await fs.mkdir(getDocsDir(), { recursive: true });
     await fs.mkdir(TASK_ASSETS_DIR, { recursive: true });
-    await loadDocsDirectory(DOCS_DIR);
+    await loadDocsDirectory(getDocsDir());
   } catch {
     // ignore
   }
@@ -714,7 +714,7 @@ initDir().then(() => {
       }
     });
 
-  const docsWatcher = chokidar.watch(DOCS_DIR, {
+  const docsWatcher = chokidar.watch(getDocsDir(), {
     ignored: (filePath: string) => {
       const basename = path.basename(filePath);
       return basename.startsWith('.') && basename !== '.docs';

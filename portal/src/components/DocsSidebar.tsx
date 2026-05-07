@@ -317,7 +317,7 @@ export function DocsSidebar({
         </div>
         <div className="min-w-0">
           <h2 className="truncate text-base font-bold text-gray-900 dark:text-gray-100">Docs Library</h2>
-          <p className="text-xs text-gray-500">Browse the `.docs` hierarchy and create pages where they belong.</p>
+          <p className="text-xs text-gray-500">Browse the workspace docs hierarchy and create pages where they belong.</p>
         </div>
       </div>
 
