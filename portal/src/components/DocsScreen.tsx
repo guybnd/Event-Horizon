@@ -83,6 +83,10 @@ function renderMarkdownToHtml(markdown: string, docs: Doc[]) {
   return rendered || '<p></p>';
 }
 
+function getEditorDocumentSnapshot(editor: { getJSON: () => unknown }) {
+  return JSON.stringify(editor.getJSON());
+}
+
 function getFolderAncestors(docPath: string) {
   const segments = docPath.split('/').filter(Boolean);
   const ancestors: string[] = [];
@@ -119,16 +123,26 @@ function resolveWikiDocPath(target: string, docs: Doc[]) {
   return titleMatch?.path || null;
 }
 
+function getWikiLinkDefinition(target: string, docs: Doc[]) {
+  const label = target.trim();
+  const resolvedPath = resolveWikiDocPath(label, docs);
+
+  return {
+    label,
+    resolvedPath,
+    href: resolvedPath ? `wiki:${encodeURIComponent(resolvedPath)}` : `broken:${encodeURIComponent(label)}`,
+  };
+}
+
 function injectWikiLinks(markdown: string, docs: Doc[]) {
   return markdown.replace(/\[\[([^\]]+)\]\]/g, (_match, rawTarget: string) => {
-    const label = rawTarget.trim();
-    const resolvedPath = resolveWikiDocPath(label, docs);
+    const link = getWikiLinkDefinition(rawTarget, docs);
 
-    if (resolvedPath) {
-      return `[${label}](wiki:${encodeURIComponent(resolvedPath)})`;
+    if (!link.label) {
+      return _match;
     }
 
-    return `[${label}](broken:${encodeURIComponent(label)})`;
+    return `[${link.label}](${link.href})`;
   });
 }
 
@@ -197,8 +211,12 @@ export function DocsScreen() {
   const [docsRefreshKey, setDocsRefreshKey] = useState(0);
   const [notice, setNotice] = useState<{ tone: 'error' | 'success'; message: string } | null>(null);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [editorSnapshot, setEditorSnapshot] = useState('');
   const turndownServiceRef = useRef<TurndownService | null>(null);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
+  const baselineEditorSnapshotRef = useRef('');
+  const isApplyingEditorContentRef = useRef(false);
+  const lastSyncedDocSignatureRef = useRef<string | null>(null);
 
   if (!turndownServiceRef.current) {
     turndownServiceRef.current = createTurndownService();
@@ -214,7 +232,10 @@ export function DocsScreen() {
       StarterKit.configure({
         link: {
           openOnClick: false,
+          autolink: true,
+          linkOnPaste: true,
           defaultProtocol: 'https',
+          isAllowedUri: (url, { defaultValidate }) => url.startsWith('wiki:') || url.startsWith('broken:') || defaultValidate(url),
         },
       }),
       Placeholder.configure({ placeholder: 'Start writing. Use [[doc-name]] for internal links.' }),
@@ -224,14 +245,35 @@ export function DocsScreen() {
     immediatelyRender: false,
     editorProps: {
       attributes: {
-        class: 'min-h-[26rem] rounded-[24px] border border-gray-200 bg-white px-5 py-4 text-base leading-7 text-gray-900 outline-none dark:border-white/10 dark:bg-black/20 dark:text-gray-100',
+        class: 'docs-editor-content min-h-[26rem] rounded-[24px] border border-gray-200 bg-white px-5 py-4 text-base leading-7 text-gray-900 outline-none dark:border-white/10 dark:bg-black/20 dark:text-gray-100',
       },
     },
     onUpdate: ({ editor: activeEditor }) => {
+      if (isApplyingEditorContentRef.current) {
+        return;
+      }
+
+      setEditorSnapshot(getEditorDocumentSnapshot(activeEditor));
       const nextMarkdown = normalizeMarkdownBody(turndownServiceRef.current?.turndown(activeEditor.getHTML()) || '');
       setDraftBody(nextMarkdown);
     },
   });
+
+  const setEditorContentSafely = (html: string) => {
+    if (!editor) {
+      return '';
+    }
+
+    isApplyingEditorContentRef.current = true;
+    editor.commands.setContent(html, { emitUpdate: false });
+    const nextSnapshot = getEditorDocumentSnapshot(editor);
+    setEditorSnapshot(nextSnapshot);
+    queueMicrotask(() => {
+      isApplyingEditorContentRef.current = false;
+    });
+
+    return nextSnapshot;
+  };
 
   const normalizedDraftTitle = draftTitle.trim() || (selectedDoc ? humanizeDocPath(selectedDoc.path) : 'Untitled');
   const draftMarkdown = normalizeMarkdownBody(draftBody);
@@ -239,7 +281,7 @@ export function DocsScreen() {
     selectedDoc
     && (
       normalizedDraftTitle !== selectedDoc.title
-      || draftMarkdown !== normalizeMarkdownBody(selectedDoc.body)
+      || editorSnapshot !== baselineEditorSnapshotRef.current
     )
   );
 
@@ -359,11 +401,22 @@ export function DocsScreen() {
     editor.setEditable(Boolean(selectedDoc) && canEditDocs);
 
     if (!selectedDoc) {
-      editor.commands.setContent('<p></p>');
+      if (lastSyncedDocSignatureRef.current !== '__empty__') {
+        lastSyncedDocSignatureRef.current = '__empty__';
+        baselineEditorSnapshotRef.current = setEditorContentSafely('<p></p>');
+      }
       return;
     }
 
-    editor.commands.setContent(renderMarkdownToHtml(normalizeMarkdownBody(selectedDoc.body), docs));
+    const normalizedBody = normalizeMarkdownBody(selectedDoc.body);
+    const docSignature = `${selectedDoc.path}\u0000${normalizedBody}`;
+
+    if (lastSyncedDocSignatureRef.current === docSignature) {
+      return;
+    }
+
+    lastSyncedDocSignatureRef.current = docSignature;
+    baselineEditorSnapshotRef.current = setEditorContentSafely(renderMarkdownToHtml(normalizedBody, docs));
   }, [editor, selectedDoc?.path, selectedDoc?.body, canEditDocs, docs]);
 
   useEffect(() => {
@@ -512,6 +565,8 @@ export function DocsScreen() {
       setDocs((currentDocs) => currentDocs.map((doc) => doc.path === updatedDoc.path ? updatedDoc : doc));
       setDraftTitle(updatedDoc.title);
       setDraftBody(normalizeMarkdownBody(updatedDoc.body));
+      baselineEditorSnapshotRef.current = editor ? getEditorDocumentSnapshot(editor) : editorSnapshot;
+      lastSyncedDocSignatureRef.current = `${updatedDoc.path}\u0000${normalizeMarkdownBody(updatedDoc.body)}`;
       setIsEditingTitle(false);
       setNotice({ tone: 'success', message: `Saved ${updatedDoc.title}.` });
     } catch (error) {
@@ -558,8 +613,10 @@ export function DocsScreen() {
     }
 
     setDraftTitle(selectedDoc.title);
-    setDraftBody(normalizeMarkdownBody(selectedDoc.body));
-    editor?.commands.setContent(renderMarkdownToHtml(normalizeMarkdownBody(selectedDoc.body), docs));
+    const normalizedBody = normalizeMarkdownBody(selectedDoc.body);
+    setDraftBody(normalizedBody);
+    lastSyncedDocSignatureRef.current = `${selectedDoc.path}\u0000${normalizedBody}`;
+    baselineEditorSnapshotRef.current = setEditorContentSafely(renderMarkdownToHtml(normalizedBody, docs));
     setIsEditingTitle(false);
     setNotice(null);
   };
@@ -593,6 +650,12 @@ export function DocsScreen() {
     if (href.startsWith('broken:')) {
       event.preventDefault();
       setNotice({ tone: 'error', message: `No doc found for ${decodeURIComponent(href.slice(7))}.` });
+      return;
+    }
+
+    if (href) {
+      event.preventDefault();
+      window.open(href, '_blank', 'noopener,noreferrer');
     }
   };
 
@@ -607,7 +670,22 @@ export function DocsScreen() {
       return;
     }
 
-    editor.chain().focus().insertContent(`[[${nextTarget.trim()}]]`).run();
+    const link = getWikiLinkDefinition(nextTarget, docs);
+    const linkedDoc = link.resolvedPath ? docs.find((doc) => doc.path === link.resolvedPath) : null;
+    const linkText = selectionText.trim() || linkedDoc?.title || link.label;
+    const chain = editor.chain().focus();
+
+    if (editor.state.selection.empty) {
+      chain.insertContent({
+        type: 'text',
+        text: linkText,
+        marks: [{ type: 'link', attrs: { href: link.href } }],
+      });
+    } else {
+      chain.extendMarkRange('link').setLink({ href: link.href });
+    }
+
+    chain.run();
   };
 
   const stopEditingTitle = (mode: 'save' | 'cancel' = 'save') => {
@@ -632,7 +710,7 @@ export function DocsScreen() {
   };
 
   const handleSetLink = () => {
-    if (!editor) {
+    if (!editor || !canEditDocs) {
       return;
     }
 
@@ -822,7 +900,7 @@ export function DocsScreen() {
                   </div>
                 </div>
               )}
-              <div className="rounded-[28px] border border-gray-200 bg-gray-50/70 px-6 py-6 dark:border-white/10 dark:bg-black/10" onClickCapture={handleEditorClick}>
+              <div className="docs-editor-shell rounded-[28px] border border-gray-200 bg-gray-50/70 px-6 py-6 dark:border-white/10 dark:bg-black/10" onClickCapture={handleEditorClick}>
                 <EditorContent editor={editor} />
               </div>
             </div>

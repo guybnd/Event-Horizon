@@ -10,3 +10,88 @@
 body {
   @apply bg-gray-50 text-gray-900 dark:bg-bg-dark dark:text-gray-100;
 }
+
+.docs-editor-shell {
+  @apply overflow-hidden;
+}
+
+.docs-editor-content > *:first-child {
+  margin-top: 0;
+}
+
+.docs-editor-content > *:last-child {
+  margin-bottom: 0;
+}
+
+.docs-editor-content p {
+  @apply my-3;
+}
+
+.docs-editor-content strong {
+  @apply font-bold;
+}
+
+.docs-editor-content em {
+  @apply italic;
+}
+
+.docs-editor-content h1 {
+  @apply mt-6 mb-3 text-3xl font-bold tracking-tight text-gray-950 dark:text-white;
+}
+
+.docs-editor-content h2 {
+  @apply mt-6 mb-3 text-2xl font-semibold text-gray-900 dark:text-gray-50;
+}
+
+.docs-editor-content h3 {
+  @apply mt-5 mb-2 text-xl font-semibold text-gray-900 dark:text-gray-100;
+}
+
+.docs-editor-content ul {
+  @apply my-4 list-disc pl-6;
+}
+
+.docs-editor-content ol {
+  @apply my-4 list-decimal pl-6;
+}
+
+.docs-editor-content li {
+  @apply my-1;
+}
+
+.docs-editor-content blockquote {
+  @apply my-4 rounded-r-2xl border-l-4 border-primary/40 bg-gray-50 px-4 py-3 italic text-gray-700 dark:bg-white/5 dark:text-gray-200;
+}
+
+.docs-editor-content pre {
+  @apply my-4 overflow-x-auto rounded-2xl bg-gray-950 px-4 py-3 text-sm text-gray-100;
+}
+
+.docs-editor-content pre code {
+  @apply bg-transparent p-0 text-inherit;
+}
+
+.docs-editor-content :not(pre) > code {
+  @apply rounded-md bg-gray-100 px-1.5 py-0.5 text-[0.9em] text-gray-800 dark:bg-white/10 dark:text-gray-100;
+}
+
+.docs-editor-content a {
+  @apply cursor-pointer font-semibold underline underline-offset-2;
+}
+
+.docs-editor-content a[href^='wiki:'] {
+  @apply rounded-full bg-primary/10 px-2 py-0.5 text-primary no-underline;
+}
+
+.docs-editor-content a[href^='wiki:']:hover {
+  @apply bg-primary/15;
+}
+
+.docs-editor-content a[href^='broken:'] {
+  @apply rounded-full bg-rose-100 px-2 py-0.5 text-rose-700 no-underline dark:bg-rose-500/10 dark:text-rose-300;
+}
+
+.docs-editor-content p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  @apply pointer-events-none float-left h-0 text-gray-400;
+}

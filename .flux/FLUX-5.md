@@ -32,6 +32,20 @@ history:
 
       4. have a setting for this, default is all can edit as its just files
       after all
+    - type: comment
+      user: Agent
+      date: '2026-05-07T01:50:24.669Z'
+      comment: >-
+        Stabilized the docs editor pass. Dirty tracking now compares against the
+        loaded editor document snapshot instead of markdown byte equality, which
+        removed the false `Unsaved` state on clean loads. The docs editor also now
+        renders formatted content with explicit heading/list/code/link styling,
+        supports wiki and external links in the Tiptap link mark, and internal
+        article links navigate correctly from the live editor surface. Validated
+        with `npm.cmd run build -w portal`, a clean `/docs` load showing no
+        `Unsaved` badge, and live navigation from `Architecture Overview` to
+        `Project Overview` through a wiki link.
+      id: c-2026-05-07t01-50-24-669z
 
       5. idk
     id: c-2026-05-06t07-35-41-321z
@@ -142,6 +156,20 @@ history:
       updates I will validate that the docs still parse through the live docs
       API.
     id: c-2026-05-07t11-25-50-1063925-10-00
+  - type: comment
+    user: Agent
+    date: '2026-05-07T01:50:24.669Z'
+    comment: >-
+      Stabilized the docs editor pass. Dirty tracking now compares against the
+      loaded editor document snapshot instead of markdown byte equality, which
+      removed the false `Unsaved` state on clean loads. The docs editor also now
+      renders formatted content with explicit heading/list/code/link styling,
+      supports wiki and external links in the Tiptap link mark, and internal
+      article links navigate correctly from the live editor surface. Validated
+      with `npm.cmd run build -w portal`, a clean `/docs` load showing no
+      `Unsaved` badge, and live navigation from `Architecture Overview` to
+      `Project Overview` through a wiki link.
+    id: c-2026-05-07t01-50-24-669z
 order: 4
 priority: High
 effort: M
