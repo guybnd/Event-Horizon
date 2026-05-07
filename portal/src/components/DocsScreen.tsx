@@ -212,6 +212,8 @@ export function DocsScreen() {
   const [notice, setNotice] = useState<{ tone: 'error' | 'success'; message: string } | null>(null);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [editorSnapshot, setEditorSnapshot] = useState('');
+  const [isEditorFocused, setIsEditorFocused] = useState(false);
+  const [hasTextSelection, setHasTextSelection] = useState(false);
   const turndownServiceRef = useRef<TurndownService | null>(null);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
   const baselineEditorSnapshotRef = useRef('');
@@ -226,6 +228,12 @@ export function DocsScreen() {
     || (config?.docsAllowedUsers ?? []).includes(currentUser);
   const brokenWikiLinks = selectedDoc ? getBrokenWikiLinks(draftBody, docs) : [];
   const breadcrumbs = selectedDoc ? getBreadcrumbs(selectedDoc.path) : [];
+  const showToolbarActiveState = isEditorFocused && hasTextSelection;
+
+  const syncEditorSelectionState = (activeEditor: NonNullable<typeof editor>) => {
+    const { from, to } = activeEditor.state.selection;
+    setHasTextSelection(from !== to);
+  };
 
   const editor = useEditor({
     extensions: [
@@ -257,6 +265,17 @@ export function DocsScreen() {
       const nextMarkdown = normalizeMarkdownBody(turndownServiceRef.current?.turndown(activeEditor.getHTML()) || '');
       setDraftBody(nextMarkdown);
     },
+    onSelectionUpdate: ({ editor: activeEditor }) => {
+      syncEditorSelectionState(activeEditor);
+    },
+    onFocus: ({ editor: activeEditor }) => {
+      setIsEditorFocused(true);
+      syncEditorSelectionState(activeEditor);
+    },
+    onBlur: () => {
+      setIsEditorFocused(false);
+      setHasTextSelection(false);
+    },
   });
 
   const setEditorContentSafely = (html: string) => {
@@ -268,6 +287,7 @@ export function DocsScreen() {
     editor.commands.setContent(html, { emitUpdate: false });
     const nextSnapshot = getEditorDocumentSnapshot(editor);
     setEditorSnapshot(nextSnapshot);
+    syncEditorSelectionState(editor);
     queueMicrotask(() => {
       isApplyingEditorContentRef.current = false;
     });
@@ -839,32 +859,32 @@ export function DocsScreen() {
           )}
 
           {selectedDoc && canEditDocs && (
-            <div className="flex flex-wrap items-center gap-2 rounded-[24px] border border-gray-200 bg-gray-50/80 px-4 py-3 dark:border-white/10 dark:bg-black/10">
-              <ToolbarButton label="Bold" active={Boolean(editor?.isActive('bold'))} disabled={!editor} onClick={() => editor?.chain().focus().toggleBold().run()}>
+            <div className="sticky top-4 z-20 flex flex-wrap items-center gap-2 rounded-[24px] border border-gray-200 bg-gray-50/90 px-4 py-3 shadow-sm backdrop-blur dark:border-white/10 dark:bg-[#161720]/90">
+              <ToolbarButton label="Bold" active={showToolbarActiveState && Boolean(editor?.isActive('bold'))} disabled={!editor} onClick={() => editor?.chain().focus().toggleBold().run()}>
                 <Bold className="h-4 w-4" />
               </ToolbarButton>
-              <ToolbarButton label="Italic" active={Boolean(editor?.isActive('italic'))} disabled={!editor} onClick={() => editor?.chain().focus().toggleItalic().run()}>
+              <ToolbarButton label="Italic" active={showToolbarActiveState && Boolean(editor?.isActive('italic'))} disabled={!editor} onClick={() => editor?.chain().focus().toggleItalic().run()}>
                 <Italic className="h-4 w-4" />
               </ToolbarButton>
-              <ToolbarButton label="Heading 1" active={Boolean(editor?.isActive('heading', { level: 1 }))} disabled={!editor} onClick={() => editor?.chain().focus().toggleHeading({ level: 1 }).run()}>
+              <ToolbarButton label="Heading 1" active={showToolbarActiveState && Boolean(editor?.isActive('heading', { level: 1 }))} disabled={!editor} onClick={() => editor?.chain().focus().toggleHeading({ level: 1 }).run()}>
                 <Heading1 className="h-4 w-4" />
               </ToolbarButton>
-              <ToolbarButton label="Heading 2" active={Boolean(editor?.isActive('heading', { level: 2 }))} disabled={!editor} onClick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()}>
+              <ToolbarButton label="Heading 2" active={showToolbarActiveState && Boolean(editor?.isActive('heading', { level: 2 }))} disabled={!editor} onClick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()}>
                 <Heading2 className="h-4 w-4" />
               </ToolbarButton>
-              <ToolbarButton label="Bullet List" active={Boolean(editor?.isActive('bulletList'))} disabled={!editor} onClick={() => editor?.chain().focus().toggleBulletList().run()}>
+              <ToolbarButton label="Bullet List" active={showToolbarActiveState && Boolean(editor?.isActive('bulletList'))} disabled={!editor} onClick={() => editor?.chain().focus().toggleBulletList().run()}>
                 <List className="h-4 w-4" />
               </ToolbarButton>
-              <ToolbarButton label="Numbered List" active={Boolean(editor?.isActive('orderedList'))} disabled={!editor} onClick={() => editor?.chain().focus().toggleOrderedList().run()}>
+              <ToolbarButton label="Numbered List" active={showToolbarActiveState && Boolean(editor?.isActive('orderedList'))} disabled={!editor} onClick={() => editor?.chain().focus().toggleOrderedList().run()}>
                 <ListOrdered className="h-4 w-4" />
               </ToolbarButton>
-              <ToolbarButton label="Code Block" active={Boolean(editor?.isActive('codeBlock'))} disabled={!editor} onClick={() => editor?.chain().focus().toggleCodeBlock().run()}>
+              <ToolbarButton label="Code Block" active={showToolbarActiveState && Boolean(editor?.isActive('codeBlock'))} disabled={!editor} onClick={() => editor?.chain().focus().toggleCodeBlock().run()}>
                 <Code className="h-4 w-4" />
               </ToolbarButton>
               <ToolbarButton label="Wiki Link" disabled={!editor} onClick={handleInsertWikiLink}>
                 <FileText className="h-4 w-4" />
               </ToolbarButton>
-              <ToolbarButton label="External Link" active={Boolean(editor?.isActive('link'))} disabled={!editor} onClick={handleSetLink}>
+              <ToolbarButton label="External Link" active={showToolbarActiveState && Boolean(editor?.isActive('link'))} disabled={!editor} onClick={handleSetLink}>
                 <LinkIcon className="h-4 w-4" />
               </ToolbarButton>
               {isDirty && (

@@ -32,6 +32,8 @@ rendering and editing files that live beside the rest of the project.
 - Users can create pages globally or directly within a folder.
 - Sibling page order is controlled from the left rail by drag-and-drop and is
   persisted back to the `order` field.
+- The formatting toolbar stays sticky while the page scrolls so primary editing
+  actions remain available deeper in long documents.
 - The right pane keeps the editor open at all times instead of switching
   between preview and edit modes.
 
@@ -45,6 +47,9 @@ rendering and editing files that live beside the rest of the project.
 ## Editing and save behavior
 
 - The page title is edited inline from the header area.
+- Toolbar buttons only render as active when the editor has an active text
+  selection, which avoids stale pressed states when the cursor is collapsed or
+  the editor is blurred.
 - Dirty tracking is based on the editor document state rather than markdown byte
   equality, which avoids false unsaved markers caused by markdown
   normalization.
