@@ -303,6 +303,32 @@ async function saveConfig(newConfig: any) {
   await fs.writeFile(CONFIG_FILE, JSON.stringify(configCache, null, 2), 'utf-8');
 }
 
+async function autoRegisterUnknownTags(tags: string[]) {
+  if (!tags || !Array.isArray(tags) || tags.length === 0) return;
+  
+  if (!configCache.tags) {
+    configCache.tags = [];
+  }
+  
+  const existingTagsLower = new Set(configCache.tags.map((t: any) => t.name?.toLowerCase() || ''));
+  let configChanged = false;
+  
+  for (const tag of tags) {
+    if (tag && typeof tag === 'string' && !existingTagsLower.has(tag.toLowerCase())) {
+      configCache.tags.push({
+        name: tag,
+        color: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300'
+      });
+      existingTagsLower.add(tag.toLowerCase());
+      configChanged = true;
+    }
+  }
+  
+  if (configChanged) {
+    await saveConfig(configCache);
+  }
+}
+
 function isTopLevelTaskFile(filePath: string) {
   return filePath.endsWith('.md') && path.dirname(filePath) === FLUX_DIR;
 }
@@ -629,6 +655,10 @@ async function loadTask(filePath: string) {
     if (normalizedHistory.changed) {
       const normalizedContent = matter.stringify(parsed.content, normalizedFrontmatter);
       await fs.writeFile(filePath, normalizedContent, 'utf-8');
+    }
+    
+    if (normalizedFrontmatter.tags && Array.isArray(normalizedFrontmatter.tags)) {
+      await autoRegisterUnknownTags(normalizedFrontmatter.tags);
     }
 
     console.log(`Loaded task: ${id}`);
@@ -962,6 +992,9 @@ app.post('/api/tasks', async (req, res) => {
   };
 
   try {
+    if (frontmatter.tags && Array.isArray(frontmatter.tags)) {
+      await autoRegisterUnknownTags(frontmatter.tags);
+    }
     const fileContent = matter.stringify(body || '', frontmatter);
     await fs.writeFile(filePath, fileContent, 'utf-8');
 
@@ -1019,6 +1052,9 @@ app.put('/api/tasks/:id', async (req, res) => {
   frontmatter.history = normalizeHistoryEntries(nextHistory).history;
 
   try {
+    if (frontmatter.tags && Array.isArray(frontmatter.tags)) {
+      await autoRegisterUnknownTags(frontmatter.tags);
+    }
     const fileContent = matter.stringify(body || '', frontmatter);
     await fs.writeFile(_path, fileContent, 'utf-8');
 
@@ -1128,6 +1164,10 @@ app.post('/api/bulk-rename', async (req, res) => {
     console.error('Failed bulk rename:', err);
     res.status(500).json({ error: 'Failed bulk rename' });
   }
+});
+
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok' });
 });
 
 app.get('/api/config', (req, res) => {
