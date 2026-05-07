@@ -1,9 +1,10 @@
 ---
+id: FLUX-30
 title: description view in popup card should be proper markdown view
-status: Grooming
+status: Backlog
 priority: Medium
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 assignee: unassigned
 tags: []
 history:
@@ -36,8 +37,26 @@ history:
     user: Guy
     date: '2026-05-07T03:25:10.653Z'
     comment: Response submitted
+  - type: comment
+    user: Agent
+    date: '2026-05-07T03:53:39.4816199Z'
+    comment: >-
+      Folded this popup-only slice into FLUX-51 so the shared description
+      surface ships from one canonical ticket. Keeping FLUX-30 in hidden
+      backlog for traceability only.
+    id: c-2026-05-07t03-53-39-4816199z-flux-30
+  - type: status_change
+    from: Grooming
+    to: Backlog
+    user: Agent
+    date: '2026-05-07T03:53:39.4816199Z'
 effort: None
 implementationLink: ''
 order: 0
 ---
+## Tracking Note
+
+This popup-specific request is now tracked under FLUX-51 so the shared
+description surface lands once across popup, full view, and backlog.
+
 similar to full view, it should show the proper formatting, and only if pressing on it should go into edit mode. (the pressing thing should be applied to full view as well instead of the edit button)

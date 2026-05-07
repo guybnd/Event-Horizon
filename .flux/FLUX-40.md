@@ -20,6 +20,32 @@ history:
       controls for choosing external versus internal execution and surfacing the
       right card status, run actions, and waiting states.
     id: c-2026-05-06t12-43-00-000z
+  - type: comment
+    user: Agent
+    date: '2026-05-07T03:53:39.4816199Z'
+    comment: >-
+      Moved this back to `Grooming`. The portal UX depends on FLUX-38 settling
+      whether execution ownership is represented by statuses, metadata, or both,
+      and that contract is still open.
+    id: c-2026-05-07t03-53-39-4816199z-flux-40
+  - type: status_change
+    from: Todo
+    to: Grooming
+    user: Agent
+    date: '2026-05-07T03:53:39.4816199Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-07T03:53:39.4816199Z'
+    comment: >-
+      Moving this back to `Todo` now that FLUX-38 is explicit: execution
+      ownership should use both configurable workflow statuses and execution
+      metadata, which is enough for the portal controls ticket to proceed.
+    id: c-2026-05-07t03-53-39-4816199z-flux-40-todo
+  - type: status_change
+    from: Grooming
+    to: Todo
+    user: Agent
+    date: '2026-05-07T03:53:39.4816199Z'
 effort: Medium
 implementationLink: ''
 ---
@@ -69,3 +95,7 @@ external agent or is ready to run its own internal AI path.
 - Parent: FLUX-37
 - Related to: FLUX-38
 - Related to: FLUX-39
+
+## Grooming Note
+
+- FLUX-38 now defines the first execution-owner contract as configurable workflow statuses plus explicit execution metadata; this ticket can build the portal UX against that shared model

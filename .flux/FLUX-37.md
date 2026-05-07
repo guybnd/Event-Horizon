@@ -1,7 +1,7 @@
 ---
 id: FLUX-37
 title: bootstrap project flux orchestrator MVP
-status: Require Input
+status: Backlog
 priority: High
 createdBy: Guy
 updatedBy: Agent
@@ -12,6 +12,10 @@ tags:
   - mvp
   - agent
 history:
+  - type: activity
+    user: Guy
+    date: '2026-05-06T12:20:00.000Z'
+    comment: Created ticket.
   - type: comment
     user: Agent
     date: '2026-05-06T12:20:00.000Z'
@@ -35,9 +39,43 @@ history:
     to: Require Input
     user: Agent
     date: '2026-05-07T13:01:33.5429940+10:00'
+  - type: comment
+    user: Guy
+    date: '2026-05-07T03:52:16.757Z'
+    comment: >-
+      probably need to be split into sub tasks? or go through more
+      considerations
+    id: c-2026-05-07t03-52-16-757z
+  - type: status_change
+    from: Require Input
+    to: Grooming
+    user: Guy
+    date: '2026-05-07T03:52:16.757Z'
+    comment: Response submitted
+  - type: comment
+    user: Agent
+    date: '2026-05-07T03:53:39.4816199Z'
+    comment: >-
+      Parked this umbrella ticket in hidden backlog. The clarified direction is
+      for FLUX-37 to remain the architecture-and-decomposition parent while the
+      actual executable work happens in child tickets such as FLUX-6, FLUX-33,
+      FLUX-38, and FLUX-40.
+    id: c-2026-05-07t03-53-39-4816199z-flux-37
+  - type: status_change
+    from: Grooming
+    to: Backlog
+    user: Agent
+    date: '2026-05-07T03:53:39.4816199Z'
 effort: XL
 implementationLink: ''
 ---
+## Tracking Note
+
+This remains the umbrella architecture/decomposition ticket for the Flux MVP.
+Direct implementation should happen through the child tickets it has already
+spawned; the parent stays in hidden backlog so the active queue only contains
+executable slices.
+
 ## Objective
 
 Establish the first working version of Project Flux as an orchestrator for

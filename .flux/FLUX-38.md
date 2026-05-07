@@ -1,6 +1,7 @@
 ---
+id: FLUX-38
 title: define dual-mode execution bridge and executor lifecycle
-status: Require Input
+status: Todo
 priority: High
 createdBy: Guy
 updatedBy: Agent
@@ -11,6 +12,10 @@ tags:
   - backend
   - agent
 history:
+  - type: activity
+    user: Guy
+    date: '2026-05-06T12:41:00.000Z'
+    comment: Created ticket.
   - type: comment
     user: Agent
     date: '2026-05-06T12:41:00.000Z'
@@ -38,6 +43,35 @@ history:
     to: Require Input
     user: Agent
     date: '2026-05-07T13:01:33.5429940+10:00'
+  - type: comment
+    user: Guy
+    date: '2026-05-07T03:53:26.951Z'
+    comment: >-
+      maybe both together. we could consider if certain columns can contain
+      multiple statuses. maybe need a subtask to separately manage that in the
+      settings too
+    id: c-2026-05-07t03-53-26-951z
+  - type: status_change
+    from: Require Input
+    to: Grooming
+    user: Guy
+    date: '2026-05-07T03:53:26.951Z'
+    comment: Response submitted
+  - type: comment
+    user: Agent
+    date: '2026-05-07T03:53:39.4816199Z'
+    comment: >-
+      Groomed this around the clarified answer: use both configurable workflow
+      statuses and explicit execution metadata together. Statuses carry board
+      visibility, metadata carries ownership and mode details. The
+      multi-status-per-column idea can be treated as a follow-up rather than a
+      blocker.
+    id: c-2026-05-07t03-53-39-4816199z-flux-38
+  - type: status_change
+    from: Grooming
+    to: Todo
+    user: Agent
+    date: '2026-05-07T03:53:39.4816199Z'
 effort: Large
 implementationLink: ''
 order: 2
@@ -58,7 +92,8 @@ LLM and apply validated edits itself.
 
 ### 2. Model execution ownership explicitly
 - Ticket state must make it clear who currently holds the pen: user, external agent, or Flux internal AI
-- Define the metadata or statuses needed for `pending external execution` and `executing internal`
+- Use both workflow statuses and explicit execution metadata together for the first version
+- Statuses should carry the human-visible board stage, while metadata records executor identity, mode, and ownership details
 - Keep this compatible with configurable board statuses rather than hard-coding fragile assumptions into the portal
 
 ### 3. Share execution preflight checks
@@ -91,3 +126,7 @@ LLM and apply validated edits itself.
 
 - Parent: FLUX-37
 - Related to: FLUX-6
+
+## Notes
+
+- If column aliasing or multiple statuses per column becomes necessary, treat that as a follow-up configuration ticket rather than a blocker to the first execution-bridge contract

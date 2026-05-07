@@ -1,8 +1,9 @@
 ---
+id: FLUX-18
 title: Local executable / packaged app
 status: Todo
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 assignee: Agent
 tags:
   - feature
@@ -22,7 +23,7 @@ history:
 
       2. browser based
 
-      3. git binary is fine 
+      3. git binary is fine
 
       4. maybe some check if repo on github is further ahead and a prompt for
       user to update it
@@ -34,76 +35,78 @@ history:
     to: Todo
     user: Guy
     date: '2026-05-06T07:37:22.840Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-07T03:53:39.4816199Z'
+    comment: >-
+      Tightened this around the answered packaging decisions: browser-based
+      runtime, Windows and macOS as the first targets, Git as an external
+      prerequisite, and update prompts rather than full auto-update. This is
+      concrete enough to stay in `Todo`.
+    id: c-2026-05-07t03-53-39-4816199z-flux-18
 order: 5
 priority: Medium
 effort: L
+implementationLink: ''
 ---
 ## Summary
 
-Package Event Horizon as a standalone executable so it can run independently without requiring Node.js, npm, or an IDE. This would allow distribution as a portable app.
+Package Event Horizon as a browser-based local app that ships without a Node.js
+or npm prerequisite. The packaged runtime should start the engine, serve the
+built portal, open the default browser, and behave like a downloadable desktop
+binary rather than requiring an IDE-driven dev setup.
 
 ## Requirements
 
-### 1. Single executable or installer
-- User downloads a single file and runs it
-- Launches the engine (Express server) and opens the portal (Vite-built frontend) in the browser
-- No Node.js installation required on the target machine
+### 1. Bundle the runtime into one packaged app
+- Build the portal for production and serve it from the packaged engine process
+- Launch the local server from the packaged runtime and open the default browser automatically
+- End users should not need Node.js, npm, or VS Code installed
 
-### 2. Packaging options
+### 2. Target Windows and macOS first
+- The first supported packaged targets are Windows and macOS
+- Downloadable release artifacts are sufficient for the first slice; installer wrappers can follow later
+- Git can remain an external prerequisite for git-aware workflow features
 
-| Approach | Pros | Cons |
-|----------|------|------|
-| **Electron** | Full desktop app, system tray, native feel | Heavy (~100MB+), complex build |
-| **pkg (Vercel)** | Bundles Node.js into single exe, lightweight | No native UI, opens in browser |
-| **nexe** | Similar to pkg, compiles to native binary | Less maintained |
-| **Tauri** | Lightweight native wrapper (~10MB), Rust-based | Requires Rust toolchain for building |
-| **Docker** | Cross-platform, easy deployment | Requires Docker on target |
+### 3. Keep v1 browser-based
+- The first version should run as a local executable that opens the portal in the browser
+- Do not require an Electron or Tauri desktop shell for the initial implementation
+- System tray controls, auto-start, and native notifications stay out of scope for this ticket
 
-### 3. Recommended approach: `pkg` + system tray
+### 4. Provide lightweight update awareness
+- The packaged app may check whether a newer GitHub release or repo version exists and prompt the user to update
+- Automatic in-place updating is not required in the first version
+- Update prompts should fail safely when network access is unavailable
 
-**Phase 1:** Use `pkg` to bundle the engine into a standalone `.exe` / binary
-- Build the portal (`vite build`) and serve the static files from the engine
-- Engine serves both API and frontend from a single process
-- User runs the exe, it starts on `localhost:3001`, opens browser automatically
-
-**Phase 2:** Optional Electron or Tauri wrapper for a proper desktop app
-- System tray icon with "Open Board" and "Quit" options
-- Auto-start on login option
-- Native notifications for "Require Input" tickets
-
-### 4. Build pipeline
-- `npm run build` — builds portal + compiles engine
-- `npm run package` — creates distributable exe
-- Output: `dist/event-horizon-win.exe`, `dist/event-horizon-mac`, `dist/event-horizon-linux`
-
-## Open Questions
-
-> **@Guy — Need your input:**
->
-> 1. **Target platforms?** Windows only for now, or also Mac/Linux?
-> 2. **Desktop app or browser-based?** Do you want a proper desktop window (Electron/Tauri) or is "runs as exe, opens in browser" sufficient?
-> 3. **Distribution method?** Just a downloadable binary on GitHub releases, or an actual installer (`.msi` / `.dmg`)?
-> 4. **Auto-update?** Should the app check for and install updates, or is manual download fine?
-> 5. **Priority?** This feels like a polish/release task. Should we focus on features first (FLUX-5, 6, 9, etc.) and do packaging later?
+### 5. Add a repeatable packaging pipeline
+- `npm run build` should produce the production portal assets and engine bundle needed for packaging
+- `npm run package` should create distributable artifacts for the initial supported targets
+- The packaged runtime should resolve the working `.flux/` directory predictably or prompt for it when needed
 
 ## Acceptance Criteria
 
-- [ ] Single command to build a distributable binary
-- [ ] Binary runs without Node.js installed
-- [ ] Launches engine + serves portal UI
-- [ ] Opens browser automatically to the portal
-- [ ] Works on at least Windows (primary target)
-- [ ] Connects to the correct `.flux/` directory (working directory or configurable)
+- [ ] A repeatable package command exists for creating a distributable runtime
+- [ ] The packaged runtime launches without Node.js installed
+- [ ] The packaged runtime serves the portal UI and API from the same local process
+- [ ] Launching the packaged runtime opens the browser automatically
+- [ ] Windows and macOS packaging paths are defined for the first release slice
+- [ ] Git-aware features degrade clearly when Git is unavailable instead of failing silently
 
 ## Files to Create/Modify
 
-- `engine/src/index.ts` — Add static file serving for built portal assets
-- `scripts/build.ts` — **[NEW]** Build and package script
-- `package.json` — Add `build` and `package` scripts
-- `electron/` or `tauri/` — **[NEW]** If going desktop app route
+- `engine/src/index.ts` or packaged entry module for serving built portal assets
+- `package.json`
+- `portal/` build output integration
+- Packaging script or config such as `scripts/package.*` or a tool config file
+- Release documentation in `README.md` if the packaging flow changes user setup
 
 ## Dependencies
 
-- Should be done after core features are stable
-- Portal must be `vite build`-able (currently works)
+- Should be done after core product flows are stable enough to package
+- Depends on the portal being buildable for production
+
+## Notes
+
+- A `pkg`-style single-binary approach is acceptable for the first slice if it can serve the built portal assets from the same process
+- macOS packaging may need a CI or platform-specific build path even if Windows is validated locally first
 

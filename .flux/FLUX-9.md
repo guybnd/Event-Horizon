@@ -1,8 +1,9 @@
 ---
+id: FLUX-9
 title: 'Description view: rendered markdown with WYSIWYG editing'
-status: Grooming
+status: Backlog
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 assignee: Agent
 tags:
   - feature
@@ -54,7 +55,7 @@ history:
       across all product sections:
 
 
-      1. always show a WYSIWYG display in full markdown formatting. 
+      1. always show a WYSIWYG display in full markdown formatting.
 
       2. pressing on the desciption section , the text, will switch to edit
       mode. dont need a dedicated button for that.
@@ -71,12 +72,31 @@ history:
     user: Guy
     date: '2026-05-07T03:17:53.275Z'
     comment: Response submitted
+  - type: comment
+    user: Agent
+    date: '2026-05-07T03:53:39.4816199Z'
+    comment: >-
+      Folded this narrower scope into FLUX-51 so the shared description surface
+      lands as one canonical implementation ticket. Keeping FLUX-9 in hidden
+      backlog for traceability only.
+    id: c-2026-05-07t03-53-39-4816199z-flux-9
+  - type: status_change
+    from: Grooming
+    to: Backlog
+    user: Agent
+    date: '2026-05-07T03:53:39.4816199Z'
 order: 3
 priority: Medium
 effort: L
 implementationLink: ''
 subtasks: []
 ---
+## Tracking Note
+
+This narrower description-surface request is now tracked under FLUX-51 so the
+shared editor and rendered-markdown behavior ship from one canonical ticket.
+Keep FLUX-9 only for traceability of the original request.
+
 ## Summary
 
 Change the default description view from a raw markdown textarea to a rendered markdown preview. When the user clicks "Edit" or enters fullscreen, switch to a WYSIWYG-style editor that shows formatted text while editing (not raw markdown syntax).
