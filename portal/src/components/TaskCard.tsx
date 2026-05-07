@@ -9,7 +9,7 @@ import { isPromptableStatus } from '../workflow';
 
 export function TaskCard({ task, parentTask, isOverlay }: { task: Task, parentTask?: Task, isOverlay?: boolean }) {
   const EFFORT_OPTIONS = ['None', 'XS', 'S', 'M', 'L', 'XL'];
-  const { openTaskModal, config, currentUser, triggerRefresh } = useApp();
+  const { openTaskModal, openTaskFullView, config, currentUser, triggerRefresh } = useApp();
   const [priorityMenuOpen, setPriorityMenuOpen] = useState(false);
   const [effortMenuOpen, setEffortMenuOpen] = useState(false);
   const [assigneeMenuOpen, setAssigneeMenuOpen] = useState(false);
@@ -195,6 +195,16 @@ export function TaskCard({ task, parentTask, isOverlay }: { task: Task, parentTa
   const allTags = config?.tags?.map((tag) => tag.name) || [];
   const visibleTitle = titleValue || 'Untitled Task';
   const visibleAssignee = assigneeName || 'unassigned';
+  const boardCardOpenMode = config?.boardCardOpenMode || 'full';
+
+  const openBoardTask = (nextTask: Task) => {
+    if (boardCardOpenMode === 'full') {
+      openTaskFullView(nextTask);
+      return;
+    }
+
+    openTaskModal(nextTask);
+  };
 
   return (
     <div
@@ -223,7 +233,7 @@ export function TaskCard({ task, parentTask, isOverlay }: { task: Task, parentTa
 
         <div 
           className="flex-1 p-3 pl-2 cursor-pointer flex flex-col"
-          onClick={() => openTaskModal(task)}
+          onClick={() => openBoardTask(task)}
         >
           <div className="flex flex-col items-start mb-2">
             {isEditingTitle && !isOverlay ? (
@@ -272,7 +282,7 @@ export function TaskCard({ task, parentTask, isOverlay }: { task: Task, parentTa
                   type="button"
                   onClick={(event) => {
                     event.stopPropagation();
-                    openTaskModal(parentTask);
+                    openBoardTask(parentTask);
                   }}
                   className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700 transition-colors hover:border-amber-300 hover:bg-amber-100 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300 dark:hover:bg-amber-500/15"
                 >

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useApp } from '../AppContext';
 import { Save, Plus, X, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal } from 'lucide-react';
 import { bulkRename, fetchSkillStatus, installWorkspaceSkill } from '../api';
-import type { TagDef, StatusDef, UserDef, PriorityDef, DocsEditPermissions } from '../types';
+import type { TagDef, StatusDef, UserDef, PriorityDef, DocsEditPermissions, BoardCardOpenMode } from '../types';
 import { DEFAULT_READY_FOR_MERGE_STATUS, DEFAULT_REQUIRE_INPUT_STATUS } from '../workflow';
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
@@ -214,6 +214,7 @@ export function Settings() {
   const [projects, setProjects] = useState('');
   const [enableBacklog, setEnableBacklog] = useState(true);
   const [requireComment, setRequireComment] = useState(true);
+  const [boardCardOpenMode, setBoardCardOpenMode] = useState<BoardCardOpenMode>('full');
   const [requireInputStatus, setRequireInputStatus] = useState(DEFAULT_REQUIRE_INPUT_STATUS);
   const [readyForMergeStatus, setReadyForMergeStatus] = useState(DEFAULT_READY_FOR_MERGE_STATUS);
   const [docsEditPermissions, setDocsEditPermissions] = useState<DocsEditPermissions>('all');
@@ -239,6 +240,7 @@ export function Settings() {
       setProjects(config.projects.join(', '));
       setEnableBacklog(config.enableBacklogScreen);
       setRequireComment(config.requireCommentOnStatusChange);
+      setBoardCardOpenMode(config.boardCardOpenMode || 'full');
       setRequireInputStatus(config.requireInputStatus || DEFAULT_REQUIRE_INPUT_STATUS);
       setReadyForMergeStatus(config.readyForMergeStatus || DEFAULT_READY_FOR_MERGE_STATUS);
       setDocsEditPermissions(config.docsEditPermissions || 'all');
@@ -363,6 +365,7 @@ export function Settings() {
         projects: projects.split(',').map(s => s.trim()).filter(Boolean),
         enableBacklogScreen: enableBacklog,
         requireCommentOnStatusChange: requireComment,
+        boardCardOpenMode,
         requireInputStatus: normalizedRequireInputStatus,
         readyForMergeStatus: normalizedReadyForMergeStatus,
         docsEditPermissions,
@@ -419,6 +422,7 @@ export function Settings() {
     projects: projects.split(',').map(s => s.trim()).filter(Boolean),
     enableBacklogScreen: enableBacklog,
     requireCommentOnStatusChange: requireComment,
+    boardCardOpenMode,
     requireInputStatus: normalizedRequireInputStatus,
     readyForMergeStatus: normalizedReadyForMergeStatus,
     docsEditPermissions,
@@ -434,6 +438,7 @@ export function Settings() {
     projects: config.projects,
     enableBacklogScreen: config.enableBacklogScreen,
     requireCommentOnStatusChange: config.requireCommentOnStatusChange,
+    boardCardOpenMode: config.boardCardOpenMode || 'full',
     requireInputStatus: config.requireInputStatus || DEFAULT_REQUIRE_INPUT_STATUS,
     readyForMergeStatus: config.readyForMergeStatus || DEFAULT_READY_FOR_MERGE_STATUS,
     docsEditPermissions: config.docsEditPermissions || 'all',
@@ -662,6 +667,31 @@ export function Settings() {
         </div>
 
         <div className="border-t border-gray-200 dark:border-white/10 pt-8 space-y-4">
+          <div className="rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <span className="block text-sm font-bold text-gray-800 dark:text-gray-200 mb-0.5">Board Card Click Behavior</span>
+                <span className="text-xs text-gray-500">Choose whether clicking a board card opens the full ticket view or the popup editor. The shipped default is full view.</span>
+              </div>
+              <div className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white p-1 dark:border-white/10 dark:bg-black/20">
+                <button
+                  type="button"
+                  onClick={() => setBoardCardOpenMode('full')}
+                  className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${boardCardOpenMode === 'full' ? 'bg-primary text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/5'}`}
+                >
+                  Full View
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBoardCardOpenMode('popup')}
+                  className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${boardCardOpenMode === 'popup' ? 'bg-primary text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/5'}`}
+                >
+                  Popup View
+                </button>
+              </div>
+            </div>
+          </div>
+
           <label className="flex items-center gap-4 cursor-pointer p-4 bg-gray-50 dark:bg-black/10 rounded-xl border border-gray-200 dark:border-white/5 hover:border-primary transition-colors">
             <input 
               type="checkbox" 
@@ -697,7 +727,7 @@ export function Settings() {
               <div className="space-y-3 text-sm text-gray-600 dark:text-gray-300">
                 <div>
                   <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Status</div>
-                  <div className="mt-1 font-medium">{skillLoading ? 'Checking…' : workflowInstalled ? 'Installed in this repo' : 'Not fully installed in this repo'}</div>
+                  <div className="mt-1 font-medium">{skillLoading ? 'CheckingΓÇª' : workflowInstalled ? 'Installed in this repo' : 'Not fully installed in this repo'}</div>
                 </div>
                 <div>
                   <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Source Skill</div>
@@ -730,7 +760,7 @@ export function Settings() {
                   disabled={skillInstalling}
                   className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${skillInstalling ? 'bg-gray-200 text-gray-400 dark:bg-white/10 dark:text-gray-500' : 'bg-primary text-white hover:bg-primary-hover'}`}
                 >
-                  {skillInstalling ? 'Installing…' : workflowInstalled ? 'Reinstall Workflow' : 'Install Workflow'}
+                  {skillInstalling ? 'InstallingΓÇª' : workflowInstalled ? 'Reinstall Workflow' : 'Install Workflow'}
                 </button>
                 <button
                   onClick={handleCopyInstallCommand}

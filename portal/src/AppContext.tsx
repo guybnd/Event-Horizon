@@ -88,6 +88,7 @@ interface AppState {
   isModalOpen: boolean;
   closeModal: () => void;
   openTaskModal: (task?: Partial<Task>) => void;
+  openTaskFullView: (task: Partial<Task>) => void;
   refreshTrigger: number;
   triggerRefresh: () => void;
   config: Config | null;
@@ -126,8 +127,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setFilterTag('all');
   };
 
+  const updateTicketViewUrl = (taskId: string, viewMode: 'popup' | 'full') => {
+    const url = new URL(window.location.href);
+    url.searchParams.set('ticket', taskId);
+    url.searchParams.set('view', viewMode);
+    window.history.replaceState({}, '', url);
+  };
+
   const openTaskModal = (task?: Partial<Task>) => {
-    setModalTask(task || { status: 'Todo' });
+    const nextTask = task || { status: 'Todo' };
+    if (nextTask.id) {
+      updateTicketViewUrl(nextTask.id, 'popup');
+    }
+    setModalTask(nextTask);
+    setIsModalOpen(true);
+  };
+
+  const openTaskFullView = (task: Partial<Task>) => {
+    if (task.id) {
+      updateTicketViewUrl(task.id, 'full');
+    }
+    setModalTask(task);
     setIsModalOpen(true);
   };
 
@@ -225,6 +245,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       view, setView,
       modalTask, isModalOpen,
       openTaskModal,
+      openTaskFullView,
       closeModal,
       setModalTask,
       refreshTrigger, triggerRefresh,

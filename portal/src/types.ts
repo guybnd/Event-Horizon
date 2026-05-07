@@ -51,6 +51,8 @@ export interface PriorityDef {
   originalName?: string;
 }
 
+export type BoardCardOpenMode = 'popup' | 'full';
+
 export type DocsEditPermissions = 'all' | 'specified';
 
 export interface Doc {
@@ -71,6 +73,7 @@ export interface Config {
   projects: string[];
   enableBacklogScreen: boolean;
   requireCommentOnStatusChange: boolean;
+  boardCardOpenMode?: BoardCardOpenMode;
   requireInputStatus?: string;
   readyForMergeStatus?: string;
   docsEditPermissions?: DocsEditPermissions;

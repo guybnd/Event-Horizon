@@ -26,6 +26,8 @@ import {
 import { useApp } from '../AppContext';
 import { createTask, deleteTask, fetchTasks, updateTask } from '../api';
 import type { Config, HistoryEntry, TagDef, Task } from '../types';
+import { StatusBadge } from './StatusBadge';
+import { getStatusColorClass } from '../statusStyles';
 import { DEFAULT_READY_FOR_MERGE_STATUS, getRequireInputStatus } from '../workflow';
 
 const ACTIVITY_FILTER_STORAGE_KEY = 'flux.activityFilter';
@@ -686,7 +688,14 @@ export function TaskModal() {
               <div className="min-w-0 flex-1 text-left">
                 <p className="text-xs font-bold uppercase tracking-wider text-gray-400">{task.id}</p>
                 <p className="truncate text-sm font-medium text-gray-800 dark:text-gray-200">{task.title || 'Untitled Task'}</p>
-                <p className="mt-1 text-xs text-gray-500">{task.status} · {task.assignee || 'unassigned'} · {task.priority || 'None'}</p>
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                  <StatusBadge
+                    status={task.status}
+                    colorClass={getStatusColorClass(config, task.status)}
+                    className="text-[10px] font-bold uppercase tracking-[0.16em]"
+                  />
+                  <span>{task.assignee || 'unassigned'} · {task.priority || 'None'}</span>
+                </div>
               </div>
               <button
                 type="button"
@@ -853,9 +862,9 @@ export function TaskModal() {
               </div>
               {entry.type === 'status_change' && (
                 <div className="mb-1.5 flex items-center gap-2 text-xs text-gray-500">
-                  Moved from <span className="font-semibold text-gray-700 dark:text-gray-300">{entry.from}</span>
+                  Moved from <StatusBadge status={entry.from || 'Unknown'} colorClass={getStatusColorClass(config, entry.from || '')} className="text-[10px] font-bold uppercase tracking-[0.16em]" />
                   <ArrowRight className="h-3 w-3" />
-                  <span className="font-semibold text-gray-700 dark:text-gray-300">{entry.to}</span>
+                  <StatusBadge status={entry.to || 'Unknown'} colorClass={getStatusColorClass(config, entry.to || '')} className="text-[10px] font-bold uppercase tracking-[0.16em]" />
                 </div>
               )}
               {entry.comment && <p className="whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-300">{entry.comment}</p>}
@@ -1123,7 +1132,14 @@ export function TaskModal() {
                 Back to Board
               </button>
               <div className="min-w-0">
-                <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{modalTask?.id || 'New Task'}</p>
+                <div className="flex items-center gap-2">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{modalTask?.id || 'New Task'}</p>
+                  <StatusBadge
+                    status={status}
+                    colorClass={getStatusColorClass(config, status)}
+                    className="text-[10px] font-bold uppercase tracking-[0.16em]"
+                  />
+                </div>
                 <h2 className="truncate text-lg font-semibold text-gray-900 dark:text-gray-100">{title || 'Untitled Task'}</h2>
               </div>
             </div>
@@ -1226,10 +1242,17 @@ export function TaskModal() {
           <div className="flex h-full w-full flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl dark:border-white/10 dark:bg-[#1a1b23]">
             <div className="modal-handle flex shrink-0 items-center justify-between cursor-move border-b border-gray-100 bg-gray-50 px-4 py-3 dark:border-white/5 dark:bg-black/20">
               <div className="flex flex-col">
-                <span className="mb-0.5 text-[10px] font-bold uppercase tracking-wider text-gray-400">
-                  {modalTask?.id ? modalTask.id : 'New Task'}{' '}
-                  {isDirty && <span className="ml-1 lowercase italic normal-case text-amber-500">(Unsaved changes)</span>}
-                </span>
+                <div className="mb-0.5 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                  <span>
+                    {modalTask?.id ? modalTask.id : 'New Task'}{' '}
+                    {isDirty && <span className="ml-1 lowercase italic normal-case text-amber-500">(Unsaved changes)</span>}
+                  </span>
+                  <StatusBadge
+                    status={status}
+                    colorClass={getStatusColorClass(config, status)}
+                    className="text-[10px] font-bold uppercase tracking-[0.16em]"
+                  />
+                </div>
                 <h2 className="leading-none font-semibold text-gray-800 dark:text-gray-200">{title || 'Untitled Task'}</h2>
               </div>
               <div className="flex items-center gap-2.5">

@@ -49,6 +49,7 @@ let configCache: any = {
   ],
   enableBacklogScreen: true,
   requireCommentOnStatusChange: true,
+  boardCardOpenMode: 'full',
   requireInputStatus: 'Require Input',
   readyForMergeStatus: 'Ready',
   docsEditPermissions: 'all',

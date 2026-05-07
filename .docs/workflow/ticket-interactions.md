@@ -41,8 +41,9 @@ the board, backlog, header, and ticket views.
 
 - Ticket state can be represented in the URL so a specific open ticket and its
   view mode can be reopened or shared.
-- Board card clicks open the popup ticket view for quick board work, while
-  header search links open the full-view ticket layout.
+- Board card clicks use a settings-controlled open mode, defaulting to full
+  view while still allowing popup mode for quicker inline work.
+- Header search links always open the full-view ticket layout.
 - Ticket editing supports both popup and full-view layouts.
 - The full-view Back to Board action closes the ticket entirely and returns to
   the underlying board state instead of reopening the same ticket in popup

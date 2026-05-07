@@ -25,11 +25,69 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-07T13:01:33.5429940+10:00'
-id: FLUX-53
+  - type: comment
+    user: Agent
+    date: '2026-05-07T13:11:54.1319530+10:00'
+    comment: >-
+      Plan: add shared status-color defaults and a reusable status badge, expose
+      status color editing for board and hidden statuses in Settings, then
+      replace plain status text in search and ticket views with the new colored
+      badges.
+    id: c-2026-05-07t13-11-54-1319530-10-00
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-07T13:11:54.1319530+10:00'
+  - type: comment
+    user: Agent
+    date: '2026-05-07T13:18:19.3521704+10:00'
+    comment: >-
+      Added configurable status colors in Settings for both board and hidden
+      statuses, seeded the shipped workflow statuses with a default palette, and
+      introduced shared status badge rendering so the colors show up in board
+      lanes, search results, ticket headers, activity history, and other ticket
+      surfaces. Updated ticket interaction docs to describe the new behavior.
+      Validated with `npm.cmd run build -w portal`, a live config check from
+      `http://localhost:3001/api/config`, engine task parsing that still reports
+      `FLUX-53` and `FLUX-54` correctly, a live Settings view showing colored
+      status chips, and a full ticket view showing the colored `In Progress`
+      badge. Commit is deferred because the current worktree still contains
+      unrelated shared-file changes, so a focused commit is not cleanly isolated
+      yet.
+    id: c-2026-05-07t13-18-19-3521704-10-00
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-07T13:18:19.3521704+10:00'
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Guy
+    date: '2026-05-07T03:19:44.052Z'
+  - type: comment
+    user: Guy
+    date: '2026-05-07T03:20:24.460Z'
+    comment: >-
+      settings page looks broken, need a cleaner way to sort this and color
+      select. maybe just show a popup when pressing on the title color of the
+      status?
+    id: c-2026-05-07t03-20-24-460z
+  - type: comment
+    user: Agent
+    date: '2026-05-07T13:29:51.8493553+10:00'
+    comment: >-
+      Follow-up polish for the in-progress settings redesign: make the status
+      picker swatches use the same saturated visual treatment as the priority
+      picker, and align the Global Tags swatch palette with the saved tag chip
+      colors so the picker no longer looks muted or misleading.
+    id: c-2026-05-07t13-29-51-8493553-10-00
 title: colors for statuses
-status: Todo
+status: In Progress
 createdBy: Guy
 updatedBy: Agent
+order: 0
 ---
 ## Summary
 
