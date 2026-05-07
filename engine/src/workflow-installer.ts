@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-export type Framework = 'auto' | 'copilot' | 'gemini' | 'generic';
+export type Framework = 'auto' | 'copilot' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'generic';
 type ResolvedFramework = Exclude<Framework, 'auto'>;
 
 export const EVENT_HORIZON_INSTRUCTIONS_START = '<!-- EVENT_HORIZON_MANAGED_INSTRUCTIONS:START -->';
@@ -46,6 +46,18 @@ function resolveFramework(targetDir: string, requested: Framework): ResolvedFram
     return 'gemini';
   }
 
+  if (existsSync(path.join(targetDir, '.cursor'))) {
+    return 'cursor';
+  }
+
+  if (existsSync(path.join(targetDir, '.windsurf'))) {
+    return 'windsurf';
+  }
+
+  if (existsSync(path.join(targetDir, '.cline'))) {
+    return 'cline';
+  }
+
   return 'generic';
 }
 
@@ -55,17 +67,35 @@ function skillDestinationFor(targetDir: string, framework: ResolvedFramework) {
       return path.join(targetDir, '.github', 'skills', 'event-horizon', 'SKILL.md');
     case 'gemini':
       return path.join(targetDir, '.gemini', 'skills', 'event-horizon.md');
+    case 'cursor':
+      return path.join(targetDir, '.cursor', 'rules', 'event-horizon.mdc');
+    case 'cline':
+      return path.join(targetDir, '.cline', 'rules', 'event-horizon.md');
+    case 'windsurf':
+      return path.join(targetDir, '.windsurf', 'rules', 'event-horizon.md');
+    case 'claude':
+      return path.join(targetDir, '.claude', 'rules', 'event-horizon.md');
     case 'generic':
+    default:
       return path.join(targetDir, '.event-horizon', 'skills', 'event-horizon.md');
   }
 }
 
 function instructionsDestinationFor(targetDir: string, framework: ResolvedFramework) {
-  if (framework !== 'copilot') {
-    return undefined;
+  switch (framework) {
+    case 'copilot':
+      return path.join(targetDir, '.github', 'copilot-instructions.md');
+    case 'cursor':
+      return path.join(targetDir, '.cursorrules');
+    case 'cline':
+      return path.join(targetDir, '.clinerules');
+    case 'windsurf':
+      return path.join(targetDir, '.windsurfrules');
+    case 'claude':
+      return path.join(targetDir, '.clauderc');
+    default:
+      return undefined;
   }
-
-  return path.join(targetDir, '.github', 'copilot-instructions.md');
 }
 
 function getSourcePaths(sourceRoot: string) {

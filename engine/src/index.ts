@@ -950,7 +950,8 @@ app.post('/api/tasks/:id/assets', async (req, res) => {
 
 app.get('/api/skill/status', async (req, res) => {
   try {
-    const status = await getWorkflowInstallStatus({ sourceRoot: REPO_ROOT, targetDir: REPO_ROOT, framework: 'copilot' });
+    const framework = (req.query.framework as any) || 'auto';
+    const status = await getWorkflowInstallStatus({ sourceRoot: REPO_ROOT, targetDir: REPO_ROOT, framework });
     res.json(status);
   } catch (error) {
     console.error('Failed to load skill status:', error);
@@ -960,7 +961,8 @@ app.get('/api/skill/status', async (req, res) => {
 
 app.post('/api/skill/install', async (req, res) => {
   try {
-    const result = await installWorkspaceWorkflow({ sourceRoot: REPO_ROOT, targetDir: REPO_ROOT, framework: 'copilot' });
+    const framework = req.body?.framework || 'auto';
+    const result = await installWorkspaceWorkflow({ sourceRoot: REPO_ROOT, targetDir: REPO_ROOT, framework });
     res.json({ success: true, ...result });
   } catch (error) {
     console.error('Failed to install skill:', error);

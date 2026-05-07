@@ -115,7 +115,7 @@ export async function deleteDoc(docPath: string): Promise<void> {
 }
 
 export interface SkillStatus {
-  framework: 'copilot' | 'gemini' | 'generic';
+  framework: 'copilot' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'generic';
   skillSourcePath: string;
   skillInstalledPath: string;
   skillSourceExists: boolean;
@@ -127,16 +127,17 @@ export interface SkillStatus {
   workflowInstalled: boolean;
 }
 
-export async function fetchSkillStatus(): Promise<SkillStatus> {
-  const res = await fetch(`${API_URL}/skill/status`);
+export async function fetchSkillStatus(framework: string = 'auto'): Promise<SkillStatus> {
+  const res = await fetch(`${API_URL}/skill/status?framework=${framework}`);
   if (!res.ok) throw new Error('Failed to fetch skill status');
   return res.json();
 }
 
-export async function installWorkspaceSkill(): Promise<{ success: boolean; skillInstalledPath: string; instructionsInstalledPath?: string }> {
+export async function installWorkspaceSkill(framework: string = 'auto'): Promise<{ success: boolean; skillInstalledPath: string; instructionsInstalledPath?: string }> {
   const res = await fetch(`${API_URL}/skill/install`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ framework }),
   });
   if (!res.ok) throw new Error('Failed to install skill');
   return res.json();

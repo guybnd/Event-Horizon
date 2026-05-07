@@ -415,6 +415,7 @@ export function Settings() {
   const [instructionsInstalledPath, setInstructionsInstalledPath] = useState('');
   const [skillLoading, setSkillLoading] = useState(true);
   const [skillInstalling, setSkillInstalling] = useState(false);
+  const [targetFramework, setTargetFramework] = useState('auto');
 
   useEffect(() => {
     if (config) {
@@ -474,7 +475,8 @@ export function Settings() {
   };
 
   useEffect(() => {
-    fetchSkillStatus()
+    setSkillLoading(true);
+    fetchSkillStatus(targetFramework)
       .then((status) => {
         setWorkflowInstalled(status.workflowInstalled);
         setSkillInstalled(status.skillInstalled);
@@ -486,7 +488,7 @@ export function Settings() {
       })
       .catch(console.error)
       .finally(() => setSkillLoading(false));
-  }, []);
+  }, [targetFramework]);
 
   const handleSave = async () => {
     if (!config) return;
@@ -587,13 +589,13 @@ export function Settings() {
   const handleInstallSkill = async () => {
     setSkillInstalling(true);
     try {
-      const result = await installWorkspaceSkill();
+      const result = await installWorkspaceSkill(targetFramework);
       setWorkflowInstalled(true);
       setSkillInstalled(true);
       setInstructionsInstalled(Boolean(result.instructionsInstalledPath));
       setSkillInstalledPath(result.skillInstalledPath);
       setInstructionsInstalledPath(result.instructionsInstalledPath || '');
-      alert(`Installed Event Horizon workflow to ${result.skillInstalledPath}${result.instructionsInstalledPath ? `\nPatched Copilot instructions at ${result.instructionsInstalledPath}` : ''}`);
+      alert(`Installed Event Horizon workflow to ${result.skillInstalledPath}${result.instructionsInstalledPath ? `\nPatched instructions at ${result.instructionsInstalledPath}` : ''}`);
     } catch (error) {
       console.error(error);
       alert('Failed to install Event Horizon workflow');
@@ -603,7 +605,7 @@ export function Settings() {
   };
 
   const handleCopyInstallCommand = async () => {
-    const command = 'npm.cmd run install-skill -- --target c:\\GitHub\\EventHorizon --framework copilot';
+    const command = `npm.cmd run install-skill -- --target c:\\GitHub\\EventHorizon --framework ${targetFramework}`;
     try {
       await navigator.clipboard.writeText(command);
       alert('Copied skill install command to clipboard');
@@ -1085,6 +1087,25 @@ export function Settings() {
             <div className="flex items-start justify-between gap-6">
               <div className="space-y-3 text-sm text-gray-600 dark:text-gray-300">
                 <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Target Framework</div>
+                  <div className="mt-1">
+                    <select
+                      value={targetFramework}
+                      onChange={(e) => setTargetFramework(e.target.value)}
+                      className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
+                    >
+                      <option value="auto">Auto-Detect</option>
+                      <option value="copilot">GitHub Copilot</option>
+                      <option value="cursor">Cursor</option>
+                      <option value="cline">Cline</option>
+                      <option value="windsurf">Windsurf</option>
+                      <option value="claude">Claude Code</option>
+                      <option value="gemini">Gemini CLI</option>
+                      <option value="generic">Generic / Other</option>
+                    </select>
+                  </div>
+                </div>
+                <div>
                   <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Status</div>
                   <div className="mt-1 font-medium">{skillLoading ? 'Checking…' : workflowInstalled ? 'Installed in this repo' : 'Not fully installed in this repo'}</div>
                 </div>
@@ -1096,21 +1117,27 @@ export function Settings() {
                   <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Workspace Skill Path</div>
                   <div className="mt-1 break-all">{skillInstalledPath || '.github/skills/event-horizon/SKILL.md'}</div>
                 </div>
-                <div>
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Copilot Instructions Source</div>
-                  <div className="mt-1 break-all">{instructionsSourcePath || '.flux/skills/event-horizon-copilot-instructions.md'}</div>
-                </div>
-                <div>
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Copilot Instructions Path</div>
-                  <div className="mt-1 break-all">{instructionsInstalledPath || '.github/copilot-instructions.md'}</div>
-                </div>
+                {instructionsSourcePath && (
+                  <div>
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Instructions Source</div>
+                    <div className="mt-1 break-all">{instructionsSourcePath}</div>
+                  </div>
+                )}
+                {instructionsInstalledPath && (
+                  <div>
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Instructions Path</div>
+                    <div className="mt-1 break-all">{instructionsInstalledPath}</div>
+                  </div>
+                )}
                 <div className="flex flex-wrap gap-2 pt-1 text-xs font-medium">
                   <span className={`rounded-full px-2.5 py-1 ${skillInstalled ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300'}`}>
                     Skill: {skillInstalled ? 'Installed' : 'Missing'}
                   </span>
-                  <span className={`rounded-full px-2.5 py-1 ${instructionsInstalled ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300'}`}>
-                    Instructions: {instructionsInstalled ? 'Installed' : 'Missing'}
-                  </span>
+                  {(instructionsSourcePath || instructionsInstalledPath) && (
+                    <span className={`rounded-full px-2.5 py-1 ${instructionsInstalled ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-500/10 dark:text-amber-300'}`}>
+                      Instructions: {instructionsInstalled ? 'Installed' : 'Missing/Unpatched'}
+                    </span>
+                  )}
                 </div>
               </div>
               <div className="flex shrink-0 flex-col gap-3">

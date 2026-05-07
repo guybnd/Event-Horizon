@@ -1,4 +1,4 @@
-type Framework = 'auto' | 'copilot' | 'gemini' | 'generic';
+type Framework = 'auto' | 'copilot' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'generic';
 
 const path = require('node:path') as typeof import('node:path');
 const { getWorkflowInstallStatus, installWorkspaceWorkflow } = require('./workflow-installer') as typeof import('./workflow-installer');

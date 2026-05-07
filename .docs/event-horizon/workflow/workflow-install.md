@@ -24,12 +24,14 @@ Event Horizon installs two Copilot-facing assets into a target repository so the
 
 -   From the portal Settings screen with the workflow install action.
     
--   From the CLI with `npm.cmd run install-skill -- --target <repo> --framework copilot`.
+-   From the CLI with `npm.cmd run install-skill -- --target <repo> --framework <copilot|cursor|cline|windsurf|claude|gemini|generic|auto>`.
     
 
 ## Settings-driven workflow controls
 
--   The Settings screen also shows the current workflow source paths, installed target paths, and a copyable CLI command so refresh behavior stays visible from the product.
+-   The Settings screen also shows the current workflow source paths, installed target paths, and a framework selector to choose your IDE/agent target (e.g. Cursor vs GitHub Copilot).
+    
+-   The Settings screen also surfaces a copyable CLI command so refresh behavior stays visible from the product.
     
 -   The same workflow settings area lets the user choose which status acts as the user-input stage and which status acts as the ready-for-merge review stage.
     
