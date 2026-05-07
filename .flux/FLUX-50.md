@@ -67,7 +67,9 @@ order: 6
 Add a Releases surface that groups completed tickets under versioned releases.
 Creating a release should apply version metadata to selected `Done` tickets,
 move them into a hidden `Released` status, and make them discoverable through
-search and the Releases view rather than the active board.
+search and the Releases view rather than the active board. This system must also
+include a CLI-driven procedure and documentation to allow AI agents to safely
+orchestrate releases and batch-update tickets.
 
 ## Requirements
 
@@ -96,6 +98,11 @@ search and the Releases view rather than the active board.
 - Global search should still return released tickets with their version context
 - The ticket modal/details view should surface release metadata when present
 
+### 6. Agent Orchestration Procedure
+- Provide a CLI tool or script (e.g., `npm run flux:release <version>`) that the AI agent can execute to orchestrate a release programmatically.
+- The process must automatically gather all eligible `Done` tickets, apply the target version to them, generate aggregated release notes from ticket summaries, and safely transition their statuses to `Released`.
+- Include explicit agent instructions on how to decide version numbers, trigger the release script, and finalize the release workflow.
+
 ## Acceptance Criteria
 
 - [ ] Tickets can store release metadata such as version and release date
@@ -103,6 +110,8 @@ search and the Releases view rather than the active board.
 - [ ] Users can select `Done` tickets and assign them to a versioned release
 - [ ] Released tickets disappear from the active board but remain accessible through search and the Releases surface
 - [ ] The Releases surface groups tickets by version and opens the underlying ticket details correctly
+- [ ] Agent tooling/script exists to reliably batch-release tickets and generate release notes via CLI
+- [ ] Agent instructions clearly define the procedure to orchestrate a new version release
 
 ## Likely Affected Areas
 
