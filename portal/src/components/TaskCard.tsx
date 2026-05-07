@@ -7,7 +7,8 @@ import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal } from '
 import { useApp } from '../AppContext';
 import { updateTask } from '../api';
 import { isPromptableStatus } from '../workflow';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
+import { TaskMarkdown } from './TaskMarkdown';
 
 export function TaskCard({
   task,
@@ -251,6 +252,56 @@ export function TaskCard({
   const { isModalOpen, modalTask } = useApp();
   const isThisTaskOpen = isModalOpen && modalTask?.id === task.id;
   const [isAnimatingZ, setIsAnimatingZ] = useState(false);
+  const [isHovering, setIsHovering] = useState(false);
+  const [popupDirection, setPopupDirection] = useState<'right' | 'left'>('right');
+  const [popupVAlign, setPopupVAlign] = useState<'top' | 'bottom'>('top');
+  const hoverTimeout = useRef<number | null>(null);
+
+  const handleMouseEnter = (event: any) => {
+    if (!config?.hoverPopupsEnabled) return;
+    if (isDragging) return;
+    if (priorityMenuOpen || effortMenuOpen || assigneeMenuOpen || tagMenuOpen || isEditingTitle) return;
+    
+    // Calculate direction before showing
+    const currentCard = event.currentTarget.getBoundingClientRect();
+    // Assuming popup width of ~ 600px
+    if (currentCard.right + 600 + 32 > window.innerWidth) {
+      setPopupDirection('left');
+    } else {
+      setPopupDirection('right');
+    }
+
+    if (currentCard.top + 400 > window.innerHeight) {
+      setPopupVAlign('bottom');
+    } else {
+      setPopupVAlign('top');
+    }
+    
+    if (hoverTimeout.current !== null) {
+      window.clearTimeout(hoverTimeout.current);
+    }
+    
+    const delay = config?.hoverPopupDelay ?? 1500;
+    hoverTimeout.current = window.setTimeout(() => {
+      setIsHovering(true);
+    }, delay);
+  };
+
+  const handleMouseLeave = () => {
+    if (hoverTimeout.current !== null) {
+      window.clearTimeout(hoverTimeout.current);
+      hoverTimeout.current = null;
+    }
+    setIsHovering(false);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (hoverTimeout.current !== null) {
+        window.clearTimeout(hoverTimeout.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (isThisTaskOpen) {
@@ -272,7 +323,9 @@ export function TaskCard({
       {...layoutProps}
       ref={setNodeRef}
       style={{ ...style, zIndex: isThisTaskOpen || isAnimatingZ ? 60 : undefined }}
-      className={`mb-3 group flex flex-col relative ${(priorityMenuOpen || effortMenuOpen || assigneeMenuOpen || tagMenuOpen || isEditingTitle) ? 'z-40' : ''}`}
+      className={`mb-3 group flex flex-col relative ${(priorityMenuOpen || effortMenuOpen || assigneeMenuOpen || tagMenuOpen || isEditingTitle || isHovering) ? 'z-40' : ''}`}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
     >
       <motion.div {...contentAnimation} className={`relative flex flex-col rounded-xl border bg-white/80 dark:bg-[#252630]/80 backdrop-blur-md p-0 shadow-sm hover:border-primary/50 hover:shadow-md transition-all ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''} ${isPromptStatus ? 'border-amber-300 dark:border-amber-500/40 ring-1 ring-amber-200/50 dark:ring-amber-500/20' : 'border-gray-200/50 dark:border-white/5'} ${liveAnimationClass} ${liveAccentClass}`}>
         {isPromptStatus && (
@@ -525,6 +578,25 @@ export function TaskCard({
           </div>
         </div>
       </motion.div>
+
+      <AnimatePresence>
+        {isHovering && !isOverlay && !isThisTaskOpen && task.body?.trim() && (
+          <motion.div
+            initial={{ opacity: 0, y: popupVAlign === 'top' ? 10 : -10, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            transition={{ duration: 0.15 }}
+            className={`absolute ${popupVAlign === 'top' ? 'top-0' : 'bottom-0'} w-[600px] max-h-[85vh] overflow-y-auto z-[100] rounded-xl border border-gray-200/80 bg-white/95 p-6 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:bg-[#1a1b23]/95 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 dark:[&::-webkit-scrollbar-thumb]:bg-gray-600 [&::-webkit-scrollbar-track]:bg-transparent ${popupDirection === 'right' ? 'left-full ml-4' : 'right-full mr-4'}`}
+            onClick={(e) => e.stopPropagation()}
+            onMouseEnter={() => setIsHovering(true)}
+            onMouseLeave={handleMouseLeave}
+          >
+            <div className="prose prose-sm dark:prose-invert max-w-none">
+              <TaskMarkdown body={task.body} taskId={task.id} compact />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </CardContainer>
   );
 }

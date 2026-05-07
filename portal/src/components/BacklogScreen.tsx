@@ -1,10 +1,109 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useApp } from '../AppContext';
 import { updateTask } from '../api';
 import { Loader2, Plus } from 'lucide-react';
 import { TaskViewControls } from './TaskViewControls';
 import { filterAndSortTasks } from '../taskSearch';
 import { normalizeTaskMarkdownBody, TaskDescriptionSurface } from './TaskDescriptionSurface';
+import { motion, AnimatePresence } from 'framer-motion';
+import { TaskMarkdown } from './TaskMarkdown';
+import type { Task, TaskLiveEvent } from '../types';
+
+function BacklogRow({
+  task,
+  selectedTaskId,
+  setSelectedTaskId,
+  liveEvent
+}: {
+  task: Task;
+  selectedTaskId: string | null;
+  setSelectedTaskId: (id: string) => void;
+  liveEvent?: TaskLiveEvent;
+}) {
+  const { config } = useApp();
+  const [isHovering, setIsHovering] = useState(false);
+  const [popupDirection, setPopupDirection] = useState<'right' | 'left'>('right');
+  const [popupVAlign, setPopupVAlign] = useState<'top' | 'bottom'>('top');
+  const hoverTimeout = useRef<number | null>(null);
+
+  const handleMouseEnter = (event: any) => {
+    if (!config?.hoverPopupsEnabled) return;
+    const currentCard = event.currentTarget.getBoundingClientRect();
+    if (currentCard.right + 600 + 32 > window.innerWidth) {
+      setPopupDirection('left');
+    } else {
+      setPopupDirection('right');
+    }
+
+    if (currentCard.top + 400 > window.innerHeight) {
+      setPopupVAlign('bottom');
+    } else {
+      setPopupVAlign('top');
+    }
+    
+    if (hoverTimeout.current !== null) {
+      window.clearTimeout(hoverTimeout.current);
+    }
+    const delay = config?.hoverPopupDelay ?? 1500;
+    hoverTimeout.current = window.setTimeout(() => setIsHovering(true), delay);
+  };
+
+  const handleMouseLeave = () => {
+    if (hoverTimeout.current !== null) {
+      window.clearTimeout(hoverTimeout.current);
+      hoverTimeout.current = null;
+    }
+    setIsHovering(false);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (hoverTimeout.current !== null) window.clearTimeout(hoverTimeout.current);
+    };
+  }, []);
+
+  const liveAnimationClass = liveEvent
+    ? liveEvent.kind === 'created'
+      ? 'task-live-created'
+      : liveEvent.kind === 'moved'
+        ? 'task-live-moved'
+        : 'task-live-updated'
+    : '';
+
+  return (
+    <div 
+      onClick={() => setSelectedTaskId(task.id)}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+      className={`p-3 relative rounded-lg border cursor-pointer transition-all flex flex-col ${
+        selectedTaskId === task.id 
+          ? 'border-primary bg-primary/5 shadow-sm' 
+          : 'border-gray-200 dark:border-white/5 bg-white dark:bg-[#252630] hover:border-gray-300 dark:hover:border-white/20'
+      } ${liveAnimationClass} ${isHovering ? 'z-50' : ''}`}
+    >
+      <h4 className="text-sm font-medium text-gray-900 dark:text-gray-100 leading-snug">{task.title || 'Untitled Task'}</h4>
+      <span className="text-[10px] font-bold text-gray-400 mt-0.5 tracking-wider">{task.id}</span>
+      <AnimatePresence>
+        {isHovering && task.body?.trim() && (
+          <motion.div
+            initial={{ opacity: 0, y: popupVAlign === 'top' ? 10 : -10, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            transition={{ duration: 0.15 }}
+            className={`absolute ${popupVAlign === 'top' ? 'top-0' : 'bottom-0'} w-[600px] max-h-[85vh] overflow-y-auto z-[100] rounded-xl border border-gray-200/80 bg-white/95 p-6 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:bg-[#1a1b23]/95 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 dark:[&::-webkit-scrollbar-thumb]:bg-gray-600 [&::-webkit-scrollbar-track]:bg-transparent ${popupDirection === 'right' ? 'left-full ml-4' : 'right-full mr-4'}`}
+            onClick={(e) => e.stopPropagation()}
+            onMouseEnter={() => setIsHovering(true)}
+            onMouseLeave={handleMouseLeave}
+          >
+            <div className="prose prose-sm dark:prose-invert max-w-none">
+              <TaskMarkdown body={task.body} taskId={task.id} compact />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
 
 export function BacklogScreen() {
   const {
@@ -132,31 +231,13 @@ export function BacklogScreen() {
             <p className="text-sm text-gray-500 text-center mt-10">{searchQuery.trim() ? 'No backlog items match the current filters.' : 'No backlog items.'}</p>
           )}
           {visibleTasks.map(task => (
-            (() => {
-              const liveEvent = taskLiveEvents[task.id];
-              const liveAnimationClass = liveEvent
-                ? liveEvent.kind === 'created'
-                  ? 'task-live-created'
-                  : liveEvent.kind === 'moved'
-                    ? 'task-live-moved'
-                    : 'task-live-updated'
-                : '';
-
-              return (
-            <div 
+            <BacklogRow
               key={task.id}
-              onClick={() => setSelectedTaskId(task.id)}
-              className={`p-3 rounded-lg border cursor-pointer transition-all flex flex-col ${
-                selectedTaskId === task.id 
-                  ? 'border-primary bg-primary/5 shadow-sm' 
-                  : 'border-gray-200 dark:border-white/5 bg-white dark:bg-[#252630] hover:border-gray-300 dark:hover:border-white/20'
-              } ${liveAnimationClass}`}
-            >
-              <h4 className="text-sm font-medium text-gray-900 dark:text-gray-100 leading-snug">{task.title || 'Untitled Task'}</h4>
-              <span className="text-[10px] font-bold text-gray-400 mt-0.5 tracking-wider">{task.id}</span>
-            </div>
-              );
-            })()
+              task={task}
+              selectedTaskId={selectedTaskId}
+              setSelectedTaskId={setSelectedTaskId}
+              liveEvent={taskLiveEvents[task.id]}
+            />
           ))}
         </div>
       </div>

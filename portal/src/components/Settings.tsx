@@ -362,6 +362,8 @@ export function Settings() {
   const [readyForMergeStatus, setReadyForMergeStatus] = useState(DEFAULT_READY_FOR_MERGE_STATUS);
   const [docsEditPermissions, setDocsEditPermissions] = useState<DocsEditPermissions>('all');
   const [docsAllowedUsers, setDocsAllowedUsers] = useState<string[]>([]);
+  const [hoverPopupsEnabled, setHoverPopupsEnabled] = useState(true);
+  const [hoverPopupDelay, setHoverPopupDelay] = useState(1500);
   const [saving, setSaving] = useState(false);
   const [workflowInstalled, setWorkflowInstalled] = useState(false);
   const [skillInstalled, setSkillInstalled] = useState(false);
@@ -388,6 +390,8 @@ export function Settings() {
       setReadyForMergeStatus(config.readyForMergeStatus || DEFAULT_READY_FOR_MERGE_STATUS);
       setDocsEditPermissions(config.docsEditPermissions || 'all');
       setDocsAllowedUsers(config.docsAllowedUsers || []);
+      setHoverPopupsEnabled(config.hoverPopupsEnabled ?? true);
+      setHoverPopupDelay(config.hoverPopupDelay ?? 1500);
     }
   }, [config]);
 
@@ -514,7 +518,9 @@ export function Settings() {
         requireInputStatus: normalizedRequireInputStatus,
         readyForMergeStatus: normalizedReadyForMergeStatus,
         docsEditPermissions,
-        docsAllowedUsers: cleanDocsAllowedUsers
+        docsAllowedUsers: cleanDocsAllowedUsers,
+        hoverPopupsEnabled,
+        hoverPopupDelay
       });
       
       triggerRefresh(); // Refresh tasks cache on frontend to show renamed items
@@ -573,7 +579,9 @@ export function Settings() {
     requireInputStatus: normalizedRequireInputStatus,
     readyForMergeStatus: normalizedReadyForMergeStatus,
     docsEditPermissions,
-    docsAllowedUsers: docsEditPermissions === 'specified' ? docsAllowedUsers : []
+    docsAllowedUsers: docsEditPermissions === 'specified' ? docsAllowedUsers : [],
+    hoverPopupsEnabled,
+    hoverPopupDelay
   });
 
   const originalPayload = JSON.stringify({
@@ -863,6 +871,39 @@ export function Settings() {
                     className="sr-only peer"
                     checked={animationsEnabled}
                     onChange={(e) => setAnimationsEnabled(e.target.checked)}
+                  />
+                  <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10 space-y-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <span className="block text-sm font-bold text-gray-800 dark:text-gray-200 mb-0.5">Card Hover Preview</span>
+                <span className="text-xs text-gray-500">Show full description popup on hover. Optionally configure the delay in ms.</span>
+              </div>
+              <div className="flex items-center gap-3">
+                {hoverPopupsEnabled && (
+                  <div className="flex items-center gap-2">
+                     <span className="text-xs text-gray-500 font-medium">Delay (ms)</span>
+                     <input
+                      type="number"
+                      value={hoverPopupDelay}
+                      onChange={(e) => setHoverPopupDelay(Number(e.target.value) || 1500)}
+                      className="w-20 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
+                      min="0"
+                      step="100"
+                    />
+                  </div>
+                )}
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="sr-only peer"
+                    checked={hoverPopupsEnabled}
+                    onChange={(e) => setHoverPopupsEnabled(e.target.checked)}
                   />
                   <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-primary"></div>
                 </label>

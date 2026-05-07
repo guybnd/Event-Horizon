@@ -158,5 +158,7 @@
   "requireInputStatus": "Require Input",
   "readyForMergeStatus": "Ready",
   "docsEditPermissions": "all",
-  "docsAllowedUsers": []
+  "docsAllowedUsers": [],
+  "hoverPopupsEnabled": true,
+  "hoverPopupDelay": 250
 }

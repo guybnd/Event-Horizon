@@ -95,4 +95,6 @@ export interface Config {
   docsAllowedUsers?: string[];
   animationsEnabled?: boolean;
   animationSpeed?: 'fast' | 'normal' | 'slow';
+  hoverPopupsEnabled?: boolean;
+  hoverPopupDelay?: number;
 }
