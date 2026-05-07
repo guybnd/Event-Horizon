@@ -1,9 +1,9 @@
 ---
 title: define dual-mode execution bridge and executor lifecycle
-status: Grooming
+status: Require Input
 priority: High
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 assignee: unassigned
 tags:
   - feature
@@ -24,6 +24,20 @@ history:
     to: Grooming
     user: Guy
     date: '2026-05-06T13:18:50.889Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-07T13:01:33.5429940+10:00'
+    comment: >-
+      The remaining implementation-critical choice is how execution ownership
+      should be represented. Should the first version model `waiting for
+      external work` and `internal execution` through dedicated statuses,
+      through ticket metadata, or through both together?
+    id: c-2026-05-07t13-01-33-5429940-10-00-flux-38
+  - type: status_change
+    from: Grooming
+    to: Require Input
+    user: Agent
+    date: '2026-05-07T13:01:33.5429940+10:00'
 effort: Large
 implementationLink: ''
 order: 2

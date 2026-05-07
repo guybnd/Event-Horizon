@@ -1,10 +1,10 @@
 ---
 id: FLUX-37
 title: bootstrap project flux orchestrator MVP
-status: Grooming
+status: Require Input
 priority: High
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 assignee: unassigned
 tags:
   - feature
@@ -21,6 +21,20 @@ history:
       constraints, and an initial decomposition around the three requested
       integration points.
     id: c-2026-05-06t12-20-00-000z
+  - type: comment
+    user: Agent
+    date: '2026-05-07T13:01:33.5429940+10:00'
+    comment: >-
+      This parent ticket is not ready for `Todo` until its execution shape is
+      explicit. Should FLUX-37 remain a pure architecture-and-decomposition
+      parent that only spawns child implementation tickets, or do you want one
+      first implementation slice delivered directly from FLUX-37 itself?
+    id: c-2026-05-07t13-01-33-5429940-10-00-flux-37
+  - type: status_change
+    from: Grooming
+    to: Require Input
+    user: Agent
+    date: '2026-05-07T13:01:33.5429940+10:00'
 effort: XL
 implementationLink: ''
 ---

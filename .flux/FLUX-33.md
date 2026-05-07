@@ -1,9 +1,9 @@
 ---
 title: Automatic Definition of Done Verification
-status: Grooming
+status: Require Input
 priority: High
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 assignee: unassigned
 tags:
   - feature
@@ -23,6 +23,20 @@ history:
     to: Grooming
     user: Guy
     date: '2026-05-06T12:52:25.028Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-07T13:01:33.5429940+10:00'
+    comment: >-
+      The main unresolved workflow choice is which state should trigger this
+      verifier. Should validation run when a ticket enters the current `Ready`
+      status, or do you want a separate dedicated review status such as
+      `In Review` or `Sentry` added before this ticket moves to `Todo`?
+    id: c-2026-05-07t13-01-33-5429940-10-00-flux-33
+  - type: status_change
+    from: Grooming
+    to: Require Input
+    user: Agent
+    date: '2026-05-07T13:01:33.5429940+10:00'
 effort: None
 implementationLink: ''
 subtasks: []

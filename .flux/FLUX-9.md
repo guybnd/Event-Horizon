@@ -1,8 +1,8 @@
 ---
 title: 'Description view: rendered markdown with WYSIWYG editing'
-status: Todo
+status: Require Input
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 assignee: Agent
 tags:
   - feature
@@ -22,9 +22,35 @@ history:
     user: Guy
     date: '2026-05-06T13:42:36.994Z'
     comment: Changed effort from None to L.
+  - type: comment
+    user: Guy
+    date: '2026-05-07T01:52:14.835Z'
+    comment: See flux-51
+    id: c-2026-05-07t01-52-14-835z
+  - type: status_change
+    from: Todo
+    to: Grooming
+    user: Guy
+    date: '2026-05-07T01:52:18.881Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-07T13:01:33.5429940+10:00'
+    comment: >-
+      This is close to ready, but the scope relationship with FLUX-51 is still
+      unresolved. Should FLUX-9 stay as the focused first slice for ticket
+      descriptions using rendered markdown plus an edit toggle, or do you want
+      that work folded into FLUX-51's broader shared-editor refactor?
+    id: c-2026-05-07t13-01-33-5429940-10-00-flux-9
+  - type: status_change
+    from: Grooming
+    to: Require Input
+    user: Agent
+    date: '2026-05-07T13:01:33.5429940+10:00'
 order: 3
 priority: Medium
 effort: L
+implementationLink: ''
+subtasks: []
 ---
 ## Summary
 
