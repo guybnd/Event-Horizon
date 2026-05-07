@@ -52,7 +52,7 @@ history:
     date: '2026-05-07T08:07:13.020Z'
     comment: Changed assignee from unassigned to Agent.
 title: Show full description popup on card hover (1.5s)
-status: Done
+status: In Progress
 createdBy: Guy
 updatedBy: Guy
 order: 10

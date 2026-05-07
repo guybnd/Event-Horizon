@@ -90,32 +90,35 @@ function BacklogRow({
     >
       <h4 className="text-sm font-medium text-gray-900 dark:text-gray-100 leading-snug">{task.title || 'Untitled Task'}</h4>
       <span className="text-[10px] font-bold text-gray-400 mt-0.5 tracking-wider">{task.id}</span>
-      <AnimatePresence>
-        {isHovering && task.body?.trim() && createPortal(
-          <motion.div
-            initial={{ opacity: 0, y: 10, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.95 }}
-            transition={{ duration: 0.15 }}
-            style={{ 
-              position: 'fixed',
-              top: popupPos.top,
-              left: popupPos.left !== 'auto' ? popupPos.left : undefined,
-              right: popupPos.right !== 'auto' ? popupPos.right : undefined,
-              zIndex: 999999
-            }}
-            className={`w-[640px] max-h-[85vh] overflow-y-auto rounded-xl border border-gray-200/80 bg-white/95 p-6 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:bg-[#1a1b23]/95 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 dark:[&::-webkit-scrollbar-thumb]:bg-gray-600 [&::-webkit-scrollbar-track]:bg-transparent`}
-            onClick={(e) => e.stopPropagation()}
-            onMouseEnter={() => setIsHovering(true)}
-            onMouseLeave={handleMouseLeave}
-          >
-            <div className="prose prose-sm dark:prose-invert max-w-none">
-              <TaskMarkdown body={task.body} taskId={task.id} compact />
-            </div>
-          </motion.div>,
-          document.body
-        )}
-      </AnimatePresence>
+      {createPortal(
+        <AnimatePresence>
+          {isHovering && task.body?.trim() && (
+            <motion.div
+              key={`popup-${task.id}`}
+              initial={{ opacity: 0, y: 10, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              transition={{ duration: 0.15 }}
+              style={{ 
+                position: 'fixed',
+                top: popupPos.top,
+                left: popupPos.left !== 'auto' ? popupPos.left : undefined,
+                right: popupPos.right !== 'auto' ? popupPos.right : undefined,
+                zIndex: 999999
+              }}
+              className={`w-[640px] max-h-[85vh] overflow-y-auto rounded-xl border border-gray-200/80 bg-white/95 p-6 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:bg-[#1a1b23]/95 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 dark:[&::-webkit-scrollbar-thumb]:bg-gray-600 [&::-webkit-scrollbar-track]:bg-transparent`}
+              onClick={(e) => e.stopPropagation()}
+              onMouseEnter={() => setIsHovering(true)}
+              onMouseLeave={handleMouseLeave}
+            >
+              <div className="prose prose-sm dark:prose-invert max-w-none">
+                <TaskMarkdown body={task.body} taskId={task.id} compact />
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
     </div>
   );
 }
