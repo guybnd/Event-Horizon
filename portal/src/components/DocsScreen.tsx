@@ -194,7 +194,9 @@ function ToolbarButton({
 export function DocsScreen() {
   const { currentUser, config } = useApp();
   const [docs, setDocs] = useState<Doc[]>([]);
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [selectedPath, setSelectedPath] = useState<string | null>(
+    () => new URLSearchParams(window.location.search).get('doc')
+  );
   const [selectedDoc, setSelectedDoc] = useState<Doc | null>(null);
   const [loadingDocs, setLoadingDocs] = useState(true);
   const [loadingDoc, setLoadingDoc] = useState(false);
@@ -219,6 +221,7 @@ export function DocsScreen() {
   const baselineEditorSnapshotRef = useRef('');
   const isApplyingEditorContentRef = useRef(false);
   const lastSyncedDocSignatureRef = useRef<string | null>(null);
+  const loadedDocsRef = useRef<Doc[]>([]);
 
   if (!turndownServiceRef.current) {
     turndownServiceRef.current = createTurndownService();
@@ -314,6 +317,17 @@ export function DocsScreen() {
     titleInputRef.current?.select();
   }, [isEditingTitle]);
 
+    const handleCustomNavigation = () => {
+      const initialDoc = new URLSearchParams(window.location.search).get('doc');
+      if (initialDoc && loadedDocsRef.current.some(d => d.path === initialDoc)) {
+        setSelectedPath(initialDoc);
+      }
+    };
+    
+    window.addEventListener('flux:navigate', handleCustomNavigation);
+    return () => window.removeEventListener('flux:navigate', handleCustomNavigation);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -326,6 +340,7 @@ export function DocsScreen() {
           return;
         }
 
+        loadedDocsRef.current = loadedDocs;
         setDocs(loadedDocs);
         setExpandedFolders((current) => {
           const nextFolders = { ...current };
@@ -348,8 +363,12 @@ export function DocsScreen() {
           return;
         }
 
-        if (!selectedPath || !loadedDocs.some((doc) => doc.path === selectedPath)) {
+        const initialDoc = new URLSearchParams(window.location.search).get('doc');
+        const currentlySelected = selectedPath || initialDoc;
+        if (!currentlySelected || !loadedDocs.some((doc) => doc.path === currentlySelected)) {
           setSelectedPath(loadedDocs[0].path);
+        } else if (initialDoc && !selectedPath) {
+          setSelectedPath(initialDoc);
         }
       } catch (error) {
         console.error(error);
@@ -372,6 +391,9 @@ export function DocsScreen() {
 
   useEffect(() => {
     if (!selectedPath) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('doc');
+      window.history.replaceState({}, '', url);
       setSelectedDoc(null);
       setDraftTitle('');
       setDraftBody('');
@@ -379,6 +401,10 @@ export function DocsScreen() {
       setLoadingDoc(false);
       return;
     }
+
+    const url = new URL(window.location.href);
+    url.searchParams.set('doc', selectedPath);
+    window.history.replaceState({}, '', url);
 
     let cancelled = false;
     setLoadingDoc(true);

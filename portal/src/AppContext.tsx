@@ -502,10 +502,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setFilterTag(nextFilters.filterTag);
     };
 
+    const handleCustomNavigation = () => {
+      handlePopState();
+    };
+
     window.addEventListener('popstate', handlePopState);
+    window.addEventListener('flux:navigate', handleCustomNavigation);
 
     return () => {
       window.removeEventListener('popstate', handlePopState);
+      window.removeEventListener('flux:navigate', handleCustomNavigation);
     };
   }, []);
 

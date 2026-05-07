@@ -41,12 +41,18 @@ export function ReleasesScreen() {
                       <span className="text-sm text-gray-500 dark:text-gray-400">Released on {releaseDate}</span>
                     )}
                     {docPath && (
-                      <a 
-                        href={`/docs?doc=${encodeURIComponent(docPath)}`}
-                        className="text-sm text-blue-600 dark:text-blue-400 hover:underline"
+                      <button 
+                        onClick={() => {
+                          const url = new URL(window.location.href);
+                          url.pathname = '/docs';
+                          url.searchParams.set('doc', docPath);
+                          window.history.pushState({}, '', url);
+                          window.dispatchEvent(new CustomEvent('flux:navigate'));
+                        }}
+                        className="text-sm text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
                       >
                         View Release Notes
-                      </a>
+                      </button>
                     )}
                   </div>
                 </div>

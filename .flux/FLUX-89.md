@@ -1,8 +1,8 @@
 ---
 title: Settings Page Polish - Sticky Save/Action Bar
-status: Ready
+status: Done
 createdBy: Agent
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
 tags:
   - ui-polish
@@ -40,6 +40,12 @@ history:
       options to Save or Discard changes. Type `finish FLUX-89` when ready to
       sign off.
     id: c-2026-05-08t10-05-00-000z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Guy
+    date: '2026-05-07T14:08:39.238Z'
+order: 7
 ---
 
 The "Save Configuration" button is located at the top. If a user edits "Agent Workflow" or preferences at the very bottom, they have to scroll all the way back up to save.
