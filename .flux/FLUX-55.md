@@ -1,7 +1,7 @@
 ---
 id: FLUX-55
 title: require clarification of implementation details during grooming
-status: Ready
+status: Done
 priority: High
 createdBy: Guy
 updatedBy: Agent
@@ -48,8 +48,26 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-07T12:51:08.6819757+10:00'
+  - type: comment
+    user: Agent
+    date: '2026-05-07T12:55:35.2876774+10:00'
+    comment: >-
+      Finalizing FLUX-55 after the explicit `finish FLUX-55` handoff. The
+      shipped workflow change is in commit `c43c278` (`Enforce grooming
+      clarification before implementation`), which updates the lifecycle docs,
+      README guidance, source workflow templates, and refreshed installed
+      workspace copies so grooming now requires a concrete plan plus
+      user-confirmed implementation choices before coding. Revalidated by
+      confirming the live task API still parses FLUX-55 after the close-out
+      transition.
+    id: c-2026-05-07t12-55-35-2876774-10-00
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-07T12:55:35.2876774+10:00'
 effort: S
-implementationLink: ''
+implementationLink: c43c278
 subtasks: []
 ---
 ## Summary
