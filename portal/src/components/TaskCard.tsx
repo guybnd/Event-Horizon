@@ -10,6 +10,7 @@ import { updateTask } from '../api';
 import { isPromptableStatus, relativeTime } from '../workflow';
 import { motion, AnimatePresence } from 'framer-motion';
 import { TaskMarkdown } from './TaskMarkdown';
+import { ContextMenu } from './ContextMenu';
 
 export function TaskCard({
   task,
@@ -43,6 +44,7 @@ export function TaskCard({
   const titleInputRef = useRef<HTMLInputElement | null>(null);
   const [commentPopoverOpen, setCommentPopoverOpen] = useState(false);
   const [commentPopoverPos, setCommentPopoverPos] = useState({ top: 0, left: 0 });
+  const [contextMenuPos, setContextMenuPos] = useState<{ x: number; y: number } | null>(null);
   const [popoverReplyTarget, setPopoverReplyTarget] = useState<string | null>(null);
   const [popoverReplyDraft, setPopoverReplyDraft] = useState('');
   const [popoverReplySaving, setPopoverReplySaving] = useState(false);
@@ -112,6 +114,7 @@ export function TaskCard({
         setTagMenuOpen(false);
         setIsEditingTitle(false);
         setTitleValue(task.title || '');
+        setContextMenuPos(null);
       }
     };
 
@@ -437,6 +440,14 @@ export function TaskCard({
       className={`mb-3 group flex flex-col relative ${(priorityMenuOpen || effortMenuOpen || assigneeMenuOpen || tagMenuOpen || isEditingTitle || isHovering) ? 'z-40' : ''}`}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
+      onContextMenu={(e) => {
+        if (isOverlay) return;
+        e.preventDefault();
+        e.stopPropagation();
+        setContextMenuPos({ x: e.clientX, y: e.clientY });
+        setCommentPopoverOpen(false);
+        setIsHovering(false);
+      }}
     >
       <motion.div {...contentAnimation} className={`relative flex flex-col rounded-xl border bg-white/80 dark:bg-[#252630]/80 backdrop-blur-md p-0 shadow-sm hover:border-primary/50 hover:shadow-md transition-all ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''} ${isPromptStatus ? 'border-amber-300 dark:border-amber-500/40 ring-1 ring-amber-200/50 dark:ring-amber-500/20' : 'border-gray-200/50 dark:border-white/5'} ${liveAnimationClass} ${liveAccentClass} ${hasUnread && !liveAccentClass ? 'ring-2 ring-amber-400/60 dark:ring-amber-500/40' : ''}`}>
         {isPromptStatus && (
@@ -857,6 +868,14 @@ export function TaskCard({
           )}
         </AnimatePresence>,
         document.body
+      )}
+
+      {contextMenuPos && !isOverlay && (
+        <ContextMenu
+          task={task}
+          position={contextMenuPos}
+          onClose={() => setContextMenuPos(null)}
+        />
       )}
     </CardContainer>
   );
