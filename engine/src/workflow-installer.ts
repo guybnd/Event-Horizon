@@ -73,6 +73,10 @@ function resolveFramework(targetDir: string, requested: Framework): ResolvedFram
     return 'cline';
   }
 
+  if (existsSync(path.join(targetDir, '.claude'))) {
+    return 'claude';
+  }
+
   return 'generic';
 }
 

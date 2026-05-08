@@ -141,6 +141,7 @@ export async function deleteDoc(docPath: string): Promise<void> {
 export interface SkillStatus {
   framework: 'copilot' | 'antigravity' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'generic';
   skillSourcePath: string;
+  skillSourcePaths: string[];
   skillInstalledPath: string;
   skillSourceExists: boolean;
   skillInstalled: boolean;

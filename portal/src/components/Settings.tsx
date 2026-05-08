@@ -491,7 +491,7 @@ export function Settings() {
       .then((status) => {
         setWorkflowInstalled(status.workflowInstalled);
         setSkillInstalled(status.skillInstalled);
-        setSkillSourcePaths(status.skillSourcePath ? [status.skillSourcePath] : []);
+        setSkillSourcePaths(status.skillSourcePaths ?? (status.skillSourcePath ? [status.skillSourcePath] : []));
         setSkillInstalledPath(status.skillInstalledPath);
         setInstructionsInstalled(status.instructionsInstalled);
         setInstructionsSourcePath(status.instructionsSourcePath || '');
@@ -618,7 +618,8 @@ export function Settings() {
   };
 
   const handleCopyInstallCommand = async () => {
-    const command = `npm.cmd run install-skill -- --target c:\\GitHub\\EventHorizon --framework ${targetFramework}`;
+    const targetPath = workspacePath ?? '/path/to/workspace';
+    const command = `npm run install-skill -- --target "${targetPath}" --framework ${targetFramework}`;
     try {
       await navigator.clipboard.writeText(command);
       alert('Copied skill install command to clipboard');
