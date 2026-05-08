@@ -162,6 +162,8 @@ export function TaskModal() {
     modalTask,
     setModalTask,
     openTaskModal,
+    openModalScrollToComments,
+    clearOpenModalScrollToComments,
     currentProject,
     currentUser,
     refreshTrigger,
@@ -190,7 +192,7 @@ export function TaskModal() {
   const [collapsedThreads, setCollapsedThreads] = useState<Record<string, boolean>>({});
   const [responseDestination, setResponseDestination] = useState('Todo');
   const [returnToWorkOpen, setReturnToWorkOpen] = useState(false);
-  const [returnToWorkReason, setReturnToWorkReason] = useState('');
+  const returnToWorkReasonRef = useRef<HTMLTextAreaElement>(null);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [isWideMode, setIsWideMode] = useState(false);
@@ -259,6 +261,15 @@ export function TaskModal() {
   }, [isFullView, modalTask?.id]);
 
   useEffect(() => {
+    if (!isFullView || !openModalScrollToComments) return;
+    const timer = setTimeout(() => {
+      commentSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      clearOpenModalScrollToComments();
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [isFullView, openModalScrollToComments, clearOpenModalScrollToComments]);
+
+  useEffect(() => {
     if (modalTask) {
       setTitle(modalTask.title || '');
       setBody(modalTask.body || '');
@@ -275,7 +286,7 @@ export function TaskModal() {
       setCollapsedThreads({});
       setResponseDestination('Todo');
       setReturnToWorkOpen(false);
-      setReturnToWorkReason('');
+      if (returnToWorkReasonRef.current) returnToWorkReasonRef.current.value = '';
       setConfirmDiscard(false);
       setConfirmDelete(false);
       setIsWideMode(false);
@@ -461,7 +472,7 @@ export function TaskModal() {
   const handleReturnToWork = async () => {
     if (!modalTask?.id) return;
     const submittedAt = new Date().toISOString();
-    const reason = returnToWorkReason.trim();
+    const reason = (returnToWorkReasonRef.current?.value ?? '').trim();
     const lastReadySummary = [...(modalTask.history || [])].reverse().find(
       (e) => e.type === 'comment' && e.id
     );
@@ -501,7 +512,7 @@ export function TaskModal() {
       setModalTask(updatedTask);
       setStatus(preReadyStatus);
       setReturnToWorkOpen(false);
-      setReturnToWorkReason('');
+      if (returnToWorkReasonRef.current) returnToWorkReasonRef.current.value = '';
       triggerRefresh();
       closeModal();
     } catch (error) {
@@ -514,7 +525,7 @@ export function TaskModal() {
   const handleReturnToWorkAndLaunch = async () => {
     if (!modalTask?.id) return;
     const submittedAt = new Date().toISOString();
-    const reason = returnToWorkReason.trim();
+    const reason = (returnToWorkReasonRef.current?.value ?? '').trim();
     const lastReadySummary = [...(modalTask.history || [])].reverse().find(
       (e) => e.type === 'comment' && e.id
     );
@@ -552,7 +563,7 @@ export function TaskModal() {
         updatedBy: currentUser,
       } as any);
       setReturnToWorkOpen(false);
-      setReturnToWorkReason('');
+      if (returnToWorkReasonRef.current) returnToWorkReasonRef.current.value = '';
       triggerRefresh();
       const session = await startTaskCliSession(modalTask.id, selectedCliFramework, undefined, skipPermissions);
       setCliSession(session);
@@ -1708,9 +1719,8 @@ export function TaskModal() {
               <label className="block text-xs font-bold uppercase tracking-wider text-gray-400">Reason for returning</label>
               <textarea
                 autoFocus
+                ref={returnToWorkReasonRef}
                 className="h-24 w-full resize-none rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm outline-none placeholder:text-gray-400 focus:border-primary dark:border-white/10 dark:bg-black/30"
-                value={returnToWorkReason}
-                onChange={(e) => setReturnToWorkReason(e.target.value)}
                 placeholder="Describe what needs to be changed..."
               />
               <div className="flex flex-col gap-2">
@@ -1724,7 +1734,7 @@ export function TaskModal() {
                     {saving ? 'Returning...' : 'Return to work'}
                   </button>
                   <button
-                    onClick={() => { setReturnToWorkOpen(false); setReturnToWorkReason(''); }}
+                    onClick={() => { setReturnToWorkOpen(false); if (returnToWorkReasonRef.current) returnToWorkReasonRef.current.value = ''; }}
                     className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
                   >
                     Cancel
@@ -2235,6 +2245,18 @@ export function TaskModal() {
               </div>
 
               {subtasksPanel}
+
+              {cliSession?.liveOutput && (
+                <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 dark:border-white/5 dark:bg-black/20">
+                  <p className="mb-1 text-[10px] font-bold uppercase tracking-wider text-gray-400">Live Output</p>
+                  <pre
+                    ref={liveOutputRef}
+                    className="max-h-48 overflow-y-auto rounded-lg bg-gray-900 p-2 text-[10px] leading-relaxed text-gray-200 dark:bg-black/60 whitespace-pre-wrap break-words"
+                  >
+                    {cliSession.liveOutput}
+                  </pre>
+                </div>
+              )}
 
               <div className="border-t border-gray-200 pt-4 dark:border-white/10">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-3">

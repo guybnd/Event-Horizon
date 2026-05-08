@@ -124,7 +124,9 @@ interface AppState {
   isModalOpen: boolean;
   closeModal: () => void;
   openTaskModal: (task?: Partial<Task>) => void;
-  openTaskFullView: (task: Partial<Task>) => void;
+  openTaskFullView: (task: Partial<Task>, options?: { scrollToComments?: boolean }) => void;
+  openModalScrollToComments: boolean;
+  clearOpenModalScrollToComments: () => void;
   tasks: Task[];
   tasksLoading: boolean;
   taskLiveEvents: Record<string, TaskLiveEvent>;
@@ -160,6 +162,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [view, setCurrentView] = useState<AppView>(() => getViewFromLocation());
   const [modalTask, setModalTask] = useState<Partial<Task> | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [openModalScrollToComments, setOpenModalScrollToComments] = useState(false);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [tasksLoading, setTasksLoading] = useState(true);
   const [taskLiveEvents, setTaskLiveEvents] = useState<Record<string, TaskLiveEvent>>({});
@@ -395,13 +398,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setIsModalOpen(true);
   };
 
-  const openTaskFullView = (task: Partial<Task>) => {
+  const openTaskFullView = (task: Partial<Task>, options?: { scrollToComments?: boolean }) => {
     if (task.id) {
       updateTicketViewUrl(task.id, 'full');
     }
     setModalTask(task);
     setIsModalOpen(true);
+    setOpenModalScrollToComments(options?.scrollToComments ?? false);
   };
+
+  const clearOpenModalScrollToComments = () => setOpenModalScrollToComments(false);
 
   const closeModal = () => {
     setIsModalOpen(false);
@@ -418,8 +424,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  // Load full read-state from server once on mount (and when user changes)
+  // Load full read-state from server once the workspace is ready (and when user changes)
   useEffect(() => {
+    if (!workspaceConfigured) return;
     readCommentsLoadedRef.current = false;
     setReadComments({});
     fetchReadState()
@@ -429,7 +436,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         readCommentsLoadedRef.current = true;
       })
       .catch(() => { readCommentsLoadedRef.current = true; });
-  }, [currentUser]);
+  }, [currentUser, workspaceConfigured]);
 
   const ensureReadStateLoaded = useCallback((_ticketId: string) => {
     // no-op: full state is loaded on mount; kept for API compatibility
@@ -648,6 +655,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       modalTask, isModalOpen,
       openTaskModal,
       openTaskFullView,
+      openModalScrollToComments,
+      clearOpenModalScrollToComments,
       closeModal,
       setModalTask,
       tasks,

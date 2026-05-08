@@ -4,7 +4,7 @@ import type { CSSProperties } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { Task, TaskLiveEvent } from '../types';
-import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, MessageCircle, Bot, SendHorizontal } from 'lucide-react';
+import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, MessageCircle, Bot, SendHorizontal, Maximize2 } from 'lucide-react';
 import { useApp } from '../AppContext';
 import { sendTaskCliInput, startTaskCliSession, updateTask } from '../api';
 import { getReadyForMergeStatus, isPromptableStatus, relativeTime } from '../workflow';
@@ -776,28 +776,41 @@ export function TaskCard({
               transition={{ duration: 0.12 }}
               style={{
                 position: 'fixed',
-                top: Math.min(commentPopoverPos.top, window.innerHeight - 480),
-                left: Math.min(commentPopoverPos.left, window.innerWidth - 420),
+                top: Math.min(commentPopoverPos.top, window.innerHeight - 520),
+                left: Math.min(commentPopoverPos.left, window.innerWidth - 480),
                 zIndex: 999999,
               }}
-              className="w-[420px] max-h-[480px] overflow-y-auto rounded-xl border border-gray-200/80 bg-white/95 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:bg-[#1a1b23]/95 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 dark:[&::-webkit-scrollbar-thumb]:bg-gray-600 [&::-webkit-scrollbar-track]:bg-transparent"
+              className="w-[480px] max-h-[520px] overflow-y-auto rounded-xl border border-gray-200/80 bg-white/95 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:bg-[#1a1b23]/95 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 dark:[&::-webkit-scrollbar-thumb]:bg-gray-600 [&::-webkit-scrollbar-track]:bg-transparent"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="sticky top-0 bg-white/95 dark:bg-[#1a1b23]/95 px-3 py-2 border-b border-gray-100 dark:border-white/5 backdrop-blur-xl flex items-center justify-between">
                 <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider">
                   Comments ({comments.length}){unreadComments.length > 0 ? ` · ${unreadComments.length} unread` : ''}
                 </span>
-                {unreadComments.length > 0 && (
+                <div className="flex items-center gap-2">
+                  {unreadComments.length > 0 && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        ctxMarkAllCommentsRead(task.id, comments.filter(c => c.id).map(c => c.id!));
+                      }}
+                      className="text-[10px] font-semibold text-amber-600 hover:text-amber-700 dark:text-amber-400 dark:hover:text-amber-300 transition-colors"
+                    >
+                      Mark all read
+                    </button>
+                  )}
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      ctxMarkAllCommentsRead(task.id, comments.filter(c => c.id).map(c => c.id!));
+                      setCommentPopoverOpen(false);
+                      openTaskFullView(task, { scrollToComments: true });
                     }}
-                    className="text-[10px] font-semibold text-amber-600 hover:text-amber-700 dark:text-amber-400 dark:hover:text-amber-300 transition-colors"
+                    title="Open in full view"
+                    className="flex items-center gap-1 text-[10px] font-semibold text-gray-400 hover:text-primary dark:text-gray-500 dark:hover:text-primary transition-colors"
                   >
-                    Mark all read
+                    <Maximize2 className="w-3 h-3" />
                   </button>
-                )}
+                </div>
               </div>
               <div className="divide-y divide-gray-100 dark:divide-white/5">
                 {topLevelComments.map((c, i) => {
@@ -821,7 +834,7 @@ export function TaskCard({
                             </span>
                           )}
                         </div>
-                        <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed whitespace-pre-wrap">{c.comment}</p>
+                        <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed whitespace-pre-wrap">{c.comment}</p>
                         {c.id && (
                           <button
                             onClick={(e) => { e.stopPropagation(); setPopoverReplyTarget(isReplying ? null : c.id!); setPopoverReplyDraft(''); }}
@@ -875,7 +888,7 @@ export function TaskCard({
                                   <span className="text-[10px] text-gray-400 dark:text-gray-500">{relativeTime(r.date)}</span>
                                   {isUnreadReply && <span className="ml-auto h-1.5 w-1.5 rounded-full bg-amber-400" />}
                                 </div>
-                                <p className="text-xs text-gray-600 dark:text-gray-400 leading-relaxed whitespace-pre-wrap">{r.comment}</p>
+                                <p className="text-sm text-gray-600 dark:text-gray-400 leading-relaxed whitespace-pre-wrap">{r.comment}</p>
                               </div>
                             );
                           })}
