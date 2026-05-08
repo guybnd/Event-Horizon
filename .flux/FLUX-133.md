@@ -1,7 +1,7 @@
 ---
 id: FLUX-133
 title: Stabilize portal dev startup on Node 22 and lock react-draggable
-status: Ready
+status: Done
 createdBy: Agent
 updatedBy: Agent
 assignee: unassigned
@@ -10,7 +10,7 @@ tags:
   - devx
 priority: High
 effort: XS
-implementationLink: ''
+implementationLink: '1546a87'
 subtasks: []
 history:
   - type: activity
@@ -48,6 +48,20 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-08T12:09:55Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-08T12:12:04Z'
+    comment: >-
+      Completed ticket. Stabilized portal startup on Node 22 by pinning
+      react-draggable to 4.4.6 via workspace override plus explicit portal
+      dependency, and refreshed lockfile. Validation: npm run dev -w portal
+      reached Vite ready state. Commit: 1546a87.
+    id: c-flux133-done
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-08T12:12:04Z'
 ---
 
 ## Problem / Motivation
