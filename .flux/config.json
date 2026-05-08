@@ -19,6 +19,10 @@
     },
     {
       "name": "Done"
+    },
+    {
+      "name": "Archived",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     }
   ],
   "hiddenStatuses": [
@@ -194,6 +198,7 @@
   "animationSpeed": "fast",
   "requireInputStatus": "Require Input",
   "readyForMergeStatus": "Ready",
+  "archiveStatus": "Archived",
   "docsEditPermissions": "all",
   "docsAllowedUsers": [],
   "docsRoot": ".docs",

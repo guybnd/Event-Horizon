@@ -1,9 +1,8 @@
 ---
-id: FLUX-9
 title: 'Description view: rendered markdown with WYSIWYG editing'
-status: Backlog
+status: Archived
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: Agent
 tags:
   - feature
@@ -85,6 +84,11 @@ history:
     to: Backlog
     user: Agent
     date: '2026-05-07T03:53:39.4816199Z'
+  - type: status_change
+    from: Backlog
+    to: Archived
+    user: Guy
+    date: '2026-05-08T00:11:27.225Z'
 order: 3
 priority: Medium
 effort: L

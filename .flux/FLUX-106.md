@@ -7,7 +7,7 @@ tags:
 createdBy: Unknown
 updatedBy: Guy
 title: Return to work button for Ready tickets
-status: Ready
+status: Done
 assignee: unassigned
 history:
   - type: activity
@@ -165,19 +165,18 @@ history:
     comment: Returned to work
   - type: comment
     user: Agent
-    date: '2026-05-08T14:20:00.000Z'
+    date: '2026-05-08T14:30:00.000Z'
     comment: >-
-      Fixed properly. "Close window" now calls setIsPromptModalOpen(false) —
-      exactly what the prompt card's X button does. Closes just the floating
-      prompt window, ticket stays open. In popup mode button says "Open full
-      ticket".
-    id: c-flux106-v7
+      Done. Committed 46fd260. Return-to-work button with inline reason textarea,
+      threaded reply to last agent comment, and close-window dismissing the
+      prompt panel all working correctly.
+    id: c-flux106-close
   - type: status_change
-    from: In Progress
-    to: Ready
+    from: Ready
+    to: Done
     user: Agent
-    date: '2026-05-08T14:20:00.000Z'
-implementationLink: ''
+    date: '2026-05-08T14:30:00.000Z'
+implementationLink: '46fd260'
 subtasks: []
 ---
 # Goal

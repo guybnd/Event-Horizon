@@ -49,14 +49,34 @@ history:
     date: '2026-05-08T12:40:00.000Z'
     comment: >-
       Bug fix: task filter alone was insufficient — the Archived column itself
-      still rendered when it was in config.columns. Added a `.filter(c => c !== archiveStatus)`
-      to `allColumns` in Board.tsx so the column is also excluded from rendering.
+      still rendered when it was in config.columns. Added a `.filter(c => c !==
+      archiveStatus)` to `allColumns` in Board.tsx so the column is also
+      excluded from rendering.
     id: c-flux109-fix
-id: FLUX-109
+  - type: comment
+    user: Agent
+    date: '2026-05-08T13:45:00.000Z'
+    comment: >-
+      Done. Committed c41a465. Archive status feature is complete — tickets in
+      the configured archive status are hidden from board tasks and column list,
+      but remain searchable. Settings UI includes the Archive Status field with
+      Restore button.
+    id: c-flux109-close
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-08T13:45:00.000Z'
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Guy
+    date: '2026-05-08T00:38:08.254Z'
 title: add archive status that hides tickets from all surfaces except search
-status: Ready
+status: Done
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
+order: 75
 ---
 
 # Goal
