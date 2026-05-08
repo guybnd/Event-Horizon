@@ -974,7 +974,7 @@ app.post('/api/skill/install', async (req, res) => {
 
 app.post('/api/tasks', async (req, res) => {
   const { projectKey, status, author, title, body, ...rest } = req.body;
-  const pKey = projectKey || 'FLUX';
+  const pKey = projectKey || 'PROJECT';
 
   let maxId = 0;
   Object.keys(tasksCache).forEach((key) => {

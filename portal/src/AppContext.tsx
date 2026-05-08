@@ -138,7 +138,7 @@ const AppContext = createContext<AppState | undefined>(undefined);
 export function AppProvider({ children }: { children: ReactNode }) {
   const initialFilters = getTaskFiltersFromLocation();
   const [currentUser, setCurrentUser] = useState('Guy');
-  const [currentProject, setCurrentProject] = useState('FLUX');
+  const [currentProject, setCurrentProject] = useState('');
   const [searchQuery, setSearchQuery] = useState(initialFilters.searchQuery);
   const [sortOption, setSortOption] = useState<TaskSortOption>(initialFilters.sortOption);
   const [filterAssignee, setFilterAssignee] = useState(initialFilters.filterAssignee);
@@ -417,6 +417,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (cancelled) return;
         setConfig(loadedConfig);
         configRef.current = loadedConfig;
+        setCurrentProject((prev) => prev || loadedConfig.projects?.[0] || 'PROJECT');
       } catch (error) {
         console.error(error);
         if (cancelled) return;

@@ -1,6 +1,6 @@
 ---
 title: Make default project key configurable instead of hardcoded FLUX
-status: Todo
+status: Ready
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent
@@ -24,6 +24,35 @@ history:
       default project key in AppContext.tsx. When Event Horizon is installed in
       another project, the default should come from config.json instead.
     id: c-2026-05-07t06-50-00-000z-flux-74
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-08T12:20:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-08T12:20:00.000Z'
+    comment: >-
+      Plan: (1) AppContext.tsx — initialise `currentProject` to `''` and set it
+      to `config.projects[0]` (fallback `'PROJECT'`) in the `loadConfig` effect
+      after `setConfig`. (2) engine/src/index.ts line 977 — change fallback from
+      `'FLUX'` to `'PROJECT'`.
+    id: c-flux74-plan
+  - type: comment
+    user: Agent
+    date: '2026-05-08T12:21:00.000Z'
+    comment: >-
+      Implemented. AppContext initialises `currentProject` to `''` and sets it
+      to `config.projects[0] || 'PROJECT'` after config loads (only if not
+      already set, preserving any user-selected project across re-fetches).
+      Engine fallback changed from `'FLUX'` to `'PROJECT'`. Existing repo
+      unaffected — config already has `'FLUX'` as first project.
+    id: c-flux74-done
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-08T12:21:00.000Z'
 order: 74
 ---
 ## Summary
