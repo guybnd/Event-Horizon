@@ -4,7 +4,7 @@ tags:
   - bug
 priority: Low
 effort: XS
-implementationLink: ''
+implementationLink: 'd3ac8f8'
 subtasks: []
 history:
   - type: activity
@@ -48,8 +48,20 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-08T15:50:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-08T15:55:00.000Z'
+    comment: >-
+      Done. Committed d3ac8f8. Title textarea now auto-resizes on modal open
+      via a useEffect on [isModalOpen, isFullView, title]. User confirmed.
+    id: c-flux107-close
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-08T15:55:00.000Z'
 title: Title box not scaling sometimes
-status: Ready
+status: Done
 createdBy: Guy
 updatedBy: Agent
 ---
