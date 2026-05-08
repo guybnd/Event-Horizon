@@ -5,7 +5,7 @@ import { bulkRename, fetchSkillStatus, installWorkspaceSkill } from '../api';
 import type { TagDef, StatusDef, UserDef, PriorityDef, DocsEditPermissions, BoardCardOpenMode } from '../types';
 import { StatusBadge } from './StatusBadge';
 import { getDefaultStatusColor, STATUS_COLOR_PALETTE } from '../statusStyles';
-import { DEFAULT_READY_FOR_MERGE_STATUS, DEFAULT_REQUIRE_INPUT_STATUS } from '../workflow';
+import { DEFAULT_READY_FOR_MERGE_STATUS, DEFAULT_REQUIRE_INPUT_STATUS, DEFAULT_ARCHIVE_STATUS } from '../workflow';
 import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
@@ -399,6 +399,7 @@ export function Settings() {
   const [animationSpeed, setAnimationSpeed] = useState<'fast' | 'normal' | 'slow'>('normal');
   const [requireInputStatus, setRequireInputStatus] = useState(DEFAULT_REQUIRE_INPUT_STATUS);
   const [readyForMergeStatus, setReadyForMergeStatus] = useState(DEFAULT_READY_FOR_MERGE_STATUS);
+  const [archiveStatus, setArchiveStatus] = useState(DEFAULT_ARCHIVE_STATUS);
   const [docsEditPermissions, setDocsEditPermissions] = useState<DocsEditPermissions>('all');
   const [docsAllowedUsers, setDocsAllowedUsers] = useState<string[]>([]);
   const [docsRoot, setDocsRoot] = useState('.docs');
@@ -435,6 +436,7 @@ export function Settings() {
       setAnimationSpeed(config.animationSpeed || 'normal');
       setRequireInputStatus(config.requireInputStatus || DEFAULT_REQUIRE_INPUT_STATUS);
       setReadyForMergeStatus(config.readyForMergeStatus || DEFAULT_READY_FOR_MERGE_STATUS);
+      setArchiveStatus(config.archiveStatus || DEFAULT_ARCHIVE_STATUS);
       setDocsEditPermissions(config.docsEditPermissions || 'all');
       setDocsAllowedUsers(config.docsAllowedUsers || []);
       setDocsRoot(config.docsRoot || '.docs');
@@ -449,6 +451,7 @@ export function Settings() {
 
   const normalizedRequireInputStatus = requireInputStatus.trim() || DEFAULT_REQUIRE_INPUT_STATUS;
   const normalizedReadyForMergeStatus = readyForMergeStatus.trim() || DEFAULT_READY_FOR_MERGE_STATUS;
+  const normalizedArchiveStatus = archiveStatus.trim() || DEFAULT_ARCHIVE_STATUS;
   const statusOptions = Array.from(
     new Set([...columns, ...hiddenStatuses].map((item) => item.name.trim()).filter(Boolean))
   );
@@ -572,6 +575,7 @@ export function Settings() {
         animationSpeed,
         requireInputStatus: normalizedRequireInputStatus,
         readyForMergeStatus: normalizedReadyForMergeStatus,
+        archiveStatus: normalizedArchiveStatus,
         docsEditPermissions,
         docsAllowedUsers: cleanDocsAllowedUsers,
         docsRoot,
@@ -639,6 +643,7 @@ export function Settings() {
     animationSpeed,
     requireInputStatus: normalizedRequireInputStatus,
     readyForMergeStatus: normalizedReadyForMergeStatus,
+    archiveStatus: normalizedArchiveStatus,
     docsEditPermissions,
     docsAllowedUsers: docsEditPermissions === 'specified' ? docsAllowedUsers : [],
     docsRoot,
@@ -661,6 +666,7 @@ export function Settings() {
     animationSpeed: config.animationSpeed || 'normal',
     requireInputStatus: config.requireInputStatus || DEFAULT_REQUIRE_INPUT_STATUS,
     readyForMergeStatus: config.readyForMergeStatus || DEFAULT_READY_FOR_MERGE_STATUS,
+    archiveStatus: config.archiveStatus || DEFAULT_ARCHIVE_STATUS,
     docsEditPermissions: config.docsEditPermissions || 'all',
     docsAllowedUsers: config.docsEditPermissions === 'specified' ? (config.docsAllowedUsers || []) : [],
     docsRoot: config.docsRoot || '.docs',
@@ -686,6 +692,7 @@ export function Settings() {
     setAnimationSpeed(config.animationSpeed || 'normal');      
     setRequireInputStatus(config.requireInputStatus || DEFAULT_REQUIRE_INPUT_STATUS);
     setReadyForMergeStatus(config.readyForMergeStatus || DEFAULT_READY_FOR_MERGE_STATUS);
+    setArchiveStatus(config.archiveStatus || DEFAULT_ARCHIVE_STATUS);
     setDocsEditPermissions(config.docsEditPermissions || 'all');
     setDocsAllowedUsers(config.docsAllowedUsers || []);
     setDocsRoot(config.docsRoot || '.docs');
@@ -849,6 +856,48 @@ export function Settings() {
                     <button
                       type="button"
                       onClick={() => restoreWorkflowStatusToBoard(normalizedReadyForMergeStatus)}
+                      className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
+                    >
+                      Restore
+                    </button>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-white/10 dark:bg-black/20">
+                  <div className="mb-3 flex items-start justify-between gap-3">
+                    <div>
+                      <h4 className="text-sm font-bold text-gray-800 dark:text-gray-200">Archive Status</h4>
+                      <p className="mt-1 text-xs text-gray-500">Tickets in this status are hidden from the board but remain discoverable via search.</p>
+                    </div>
+                    <span className="rounded-full bg-gray-100 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-gray-600 dark:bg-white/10 dark:text-gray-300">
+                      {getWorkflowStatusLocation(normalizedArchiveStatus)}
+                    </span>
+                  </div>
+                  <div className="flex gap-2">
+                    <select
+                      className="flex-1 bg-gray-50 dark:bg-black/20 border border-gray-200 dark:border-white/10 rounded-lg px-3 py-2 outline-none focus:border-primary text-sm font-medium"
+                      value={statusOptions.includes(normalizedArchiveStatus) ? normalizedArchiveStatus : '__missing__'}
+                      onChange={e => setArchiveStatus(e.target.value)}
+                      disabled={statusOptions.length === 0}
+                    >
+                      {!statusOptions.includes(normalizedArchiveStatus) && (
+                        <option value="__missing__" disabled>
+                          {normalizedArchiveStatus} (missing)
+                        </option>
+                      )}
+                      {statusOptions.length === 0 ? (
+                        <option value="">No statuses available</option>
+                      ) : (
+                        statusOptions.map((statusOption) => (
+                          <option key={statusOption} value={statusOption}>
+                            {statusOption}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => restoreWorkflowStatusToBoard(normalizedArchiveStatus)}
                       className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
                     >
                       Restore

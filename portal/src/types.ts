@@ -94,6 +94,7 @@ export interface Config {
   boardCardOpenMode?: BoardCardOpenMode;
   requireInputStatus?: string;
   readyForMergeStatus?: string;
+  archiveStatus?: string;
   docsEditPermissions?: DocsEditPermissions;
   docsAllowedUsers?: string[];
   docsRoot?: string;

@@ -13,6 +13,7 @@ import { TaskViewControls } from './TaskViewControls';
 import { filterAndSortTasks } from '../taskSearch';
 import { getStatusColorClass } from '../statusStyles';
 import { ReleaseModal } from './ReleaseModal';
+import { getArchiveStatus } from '../workflow';
 
 export function Board() {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -56,14 +57,16 @@ export function Board() {
     );
   }
 
+  const archiveStatus = getArchiveStatus(config);
   const boardTasks = tasks.filter((task) => 
     task.status !== 'Released' && 
+    task.status !== archiveStatus &&
     !config.hiddenStatuses?.some((hiddenStatus) => hiddenStatus.name === task.status)
   );
   const extraStatuses = Array.from(new Set(boardTasks.map(t => t.status)))
     .filter(s => !config.columns?.find(c => c.name === s) && !config.hiddenStatuses?.find(h => h.name === s));
 
-  const allColumns = [...(config.columns?.map(c => c.name) || []), ...extraStatuses];
+  const allColumns = [...(config.columns?.map(c => c.name).filter(c => c !== archiveStatus) || []), ...extraStatuses];
   const columnOrder = new Map(allColumns.map((columnId, index) => [columnId, index]));
   const visibleTasks = filterAndSortTasks(boardTasks, config, {
     searchQuery,

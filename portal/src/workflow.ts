@@ -2,6 +2,7 @@ import type { Config } from './types';
 
 export const DEFAULT_REQUIRE_INPUT_STATUS = 'Require Input';
 export const DEFAULT_READY_FOR_MERGE_STATUS = 'Ready';
+export const DEFAULT_ARCHIVE_STATUS = 'Archived';
 
 export function getRequireInputStatus(config?: Config | null) {
   return config?.requireInputStatus?.trim() || DEFAULT_REQUIRE_INPUT_STATUS;
@@ -9,6 +10,10 @@ export function getRequireInputStatus(config?: Config | null) {
 
 export function getReadyForMergeStatus(config?: Config | null) {
   return config?.readyForMergeStatus?.trim() || DEFAULT_READY_FOR_MERGE_STATUS;
+}
+
+export function getArchiveStatus(config?: Config | null) {
+  return config?.archiveStatus?.trim() || DEFAULT_ARCHIVE_STATUS;
 }
 
 export function getPromptableStatuses(config?: Config | null) {
