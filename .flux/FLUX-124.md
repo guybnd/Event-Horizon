@@ -6,7 +6,7 @@ tags:
   - ux
 priority: High
 effort: M
-implementationLink: a95ebc9
+implementationLink: 449fe3b
 subtasks: []
 history:
   - type: activity
@@ -186,6 +186,24 @@ history:
     to: Done
     user: Agent
     date: '2026-05-08T18:00:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-08T00:00:00.000Z'
+    comment: >-
+      Closing FLUX-124. All originally scoped items are shipped: systray binary
+      integration, pkg extraction, auto-open browser, configurable port, PE
+      header patch (no CMD window), right-click menu with project name, ready
+      handshake protocol. Commits: a95ebc9, 5c5d727, 10d01f7, eea58fe, 449fe3b.
+
+      One known issue remains: the tray icon is blank on Windows despite valid
+      base64 PNG being sent. This is tracked separately as FLUX-129 and will be
+      investigated independently.
+    id: c-flux124-close
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-05-08T00:00:00.000Z'
 title: System tray icon for the standalone binary
 status: Done
 createdBy: Guy
