@@ -4,6 +4,7 @@ import chokidar from 'chokidar';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import { execFile, spawn } from 'child_process';
+import zlib from 'zlib';
 import path from 'path';
 import os from 'os';
 import matter from 'gray-matter';
@@ -1455,44 +1456,49 @@ const TRAY_BINARIES: Partial<Record<NodeJS.Platform, string>> = {
   linux:  'tray_linux_release',
 };
 
-/** Builds a tiny 16×16 32-bit BGRA ICO (indigo fill) as a base64 string. */
-function buildTrayIcon(): string {
-  const W = 16, H = 16;
-  const andMaskSize = Math.ceil(W / 32) * 4 * H; // 64 bytes
-  const bmpDataSize = 40 + W * H * 4 + andMaskSize; // 1128 bytes
-  const buf = Buffer.alloc(6 + 16 + bmpDataSize);
-  let o = 0;
-
-  // ICONDIR
-  buf.writeUInt16LE(0, o); o += 2;
-  buf.writeUInt16LE(1, o); o += 2; // type = icon
-  buf.writeUInt16LE(1, o); o += 2; // count = 1
-
-  // ICONDIRENTRY
-  buf.writeUInt8(W, o++); buf.writeUInt8(H, o++);
-  buf.writeUInt8(0, o++); buf.writeUInt8(0, o++); // colorCount, reserved
-  buf.writeUInt16LE(1, o); o += 2;  // planes
-  buf.writeUInt16LE(32, o); o += 2; // bitCount
-  buf.writeUInt32LE(bmpDataSize, o); o += 4; // bytesInRes
-  buf.writeUInt32LE(22, o); o += 4; // imageOffset = 6 + 16
-
-  // BITMAPINFOHEADER
-  buf.writeUInt32LE(40, o); o += 4;       // biSize
-  buf.writeInt32LE(W, o); o += 4;         // biWidth
-  buf.writeInt32LE(H * 2, o); o += 4;     // biHeight (doubled for ICO)
-  buf.writeUInt16LE(1, o); o += 2;        // biPlanes
-  buf.writeUInt16LE(32, o); o += 2;       // biBitCount
-  buf.writeUInt32LE(0, o); o += 4;        // biCompression (BI_RGB)
-  buf.fill(0, o, o + 20); o += 20;        // remaining header fields
-
-  // Pixel data: indigo #4F46E5 in BGRA
-  for (let i = 0; i < W * H; i++) {
-    buf[o++] = 0xE5; buf[o++] = 0x46; buf[o++] = 0x4F; buf[o++] = 0xFF;
+/** CRC32 used for PNG chunk checksums. */
+function crc32(buf: Buffer): number {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < buf.length; i++) {
+    c ^= buf[i];
+    for (let j = 0; j < 8; j++) c = (c >>> 1) ^ (0xEDB88320 & -(c & 1));
   }
-  // AND mask: all zeros = fully opaque
-  buf.fill(0, o, o + andMaskSize);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
 
-  return buf.toString('base64');
+function pngChunk(type: string, data: Buffer): Buffer {
+  const typeB = Buffer.from(type, 'ascii');
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length);
+  const crcOut = Buffer.alloc(4);
+  crcOut.writeUInt32BE(crc32(Buffer.concat([typeB, data])));
+  return Buffer.concat([len, typeB, data, crcOut]);
+}
+
+/**
+ * Generates a 16×16 solid #863bff (portal violet) PNG as base64.
+ * The systray Go binary expects a base64-encoded PNG (not ICO).
+ */
+function buildTrayIconPng(): string {
+  const W = 16, H = 16;
+  const [R, G, B] = [0x86, 0x3B, 0xFF]; // #863bff — portal logo violet
+  const raw = Buffer.alloc(H * (1 + W * 3));
+  let o = 0;
+  for (let y = 0; y < H; y++) {
+    raw[o++] = 0; // filter: None
+    for (let x = 0; x < W; x++) { raw[o++] = R; raw[o++] = G; raw[o++] = B; }
+  }
+  const sig = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(W, 0); ihdr.writeUInt32BE(H, 4);
+  ihdr[8] = 8; ihdr[9] = 2; // 8-bit depth, RGB color type
+  const png = Buffer.concat([
+    sig,
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', zlib.deflateSync(raw)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+  return png.toString('base64');
 }
 
 async function initTray(port: number): Promise<void> {
@@ -1532,30 +1538,39 @@ async function initTray(port: number): Promise<void> {
     try { await fs.chmod(binaryPath, 0o755); } catch {}
   }
 
-  const trayProc = spawn(binaryPath, [], { stdio: ['pipe', 'pipe', 'ignore'] });
+  const trayProc = spawn(binaryPath, [], {
+    stdio: ['pipe', 'pipe', 'ignore'],
+    windowsHide: true,  // prevents the spawned tray process from allocating a console window
+  });
 
+  const projectName = workspaceRoot ? path.basename(workspaceRoot) : 'No project open';
   const menu = {
-    icon: buildTrayIcon(),
+    icon: buildTrayIconPng(),
     title: 'Event Horizon',
     tooltip: 'Event Horizon',
     items: [
-      { title: 'Open in Browser', tooltip: '', checked: false, enabled: true },
-      { title: '<SEPARATOR>',     tooltip: '', checked: false, enabled: false },
-      { title: 'Quit Event Horizon', tooltip: '', checked: false, enabled: true },
+      { title: 'Event Horizon',       tooltip: '', checked: false, enabled: false },
+      { title: projectName,           tooltip: '', checked: false, enabled: false },
+      { title: 'Open in Browser',     tooltip: '', checked: false, enabled: true },
+      { title: 'Quit Event Horizon',  tooltip: '', checked: false, enabled: true },
     ],
   };
-  trayProc.stdin!.write(JSON.stringify(menu) + '\n');
 
-  let buf = '';
+  // The Go tray binary sends {"type":"ready"} before it can accept the menu JSON.
+  let lineBuf = '';
+  let menuSent = false;
   trayProc.stdout!.on('data', (chunk: Buffer) => {
-    buf += chunk.toString();
-    const lines = buf.split('\n');
-    buf = lines.pop() || '';
+    lineBuf += chunk.toString();
+    const lines = lineBuf.split('\n');
+    lineBuf = lines.pop() || '';
     for (const line of lines) {
       if (!line.trim()) continue;
       try {
         const evt = JSON.parse(line);
-        if (evt.type === 'clicked') {
+        if (!menuSent && evt.type === 'ready') {
+          menuSent = true;
+          trayProc.stdin!.write(JSON.stringify(menu) + '\n');
+        } else if (evt.type === 'clicked') {
           const title: string = evt.item?.title || '';
           if (title === 'Open in Browser') openBrowser(`http://localhost:${port}`);
           else if (title === 'Quit Event Horizon') process.exit(0);

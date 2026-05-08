@@ -6,7 +6,7 @@ tags:
   - ux
 priority: High
 effort: M
-implementationLink: 'a95ebc9'
+implementationLink: a95ebc9
 subtasks: []
 history:
   - type: activity
@@ -119,18 +119,78 @@ history:
          - `startServer()`: async startup wrapper; in pkg mode auto-opens the
            browser 800ms after bind, then inits the tray.
 
-      Binary built at 87MB (includes all-platform tray binaries). PE header patched.
-      Console window suppressed on Windows. Auto-open confirmed in build output.
+      Binary built at 87MB (includes all-platform tray binaries). PE header
+      patched. Console window suppressed on Windows. Auto-open confirmed in
+      build output.
     id: c-flux124-done
   - type: status_change
     from: In Progress
     to: Done
     user: Agent
     date: '2026-05-08T17:42:00.000Z'
+  - type: status_change
+    from: Done
+    to: Require Input
+    user: Guy
+    date: '2026-05-08T07:47:40.444Z'
+  - type: comment
+    user: Guy
+    date: '2026-05-08T07:49:16.607Z'
+    comment: >-
+      upon testing:
+
+
+      1. system icon should be same as the app brower icon
+
+      2. right click tray menu ahs a dumb "<SEPARATOR>" line
+
+      3. should have project name line at the top
+
+      4. it still opens a cmd window, that upon user closing it, kills the app.
+      bad UX
+
+      cant it live in background service in the tray icon?
+    replyTo: c-flux124-done
+    id: c-2026-05-08t07-49-16-607z
+  - type: comment
+    user: Agent
+    date: '2026-05-08T18:00:00.000Z'
+    comment: >-
+      Fixed 4 issues from testing:
+
+      1. Icon: replaced ICO with PNG (Go binary expects base64 PNG, not ICO).
+         Added `crc32()`, `pngChunk()`, `buildTrayIconPng()` — generates a 16x16
+         solid #863bff (portal violet) PNG at runtime using Node's built-in `zlib`.
+
+      2. Separator showing as text: removed `<SEPARATOR>` item entirely. The Go
+         binary has no separator support in its JSON protocol — it was rendering
+         the literal string as a menu item.
+
+      3. CMD window: added `windowsHide: true` to the `spawn()` call for the tray
+         binary. This was the same fix used in the systray JS library. The PE
+         header patch suppresses the main exe's console; `windowsHide` suppresses
+         the spawned tray process's console.
+
+      4. Project name: added two disabled header items at the top of the menu —
+         "Event Horizon" (app name) and the current workspace basename (or
+         "No project open"). Menu is now: header / project name / Open in Browser
+         / Quit.
+
+      5. Protocol fix: now waits for `{type: "ready"}` from the Go binary before
+         writing the menu JSON, matching the expected handshake protocol.
+
+      Binary rebuilt and PE-patched.
+    id: c-flux124-fixes
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-05-08T18:00:00.000Z'
 title: System tray icon for the standalone binary
 status: Done
 createdBy: Guy
 updatedBy: Agent
+order: 0
 ---
 
 ## Problem / Motivation
