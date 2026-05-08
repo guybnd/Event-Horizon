@@ -222,11 +222,11 @@ export async function fetchTaskCliSession(taskId: string): Promise<CliSessionSum
   return payload.session || null;
 }
 
-export async function startTaskCliSession(taskId: string, framework: CliFramework, appendPrompt?: string): Promise<CliSessionSummary> {
+export async function startTaskCliSession(taskId: string, framework: CliFramework, appendPrompt?: string, skipPermissions = true): Promise<CliSessionSummary> {
   const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ framework, ...(appendPrompt ? { appendPrompt } : {}) }),
+    body: JSON.stringify({ framework, skipPermissions, ...(appendPrompt ? { appendPrompt } : {}) }),
   });
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));

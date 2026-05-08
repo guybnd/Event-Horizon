@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Archive, Check, ChevronRight, Copy, ExternalLink, GitBranch, MessageCircle, Trash2, X } from 'lucide-react';
+import { Archive, Bot, Check, ChevronRight, Copy, ExternalLink, GitBranch, MessageCircle, Trash2, X } from 'lucide-react';
 import type { Task } from '../types';
 import { useApp } from '../AppContext';
-import { deleteTask, updateTask } from '../api';
+import { deleteTask, startTaskCliSession, updateTask } from '../api';
 import { getArchiveStatus } from '../workflow';
 
 const AGENT_COMMANDS = [
@@ -76,6 +76,16 @@ export function ContextMenu({ task, position, onClose }: Props) {
     onClose();
   };
 
+  const handleLaunchAgent = () => {
+    onClose();
+    void startTaskCliSession(task.id, 'claude', undefined, true).then(() => triggerRefresh());
+    if (boardCardOpenMode === 'full') {
+      openTaskFullView(task);
+    } else {
+      openTaskModal(task);
+    }
+  };
+
   const handleTransition = async (status: string) => {
     onClose();
     await updateTask(task.id, { status, updatedBy: currentUser } as any);
@@ -118,6 +128,11 @@ export function ContextMenu({ task, position, onClose }: Props) {
       {/* Open / Edit */}
       <MenuItem icon={<ExternalLink className="h-3.5 w-3.5" />} onClick={handleOpen}>
         Edit / Open
+      </MenuItem>
+
+      {/* Launch Agent */}
+      <MenuItem icon={<Bot className="h-3.5 w-3.5" />} onClick={handleLaunchAgent}>
+        Launch Agent
       </MenuItem>
 
       {/* Mark comments as read */}

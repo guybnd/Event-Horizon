@@ -210,8 +210,10 @@ export function TaskModal() {
   const [cliSession, setCliSession] = useState<CliSessionSummary | null>(null);
   const [cliSessionBusy, setCliSessionBusy] = useState(false);
   const [cliSessionError, setCliSessionError] = useState('');
+  const [skipPermissions, setSkipPermissions] = useState(true);
 
   const commentRef = useRef<HTMLTextAreaElement>(null);
+  const liveOutputRef = useRef<HTMLPreElement>(null);
   const replyTextareaRef = useRef<HTMLTextAreaElement>(null);
   const commentSectionRef = useRef<HTMLDivElement>(null);
   const promptModalRef = useRef<HTMLDivElement>(null);
@@ -326,6 +328,12 @@ export function TaskModal() {
 
     return () => window.clearInterval(timer);
   }, [isModalOpen, modalTask?.id, cliSession]);
+
+  useEffect(() => {
+    if (liveOutputRef.current) {
+      liveOutputRef.current.scrollTop = liveOutputRef.current.scrollHeight;
+    }
+  }, [cliSession?.liveOutput]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -494,6 +502,60 @@ export function TaskModal() {
       setStatus(preReadyStatus);
       setReturnToWorkOpen(false);
       setReturnToWorkReason('');
+      triggerRefresh();
+      closeModal();
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleReturnToWorkAndLaunch = async () => {
+    if (!modalTask?.id) return;
+    const submittedAt = new Date().toISOString();
+    const reason = returnToWorkReason.trim();
+    const lastReadySummary = [...(modalTask.history || [])].reverse().find(
+      (e) => e.type === 'comment' && e.id
+    );
+    setSaving(true);
+    try {
+      const newEntries: any[] = [];
+      if (reason) {
+        newEntries.push({
+          type: 'comment',
+          user: currentUser,
+          date: submittedAt,
+          comment: reason,
+          ...(lastReadySummary?.id ? { replyTo: lastReadySummary.id } : {}),
+        });
+      }
+      newEntries.push({
+        type: 'status_change',
+        from: readyForMergeStatus,
+        to: preReadyStatus,
+        user: currentUser,
+        date: submittedAt,
+        comment: 'Returned to work',
+      });
+      await updateTask(modalTask.id, {
+        title,
+        body,
+        status: preReadyStatus,
+        assignee,
+        tags,
+        priority,
+        effort,
+        implementationLink: implementationLink.trim(),
+        order: modalTask.order,
+        history: [...(modalTask.history || []), ...newEntries],
+        updatedBy: currentUser,
+      } as any);
+      setReturnToWorkOpen(false);
+      setReturnToWorkReason('');
+      triggerRefresh();
+      const session = await startTaskCliSession(modalTask.id, selectedCliFramework, undefined, skipPermissions);
+      setCliSession(session);
       triggerRefresh();
       closeModal();
     } catch (error) {
@@ -1176,12 +1238,7 @@ export function TaskModal() {
       {modalTask?.id && (
         <div className="space-y-3 rounded-xl border border-gray-100 bg-gray-50 p-3 dark:border-white/5 dark:bg-black/20">
           <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Agent Session</p>
-              <p className="mt-1 text-sm font-medium text-gray-700 dark:text-gray-200">
-                {cliSession ? `${cliSession.label} (${cliSession.status})` : 'No active session'}
-              </p>
-            </div>
+            <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Agent Session</p>
             {cliSession && (
               <span className="inline-flex items-center gap-1 rounded-full bg-gray-200 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-gray-700 dark:bg-white/10 dark:text-gray-300">
                 <CircleDot className="h-3 w-3" />
@@ -1190,10 +1247,9 @@ export function TaskModal() {
             )}
           </div>
 
-          <div>
-            <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Target CLI</label>
+          <div className="flex gap-2">
             <select
-              className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary disabled:cursor-not-allowed disabled:opacity-60 dark:border-white/10 dark:bg-[#252630]"
+              className="flex-1 min-w-0 cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary disabled:cursor-not-allowed disabled:opacity-60 dark:border-white/10 dark:bg-[#252630]"
               value={selectedCliFramework}
               onChange={(event) => setSelectedCliFramework(event.target.value as CliFramework)}
               disabled={Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status)) || cliSessionBusy}
@@ -1201,42 +1257,6 @@ export function TaskModal() {
               <option value="claude">Claude Code</option>
               <option value="copilot">Copilot CLI</option>
             </select>
-          </div>
-
-          {cliSession?.blockedReason && (
-            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-500/20 dark:bg-amber-500/10">
-              <p className="text-xs font-semibold text-amber-700 dark:text-amber-300">Agent blocked — waiting for permission</p>
-              <p className="mt-0.5 text-[11px] text-amber-600 dark:text-amber-400">{cliSession.blockedReason}</p>
-              <button
-                type="button"
-                disabled={cliSessionBusy}
-                onClick={() => {
-                  if (!modalTask?.id) return;
-                  setCliSessionBusy(true);
-                  setCliSessionError('');
-                  void sendTaskCliInput(modalTask.id, 'You now have permission to proceed. Continue with the task.', currentUser)
-                    .then((session) => {
-                      setCliSession({ ...session, blockedReason: undefined });
-                      triggerRefresh();
-                    })
-                    .catch((error: any) => setCliSessionError(error?.message || 'Failed to grant permissions.'))
-                    .finally(() => setCliSessionBusy(false));
-                }}
-                className="mt-2 flex items-center gap-1.5 rounded-md bg-amber-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-600 disabled:opacity-50"
-              >
-                <Bot className="h-3.5 w-3.5" />
-                Grant Permissions &amp; Resume
-              </button>
-            </div>
-          )}
-
-          {cliSessionError && (
-            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300">
-              {cliSessionError}
-            </div>
-          )}
-
-          <div className="flex gap-2">
             <button
               type="button"
               disabled={!modalTask?.id || cliSessionBusy || Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status))}
@@ -1244,7 +1264,7 @@ export function TaskModal() {
                 if (!modalTask?.id) return;
                 setCliSessionBusy(true);
                 setCliSessionError('');
-                void startTaskCliSession(modalTask.id, selectedCliFramework)
+                void startTaskCliSession(modalTask.id, selectedCliFramework, undefined, skipPermissions)
                   .then((session) => {
                     setCliSession(session);
                     triggerRefresh();
@@ -1254,10 +1274,10 @@ export function TaskModal() {
                   })
                   .finally(() => setCliSessionBusy(false));
               }}
-              className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+              className="flex items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Bot className="h-4 w-4" />
-              {cliSessionBusy ? 'Starting...' : 'Launch'}
+              {cliSessionBusy ? 'Starting…' : 'Launch'}
             </button>
             <button
               type="button"
@@ -1276,16 +1296,48 @@ export function TaskModal() {
                   })
                   .finally(() => setCliSessionBusy(false));
               }}
-              className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-xs font-semibold text-gray-700 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/10 dark:text-gray-200 dark:hover:bg-white/5"
+              className="flex items-center justify-center gap-1.5 rounded-lg border border-gray-300 px-3 py-2 text-xs font-semibold text-gray-700 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/10 dark:text-gray-200 dark:hover:bg-white/5"
             >
               <Square className="h-4 w-4" />
               Stop
             </button>
           </div>
 
-          <p className="text-[11px] text-gray-500 dark:text-gray-400">
-            While a session is active, comments and replies are sent directly to the CLI and logged on the ticket.
-          </p>
+          <label className="flex cursor-pointer items-center gap-2">
+            <input
+              type="checkbox"
+              checked={skipPermissions}
+              onChange={(e) => setSkipPermissions(e.target.checked)}
+              disabled={Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status))}
+              className="rounded"
+            />
+            <span className="text-xs text-gray-600 dark:text-gray-400">Skip permission prompts (run freely)</span>
+          </label>
+
+          {cliSession?.blockedReason && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-500/20 dark:bg-amber-500/10">
+              <p className="text-xs font-semibold text-amber-700 dark:text-amber-300">Agent blocked — waiting for permission</p>
+              <p className="mt-0.5 text-[11px] text-amber-600 dark:text-amber-400">{cliSession.blockedReason}</p>
+            </div>
+          )}
+
+          {cliSessionError && (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300">
+              {cliSessionError}
+            </div>
+          )}
+
+          {cliSession?.liveOutput && (
+            <div>
+              <p className="mb-1 text-[10px] font-bold uppercase tracking-wider text-gray-400">Live Output</p>
+              <pre
+                ref={liveOutputRef}
+                className="max-h-48 overflow-y-auto rounded-lg bg-gray-900 p-2 text-[10px] leading-relaxed text-gray-200 dark:bg-black/60 whitespace-pre-wrap break-words"
+              >
+                {cliSession.liveOutput}
+              </pre>
+            </div>
+          )}
         </div>
       )}
       {modalTask?.id && (
@@ -1661,20 +1713,30 @@ export function TaskModal() {
                 onChange={(e) => setReturnToWorkReason(e.target.value)}
                 placeholder="Describe what needs to be changed..."
               />
-              <div className="flex gap-2">
+              <div className="flex flex-col gap-2">
+                <div className="flex gap-2">
+                  <button
+                    disabled={saving}
+                    onClick={() => void handleReturnToWork()}
+                    className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-700 transition-colors hover:bg-amber-100 disabled:opacity-50 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300 dark:hover:bg-amber-500/20"
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                    {saving ? 'Returning...' : 'Return to work'}
+                  </button>
+                  <button
+                    onClick={() => { setReturnToWorkOpen(false); setReturnToWorkReason(''); }}
+                    className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
+                  >
+                    Cancel
+                  </button>
+                </div>
                 <button
                   disabled={saving}
-                  onClick={() => void handleReturnToWork()}
-                  className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-amber-600 disabled:opacity-50"
+                  onClick={() => void handleReturnToWorkAndLaunch()}
+                  className="flex w-full items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-amber-600 disabled:opacity-50"
                 >
-                  <RotateCcw className="h-4 w-4" />
-                  {saving ? 'Returning...' : 'Confirm return'}
-                </button>
-                <button
-                  onClick={() => { setReturnToWorkOpen(false); setReturnToWorkReason(''); }}
-                  className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
-                >
-                  Cancel
+                  <Bot className="h-4 w-4" />
+                  {saving ? 'Returning...' : 'Return + Launch Agent'}
                 </button>
               </div>
             </div>
@@ -1797,6 +1859,57 @@ export function TaskModal() {
                 <Save className="h-4 w-4" />
                 {saving ? 'Saving...' : 'Save'}
               </button>
+              {/* Agent Session — always visible in top bar */}
+              {modalTask?.id && (() => {
+                const sessionIsActive = Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status));
+                if (sessionIsActive && cliSession) {
+                  const statusColor = cliSession.status === 'running' ? 'bg-green-500' : cliSession.status === 'waiting-input' ? 'bg-amber-500' : 'bg-gray-400';
+                  return (
+                    <div className="flex items-center gap-2">
+                      <span className="flex items-center gap-1.5 rounded-full border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-700 dark:border-white/10 dark:bg-white/5 dark:text-gray-200">
+                        <span className={`h-2 w-2 rounded-full ${statusColor} animate-pulse`} />
+                        Agent {cliSession.status}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={cliSessionBusy}
+                        onClick={() => {
+                          if (!modalTask?.id) return;
+                          setCliSessionBusy(true);
+                          setCliSessionError('');
+                          void stopTaskCliSession(modalTask.id)
+                            .then((session) => { setCliSession(session); triggerRefresh(); })
+                            .catch((error: any) => { setCliSessionError(error?.message || 'Failed to stop CLI session.'); })
+                            .finally(() => setCliSessionBusy(false));
+                        }}
+                        className="flex items-center gap-1 rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-100 disabled:opacity-50 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
+                      >
+                        <Square className="h-3 w-3" />
+                        Stop
+                      </button>
+                    </div>
+                  );
+                }
+                return (
+                  <button
+                    type="button"
+                    disabled={cliSessionBusy}
+                    onClick={() => {
+                      if (!modalTask?.id) return;
+                      setCliSessionBusy(true);
+                      setCliSessionError('');
+                      void startTaskCliSession(modalTask.id, selectedCliFramework, undefined, skipPermissions)
+                        .then((session) => { setCliSession(session); triggerRefresh(); })
+                        .catch((error: any) => { setCliSessionError(error?.message || 'Failed to start CLI session.'); })
+                        .finally(() => setCliSessionBusy(false));
+                    }}
+                    className="flex items-center gap-1.5 rounded-md bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-gray-700 disabled:opacity-50 dark:bg-white/10 dark:hover:bg-white/20"
+                  >
+                    <Bot className="h-3.5 w-3.5" />
+                    {cliSessionBusy ? 'Starting…' : 'Launch Agent'}
+                  </button>
+                );
+              })()}
               <button onClick={handleCloseAttempt} className="rounded p-2 text-gray-400 transition-colors hover:bg-gray-200 hover:text-gray-700 dark:hover:bg-white/5 dark:hover:text-white">
                 <X className="h-5 w-5" />
               </button>

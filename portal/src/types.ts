@@ -47,6 +47,8 @@ export interface CliSessionSummary {
   lastOutputAt?: string;
   lastInputAt?: string;
   blockedReason?: string;
+  liveOutput?: string;
+  skipPermissions?: boolean;
 }
 
 export interface TaskLiveEvent {

@@ -188,10 +188,42 @@ history:
       session `completed` or `failed`, and the next poll clears the active
       indicators.
     id: c-2026-05-08t13-17-00-000z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Guy
+    date: '2026-05-08T14:12:16.276Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-08T14:13:31.223Z'
+    comment: Launched Claude Code session (a6a47e87).
+  - type: comment
+    user: Claude Code
+    date: '2026-05-08T14:13:42.952Z'
+    comment: >-
+      ```text
+
+      Let me check the current state of the ticket and changed files before
+      closing.
+
+      ```
+    id: c-2026-05-08t14-13-42-952z
+  - type: comment
+    user: Claude Code
+    date: '2026-05-08T14:14:12.128Z'
+    comment: >-
+      ```text
+
+      Let me look at the actual diffs to separate FLUX-132 changes from other
+      tickets' work.
+
+      ```
+    id: c-2026-05-08t14-14-12-128z
 title: two way integration with CLIs like claude code and copilot CLI
-status: In Progress
+status: Ready
 createdBy: Guy
-updatedBy: Claude Code
+updatedBy: Agent
+order: 1
 ---
 ## Problem / Motivation
 
