@@ -1,6 +1,93 @@
-import { useState } from 'react';
-import { ChevronDown, Search, SlidersHorizontal } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { AlertCircle, ArrowUpDown, ChevronDown, ChevronUp, Equal, Search, SlidersHorizontal, Tag, User } from 'lucide-react';
 import { useApp } from '../AppContext';
+import type { Config } from '../types';
+
+function getTagColor(name: string, config: Config | null) {
+  const tagObj = config?.tags?.find((t) => t.name === name);
+  return tagObj?.color || 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300';
+}
+
+function getPriorityIcon(name: string, config: Config | null) {
+  const p = config?.priorities?.find((p) => p.name === name);
+  const color = p?.color || 'text-gray-400';
+  switch (p?.icon) {
+    case 'AlertCircle': return <AlertCircle className={`h-3.5 w-3.5 ${color}`} />;
+    case 'ChevronUp': return <ChevronUp className={`h-3.5 w-3.5 ${color}`} />;
+    case 'ChevronDown': return <ChevronDown className={`h-3.5 w-3.5 ${color}`} />;
+    case 'Equal':
+    case 'Equals': return <Equal className={`h-3.5 w-3.5 ${color}`} />;
+    default: return null;
+  }
+}
+
+function FilterDropdown({
+  label,
+  displayValue,
+  children,
+}: {
+  label: string;
+  displayValue: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    window.addEventListener('mousedown', handler);
+    return () => window.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative flex items-center gap-3 rounded-xl border border-gray-200 bg-gray-50/80 px-3 py-2 dark:border-white/10 dark:bg-white/5">
+      <span className="flex-none text-xs font-medium uppercase tracking-[0.16em] text-gray-400">{label}</span>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex min-w-0 flex-1 items-center justify-between gap-1.5 text-sm text-gray-600 outline-none dark:text-gray-200"
+      >
+        <span className="min-w-0 truncate">{displayValue}</span>
+        <ChevronDown className={`h-3.5 w-3.5 flex-none text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full z-50 mt-1 min-w-full rounded-xl border border-gray-200 bg-white p-1 shadow-xl dark:border-white/10 dark:bg-[#252630]">
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DropdownItem({
+  selected,
+  onClick,
+  children,
+}: {
+  selected: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition-colors ${
+        selected
+          ? 'bg-primary/10 font-semibold text-primary dark:bg-primary/20'
+          : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-white/5'
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
 
 interface TaskViewControlsProps {
   title: string;
@@ -99,62 +186,110 @@ export function TaskViewControls({
 
       {showAdvancedFilters && (
         <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
-          <label className="flex items-center gap-3 rounded-xl border border-gray-200 bg-gray-50/80 px-3 py-2 dark:border-white/10 dark:bg-white/5">
-            <span className="flex-none text-xs font-medium uppercase tracking-[0.16em] text-gray-400">Sort</span>
-            <select
-              value={sortOption}
-              onChange={(event) => setSortOption(event.target.value as any)}
-              className="min-w-0 flex-1 bg-transparent text-sm text-gray-600 outline-none dark:bg-[#1a1b23] dark:text-gray-200"
-            >
-              <option value="default">Default</option>
-              <option value="priority">Priority</option>
-              <option value="updated">Recently updated</option>
-              <option value="assignee">Assignee</option>
-            </select>
-          </label>
 
-          <label className="flex items-center gap-3 rounded-xl border border-gray-200 bg-gray-50/80 px-3 py-2 dark:border-white/10 dark:bg-white/5">
-            <span className="flex-none text-xs font-medium uppercase tracking-[0.16em] text-gray-400">Assignee</span>
-            <select
-              value={filterAssignee}
-              onChange={(event) => setFilterAssignee(event.target.value)}
-              className="min-w-0 flex-1 bg-transparent text-sm text-gray-600 outline-none dark:bg-[#1a1b23] dark:text-gray-200"
-            >
-              <option value="all">All assignees</option>
-              {config?.users.map((user) => (
-                <option key={user.name} value={user.name}>{user.name}</option>
-              ))}
-              <option value="unassigned">Unassigned</option>
-            </select>
-          </label>
+          {/* Sort */}
+          <FilterDropdown
+            label="Sort"
+            displayValue={
+              <span className="flex items-center gap-1.5">
+                <ArrowUpDown className="h-3.5 w-3.5 flex-none text-gray-400" />
+                {sortOption === 'default' ? 'Default' : sortOption === 'priority' ? 'Priority' : sortOption === 'updated' ? 'Recently updated' : 'Assignee'}
+              </span>
+            }
+          >
+            {([
+              { value: 'default', label: 'Default' },
+              { value: 'priority', label: 'Priority' },
+              { value: 'updated', label: 'Recently updated' },
+              { value: 'assignee', label: 'Assignee' },
+            ] as const).map((opt) => (
+              <DropdownItem key={opt.value} selected={sortOption === opt.value} onClick={() => setSortOption(opt.value)}>
+                <ArrowUpDown className="h-3.5 w-3.5 flex-none text-gray-400" />
+                {opt.label}
+              </DropdownItem>
+            ))}
+          </FilterDropdown>
 
-          <label className="flex items-center gap-3 rounded-xl border border-gray-200 bg-gray-50/80 px-3 py-2 dark:border-white/10 dark:bg-white/5">
-            <span className="flex-none text-xs font-medium uppercase tracking-[0.16em] text-gray-400">Priority</span>
-            <select
-              value={filterPriority}
-              onChange={(event) => setFilterPriority(event.target.value)}
-              className="min-w-0 flex-1 bg-transparent text-sm text-gray-600 outline-none dark:bg-[#1a1b23] dark:text-gray-200"
-            >
-              <option value="all">All priorities</option>
-              {config?.priorities.map((priority) => (
-                <option key={priority.name} value={priority.name}>{priority.name}</option>
-              ))}
-            </select>
-          </label>
+          {/* Assignee */}
+          <FilterDropdown
+            label="Assignee"
+            displayValue={
+              <span className="flex items-center gap-1.5">
+                <User className="h-3.5 w-3.5 flex-none text-gray-400" />
+                {filterAssignee === 'all' ? 'All assignees' : filterAssignee === 'unassigned' ? 'Unassigned' : filterAssignee}
+              </span>
+            }
+          >
+            <DropdownItem selected={filterAssignee === 'all'} onClick={() => setFilterAssignee('all')}>
+              <User className="h-3.5 w-3.5 flex-none text-gray-400" />
+              All assignees
+            </DropdownItem>
+            {config?.users.map((user) => (
+              <DropdownItem key={user.name} selected={filterAssignee === user.name} onClick={() => setFilterAssignee(user.name)}>
+                <User className="h-3.5 w-3.5 flex-none text-gray-400" />
+                {user.name}
+              </DropdownItem>
+            ))}
+            <DropdownItem selected={filterAssignee === 'unassigned'} onClick={() => setFilterAssignee('unassigned')}>
+              <User className="h-3.5 w-3.5 flex-none text-gray-400" />
+              Unassigned
+            </DropdownItem>
+          </FilterDropdown>
 
-          <label className="flex items-center gap-3 rounded-xl border border-gray-200 bg-gray-50/80 px-3 py-2 dark:border-white/10 dark:bg-white/5">
-            <span className="flex-none text-xs font-medium uppercase tracking-[0.16em] text-gray-400">Tag</span>
-            <select
-              value={filterTag}
-              onChange={(event) => setFilterTag(event.target.value)}
-              className="min-w-0 flex-1 bg-transparent text-sm text-gray-600 outline-none dark:bg-[#1a1b23] dark:text-gray-200"
-            >
-              <option value="all">All tags</option>
-              {config?.tags.map((tag) => (
-                <option key={tag.name} value={tag.name}>{tag.name}</option>
-              ))}
-            </select>
-          </label>
+          {/* Priority */}
+          <FilterDropdown
+            label="Priority"
+            displayValue={
+              filterPriority === 'all' ? (
+                <span className="flex items-center gap-1.5 text-gray-400">All priorities</span>
+              ) : (
+                <span className="flex items-center gap-1.5">
+                  {getPriorityIcon(filterPriority, config)}
+                  {filterPriority}
+                </span>
+              )
+            }
+          >
+            <DropdownItem selected={filterPriority === 'all'} onClick={() => setFilterPriority('all')}>
+              <span className="text-gray-400">All priorities</span>
+            </DropdownItem>
+            {config?.priorities.map((priority) => (
+              <DropdownItem key={priority.name} selected={filterPriority === priority.name} onClick={() => setFilterPriority(priority.name)}>
+                {getPriorityIcon(priority.name, config)}
+                {priority.name}
+              </DropdownItem>
+            ))}
+          </FilterDropdown>
+
+          {/* Tag */}
+          <FilterDropdown
+            label="Tag"
+            displayValue={
+              filterTag === 'all' ? (
+                <span className="flex items-center gap-1.5">
+                  <Tag className="h-3.5 w-3.5 flex-none text-gray-400" />
+                  All tags
+                </span>
+              ) : (
+                <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${getTagColor(filterTag, config)}`}>
+                  {filterTag}
+                </span>
+              )
+            }
+          >
+            <DropdownItem selected={filterTag === 'all'} onClick={() => setFilterTag('all')}>
+              <Tag className="h-3.5 w-3.5 flex-none text-gray-400" />
+              All tags
+            </DropdownItem>
+            {config?.tags.map((tag) => (
+              <DropdownItem key={tag.name} selected={filterTag === tag.name} onClick={() => setFilterTag(tag.name)}>
+                <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${getTagColor(tag.name, config)}`}>
+                  {tag.name}
+                </span>
+              </DropdownItem>
+            ))}
+          </FilterDropdown>
+
         </div>
       )}
     </section>
