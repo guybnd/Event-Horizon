@@ -4,7 +4,7 @@ tags:
   - ux
 priority: Medium
 effort: M
-implementationLink: ''
+implementationLink: '5242940'
 subtasks: []
 history:
   - type: activity
@@ -58,9 +58,21 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-08T15:10:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-08T15:20:00.000Z'
+    comment: >-
+      Done. Committed 5242940. Custom dropdowns with icons and colored tag/priority
+      badges are live in TaskViewControls. User confirmed "looking good".
+    id: c-flux114-close
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-08T15:20:00.000Z'
 id: FLUX-114
 title: add icons and style to filters in the board view
-status: Ready
+status: Done
 createdBy: Guy
 updatedBy: Agent
 ---
