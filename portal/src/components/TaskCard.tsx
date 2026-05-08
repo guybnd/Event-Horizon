@@ -4,10 +4,10 @@ import type { CSSProperties } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { Task, TaskLiveEvent } from '../types';
-import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, MessageCircle, Bot } from 'lucide-react';
+import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, MessageCircle, Bot, SendHorizontal } from 'lucide-react';
 import { useApp } from '../AppContext';
-import { updateTask } from '../api';
-import { isPromptableStatus, relativeTime } from '../workflow';
+import { sendTaskCliInput, startTaskCliSession, updateTask } from '../api';
+import { getReadyForMergeStatus, isPromptableStatus, relativeTime } from '../workflow';
 import { motion, AnimatePresence } from 'framer-motion';
 import { TaskMarkdown } from './TaskMarkdown';
 import { ContextMenu } from './ContextMenu';
@@ -143,6 +143,9 @@ export function TaskCard({
   const hasActiveCliSession = Boolean(task.cliSession && ['pending', 'running', 'waiting-input'].includes(task.cliSession.status));
 
   const isPromptStatus = isPromptableStatus(task.status, config);
+  const readyForMergeStatus = getReadyForMergeStatus(config);
+  const isReadyForMerge = task.status === readyForMergeStatus;
+  const [finishBusy, setFinishBusy] = useState(false);
   const comments = task.history?.filter(e => e.type === 'comment') ?? [];
   const topLevelComments = [...comments.filter(c => !c.replyTo)].reverse();
   const repliesByParentId = new Map<string, typeof comments>();
@@ -174,6 +177,22 @@ export function TaskCard({
       setPopoverReplyDraft('');
     } finally {
       setPopoverReplySaving(false);
+    }
+  };
+
+  const sendFinishCommand = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setFinishBusy(true);
+    try {
+      const command = `finish ${task.id}`;
+      if (hasActiveCliSession) {
+        await sendTaskCliInput(task.id, command, currentUser);
+      } else {
+        await startTaskCliSession(task.id, 'claude', command);
+      }
+      triggerRefresh();
+    } finally {
+      setFinishBusy(false);
     }
   };
 
@@ -464,7 +483,7 @@ export function TaskCard({
               ? openCommentPopover
               : (e) => { e.stopPropagation(); openTaskModal(task); }
             }
-            title={comments.length > 0 ? `${comments.length} comment${comments.length === 1 ? '' : 's'}` : 'Add a comment'}
+            title={hasUnread ? `${unreadComments.length} unread comment${unreadComments.length === 1 ? '' : 's'}` : comments.length > 0 ? `${comments.length} comment${comments.length === 1 ? '' : 's'}` : 'Add a comment'}
             className={`absolute z-20 flex items-center gap-1 rounded-full font-semibold transition-all duration-200 ${
               hasUnread
                 ? `${isPromptStatus ? '-top-3.5 right-7' : '-top-3.5 right-3'} px-2.5 py-1 text-[10px] bg-amber-400 text-white shadow-md hover:bg-amber-500 hover:scale-110 active:scale-95`
@@ -474,7 +493,7 @@ export function TaskCard({
             }`}
           >
             <MessageCircle className="w-3.5 h-3.5" />
-            {comments.length > 0 && <span>{comments.length}</span>}
+            {hasUnread ? <span>{unreadComments.length}</span> : comments.length > 0 && <span>{comments.length}</span>}
           </button>
         )}
         {isPromptStatus && (
@@ -731,6 +750,16 @@ export function TaskCard({
                 )}
               </div>
             </div>
+            {isReadyForMerge && !isOverlay && (
+              <button
+                onClick={(e) => void sendFinishCommand(e)}
+                disabled={finishBusy}
+                className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-[11px] font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <SendHorizontal className="w-3 h-3" />
+                {finishBusy ? 'Sending…' : 'Tell agent to finish'}
+              </button>
+            )}
           </div>
         </div>
       </motion.div>
