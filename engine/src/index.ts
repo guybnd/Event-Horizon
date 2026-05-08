@@ -757,6 +757,40 @@ app.get('/api/tasks', (req, res) => {
   res.json(Object.values(tasksCache));
 });
 
+const READ_STATE_FILE = path.join(FLUX_DIR, 'read-state.json');
+
+app.get('/api/read-state', async (req, res) => {
+  try {
+    const raw = await fs.readFile(READ_STATE_FILE, 'utf-8').catch(() => '{}');
+    res.json(JSON.parse(raw));
+  } catch {
+    res.json({});
+  }
+});
+
+app.put('/api/read-state', async (req, res) => {
+  try {
+    const body = req.body as Record<string, Record<string, string[]>>;
+    // Merge with existing state so concurrent users don't overwrite each other
+    let existing: Record<string, Record<string, string[]>> = {};
+    try {
+      const raw = await fs.readFile(READ_STATE_FILE, 'utf-8');
+      existing = JSON.parse(raw);
+    } catch { /* file may not exist yet */ }
+    for (const [user, tickets] of Object.entries(body)) {
+      existing[user] = existing[user] || {};
+      for (const [ticketId, ids] of Object.entries(tickets)) {
+        const merged = new Set([...(existing[user][ticketId] || []), ...ids]);
+        existing[user][ticketId] = [...merged];
+      }
+    }
+    await fs.writeFile(READ_STATE_FILE, JSON.stringify(existing, null, 2), 'utf-8');
+    res.json(existing);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/docs', (req, res) => {
   res.json(sortDocs(Object.values(docsCache).map(serializeDoc)));
 });

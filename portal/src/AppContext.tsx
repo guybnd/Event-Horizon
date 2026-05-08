@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { ColumnLiveEvent, Config, Task, TaskLiveEvent } from './types';
-import { fetchConfig, fetchTasks, fetchHealth, saveConfig as apiSaveConfig } from './api';
+import { fetchConfig, fetchTasks, fetchHealth, saveConfig as apiSaveConfig, fetchReadState, saveReadState } from './api';
 
 type AppView = 'board' | 'backlog' | 'docs' | 'settings' | 'releases';
 export type TaskSortOption = 'default' | 'priority' | 'updated' | 'assignee';
@@ -131,6 +131,10 @@ interface AppState {
   isConnected: boolean;
   config: Config | null;
   saveConfig: (updates: Config) => Promise<void>;
+  readComments: Record<string, string[]>;
+  ensureReadStateLoaded: (ticketId: string) => void;
+  markCommentRead: (ticketId: string, commentId: string) => void;
+  markAllCommentsRead: (ticketId: string, commentIds: string[]) => void;
 }
 
 const AppContext = createContext<AppState | undefined>(undefined);
@@ -156,6 +160,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [isWindowVisible, setIsWindowVisible] = useState(() => (typeof document === 'undefined' ? true : !document.hidden));
   const [isConnected, setIsConnected] = useState(true);
   const [config, setConfig] = useState<Config | null>(null);
+  const [readComments, setReadComments] = useState<Record<string, string[]>>({});
+  const readCommentsLoadedRef = useRef(false);
   const configRef = useRef<Config | null>(null);
   const tasksRef = useRef<Task[]>([]);
   const isFetchingTasksRef = useRef(false);
@@ -400,6 +406,43 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  // Load full read-state from server once on mount (and when user changes)
+  useEffect(() => {
+    readCommentsLoadedRef.current = false;
+    setReadComments({});
+    fetchReadState()
+      .then(state => {
+        const userState = state[currentUser] ?? {};
+        setReadComments(userState);
+        readCommentsLoadedRef.current = true;
+      })
+      .catch(() => { readCommentsLoadedRef.current = true; });
+  }, [currentUser]);
+
+  const ensureReadStateLoaded = useCallback((_ticketId: string) => {
+    // no-op: full state is loaded on mount; kept for API compatibility
+  }, []);
+
+  const markCommentRead = useCallback((ticketId: string, commentId: string) => {
+    setReadComments(prev => {
+      const existing = prev[ticketId] ?? [];
+      if (existing.includes(commentId)) return prev;
+      const next = [...existing, commentId];
+      void saveReadState({ [currentUser]: { [ticketId]: next } });
+      return { ...prev, [ticketId]: next };
+    });
+  }, [currentUser]);
+
+  const markAllCommentsRead = useCallback((ticketId: string, commentIds: string[]) => {
+    setReadComments(prev => {
+      const existing = new Set(prev[ticketId] ?? []);
+      commentIds.forEach(id => existing.add(id));
+      const next = [...existing];
+      void saveReadState({ [currentUser]: { [ticketId]: next } });
+      return { ...prev, [ticketId]: next };
+    });
+  }, [currentUser]);
+
   useEffect(() => {
     return () => {
       Object.values(taskEventTimeoutsRef.current).forEach((timeoutId) => window.clearTimeout(timeoutId));
@@ -573,7 +616,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       lastRefreshAt,
       isWindowVisible,
       isConnected,
-      config, saveConfig
+      config, saveConfig,
+      readComments, ensureReadStateLoaded, markCommentRead, markAllCommentsRead,
     }}>
       {children}
     </AppContext.Provider>

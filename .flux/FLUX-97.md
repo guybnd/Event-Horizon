@@ -16,10 +16,10 @@ history:
     user: Agent
     date: '2026-05-08T00:00:00.000Z'
     comment: >-
-      Groomed. ReleasesScreen renders each version as a static card block.
-      Plan: add local collapsed state per version using React useState (or a
-      Set), render a chevron toggle button in the version header row, and hide
-      the task grid when collapsed. Default state: expanded. No routing or
+      Groomed. ReleasesScreen renders each version as a static card block. Plan:
+      add local collapsed state per version using React useState (or a Set),
+      render a chevron toggle button in the version header row, and hide the
+      task grid when collapsed. Default state: expanded. No routing or
       persistence needed.
     id: c-flux97-groom
   - type: status_change
@@ -27,11 +27,16 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-08T00:00:00.000Z'
-id: FLUX-97
+  - type: comment
+    user: Guy
+    date: '2026-05-08T04:00:08.078Z'
+    comment: test inline comment
+    replyTo: c-flux97-groom
+    id: c-2026-05-08t04-00-08-078z
 title: release surface - make releases collapsible for easy navigation
 status: Todo
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 ---
 
 # Goal

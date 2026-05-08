@@ -153,6 +153,24 @@ export const saveConfig = async (config: Config): Promise<Config> => {
   return response.json();
 };
 
+export type ReadState = Record<string, Record<string, string[]>>;
+
+export async function fetchReadState(): Promise<ReadState> {
+  const res = await fetch(`${API_URL}/read-state`);
+  if (!res.ok) return {};
+  return res.json();
+}
+
+export async function saveReadState(patch: ReadState): Promise<ReadState> {
+  const res = await fetch(`${API_URL}/read-state`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error('Failed to save read state');
+  return res.json();
+}
+
 export const bulkRename = async (payload: { tags?: Record<string, string>, statuses?: Record<string, string>, users?: Record<string, string>, priorities?: Record<string, string> }): Promise<{success: boolean, modifiedCount: number}> => {
   const response = await fetch(`${API_URL}/bulk-rename`, {
     method: 'POST',

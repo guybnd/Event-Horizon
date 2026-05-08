@@ -24,7 +24,7 @@ import { getStatusColorClass } from '../statusStyles';
 import { buildUnsupportedImageMessage, uploadTaskImageMarkdownLinks } from '../taskAssetUploads';
 import { normalizeTaskMarkdownBody, TaskDescriptionSurface } from './TaskDescriptionSurface';
 import { TaskMarkdown } from './TaskMarkdown';
-import { DEFAULT_READY_FOR_MERGE_STATUS, getRequireInputStatus } from '../workflow';
+import { DEFAULT_READY_FOR_MERGE_STATUS, getRequireInputStatus, relativeTime } from '../workflow';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const ACTIVITY_FILTER_STORAGE_KEY = 'flux.activityFilter';
@@ -164,6 +164,10 @@ export function TaskModal() {
     refreshTrigger,
     triggerRefresh,
     config,
+    readComments,
+    ensureReadStateLoaded,
+    markCommentRead: ctxMarkCommentRead,
+    markAllCommentsRead: ctxMarkAllCommentsRead,
   } = useApp();
 
   const [title, setTitle] = useState('');
@@ -205,6 +209,10 @@ export function TaskModal() {
   const commentSectionRef = useRef<HTMLDivElement>(null);
   const promptModalRef = useRef<HTMLDivElement>(null);
   const titleRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (modalTask?.id) ensureReadStateLoaded(modalTask.id);
+  }, [modalTask?.id, ensureReadStateLoaded]);
 
   useEffect(() => {
     const el = titleRef.current;
@@ -1049,8 +1057,14 @@ export function TaskModal() {
     </div>
   );
 
+  const readCommentIds = new Set(readComments[modalTask?.id ?? ''] ?? []);
+
+  const unreadCommentCount = (modalTask?.history || []).filter(
+    (e) => e.type === 'comment' && e.id && !readCommentIds.has(e.id)
+  ).length;
+
   const activityFilterTabs = (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-2 flex-wrap">
       <button
         type="button"
         onClick={() => setActivityFilter('all')}
@@ -1073,6 +1087,15 @@ export function TaskModal() {
       >
         Comments Only
       </button>
+      {unreadCommentCount > 0 && (
+        <button
+          type="button"
+          onClick={() => modalTask?.id && ctxMarkAllCommentsRead(modalTask.id, (modalTask.history || []).filter(e => e.type === 'comment' && e.id).map(e => e.id!))}
+          className="ml-auto rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-700 transition-colors hover:bg-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:hover:bg-amber-500/25"
+        >
+          Mark all read ({unreadCommentCount})
+        </button>
+      )}
     </div>
   );
 
@@ -1081,7 +1104,7 @@ export function TaskModal() {
       {topLevelEntries.length === 0 ? (
         <p className="text-sm italic text-gray-500">No activity yet.</p>
       ) : (
-        [...topLevelEntries].map((entry, index) => {
+        [...topLevelEntries].reverse().map((entry, index) => {
           const replies = entry.id ? repliesByParent.get(entry.id) || [] : [];
           const isCollapsed = entry.id ? collapsedThreads[entry.id] : false;
 
@@ -1094,7 +1117,18 @@ export function TaskModal() {
                 <MessageSquare className="h-3 w-3 text-primary" />
               )}
             </div>
-            <div className="flex-1 rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-white/5 dark:bg-black/20">
+            <div
+              className={`flex-1 rounded-lg border p-3 transition-colors ${
+                entry.type === 'comment' && entry.id && !readCommentIds.has(entry.id)
+                  ? 'border-amber-200/60 bg-amber-50/60 dark:border-amber-500/20 dark:bg-amber-500/5 cursor-pointer hover:bg-amber-100/60 dark:hover:bg-amber-500/10'
+                  : 'border-gray-100 bg-gray-50 dark:border-white/5 dark:bg-black/20'
+              }`}
+              onClick={() => {
+                if (entry.type === 'comment' && entry.id && !readCommentIds.has(entry.id)) {
+                  ctxMarkCommentRead(modalTask!.id!, entry.id);
+                }
+              }}
+            >
               <div className="mb-1 flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-semibold text-gray-800 dark:text-gray-200">{entry.user}</span>
@@ -1103,8 +1137,14 @@ export function TaskModal() {
                       {entry.id}
                     </span>
                   )}
+                  {entry.type === 'comment' && entry.id && !readCommentIds.has(entry.id) && (
+                    <span className="flex items-center gap-1 text-[10px] text-amber-500 dark:text-amber-400">
+                      <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+                      unread · click to mark read
+                    </span>
+                  )}
                 </div>
-                <span className="text-[10px] text-gray-500">{new Date(entry.date).toLocaleString()}</span>
+                <span className="text-[10px] text-gray-500" title={new Date(entry.date).toLocaleString()}>{relativeTime(entry.date)}</span>
               </div>
               {entry.type === 'status_change' && (
                 <div className="mb-1.5 flex items-center gap-2 text-xs text-gray-500">
@@ -1202,7 +1242,7 @@ export function TaskModal() {
                             </span>
                           )}
                         </div>
-                        <span className="text-[10px] text-gray-500">{new Date(reply.date).toLocaleString()}</span>
+                        <span className="text-[10px] text-gray-500" title={new Date(reply.date).toLocaleString()}>{relativeTime(reply.date)}</span>
                       </div>
                       {reply.comment && <TaskMarkdown body={reply.comment} taskId={modalTask?.id} compact imageMode="comment" emptyMessage="" />}
                     </div>
