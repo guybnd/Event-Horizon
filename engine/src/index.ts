@@ -1434,7 +1434,8 @@ async function readPortConfig(): Promise<number> {
 function openBrowser(url: string) {
   try {
     if (process.platform === 'win32') {
-      execFile('cmd', ['/c', 'start', '', url]);
+      // windowsHide suppresses the CMD flash that would otherwise appear briefly.
+      execFile('cmd.exe', ['/c', 'start', '', url], { windowsHide: true });
     } else if (process.platform === 'darwin') {
       execFile('open', [url]);
     } else {
@@ -1476,22 +1477,33 @@ function pngChunk(type: string, data: Buffer): Buffer {
 }
 
 /**
- * Generates a 16×16 solid #863bff (portal violet) PNG as base64.
- * The systray Go binary expects a base64-encoded PNG (not ICO).
+ * Generates a 32×32 solid #863bff (portal violet) RGBA PNG as base64.
+ * The systray Go binary expects a base64-encoded PNG.
+ * Using RGBA (color type 6) at 32×32 for reliable rendering across all platforms.
  */
 function buildTrayIconPng(): string {
-  const W = 16, H = 16;
-  const [R, G, B] = [0x86, 0x3B, 0xFF]; // #863bff — portal logo violet
-  const raw = Buffer.alloc(H * (1 + W * 3));
-  let o = 0;
+  const W = 32, H = 32;
+  const [R, G, B, A] = [0x86, 0x3B, 0xFF, 0xFF]; // #863bff fully opaque
+
+  // Each scanline: filter byte (0=None) + W*4 RGBA bytes
+  const rowSize = 1 + W * 4;
+  const raw = Buffer.alloc(H * rowSize);
   for (let y = 0; y < H; y++) {
-    raw[o++] = 0; // filter: None
-    for (let x = 0; x < W; x++) { raw[o++] = R; raw[o++] = G; raw[o++] = B; }
+    const base = y * rowSize;
+    raw[base] = 0; // filter: None
+    for (let x = 0; x < W; x++) {
+      const o = base + 1 + x * 4;
+      raw[o] = R; raw[o + 1] = G; raw[o + 2] = B; raw[o + 3] = A;
+    }
   }
+
   const sig = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(W, 0); ihdr.writeUInt32BE(H, 4);
-  ihdr[8] = 8; ihdr[9] = 2; // 8-bit depth, RGB color type
+  ihdr[8] = 8;  // bit depth
+  ihdr[9] = 6;  // color type: RGBA (includes alpha channel)
+  // compression=0, filter=0, interlace=0 already zero
+
   const png = Buffer.concat([
     sig,
     pngChunk('IHDR', ihdr),
