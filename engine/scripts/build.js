@@ -17,6 +17,10 @@ const outDir = path.join(engineRoot, 'dist');
 const portalSrc = path.join(repoRoot, 'portal', 'dist');
 const portalDest = path.join(outDir, 'portal', 'dist');
 
+// Tray binary source — hoisted to root node_modules by npm workspaces
+const traybinSrc = path.join(repoRoot, 'node_modules', 'systray', 'traybin');
+const traybinDest = path.join(outDir, 'traybin');
+
 // Skill/instructions source files to embed in the binary
 const bundledAssets = [
   { src: path.join(repoRoot, '.docs', 'skills'),          dest: path.join(outDir, '.docs', 'skills') },
@@ -92,6 +96,17 @@ async function build() {
     }
   }
   console.log('Skill assets staged.');
+
+  // Stage systray tray binaries so they can be embedded as pkg assets.
+  try {
+    await fsp.access(traybinSrc);
+    console.log('Staging traybin/ → engine/dist/traybin/ …');
+    await fsp.rm(traybinDest, { recursive: true, force: true });
+    await copyDir(traybinSrc, traybinDest);
+    console.log('Tray binaries staged.');
+  } catch {
+    console.warn('systray traybin/ not found — skipping. Run npm install first.');
+  }
 
   console.log('Build complete → engine/dist/');
 }

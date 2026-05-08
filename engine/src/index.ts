@@ -3,7 +3,7 @@ import cors from 'cors';
 import chokidar from 'chokidar';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
 import path from 'path';
 import os from 'os';
 import matter from 'gray-matter';
@@ -1408,24 +1408,200 @@ app.post('/api/shutdown', (_req, res) => {
   setTimeout(() => process.exit(0), 150);
 });
 
-const PORT = process.env.PORT || 3001;
+// ─── App config (port) ────────────────────────────────────────────────────────
+// When running as a pkg binary, read/create event-horizon.config.json adjacent
+// to the executable so users can change the port before launching.
+async function readPortConfig(): Promise<number> {
+  const isPkg = (process as any).pkg !== undefined;
+  if (!isPkg) return parseInt(process.env.PORT || '3001', 10);
 
-app.listen(PORT, async () => {
-  console.log(`Event Horizon Engine running on port ${PORT}`);
-  if (PORTAL_DIST_EXISTS) {
-    console.log(`Portal:   http://localhost:${PORT}`);
+  const cfgPath = path.join(path.dirname(process.execPath), 'event-horizon.config.json');
+  try {
+    const raw = await fs.readFile(cfgPath, 'utf-8');
+    const cfg = JSON.parse(raw);
+    if (Number.isInteger(cfg.port) && cfg.port > 0 && cfg.port < 65536) return cfg.port;
+  } catch {
+    // Create a default config file so users know it exists and can edit it.
+    try {
+      await fs.writeFile(cfgPath, JSON.stringify({ port: 3001 }, null, 2), 'utf-8');
+    } catch {}
   }
+  return 3001;
+}
 
-  // Try to restore workspace: --workspace arg wins, then persisted settings.
-  const cliWorkspace = getCliWorkspace();
-  const settings = await loadAppSettings();
-  const initial = cliWorkspace || settings.workspace || null;
+// ─── Open browser ─────────────────────────────────────────────────────────────
+function openBrowser(url: string) {
+  try {
+    if (process.platform === 'win32') {
+      execFile('cmd', ['/c', 'start', '', url]);
+    } else if (process.platform === 'darwin') {
+      execFile('open', [url]);
+    } else {
+      execFile('xdg-open', [url]);
+    }
+  } catch {}
+}
 
-  if (initial && existsSync(path.join(initial, '.flux'))) {
-    await activateWorkspace(initial);
-  } else if (initial) {
-    console.warn(`Saved workspace not found: ${initial} — open the portal to select a folder.`);
+// ─── System tray ──────────────────────────────────────────────────────────────
+// Uses the pre-compiled Go tray binary from the `systray` npm package.
+// In pkg mode, the binary is embedded as an asset; we extract it to the OS
+// temp dir before spawning (pkg virtual FS cannot directly execFile).
+// The binary communicates via stdin/stdout JSON — we implement the protocol
+// directly without importing the systray JS module.
+
+const TRAY_BINARIES: Partial<Record<NodeJS.Platform, string>> = {
+  win32:  'tray_windows_release.exe',
+  darwin: 'tray_darwin_release',
+  linux:  'tray_linux_release',
+};
+
+/** Builds a tiny 16×16 32-bit BGRA ICO (indigo fill) as a base64 string. */
+function buildTrayIcon(): string {
+  const W = 16, H = 16;
+  const andMaskSize = Math.ceil(W / 32) * 4 * H; // 64 bytes
+  const bmpDataSize = 40 + W * H * 4 + andMaskSize; // 1128 bytes
+  const buf = Buffer.alloc(6 + 16 + bmpDataSize);
+  let o = 0;
+
+  // ICONDIR
+  buf.writeUInt16LE(0, o); o += 2;
+  buf.writeUInt16LE(1, o); o += 2; // type = icon
+  buf.writeUInt16LE(1, o); o += 2; // count = 1
+
+  // ICONDIRENTRY
+  buf.writeUInt8(W, o++); buf.writeUInt8(H, o++);
+  buf.writeUInt8(0, o++); buf.writeUInt8(0, o++); // colorCount, reserved
+  buf.writeUInt16LE(1, o); o += 2;  // planes
+  buf.writeUInt16LE(32, o); o += 2; // bitCount
+  buf.writeUInt32LE(bmpDataSize, o); o += 4; // bytesInRes
+  buf.writeUInt32LE(22, o); o += 4; // imageOffset = 6 + 16
+
+  // BITMAPINFOHEADER
+  buf.writeUInt32LE(40, o); o += 4;       // biSize
+  buf.writeInt32LE(W, o); o += 4;         // biWidth
+  buf.writeInt32LE(H * 2, o); o += 4;     // biHeight (doubled for ICO)
+  buf.writeUInt16LE(1, o); o += 2;        // biPlanes
+  buf.writeUInt16LE(32, o); o += 2;       // biBitCount
+  buf.writeUInt32LE(0, o); o += 4;        // biCompression (BI_RGB)
+  buf.fill(0, o, o + 20); o += 20;        // remaining header fields
+
+  // Pixel data: indigo #4F46E5 in BGRA
+  for (let i = 0; i < W * H; i++) {
+    buf[o++] = 0xE5; buf[o++] = 0x46; buf[o++] = 0x4F; buf[o++] = 0xFF;
+  }
+  // AND mask: all zeros = fully opaque
+  buf.fill(0, o, o + andMaskSize);
+
+  return buf.toString('base64');
+}
+
+async function initTray(port: number): Promise<void> {
+  const isPkg = (process as any).pkg !== undefined;
+  const binaryName = TRAY_BINARIES[process.platform];
+  if (!binaryName) return; // unsupported platform
+
+  let binaryPath: string;
+
+  if (isPkg) {
+    // Binary is embedded in the pkg virtual snapshot alongside index.js.
+    // Extract to a real temp-dir path so the OS can execute it.
+    const embeddedPath = path.join(__dirname, 'traybin', binaryName);
+    const tmpPath = path.join(os.tmpdir(), `eh-tray-${binaryName}`);
+
+    // Only extract if the file doesn't already exist (avoid re-copy on restart).
+    if (!existsSync(tmpPath)) {
+      const data = await fs.readFile(embeddedPath);
+      await fs.writeFile(tmpPath, data, { mode: 0o755 });
+    }
+    binaryPath = tmpPath;
   } else {
-    console.log('No workspace configured. Open the portal to select your project folder.');
+    // Dev/compiled: look for the binary in root node_modules (npm workspaces hoist).
+    const candidates = [
+      path.resolve(__dirname, '..', '..', 'node_modules', 'systray', 'traybin', binaryName),
+      path.resolve(__dirname, '..', 'node_modules', 'systray', 'traybin', binaryName),
+    ];
+    const found = candidates.find(p => existsSync(p));
+    if (!found) {
+      console.warn('Tray binary not found — skipping tray init.');
+      return;
+    }
+    binaryPath = found;
   }
+
+  if (process.platform !== 'win32') {
+    try { await fs.chmod(binaryPath, 0o755); } catch {}
+  }
+
+  const trayProc = spawn(binaryPath, [], { stdio: ['pipe', 'pipe', 'ignore'] });
+
+  const menu = {
+    icon: buildTrayIcon(),
+    title: 'Event Horizon',
+    tooltip: 'Event Horizon',
+    items: [
+      { title: 'Open in Browser', tooltip: '', checked: false, enabled: true },
+      { title: '<SEPARATOR>',     tooltip: '', checked: false, enabled: false },
+      { title: 'Quit Event Horizon', tooltip: '', checked: false, enabled: true },
+    ],
+  };
+  trayProc.stdin!.write(JSON.stringify(menu) + '\n');
+
+  let buf = '';
+  trayProc.stdout!.on('data', (chunk: Buffer) => {
+    buf += chunk.toString();
+    const lines = buf.split('\n');
+    buf = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const evt = JSON.parse(line);
+        if (evt.type === 'clicked') {
+          const title: string = evt.item?.title || '';
+          if (title === 'Open in Browser') openBrowser(`http://localhost:${port}`);
+          else if (title === 'Quit Event Horizon') process.exit(0);
+        }
+      } catch {}
+    }
+  });
+
+  trayProc.on('exit', () => { process.exit(0); });
+  process.on('exit', () => { try { trayProc.kill(); } catch {} });
+}
+
+// ─── Server startup ───────────────────────────────────────────────────────────
+async function startServer() {
+  const PORT = await readPortConfig();
+  const isPkg = (process as any).pkg !== undefined;
+
+  app.listen(PORT, async () => {
+    console.log(`Event Horizon Engine running on port ${PORT}`);
+    if (PORTAL_DIST_EXISTS) {
+      console.log(`Portal:   http://localhost:${PORT}`);
+    }
+
+    // Try to restore workspace: --workspace arg wins, then persisted settings.
+    const cliWorkspace = getCliWorkspace();
+    const settings = await loadAppSettings();
+    const initial = cliWorkspace || settings.workspace || null;
+
+    if (initial && existsSync(path.join(initial, '.flux'))) {
+      await activateWorkspace(initial);
+    } else if (initial) {
+      console.warn(`Saved workspace not found: ${initial} — open the portal to select a folder.`);
+    } else {
+      console.log('No workspace configured. Open the portal to select your project folder.');
+    }
+
+    if (isPkg) {
+      // Auto-open the browser after a short delay to let the engine fully bind.
+      setTimeout(() => openBrowser(`http://localhost:${PORT}`), 800);
+      // Start the system tray icon (non-fatal if it fails).
+      initTray(PORT).catch(e => console.warn('Tray init failed:', e.message));
+    }
+  });
+}
+
+startServer().catch(err => {
+  console.error('Failed to start Event Horizon:', err);
+  process.exit(1);
 });
