@@ -4,7 +4,6 @@ import chokidar from 'chokidar';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import { execFile, spawn } from 'child_process';
-import zlib from 'zlib';
 import path from 'path';
 import os from 'os';
 import matter from 'gray-matter';
@@ -1456,62 +1455,6 @@ const TRAY_BINARIES: Partial<Record<NodeJS.Platform, string>> = {
   darwin: 'tray_darwin_release',
   linux:  'tray_linux_release',
 };
-
-/** CRC32 used for PNG chunk checksums. */
-function crc32(buf: Buffer): number {
-  let c = 0xFFFFFFFF;
-  for (let i = 0; i < buf.length; i++) {
-    c ^= buf[i];
-    for (let j = 0; j < 8; j++) c = (c >>> 1) ^ (0xEDB88320 & -(c & 1));
-  }
-  return (c ^ 0xFFFFFFFF) >>> 0;
-}
-
-function pngChunk(type: string, data: Buffer): Buffer {
-  const typeB = Buffer.from(type, 'ascii');
-  const len = Buffer.alloc(4);
-  len.writeUInt32BE(data.length);
-  const crcOut = Buffer.alloc(4);
-  crcOut.writeUInt32BE(crc32(Buffer.concat([typeB, data])));
-  return Buffer.concat([len, typeB, data, crcOut]);
-}
-
-/**
- * Generates a 32×32 solid #863bff (portal violet) RGBA PNG as base64.
- * The systray Go binary expects a base64-encoded PNG.
- * Using RGBA (color type 6) at 32×32 for reliable rendering across all platforms.
- */
-function buildTrayIconPng(): string {
-  const W = 32, H = 32;
-  const [R, G, B, A] = [0x86, 0x3B, 0xFF, 0xFF]; // #863bff fully opaque
-
-  // Each scanline: filter byte (0=None) + W*4 RGBA bytes
-  const rowSize = 1 + W * 4;
-  const raw = Buffer.alloc(H * rowSize);
-  for (let y = 0; y < H; y++) {
-    const base = y * rowSize;
-    raw[base] = 0; // filter: None
-    for (let x = 0; x < W; x++) {
-      const o = base + 1 + x * 4;
-      raw[o] = R; raw[o + 1] = G; raw[o + 2] = B; raw[o + 3] = A;
-    }
-  }
-
-  const sig = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(W, 0); ihdr.writeUInt32BE(H, 4);
-  ihdr[8] = 8;  // bit depth
-  ihdr[9] = 6;  // color type: RGBA (includes alpha channel)
-  // compression=0, filter=0, interlace=0 already zero
-
-  const png = Buffer.concat([
-    sig,
-    pngChunk('IHDR', ihdr),
-    pngChunk('IDAT', zlib.deflateSync(raw)),
-    pngChunk('IEND', Buffer.alloc(0)),
-  ]);
-  return png.toString('base64');
-}
 
 async function initTray(port: number): Promise<void> {
   const isPkg = (process as any).pkg !== undefined;
