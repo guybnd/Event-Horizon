@@ -45,14 +45,14 @@ function FilterDropdown({
   }, [open]);
 
   return (
-    <div ref={ref} className="relative flex items-center gap-3 rounded-xl border border-gray-200 bg-gray-50/80 px-3 py-2 dark:border-white/10 dark:bg-white/5">
+    <div ref={ref} className="relative flex flex-none items-center gap-2 rounded-xl border border-gray-200 bg-gray-50/80 px-3 py-2 dark:border-white/10 dark:bg-white/5">
       <span className="flex-none text-xs font-medium uppercase tracking-[0.16em] text-gray-400">{label}</span>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="flex min-w-0 flex-1 items-center justify-between gap-1.5 text-sm text-gray-600 outline-none dark:text-gray-200"
       >
-        <span className="min-w-0 truncate">{displayValue}</span>
+        <span className="whitespace-nowrap">{displayValue}</span>
         <ChevronDown className={`h-3.5 w-3.5 flex-none text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
@@ -121,6 +121,18 @@ export function TaskViewControls({
     config,
   } = useApp();
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+  const filtersRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showAdvancedFilters) return;
+    const handler = (e: MouseEvent) => {
+      if (filtersRef.current && !filtersRef.current.contains(e.target as Node)) {
+        setShowAdvancedFilters(false);
+      }
+    };
+    window.addEventListener('mousedown', handler);
+    return () => window.removeEventListener('mousedown', handler);
+  }, [showAdvancedFilters]);
 
   const activeFilterCount = [
     searchQuery.trim().length > 0,
@@ -139,7 +151,7 @@ export function TaskViewControls({
 
   return (
     <section className="rounded-2xl border border-gray-200 bg-white/80 p-3 shadow-sm dark:border-white/10 dark:bg-[#181922]/80">
-      <div className="flex items-center gap-2 flex-wrap">
+      <div className="relative flex items-center gap-2 flex-wrap">
         <div className="flex items-center gap-2 flex-none">
           <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-gray-100 text-gray-500 dark:bg-white/5 dark:text-gray-300">
             <SlidersHorizontal className="h-4 w-4" />
@@ -152,35 +164,138 @@ export function TaskViewControls({
           </div>
         </div>
 
-        <label className="flex w-44 flex-none items-center gap-2 rounded-xl border border-gray-200 bg-gray-50/80 px-3 py-2 dark:border-white/10 dark:bg-white/5">
-          <Search className="h-4 w-4 flex-none text-gray-400" />
-          <input
-            value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
-            placeholder={searchPlaceholder}
-            className="min-w-0 w-full bg-transparent text-sm text-gray-700 outline-none placeholder:text-gray-400 dark:text-gray-200"
-          />
-        </label>
-
         <button
           onClick={() => setFilterUnreadOnly(!filterUnreadOnly)}
-          className={`inline-flex flex-none items-center gap-1.5 rounded-xl border px-3 py-2 text-sm font-medium transition-colors ${
+          className={`inline-flex flex-none items-center gap-1.5 rounded-xl border px-3 py-2 text-sm font-medium transition-all ${
             filterUnreadOnly
-              ? 'border-blue-400 bg-blue-50 text-blue-600 dark:border-blue-500 dark:bg-blue-900/30 dark:text-blue-300'
-              : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-100 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10'
+              ? 'border-amber-400 bg-amber-400 text-white shadow-sm shadow-amber-400/30 dark:border-amber-400 dark:bg-amber-400 dark:text-white'
+              : 'border-amber-300/60 bg-amber-50/60 text-amber-600 hover:border-amber-400 hover:bg-amber-100 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400 dark:hover:bg-amber-500/20'
           }`}
         >
           <Inbox className="h-4 w-4" />
           Unread
         </button>
 
-        <button
-          onClick={() => setShowAdvancedFilters((current) => !current)}
-          className="inline-flex flex-none items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
-        >
-          <span>{activeAdvancedFilterCount > 0 ? `Filters (${activeAdvancedFilterCount})` : 'Filters'}</span>
-          <ChevronDown className={`h-4 w-4 transition-transform ${showAdvancedFilters ? 'rotate-180' : ''}`} />
-        </button>
+        <div ref={filtersRef} className="relative flex-none">
+          <button
+            onClick={() => setShowAdvancedFilters((current) => !current)}
+            className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-medium transition-colors ${
+              showAdvancedFilters
+                ? 'border-gray-300 bg-gray-100 text-gray-700 dark:border-white/20 dark:bg-white/10 dark:text-gray-200'
+                : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-100 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10'
+            }`}
+          >
+            <span>{activeAdvancedFilterCount > 0 ? `Filters (${activeAdvancedFilterCount})` : 'Filters'}</span>
+            <ChevronDown className={`h-4 w-4 transition-transform ${showAdvancedFilters ? 'rotate-180' : ''}`} />
+          </button>
+
+          {showAdvancedFilters && (
+            <div className="absolute left-0 top-full z-50 mt-1.5 flex flex-wrap gap-2 rounded-2xl border border-gray-200 bg-white/95 p-3 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:bg-[#1e1f2a]/95">
+              {/* Sort */}
+              <FilterDropdown
+                label="Sort"
+                displayValue={
+                  <span className="flex items-center gap-1.5">
+                    <ArrowUpDown className="h-3.5 w-3.5 flex-none text-gray-400" />
+                    {sortOption === 'default' ? 'Default' : sortOption === 'priority' ? 'Priority' : sortOption === 'updated' ? 'Recently updated' : 'Assignee'}
+                  </span>
+                }
+              >
+                {([
+                  { value: 'default', label: 'Default' },
+                  { value: 'priority', label: 'Priority' },
+                  { value: 'updated', label: 'Recently updated' },
+                  { value: 'assignee', label: 'Assignee' },
+                ] as const).map((opt) => (
+                  <DropdownItem key={opt.value} selected={sortOption === opt.value} onClick={() => setSortOption(opt.value)}>
+                    <ArrowUpDown className="h-3.5 w-3.5 flex-none text-gray-400" />
+                    {opt.label}
+                  </DropdownItem>
+                ))}
+              </FilterDropdown>
+
+              {/* Assignee */}
+              <FilterDropdown
+                label="Assignee"
+                displayValue={
+                  <span className="flex items-center gap-1.5">
+                    <User className="h-3.5 w-3.5 flex-none text-gray-400" />
+                    {filterAssignee === 'all' ? 'All assignees' : filterAssignee === 'unassigned' ? 'Unassigned' : filterAssignee}
+                  </span>
+                }
+              >
+                <DropdownItem selected={filterAssignee === 'all'} onClick={() => setFilterAssignee('all')}>
+                  <User className="h-3.5 w-3.5 flex-none text-gray-400" />
+                  All assignees
+                </DropdownItem>
+                {config?.users.map((user) => (
+                  <DropdownItem key={user.name} selected={filterAssignee === user.name} onClick={() => setFilterAssignee(user.name)}>
+                    <User className="h-3.5 w-3.5 flex-none text-gray-400" />
+                    {user.name}
+                  </DropdownItem>
+                ))}
+                <DropdownItem selected={filterAssignee === 'unassigned'} onClick={() => setFilterAssignee('unassigned')}>
+                  <User className="h-3.5 w-3.5 flex-none text-gray-400" />
+                  Unassigned
+                </DropdownItem>
+              </FilterDropdown>
+
+              {/* Priority */}
+              <FilterDropdown
+                label="Priority"
+                displayValue={
+                  filterPriority === 'all' ? (
+                    <span className="flex items-center gap-1.5 text-gray-400">All priorities</span>
+                  ) : (
+                    <span className="flex items-center gap-1.5">
+                      {getPriorityIcon(filterPriority, config)}
+                      {filterPriority}
+                    </span>
+                  )
+                }
+              >
+                <DropdownItem selected={filterPriority === 'all'} onClick={() => setFilterPriority('all')}>
+                  <span className="text-gray-400">All priorities</span>
+                </DropdownItem>
+                {config?.priorities.map((priority) => (
+                  <DropdownItem key={priority.name} selected={filterPriority === priority.name} onClick={() => setFilterPriority(priority.name)}>
+                    {getPriorityIcon(priority.name, config)}
+                    {priority.name}
+                  </DropdownItem>
+                ))}
+              </FilterDropdown>
+
+              {/* Tag */}
+              <FilterDropdown
+                label="Tag"
+                displayValue={
+                  filterTag === 'all' ? (
+                    <span className="flex items-center gap-1.5">
+                      <Tag className="h-3.5 w-3.5 flex-none text-gray-400" />
+                      All tags
+                    </span>
+                  ) : (
+                    <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${getTagColor(filterTag, config)}`}>
+                      {filterTag}
+                    </span>
+                  )
+                }
+              >
+                <DropdownItem selected={filterTag === 'all'} onClick={() => setFilterTag('all')}>
+                  <Tag className="h-3.5 w-3.5 flex-none text-gray-400" />
+                  All tags
+                </DropdownItem>
+                {config?.tags.map((tag) => (
+                  <DropdownItem key={tag.name} selected={filterTag === tag.name} onClick={() => setFilterTag(tag.name)}>
+                    <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${getTagColor(tag.name, config)}`}>
+                      {tag.name}
+                    </span>
+                  </DropdownItem>
+                ))}
+              </FilterDropdown>
+            </div>
+          )}
+        </div>
 
         <button
           onClick={clearTaskFilters}
@@ -189,116 +304,17 @@ export function TaskViewControls({
         >
           Clear
         </button>
+
+        <label className="flex min-w-44 flex-1 items-center gap-2 rounded-xl border border-gray-200 bg-gray-50/80 px-3 py-2 dark:border-white/10 dark:bg-white/5">
+          <Search className="h-4 w-4 flex-none text-gray-400" />
+          <input
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder={searchPlaceholder}
+            className="min-w-0 w-full bg-transparent text-sm text-gray-700 outline-none placeholder:text-gray-400 dark:text-gray-200"
+          />
+        </label>
       </div>
-
-      {showAdvancedFilters && (
-        <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
-
-          {/* Sort */}
-          <FilterDropdown
-            label="Sort"
-            displayValue={
-              <span className="flex items-center gap-1.5">
-                <ArrowUpDown className="h-3.5 w-3.5 flex-none text-gray-400" />
-                {sortOption === 'default' ? 'Default' : sortOption === 'priority' ? 'Priority' : sortOption === 'updated' ? 'Recently updated' : 'Assignee'}
-              </span>
-            }
-          >
-            {([
-              { value: 'default', label: 'Default' },
-              { value: 'priority', label: 'Priority' },
-              { value: 'updated', label: 'Recently updated' },
-              { value: 'assignee', label: 'Assignee' },
-            ] as const).map((opt) => (
-              <DropdownItem key={opt.value} selected={sortOption === opt.value} onClick={() => setSortOption(opt.value)}>
-                <ArrowUpDown className="h-3.5 w-3.5 flex-none text-gray-400" />
-                {opt.label}
-              </DropdownItem>
-            ))}
-          </FilterDropdown>
-
-          {/* Assignee */}
-          <FilterDropdown
-            label="Assignee"
-            displayValue={
-              <span className="flex items-center gap-1.5">
-                <User className="h-3.5 w-3.5 flex-none text-gray-400" />
-                {filterAssignee === 'all' ? 'All assignees' : filterAssignee === 'unassigned' ? 'Unassigned' : filterAssignee}
-              </span>
-            }
-          >
-            <DropdownItem selected={filterAssignee === 'all'} onClick={() => setFilterAssignee('all')}>
-              <User className="h-3.5 w-3.5 flex-none text-gray-400" />
-              All assignees
-            </DropdownItem>
-            {config?.users.map((user) => (
-              <DropdownItem key={user.name} selected={filterAssignee === user.name} onClick={() => setFilterAssignee(user.name)}>
-                <User className="h-3.5 w-3.5 flex-none text-gray-400" />
-                {user.name}
-              </DropdownItem>
-            ))}
-            <DropdownItem selected={filterAssignee === 'unassigned'} onClick={() => setFilterAssignee('unassigned')}>
-              <User className="h-3.5 w-3.5 flex-none text-gray-400" />
-              Unassigned
-            </DropdownItem>
-          </FilterDropdown>
-
-          {/* Priority */}
-          <FilterDropdown
-            label="Priority"
-            displayValue={
-              filterPriority === 'all' ? (
-                <span className="flex items-center gap-1.5 text-gray-400">All priorities</span>
-              ) : (
-                <span className="flex items-center gap-1.5">
-                  {getPriorityIcon(filterPriority, config)}
-                  {filterPriority}
-                </span>
-              )
-            }
-          >
-            <DropdownItem selected={filterPriority === 'all'} onClick={() => setFilterPriority('all')}>
-              <span className="text-gray-400">All priorities</span>
-            </DropdownItem>
-            {config?.priorities.map((priority) => (
-              <DropdownItem key={priority.name} selected={filterPriority === priority.name} onClick={() => setFilterPriority(priority.name)}>
-                {getPriorityIcon(priority.name, config)}
-                {priority.name}
-              </DropdownItem>
-            ))}
-          </FilterDropdown>
-
-          {/* Tag */}
-          <FilterDropdown
-            label="Tag"
-            displayValue={
-              filterTag === 'all' ? (
-                <span className="flex items-center gap-1.5">
-                  <Tag className="h-3.5 w-3.5 flex-none text-gray-400" />
-                  All tags
-                </span>
-              ) : (
-                <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${getTagColor(filterTag, config)}`}>
-                  {filterTag}
-                </span>
-              )
-            }
-          >
-            <DropdownItem selected={filterTag === 'all'} onClick={() => setFilterTag('all')}>
-              <Tag className="h-3.5 w-3.5 flex-none text-gray-400" />
-              All tags
-            </DropdownItem>
-            {config?.tags.map((tag) => (
-              <DropdownItem key={tag.name} selected={filterTag === tag.name} onClick={() => setFilterTag(tag.name)}>
-                <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${getTagColor(tag.name, config)}`}>
-                  {tag.name}
-                </span>
-              </DropdownItem>
-            ))}
-          </FilterDropdown>
-
-        </div>
-      )}
     </section>
   );
 }
