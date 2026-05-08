@@ -353,6 +353,8 @@ export function TaskCard({
     if (!config?.hoverPopupsEnabled) return;
     if (isDragging) return;
     if (priorityMenuOpen || effortMenuOpen || assigneeMenuOpen || tagMenuOpen || isEditingTitle || commentPopoverOpen) return;
+    // Don't trigger the description popup when the mouse enters via the comment badge
+    if (commentBadgeRef.current?.contains(event.target as Node)) return;
     
     // Calculate direction before showing
     const currentCard = event.currentTarget.getBoundingClientRect();
@@ -450,6 +452,27 @@ export function TaskCard({
       }}
     >
       <motion.div {...contentAnimation} className={`relative flex flex-col rounded-xl border bg-white/80 dark:bg-[#252630]/80 backdrop-blur-md p-0 shadow-sm hover:border-primary/50 hover:shadow-md transition-all ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''} ${isPromptStatus ? 'border-amber-300 dark:border-amber-500/40 ring-1 ring-amber-200/50 dark:ring-amber-500/20' : 'border-gray-200/50 dark:border-white/5'} ${liveAnimationClass} ${liveAccentClass} ${hasUnread && !liveAccentClass ? 'ring-2 ring-amber-400/60 dark:ring-amber-500/40' : ''}`}>
+        {/* Comment badge — fixed top-right anchor; juts above card when there are unread comments */}
+        {!isOverlay && (
+          <button
+            ref={commentBadgeRef}
+            onClick={comments.length > 0
+              ? openCommentPopover
+              : (e) => { e.stopPropagation(); openTaskModal(task); }
+            }
+            title={comments.length > 0 ? `${comments.length} comment${comments.length === 1 ? '' : 's'}` : 'Add a comment'}
+            className={`absolute z-20 flex items-center gap-1 rounded-full font-semibold transition-all duration-200 ${
+              hasUnread
+                ? `${isPromptStatus ? '-top-3.5 right-7' : '-top-3.5 right-3'} px-2.5 py-1 text-[10px] bg-amber-400 text-white shadow-md hover:bg-amber-500 hover:scale-110 active:scale-95`
+                : comments.length > 0
+                  ? 'top-2 right-2 px-2 py-0.5 text-[10px] bg-gray-100/80 text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-primary/10 hover:text-primary hover:scale-105 active:scale-95 dark:bg-black/30 dark:text-gray-500 dark:hover:bg-primary/15 dark:hover:text-primary'
+                  : 'top-2 right-2 p-1 text-gray-300 opacity-0 group-hover:opacity-100 hover:text-primary hover:scale-105 active:scale-95 dark:text-gray-600 dark:hover:text-primary'
+            }`}
+          >
+            <MessageCircle className="w-3.5 h-3.5" />
+            {comments.length > 0 && <span>{comments.length}</span>}
+          </button>
+        )}
         {isPromptStatus && (
           <div className="absolute -top-1.5 -right-1.5 z-10">
             <div className="relative">
@@ -657,27 +680,7 @@ export function TaskCard({
                   </div>
                 )}
               </div>
-              {!isOverlay && (
-                <button
-                  ref={comments.length > 0 ? commentBadgeRef : undefined}
-                  onClick={comments.length > 0
-                    ? openCommentPopover
-                    : (e) => { e.stopPropagation(); openTaskModal(task); }
-                  }
-                  title={comments.length > 0 ? `${comments.length} comment${comments.length === 1 ? '' : 's'}` : 'Add a comment'}
-                  className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-semibold transition-all duration-150 hover:scale-105 active:scale-95 ${
-                    comments.length === 0
-                      ? 'bg-gray-100/60 text-gray-400 hover:bg-primary/10 hover:text-primary dark:bg-white/5 dark:text-gray-600 dark:hover:bg-primary/15 dark:hover:text-primary'
-                      : hasUnread
-                        ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 hover:shadow-sm dark:bg-amber-500/15 dark:text-amber-300 dark:hover:bg-amber-500/25'
-                        : 'bg-gray-100 text-gray-500 hover:bg-primary/10 hover:text-primary hover:shadow-sm dark:bg-black/20 dark:text-gray-400 dark:hover:bg-primary/15 dark:hover:text-primary'
-                  }`}
-                >
-                  <MessageCircle className="w-3.5 h-3.5" />
-                  {comments.length > 0 && <span>{comments.length}</span>}
-                  {hasUnread && <span className="ml-0.5 h-1.5 w-1.5 rounded-full bg-amber-400" />}
-                </button>
-              )}
+
               <div ref={assigneeMenuRef} className="relative ml-auto">
                 <button
                   onClick={(event) => {
