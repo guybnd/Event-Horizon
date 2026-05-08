@@ -648,9 +648,31 @@ export function TaskModal() {
         history: [...(modalTask.history || []), ...historyUpdates],
         updatedBy: currentUser,
       } as any);
+
+      const newResponseComment = [...(updatedTask.history || [])].reverse().find(
+        (e) => e.type === 'comment' && e.user === currentUser && e.date === submittedAt
+      );
+      const idsToMarkRead: string[] = [];
+      if (lastAgentComment?.id) idsToMarkRead.push(lastAgentComment.id);
+      if (newResponseComment?.id) idsToMarkRead.push(newResponseComment.id);
+      if (idsToMarkRead.length > 0) {
+        ctxMarkAllCommentsRead(updatedTask.id, idsToMarkRead);
+      }
+
       setModalTask(updatedTask);
       setNewComment('');
       setStatus(targetStatus);
+
+      // Auto-mark the prompt and the user's response as read so they don't
+      // show as unread after submitting.
+      const idsToMark: string[] = [];
+      if (lastAgentComment?.id) idsToMark.push(lastAgentComment.id);
+      const responseEntry = (updatedTask.history || []).find(
+        (e: HistoryEntry) => e.type === 'comment' && e.date === submittedAt && e.user === currentUser,
+      );
+      if (responseEntry?.id) idsToMark.push(responseEntry.id);
+      if (idsToMark.length > 0) ctxMarkAllCommentsRead(modalTask.id, idsToMark);
+
       triggerRefresh();
       closeModal();
     } catch (error) {

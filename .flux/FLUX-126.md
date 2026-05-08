@@ -1,9 +1,9 @@
 ---
 id: FLUX-126
 title: Responding to a prompt shouldn't show up as an unread message
-status: Todo
+status: In Progress
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 assignee: unassigned
 tags:
   - ux
@@ -17,6 +17,23 @@ history:
     user: Guy
     date: '2026-05-08T07:35:24.822Z'
     comment: Created ticket.
+  - type: comment
+    user: Agent
+    date: '2026-05-08T00:00:00.000Z'
+    comment: >-
+      Plan: in `submitRequireInputResponse` (TaskModal.tsx), after `updateTask`
+      returns the updated task, find (a) the prompt comment id (`lastAgentComment.id`)
+      and (b) the user's new response comment id (match by `date === submittedAt`
+      and `user === currentUser` in `updatedTask.history`). Call
+      `ctxMarkAllCommentsRead(modalTask.id, [...idsToMark])` before `closeModal()`.
+      The AppContext `markAllCommentsRead` is a synchronous state update with
+      fire-and-forget persistence, so no await is needed.
+    id: c-flux126-plan
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-08T00:00:00.000Z'
 ---
 
 ## Summary
