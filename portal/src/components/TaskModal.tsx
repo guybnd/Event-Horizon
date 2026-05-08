@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
 import { Rnd } from 'react-rnd';
 import {
   AlertCircle,
@@ -305,7 +305,7 @@ export function TaskModal() {
     if (!isModalOpen) return;
 
     fetchTasks()
-      .then(setAllTasks)
+      .then((tasks) => startTransition(() => setAllTasks(tasks)))
       .catch(console.error);
   }, [isModalOpen, refreshTrigger]);
 
@@ -315,7 +315,7 @@ export function TaskModal() {
     }
 
     void fetchTaskCliSession(modalTask.id)
-      .then((session) => setCliSession(session))
+      .then((session) => startTransition(() => setCliSession(session)))
       .catch(() => {});
   }, [isModalOpen, modalTask?.id]);
 
@@ -332,9 +332,8 @@ export function TaskModal() {
 
     const timer = window.setInterval(() => {
       void fetchTaskCliSession(taskId)
-        .then((session) => setCliSession(session))
+        .then((session) => startTransition(() => setCliSession(session)))
         .catch(() => {});
-      triggerRefresh();
     }, 2500);
 
     return () => window.clearInterval(timer);

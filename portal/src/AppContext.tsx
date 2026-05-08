@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, startTransition, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { ColumnLiveEvent, Config, Task, TaskLiveEvent } from './types';
 import { fetchConfig, fetchTasks, fetchHealth, saveConfig as apiSaveConfig, fetchReadState, saveReadState, fetchWorkspace } from './api';
@@ -339,19 +339,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
 
       hasLoadedTasksRef.current = true;
-      setTasksLoading(false);
 
       if (!changed && previousTasks.length > 0) {
+        startTransition(() => setTasksLoading(false));
         return;
       }
 
       tasksRef.current = fetchedTasks;
-      setTasks(fetchedTasks);
-      setLastRefreshAt(Date.now());
-
-      if (shouldEmitLiveEvents) {
-        applyLiveEvents(nextTaskEvents, nextColumnEvents);
-      }
+      startTransition(() => {
+        setTasksLoading(false);
+        setTasks(fetchedTasks);
+        setLastRefreshAt(Date.now());
+        if (shouldEmitLiveEvents) {
+          applyLiveEvents(nextTaskEvents, nextColumnEvents);
+        }
+      });
     } catch (error) {
       console.error(error);
 
