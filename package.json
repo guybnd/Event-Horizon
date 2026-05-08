@@ -14,5 +14,8 @@
     "package:win": "npm run build && npm run package:win -w engine",
     "package:mac": "npm run build && npm run package:mac -w engine",
     "install-skill": "npm run install-skill -w engine --"
+  },
+  "overrides": {
+    "react-draggable": "4.4.6"
   }
 }
