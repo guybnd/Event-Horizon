@@ -29,7 +29,75 @@ The project is split into three main areas:
 
 ---
 
-## 🚀 Getting Started
+## � Install in Your Project
+
+Use Event Horizon as a local project management layer inside any Git repository.
+
+### Prerequisites
+
+* **Node.js ≥ 18** and **npm ≥ 9**
+* A Git repository (or any directory) to manage
+
+### 1. Clone or download the Event Horizon engine
+
+```bash
+git clone https://github.com/your-org/event-horizon.git
+cd event-horizon
+npm install
+```
+
+### 2. Initialise your project workspace
+
+```bash
+npm run init -- --target /path/to/your-project --key MYAPP
+```
+
+This creates `.flux/` (config + ticket store) and `.docs/` inside your project directory.
+
+> **Tip:** If you run the command from inside your project directory, omit `--target`:
+> ```bash
+> cd /path/to/your-project
+> npm run init -w engine -- --key MYAPP
+> ```
+
+### 3. Start the engine, pointing it at your project
+
+```bash
+cd /path/to/event-horizon/engine
+npm run dev -- --workspace /path/to/your-project
+```
+
+### 4. Open the portal
+
+Navigate to **http://localhost:3001** — the portal is served directly from the engine.
+
+### 5. Create your first ticket
+
+Click **+ New ticket** on the board and start planning.
+
+---
+
+## ⚙️ Config Reference (`config.json`)
+
+The `.flux/config.json` file controls the board layout and behaviour:
+
+| Field | Description |
+|-------|-------------|
+| `columns` | Board columns shown on the Kanban view (each has a `name` and optional `color`) |
+| `hiddenStatuses` | Statuses tracked in the system but hidden from the main board |
+| `projects` | Array of project key strings (e.g. `["MYAPP"]`) — determines ticket ID prefixes |
+| `users` | List of known users (`{ name: "Alice" }`) |
+| `tags` | Tag definitions with optional colors |
+| `priorities` | Priority levels with icons and colors |
+| `enableBacklogScreen` | `true` to show the Backlog nav item |
+| `requireInputStatus` | Status name agents use when they need clarification (default `"Require Input"`) |
+| `readyForMergeStatus` | Status name for the pre-merge review checkpoint (default `"Ready"`) |
+| `boardCardOpenMode` | `"full"` opens ticket in full view on card click; `"preview"` opens sidebar preview |
+| `animationsEnabled` | Toggle UI animations |
+
+---
+
+## 🚀 Getting Started (Development / Contributor Mode)
 
 To run the full stack during development, you will need two terminal windows:
 
@@ -39,15 +107,29 @@ cd engine
 npm install
 npm run dev
 ```
-> The Engine runs locally on `http://localhost:3001`
+> The Engine runs on `http://localhost:3001` and auto-reloads on source changes.
+> The portal is also served from this port when `portal/dist/` exists.
 
-### 2. Start the Frontend Portal
+### 2. Start the Frontend Portal (dev mode with hot reload)
 ```bash
 cd portal
 npm install
 npm run dev
 ```
-> The Portal UI runs locally on `http://localhost:5173`
+> The Portal dev server runs on `http://localhost:5173` and proxies `/api` calls to the engine.
+
+---
+
+## 🏗️ Production Build
+
+```bash
+npm run build          # Build portal (Vite) + engine (esbuild bundle)
+npm run package:win    # Package into a Windows standalone binary
+npm run package:mac    # Package into a macOS standalone binary
+```
+
+The packaged binary serves both the API and portal from a single process.
+Place the binary alongside a `portal/dist/` directory (relative path).
 
 ---
 
