@@ -6,7 +6,7 @@ tags:
   - workflow
 priority: High
 effort: L
-implementationLink: ''
+implementationLink: 'd2fdf00'
 subtasks:
   - >-
     Spawn claude CLI sessions with --dangerously-skip-permissions so the agent
@@ -209,12 +209,68 @@ history:
 
       ```
     id: c-2026-05-08t14-14-26-140z
+  - type: comment
+    user: Claude Code
+    date: '2026-05-08T14:14:37.820Z'
+    comment: >-
+      ```text
+
+      Commit created at `d2fdf00`. Now update the ticket with the implementation
+      link, completion comment, and move to Done atomically.
+
+      ```
+    id: c-2026-05-08t14-14-37-820z
+  - type: comment
+    user: Claude Code
+    date: '2026-05-09T01:30:00.000Z'
+    comment: >-
+      ## Completed — commit d2fdf00
+
+
+      All three goals shipped across two commits (`8f23054` engine, `d2fdf00`
+      portal):
+
+
+      **Engine (`engine/src/index.ts`):**
+
+      - Spawns with `--dangerously-skip-permissions` for both initial launch and
+      `--resume` reply processes
+
+      - Detects `tool_use_blocked` events and permission-error stderr patterns;
+      transitions ticket to `Require Input` with a blocked-reason activity entry
+
+
+      **Portal (`portal/src/components/TaskModal.tsx`, `ContextMenu.tsx`,
+      `api.ts`, `types.ts`):**
+
+      - Skip-permissions checkbox in Agent Session panel (default on)
+
+      - Amber warning card surfaces the blocked reason when an agent hits a
+      denial
+
+      - Live output panel with auto-scroll
+
+      - Agent session status indicator + Stop/Launch controls pinned in modal
+      top bar
+
+      - "Return + Launch Agent" button in the Return-to-Work flow
+
+      - "Launch Agent" context-menu item for one-click session start from the
+      board
+
+      - `skipPermissions` flag threaded through `startTaskCliSession`
+    id: c-2026-05-09t01-30-00-000z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Claude Code
+    date: '2026-05-09T01:30:00.000Z'
 title: >-
   CLI session permissions: spawn with max permissions, block on prompt, grant
   from ticket UI
-status: Ready
+status: Done
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Claude Code
 order: 0
 ---
 ## Problem / Motivation
