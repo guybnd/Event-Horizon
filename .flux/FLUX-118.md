@@ -2,14 +2,14 @@
 title: Add settings to comment tooltip box
 status: Done
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
 tags:
   - feature
   - ux
 priority: Low
 effort: S
-implementationLink: 17dce82
+implementationLink: PENDING
 subtasks: []
 history:
   - type: activity
@@ -267,20 +267,25 @@ history:
   - type: activity
     user: Agent
     date: '2026-05-08T14:33:40.576Z'
-    comment: Launched Claude Code session (f8b75690)
+    comment: Launched Claude Code session (f8b75690).
   - type: comment
-    user: Agent
-    date: '2026-05-09T12:00:00.000Z'
+    user: Claude Code
+    date: '2026-05-08T14:36:02.112Z'
     comment: >-
-      Committed. Popover widened to 480px/520px, comment text bumped to text-sm,
-      expand button opens full-view and scrolls to comments section. Both issues
-      from Guy's feedback resolved.
-    id: c-2026-05-09-done
+      ```text
+
+      FLUX-118 is closed. Committed as `17dce82` — comment popover widened, text
+      bumped to `text-sm`, expand button opens full-view mode and scrolls to
+      comments.
+
+      ```
+    id: c-2026-05-08t14-36-02-112z
   - type: status_change
     from: Ready
     to: Done
-    user: Agent
-    date: '2026-05-09T12:00:00.000Z'.
+    user: Guy
+    date: '2026-05-08T14:42:12.164Z'
+order: 124
 ---
 
 ## Summary

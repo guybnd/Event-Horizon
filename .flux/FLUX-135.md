@@ -6,7 +6,7 @@ tags:
   - workflow
 priority: High
 effort: L
-implementationLink: 'd2fdf00'
+implementationLink: d2fdf00
 subtasks:
   - >-
     Spawn claude CLI sessions with --dangerously-skip-permissions so the agent
@@ -265,12 +265,35 @@ history:
     to: Done
     user: Claude Code
     date: '2026-05-09T01:30:00.000Z'
+  - type: comment
+    user: Claude Code
+    date: '2026-05-08T14:15:10.070Z'
+    comment: >-
+      ```text
+
+      FLUX-135 is closed. Here's what shipped:
+
+
+      **Engine (commit `8f23054`):** Sessions spawn with
+      `--dangerously-skip-permissions`; `tool_use_blocked` events and
+      permission-error stderr patterns automatically transition the ticket to
+      `Require Input` with a blocked-reason entry.
+
+
+      **Portal (commit `d2fdf00`):** Skip-permissions checkbox (default on),
+      amber blocked-reason card, live output panel with auto-scroll, agent
+      status + Stop/Launch in the modal top bar, "Return + Launch Agent" in the
+      return-to-work flow, and a "Launch Agent" context-menu item on board
+      cards.
+
+      ```
+    id: c-2026-05-08t14-15-10-070z
 title: >-
   CLI session permissions: spawn with max permissions, block on prompt, grant
   from ticket UI
 status: Done
 createdBy: Guy
-updatedBy: Claude Code
+updatedBy: Agent
 order: 0
 ---
 ## Problem / Motivation

@@ -3,7 +3,7 @@ assignee: unassigned
 tags: []
 priority: Low
 effort: XS
-implementationLink: '835253c'
+implementationLink: 835253c
 subtasks: []
 history:
   - type: activity
@@ -64,6 +64,18 @@ history:
     to: Done
     user: Agent
     date: '2026-05-09T12:00:01.000Z'
+  - type: comment
+    user: Claude Code
+    date: '2026-05-08T14:27:34.824Z'
+    comment: >-
+      ```text
+
+      FLUX-141 is done. Committed as `835253c` — the 5-line navigation block
+      removed from `handleLaunchAgent` in `ContextMenu.tsx`, ticket closed at
+      `32a0d96`.
+
+      ```
+    id: c-2026-05-08t14-27-34-824z
 title: right click launch agent opens the page instead of just launching it
 status: Done
 createdBy: Guy

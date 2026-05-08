@@ -41,6 +41,20 @@ history:
     user: Agent
     date: '2026-05-08T14:54:22.971Z'
     comment: Updated implementation link.
+  - type: comment
+    user: Claude Code
+    date: '2026-05-08T14:54:30.914Z'
+    comment: >-
+      ```text
+
+      FLUX-123 is done. The fix was in commit `988d7c7` — added
+      `workspaceConfigured` to the `useEffect` dependency array and an
+      early-return guard in `portal/src/AppContext.tsx:431-441`, so the read
+      state fetch now only fires once the workspace is confirmed ready instead
+      of silently failing on the 503 during initial mount.
+
+      ```
+    id: c-2026-05-08t14-54-30-914z
 ---
 
 ## Summary

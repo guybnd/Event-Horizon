@@ -13,6 +13,7 @@
     "package": "npm run build && npm run package -w engine",
     "package:win": "npm run build && npm run package:win -w engine",
     "package:mac": "npm run build && npm run package:mac -w engine",
+    "dist:mac": "npm run package:mac && zip -j event-horizon-macos.zip engine/dist/event-horizon",
     "install-skill": "npm run install-skill -w engine --"
   },
   "overrides": {

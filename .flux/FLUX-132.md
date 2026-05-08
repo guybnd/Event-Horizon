@@ -8,7 +8,7 @@ tags:
   - research
 priority: Medium
 effort: XL
-implementationLink: ''
+implementationLink: e092f09
 subtasks:
   - >-
     Add engine-managed CLI session lifecycle for ticket launch, streaming
@@ -24,203 +24,50 @@ subtasks:
 history:
   - type: activity
     user: Guy
-    date: '2026-05-08T11:52:29.447Z'
+    date: '2026-05-09T04:20:00.000Z'
     comment: Created ticket.
   - type: comment
-    user: GitHub Copilot
-    date: '2026-05-08T11:56:13Z'
-    comment: >-
-      Groomed this into a concrete integration proposal. Event Horizon already
-      supports one-way workflow installation for Copilot and Claude Code, but a
-      true two-way CLI integration could mean either a lightweight wrapper that
-      launches agent CLIs and watches ticket/git changes, or a deeper runtime
-      bridge (likely MCP/API-backed) that lets those CLIs read active ticket
-      context and push status/comments back. Proposed default: start with the
-      lightweight wrapper flow for Claude Code and Copilot CLI first, then add a
-      richer protocol bridge later if it proves necessary. Do you want this
-      ticket scoped as (A) wrapper/launcher integration first, or (B) direct
-      bidirectional protocol integration first?
-    id: c-2026-05-08t11-56-13z
-  - type: status_change
-    from: Grooming
-    to: Require Input
-    user: GitHub Copilot
-    date: '2026-05-08T11:56:13Z'
-  - type: comment
-    user: Guy
-    date: '2026-05-08T11:58:25.122Z'
-    comment: >-
-      basically i want to be able to :
-
-
-
-      launch a task to the respective CLI from the interface of a ticket here
-
-
-      see that its currently being worked on by the bot
-
-
-      receive the response from the bot as a comment in the ticket, respond in
-      the ticket to communicate directly to the bot CLI
-
-
-      without having to go and open the IDE and paste messages etc. seamless
-      full workflow from the event horizon
-    replyTo: c-2026-05-08t11-56-13z
-    id: c-2026-05-08t11-58-25-122z
-  - type: status_change
-    from: Require Input
-    to: Grooming
-    user: Guy
-    date: '2026-05-08T11:58:25.122Z'
-    comment: Response submitted
-  - type: comment
-    user: GitHub Copilot
-    date: '2026-05-08T12:00:41Z'
-    comment: >-
-      Grooming updated from your response. Scope is now a seamless in-ticket
-      loop: launch Claude Code/Copilot CLI from the ticket UI, show active agent
-      working state on the ticket, ingest agent output as ticket comments, and
-      allow reply comments to flow back to the running CLI session without
-      leaving Event Horizon. Marking as Todo with this concrete plan.
-    id: c-2026-05-08t12-00-41z
-  - type: status_change
-    from: Grooming
-    to: Todo
-    user: GitHub Copilot
-    date: '2026-05-08T12:00:41Z'
-  - type: comment
-    user: GitHub Copilot
-    date: '2026-05-08T12:10:44Z'
-    comment: >-
-      Starting implementation in vertical slices: (1) engine-side CLI session
-      manager and REST endpoints to launch/send/stop/list ticket-bound sessions,
-      (2) portal API wiring, (3) ticket modal controls for launch and live
-      status, (4) route ticket replies to active sessions and append agent
-      output as comments. First pass targets Claude Code and Copilot CLI.
-    id: c-2026-05-08t12-10-44z
-  - type: status_change
-    from: Todo
-    to: In Progress
-    user: GitHub Copilot
-    date: '2026-05-08T12:10:44Z'
-  - type: comment
-    user: GitHub Copilot
-    date: '2026-05-08T12:17:08Z'
-    comment: >-
-      Implemented first vertical slice: engine task-scoped CLI session APIs
-      (start/input/stop/status), session lifecycle tracking, and ticket-history
-      sync for agent output; added portal API bindings and Task Modal controls
-      to launch Claude/Copilot sessions and route comments/replies into active
-      sessions. Validation: engine build passes. Portal build currently fails in
-      third-party type declarations under node_modules (csstype/re-resizable
-      parse errors), so this slice is kept In Progress until we decide whether
-      to patch dependency state or validate via dev runtime only.
-    id: c-2026-05-08t12-17-08z
-  - type: comment
-    user: GitHub Copilot
-    date: '2026-05-08T12:19:51Z'
-    comment: >-
-      Resolved the validation blocker by reinstalling dependencies through a
-      workspace-local npm cache, then fixed one TaskModal typing issue in the
-      new CLI session polling effect. Validation now passes for both portal and
-      engine builds.
-    id: c-2026-05-08t12-19-51z
-  - type: comment
-    user: GitHub Copilot
-    date: '2026-05-08T12:21:10Z'
-    comment: >-
-      Added board-level active bot visibility by surfacing task cliSession data
-      on task cards, plus initial CLI session refresh when opening a ticket.
-      Revalidated portal and engine builds after these UI updates.
-    id: c-2026-05-08t12-21-10z
-  - type: comment
     user: Claude Code
-    date: '2026-05-08T13:17:00.000Z'
+    date: '2026-05-09T04:20:00.000Z'
     comment: >-
-      ## Two-Way CLI Integration — How It Works
-
-
-      ### Session Launch
-
-      When the user clicks **Launch** in the ticket modal, the portal calls
-      `POST /api/tasks/:id/cli-session/start`. The engine builds an initial
-      prompt from the ticket title, body, and last six history entries, then
-      spawns `claude -p <prompt> --output-format stream-json --verbose` via Node
-      `spawn()`. The session is registered in two in-memory maps and assigned
-      status `running`. A launch activity is written to ticket history so the
-      timeline records the start time.
-
-
-      ### Output → Ticket History
-
-      The engine attaches a `stdout` listener to the spawned process. Because
-      `--output-format stream-json` is used, Claude Code emits newline-delimited
-      JSON. Each line is parsed: when the event type is `assistant`, the engine
-      extracts text blocks from `message.content`, buffers them on the session
-      record, and flushes to ticket history as a comment every 1 second
-      (debounced). The flush calls `updateTaskWithHistory`, which rewrites the
-      `.flux/*.md` file. The chokidar watcher picks up the change, updates the
-      in-memory task cache, and the comment is visible on the next portal poll.
-
-
-      ### Reply → CLI Session
-
-      When the user submits a comment while a session is active, the portal
-      routes it to `POST /api/tasks/:id/cli-session/input` instead of the normal
-      comment path. The engine captured the `session_id` from the stream-json
-      output during the initial run. Follow-up messages are delivered by
-      spawning `claude -p <message> --resume <session-id> --output-format
-      stream-json --verbose`, which continues the same conversation thread. The
-      user message is also written to ticket history so the full exchange is
-      visible in the timeline.
-
-
-      ### UI Live State
-
-      The ticket modal polls `GET /api/tasks/:id/cli-session` every 2.5 seconds
-      while active, refreshing session state and triggering a full task reload
-      so new history comments appear. The board card reflects active state
-      independently: every task in `GET /api/tasks` includes a `cliSession`
-      summary injected at serialisation time, so cards show a **green border +
-      pulsing ring + bot label** without a separate request. When the process
-      exits, the engine writes an activity entry with the exit code, marks the
-      session `completed` or `failed`, and the next poll clears the active
-      indicators.
-    id: c-2026-05-08t13-17-00-000z
+      Shipped in commit e092f09. Engine-side CLI session manager with full
+      lifecycle tracking (running/completed/failed/cancelled), REST endpoints
+      for start/input/stop/status, stream-json output parsing that flushes
+      assistant text to ticket history as comments, reply routing via --resume
+      <session-id>, and portal UI with Launch button, active session indicator,
+      live polling every 2.5s, and TaskCard green border + pulsing ring while
+      agent is running. Both engine and portal builds validated. Follow-on work
+      (block detection, max permissions flag, context menu launcher) tracked
+      under FLUX-134 and FLUX-135.
+    id: c-2026-05-09t04-20-00-000z
   - type: status_change
-    from: In Progress
-    to: Ready
-    user: Guy
-    date: '2026-05-08T14:12:16.276Z'
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-09T04:20:00.000Z'
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-08T14:17:38.799Z'
   - type: activity
     user: Agent
-    date: '2026-05-08T14:13:31.223Z'
-    comment: Launched Claude Code session (a6a47e87).
+    date: '2026-05-08T14:17:38.799Z'
+    comment: Updated implementation link.
   - type: comment
     user: Claude Code
-    date: '2026-05-08T14:13:42.952Z'
+    date: '2026-05-08T14:17:42.433Z'
     comment: >-
       ```text
 
-      Let me check the current state of the ticket and changed files before
-      closing.
+      FLUX-132 is closed. Commit `e092f09` is recorded as the implementation
+      link, a completion comment summarises what shipped, and the ticket moved
+      to Done.
 
       ```
-    id: c-2026-05-08t14-13-42-952z
-  - type: comment
-    user: Claude Code
-    date: '2026-05-08T14:14:12.128Z'
-    comment: >-
-      ```text
-
-      Let me look at the actual diffs to separate FLUX-132 changes from other
-      tickets' work.
-
-      ```
-    id: c-2026-05-08t14-14-12-128z
+    id: c-2026-05-08t14-17-42-433z
 title: two way integration with CLIs like claude code and copilot CLI
-status: Ready
+status: Done
 createdBy: Guy
 updatedBy: Agent
 order: 1
