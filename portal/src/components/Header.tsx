@@ -86,8 +86,8 @@ export function Header() {
 
   return (
     <header className="sticky top-0 z-10 border-b border-gray-200 bg-white/65 px-8 py-4 backdrop-blur-md dark:border-white/5 dark:bg-black/20">
-      <div className="flex flex-col gap-4 2xl:flex-row 2xl:items-center 2xl:justify-between">
-      <div className="flex flex-wrap items-center gap-4 xl:gap-6">
+      <div className="flex items-center justify-between gap-4 overflow-x-auto pb-1 -mb-1">
+      <div className="flex shrink-0 items-center gap-4 xl:gap-6">
         <div className="flex items-center gap-3">
           <div className="bg-primary/10 p-2 rounded-lg">
             <Rocket className="w-5 h-5 text-primary" />
@@ -134,7 +134,7 @@ export function Header() {
         </div>
       </div>
       
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex items-center gap-3 min-w-0 flex-1 justify-end">
         <button
           onClick={() => openTaskModal({ status: 'Grooming' })}
           className="flex h-[38px] items-center justify-center gap-2 rounded-2xl bg-primary px-4 text-sm font-semibold text-white shadow-sm transition-all hover:bg-primary-hover focus:outline-none cursor-pointer"
@@ -142,7 +142,7 @@ export function Header() {
           <Plus className="h-4 w-4" />
           <span className="hidden sm:inline">New ticket</span>
         </button>
-        <div ref={searchContainerRef} className="relative min-w-[320px] flex-1 2xl:w-[420px] 2xl:flex-none">
+        <div ref={searchContainerRef} className="relative min-w-[160px] flex-1 max-w-[420px]">
           <div className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white/80 px-3 py-2 text-sm text-gray-600 shadow-sm dark:border-white/10 dark:bg-white/5 dark:text-gray-300">
             <Search className="h-4 w-4 text-gray-400" />
             <input
@@ -210,7 +210,7 @@ export function Header() {
         </div>
         <button
           onClick={() => setView('board')}
-          className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-left transition-colors ${promptCount > 0 ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300' : 'border-gray-200 bg-white/60 text-gray-500 dark:border-white/10 dark:bg-white/5 dark:text-gray-400'} ${isPromptPulseActive ? 'header-live-prompts' : ''}`}
+          className={`flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-left transition-colors ${promptCount > 0 ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300' : 'border-gray-200 bg-white/60 text-gray-500 dark:border-white/10 dark:bg-white/5 dark:text-gray-400'} ${isPromptPulseActive ? 'header-live-prompts' : ''}`}
           title="Open board to review tickets waiting for input or merge review"
         >
           <div className="relative">
@@ -223,7 +223,7 @@ export function Header() {
           </div>
         </button>
 
-        <div className={`flex items-center gap-2 rounded-xl border px-3 py-2 transition-colors ${!isConnected ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300' : 'border-transparent bg-transparent text-gray-500 dark:text-gray-400'}`}>
+        <div className={`flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 transition-colors ${!isConnected ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300' : 'border-transparent bg-transparent text-gray-500 dark:text-gray-400'}`}>
           <div className="relative flex items-center justify-center">
             {isConnected ? (
               <div className="h-2 w-2 rounded-full bg-emerald-500/70" />
@@ -241,7 +241,7 @@ export function Header() {
           onClick={handleStopService}
           disabled={isStoppingService || !isConnected}
           title="Stop the Event Horizon service"
-          className="flex items-center justify-center rounded-xl border border-gray-200 bg-white/60 p-2 text-gray-400 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:bg-white/5 dark:text-gray-500 dark:hover:border-red-500/30 dark:hover:bg-red-500/10 dark:hover:text-red-400"
+          className="flex shrink-0 items-center justify-center rounded-xl border border-gray-200 bg-white/60 p-2 text-gray-400 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:bg-white/5 dark:text-gray-500 dark:hover:border-red-500/30 dark:hover:bg-red-500/10 dark:hover:text-red-400"
         >
           <Power className="h-4 w-4" />
         </button>
