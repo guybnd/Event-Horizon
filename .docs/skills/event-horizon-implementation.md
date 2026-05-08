@@ -20,16 +20,18 @@ Load this skill when a ticket's status is `Todo` or `In Progress`.
 ## Implementation Workflow
 
 1. Read the full ticket, including all history comments, before touching any file.
-2. Read nearby implementation files before editing. Prefer the smallest owning surface.
-3. Post a short plan comment to the ticket before substantial work.
-4. Move the ticket to `In Progress` before making the first substantive code change.
-5. Make small, local changes and validate immediately after the first substantive edit.
-6. Post progress comments when scope changes, validation fails, or the user redirects the work.
-7. If clarification is required during implementation, do not ask only in chat. Move the ticket to the configured user-input status (`requireInputStatus` in `.flux/config.json`, default `Require Input`), leave one explicit question in ticket history, and use the focused response flow so the user can answer through the system.
-8. When a ticket enters the configured ready-for-merge status (`readyForMergeStatus` in `.flux/config.json`, default `Ready`), treat it as awaiting user review rather than fully closed work. Keep files uncommitted or on a working branch at this stage.
-9. Before moving a ticket to `Ready` or `Done`, review whether `.docs/`, `README.md`, or `.docs/skills/*.md` should be updated and refresh the relevant docs when behaviour, workflow expectations, or touchpoints changed.
-10. If the user says `finish FLUX-XX` for a ticket in the ready-for-merge status, stage all relevant files and perform the final ticket-close sequence. The commit creation, recording its hash in `implementationLink`, and the status transition to `Done` must happen simultaneously as one atomic step.
-11. Add a descriptive completion comment that explains what changed, what was validated, any follow-up caveats, and the commit reference when available. Then move the ticket to `Done`.
+2. **[HARD GATE] Verify the ticket body contains a concrete implementation plan before writing any code.** If the body still reads as the original vague user description, grooming is incomplete — stop, rewrite the body using the grooming skill steps, move the ticket to `Todo`, then return here. Do not proceed past this step with an ungroomed ticket body.
+3. **[HARD GATE] Verify the ticket history contains a `Grooming → Todo` status change before setting `In Progress`.** If that transition is absent, the ticket skipped the grooming checkpoint — treat it as incomplete grooming and stop.
+4. Read nearby implementation files before editing. Prefer the smallest owning surface.
+5. Post a short plan comment to the ticket before substantial work.
+6. Move the ticket to `In Progress` before making the first substantive code change.
+7. Make small, local changes and validate immediately after the first substantive edit.
+8. Post progress comments when scope changes, validation fails, or the user redirects the work.
+9. If clarification is required during implementation, do not ask only in chat. Move the ticket to the configured user-input status (`requireInputStatus` in `.flux/config.json`, default `Require Input`), leave one explicit question in ticket history, and use the focused response flow so the user can answer through the system.
+10. When a ticket enters the configured ready-for-merge status (`readyForMergeStatus` in `.flux/config.json`, default `Ready`), treat it as awaiting user review rather than fully closed work. Keep files uncommitted or on a working branch at this stage.
+11. Before moving a ticket to `Ready` or `Done`, review whether `.docs/`, `README.md`, or `.docs/skills/*.md` should be updated and refresh the relevant docs when behaviour, workflow expectations, or touchpoints changed.
+12. If the user says `finish FLUX-XX` for a ticket in the ready-for-merge status, stage all relevant files and perform the final ticket-close sequence. The commit creation, recording its hash in `implementationLink`, and the status transition to `Done` must happen simultaneously as one atomic step.
+13. Add a descriptive completion comment that explains what changed, what was validated, any follow-up caveats, and the commit reference when available. Then move the ticket to `Done`.
 
 ## Common Project Patterns
 
