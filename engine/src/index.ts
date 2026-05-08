@@ -120,6 +120,7 @@ interface CliSessionRecord extends CliSessionSummary {
   blockedReason?: string;
   outputBuffer: string;
   liveOutputBuffer: string;
+  pendingAssistantText: string;
   flushTimer?: NodeJS.Timeout;
   requestedStop: boolean;
   writeQueue: Promise<void>;
@@ -1096,6 +1097,7 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
     label,
     outputBuffer: '',
     liveOutputBuffer: '',
+    pendingAssistantText: '',
     skipPermissions,
     requestedStop: false,
     writeQueue: Promise.resolve(),
@@ -1125,6 +1127,15 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
       ],
     });
 
+    // Flush any deferred assistant text to history (confirmed not followed by tool use).
+    const commitPendingAssistantText = () => {
+      if (session.pendingAssistantText) {
+        appendSessionOutput(session, session.pendingAssistantText, 'stdout', true);
+        flushSessionOutput(session);
+        session.pendingAssistantText = '';
+      }
+    };
+
     let lineBuf = '';
     proc.stdout.on('data', (chunk: Buffer) => {
       lineBuf += chunk.toString();
@@ -1139,15 +1150,34 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
           if (!session.claudeSessionId && evt.session_id) {
             session.claudeSessionId = evt.session_id;
           }
-          // Extract assistant text — saved to history and shown live
           if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
+            const hasToolUse = evt.message.content.some((b: any) => b.type === 'tool_use');
+            if (hasToolUse) {
+              // This is a tool-calling turn — discard any pending narration text
+              session.pendingAssistantText = '';
+            } else {
+              // Pure-text turn — could be narration or a real update. Commit previous pending
+              // text first (two consecutive text turns means the first was a real update),
+              // then defer this one until we see what follows.
+              commitPendingAssistantText();
+            }
             for (const block of evt.message.content) {
               if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
-                appendSessionOutput(session, block.text, 'stdout', true);
-                flushSessionOutput(session);
+                // Always show in live panel immediately
+                session.liveOutputBuffer += block.text;
+                if (!hasToolUse) {
+                  // Defer to pendingAssistantText; will be committed or discarded on next event
+                  session.pendingAssistantText += block.text;
+                }
               }
             }
           } else {
+            // Non-assistant event — commit any pending text (it wasn't followed by a tool call)
+            if (evt.type !== 'tool_use' && evt.type !== 'tool_result') {
+              commitPendingAssistantText();
+            } else {
+              session.pendingAssistantText = '';
+            }
             // All other JSON events are ephemeral — live panel only, never saved
             appendSessionOutput(session, trimmed, 'stdout', false);
           }
@@ -1181,6 +1211,7 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
     proc.on('error', async (error) => {
       session.status = 'failed';
       session.endedAt = new Date().toISOString();
+      commitPendingAssistantText();
       flushSessionOutput(session, true);
       await updateTaskWithHistory(id, {
         updatedBy: 'Agent',
@@ -1191,6 +1222,7 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
     });
 
     proc.on('exit', async (code, signal) => {
+      commitPendingAssistantText();
       flushSessionOutput(session, true);
       session.endedAt = new Date().toISOString();
       if (session.requestedStop) {
@@ -1269,6 +1301,15 @@ app.post('/api/tasks/:id/cli-session/input', requireWorkspace, async (req, res) 
     session.proc = replyProc;
     session.pid = replyProc.pid;
 
+    // Flush any deferred assistant text to history (confirmed not followed by tool use).
+    const commitReplyPendingText = () => {
+      if (session.pendingAssistantText) {
+        appendSessionOutput(session, session.pendingAssistantText, 'stdout', true);
+        flushSessionOutput(session);
+        session.pendingAssistantText = '';
+      }
+    };
+
     let lineBuf = '';
     replyProc.stdout.on('data', (chunk: Buffer) => {
       lineBuf += chunk.toString();
@@ -1281,12 +1322,27 @@ app.post('/api/tasks/:id/cli-session/input', requireWorkspace, async (req, res) 
           const evt = JSON.parse(trimmed);
           if (evt.session_id) session.claudeSessionId = evt.session_id;
           if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
+            const hasToolUse = evt.message.content.some((b: any) => b.type === 'tool_use');
+            if (hasToolUse) {
+              session.pendingAssistantText = '';
+            } else {
+              commitReplyPendingText();
+            }
             for (const block of evt.message.content) {
               if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
-                appendSessionOutput(session, block.text, 'stdout');
-                flushSessionOutput(session);
+                session.liveOutputBuffer += block.text;
+                if (!hasToolUse) {
+                  session.pendingAssistantText += block.text;
+                }
               }
             }
+          } else {
+            if (evt.type !== 'tool_use' && evt.type !== 'tool_result') {
+              commitReplyPendingText();
+            } else {
+              session.pendingAssistantText = '';
+            }
+            appendSessionOutput(session, trimmed, 'stdout', false);
           }
           if (evt.type === 'tool_use_blocked' || (evt.type === 'result' && evt.is_error && /permission|not allowed|denied/i.test(String(evt.error || '')))) {
             const reason = evt.tool_name
@@ -1304,15 +1360,13 @@ app.post('/api/tasks/:id/cli-session/input', requireWorkspace, async (req, res) 
             });
           }
         } catch {
-          appendSessionOutput(session, trimmed, 'stdout');
-          flushSessionOutput(session);
+          appendSessionOutput(session, trimmed, 'stdout', false);
         }
       }
     });
 
     replyProc.stderr.on('data', (chunk) => {
-      appendSessionOutput(session, chunk, 'stderr');
-      flushSessionOutput(session);
+      appendSessionOutput(session, chunk, 'stderr', false);
     });
 
     replyProc.on('error', async (error) => {
@@ -1324,6 +1378,7 @@ app.post('/api/tasks/:id/cli-session/input', requireWorkspace, async (req, res) 
     });
 
     replyProc.on('exit', async () => {
+      commitReplyPendingText();
       flushSessionOutput(session, true);
       session.status = 'waiting-input';
     });
