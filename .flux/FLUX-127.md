@@ -5,7 +5,7 @@ tags:
   - ux
 priority: High
 effort: M
-implementationLink: ''
+implementationLink: 5cb795e8db9245c8009a13a36902ae1d5f492e6b
 subtasks: []
 history:
   - type: activity
@@ -67,9 +67,20 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-08T17:45:00.000Z'
+  - type: comment
+    user: Antigravity
+    date: '2026-05-08T08:39:20.000Z'
+    comment: >-
+      Completed the full documentation pass for the binary distribution model. Rewrote `installation.md`, added the binary context to `project-overview.md` and `architecture/overview.md`, streamlined the `README.md` for a binary-first quick start, and created the new `configuration.md` reference guide. Committed in `5cb795e8db9245c8009a13a36902ae1d5f492e6b`.
+    id: c-2026-05-08t08-39-20-000z
+  - type: status_change
+    from: Todo
+    to: Done
+    user: Antigravity
+    date: '2026-05-08T08:39:20.000Z'
 id: FLUX-127
 title: Docs pass — update setup, install, and architecture docs for binary distribution
-status: Todo
+status: Done
 createdBy: Guy
 updatedBy: Agent
 ---
