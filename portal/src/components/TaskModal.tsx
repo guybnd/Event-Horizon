@@ -204,6 +204,14 @@ export function TaskModal() {
   const replyTextareaRef = useRef<HTMLTextAreaElement>(null);
   const commentSectionRef = useRef<HTMLDivElement>(null);
   const promptModalRef = useRef<HTMLDivElement>(null);
+  const titleRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const el = titleRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = el.scrollHeight + 'px';
+  }, [isModalOpen, isFullView, title]);
 
   useEffect(() => {
     const handleOutsideClick = (event: MouseEvent) => {
@@ -1610,6 +1618,7 @@ export function TaskModal() {
                 <div>
                   <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Title</label>
                   <textarea
+                    ref={titleRef}
                     rows={1}
                     className="w-full resize-none overflow-hidden rounded-lg border border-gray-200 bg-white px-3 py-2 text-base font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-black/40"
                     value={title}
@@ -1724,6 +1733,7 @@ export function TaskModal() {
                   <div>
                     <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Title</label>
                     <textarea
+                      ref={titleRef}
                       rows={1}
                       className={`w-full resize-none overflow-hidden rounded-lg border border-gray-200 px-3 py-2 font-medium outline-none focus:border-primary dark:border-white/10 ${
                         isWideMode ? 'bg-white text-sm dark:bg-black/40' : 'bg-gray-50 text-[15px] dark:bg-black/20'
