@@ -104,7 +104,7 @@ export function TaskViewControls({
             <select
               value={sortOption}
               onChange={(event) => setSortOption(event.target.value as any)}
-              className="min-w-0 flex-1 bg-transparent text-sm text-gray-600 outline-none dark:text-gray-300"
+              className="min-w-0 flex-1 bg-transparent text-sm text-gray-600 outline-none dark:bg-[#1a1b23] dark:text-gray-200"
             >
               <option value="default">Default</option>
               <option value="priority">Priority</option>
@@ -118,7 +118,7 @@ export function TaskViewControls({
             <select
               value={filterAssignee}
               onChange={(event) => setFilterAssignee(event.target.value)}
-              className="min-w-0 flex-1 bg-transparent text-sm text-gray-600 outline-none dark:text-gray-300"
+              className="min-w-0 flex-1 bg-transparent text-sm text-gray-600 outline-none dark:bg-[#1a1b23] dark:text-gray-200"
             >
               <option value="all">All assignees</option>
               {config?.users.map((user) => (
@@ -133,7 +133,7 @@ export function TaskViewControls({
             <select
               value={filterPriority}
               onChange={(event) => setFilterPriority(event.target.value)}
-              className="min-w-0 flex-1 bg-transparent text-sm text-gray-600 outline-none dark:text-gray-300"
+              className="min-w-0 flex-1 bg-transparent text-sm text-gray-600 outline-none dark:bg-[#1a1b23] dark:text-gray-200"
             >
               <option value="all">All priorities</option>
               {config?.priorities.map((priority) => (
@@ -147,7 +147,7 @@ export function TaskViewControls({
             <select
               value={filterTag}
               onChange={(event) => setFilterTag(event.target.value)}
-              className="min-w-0 flex-1 bg-transparent text-sm text-gray-600 outline-none dark:text-gray-300"
+              className="min-w-0 flex-1 bg-transparent text-sm text-gray-600 outline-none dark:bg-[#1a1b23] dark:text-gray-200"
             >
               <option value="all">All tags</option>
               {config?.tags.map((tag) => (
