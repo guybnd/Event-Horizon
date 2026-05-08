@@ -24,7 +24,9 @@ Load this skill when a ticket's status is `Grooming` or `Require Input`.
 3. Treat `Grooming` as a planning phase, not implied permission to code. Tighten the ticket body into a concrete plan, capture likely touchpoints and intended validation, review the applicable ticket metadata, and fill anything that is already inferable from the current context.
 4. Applicable metadata fields to review and fill: `priority`, `effort`, `tags`, hierarchy links, and related-ticket references when they matter for the work.
 5. If implementation-critical choices or applicable metadata values are unresolved, do not silently pick a direction. Move the ticket to the configured user-input status (`requireInputStatus` in `.flux/config.json`, default `Require Input`), leave one explicit question in ticket history, include the proposed fill values or defaults for the missing fields, and wait for the answer.
-6. Once all choices are resolved, write the concrete implementation plan into the ticket body so another agent could pick up the work without re-discovery.
+6. Once all choices are resolved, rewrite the ticket body with two sections in order:
+   - **Problem / Motivation** (1–3 sentences): explain what user problem or pain point this ticket addresses, who benefits, and why it was prioritised. This gives any reader — human or agent — immediate context on why the work matters, not just what to do.
+   - **Implementation plan**: the concrete steps, files, and approach so another agent could pick up the work without re-discovery.
 7. Move the ticket to `Todo` when grooming is complete but coding is not starting yet.
 
 ## Ticket Metadata Conventions

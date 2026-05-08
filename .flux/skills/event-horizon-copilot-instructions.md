@@ -55,7 +55,7 @@ For any ticket-driven implementation task, the agent must follow this sequence:
 ### Documentation Expectations
 
 - Use `.docs/` as the primary durable project knowledge base when grooming or starting ticket work.
-- Use grooming to improve the ticket body itself so another agent could pick up the clarified plan without rediscovery, and fill applicable metadata instead of leaving inferable values blank.
+- Use grooming to improve the ticket body itself so another agent could pick up the clarified plan without rediscovery. Structure groomed bodies with a **Problem / Motivation** section first (what user problem this solves and why it matters) followed by the implementation plan. Fill applicable metadata instead of leaving inferable values blank.
 - Update `README.md` when repository-wide setup, architecture, or workflow behavior changes.
 - If the task changes agent workflow or workflow installation behavior, update the relevant files in `.docs/skills/` and `.flux/skills/event-horizon-copilot-instructions.md`, then refresh the installed workspace copies.
 
