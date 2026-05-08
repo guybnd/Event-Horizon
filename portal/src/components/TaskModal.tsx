@@ -10,6 +10,7 @@ import {
   Maximize2,
   MessageSquare,
   PanelRight,
+  RotateCcw,
   Save,
   SendHorizontal,
   Trash2,
@@ -181,6 +182,8 @@ export function TaskModal() {
   const [replyDraft, setReplyDraft] = useState('');
   const [collapsedThreads, setCollapsedThreads] = useState<Record<string, boolean>>({});
   const [responseDestination, setResponseDestination] = useState('Todo');
+  const [returnToWorkOpen, setReturnToWorkOpen] = useState(false);
+  const [returnToWorkReason, setReturnToWorkReason] = useState('');
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [isWideMode, setIsWideMode] = useState(false);
@@ -246,6 +249,8 @@ export function TaskModal() {
       setReplyDraft('');
       setCollapsedThreads({});
       setResponseDestination('Todo');
+      setReturnToWorkOpen(false);
+      setReturnToWorkReason('');
       setConfirmDiscard(false);
       setConfirmDelete(false);
       setIsWideMode(false);
@@ -377,6 +382,69 @@ export function TaskModal() {
     const entry = [...history].reverse()[idx];
     return (entry as any).from as string | undefined;
   }, [modalTask?.history, requireInputStatus]);
+
+  const preReadyStatus = useMemo(() => {
+    const history = modalTask?.history || [];
+    const entry = [...history].reverse().find(
+      (e) => e.type === 'status_change' && (e as any).to === readyForMergeStatus
+    );
+    const from = entry ? (entry as any).from as string : null;
+    if (!from || promptableStatuses.includes(from)) return requireInputDestinations[0] || 'In Progress';
+    return from;
+  }, [modalTask?.history, readyForMergeStatus, promptableStatuses, requireInputDestinations]);
+
+  const handleReturnToWork = async () => {
+    if (!modalTask?.id) return;
+    const submittedAt = new Date().toISOString();
+    const reason = returnToWorkReason.trim();
+    const lastReadySummary = [...(modalTask.history || [])].reverse().find(
+      (e) => e.type === 'comment' && e.id
+    );
+    setSaving(true);
+    try {
+      const newEntries: any[] = [];
+      if (reason) {
+        newEntries.push({
+          type: 'comment',
+          user: currentUser,
+          date: submittedAt,
+          comment: reason,
+          ...(lastReadySummary?.id ? { replyTo: lastReadySummary.id } : {}),
+        });
+      }
+      newEntries.push({
+        type: 'status_change',
+        from: readyForMergeStatus,
+        to: preReadyStatus,
+        user: currentUser,
+        date: submittedAt,
+        comment: 'Returned to work',
+      });
+      const updatedTask = await updateTask(modalTask.id, {
+        title,
+        body,
+        status: preReadyStatus,
+        assignee,
+        tags,
+        priority,
+        effort,
+        implementationLink: implementationLink.trim(),
+        order: modalTask.order,
+        history: [...(modalTask.history || []), ...newEntries],
+        updatedBy: currentUser,
+      } as any);
+      setModalTask(updatedTask);
+      setStatus(preReadyStatus);
+      setReturnToWorkOpen(false);
+      setReturnToWorkReason('');
+      triggerRefresh();
+      closeModal();
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   useEffect(() => {
     if (!isRequireInput) return;
@@ -1292,25 +1360,61 @@ export function TaskModal() {
           <p className="font-semibold text-gray-900 dark:text-gray-100">Suggested command</p>
           <p className="mt-2 rounded-lg bg-gray-100 px-3 py-2 font-mono text-sm text-gray-800 dark:bg-black/30 dark:text-gray-200">finish {modalTask.id}</p>
           <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">This status is configurable in Settings, but the finalization handoff is always driven by the agent command after your review.</p>
+          {returnToWorkOpen && (
+            <div className="mt-4 space-y-2">
+              <label className="block text-xs font-bold uppercase tracking-wider text-gray-400">Reason for returning</label>
+              <textarea
+                autoFocus
+                className="h-24 w-full resize-none rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm outline-none placeholder:text-gray-400 focus:border-primary dark:border-white/10 dark:bg-black/30"
+                value={returnToWorkReason}
+                onChange={(e) => setReturnToWorkReason(e.target.value)}
+                placeholder="Describe what needs to be changed..."
+              />
+              <div className="flex gap-2">
+                <button
+                  disabled={saving}
+                  onClick={() => void handleReturnToWork()}
+                  className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-amber-600 disabled:opacity-50"
+                >
+                  <RotateCcw className="h-4 w-4" />
+                  {saving ? 'Returning...' : 'Confirm return'}
+                </button>
+                <button
+                  onClick={() => { setReturnToWorkOpen(false); setReturnToWorkReason(''); }}
+                  className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="space-y-2 rounded-xl border border-gray-200 bg-white/80 p-4 dark:border-white/10 dark:bg-black/20">
           <button
-            onClick={() => {
-              void navigator.clipboard.writeText(`finish ${modalTask.id}`);
-            }}
-            className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary-hover"
-          >
-            <SendHorizontal className="h-4 w-4" />
-            Copy finish command
-          </button>
-          <button
-            onClick={() => setIsFullView(true)}
-            className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
-          >
-            <Maximize2 className="h-4 w-4" />
-            Open full ticket
-          </button>
+              onClick={() => {
+                void navigator.clipboard.writeText(`finish ${modalTask.id}`);
+              }}
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary-hover"
+            >
+              <SendHorizontal className="h-4 w-4" />
+              Copy finish command
+            </button>
+            <button
+              disabled={saving}
+              onClick={() => setReturnToWorkOpen(true)}
+              className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 disabled:opacity-50 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
+            >
+              <RotateCcw className="h-4 w-4" />
+              Return to work
+            </button>
+            <button
+              onClick={() => isFullView ? setIsPromptModalOpen(false) : setIsFullView(true)}
+              className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
+            >
+              {isFullView ? <X className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+              {isFullView ? 'Close window' : 'Open full ticket'}
+            </button>
         </div>
       </div>
     </div>
