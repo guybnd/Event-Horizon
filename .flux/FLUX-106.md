@@ -5,8 +5,7 @@ tags:
   - ux
   - feature
 createdBy: Unknown
-updatedBy: Unknown
-id: FLUX-106
+updatedBy: Guy
 title: Return to work button for Ready tickets
 status: Grooming
 assignee: unassigned
@@ -15,6 +14,19 @@ history:
     user: Unknown
     date: '2026-05-07T23:54:29.753Z'
     comment: Created ticket.
+  - type: comment
+    user: Guy
+    date: '2026-05-07T23:59:12.032Z'
+    comment: >-
+      additional improvement for ready tickets:
+
+
+      passing to ready should 'require' from agent to put a summary on the
+      ticket for the user to read and review. this should of course be reflected
+      also in the agent skills and copilot instructions etc.
+    id: c-2026-05-07t23-59-12-032z
+implementationLink: ''
+subtasks: []
 ---
 # Goal
 

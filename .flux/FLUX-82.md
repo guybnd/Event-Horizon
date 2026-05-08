@@ -34,10 +34,33 @@ history:
     to: Require Input
     user: Agent
     date: '2026-05-08T00:00:00.000Z'
+  - type: comment
+    user: Guy
+    date: '2026-05-07T23:44:31.231Z'
+    comment: >-
+      auto on first launch. maybe with a button in settings to restart tutorial
+
+      localstorage flag that indicates its been through so we can skip
+
+      maybe interactive guided tour is better even if more brittle it will scale
+      better with the mass of changes that will inevitably come
+    id: c-2026-05-07t23-44-31-231z
+  - type: status_change
+    from: Require Input
+    to: Todo
+    user: Guy
+    date: '2026-05-07T23:44:31.231Z'
+    comment: Response submitted
+  - type: status_change
+    from: Todo
+    to: Grooming
+    user: Guy
+    date: '2026-05-07T23:44:35.291Z'
 title: Tutorial & initial setup
-status: Require Input
+status: Grooming
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
+order: 0
 ---
 
 # Goal

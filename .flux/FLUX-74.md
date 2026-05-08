@@ -1,6 +1,6 @@
 ---
 title: Make default project key configurable instead of hardcoded FLUX
-status: Ready
+status: Done
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent
@@ -9,7 +9,7 @@ tags:
   - mvp
 priority: High
 effort: S
-implementationLink: ''
+implementationLink: '1a156b4'
 subtasks: []
 history:
   - type: activity
@@ -53,6 +53,16 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-08T12:21:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-08T12:22:00.000Z'
+    comment: Committed as 1a156b4. Ticket closed.
+    id: c-flux74-close
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-08T12:22:00.000Z'
 order: 74
 ---
 ## Summary

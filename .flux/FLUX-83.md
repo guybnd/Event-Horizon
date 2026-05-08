@@ -1,8 +1,8 @@
 ---
 title: Provide a robust mechanism for agent ticket edits to prevent ticket corruption
-status: Require Input
+status: Grooming
 createdBy: User
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
 tags:
   - reliability
@@ -60,6 +60,19 @@ history:
     to: Require Input
     user: Agent
     date: '2026-05-08T00:00:00.000Z'
+  - type: comment
+    user: Guy
+    date: '2026-05-07T23:47:10.213Z'
+    comment: >-
+      lets do option D and then also add a ticket for ui indicator for bad
+      tickets
+    id: c-2026-05-07t23-47-10-213z
+  - type: status_change
+    from: Require Input
+    to: Grooming
+    user: Guy
+    date: '2026-05-07T23:47:10.213Z'
+    comment: Response submitted
 order: 83
 ---
 
