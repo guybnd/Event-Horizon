@@ -657,15 +657,25 @@ export function TaskCard({
                   </div>
                 )}
               </div>
-              {comments.length > 0 && !isOverlay && (
+              {!isOverlay && (
                 <button
-                  ref={commentBadgeRef}
-                  onClick={openCommentPopover}
-                  className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold transition-colors ${hasUnread ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300' : 'bg-gray-100 text-gray-500 dark:bg-black/20 dark:text-gray-400'}`}
+                  ref={comments.length > 0 ? commentBadgeRef : undefined}
+                  onClick={comments.length > 0
+                    ? openCommentPopover
+                    : (e) => { e.stopPropagation(); openTaskModal(task); }
+                  }
+                  title={comments.length > 0 ? `${comments.length} comment${comments.length === 1 ? '' : 's'}` : 'Add a comment'}
+                  className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-semibold transition-all duration-150 hover:scale-105 active:scale-95 ${
+                    comments.length === 0
+                      ? 'bg-gray-100/60 text-gray-400 hover:bg-primary/10 hover:text-primary dark:bg-white/5 dark:text-gray-600 dark:hover:bg-primary/15 dark:hover:text-primary'
+                      : hasUnread
+                        ? 'bg-amber-100 text-amber-700 hover:bg-amber-200 hover:shadow-sm dark:bg-amber-500/15 dark:text-amber-300 dark:hover:bg-amber-500/25'
+                        : 'bg-gray-100 text-gray-500 hover:bg-primary/10 hover:text-primary hover:shadow-sm dark:bg-black/20 dark:text-gray-400 dark:hover:bg-primary/15 dark:hover:text-primary'
+                  }`}
                 >
-                  <MessageCircle className="w-3 h-3" />
-                  <span>{comments.length}</span>
-                  {hasUnread && <span className="ml-0.5 h-1.5 w-1.5 rounded-full bg-amber-400 dark:bg-amber-400" />}
+                  <MessageCircle className="w-3.5 h-3.5" />
+                  {comments.length > 0 && <span>{comments.length}</span>}
+                  {hasUnread && <span className="ml-0.5 h-1.5 w-1.5 rounded-full bg-amber-400" />}
                 </button>
               )}
               <div ref={assigneeMenuRef} className="relative ml-auto">
