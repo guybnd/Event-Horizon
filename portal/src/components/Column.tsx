@@ -19,7 +19,17 @@ interface ColumnProps {
 
 export function Column({ id, title, tasks, parentByChildId, liveEvent, taskLiveEvents, getTaskTravelDirection }: ColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id });
-  const { openTaskModal, config } = useApp();
+  const { openTaskModal, config, readComments, markAllCommentsRead } = useApp();
+
+  // Collect all unread comment IDs across every task in this column
+  const columnUnreadByTask = tasks.map(task => {
+    const readIds = new Set(readComments[task.id] ?? []);
+    const ids = (task.history ?? [])
+      .filter(e => e.type === 'comment' && e.id && !readIds.has(e.id))
+      .map(e => e.id!);
+    return { taskId: task.id, ids };
+  }).filter(t => t.ids.length > 0);
+  const hasColumnUnread = columnUnreadByTask.length > 0;
 
   return (
     <div className="flex flex-col w-[320px] shrink-0">
@@ -33,6 +43,14 @@ export function Column({ id, title, tasks, parentByChildId, liveEvent, taskLiveE
           <span className={`bg-gray-200 dark:bg-white/10 text-gray-600 dark:text-gray-400 text-xs px-2.5 py-0.5 rounded-full font-medium ${liveEvent ? 'column-live-badge' : ''}`}>
             {tasks.length}
           </span>
+          {hasColumnUnread && (
+            <button
+              onClick={() => columnUnreadByTask.forEach(({ taskId, ids }) => markAllCommentsRead(taskId, ids))}
+              className="text-[10px] font-semibold text-amber-500 hover:text-amber-600 dark:text-amber-400 dark:hover:text-amber-300 transition-colors"
+            >
+              Mark all read
+            </button>
+          )}
         </div>
         {id === 'Done' && tasks.length > 0 && (
           <button
