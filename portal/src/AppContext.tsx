@@ -66,6 +66,7 @@ function getTaskFiltersFromLocation() {
     filterAssignee: params.get('assignee') || 'all',
     filterPriority: params.get('priority') || 'all',
     filterTag: params.get('tag') || 'all',
+    filterUnreadOnly: params.get('unread') === '1',
   };
 }
 
@@ -75,6 +76,7 @@ function updateTaskFilterUrl(filters: {
   filterAssignee: string;
   filterPriority: string;
   filterTag: string;
+  filterUnreadOnly: boolean;
 }) {
   const url = new URL(window.location.href);
   const entries: Array<[string, string, string]> = [
@@ -83,6 +85,7 @@ function updateTaskFilterUrl(filters: {
     ['assignee', filters.filterAssignee, 'all'],
     ['priority', filters.filterPriority, 'all'],
     ['tag', filters.filterTag, 'all'],
+    ['unread', filters.filterUnreadOnly ? '1' : '', ''],
   ];
 
   entries.forEach(([key, value, fallback]) => {
@@ -111,6 +114,8 @@ interface AppState {
   setFilterPriority: (value: string) => void;
   filterTag: string;
   setFilterTag: (value: string) => void;
+  filterUnreadOnly: boolean;
+  setFilterUnreadOnly: (value: boolean) => void;
   clearTaskFilters: () => void;
   view: AppView;
   setView: (view: AppView) => void;
@@ -148,6 +153,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [filterAssignee, setFilterAssignee] = useState(initialFilters.filterAssignee);
   const [filterPriority, setFilterPriority] = useState(initialFilters.filterPriority);
   const [filterTag, setFilterTag] = useState(initialFilters.filterTag);
+  const [filterUnreadOnly, setFilterUnreadOnly] = useState(initialFilters.filterUnreadOnly);
   const [view, setCurrentView] = useState<AppView>(() => getViewFromLocation());
   const [modalTask, setModalTask] = useState<Partial<Task> | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -372,6 +378,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setFilterAssignee('all');
     setFilterPriority('all');
     setFilterTag('all');
+    setFilterUnreadOnly(false);
   };
 
   const openTaskModal = (task?: Partial<Task>) => {
@@ -577,8 +584,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    updateTaskFilterUrl({ searchQuery, sortOption, filterAssignee, filterPriority, filterTag });
-  }, [searchQuery, sortOption, filterAssignee, filterPriority, filterTag]);
+    updateTaskFilterUrl({ searchQuery, sortOption, filterAssignee, filterPriority, filterTag, filterUnreadOnly });
+  }, [searchQuery, sortOption, filterAssignee, filterPriority, filterTag, filterUnreadOnly]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -601,6 +608,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       filterAssignee, setFilterAssignee,
       filterPriority, setFilterPriority,
       filterTag, setFilterTag,
+      filterUnreadOnly, setFilterUnreadOnly,
       clearTaskFilters,
       view, setView,
       modalTask, isModalOpen,

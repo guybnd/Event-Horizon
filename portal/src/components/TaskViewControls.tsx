@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { AlertCircle, ArrowUpDown, ChevronDown, ChevronUp, Equal, Search, SlidersHorizontal, Tag, User } from 'lucide-react';
+import { AlertCircle, ArrowUpDown, ChevronDown, ChevronUp, Equal, Inbox, Search, SlidersHorizontal, Tag, User } from 'lucide-react';
 import { useApp } from '../AppContext';
 import type { Config } from '../types';
 
@@ -115,6 +115,8 @@ export function TaskViewControls({
     setFilterPriority,
     filterTag,
     setFilterTag,
+    filterUnreadOnly,
+    setFilterUnreadOnly,
     clearTaskFilters,
     config,
   } = useApp();
@@ -126,6 +128,7 @@ export function TaskViewControls({
     filterAssignee !== 'all',
     filterPriority !== 'all',
     filterTag !== 'all',
+    filterUnreadOnly,
   ].filter(Boolean).length;
   const activeAdvancedFilterCount = [
     sortOption !== 'default',
@@ -136,52 +139,56 @@ export function TaskViewControls({
 
   return (
     <section className="rounded-2xl border border-gray-200 bg-white/80 p-3 shadow-sm dark:border-white/10 dark:bg-[#181922]/80">
-      <div className="flex flex-col gap-2 xl:flex-row xl:items-center">
-        <div className="flex items-center gap-3 xl:min-w-[240px] xl:flex-none">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gray-100 text-gray-500 dark:bg-white/5 dark:text-gray-300">
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-2 flex-none">
+          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-gray-100 text-gray-500 dark:bg-white/5 dark:text-gray-300">
             <SlidersHorizontal className="h-4 w-4" />
           </div>
-          <div className="min-w-0">
-            <div className="truncate text-sm font-semibold text-gray-900 dark:text-white">{title}</div>
-            <div className="text-xs text-gray-500 dark:text-gray-400">
+          <div className="hidden sm:block">
+            <div className="text-sm font-semibold text-gray-900 dark:text-white whitespace-nowrap">{title}</div>
+            <div className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">
               {visibleCount} of {totalCount} {itemLabel}
             </div>
           </div>
         </div>
 
-        <div className="flex min-w-0 flex-1 flex-col gap-2 lg:flex-row lg:items-center">
-          <label className="flex min-w-0 flex-1 items-center gap-2 rounded-xl border border-gray-200 bg-gray-50/80 px-3 py-2 dark:border-white/10 dark:bg-white/5">
-            <Search className="h-4 w-4 flex-none text-gray-400" />
-            <input
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
-              placeholder={searchPlaceholder}
-              className="min-w-0 flex-1 bg-transparent text-sm text-gray-700 outline-none placeholder:text-gray-400 dark:text-gray-200"
-            />
-          </label>
+        <label className="flex w-44 flex-none items-center gap-2 rounded-xl border border-gray-200 bg-gray-50/80 px-3 py-2 dark:border-white/10 dark:bg-white/5">
+          <Search className="h-4 w-4 flex-none text-gray-400" />
+          <input
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder={searchPlaceholder}
+            className="min-w-0 w-full bg-transparent text-sm text-gray-700 outline-none placeholder:text-gray-400 dark:text-gray-200"
+          />
+        </label>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              onClick={() => setShowAdvancedFilters((current) => !current)}
-              className="inline-flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
-            >
-              <span>{activeAdvancedFilterCount > 0 ? `Filters (${activeAdvancedFilterCount})` : 'Filters'}</span>
-              <ChevronDown className={`h-4 w-4 transition-transform ${showAdvancedFilters ? 'rotate-180' : ''}`} />
-            </button>
+        <button
+          onClick={() => setFilterUnreadOnly(!filterUnreadOnly)}
+          className={`inline-flex flex-none items-center gap-1.5 rounded-xl border px-3 py-2 text-sm font-medium transition-colors ${
+            filterUnreadOnly
+              ? 'border-blue-400 bg-blue-50 text-blue-600 dark:border-blue-500 dark:bg-blue-900/30 dark:text-blue-300'
+              : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-100 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10'
+          }`}
+        >
+          <Inbox className="h-4 w-4" />
+          Unread
+        </button>
 
-            <div className="rounded-full border border-gray-200 bg-gray-50 px-3 py-1.5 text-xs font-medium text-gray-600 dark:border-white/10 dark:bg-white/5 dark:text-gray-300">
-              {activeFilterCount > 0 ? `${activeFilterCount} active` : 'Clean view'}
-            </div>
+        <button
+          onClick={() => setShowAdvancedFilters((current) => !current)}
+          className="inline-flex flex-none items-center gap-2 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
+        >
+          <span>{activeAdvancedFilterCount > 0 ? `Filters (${activeAdvancedFilterCount})` : 'Filters'}</span>
+          <ChevronDown className={`h-4 w-4 transition-transform ${showAdvancedFilters ? 'rotate-180' : ''}`} />
+        </button>
 
-            <button
-              onClick={clearTaskFilters}
-              disabled={activeFilterCount === 0}
-              className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-500 transition-colors hover:bg-gray-100 disabled:cursor-default disabled:opacity-60 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
-            >
-              Clear
-            </button>
-          </div>
-        </div>
+        <button
+          onClick={clearTaskFilters}
+          disabled={activeFilterCount === 0}
+          className="flex-none rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-500 transition-colors hover:bg-gray-100 disabled:cursor-default disabled:opacity-60 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
+        >
+          Clear
+        </button>
       </div>
 
       {showAdvancedFilters && (

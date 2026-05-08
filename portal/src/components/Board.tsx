@@ -13,7 +13,7 @@ import { TaskViewControls } from './TaskViewControls';
 import { filterAndSortTasks } from '../taskSearch';
 import { getStatusColorClass } from '../statusStyles';
 import { ReleaseModal } from './ReleaseModal';
-import { getArchiveStatus } from '../workflow';
+import { getArchiveStatus, getRequireInputStatus } from '../workflow';
 
 export function Board() {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -32,6 +32,8 @@ export function Board() {
     filterAssignee,
     filterPriority,
     filterTag,
+    filterUnreadOnly,
+    readComments,
   } = useApp();
 
   const [pendingStatusChange, setPendingStatusChange] = useState<{taskId: string, newStatus: string, oldStatus: string} | null>(null);
@@ -74,6 +76,9 @@ export function Board() {
     filterAssignee,
     filterPriority,
     filterTag,
+    filterUnreadOnly,
+    readComments,
+    requireInputStatus: getRequireInputStatus(config),
   });
   const parentByChildId = new Map<string, Task>();
 

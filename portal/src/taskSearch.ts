@@ -7,6 +7,9 @@ export interface TaskFilterState {
   filterAssignee: string;
   filterPriority: string;
   filterTag: string;
+  filterUnreadOnly?: boolean;
+  readComments?: Record<string, string[]>;
+  requireInputStatus?: string;
 }
 
 export interface TaskSearchResult {
@@ -71,6 +74,17 @@ export function filterAndSortTasks(tasks: Task[], config: Config, filters: TaskF
       const matchesAssignee = filters.filterAssignee === 'all' || (task.assignee || 'unassigned') === filters.filterAssignee;
       const matchesPriority = filters.filterPriority === 'all' || (task.priority || 'None') === filters.filterPriority;
       const matchesTag = filters.filterTag === 'all' || Boolean(task.tags?.includes(filters.filterTag));
+
+      if (filters.filterUnreadOnly) {
+        const readIds = new Set(filters.readComments?.[task.id] ?? []);
+        const hasUnreadComment = task.history?.some(
+          (e) => e.type === 'comment' && e.id && !readIds.has(e.id)
+        ) ?? false;
+        const isWaitingInput = filters.requireInputStatus
+          ? task.status === filters.requireInputStatus
+          : false;
+        if (!hasUnreadComment && !isWaitingInput) return false;
+      }
 
       return matchesQuery && matchesAssignee && matchesPriority && matchesTag;
     })

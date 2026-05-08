@@ -5,6 +5,7 @@ import { updateTask } from '../api';
 import { Loader2, Plus } from 'lucide-react';
 import { TaskViewControls } from './TaskViewControls';
 import { filterAndSortTasks } from '../taskSearch';
+import { getRequireInputStatus } from '../workflow';
 import { normalizeTaskMarkdownBody, TaskDescriptionSurface } from './TaskDescriptionSurface';
 import { motion, AnimatePresence } from 'framer-motion';
 import { TaskMarkdown } from './TaskMarkdown';
@@ -135,6 +136,8 @@ export function BacklogScreen() {
     filterAssignee,
     filterPriority,
     filterTag,
+    filterUnreadOnly,
+    readComments,
     tasks: liveTasks,
     tasksLoading,
     taskLiveEvents,
@@ -154,6 +157,9 @@ export function BacklogScreen() {
     filterAssignee,
     filterPriority,
     filterTag,
+    filterUnreadOnly,
+    readComments,
+    requireInputStatus: getRequireInputStatus(config),
   }) : tasks;
   const selectedVisibleTask = visibleTasks.find(t => t.id === selectedTaskId) || null;
   const isDescriptionDirty = normalizeTaskMarkdownBody(descriptionDraft) !== normalizeTaskMarkdownBody(selectedVisibleTask?.body || '');
