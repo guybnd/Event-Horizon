@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, Search, FileText, Tag, Plus, Power } from 'lucide-react';
+import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, Search, FileText, Tag, Plus, Power, Bot } from 'lucide-react';
 import { useApp } from '../AppContext';
 import { StatusBadge } from './StatusBadge';
 import { getStatusColorClass } from '../statusStyles';
@@ -27,6 +27,8 @@ export function Header() {
   const searchContainerRef = useRef<HTMLDivElement | null>(null);
   const promptableStatuses = getPromptableStatuses(config);
   const promptCount = tasks.filter((task) => promptableStatuses.includes(task.status)).length;
+  const activeSessionStatuses = new Set(['pending', 'running', 'waiting-input']);
+  const activeSessionCount = tasks.filter((task) => task.cliSession && activeSessionStatuses.has(task.cliSession.status)).length;
   const searchResults = globalSearchQuery.trim() ? searchTasks(tasks, globalSearchQuery, 7) : [];
   const previousPromptCountRef = useRef(promptCount);
 
@@ -220,6 +222,21 @@ export function Header() {
           <div className="flex flex-col items-start leading-none">
             <span className="text-[10px] font-bold uppercase tracking-wider">User Prompts</span>
             <span className="mt-1 text-sm font-semibold">{promptCount}</span>
+          </div>
+        </button>
+
+        <button
+          onClick={() => setView('board')}
+          className={`flex shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-left transition-colors ${activeSessionCount > 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300' : 'border-gray-200 bg-white/60 text-gray-500 dark:border-white/10 dark:bg-white/5 dark:text-gray-400'}`}
+          title="Active Claude Code agent sessions running on tickets"
+        >
+          <div className="relative">
+            <Bot className="h-4 w-4" />
+            {activeSessionCount > 0 && <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />}
+          </div>
+          <div className="flex flex-col items-start leading-none">
+            <span className="text-[10px] font-bold uppercase tracking-wider">Agent Sessions</span>
+            <span className="mt-1 text-sm font-semibold">{activeSessionCount}</span>
           </div>
         </button>
 
