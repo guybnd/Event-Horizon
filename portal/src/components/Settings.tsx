@@ -791,7 +791,7 @@ export function Settings() {
                   </div>
                   <div className="flex gap-2">
                     <select
-                      className="flex-1 bg-gray-50 dark:bg-black/20 border border-gray-200 dark:border-white/10 rounded-lg px-3 py-2 outline-none focus:border-primary text-sm font-medium"
+                      className="flex-1 bg-gray-50 dark:bg-[#252630] border border-gray-200 dark:border-white/10 rounded-lg px-3 py-2 outline-none focus:border-primary text-sm font-medium"
                       value={isRequireInputStatusMissing ? '__missing__' : normalizedRequireInputStatus}
                       onChange={e => setRequireInputStatus(e.target.value)}
                       disabled={statusOptions.length === 0}
@@ -833,7 +833,7 @@ export function Settings() {
                   </div>
                   <div className="flex gap-2">
                     <select
-                      className="flex-1 bg-gray-50 dark:bg-black/20 border border-gray-200 dark:border-white/10 rounded-lg px-3 py-2 outline-none focus:border-primary text-sm font-medium"
+                      className="flex-1 bg-gray-50 dark:bg-[#252630] border border-gray-200 dark:border-white/10 rounded-lg px-3 py-2 outline-none focus:border-primary text-sm font-medium"
                       value={isReadyForMergeStatusMissing ? '__missing__' : normalizedReadyForMergeStatus}
                       onChange={e => setReadyForMergeStatus(e.target.value)}
                       disabled={statusOptions.length === 0}
@@ -875,7 +875,7 @@ export function Settings() {
                   </div>
                   <div className="flex gap-2">
                     <select
-                      className="flex-1 bg-gray-50 dark:bg-black/20 border border-gray-200 dark:border-white/10 rounded-lg px-3 py-2 outline-none focus:border-primary text-sm font-medium"
+                      className="flex-1 bg-gray-50 dark:bg-[#252630] border border-gray-200 dark:border-white/10 rounded-lg px-3 py-2 outline-none focus:border-primary text-sm font-medium"
                       value={statusOptions.includes(normalizedArchiveStatus) ? normalizedArchiveStatus : '__missing__'}
                       onChange={e => setArchiveStatus(e.target.value)}
                       disabled={statusOptions.length === 0}
@@ -964,7 +964,7 @@ export function Settings() {
                 <select
                   value={docsEditPermissions}
                   onChange={(event) => setDocsEditPermissions(event.target.value as DocsEditPermissions)}
-                  className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-black/20"
+                  className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
                 >
                   <option value="all">All users</option>
                   <option value="specified">Only specified users</option>
