@@ -3,7 +3,8 @@ import cors from 'cors';
 import chokidar from 'chokidar';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
-import { execFile, spawn } from 'child_process';
+import { randomUUID } from 'crypto';
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import path from 'path';
 import os from 'os';
 import matter from 'gray-matter';
@@ -92,8 +93,37 @@ interface StoredDoc extends DocRecord {
   _path: string;
 }
 
+type CliFramework = 'claude' | 'copilot';
+type CliSessionStatus = 'pending' | 'running' | 'waiting-input' | 'completed' | 'failed' | 'cancelled';
+
+interface CliSessionSummary {
+  id: string;
+  taskId: string;
+  framework: CliFramework;
+  status: CliSessionStatus;
+  command: string;
+  args: string[];
+  startedAt: string;
+  endedAt?: string;
+  pid?: number;
+  label: string;
+  lastOutputAt?: string;
+  lastInputAt?: string;
+}
+
+interface CliSessionRecord extends CliSessionSummary {
+  proc?: ChildProcessWithoutNullStreams;
+  claudeSessionId?: string;
+  outputBuffer: string;
+  flushTimer?: NodeJS.Timeout;
+  requestedStop: boolean;
+  writeQueue: Promise<void>;
+}
+
 let tasksCache: Record<string, any> = {};
 let docsCache: Record<string, StoredDoc> = {};
+const cliSessionsById = new Map<string, CliSessionRecord>();
+const cliSessionIdByTaskId = new Map<string, string>();
 let configCache: any = {
   columns: [
     { name: 'Todo', color: 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300' },
@@ -133,6 +163,178 @@ let configCache: any = {
     releaseNotesPath: 'release-notes'
   }
 };
+
+function cliLabelForFramework(framework: CliFramework) {
+  return framework === 'claude' ? 'Claude Code' : 'Copilot CLI';
+}
+
+function getCliSessionSummaryForTask(taskId: string): CliSessionSummary | undefined {
+  const sessionId = cliSessionIdByTaskId.get(taskId);
+  if (!sessionId) {
+    return undefined;
+  }
+
+  const session = cliSessionsById.get(sessionId);
+  if (!session) {
+    return undefined;
+  }
+
+  return {
+    id: session.id,
+    taskId: session.taskId,
+    framework: session.framework,
+    status: session.status,
+    command: session.command,
+    args: [...session.args],
+    startedAt: session.startedAt,
+    endedAt: session.endedAt,
+    pid: session.pid,
+    label: session.label,
+    lastOutputAt: session.lastOutputAt,
+    lastInputAt: session.lastInputAt,
+  };
+}
+
+function serializeTaskForApi(task: any) {
+  return {
+    ...task,
+    cliSession: getCliSessionSummaryForTask(task.id),
+  };
+}
+
+function buildCommentEntry(user: string, comment: string, date: string, extra: Record<string, unknown> = {}) {
+  return {
+    type: 'comment',
+    user,
+    date,
+    comment,
+    ...extra,
+  };
+}
+
+async function updateTaskWithHistory(taskId: string, options: {
+  entries?: any[];
+  updatedBy?: string;
+  nextStatus?: string;
+}) {
+  const task = tasksCache[taskId];
+  if (!task) {
+    return null;
+  }
+
+  const actor = options.updatedBy || task.updatedBy || 'Agent';
+  const activityTimestamp = new Date().toISOString();
+  const entries = Array.isArray(options.entries) ? [...options.entries] : [];
+  const { body, _path, id: _id, ...frontmatter } = task;
+  const normalizedExistingHistory = normalizeHistoryEntries(frontmatter.history || []);
+  let nextHistory = ensureCreationActivity(
+    normalizedExistingHistory.history,
+    frontmatter.createdBy || actor,
+    findEarliestHistoryDate(normalizedExistingHistory.history),
+  ).history;
+
+  if (options.nextStatus && frontmatter.status !== options.nextStatus) {
+    entries.push({
+      type: 'status_change',
+      from: frontmatter.status,
+      to: options.nextStatus,
+      user: actor,
+      date: activityTimestamp,
+    });
+    frontmatter.status = options.nextStatus;
+  }
+
+  nextHistory = normalizeHistoryEntries([...nextHistory, ...entries]).history;
+  frontmatter.history = nextHistory;
+  frontmatter.updatedBy = actor;
+
+  const fileContent = matter.stringify(body || '', frontmatter);
+  await fs.writeFile(_path, fileContent, 'utf-8');
+  tasksCache[taskId] = { ...frontmatter, body, id: taskId, _path };
+  return tasksCache[taskId];
+}
+
+function appendSessionOutput(session: CliSessionRecord, chunk: Buffer | string, source: 'stdout' | 'stderr') {
+  const text = String(chunk ?? '').replace(/\r\n/g, '\n');
+  if (!text.trim()) {
+    return;
+  }
+
+  const prefix = source === 'stderr' ? '[stderr] ' : '';
+  session.outputBuffer += `${prefix}${text}`;
+  session.lastOutputAt = new Date().toISOString();
+}
+
+function enqueueSessionWrite(session: CliSessionRecord, writer: () => Promise<void>) {
+  session.writeQueue = session.writeQueue
+    .then(writer)
+    .catch((error) => {
+      console.error(`CLI session ${session.id} failed to append task history:`, error);
+    });
+}
+
+function flushSessionOutput(session: CliSessionRecord, force = false) {
+  if (!session.outputBuffer.trim()) {
+    return;
+  }
+
+  const flushNow = async () => {
+    const bufferedText = session.outputBuffer.trim();
+    session.outputBuffer = '';
+    if (!bufferedText) {
+      return;
+    }
+
+    const timestamp = new Date().toISOString();
+    const maxLength = 6000;
+    const clippedText = bufferedText.length > maxLength
+      ? `${bufferedText.slice(0, maxLength)}\n\n[output truncated]`
+      : bufferedText;
+
+    await updateTaskWithHistory(session.taskId, {
+      updatedBy: 'Agent',
+      entries: [
+        buildCommentEntry(
+          session.label,
+          `\`\`\`text\n${clippedText}\n\`\`\``,
+          timestamp,
+        ),
+      ],
+    });
+  };
+
+  if (session.flushTimer) {
+    clearTimeout(session.flushTimer);
+    session.flushTimer = undefined;
+  }
+
+  if (force) {
+    enqueueSessionWrite(session, flushNow);
+    return;
+  }
+
+  session.flushTimer = setTimeout(() => {
+    session.flushTimer = undefined;
+    enqueueSessionWrite(session, flushNow);
+  }, 1000);
+}
+
+function stopAllCliSessions(reason: string) {
+  for (const session of cliSessionsById.values()) {
+    if (!session.proc) {
+      continue;
+    }
+
+    if (session.status === 'running' || session.status === 'waiting-input' || session.status === 'pending') {
+      session.requestedStop = true;
+      try {
+        session.proc.kill('SIGTERM');
+      } catch (error) {
+        console.warn(`Failed to stop CLI session ${session.id} during ${reason}:`, error);
+      }
+    }
+  }
+}
 
 function buildCommentId(seed: string, usedIds: Set<string>) {
   const normalizedSeed = seed.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'comment';
@@ -811,7 +1013,310 @@ async function activateWorkspace(newRoot: string) {
 }
 
 app.get('/api/tasks', requireWorkspace, (req, res) => {
-  res.json(Object.values(tasksCache));
+  res.json(Object.values(tasksCache).map(serializeTaskForApi));
+});
+
+app.get('/api/tasks/:id/cli-session', requireWorkspace, (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+  if (!task) {
+    return res.status(404).json({ error: 'Task not found' });
+  }
+
+  res.json({ session: getCliSessionSummaryForTask(id) || null });
+});
+
+app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+  if (!task) {
+    return res.status(404).json({ error: 'Task not found' });
+  }
+
+  const frameworkRaw = String(req.body?.framework || '').trim().toLowerCase();
+  if (frameworkRaw !== 'claude' && frameworkRaw !== 'copilot') {
+    return res.status(400).json({ error: 'framework must be claude or copilot' });
+  }
+  const framework = frameworkRaw as CliFramework;
+
+  const existingSessionId = cliSessionIdByTaskId.get(id);
+  if (existingSessionId) {
+    const existingSession = cliSessionsById.get(existingSessionId);
+    if (existingSession && ['pending', 'running', 'waiting-input'].includes(existingSession.status)) {
+      return res.status(409).json({ error: 'Task already has an active CLI session', session: getCliSessionSummaryForTask(id) });
+    }
+  }
+
+  const binaryName = framework === 'claude' ? 'claude' : 'copilot';
+  const sessionId = randomUUID();
+  const label = cliLabelForFramework(framework);
+  const startedAt = new Date().toISOString();
+  const promptLines = [
+    `You are working on ticket ${task.id}.`,
+    `Title: ${task.title || 'Untitled ticket'}`,
+    '',
+    'Ticket description:',
+    (task.body || '').trim() || '(No description)',
+    '',
+    'Latest activity:',
+    ...(Array.isArray(task.history) ? task.history.slice(-6).map((entry: any) => {
+      if (entry?.type === 'status_change') {
+        return `- [${entry.date || ''}] ${entry.user || 'Unknown'} moved ${entry.from || '?'} -> ${entry.to || '?'}`;
+      }
+      return `- [${entry?.date || ''}] ${entry?.user || 'Unknown'}: ${entry?.comment || entry?.type || 'activity'}`;
+    }) : ['- (No history)']),
+    '',
+    'Respond with implementation progress updates and blockers. Keep updates concise.',
+  ];
+  const initialPrompt = promptLines.join('\n');
+
+  const session: CliSessionRecord = {
+    id: sessionId,
+    taskId: id,
+    framework,
+    status: 'pending',
+    command: binaryName,
+    args: [],
+    startedAt,
+    label,
+    outputBuffer: '',
+    requestedStop: false,
+    writeQueue: Promise.resolve(),
+  };
+
+  cliSessionsById.set(sessionId, session);
+  cliSessionIdByTaskId.set(id, sessionId);
+
+  try {
+    const claudeArgs = ['-p', initialPrompt, '--output-format', 'stream-json', '--verbose'];
+    const proc = spawn(binaryName, claudeArgs, {
+      cwd: workspaceRoot!,
+      env: process.env,
+      stdio: 'pipe',
+    });
+    session.proc = proc;
+    session.pid = proc.pid;
+    session.status = 'running';
+    session.args = claudeArgs;
+
+    await updateTaskWithHistory(id, {
+      updatedBy: 'Agent',
+      entries: [
+        buildActivityEntry(`Launched ${label} session (${session.id.slice(0, 8)}).`, 'Agent', startedAt),
+      ],
+    });
+
+    let lineBuf = '';
+    proc.stdout.on('data', (chunk: Buffer) => {
+      lineBuf += chunk.toString();
+      const lines = lineBuf.split('\n');
+      lineBuf = lines.pop() ?? '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const evt = JSON.parse(trimmed);
+          // Capture the claude session ID from the first system message
+          if (!session.claudeSessionId && evt.session_id) {
+            session.claudeSessionId = evt.session_id;
+          }
+          // Extract assistant text from stream-json events
+          if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
+            for (const block of evt.message.content) {
+              if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+                appendSessionOutput(session, block.text, 'stdout');
+                flushSessionOutput(session);
+              }
+            }
+          }
+        } catch {
+          // Non-JSON line — capture as-is
+          appendSessionOutput(session, trimmed, 'stdout');
+          flushSessionOutput(session);
+        }
+      }
+    });
+
+    proc.stderr.on('data', (chunk) => {
+      appendSessionOutput(session, chunk, 'stderr');
+      flushSessionOutput(session);
+    });
+
+    proc.on('error', async (error) => {
+      session.status = 'failed';
+      session.endedAt = new Date().toISOString();
+      flushSessionOutput(session, true);
+      await updateTaskWithHistory(id, {
+        updatedBy: 'Agent',
+        entries: [
+          buildActivityEntry(`${label} session failed to start: ${error.message}`, 'Agent', session.endedAt),
+        ],
+      });
+    });
+
+    proc.on('exit', async (code, signal) => {
+      flushSessionOutput(session, true);
+      session.endedAt = new Date().toISOString();
+      if (session.requestedStop) {
+        session.status = 'cancelled';
+      } else if (code === 0) {
+        session.status = 'completed';
+      } else {
+        session.status = 'failed';
+      }
+
+      const summary = session.requestedStop
+        ? `${label} session stopped.`
+        : `${label} session ended with ${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`}.`;
+
+      await updateTaskWithHistory(id, {
+        updatedBy: 'Agent',
+        entries: [buildActivityEntry(summary, 'Agent', session.endedAt)],
+      });
+    });
+
+    res.status(201).json({ session: getCliSessionSummaryForTask(id) });
+  } catch (error: any) {
+    cliSessionIdByTaskId.delete(id);
+    cliSessionsById.delete(sessionId);
+    res.status(500).json({ error: error.message || `Failed to launch ${label}` });
+  }
+});
+
+app.post('/api/tasks/:id/cli-session/input', requireWorkspace, async (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+  if (!task) {
+    return res.status(404).json({ error: 'Task not found' });
+  }
+
+  const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
+  const user = typeof req.body?.user === 'string' && req.body.user.trim() ? req.body.user.trim() : 'Guy';
+  if (!message) {
+    return res.status(400).json({ error: 'message is required' });
+  }
+
+  const sessionId = cliSessionIdByTaskId.get(id);
+  if (!sessionId) {
+    return res.status(409).json({ error: 'No active CLI session for this ticket' });
+  }
+
+  const session = cliSessionsById.get(sessionId);
+  if (!session || !['running', 'waiting-input', 'completed'].includes(session.status)) {
+    return res.status(409).json({ error: 'CLI session is not resumable', session: getCliSessionSummaryForTask(id) || null });
+  }
+
+  if (!session.claudeSessionId && session.framework === 'claude') {
+    return res.status(409).json({ error: 'Claude session ID not yet available — wait for the initial response to complete' });
+  }
+
+  const inputAt = new Date().toISOString();
+  session.lastInputAt = inputAt;
+  session.status = 'running';
+
+  await updateTaskWithHistory(id, {
+    updatedBy: user,
+    entries: [buildCommentEntry(user, message, inputAt)],
+  });
+
+  try {
+    const binaryName = session.command;
+    const resumeArgs = session.claudeSessionId
+      ? ['-p', message, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose']
+      : ['-p', message, '--output-format', 'stream-json', '--verbose'];
+
+    const replyProc = spawn(binaryName, resumeArgs, {
+      cwd: workspaceRoot!,
+      env: process.env,
+      stdio: 'pipe',
+    });
+    session.proc = replyProc;
+    session.pid = replyProc.pid;
+
+    let lineBuf = '';
+    replyProc.stdout.on('data', (chunk: Buffer) => {
+      lineBuf += chunk.toString();
+      const lines = lineBuf.split('\n');
+      lineBuf = lines.pop() ?? '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const evt = JSON.parse(trimmed);
+          if (evt.session_id) session.claudeSessionId = evt.session_id;
+          if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
+            for (const block of evt.message.content) {
+              if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+                appendSessionOutput(session, block.text, 'stdout');
+                flushSessionOutput(session);
+              }
+            }
+          }
+        } catch {
+          appendSessionOutput(session, trimmed, 'stdout');
+          flushSessionOutput(session);
+        }
+      }
+    });
+
+    replyProc.stderr.on('data', (chunk) => {
+      appendSessionOutput(session, chunk, 'stderr');
+      flushSessionOutput(session);
+    });
+
+    replyProc.on('error', async (error) => {
+      session.status = 'waiting-input';
+      await updateTaskWithHistory(id, {
+        updatedBy: 'Agent',
+        entries: [buildActivityEntry(`${session.label} reply failed: ${error.message}`, 'Agent', new Date().toISOString())],
+      });
+    });
+
+    replyProc.on('exit', async () => {
+      flushSessionOutput(session, true);
+      session.status = 'waiting-input';
+    });
+
+    res.json({ session: getCliSessionSummaryForTask(id) });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to send message to CLI session' });
+  }
+});
+
+app.post('/api/tasks/:id/cli-session/stop', requireWorkspace, async (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+  if (!task) {
+    return res.status(404).json({ error: 'Task not found' });
+  }
+
+  const sessionId = cliSessionIdByTaskId.get(id);
+  if (!sessionId) {
+    return res.status(404).json({ error: 'No CLI session found for this ticket' });
+  }
+
+  const session = cliSessionsById.get(sessionId);
+  if (!session) {
+    return res.status(404).json({ error: 'CLI session not available' });
+  }
+
+  if (!['pending', 'running', 'waiting-input'].includes(session.status)) {
+    return res.status(409).json({ error: 'CLI session is already finished', session: getCliSessionSummaryForTask(id) || null });
+  }
+
+  session.requestedStop = true;
+  session.status = 'cancelled';
+  session.endedAt = new Date().toISOString();
+  await updateTaskWithHistory(id, {
+    updatedBy: 'Agent',
+    entries: [buildActivityEntry(`${session.label} session stopped.`, 'Agent', session.endedAt)],
+  });
+  try {
+    session.proc?.kill('SIGTERM');
+    res.json({ session: getCliSessionSummaryForTask(id) });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to stop CLI session' });
+  }
 });
 
 app.get('/api/read-state', requireWorkspace, async (req, res) => {
@@ -1099,7 +1604,7 @@ app.post('/api/tasks', requireWorkspace, async (req, res) => {
     await fs.writeFile(filePath, fileContent, 'utf-8');
 
     tasksCache[nextId] = { ...frontmatter, body, id: nextId, _path: filePath };
-    res.json(tasksCache[nextId]);
+    res.json(serializeTaskForApi(tasksCache[nextId]));
   } catch (err) {
     console.error('Failed to create task:', err);
     res.status(500).json({ error: 'Failed to create task' });
@@ -1159,7 +1664,7 @@ app.put('/api/tasks/:id', requireWorkspace, async (req, res) => {
     await fs.writeFile(_path, fileContent, 'utf-8');
 
     tasksCache[id] = { ...frontmatter, body, id, _path };
-    res.json(tasksCache[id]);
+    res.json(serializeTaskForApi(tasksCache[id]));
   } catch (err) {
     console.error('Failed to update task:', err);
     res.status(500).json({ error: 'Failed to save task' });
@@ -1404,6 +1909,7 @@ if (PORTAL_DIST_EXISTS) {
 
 // Graceful shutdown — lets the portal's Stop button cleanly exit the process.
 app.post('/api/shutdown', (_req, res) => {
+  stopAllCliSessions('shutdown');
   res.json({ ok: true });
   setTimeout(() => process.exit(0), 150);
 });
@@ -1577,5 +2083,6 @@ async function startServer() {
 
 startServer().catch(err => {
   console.error('Failed to start Event Horizon:', err);
+  stopAllCliSessions('startup-failure');
   process.exit(1);
 });

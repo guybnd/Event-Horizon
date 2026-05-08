@@ -4,3 +4,6 @@ build/
 .env
 .DS_Store
 *.log
+.npm-cache/
+.claude/
+.clauderc

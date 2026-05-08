@@ -4,7 +4,7 @@ import type { CSSProperties } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { Task, TaskLiveEvent } from '../types';
-import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, MessageCircle } from 'lucide-react';
+import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, MessageCircle, Bot } from 'lucide-react';
 import { useApp } from '../AppContext';
 import { updateTask } from '../api';
 import { isPromptableStatus, relativeTime } from '../workflow';
@@ -140,6 +140,7 @@ export function TaskCard({
   const snippet = task.body?.split('\n').find(line => line.trim() && !line.startsWith('#')) || 'No description provided';
 
   const readCommentIds = new Set(readComments[task.id] ?? []);
+  const hasActiveCliSession = Boolean(task.cliSession && ['pending', 'running', 'waiting-input'].includes(task.cliSession.status));
 
   const isPromptStatus = isPromptableStatus(task.status, config);
   const comments = task.history?.filter(e => e.type === 'comment') ?? [];
@@ -451,7 +452,10 @@ export function TaskCard({
         setIsHovering(false);
       }}
     >
-      <motion.div {...contentAnimation} className={`relative flex flex-col rounded-xl border bg-white/80 dark:bg-[#252630]/80 backdrop-blur-md p-0 shadow-sm hover:border-primary/50 hover:shadow-md transition-all ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''} ${isPromptStatus ? 'border-amber-300 dark:border-amber-500/40 ring-1 ring-amber-200/50 dark:ring-amber-500/20' : 'border-gray-200/50 dark:border-white/5'} ${liveAnimationClass} ${liveAccentClass} ${hasUnread && !liveAccentClass ? 'ring-2 ring-amber-400/60 dark:ring-amber-500/40' : ''}`}>
+      <motion.div {...contentAnimation} className={`relative flex flex-col rounded-xl border bg-white/80 dark:bg-[#252630]/80 backdrop-blur-md p-0 shadow-sm hover:border-primary/50 hover:shadow-md transition-all ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''} ${isPromptStatus ? 'border-amber-300 dark:border-amber-500/40 ring-1 ring-amber-200/50 dark:ring-amber-500/20' : hasActiveCliSession ? 'border-emerald-400 dark:border-emerald-500/60' : 'border-gray-200/50 dark:border-white/5'} ${liveAnimationClass} ${liveAccentClass} ${hasUnread && !liveAccentClass ? 'ring-2 ring-amber-400/60 dark:ring-amber-500/40' : ''}`}>
+        {hasActiveCliSession && !isOverlay && (
+          <div className="pointer-events-none absolute inset-0 rounded-xl animate-pulse ring-2 ring-emerald-400/60 dark:ring-emerald-500/40" />
+        )}
         {/* Comment badge — fixed top-right anchor; juts above card when there are unread comments */}
         {!isOverlay && (
           <button
@@ -542,6 +546,12 @@ export function TaskCard({
                 <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 tracking-wider">
                   {task.id}
                 </span>
+                {hasActiveCliSession && task.cliSession && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300">
+                    <Bot className="h-3 w-3" />
+                    {task.cliSession.label}
+                  </span>
+                )}
                 {parentTask && (
                   <button
                     type="button"

@@ -4,6 +4,8 @@ import {
   AlertCircle,
   ArrowLeft,
   ArrowRight,
+  Bot,
+  CircleDot,
   ChevronDown,
   ChevronUp,
   Equal,
@@ -12,13 +14,14 @@ import {
   PanelRight,
   RotateCcw,
   Save,
+  Square,
   SendHorizontal,
   Trash2,
   X,
 } from 'lucide-react';
 import { useApp } from '../AppContext';
-import { createTask, deleteTask, fetchTasks, updateTask } from '../api';
-import type { Config, HistoryEntry, TagDef, Task } from '../types';
+import { createTask, deleteTask, fetchTaskCliSession, fetchTasks, sendTaskCliInput, startTaskCliSession, stopTaskCliSession, updateTask } from '../api';
+import type { CliFramework, CliSessionSummary, Config, HistoryEntry, TagDef, Task } from '../types';
 import { StatusBadge } from './StatusBadge';
 import { getStatusColorClass } from '../statusStyles';
 import { buildUnsupportedImageMessage, uploadTaskImageMarkdownLinks } from '../taskAssetUploads';
@@ -203,6 +206,10 @@ export function TaskModal() {
   const [allTasks, setAllTasks] = useState<Task[]>([]);
   const [subtasks, setSubtasks] = useState<string[]>([]);
   const [subtaskToAdd, setSubtaskToAdd] = useState('');
+  const [selectedCliFramework, setSelectedCliFramework] = useState<CliFramework>('claude');
+  const [cliSession, setCliSession] = useState<CliSessionSummary | null>(null);
+  const [cliSessionBusy, setCliSessionBusy] = useState(false);
+  const [cliSessionError, setCliSessionError] = useState('');
 
   const commentRef = useRef<HTMLTextAreaElement>(null);
   const replyTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -275,6 +282,9 @@ export function TaskModal() {
       setReplyAssetError('');
       setIsUploadingCommentAsset(false);
       setIsUploadingReplyAsset(false);
+      setCliSession(modalTask.cliSession || null);
+      setCliSessionBusy(false);
+      setCliSessionError('');
     }
   }, [modalTask]);
 
@@ -285,6 +295,37 @@ export function TaskModal() {
       .then(setAllTasks)
       .catch(console.error);
   }, [isModalOpen, refreshTrigger]);
+
+  useEffect(() => {
+    if (!isModalOpen || !modalTask?.id) {
+      return;
+    }
+
+    void fetchTaskCliSession(modalTask.id)
+      .then((session) => setCliSession(session))
+      .catch(() => {});
+  }, [isModalOpen, modalTask?.id]);
+
+  useEffect(() => {
+    const taskId = modalTask?.id;
+    if (!isModalOpen || !taskId) {
+      return;
+    }
+
+    const sessionIsActive = Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status));
+    if (!sessionIsActive) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      void fetchTaskCliSession(taskId)
+        .then((session) => setCliSession(session))
+        .catch(() => {});
+      triggerRefresh();
+    }, 2500);
+
+    return () => window.clearInterval(timer);
+  }, [isModalOpen, modalTask?.id, cliSession]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -575,11 +616,30 @@ export function TaskModal() {
   const sendCommentDirectly = async () => {
     if (!newComment.trim() || !modalTask?.id) return;
 
+    const commentText = newComment.trim();
+
+    if (cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status)) {
+      setCliSessionBusy(true);
+      setCliSessionError('');
+      setNewComment('');
+      try {
+        const nextSession = await sendTaskCliInput(modalTask.id, commentText, currentUser);
+        setCliSession(nextSession);
+        triggerRefresh();
+      } catch (error: any) {
+        setNewComment(commentText);
+        setCliSessionError(error?.message || 'Failed to send message to active CLI session.');
+      } finally {
+        setCliSessionBusy(false);
+      }
+      return;
+    }
+
     const commentEntry = {
       type: 'comment',
       user: currentUser,
       date: new Date().toISOString(),
-      comment: newComment.trim(),
+      comment: commentText,
     };
 
     setNewComment('');
@@ -589,11 +649,32 @@ export function TaskModal() {
   const sendReplyDirectly = async (parentId: string) => {
     if (!replyDraft.trim() || !modalTask?.id) return;
 
+    const replyText = replyDraft.trim();
+
+    if (cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status)) {
+      setCliSessionBusy(true);
+      setCliSessionError('');
+      setReplyDraft('');
+      setReplyTargetId(null);
+      try {
+        const nextSession = await sendTaskCliInput(modalTask.id, replyText, currentUser);
+        setCliSession(nextSession);
+        triggerRefresh();
+      } catch (error: any) {
+        setReplyDraft(replyText);
+        setReplyTargetId(parentId);
+        setCliSessionError(error?.message || 'Failed to send reply to active CLI session.');
+      } finally {
+        setCliSessionBusy(false);
+      }
+      return;
+    }
+
     const replyEntry = {
       type: 'comment',
       user: currentUser,
       date: new Date().toISOString(),
-      comment: replyDraft.trim(),
+      comment: replyText,
       replyTo: parentId,
     };
 
@@ -1067,6 +1148,94 @@ export function TaskModal() {
           <p className="mt-1 text-sm text-gray-700 dark:text-gray-300">Not set</p>
         )}
       </div>
+      {modalTask?.id && (
+        <div className="space-y-3 rounded-xl border border-gray-100 bg-gray-50 p-3 dark:border-white/5 dark:bg-black/20">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Agent Session</p>
+              <p className="mt-1 text-sm font-medium text-gray-700 dark:text-gray-200">
+                {cliSession ? `${cliSession.label} (${cliSession.status})` : 'No active session'}
+              </p>
+            </div>
+            {cliSession && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-gray-200 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-gray-700 dark:bg-white/10 dark:text-gray-300">
+                <CircleDot className="h-3 w-3" />
+                {cliSession.status}
+              </span>
+            )}
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Target CLI</label>
+            <select
+              className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary disabled:cursor-not-allowed disabled:opacity-60 dark:border-white/10 dark:bg-[#252630]"
+              value={selectedCliFramework}
+              onChange={(event) => setSelectedCliFramework(event.target.value as CliFramework)}
+              disabled={Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status)) || cliSessionBusy}
+            >
+              <option value="claude">Claude Code</option>
+              <option value="copilot">Copilot CLI</option>
+            </select>
+          </div>
+
+          {cliSessionError && (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300">
+              {cliSessionError}
+            </div>
+          )}
+
+          <div className="flex gap-2">
+            <button
+              type="button"
+              disabled={!modalTask?.id || cliSessionBusy || Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status))}
+              onClick={() => {
+                if (!modalTask?.id) return;
+                setCliSessionBusy(true);
+                setCliSessionError('');
+                void startTaskCliSession(modalTask.id, selectedCliFramework)
+                  .then((session) => {
+                    setCliSession(session);
+                    triggerRefresh();
+                  })
+                  .catch((error: any) => {
+                    setCliSessionError(error?.message || 'Failed to start CLI session.');
+                  })
+                  .finally(() => setCliSessionBusy(false));
+              }}
+              className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Bot className="h-4 w-4" />
+              {cliSessionBusy ? 'Starting...' : 'Launch'}
+            </button>
+            <button
+              type="button"
+              disabled={!modalTask?.id || cliSessionBusy || !cliSession || !['pending', 'running', 'waiting-input'].includes(cliSession.status)}
+              onClick={() => {
+                if (!modalTask?.id) return;
+                setCliSessionBusy(true);
+                setCliSessionError('');
+                void stopTaskCliSession(modalTask.id)
+                  .then((session) => {
+                    setCliSession(session);
+                    triggerRefresh();
+                  })
+                  .catch((error: any) => {
+                    setCliSessionError(error?.message || 'Failed to stop CLI session.');
+                  })
+                  .finally(() => setCliSessionBusy(false));
+              }}
+              className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-xs font-semibold text-gray-700 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/10 dark:text-gray-200 dark:hover:bg-white/5"
+            >
+              <Square className="h-4 w-4" />
+              Stop
+            </button>
+          </div>
+
+          <p className="text-[11px] text-gray-500 dark:text-gray-400">
+            While a session is active, comments and replies are sent directly to the CLI and logged on the ticket.
+          </p>
+        </div>
+      )}
       {modalTask?.id && (
         <button
           onClick={() => setConfirmDelete(true)}

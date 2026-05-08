@@ -27,6 +27,25 @@ export interface Task {
   version?: string;
   releasedAt?: string;
   releaseDocPath?: string;
+  cliSession?: CliSessionSummary | null;
+}
+
+export type CliFramework = 'claude' | 'copilot';
+export type CliSessionStatus = 'pending' | 'running' | 'waiting-input' | 'completed' | 'failed' | 'cancelled';
+
+export interface CliSessionSummary {
+  id: string;
+  taskId: string;
+  framework: CliFramework;
+  status: CliSessionStatus;
+  command: string;
+  args: string[];
+  startedAt: string;
+  endedAt?: string;
+  pid?: number;
+  label: string;
+  lastOutputAt?: string;
+  lastInputAt?: string;
 }
 
 export interface TaskLiveEvent {

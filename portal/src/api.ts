@@ -1,4 +1,4 @@
-import type { Task, Config, Doc } from './types';
+import type { Task, Config, Doc, CliFramework, CliSessionSummary } from './types';
 
 export const API_URL = '/api';
 
@@ -213,4 +213,51 @@ export async function createTask(taskData: Partial<Task> & { projectKey: string,
   });
   if (!res.ok) throw new Error('Failed to create task');
   return res.json();
+}
+
+export async function fetchTaskCliSession(taskId: string): Promise<CliSessionSummary | null> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session`);
+  if (!res.ok) throw new Error('Failed to fetch CLI session');
+  const payload = await res.json();
+  return payload.session || null;
+}
+
+export async function startTaskCliSession(taskId: string, framework: CliFramework): Promise<CliSessionSummary> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ framework }),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to start CLI session');
+  }
+  const payload = await res.json();
+  return payload.session;
+}
+
+export async function sendTaskCliInput(taskId: string, message: string, user: string): Promise<CliSessionSummary> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/input`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, user }),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to send CLI input');
+  }
+  const payload = await res.json();
+  return payload.session;
+}
+
+export async function stopTaskCliSession(taskId: string): Promise<CliSessionSummary> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/stop`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to stop CLI session');
+  }
+  const payload = await res.json();
+  return payload.session;
 }
