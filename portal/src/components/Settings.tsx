@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useApp } from '../AppContext';
 import { Save, Plus, X, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal } from 'lucide-react';
-import { bulkRename, fetchSkillStatus, installWorkspaceSkill } from '../api';
+import { bulkRename, fetchSkillStatus, installWorkspaceSkill, setWorkspace as apiSetWorkspace, pickWorkspaceFolder } from '../api';
 import type { TagDef, StatusDef, UserDef, PriorityDef, DocsEditPermissions, BoardCardOpenMode } from '../types';
 import { StatusBadge } from './StatusBadge';
 import { getDefaultStatusColor, STATUS_COLOR_PALETTE } from '../statusStyles';
@@ -382,7 +382,7 @@ const SimpleEditor = ({ items, setItems, placeholder, sortable = false }: { item
 };
 
 export function Settings() {
-  const { config, saveConfig, triggerRefresh, setView } = useApp();
+  const { config, saveConfig, triggerRefresh, setView, workspacePath, notifyWorkspaceSet } = useApp();
   
   const [activeTab, setActiveTab] = useState<'workflow' | 'attributes' | 'workspace' | 'preferences' | 'agent'>('workflow');
   const [columns, setColumns] = useState<StatusDef[]>([]);
@@ -410,7 +410,6 @@ export function Settings() {
   const [saving, setSaving] = useState(false);
   const [workflowInstalled, setWorkflowInstalled] = useState(false);
   const [skillInstalled, setSkillInstalled] = useState(false);
-  const [skillSourcePath, setSkillSourcePath] = useState('');
   const [skillSourcePaths, setSkillSourcePaths] = useState<string[]>([]);
   const [skillInstalledPath, setSkillInstalledPath] = useState('');
   const [instructionsInstalled, setInstructionsInstalled] = useState(false);
@@ -419,6 +418,10 @@ export function Settings() {
   const [skillLoading, setSkillLoading] = useState(true);
   const [skillInstalling, setSkillInstalling] = useState(false);
   const [targetFramework, setTargetFramework] = useState('auto');
+  const [newWorkspacePath, setNewWorkspacePath] = useState('');
+  const [workspaceSwitchError, setWorkspaceSwitchError] = useState<string | null>(null);
+  const [workspaceSwitching, setWorkspaceSwitching] = useState(false);
+  const [workspacePicking, setWorkspacePicking] = useState(false);
 
   useEffect(() => {
     if (config) {
@@ -488,8 +491,7 @@ export function Settings() {
       .then((status) => {
         setWorkflowInstalled(status.workflowInstalled);
         setSkillInstalled(status.skillInstalled);
-        setSkillSourcePath(status.skillSourcePath);
-        setSkillSourcePaths(status.skillSourcePaths || []);
+        setSkillSourcePaths(status.skillSourcePath ? [status.skillSourcePath] : []);
         setSkillInstalledPath(status.skillInstalledPath);
         setInstructionsInstalled(status.instructionsInstalled);
         setInstructionsSourcePath(status.instructionsSourcePath || '');
@@ -927,6 +929,60 @@ export function Settings() {
 
             {activeTab === 'workspace' && (
         <div className="grid grid-cols-2 gap-10">
+          <div className="col-span-2 rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
+            <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Project Folder</h3>
+            <p className="text-xs text-gray-500 mb-4">Switch to a different project. The folder must contain a <code className="font-mono bg-gray-100 dark:bg-white/10 px-1 rounded">.flux/</code> directory.</p>
+            {workspacePath && (
+              <p className="mb-3 rounded-lg bg-gray-100 dark:bg-black/20 px-3 py-2 font-mono text-xs text-gray-600 dark:text-gray-300 break-all">{workspacePath}</p>
+            )}
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={newWorkspacePath}
+                onChange={(e) => setNewWorkspacePath(e.target.value)}
+                placeholder="Path to project folder…"
+                className="min-w-0 flex-1 rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary"
+              />
+              <button
+                disabled={workspacePicking}
+                onClick={async () => {
+                  setWorkspacePicking(true);
+                  try {
+                    const picked = await pickWorkspaceFolder();
+                    if (picked) setNewWorkspacePath(picked);
+                  } finally {
+                    setWorkspacePicking(false);
+                  }
+                }}
+                className="rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/5 px-3 py-2 text-sm font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/10 disabled:opacity-50"
+              >
+                {workspacePicking ? '…' : 'Browse'}
+              </button>
+              <button
+                disabled={workspaceSwitching || !newWorkspacePath.trim()}
+                onClick={async () => {
+                  setWorkspaceSwitchError(null);
+                  setWorkspaceSwitching(true);
+                  try {
+                    await apiSetWorkspace(newWorkspacePath.trim());
+                    setNewWorkspacePath('');
+                    notifyWorkspaceSet();
+                  } catch (err: any) {
+                    setWorkspaceSwitchError(err.message);
+                  } finally {
+                    setWorkspaceSwitching(false);
+                  }
+                }}
+                className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {workspaceSwitching ? 'Switching…' : 'Switch'}
+              </button>
+            </div>
+            {workspaceSwitchError && (
+              <p className="mt-2 text-xs text-red-500">{workspaceSwitchError}</p>
+            )}
+          </div>
+
           <div>
             <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Users & Agents</h3>
             <p className="text-xs text-gray-500 mb-4">Available assignees for tickets.</p>

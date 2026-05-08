@@ -5,7 +5,7 @@ tags:
   - ux
 priority: Medium
 effort: S
-implementationLink: ''
+implementationLink: '5de4ab1'
 subtasks: []
 history:
   - type: activity
@@ -51,9 +51,14 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-08T18:30:00.000Z'
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-08T18:31:00.000Z'
 id: FLUX-116
 title: board filter improvements
-status: Ready
+status: Done
 createdBy: Guy
 updatedBy: Agent
 ---

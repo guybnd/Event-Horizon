@@ -11,7 +11,8 @@ export const STATUS_COLOR_PALETTE = [
   'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-300',
 ];
 
-export function getDefaultStatusColor(statusName: string) {
+export function getDefaultStatusColor(statusName: string | undefined) {
+  if (!statusName) return 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300';
   const normalized = statusName.trim().toLowerCase();
 
   if (normalized === 'done') {
@@ -41,10 +42,11 @@ export function getDefaultStatusColor(statusName: string) {
   return 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300';
 }
 
-export function getStatusColorClass(config: Config | null | undefined, statusName: string) {
+export function getStatusColorClass(config: Config | null | undefined, statusName: string | undefined) {
+  if (!statusName) return getDefaultStatusColor('unknown');
   const normalized = statusName.trim().toLowerCase();
   const configuredStatus = [...(config?.columns || []), ...(config?.hiddenStatuses || [])]
-    .find((item) => item.name.trim().toLowerCase() === normalized);
+    .find((item) => item.name?.trim().toLowerCase() === normalized);
 
   return configuredStatus?.color || getDefaultStatusColor(statusName);
 }

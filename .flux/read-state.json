@@ -1,67 +1,11 @@
 {
   "Guy": {
-    "FLUX-72": [
-      "c-flux72-groom"
-    ],
-    "FLUX-97": [
-      "c-flux97-groom",
-      "c-2026-05-08t04-00-08-078z"
-    ],
-    "FLUX-93": [
-      "c-flux93-plan",
-      "c-flux93-impl"
-    ],
-    "FLUX-94": [
-      "c-flux94-groom"
-    ],
-    "FLUX-107": [
-      "c-flux107-groom",
-      "c-flux107-impl",
-      "c-flux107-close"
-    ],
-    "FLUX-111": [
-      "c-flux111-groom",
-      "c-flux111-done"
-    ],
-    "FLUX-114": [
-      "c-flux114-groom",
-      "c-flux114-impl",
-      "c-flux114-close"
-    ],
-    "FLUX-110": [
-      "c-flux110-done"
-    ],
-    "FLUX-106": [
-      "c-2026-05-07t23-59-12-032z",
-      "c-flux106-groom",
-      "c-flux106-summary",
-      "c-2026-05-08t00-19-31-327z",
-      "c-flux106-v2",
-      "c-2026-05-08t00-22-50-913z",
-      "c-flux106-v3",
-      "c-2026-05-08t00-24-29-159z",
-      "c-flux106-v4",
-      "c-2026-05-08t00-29-26-642z",
-      "c-flux106-close"
-    ],
-    "FLUX-109": [
-      "c-flux109-groom",
-      "c-flux109-done",
-      "c-flux109-fix",
-      "c-flux109-close"
-    ],
-    "FLUX-74": [
-      "c-2026-05-07t06-50-00-000z-flux-74",
-      "c-flux74-plan",
-      "c-flux74-done",
-      "c-flux74-close"
-    ],
-    "FLUX-99": [
-      "c-2026-05-08t12-00-00-000z",
-      "c-2026-05-07t15-19-33-872z"
-    ],
-    "FLUX-117": [
-      "c-flux117-groom"
+    "FLUX-50": [
+      "c-2026-05-07t13-01-33-5429940-10-00-flux-50",
+      "c-2026-05-07t03-07-37-337z",
+      "c-2026-05-07t03-53-39-4816199z-flux-50",
+      "c-2026-05-07t14-00-00-000z",
+      "c-2026-05-07t14-15-00-000z"
     ]
   }
 }

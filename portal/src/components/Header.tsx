@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, Search, FileText, Tag, Plus } from 'lucide-react';
+import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, Search, FileText, Tag, Plus, Power } from 'lucide-react';
 import { useApp } from '../AppContext';
 import { StatusBadge } from './StatusBadge';
 import { getStatusColorClass } from '../statusStyles';
@@ -23,6 +23,7 @@ export function Header() {
   const [globalSearchQuery, setGlobalSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isPromptPulseActive, setIsPromptPulseActive] = useState(false);
+  const [isStoppingService, setIsStoppingService] = useState(false);
   const searchContainerRef = useRef<HTMLDivElement | null>(null);
   const promptableStatuses = getPromptableStatuses(config);
   const promptCount = tasks.filter((task) => promptableStatuses.includes(task.status)).length;
@@ -72,6 +73,16 @@ export function Header() {
       document.removeEventListener('pointerdown', handlePointerDown);
     };
   }, []);
+
+  async function handleStopService() {
+    if (!window.confirm('Stop the Event Horizon service? The portal will disconnect.')) return;
+    setIsStoppingService(true);
+    try {
+      await fetch('/api/shutdown', { method: 'POST' });
+    } catch {
+      // Expected — the server closes the connection as it exits.
+    }
+  }
 
   return (
     <header className="sticky top-0 z-10 border-b border-gray-200 bg-white/65 px-8 py-4 backdrop-blur-md dark:border-white/5 dark:bg-black/20">
@@ -225,6 +236,15 @@ export function Header() {
             <span className="mt-1 text-sm font-semibold">{isConnected ? 'Connected' : 'Offline'}</span>
           </div>
         </div>
+
+        <button
+          onClick={handleStopService}
+          disabled={isStoppingService || !isConnected}
+          title="Stop the Event Horizon service"
+          className="flex items-center justify-center rounded-xl border border-gray-200 bg-white/60 p-2 text-gray-400 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:bg-white/5 dark:text-gray-500 dark:hover:border-red-500/30 dark:hover:bg-red-500/10 dark:hover:text-red-400"
+        >
+          <Power className="h-4 w-4" />
+        </button>
 
         <div className="flex flex-col items-end">
           <label className="text-[10px] text-gray-400 font-bold uppercase tracking-wider mb-1">Project Key</label>

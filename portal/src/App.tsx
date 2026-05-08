@@ -6,9 +6,16 @@ import { DocsScreen } from './components/DocsScreen';
 import { TaskModal } from './components/TaskModal';
 import { Settings } from './components/Settings';
 import { ReleasesScreen } from './components/ReleasesScreen';
+import { WorkspaceSelector } from './components/WorkspaceSelector';
 
 function AppContent() {
-  const { view } = useApp();
+  const { view, workspaceConfigured, isConnected } = useApp();
+
+  // Show workspace picker until the engine has a project folder configured.
+  // If the engine is offline, skip the picker to show the normal UI with the disconnect banner.
+  if (!workspaceConfigured && isConnected) {
+    return <WorkspaceSelector />;
+  }
 
   return (
     <div className="min-h-[100vh] h-screen bg-gray-50 dark:bg-bg-dark text-gray-900 dark:text-gray-100 flex flex-col font-sans">

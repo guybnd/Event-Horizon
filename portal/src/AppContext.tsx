@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { ColumnLiveEvent, Config, Task, TaskLiveEvent } from './types';
-import { fetchConfig, fetchTasks, fetchHealth, saveConfig as apiSaveConfig, fetchReadState, saveReadState } from './api';
+import { fetchConfig, fetchTasks, fetchHealth, saveConfig as apiSaveConfig, fetchReadState, saveReadState, fetchWorkspace } from './api';
 
 type AppView = 'board' | 'backlog' | 'docs' | 'settings' | 'releases';
 export type TaskSortOption = 'default' | 'priority' | 'updated' | 'assignee';
@@ -134,6 +134,9 @@ interface AppState {
   lastRefreshAt: number | null;
   isWindowVisible: boolean;
   isConnected: boolean;
+  workspaceConfigured: boolean;
+  workspacePath: string | null;
+  notifyWorkspaceSet: () => void;
   config: Config | null;
   saveConfig: (updates: Config) => Promise<void>;
   readComments: Record<string, string[]>;
@@ -165,6 +168,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [lastRefreshAt, setLastRefreshAt] = useState<number | null>(null);
   const [isWindowVisible, setIsWindowVisible] = useState(() => (typeof document === 'undefined' ? true : !document.hidden));
   const [isConnected, setIsConnected] = useState(true);
+  const [workspaceConfigured, setWorkspaceConfigured] = useState(false);
+  const [workspacePath, setWorkspacePath] = useState<string | null>(null);
   const [config, setConfig] = useState<Config | null>(null);
   const [readComments, setReadComments] = useState<Record<string, string[]>>({});
   const readCommentsLoadedRef = useRef(false);
@@ -491,14 +496,43 @@ export function AppProvider({ children }: { children: ReactNode }) {
     void loadTasks();
   }, [loadTasks]);
 
+  // On mount, fetch workspace state. Then poll health alongside connection checks.
+  useEffect(() => {
+    fetchWorkspace()
+      .then(({ configured, path: wp }) => {
+        setWorkspaceConfigured(configured);
+        setWorkspacePath(wp);
+      })
+      .catch(() => {});
+  }, []);
+
+  const notifyWorkspaceSet = useCallback(() => {
+    fetchWorkspace()
+      .then(({ configured, path: wp }) => {
+        setWorkspaceConfigured(configured);
+        setWorkspacePath(wp);
+        if (configured) {
+          void loadTasks();
+          fetchConfig().then(setConfig).catch(() => {});
+        }
+      })
+      .catch(() => {});
+  }, [loadTasks]);
+
   useEffect(() => {
     let checkTimeout: number;
     let cancelled = false;
 
     const checkHealth = async () => {
       try {
-        await fetchHealth();
-        if (!cancelled) setIsConnected(true);
+        const health = await fetchHealth();
+        if (!cancelled) {
+          setIsConnected(true);
+          // Keep workspace state in sync if the server restarted with a workspace.
+          const configured = health.workspace !== null && health.workspace !== undefined;
+          setWorkspaceConfigured(configured);
+          setWorkspacePath(health.workspace ?? null);
+        }
       } catch (err) {
         if (!cancelled) setIsConnected(false);
       }
@@ -624,6 +658,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       lastRefreshAt,
       isWindowVisible,
       isConnected,
+      workspaceConfigured, workspacePath, notifyWorkspaceSet,
       config, saveConfig,
       readComments, ensureReadStateLoaded, markCommentRead, markAllCommentsRead,
     }}>
