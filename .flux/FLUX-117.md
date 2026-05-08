@@ -1,6 +1,6 @@
 ---
-title: persist comment read state across devices per user
-status: Grooming
+title: Persist comment read state across devices per user
+status: Todo
 assignee: unassigned
 tags:
   - feature
@@ -44,23 +44,26 @@ updatedBy: Guy
 order: 84
 ---
 
-## Problem / Motivation
+## Summary
+Comment read/unread state is currently stored locally in `.flux/read-state.json` and gitignored. This prevents read state from syncing across devices for the same user. By committing this file to the repository, read state can travel with the repo seamlessly.
 
-Comment read/unread state is stored in `.flux/read-state.json` on the engine
-host. Because the file is gitignored it never leaves the local machine —
-a user opening the board from a second device (different git clone) always
-sees all comments as unread. For teams or individuals who work across machines
-this defeats the purpose of the read-state feature.
+## Requirements
 
-## Implementation Plan
+### 1. Sync Read State via Git
+- Remove `.flux/read-state.json` from the project's `.gitignore`.
+- Allow the file to be committed and pushed to the repository alongside normal ticket changes.
+- Add documentation in `README.md` explaining that `read-state.json` is meant to be committed to propagate read states.
 
-1. Remove `.flux/read-state.json` from `.gitignore`.
-2. Commit `read-state.json` alongside normal ticket changes (it will auto-appear
-   in the working tree after the first mark-read action).
-3. Optionally add a note to `README.md` explaining that `read-state.json` is a
-   per-user sidecar that should be committed to propagate read state across clones.
+## Acceptance Criteria
+- [ ] `.flux/read-state.json` is removed from `.gitignore`.
+- [ ] The read state file can be committed and merged cleanly (existing engine logic already uses a Set-union merge).
 
-## Validation
+## Likely Affected Areas
+- `.gitignore`
+- `.flux/README.md` (or main project README)
 
-- Mark a comment as read on machine A, commit and push.
-- Pull on machine B, reload the portal — the same comment should show as read.
+## Notes
+- Guy moved this back to grooming, possibly to formalize the ticket structure. The proposed solution is simple and requires no engine code changes.
+
+## Original Request
+persist comment read state across devices per user

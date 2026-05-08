@@ -139,7 +139,7 @@ export async function deleteDoc(docPath: string): Promise<void> {
 }
 
 export interface SkillStatus {
-  framework: 'copilot' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'generic';
+  framework: 'copilot' | 'antigravity' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'generic';
   skillSourcePath: string;
   skillInstalledPath: string;
   skillSourceExists: boolean;

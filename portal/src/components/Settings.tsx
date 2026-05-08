@@ -1227,6 +1227,7 @@ export function Settings() {
                       <option value="cline">Cline</option>
                       <option value="windsurf">Windsurf</option>
                       <option value="claude">Claude Code</option>
+                      <option value="antigravity">Antigravity</option>
                       <option value="gemini">Gemini CLI</option>
                       <option value="generic">Generic / Other</option>
                     </select>

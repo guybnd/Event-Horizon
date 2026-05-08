@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-export type Framework = 'auto' | 'copilot' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'generic';
+export type Framework = 'auto' | 'copilot' | 'antigravity' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'generic';
 type ResolvedFramework = Exclude<Framework, 'auto'>;
 
 export const EVENT_HORIZON_INSTRUCTIONS_START = '<!-- EVENT_HORIZON_MANAGED_INSTRUCTIONS:START -->';
@@ -53,6 +53,10 @@ function resolveFramework(targetDir: string, requested: Framework): ResolvedFram
     return 'copilot';
   }
 
+  if (existsSync(path.join(targetDir, '.gemini', 'antigravity'))) {
+    return 'antigravity';
+  }
+
   if (existsSync(path.join(targetDir, '.gemini'))) {
     return 'gemini';
   }
@@ -79,6 +83,7 @@ function skillDestinationFor(targetDir: string, framework: ResolvedFramework): s
       return path.join(targetDir, '.github', 'skills', 'event-horizon', 'orchestrator.md');
     case 'cline':
       return path.join(targetDir, '.cline', 'skills', 'event-horizon-orchestrator.md');
+    case 'antigravity':
     case 'gemini':
       return path.join(targetDir, '.gemini', 'skills', 'event-horizon.md');
     case 'cursor':
@@ -109,6 +114,8 @@ function instructionsDestinationFor(targetDir: string, framework: ResolvedFramew
   switch (framework) {
     case 'copilot':
       return path.join(targetDir, '.github', 'copilot-instructions.md');
+    case 'antigravity':
+      return path.join(targetDir, '.gemini', 'instructions.md');
     case 'cursor':
       return path.join(targetDir, '.cursorrules');
     case 'cline':
@@ -189,7 +196,7 @@ export async function getWorkflowInstallStatus({ sourceRoot, targetDir, framewor
   const instructionsInstalledPath = instructionsDestinationFor(targetDir, resolvedFramework);
   const skillSourceExists = await pathExists(skillSourcePath);
   const skillInstalled = await pathExists(skillInstalledPath);
-  const instructionsSourceExists = resolvedFramework === 'copilot' ? await pathExists(instructionsSourcePath) : false;
+  const instructionsSourceExists = !!instructionsInstalledPath ? await pathExists(instructionsSourcePath) : false;
   let instructionsInstalled = false;
 
   if (instructionsInstalledPath && await pathExists(instructionsInstalledPath)) {

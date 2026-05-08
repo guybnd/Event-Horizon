@@ -1,4 +1,8 @@
 ---
+title: Tutorial & initial setup
+status: Todo
+createdBy: Guy
+updatedBy: Guy
 assignee: unassigned
 tags:
   - feature
@@ -56,53 +60,37 @@ history:
     to: Grooming
     user: Guy
     date: '2026-05-07T23:44:35.291Z'
-title: Tutorial & initial setup
-status: Grooming
-createdBy: Guy
-updatedBy: Guy
 order: 0
 ---
 
-# Goal
+## Summary
+A Welcome / Getting Started interactive guided tour for first-time users. It will auto-launch on the first visit to guide the user through the ticket lifecycle and prompt them to install the skill.
 
-A Welcome / Getting Started screen for first-time users that:
-1. Prompts them to install the skill into their agentic IDE (with a Settings shortcut button).
-2. Shows a typical ticket lifecycle: Create → Groom → Require Input → Groom → Todo → In Progress → Ready → Release.
-3. Optionally shows example ticket cards or screenshots at each step.
+## Requirements
 
-# Open Question (Require Input)
+### 1. Auto-Launch Interactive Tour
+- Detect first-time users via a `localStorage` flag (e.g., `flux:welcomed`).
+- If the flag is missing, automatically launch an interactive guided tour (using a library or custom overlay).
+- Provide a button in Settings to restart the tutorial.
 
-**How should the Welcome screen be surfaced?**
+### 2. Tour Content
+- **Step 1:** Prompt to install the skill into their agentic IDE, with a button to open Settings or copy instructions.
+- **Step 2:** Highlight the board and walk through a typical ticket lifecycle: Create → Groom → Todo → In Progress → Ready → Release.
+- Explain the purpose of each stage with interactive tooltips pointing to actual UI elements.
 
-- **Option A (recommended default):** Add it as a dedicated nav tab ("Get Started" or "Welcome") in the Header nav. Always accessible, not intrusive. User can ignore it.
-- **Option B:** Show as a modal/overlay automatically on first load when the board is empty (localStorage flag `flux:welcomed` gates it). Dismissible.
-- **Option C:** Both — show modal on first launch, accessible as a nav tab afterward.
+## Acceptance Criteria
+- [ ] On first launch, the interactive guided tour begins automatically.
+- [ ] The tour successfully guides the user through the board's elements and ticket lifecycle.
+- [ ] After completion or skipping, a `localStorage` flag is set to prevent auto-launch.
+- [ ] A "Restart Tutorial" button is available in the Settings page.
 
-**And for the step-by-step demo:**
-- **Static illustrated walkthrough** (cards + descriptions per stage) — simpler.
-- **Interactive tour** (highlights real board elements) — richer but significantly more complex.
+## Likely Affected Areas
+- `portal/src/App.tsx` (or main layout for initialization)
+- `portal/src/components/Settings.tsx`
+- New components for the guided tour overlay.
 
-Please confirm preferred approach before implementation starts.
+## Notes
+- Based on user feedback: we are using the interactive guided tour approach and triggering automatically via localStorage.
 
-# Proposed Metadata Defaults
-
-- `priority`: Medium
-- `effort`: L
-- `tags`: feature, ux
-
-# Implementation Plan (pending decision)
-
-Once the surface and demo style are confirmed:
-
-1. Create `portal/src/components/WelcomeScreen.tsx`.
-2. Add the "Get Started" nav entry in `Header.tsx` and wire it to the new view in `App.tsx`/routing.
-3. Section 1: install skill — button opens Settings, text explains what to do.
-4. Section 2: ticket lifecycle — horizontal stepper or vertical card list, one entry per status stage with a short description and optional illustration.
-5. If auto-modal (Option B/C): add localStorage gate in `App.tsx`.
-
-# Validation
-
-- Welcome screen accessible from nav.
-- Install skill button navigates to Settings.
-- All lifecycle stages shown in order.
-- No broken routing on direct URL visit.
+## Original Request
+Tutorial & initial setup
