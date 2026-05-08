@@ -79,11 +79,6 @@ export function ContextMenu({ task, position, onClose }: Props) {
   const handleLaunchAgent = () => {
     onClose();
     void startTaskCliSession(task.id, 'claude', undefined, true).then(() => triggerRefresh());
-    if (boardCardOpenMode === 'full') {
-      openTaskFullView(task);
-    } else {
-      openTaskModal(task);
-    }
   };
 
   const handleTransition = async (status: string) => {
