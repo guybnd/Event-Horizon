@@ -5,126 +5,90 @@ order: 2
 
 # Installation & Setup
 
-This guide explains how to add Event Horizon to an existing project, configure it for your team, and install the agent workflow skill.
+This guide explains how to install Event Horizon, set up your project workspace, configure your environment, and integrate the agent workflow skills.
 
 ---
 
-## Prerequisites
+## Quick Start (Binary)
 
-- **Node.js ≥ 18** and **npm ≥ 9**
-- A Git repository (or any directory) to track
+Event Horizon ships as a standalone binary with an embedded IDE-style workspace picker, a local server, and a system tray manager. No Node.js or `npm install` is required for end users.
+
+1. **Download the Binary**: Get the latest `event-horizon` executable for your platform (Windows, macOS, or Linux).
+2. **Run the App**: Double-click the executable.
+3. **Connect**: Your default web browser will automatically open the Event Horizon portal (typically at `http://localhost:3001`).
+4. **Select Workspace**: If it's your first time, the portal will prompt you to select a workspace. Click **Browse** and select your project folder, or type the path. If the folder hasn't been initialized, the portal will guide you through setting it up.
 
 ---
 
-## Step 1 — Get the Event Horizon engine
+## Initializing a New Project
 
-Clone the repository and install dependencies:
+To use Event Horizon in a new project, the folder must be initialized with a `.flux/` directory.
+
+You can initialize a project directly from the Event Horizon portal when you browse to an empty folder. Alternatively, use the CLI:
 
 ```bash
-git clone https://github.com/your-org/event-horizon.git
-cd event-horizon
-npm install
+event-horizon init --target /path/to/your-project --key MYAPP
 ```
 
----
+*(Note: If you are using the npm package, use `npx event-horizon init` instead).*
 
-## Step 2 — Initialise your project workspace
-
-Run the `init` command, pointing it at the project you want to manage:
-
-```bash
-npm run init -- --target /path/to/your-project --key MYAPP
-```
-
-| Argument | Description |
-|----------|-------------|
-| `--target <path>` | Path to the project root. Defaults to the current working directory. |
-| `--key <KEY>` | Project key used as a ticket ID prefix (e.g. `MYAPP-1`). Prompted interactively if omitted. |
-| `--force` | Re-scaffold an existing workspace (overwrites config, skips docs). |
-
-This creates:
-- `.flux/config.json` — board configuration
-- `.flux/assets/` — image attachment storage
-- `.docs/project-overview.md` — starter documentation page (if `.docs/` doesn't exist)
+This command creates:
+- `.flux/config.json` — Board configuration and project settings.
+- `.flux/assets/` — Image attachment storage.
+- `.docs/project-overview.md` — Starter documentation page (if `.docs/` doesn't exist).
 
 ---
 
-## Step 3 — Start the engine
+## Configuration Files
 
-```bash
-cd /path/to/event-horizon/engine
-npm run dev -- --workspace /path/to/your-project
-```
+Event Horizon uses three main configuration files for different scopes:
 
-The engine will:
-1. Validate that `.flux/` exists at the workspace path.
-2. Watch `.flux/*.md` ticket files and `.docs/**/*.md` for changes.
-3. Serve the portal UI from `http://localhost:3001` (if `portal/dist/` is present).
+1. **`event-horizon.config.json`**: Located next to the binary. Edit this to change the default port before the first launch.
+2. **`.flux/config.json`**: Located in your project workspace. Contains board configuration (columns, tags, statuses).
+3. **`~/.event-horizon/settings.json`**: Global user settings. Remembers your last opened workspace so you don't have to select it every time you start the app.
+
+*See the [Configuration Guide](configuration) for a full reference.*
 
 ---
 
-## Step 4 — Open the portal
+## Install the Agent Workflow Skill
 
-Navigate to **http://localhost:3001** in your browser.  
-The board will be empty and ready for your first ticket.
-
----
-
-## Step 5 — Install the agent workflow (optional)
-
-To enable the GitHub Copilot agent workflow (grooming, implementation, and commit flows):
+To enable your AI agents (like GitHub Copilot, Cline, or Antigravity) to manage the grooming, implementation, and commit flows, you must install the workflow skills. The Event Horizon binary embeds these files, so no internet access is required.
 
 1. Open **Settings** in the portal header.
-2. Go to the **Agent Workflow** tab.
-3. Click **Install Workflow**.
+2. Go to the **Agent Integration** tab.
+3. Select your AI framework (e.g., Copilot, Antigravity) from the dropdown.
+4. Click **Install Agent Workflow**.
 
-This installs skill files into `.github/skills/event-horizon/` and patches `.github/copilot-instructions.md` inside your project.
-
-Alternatively, from the CLI:
-```bash
-npm run install-skill -- --target /path/to/your-project --framework copilot
-```
+This step automatically copies the necessary `.md` skill files into your project's agent folder (e.g. `.gemini/` or `.github/`) and patches your project instructions.
 
 ---
 
-## Config Reference
+## Switching Projects
 
-The `.flux/config.json` file is the single source of truth for board configuration.
+Event Horizon operates on an IDE workspace model:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `columns` | `{ name, color? }[]` | Board columns shown on the Kanban view |
-| `hiddenStatuses` | `{ name, color? }[]` | Statuses tracked but hidden from the board |
-| `projects` | `string[]` | Project key prefixes for ticket IDs |
-| `users` | `{ name }[]` | Known users — shown in assignee dropdowns |
-| `tags` | `{ name, color? }[]` | Tag definitions |
-| `priorities` | `{ name, icon, color }[]` | Priority levels with Lucide icon names |
-| `enableBacklogScreen` | `boolean` | Show the Backlog nav item |
-| `requireInputStatus` | `string` | Status name agents use to request clarification |
-| `readyForMergeStatus` | `string` | Status name for the pre-merge review checkpoint |
-| `boardCardOpenMode` | `"full" \| "preview"` | Default card click behaviour |
-| `animationsEnabled` | `boolean` | Toggle board animations |
-| `docsRoot` | `string` | Docs directory relative to workspace root (default: `.docs`) |
+1. Open **Settings** in the portal header.
+2. Go to the **Workspace** tab.
+3. Browse to or enter the path of the new project folder.
+4. The portal will immediately switch context to the new workspace. This choice is remembered across restarts.
 
 ---
 
-## Multiple Projects
+## Quitting
 
-You can manage multiple project keys from a single workspace by adding them all to `projects` in `config.json`:
+Event Horizon runs as a background process to continuously monitor your ticket files. Closing the browser does **not** stop the engine.
 
-```json
-{
-  "projects": ["CORE", "WEB", "OPS"]
-}
-```
-
-When creating a ticket, choose the appropriate key from the **Project Key** field in the header.
+To stop the service completely:
+- Find the Event Horizon icon in your system tray (Windows) or menu bar (macOS).
+- Right-click and select **Quit**.
+- Alternatively, you can click the Power icon in the portal header.
 
 ---
 
 ## Related Docs
 
-- [Project Overview](event-horizon/project-overview)
-- [Architecture Overview](event-horizon/architecture/overview)
-- [Ticket Lifecycle](event-horizon/workflow/ticket-lifecycle)
-- [Agent Workflow Install](event-horizon/workflow/workflow-install)
+- [Configuration Reference](configuration)
+- [Project Overview](project-overview)
+- [Architecture Overview](architecture/overview)
+- [Ticket Lifecycle](workflow/ticket-lifecycle)

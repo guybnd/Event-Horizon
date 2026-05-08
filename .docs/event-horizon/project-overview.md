@@ -9,6 +9,10 @@ Event Horizon is a local-first project operating layer for human and agent work.
 The repository is the system of record: tickets, documentation, workflow
 instructions, and the product code all live together in version control.
 
+## Distribution Model
+
+Event Horizon is primarily distributed as a standalone binary application (Windows, macOS, Linux). It embeds the entire engine, portal UI, and agent workflow configurations. End-users simply double-click the executable to start the local service and manage their projects via their browser, without needing Node.js or the CLI. See the [Installation & Setup](installation) guide for details.
+
 ## Core pieces
 
 - `.flux/` stores ticket files, board config, and the source workflow assets.

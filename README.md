@@ -29,51 +29,15 @@ The project is split into three main areas:
 
 ---
 
-## � Install in Your Project
+## 🚀 Quick Start (Installation)
 
-Use Event Horizon as a local project management layer inside any Git repository.
+Event Horizon ships as a standalone, zero-dependency executable (Windows, macOS, Linux).
 
-### Prerequisites
+1. **Download & Run:** Download the latest binary for your platform and double-click it. 
+2. **Connect:** Your browser will automatically open the portal (at `http://localhost:3001`).
+3. **Select Workspace:** Click "Browse" in the portal UI to select the project directory you want to manage. If it's an uninitialized folder, the UI will guide you through setting up your `.flux/` configuration.
 
-* **Node.js ≥ 18** and **npm ≥ 9**
-* A Git repository (or any directory) to manage
-
-### 1. Clone or download the Event Horizon engine
-
-```bash
-git clone https://github.com/your-org/event-horizon.git
-cd event-horizon
-npm install
-```
-
-### 2. Initialise your project workspace
-
-```bash
-npm run init -- --target /path/to/your-project --key MYAPP
-```
-
-This creates `.flux/` (config + ticket store) and `.docs/` inside your project directory.
-
-> **Tip:** If you run the command from inside your project directory, omit `--target`:
-> ```bash
-> cd /path/to/your-project
-> npm run init -w engine -- --key MYAPP
-> ```
-
-### 3. Start the engine, pointing it at your project
-
-```bash
-cd /path/to/event-horizon/engine
-npm run dev -- --workspace /path/to/your-project
-```
-
-### 4. Open the portal
-
-Navigate to **http://localhost:3001** — the portal is served directly from the engine.
-
-### 5. Create your first ticket
-
-Click **+ New ticket** on the board and start planning.
+*(No Node.js, CLI, or `npm install` is required for end users. The backend server and frontend portal run entirely inside the background system tray application).*
 
 ---
 
@@ -159,8 +123,8 @@ Event Horizon provides powerful Copilot-facing assets explicitly tailored for ag
 Installing the workflow patches these templates directly into the target `.github/` directory natively supported by GitHub Copilot (`.github/skills/event-horizon/SKILL.md` & `.github/copilot-instructions.md`).
 
 You can install or refresh the workflow in two ways:
-* **Via Portal:** Navigate to the **Settings** screen in the Portal and click `Install Workflow`.
-* **Via CLI:** Run `npm.cmd run install-skill -- --target c:\GitHub\EventHorizon --framework copilot`.
+* **Via Portal:** Navigate to the **Settings** screen in the Portal and click `Install Agent Workflow` from the Workspace tab.
+* **Via CLI:** If you have the CLI tools, run `npx event-horizon install-skill --target /path/to/project --framework copilot`.
 
 *(The installer makes sure to only patch designated Event Horizon instruction blocks, preserving your unrelated custom instructions).*
 
