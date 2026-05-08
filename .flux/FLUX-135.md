@@ -1,5 +1,5 @@
 ---
-assignee: unassigned
+assignee: Claude Code
 tags:
   - agent
   - integration
@@ -30,10 +30,6 @@ history:
     user: Guy
     date: '2026-05-08T13:19:42.741Z'
     comment: Updated description.
-  - type: activity
-    user: Agent
-    date: '2026-05-08T13:19:44.745Z'
-    comment: Launched Claude Code session (9b432e83).
   - type: comment
     user: Claude Code
     date: '2026-05-08T13:21:07.308Z'
@@ -97,26 +93,66 @@ history:
     to: Todo
     user: Claude Code
     date: '2026-05-08T13:25:00.000Z'
-  - type: activity
-    user: Claude Code
-    date: '2026-05-08T13:24:34.246Z'
-    comment: Updated subtasks.
   - type: status_change
-    from: Grooming
-    to: Todo
+    from: Todo
+    to: In Progress
     user: Claude Code
-    date: '2026-05-08T13:25:08.304Z'
+    date: '2026-05-08T13:35:00.000Z'
+  - type: comment
+    user: Claude Code
+    date: '2026-05-08T13:35:00.000Z'
+    comment: >-
+      ## Implementation in progress
+
+
+      **Done:**
+
+      - Added `--dangerously-skip-permissions` to spawn args for both initial
+      launch and `--resume` reply processes in `engine/src/index.ts`
+
+      - Added `blockedReason` field to `CliSessionSummary` and
+      `CliSessionRecord`
+
+      - Added `tool_use_blocked` and permission-error detection in the
+      stream-json parser for both the initial session and reply processes — on
+      detection, flushes output, sets `status: waiting-input`, and transitions
+      the ticket to `Require Input` with an activity entry
+
+      - Added `blockedReason` to portal `types.ts`
+
+      - Added **Grant Permissions & Resume** button to the Agent Session panel
+      in `TaskModal.tsx` — appears when `cliSession.blockedReason` is set, shows
+      the blocked reason, sends a continuation message to the active session on
+      click
+
+
+      **Remaining:** verify end-to-end in the UI, then commit.
+    id: c-2026-05-08t13-35-00-000z
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Claude Code
+    date: '2026-05-08T13:29:39.586Z'
   - type: activity
     user: Claude Code
-    date: '2026-05-08T13:26:02.744Z'
-    comment: Updated description.
+    date: '2026-05-08T13:29:39.586Z'
+    comment: Changed assignee from unassigned to Claude Code.
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Guy
+    date: '2026-05-08T14:00:33.911Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-08T14:00:35.191Z'
+    comment: Launched Claude Code session (50cf1a02).
 title: >-
   CLI session permissions: spawn with max permissions, block on prompt, grant
   from ticket UI
-status: Todo
+status: Ready
 createdBy: Guy
-updatedBy: Claude Code
-order: 3
+updatedBy: Agent
+order: 0
 ---
 ## Problem / Motivation
 

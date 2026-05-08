@@ -110,6 +110,8 @@ interface CliSessionSummary {
   lastOutputAt?: string;
   lastInputAt?: string;
   blockedReason?: string;
+  liveOutput?: string;
+  skipPermissions?: boolean;
 }
 
 interface CliSessionRecord extends CliSessionSummary {
@@ -117,9 +119,11 @@ interface CliSessionRecord extends CliSessionSummary {
   claudeSessionId?: string;
   blockedReason?: string;
   outputBuffer: string;
+  liveOutputBuffer: string;
   flushTimer?: NodeJS.Timeout;
   requestedStop: boolean;
   writeQueue: Promise<void>;
+  skipPermissions: boolean;
 }
 
 let tasksCache: Record<string, any> = {};
@@ -195,6 +199,8 @@ function getCliSessionSummaryForTask(taskId: string): CliSessionSummary | undefi
     lastOutputAt: session.lastOutputAt,
     lastInputAt: session.lastInputAt,
     blockedReason: session.blockedReason,
+    liveOutput: session.liveOutputBuffer || undefined,
+    skipPermissions: session.skipPermissions,
   };
 }
 
@@ -257,14 +263,17 @@ async function updateTaskWithHistory(taskId: string, options: {
   return tasksCache[taskId];
 }
 
-function appendSessionOutput(session: CliSessionRecord, chunk: Buffer | string, source: 'stdout' | 'stderr') {
+function appendSessionOutput(session: CliSessionRecord, chunk: Buffer | string, source: 'stdout' | 'stderr', isAssistantText = false) {
   const text = String(chunk ?? '').replace(/\r\n/g, '\n');
   if (!text.trim()) {
     return;
   }
 
   const prefix = source === 'stderr' ? '[stderr] ' : '';
-  session.outputBuffer += `${prefix}${text}`;
+  session.liveOutputBuffer += `${prefix}${text}`;
+  if (isAssistantText) {
+    session.outputBuffer += text;
+  }
   session.lastOutputAt = new Date().toISOString();
 }
 
@@ -1042,6 +1051,7 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
   }
   const framework = frameworkRaw as CliFramework;
   const appendPrompt = typeof req.body?.appendPrompt === 'string' ? req.body.appendPrompt.trim() : '';
+  const skipPermissions = req.body?.skipPermissions !== false;
 
   const existingSessionId = cliSessionIdByTaskId.get(id);
   if (existingSessionId) {
@@ -1085,6 +1095,8 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
     startedAt,
     label,
     outputBuffer: '',
+    liveOutputBuffer: '',
+    skipPermissions,
     requestedStop: false,
     writeQueue: Promise.resolve(),
   };
@@ -1093,7 +1105,9 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
   cliSessionIdByTaskId.set(id, sessionId);
 
   try {
-    const claudeArgs = ['-p', initialPrompt, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'];
+    const claudeArgs = skipPermissions
+      ? ['-p', initialPrompt, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions']
+      : ['-p', initialPrompt, '--output-format', 'stream-json', '--verbose'];
     const proc = spawn(binaryName, claudeArgs, {
       cwd: workspaceRoot!,
       env: process.env,
@@ -1125,14 +1139,17 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
           if (!session.claudeSessionId && evt.session_id) {
             session.claudeSessionId = evt.session_id;
           }
-          // Extract assistant text from stream-json events
+          // Extract assistant text — saved to history and shown live
           if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
             for (const block of evt.message.content) {
               if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
-                appendSessionOutput(session, block.text, 'stdout');
+                appendSessionOutput(session, block.text, 'stdout', true);
                 flushSessionOutput(session);
               }
             }
+          } else {
+            // All other JSON events are ephemeral — live panel only, never saved
+            appendSessionOutput(session, trimmed, 'stdout', false);
           }
           // Detect permission blocks
           if (evt.type === 'tool_use_blocked' || (evt.type === 'result' && evt.is_error && /permission|not allowed|denied/i.test(String(evt.error || '')))) {
@@ -1151,16 +1168,14 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
             });
           }
         } catch {
-          // Non-JSON line — capture as-is
-          appendSessionOutput(session, trimmed, 'stdout');
-          flushSessionOutput(session);
+          // Non-JSON line — ephemeral only
+          appendSessionOutput(session, trimmed, 'stdout', false);
         }
       }
     });
 
     proc.stderr.on('data', (chunk) => {
-      appendSessionOutput(session, chunk, 'stderr');
-      flushSessionOutput(session);
+      appendSessionOutput(session, chunk, 'stderr', false);
     });
 
     proc.on('error', async (error) => {
