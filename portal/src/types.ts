@@ -46,6 +46,7 @@ export interface CliSessionSummary {
   label: string;
   lastOutputAt?: string;
   lastInputAt?: string;
+  blockedReason?: string;
 }
 
 export interface TaskLiveEvent {

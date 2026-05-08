@@ -503,6 +503,31 @@ export function TaskModal() {
     }
   };
 
+  const [finishBusy, setFinishBusy] = useState(false);
+  const [finishError, setFinishError] = useState('');
+
+  const sendFinishCommand = async () => {
+    if (!modalTask?.id) return;
+    const command = `finish ${modalTask.id}`;
+    const hasActiveSession = Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status));
+    setFinishBusy(true);
+    setFinishError('');
+    try {
+      if (hasActiveSession) {
+        const nextSession = await sendTaskCliInput(modalTask.id, command, currentUser);
+        setCliSession(nextSession);
+      } else {
+        const nextSession = await startTaskCliSession(modalTask.id, selectedCliFramework, command);
+        setCliSession(nextSession);
+      }
+      triggerRefresh();
+    } catch (error: any) {
+      setFinishError(error?.message || 'Failed to send finish command.');
+    } finally {
+      setFinishBusy(false);
+    }
+  };
+
   useEffect(() => {
     if (!isRequireInput) return;
     const preferred = preRequireInputStatus && requireInputDestinations.includes(preRequireInputStatus)
@@ -1178,6 +1203,33 @@ export function TaskModal() {
             </select>
           </div>
 
+          {cliSession?.blockedReason && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-500/20 dark:bg-amber-500/10">
+              <p className="text-xs font-semibold text-amber-700 dark:text-amber-300">Agent blocked — waiting for permission</p>
+              <p className="mt-0.5 text-[11px] text-amber-600 dark:text-amber-400">{cliSession.blockedReason}</p>
+              <button
+                type="button"
+                disabled={cliSessionBusy}
+                onClick={() => {
+                  if (!modalTask?.id) return;
+                  setCliSessionBusy(true);
+                  setCliSessionError('');
+                  void sendTaskCliInput(modalTask.id, 'You now have permission to proceed. Continue with the task.', currentUser)
+                    .then((session) => {
+                      setCliSession({ ...session, blockedReason: undefined });
+                      triggerRefresh();
+                    })
+                    .catch((error: any) => setCliSessionError(error?.message || 'Failed to grant permissions.'))
+                    .finally(() => setCliSessionBusy(false));
+                }}
+                className="mt-2 flex items-center gap-1.5 rounded-md bg-amber-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-600 disabled:opacity-50"
+              >
+                <Bot className="h-3.5 w-3.5" />
+                Grant Permissions &amp; Resume
+              </button>
+            </div>
+          )}
+
           {cliSessionError && (
             <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300">
               {cliSessionError}
@@ -1509,7 +1561,7 @@ export function TaskModal() {
       <div className="min-w-0 flex-1">
         <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-amber-800 dark:text-amber-300">Merge review requested</p>
         <p className="whitespace-pre-wrap text-sm text-amber-700 dark:text-amber-400">
-          This ticket is waiting in {readyForMergeStatus} for your review and finalization. Look over the ticket and diffs, then type the finish command in chat.
+          This ticket is waiting in {readyForMergeStatus} for your review and finalization. Look over the ticket and diffs, then click <strong>Tell agent to finish</strong> to close the work.
         </p>
       </div>
     </div>
@@ -1588,7 +1640,7 @@ export function TaskModal() {
         <div className="min-w-0 flex-1">
           <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Ready for final review</p>
           <h3 className="mt-1 text-lg font-semibold text-gray-900 dark:text-gray-100">Review and finish the ticket</h3>
-          <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">After reviewing the diff and ticket details, tell the agent <span className="font-semibold text-gray-900 dark:text-gray-100">finish {modalTask.id}</span> to create the final commit and close the work.</p>
+          <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">After reviewing the diff and ticket details, click <span className="font-semibold text-gray-900 dark:text-gray-100">Tell agent to finish</span> to send the close command directly to the agent.</p>
         </div>
       </div>
 
@@ -1631,12 +1683,20 @@ export function TaskModal() {
 
         <div className="space-y-2 rounded-xl border border-gray-200 bg-white/80 p-4 dark:border-white/10 dark:bg-black/20">
           <button
-              onClick={() => {
-                void navigator.clipboard.writeText(`finish ${modalTask.id}`);
-              }}
-              className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary-hover"
+              disabled={finishBusy || saving}
+              onClick={() => void sendFinishCommand()}
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
             >
               <SendHorizontal className="h-4 w-4" />
+              {finishBusy ? 'Sending…' : 'Tell agent to finish'}
+            </button>
+            {finishError && (
+              <p className="text-xs text-red-600 dark:text-red-400">{finishError}</p>
+            )}
+            <button
+              onClick={() => void navigator.clipboard.writeText(`finish ${modalTask.id}`)}
+              className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
+            >
               Copy finish command
             </button>
             <button

@@ -109,11 +109,13 @@ interface CliSessionSummary {
   label: string;
   lastOutputAt?: string;
   lastInputAt?: string;
+  blockedReason?: string;
 }
 
 interface CliSessionRecord extends CliSessionSummary {
   proc?: ChildProcessWithoutNullStreams;
   claudeSessionId?: string;
+  blockedReason?: string;
   outputBuffer: string;
   flushTimer?: NodeJS.Timeout;
   requestedStop: boolean;
@@ -192,6 +194,7 @@ function getCliSessionSummaryForTask(taskId: string): CliSessionSummary | undefi
     label: session.label,
     lastOutputAt: session.lastOutputAt,
     lastInputAt: session.lastInputAt,
+    blockedReason: session.blockedReason,
   };
 }
 
@@ -1038,6 +1041,7 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
     return res.status(400).json({ error: 'framework must be claude or copilot' });
   }
   const framework = frameworkRaw as CliFramework;
+  const appendPrompt = typeof req.body?.appendPrompt === 'string' ? req.body.appendPrompt.trim() : '';
 
   const existingSessionId = cliSessionIdByTaskId.get(id);
   if (existingSessionId) {
@@ -1067,6 +1071,7 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
     }) : ['- (No history)']),
     '',
     'Respond with implementation progress updates and blockers. Keep updates concise.',
+    ...(appendPrompt ? ['', appendPrompt] : []),
   ];
   const initialPrompt = promptLines.join('\n');
 
@@ -1088,7 +1093,7 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
   cliSessionIdByTaskId.set(id, sessionId);
 
   try {
-    const claudeArgs = ['-p', initialPrompt, '--output-format', 'stream-json', '--verbose'];
+    const claudeArgs = ['-p', initialPrompt, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'];
     const proc = spawn(binaryName, claudeArgs, {
       cwd: workspaceRoot!,
       env: process.env,
@@ -1128,6 +1133,22 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
                 flushSessionOutput(session);
               }
             }
+          }
+          // Detect permission blocks
+          if (evt.type === 'tool_use_blocked' || (evt.type === 'result' && evt.is_error && /permission|not allowed|denied/i.test(String(evt.error || '')))) {
+            const reason = evt.tool_name
+              ? `Blocked: ${evt.tool_name}${evt.error ? ` — ${evt.error}` : ''}`
+              : String(evt.error || 'Permission denied');
+            session.blockedReason = reason;
+            session.status = 'waiting-input';
+            flushSessionOutput(session, true);
+            enqueueSessionWrite(session, async () => {
+              await updateTaskWithHistory(id, {
+                updatedBy: 'Agent',
+                nextStatus: configCache.requireInputStatus || 'Require Input',
+                entries: [buildActivityEntry(`${label} blocked: ${reason}`, 'Agent', new Date().toISOString())],
+              });
+            });
           }
         } catch {
           // Non-JSON line — capture as-is
@@ -1222,8 +1243,8 @@ app.post('/api/tasks/:id/cli-session/input', requireWorkspace, async (req, res) 
   try {
     const binaryName = session.command;
     const resumeArgs = session.claudeSessionId
-      ? ['-p', message, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose']
-      : ['-p', message, '--output-format', 'stream-json', '--verbose'];
+      ? ['-p', message, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions']
+      : ['-p', message, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'];
 
     const replyProc = spawn(binaryName, resumeArgs, {
       cwd: workspaceRoot!,
@@ -1251,6 +1272,21 @@ app.post('/api/tasks/:id/cli-session/input', requireWorkspace, async (req, res) 
                 flushSessionOutput(session);
               }
             }
+          }
+          if (evt.type === 'tool_use_blocked' || (evt.type === 'result' && evt.is_error && /permission|not allowed|denied/i.test(String(evt.error || '')))) {
+            const reason = evt.tool_name
+              ? `Blocked: ${evt.tool_name}${evt.error ? ` — ${evt.error}` : ''}`
+              : String(evt.error || 'Permission denied');
+            session.blockedReason = reason;
+            session.status = 'waiting-input';
+            flushSessionOutput(session, true);
+            enqueueSessionWrite(session, async () => {
+              await updateTaskWithHistory(id, {
+                updatedBy: 'Agent',
+                nextStatus: configCache.requireInputStatus || 'Require Input',
+                entries: [buildActivityEntry(`${session.label} blocked: ${reason}`, 'Agent', new Date().toISOString())],
+              });
+            });
           }
         } catch {
           appendSessionOutput(session, trimmed, 'stdout');
