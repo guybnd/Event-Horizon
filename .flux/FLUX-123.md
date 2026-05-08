@@ -1,22 +1,46 @@
 ---
-id: FLUX-123
 title: Read state resets when I refresh page
-status: Todo
+status: Done
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 assignee: unassigned
 tags:
   - bug
   - reliability
 priority: High
 effort: S
-implementationLink: ''
+implementationLink: 988d7c70ecefd198d57ab82f756621b3491f71a1
 subtasks: []
 history:
   - type: activity
     user: Guy
-    date: '2026-05-08T07:00:44.982Z'
+    date: '2026-05-09T00:00:00.000Z'
     comment: Created ticket.
+  - type: comment
+    user: Agent
+    date: '2026-05-09T00:00:00.000Z'
+    comment: >-
+      Finished. Fix was delivered in commit 988d7c7 as part of the read-state
+      feature (FLUX-93). Added `workspaceConfigured` to the read-state
+      `useEffect` dependency array in `portal/src/AppContext.tsx:441` and an
+      early-return guard at line 431. This ensures the fetch only fires once the
+      workspace is confirmed ready, preventing the 503 silent-fail that left
+      `readComments` empty on every page load.
+    id: c-2026-05-09t00-00-00-000z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-09T00:00:00.000Z'
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-08T14:54:22.971Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-08T14:54:22.971Z'
+    comment: Updated implementation link.
 ---
 
 ## Summary
