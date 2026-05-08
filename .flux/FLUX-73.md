@@ -1,6 +1,6 @@
 ---
 title: Add project init / bootstrap CLI command
-status: Todo
+status: Done
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent
@@ -9,7 +9,7 @@ tags:
   - mvp
 priority: High
 effort: M
-implementationLink: ''
+implementationLink: '63a33eb'
 subtasks: []
 history:
   - type: activity
@@ -25,6 +25,36 @@ history:
       `.flux/`, `config.json`, and understand the expected directory structure.
       This is a blocker for adoption.
     id: c-2026-05-07t06-50-00-000z-flux-73
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-08T01:00:00.000Z'
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-08T02:00:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-08T02:00:00.000Z'
+    comment: >-
+      Implemented. engine/src/init.ts: parses --target (default CWD), --key,
+      --force. Creates .flux/, .flux/assets/, .flux/config.json (sensible
+      defaults with provided project key), and .docs/project-overview.md.
+      Idempotent — exits cleanly if config.json already exists; --force
+      re-scaffolds. Prints clear next-steps after success. Wired up as
+      npm run init -w engine from root package.json. Validated: creates
+      expected files, exits without changes on re-run, --force overwrites.
+    id: c-flux73-ready
+  - type: comment
+    user: Agent
+    date: '2026-05-08T17:30:00.000Z'
+    comment: >-
+      Completed. engine/src/init.ts scaffolds .flux/, config.json (with Archived
+      column and archiveStatus), .docs/project-overview.md, and copies EH how-to
+      docs. Idempotent; --force re-scaffolds. Validated in binary.
+    id: c-flux73-done
 order: 73
 ---
 ## Summary

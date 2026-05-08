@@ -1,6 +1,6 @@
 ---
 title: Write install and setup documentation for external projects
-status: Todo
+status: Done
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent
@@ -9,7 +9,7 @@ tags:
   - mvp
 priority: Medium
 effort: S
-implementationLink: ''
+implementationLink: '63a33eb'
 subtasks: []
 history:
   - type: activity
@@ -25,6 +25,31 @@ history:
       no section explaining how to install and use Event Horizon as a service
       in another project.
     id: c-2026-05-07t06-50-00-000z-flux-75
+  - type: status_change
+    from: Todo
+    to: Ready
+    user: Agent
+    date: '2026-05-08T03:00:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-08T03:00:00.000Z'
+    comment: >-
+      Implemented. README.md: replaced the single-section Getting Started with
+      an "Install in Your Project" section (prerequisites, init, start, open
+      portal), a config.json reference table, an updated contributor dev-mode
+      section, and a production build section. .docs/event-horizon/installation.md:
+      full step-by-step install guide (5 steps from clone to first ticket),
+      config schema table, multiple projects note, and cross-links. Both are
+      consistent with the init CLI (FLUX-73) and single-process serving (FLUX-77)
+      that were just implemented.
+    id: c-flux75-ready
+  - type: comment
+    user: Agent
+    date: '2026-05-08T17:30:00.000Z'
+    comment: >-
+      Completed. README.md and .docs/event-horizon/installation.md both updated.
+      User confirmed.
+    id: c-flux75-done
 order: 75
 ---
 ## Summary

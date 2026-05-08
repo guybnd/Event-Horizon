@@ -1,6 +1,6 @@
 ---
 title: Add production build and packaging pipeline
-status: Todo
+status: Done
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent
@@ -9,7 +9,7 @@ tags:
   - mvp
 priority: High
 effort: M
-implementationLink: ''
+implementationLink: '63a33eb'
 subtasks: []
 history:
   - type: activity
@@ -24,6 +24,37 @@ history:
       on FLUX-77 (static serving) being in place so the build output is
       meaningful.
     id: c-2026-05-07t06-55-00-000z-flux-78
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-08T02:00:00.000Z'
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-08T03:00:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-08T03:00:00.000Z'
+    comment: >-
+      Implemented. engine/scripts/build.js: uses esbuild to bundle
+      engine/src/index.ts and engine/src/init.ts into engine/dist/{index,init}.js
+      (CJS, all deps inlined, platform=node). engine/package.json: added 'build'
+      (node scripts/build.js), 'package' (all three targets via @yao-pkg/pkg),
+      'package:win' and 'package:mac' variants. root package.json: 'build' runs
+      portal then engine builds; 'package' runs full build+package.
+      resolvePortalDist() updated with process.pkg check so packaged binary looks
+      for portal/dist/ adjacent to the executable. Validated: npm run build
+      succeeds, engine/dist/index.js starts cleanly with --workspace ..
+    id: c-flux78-ready
+  - type: comment
+    user: Agent
+    date: '2026-05-08T17:30:00.000Z'
+    comment: >-
+      Completed. engine/scripts/build.js + @yao-pkg/pkg pipeline producing
+      standalone binaries. User confirmed.
+    id: c-flux78-done
 order: 78
 ---
 ## Summary

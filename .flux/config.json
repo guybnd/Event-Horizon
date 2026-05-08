@@ -30,6 +30,9 @@
       "name": "Backlog"
     }
   ],
+  "projects": [
+    "FLUX"
+  ],
   "users": [
     {
       "name": "Guy"
@@ -158,6 +161,14 @@
     {
       "name": "test",
       "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "distribution",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "research",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     }
   ],
   "priorities": [
@@ -187,25 +198,22 @@
       "color": "text-gray-400"
     }
   ],
-  "projects": [
-    "FLUX"
-  ],
   "enableBacklogScreen": true,
   "requireCommentOnStatusChange": false,
   "boardCardOpenMode": "full",
   "animationsEnabled": true,
   "enableFireworks": true,
-  "animationSpeed": "fast",
   "requireInputStatus": "Require Input",
   "readyForMergeStatus": "Ready",
   "archiveStatus": "Archived",
   "docsEditPermissions": "all",
   "docsAllowedUsers": [],
-  "docsRoot": ".docs",
-  "hoverPopupsEnabled": true,
-  "hoverPopupDelay": 350,
   "releaseSettings": {
     "generateDistinctFiles": true,
     "releaseNotesPath": "release-notes"
-  }
+  },
+  "animationSpeed": "fast",
+  "docsRoot": ".docs",
+  "hoverPopupsEnabled": true,
+  "hoverPopupDelay": 350
 }

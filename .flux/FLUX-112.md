@@ -1,14 +1,14 @@
 ---
-priority: Low
-effort: M
+title: Ready prompt as standalone popup from notification ticker
+status: Todo
+assignee: unassigned
 tags:
   - ux
   - feature
-createdBy: Guy
-updatedBy: Guy
-title: Ready prompt as standalone popup from notification ticker
-status: Grooming
-assignee: unassigned
+priority: Low
+effort: M
+implementationLink: ''
+subtasks: []
 history:
   - type: activity
     user: Guy
@@ -18,25 +18,36 @@ history:
       addition to showing the prompt inside the ticket modal, allow the Ready
       prompt to surface as a distinct popup outside the ticket — triggered from
       a notification ticker. Logged here for grooming.
-implementationLink: ''
-subtasks: []
+createdBy: Guy
+updatedBy: Guy
+id: FLUX-112
 ---
-# Goal
 
-Allow the Ready-for-merge prompt to appear as a standalone popup triggered from a notification ticker UI, outside the ticket modal itself.
+## Summary
+When a ticket reaches the "Ready" state, the prompt currently only appears inside the ticket modal. It would be useful to surface this prompt as a standalone popup outside the ticket, triggered from a notification-style ticker UI, so users can review and act on ready tickets without opening the modal.
 
-# Context
+## Requirements
 
-Currently the Ready prompt only appears inside the ticket modal. Guy noted that it would be useful to have it surface from a notification-style ticker so users can review and act on ready tickets without opening the modal. Captured from FLUX-106 review.
+### 1. Notification Ticker UI
+- Implement a notification ticker or badge (e.g., in the header) that indicates the count of "Ready" tickets.
+- Clicking the ticker should open a standalone popup or flyout.
 
-# Requirements
+### 2. Standalone Ready Popup
+- The popup should display a minimal version of the "Ready for merge/release" prompt.
+- Users should be able to approve or act on the prompt directly from this popup without needing to open the full ticket modal.
 
-- TBD during grooming. Key open questions:
-  - Where does the notification ticker live in the UI? (header? corner toast?)
-  - What does the standalone popup look like? (minimal card? full prompt panel?)
-  - Should it badge/count ready tickets?
-  - How does it interact with the existing modal — clicking opens the full modal?
+## Acceptance Criteria
+- [ ] A notification ticker displays the number of ready tickets.
+- [ ] Clicking the ticker opens a popup with the Ready prompt.
+- [ ] Acting on the prompt in the popup updates the ticket correctly.
 
-# Out of Scope
+## Likely Affected Areas
+- `portal/src/components/Header.tsx` (for the ticker).
+- New component for the Ready Popup.
 
-- Changes to the in-modal Ready prompt (handled in FLUX-106).
+## Notes
+- Handled outside of FLUX-106 (which focuses on the in-modal prompt).
+- UI placement: Header is the most logical location for a global notification ticker.
+
+## Original Request
+Captured from FLUX-106 review comment. When a ticket reaches Ready, in addition to showing the prompt inside the ticket modal, allow the Ready prompt to surface as a distinct popup outside the ticket — triggered from a notification ticker. Logged here for grooming.

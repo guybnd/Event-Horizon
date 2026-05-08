@@ -1,6 +1,6 @@
 ---
 title: Provide a robust mechanism for agent ticket edits to prevent ticket corruption
-status: Grooming
+status: Todo
 createdBy: User
 updatedBy: Guy
 assignee: unassigned
@@ -76,51 +76,33 @@ history:
 order: 83
 ---
 
-# Problem
+## Summary
+When an agent attempts to advance a ticket or log history, it uses file replacement tools that often break YAML formatting, causing tickets to vanish. We need a robust mechanism to prevent this, using a combination of file-watching validation and a safe CLI tool.
 
-When an agent uses `replace_string_in_file` or similar to edit `.flux/*.md` tickets, slight YAML formatting errors cause the ticket to fail parsing and vanish from the board. This is a recurring source of agent-induced data corruption.
+## Requirements
 
-# Paths Identified
+### 1. Validation Hook
+- Implement a fast verification hook inside the engine watcher.
+- Whenever a `.flux/*.md` file is changed, parse its YAML frontmatter.
+- If invalid, emit an immediate terminal error so the agent receives feedback and can self-correct.
 
-1. **MCP / VS Code Command Tool (most robust):** Expose explicit tool calls (`update_ticket_status`, `add_ticket_history`) that accept JSON and use `js-yaml` for safe serialization. Agent instructions forbid direct file editing. Requires MCP server integration — higher investment.
+### 2. CLI Scripts
+- Add Node CLI scripts (e.g., `patch-ticket.ts`) in `engine/src/`.
+- The script should accept arguments for editing a ticket (`--status`, `--comment`, etc.) and safely parse/stringify the file using `js-yaml`.
+- Update agent system instructions to mandate using the CLI tool instead of direct string replacements for ticket metadata.
 
-2. **Validation Hook (reactive / lightweight):** After any `.flux/*.md` file change, run a fast YAML parse check in the engine watcher and emit a terminal error immediately so the agent can self-correct. Could be paired with a pre-commit hook. No API change needed.
+## Acceptance Criteria
+- [ ] Malformed ticket edits trigger an immediate validation error in the terminal.
+- [ ] A CLI script successfully updates ticket status and history using `js-yaml`.
+- [ ] A separate ticket is created for the "corrupted file UI indicator".
 
-3. **CLI Scripts (quickest agent-friendly path):** Add Node scripts under `engine/src/` (e.g., `patch-ticket.ts`) that accept `--id`, `--status`, `--comment` args and use `js-yaml` for safe round-trip editing. Agent calls them via terminal. Instructions updated to prefer CLI over file edits for status/history changes.
+## Likely Affected Areas
+- `engine/src/watcher.ts` (or similar file monitoring)
+- `engine/src/cli/`
+- `.flux` documentation/instructions
 
-4. **Corrupted File Indicator (UX complement):** Portal detects unparsable `.flux/*.md` files (engine returns them in a separate `corrupted` list) and shows a banner so the user can instruct the agent to fix or revert.
+## Notes
+- Based on user discussion, we are proceeding with "Option D" (Validation hook + CLI Scripts). MCP tooling will be explored in the future.
 
-# Open Question (Require Input)
-
-Which implementation path should be prioritised first?
-
-- **Option A (recommended default):** CLI scripts (Option 3) — quickest to ship, immediately usable by agents.
-- **Option B:** Validation hook (Option 2) — lightweight and complementary to any path.
-- **Option C:** MCP tools (Option 1) — most thorough but highest effort.
-- **Option D:** Start with B + A, then track MCP as a future ticket.
-
-Corrupted-file indicator (Option 4) should be split into a separate ticket regardless.
-
-# Proposed Metadata Defaults
-
-- `priority`: High
-- `effort`: M (for CLI or validation hook; L for MCP)
-- `tags`: reliability, agent-workflow
-
-# Problem
-When an agent attempts to advance a ticket or log history, it uses tools like `replace_string_in_file` or similar. If the replacement is slightly off or breaks the YAML syntax, the ticket parser in the portal fails, and the ticket vanishes from the UI. This fragility degrades the user experience significantly.
-
-# Proposed Paths for Grooming
-
-1. **Structured Editing Tooling (MCP / VS Code Command):**
-   Expose an explicit tool to the agent (e.g., `update_ticket_status`, `add_ticket_history`) that takes arguments in JSON (like `ticketId`, `status`, `actor`, `comment`). The tool itself uses a robust YAML parser/serializer (e.g., `js-yaml`) to modify the file safely. The instructions would then tell the agent to *never* edit `.flux` files manually, but only through these tools.
-
-2. **Validation Hook:**
-   Whenever a `.flux` file is modified, run a light and fast verification hook. If the YAML frontmatter is invalid, provide immediate terminal feedback to the agent so it can self-correct, or enforce a Git pre-commit hook that rejects corrupted tickets.
-
-3. **CLI Scripts:**
-   Add node scripts (e.g., `npx flux-cli update FLUX-83 --status="In Progress"`) that the agent can execute via terminal to safely interact with tickets.
-
-# Questions to Resolve
-- Which intermediary mechanism makes the most sense for the current agent context?
-- Do we build this directly into the Event Horizon extension/skills/instructions?
+## Original Request
+Provide a robust mechanism for agent ticket edits to prevent ticket corruption

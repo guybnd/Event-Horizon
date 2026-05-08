@@ -29,7 +29,39 @@ The project is split into three main areas:
 
 ---
 
-## 🚀 Getting Started
+## 🚀 Quick Start (Installation)
+
+Event Horizon ships as a standalone, zero-dependency executable (Windows, macOS, Linux).
+
+1. **Download & Run:** Download the latest binary for your platform and double-click it. 
+2. **Connect:** Your browser will automatically open the portal (at `http://localhost:3001`).
+3. **Select Workspace:** Click "Browse" in the portal UI to select the project directory you want to manage. If it's an uninitialized folder, the UI will guide you through setting up your `.flux/` configuration.
+
+*(No Node.js, CLI, or `npm install` is required for end users. The backend server and frontend portal run entirely inside the background system tray application).*
+
+---
+
+## ⚙️ Config Reference (`config.json`)
+
+The `.flux/config.json` file controls the board layout and behaviour:
+
+| Field | Description |
+|-------|-------------|
+| `columns` | Board columns shown on the Kanban view (each has a `name` and optional `color`) |
+| `hiddenStatuses` | Statuses tracked in the system but hidden from the main board |
+| `projects` | Array of project key strings (e.g. `["MYAPP"]`) — determines ticket ID prefixes |
+| `users` | List of known users (`{ name: "Alice" }`) |
+| `tags` | Tag definitions with optional colors |
+| `priorities` | Priority levels with icons and colors |
+| `enableBacklogScreen` | `true` to show the Backlog nav item |
+| `requireInputStatus` | Status name agents use when they need clarification (default `"Require Input"`) |
+| `readyForMergeStatus` | Status name for the pre-merge review checkpoint (default `"Ready"`) |
+| `boardCardOpenMode` | `"full"` opens ticket in full view on card click; `"preview"` opens sidebar preview |
+| `animationsEnabled` | Toggle UI animations |
+
+---
+
+## 🚀 Getting Started (Development / Contributor Mode)
 
 To run the full stack during development, you will need two terminal windows:
 
@@ -39,15 +71,29 @@ cd engine
 npm install
 npm run dev
 ```
-> The Engine runs locally on `http://localhost:3001`
+> The Engine runs on `http://localhost:3001` and auto-reloads on source changes.
+> The portal is also served from this port when `portal/dist/` exists.
 
-### 2. Start the Frontend Portal
+### 2. Start the Frontend Portal (dev mode with hot reload)
 ```bash
 cd portal
 npm install
 npm run dev
 ```
-> The Portal UI runs locally on `http://localhost:5173`
+> The Portal dev server runs on `http://localhost:5173` and proxies `/api` calls to the engine.
+
+---
+
+## 🏗️ Production Build
+
+```bash
+npm run build          # Build portal (Vite) + engine (esbuild bundle)
+npm run package:win    # Package into a Windows standalone binary
+npm run package:mac    # Package into a macOS standalone binary
+```
+
+The packaged binary serves both the API and portal from a single process.
+Place the binary alongside a `portal/dist/` directory (relative path).
 
 ---
 
@@ -77,8 +123,8 @@ Event Horizon provides powerful Copilot-facing assets explicitly tailored for ag
 Installing the workflow patches these templates directly into the target `.github/` directory natively supported by GitHub Copilot (`.github/skills/event-horizon/SKILL.md` & `.github/copilot-instructions.md`).
 
 You can install or refresh the workflow in two ways:
-* **Via Portal:** Navigate to the **Settings** screen in the Portal and click `Install Workflow`.
-* **Via CLI:** Run `npm.cmd run install-skill -- --target c:\GitHub\EventHorizon --framework copilot`.
+* **Via Portal:** Navigate to the **Settings** screen in the Portal and click `Install Agent Workflow` from the Workspace tab.
+* **Via CLI:** If you have the CLI tools, run `npx event-horizon install-skill --target /path/to/project --framework copilot`.
 
 *(The installer makes sure to only patch designated Event Horizon instruction blocks, preserving your unrelated custom instructions).*
 

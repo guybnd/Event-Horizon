@@ -8,12 +8,20 @@ Event Horizon is designed so the repository itself is the application's data sto
 
 ## Runtime layout
 
--   The engine is a local Node.js and TypeScript service that serves the API on `http://localhost:3001`.
-    
--   The portal is a Vite and React app that serves the UI on `http://localhost:5173`.
-    
--   Both runtime layers read from the same repository-backed sources: `.flux/` for tasks and workflow assets, and `.docs/` for project documentation.
-    
+Event Horizon is distributed as a single executable that bundles both the engine API and the portal UI.
+
+- The binary starts a local server (defaulting to `http://localhost:3001`). The UI is served directly from this same origin.
+- A **System Tray** manager keeps the service running in the background. Closing your browser does not stop the engine; you must explicitly quit from the tray or the portal header.
+- Both runtime layers read from the same repository-backed sources: `.flux/` for tasks and workflow assets, and `.docs/` for project documentation.
+
+## IDE Workspace Model
+
+Event Horizon uses a dynamic workspace model similar to a code editor, allowing a single background process to manage multiple projects:
+
+- **`workspaceRoot`**: The engine maintains the currently active workspace directory in memory.
+- **`requireWorkspace` middleware**: API endpoints interacting with repo state use this middleware, which returns a `503 NO_WORKSPACE` status if a project hasn't been selected. The portal intercepts this and displays a workspace picker.
+- **Settings persistence**: Your selected workspace is remembered across application restarts in `~/.event-horizon/settings.json`.
+- **Port config**: Core networking settings are read from `event-horizon.config.json` located next to the executable.
 
 ## Storage model
 

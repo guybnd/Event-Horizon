@@ -8,6 +8,11 @@
   ],
   "scripts": {
     "dev": "npm run dev -ws --if-present",
+    "build": "npm run build -w portal && npm run build -w engine",
+    "init": "npm run init -w engine --",
+    "package": "npm run build && npm run package -w engine",
+    "package:win": "npm run build && npm run package:win -w engine",
+    "package:mac": "npm run build && npm run package:mac -w engine",
     "install-skill": "npm run install-skill -w engine --"
   }
 }

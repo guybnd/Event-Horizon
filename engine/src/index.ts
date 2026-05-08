@@ -2,7 +2,10 @@ import express from 'express';
 import cors from 'cors';
 import chokidar from 'chokidar';
 import fs from 'fs/promises';
+import { existsSync } from 'fs';
+import { execFile, spawn } from 'child_process';
 import path from 'path';
+import os from 'os';
 import matter from 'gray-matter';
 import { getWorkflowInstallStatus, installWorkspaceWorkflow } from './workflow-installer';
 
@@ -10,11 +13,63 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-const FLUX_DIR = path.join(__dirname, '../../.flux');
-const CONFIG_FILE = path.join(FLUX_DIR, 'config.json');
-const REPO_ROOT = path.resolve(FLUX_DIR, '..');
-function getDocsDir() { return path.join(REPO_ROOT, configCache.docsRoot || '.docs'); }
-const TASK_ASSETS_DIR = path.join(FLUX_DIR, 'assets');
+// ─── Workspace state ───────────────────────────────────────────────────────────
+// workspaceRoot is null until the user selects a project folder. All workspace-
+// dependent routes check this via requireWorkspace() and return 503 otherwise.
+let workspaceRoot: string | null = null;
+
+function getFluxDir()       { return path.join(workspaceRoot!, '.flux'); }
+function getConfigFile()    { return path.join(getFluxDir(), 'config.json'); }
+function getTaskAssetsDir() { return path.join(getFluxDir(), 'assets'); }
+function getReadStateFile() { return path.join(getFluxDir(), 'read-state.json'); }
+function getDocsDir()       { return path.join(workspaceRoot!, configCache.docsRoot || '.docs'); }
+
+// Persisted app settings live in ~/.event-horizon/settings.json (not per-project).
+const APP_SETTINGS_DIR  = path.join(os.homedir(), '.event-horizon');
+const APP_SETTINGS_FILE = path.join(APP_SETTINGS_DIR, 'settings.json');
+
+async function loadAppSettings(): Promise<{ workspace?: string }> {
+  try {
+    const raw = await fs.readFile(APP_SETTINGS_FILE, 'utf-8');
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+async function saveAppSettings(settings: { workspace?: string }) {
+  await fs.mkdir(APP_SETTINGS_DIR, { recursive: true });
+  await fs.writeFile(APP_SETTINGS_FILE, JSON.stringify(settings, null, 2), 'utf-8');
+}
+
+// Returns the --workspace arg if provided, null otherwise.
+function getCliWorkspace(): string | null {
+  const args = process.argv.slice(2);
+  const idx = args.indexOf('--workspace');
+  if (idx !== -1 && args[idx + 1]) return path.resolve(args[idx + 1]);
+  return null;
+}
+
+// Middleware: rejects requests that need a workspace when none is configured.
+function requireWorkspace(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (!workspaceRoot) {
+    res.status(503).json({ error: 'No workspace configured', code: 'NO_WORKSPACE' });
+    return;
+  }
+  next();
+}
+
+// Resolve the root that contains the bundled skill source files (.docs/skills, .flux/skills).
+// In pkg-packaged binaries these are embedded in the snapshot at __dirname.
+// In dev/compiled mode __dirname is engine/src or engine/dist — walk up to repo root.
+function resolveSkillSourceRoot(): string {
+  const isPkg = (process as any).pkg !== undefined;
+  if (isPkg) {
+    return __dirname;
+  }
+  // engine/src → ../../   or   engine/dist → ../../
+  return path.resolve(__dirname, '..', '..');
+}
 
 const SUPPORTED_IMAGE_TYPES = new Map<string, string>([
   ['image/png', '.png'],
@@ -70,6 +125,7 @@ let configCache: any = {
   enableFireworks: true,
   requireInputStatus: 'Require Input',
   readyForMergeStatus: 'Ready',
+  archiveStatus: 'Archived',
   docsEditPermissions: 'all',
   docsAllowedUsers: [],
   releaseSettings: {
@@ -273,7 +329,7 @@ function normalizeHistoryEntries(history: any[] = []) {
 
 async function loadConfig() {
   try {
-    const data = await fs.readFile(CONFIG_FILE, 'utf-8');
+    const data = await fs.readFile(getConfigFile(), 'utf-8');
     const loaded = JSON.parse(data);
 
     if (loaded.columns?.length && typeof loaded.columns[0] === 'string') loaded.columns = loaded.columns.map((s: string) => ({ name: s }));
@@ -309,7 +365,7 @@ async function loadConfig() {
 
 async function saveConfig(newConfig: any) {
   configCache = newConfig;
-  await fs.writeFile(CONFIG_FILE, JSON.stringify(configCache, null, 2), 'utf-8');
+  await fs.writeFile(getConfigFile(), JSON.stringify(configCache, null, 2), 'utf-8');
 }
 
 async function autoRegisterUnknownTags(tags: string[]) {
@@ -339,7 +395,7 @@ async function autoRegisterUnknownTags(tags: string[]) {
 }
 
 function isTopLevelTaskFile(filePath: string) {
-  return filePath.endsWith('.md') && path.dirname(filePath) === FLUX_DIR;
+  return filePath.endsWith('.md') && path.dirname(filePath) === getFluxDir();
 }
 
 function normalizeRelativePath(filePath: string) {
@@ -384,7 +440,7 @@ function getAssetPathFromRequestPath(requestPath: string) {
 }
 
 function getAssetFilePath(assetPath: string) {
-  return path.join(TASK_ASSETS_DIR, ...assetPath.split('/'));
+  return path.join(getTaskAssetsDir(), ...assetPath.split('/'));
 }
 
 function isPathInsideRoot(rootPath: string, targetPath: string) {
@@ -678,9 +734,9 @@ async function loadTask(filePath: string) {
 
 async function initDir() {
   try {
-    await fs.mkdir(FLUX_DIR, { recursive: true });
+    await fs.mkdir(getFluxDir(), { recursive: true });
     await fs.mkdir(getDocsDir(), { recursive: true });
-    await fs.mkdir(TASK_ASSETS_DIR, { recursive: true });
+    await fs.mkdir(getTaskAssetsDir(), { recursive: true });
     await loadDocsDirectory(getDocsDir());
   } catch {
     // ignore
@@ -688,8 +744,19 @@ async function initDir() {
   await loadConfig();
 }
 
-initDir().then(() => {
-  const fluxWatcher = chokidar.watch(FLUX_DIR, {
+// Active chokidar watchers — torn down and recreated when workspace changes.
+let activeFluxWatcher: ReturnType<typeof chokidar.watch> | null = null;
+let activeDocsWatcher: ReturnType<typeof chokidar.watch> | null = null;
+
+async function startWatchers() {
+  // Tear down previous watchers if workspace is being switched.
+  if (activeFluxWatcher) { await activeFluxWatcher.close(); activeFluxWatcher = null; }
+  if (activeDocsWatcher) { await activeDocsWatcher.close(); activeDocsWatcher = null; }
+
+  const fluxDir = getFluxDir();
+  const configFile = getConfigFile();
+
+  activeFluxWatcher = chokidar.watch(fluxDir, {
     ignored: (filePath: string) => {
       const basename = path.basename(filePath);
       return basename.startsWith('.') && basename !== '.flux';
@@ -697,22 +764,14 @@ initDir().then(() => {
     persistent: true
   });
 
-  fluxWatcher
+  activeFluxWatcher
     .on('add', (filePath) => {
-      if (isTopLevelTaskFile(filePath)) {
-        void loadTask(filePath);
-      }
-      if (filePath === CONFIG_FILE) {
-        void loadConfig();
-      }
+      if (isTopLevelTaskFile(filePath)) void loadTask(filePath);
+      if (filePath === configFile) void loadConfig();
     })
     .on('change', (filePath) => {
-      if (isTopLevelTaskFile(filePath)) {
-        void loadTask(filePath);
-      }
-      if (filePath === CONFIG_FILE) {
-        void loadConfig();
-      }
+      if (isTopLevelTaskFile(filePath)) void loadTask(filePath);
+      if (filePath === configFile) void loadConfig();
     })
     .on('unlink', (filePath) => {
       if (isTopLevelTaskFile(filePath)) {
@@ -723,7 +782,7 @@ initDir().then(() => {
       }
     });
 
-  const docsWatcher = chokidar.watch(getDocsDir(), {
+  activeDocsWatcher = chokidar.watch(getDocsDir(), {
     ignored: (filePath: string) => {
       const basename = path.basename(filePath);
       return basename.startsWith('.') && basename !== '.docs';
@@ -731,50 +790,46 @@ initDir().then(() => {
     persistent: true
   });
 
-  docsWatcher
-    .on('add', (filePath) => {
-      if (isDocFile(filePath)) {
-        void loadDoc(filePath);
-      }
-    })
-    .on('change', (filePath) => {
-      if (isDocFile(filePath)) {
-        void loadDoc(filePath);
-      }
-    })
+  activeDocsWatcher
+    .on('add', (filePath) => { if (isDocFile(filePath)) void loadDoc(filePath); })
+    .on('change', (filePath) => { if (isDocFile(filePath)) void loadDoc(filePath); })
     .on('unlink', (filePath) => {
       const docPath = getDocPathFromFile(filePath);
-      if (!docPath) {
-        return;
-      }
-
-      delete docsCache[docPath];
-      console.log(`Removed doc: ${docPath}`);
+      if (docPath) { delete docsCache[docPath]; console.log(`Removed doc: ${docPath}`); }
     });
-});
+}
 
-app.get('/api/tasks', (req, res) => {
+// Activate a workspace: set the root, reset caches, load data, start watchers.
+async function activateWorkspace(newRoot: string) {
+  workspaceRoot = newRoot;
+  tasksCache = {};
+  docsCache = {};
+  configCache = { ...configCache }; // keep defaults, will be overwritten by loadConfig
+  console.log(`Workspace: ${newRoot}`);
+  await initDir();
+  await startWatchers();
+}
+
+app.get('/api/tasks', requireWorkspace, (req, res) => {
   res.json(Object.values(tasksCache));
 });
 
-const READ_STATE_FILE = path.join(FLUX_DIR, 'read-state.json');
-
-app.get('/api/read-state', async (req, res) => {
+app.get('/api/read-state', requireWorkspace, async (req, res) => {
   try {
-    const raw = await fs.readFile(READ_STATE_FILE, 'utf-8').catch(() => '{}');
+    const raw = await fs.readFile(getReadStateFile(), 'utf-8').catch(() => '{}');
     res.json(JSON.parse(raw));
   } catch {
     res.json({});
   }
 });
 
-app.put('/api/read-state', async (req, res) => {
+app.put('/api/read-state', requireWorkspace, async (req, res) => {
   try {
     const body = req.body as Record<string, Record<string, string[]>>;
     // Merge with existing state so concurrent users don't overwrite each other
     let existing: Record<string, Record<string, string[]>> = {};
     try {
-      const raw = await fs.readFile(READ_STATE_FILE, 'utf-8');
+      const raw = await fs.readFile(getReadStateFile(), 'utf-8');
       existing = JSON.parse(raw);
     } catch { /* file may not exist yet */ }
     for (const [user, tickets] of Object.entries(body)) {
@@ -784,18 +839,18 @@ app.put('/api/read-state', async (req, res) => {
         existing[user][ticketId] = [...merged];
       }
     }
-    await fs.writeFile(READ_STATE_FILE, JSON.stringify(existing, null, 2), 'utf-8');
+    await fs.writeFile(getReadStateFile(), JSON.stringify(existing, null, 2), 'utf-8');
     res.json(existing);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.get('/api/docs', (req, res) => {
+app.get('/api/docs', requireWorkspace, (req, res) => {
   res.json(sortDocs(Object.values(docsCache).map(serializeDoc)));
 });
 
-app.post('/api/docs', async (req, res) => {
+app.post('/api/docs', requireWorkspace, async (req, res) => {
   const docPath = normalizeDocPathInput(req.body?.path);
 
   if (!docPath) {
@@ -909,7 +964,7 @@ app.get(/^\/api\/assets\/.+$/, async (req, res) => {
   }
 
   const filePath = getAssetFilePath(assetPath);
-  if (!isPathInsideRoot(TASK_ASSETS_DIR, filePath)) {
+  if (!isPathInsideRoot(getTaskAssetsDir(), filePath)) {
     return res.status(400).json({ error: 'Invalid asset path' });
   }
 
@@ -932,7 +987,7 @@ app.get(/^\/api\/assets\/.+$/, async (req, res) => {
   }
 });
 
-app.post('/api/tasks/:id/assets', async (req, res) => {
+app.post('/api/tasks/:id/assets', requireWorkspace, async (req, res) => {
   const { id } = req.params;
   const task = tasksCache[id];
 
@@ -955,7 +1010,7 @@ app.post('/api/tasks/:id/assets', async (req, res) => {
   }
 
   const safeBaseName = sanitizeAssetBaseName(fileName || 'image');
-  const taskAssetDirectory = path.join(TASK_ASSETS_DIR, id);
+  const taskAssetDirectory = path.join(getTaskAssetsDir(), id);
 
   try {
     await fs.mkdir(taskAssetDirectory, { recursive: true });
@@ -971,8 +1026,8 @@ app.post('/api/tasks/:id/assets', async (req, res) => {
 
     await fs.writeFile(filePath, fileBuffer);
 
-    const assetPath = normalizeRelativePath(path.relative(FLUX_DIR, filePath));
-    const apiAssetPath = normalizeRelativePath(path.relative(TASK_ASSETS_DIR, filePath));
+    const assetPath = normalizeRelativePath(path.relative(getFluxDir(), filePath));
+    const apiAssetPath = normalizeRelativePath(path.relative(getTaskAssetsDir(), filePath));
     res.status(201).json({
       path: assetPath,
       fileName: storedFileName,
@@ -984,10 +1039,10 @@ app.post('/api/tasks/:id/assets', async (req, res) => {
   }
 });
 
-app.get('/api/skill/status', async (req, res) => {
+app.get('/api/skill/status', requireWorkspace, async (req, res) => {
   try {
     const framework = (req.query.framework as any) || 'auto';
-    const status = await getWorkflowInstallStatus({ sourceRoot: REPO_ROOT, targetDir: REPO_ROOT, framework });
+    const status = await getWorkflowInstallStatus({ sourceRoot: resolveSkillSourceRoot(), targetDir: workspaceRoot!, framework });
     res.json(status);
   } catch (error) {
     console.error('Failed to load skill status:', error);
@@ -995,10 +1050,10 @@ app.get('/api/skill/status', async (req, res) => {
   }
 });
 
-app.post('/api/skill/install', async (req, res) => {
+app.post('/api/skill/install', requireWorkspace, async (req, res) => {
   try {
     const framework = req.body?.framework || 'auto';
-    const result = await installWorkspaceWorkflow({ sourceRoot: REPO_ROOT, targetDir: REPO_ROOT, framework });
+    const result = await installWorkspaceWorkflow({ sourceRoot: resolveSkillSourceRoot(), targetDir: workspaceRoot!, framework });
     res.json({ success: true, ...result });
   } catch (error) {
     console.error('Failed to install skill:', error);
@@ -1006,7 +1061,7 @@ app.post('/api/skill/install', async (req, res) => {
   }
 });
 
-app.post('/api/tasks', async (req, res) => {
+app.post('/api/tasks', requireWorkspace, async (req, res) => {
   const { projectKey, status, author, title, body, ...rest } = req.body;
   const pKey = projectKey || 'PROJECT';
 
@@ -1019,7 +1074,7 @@ app.post('/api/tasks', async (req, res) => {
   });
 
   const nextId = `${pKey}-${maxId + 1}`;
-  const filePath = path.join(FLUX_DIR, `${nextId}.md`);
+  const filePath = path.join(getFluxDir(), `${nextId}.md`);
   const normalizedHistory = normalizeHistoryEntries(rest.history || []);
   const createdAt = new Date().toISOString();
   const historyWithCreation = ensureCreationActivity(normalizedHistory.history, author || 'Unknown', createdAt);
@@ -1051,7 +1106,7 @@ app.post('/api/tasks', async (req, res) => {
   }
 });
 
-app.put('/api/tasks/:id', async (req, res) => {
+app.put('/api/tasks/:id', requireWorkspace, async (req, res) => {
   const { id } = req.params;
   const { updatedBy, ...updates } = req.body;
   const task = tasksCache[id];
@@ -1111,7 +1166,7 @@ app.put('/api/tasks/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/tasks/:id', async (req, res) => {
+app.delete('/api/tasks/:id', requireWorkspace, async (req, res) => {
   const { id } = req.params;
   const task = tasksCache[id];
 
@@ -1129,7 +1184,7 @@ app.delete('/api/tasks/:id', async (req, res) => {
   }
 });
 
-app.post('/api/bulk-rename', async (req, res) => {
+app.post('/api/bulk-rename', requireWorkspace, async (req, res) => {
   const { tags = {}, statuses = {}, users = {}, priorities = {} } = req.body;
   let modifiedCount = 0;
 
@@ -1212,14 +1267,101 @@ app.post('/api/bulk-rename', async (req, res) => {
 });
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok' });
+  res.json({ status: 'ok', workspace: workspaceRoot });
 });
 
-app.get('/api/config', (req, res) => {
+// ─── Native folder picker ────────────────────────────────────────────────────
+// Spawns an OS-native folder browser dialog and returns the chosen path.
+// POST /api/workspace/pick → { path: string } | { path: null } | 500 error
+function spawnFolderPicker(): Promise<string | null> {
+  return new Promise((resolve, reject) => {
+    const platform = process.platform;
+
+    if (platform === 'win32') {
+      // PowerShell FolderBrowserDialog — works headless as long as a desktop session exists.
+      const script = [
+        'Add-Type -AssemblyName System.Windows.Forms;',
+        '$d = New-Object System.Windows.Forms.FolderBrowserDialog;',
+        '$d.Description = "Select your Event Horizon project folder";',
+        '$d.ShowNewFolderButton = $true;',
+        'if ($d.ShowDialog() -eq "OK") { Write-Output $d.SelectedPath }',
+      ].join(' ');
+      execFile('powershell.exe', ['-NoProfile', '-Command', script], (err, stdout) => {
+        if (err) return reject(err);
+        const picked = stdout.trim();
+        resolve(picked || null);
+      });
+    } else if (platform === 'darwin') {
+      const script = 'POSIX path of (choose folder with prompt "Select your Event Horizon project folder")';
+      execFile('osascript', ['-e', script], (err, stdout) => {
+        if (err) return resolve(null); // user cancelled
+        const picked = stdout.trim().replace(/\/$/, '');
+        resolve(picked || null);
+      });
+    } else {
+      // Linux — try zenity, fall back to kdialog
+      execFile('zenity', ['--file-selection', '--directory', '--title=Select project folder'], (err, stdout) => {
+        if (!err) return resolve(stdout.trim() || null);
+        execFile('kdialog', ['--getexistingdirectory', process.env.HOME || '/'], (err2, stdout2) => {
+          if (err2) return resolve(null);
+          resolve(stdout2.trim() || null);
+        });
+      });
+    }
+  });
+}
+
+app.post('/api/workspace/pick', async (_req, res) => {
+  try {
+    const picked = await spawnFolderPicker();
+    res.json({ path: picked });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to open folder picker' });
+  }
+});
+
+// ─── Workspace selection API ────────────────────────────────────────────────
+// GET  /api/workspace  → current workspace state
+// POST /api/workspace  → switch to a new workspace folder
+app.get('/api/workspace', (_req, res) => {
+  res.json({ configured: workspaceRoot !== null, path: workspaceRoot });
+});
+
+app.post('/api/workspace', async (req, res) => {
+  const raw = req.body?.path;
+  if (typeof raw !== 'string' || !raw.trim()) {
+    return res.status(400).json({ error: 'path is required' });
+  }
+  const newRoot = path.resolve(raw.trim());
+
+  // Validate the folder exists.
+  try { await fs.access(newRoot); } catch {
+    return res.status(400).json({ error: `Folder not found: ${newRoot}` });
+  }
+
+  // Validate it has a .flux/ directory (or inform user to init).
+  const fluxPath = path.join(newRoot, '.flux');
+  if (!existsSync(fluxPath)) {
+    return res.status(400).json({
+      error: `No .flux/ directory found in ${newRoot}. Run event-horizon init in your project root first, or choose a different folder.`,
+      code: 'NO_FLUX_DIR',
+    });
+  }
+
+  try {
+    await activateWorkspace(newRoot);
+    await saveAppSettings({ workspace: newRoot });
+    res.json({ ok: true, path: newRoot });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/config', requireWorkspace, (req, res) => {
   res.json(configCache);
 });
 
-app.put('/api/config', async (req, res) => {
+app.put('/api/config', requireWorkspace, async (req, res) => {
   try {
     await saveConfig(req.body);
     res.json(configCache);
@@ -1228,7 +1370,212 @@ app.put('/api/config', async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-  console.log(`Event Horizon Engine running on port ${PORT}`);
+// Static portal serving — only active when portal/dist has been built.
+// API routes above take priority; this catches everything else.
+
+// Resolve portal dist path for static serving.
+// Priority: --portal-dist <path> CLI arg, then location relative to binary or engine source.
+function resolvePortalDist(): string {
+  const args = process.argv.slice(2);
+  const idx = args.indexOf('--portal-dist');
+  if (idx !== -1 && args[idx + 1]) {
+    return path.resolve(args[idx + 1]);
+  }
+  // When running as a pkg-packaged binary, process.pkg is defined.
+  // __dirname inside pkg points to the virtual snapshot directory,
+  // where portal/dist is embedded as an asset alongside index.js.
+  const isPkg = (process as any).pkg !== undefined;
+  if (isPkg) {
+    return path.join(__dirname, 'portal', 'dist');
+  }
+  // Dev (tsx) or compiled (tsc/esbuild): engine/src or engine/dist → ../../portal/dist
+  return path.resolve(__dirname, '..', '..', 'portal', 'dist');
+}
+
+const PORTAL_DIST = resolvePortalDist();
+const PORTAL_DIST_EXISTS = existsSync(PORTAL_DIST);
+
+if (PORTAL_DIST_EXISTS) {
+  app.use(express.static(PORTAL_DIST));
+  app.get(/^(?!\/api\/).*/, (_req, res) => {
+    res.sendFile(path.join(PORTAL_DIST, 'index.html'));
+  });
+}
+
+// Graceful shutdown — lets the portal's Stop button cleanly exit the process.
+app.post('/api/shutdown', (_req, res) => {
+  res.json({ ok: true });
+  setTimeout(() => process.exit(0), 150);
+});
+
+// ─── App config (port) ────────────────────────────────────────────────────────
+// When running as a pkg binary, read/create event-horizon.config.json adjacent
+// to the executable so users can change the port before launching.
+async function readPortConfig(): Promise<number> {
+  const isPkg = (process as any).pkg !== undefined;
+  if (!isPkg) return parseInt(process.env.PORT || '3001', 10);
+
+  const cfgPath = path.join(path.dirname(process.execPath), 'event-horizon.config.json');
+  try {
+    const raw = await fs.readFile(cfgPath, 'utf-8');
+    const cfg = JSON.parse(raw);
+    if (Number.isInteger(cfg.port) && cfg.port > 0 && cfg.port < 65536) return cfg.port;
+  } catch {
+    // Create a default config file so users know it exists and can edit it.
+    try {
+      await fs.writeFile(cfgPath, JSON.stringify({ port: 3001 }, null, 2), 'utf-8');
+    } catch {}
+  }
+  return 3001;
+}
+
+// ─── Open browser ─────────────────────────────────────────────────────────────
+function openBrowser(url: string) {
+  try {
+    if (process.platform === 'win32') {
+      // windowsHide suppresses the CMD flash that would otherwise appear briefly.
+      execFile('cmd.exe', ['/c', 'start', '', url], { windowsHide: true });
+    } else if (process.platform === 'darwin') {
+      execFile('open', [url]);
+    } else {
+      execFile('xdg-open', [url]);
+    }
+  } catch {}
+}
+
+// ─── System tray ──────────────────────────────────────────────────────────────
+// Uses the pre-compiled Go tray binary from the `systray` npm package.
+// In pkg mode, the binary is embedded as an asset; we extract it to the OS
+// temp dir before spawning (pkg virtual FS cannot directly execFile).
+// The binary communicates via stdin/stdout JSON — we implement the protocol
+// directly without importing the systray JS module.
+
+const TRAY_BINARIES: Partial<Record<NodeJS.Platform, string>> = {
+  win32:  'tray_windows_release.exe',
+  darwin: 'tray_darwin_release',
+  linux:  'tray_linux_release',
+};
+
+async function initTray(port: number): Promise<void> {
+  const isPkg = (process as any).pkg !== undefined;
+  const binaryName = TRAY_BINARIES[process.platform];
+  if (!binaryName) return; // unsupported platform
+
+  let binaryPath: string;
+
+  if (isPkg) {
+    // Binary is embedded in the pkg virtual snapshot alongside index.js.
+    // Extract to a real temp-dir path so the OS can execute it.
+    const embeddedPath = path.join(__dirname, 'traybin', binaryName);
+    const tmpPath = path.join(os.tmpdir(), `eh-tray-${binaryName}`);
+
+    // Only extract if the file doesn't already exist (avoid re-copy on restart).
+    if (!existsSync(tmpPath)) {
+      const data = await fs.readFile(embeddedPath);
+      await fs.writeFile(tmpPath, data, { mode: 0o755 });
+    }
+    binaryPath = tmpPath;
+  } else {
+    // Dev/compiled: look for the binary in root node_modules (npm workspaces hoist).
+    const candidates = [
+      path.resolve(__dirname, '..', '..', 'node_modules', 'systray', 'traybin', binaryName),
+      path.resolve(__dirname, '..', 'node_modules', 'systray', 'traybin', binaryName),
+    ];
+    const found = candidates.find(p => existsSync(p));
+    if (!found) {
+      console.warn('Tray binary not found — skipping tray init.');
+      return;
+    }
+    binaryPath = found;
+  }
+
+  if (process.platform !== 'win32') {
+    try { await fs.chmod(binaryPath, 0o755); } catch {}
+  }
+
+  const trayProc = spawn(binaryPath, [], {
+    stdio: ['pipe', 'pipe', 'ignore'],
+    windowsHide: true,  // prevents the spawned tray process from allocating a console window
+  });
+
+  // Known-good 32×32 PNG from the systray package test suite (base64-encoded).
+  // This icon is confirmed to be accepted by the Go tray binary.
+  const TRAY_ICON_PNG = 'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAGXRFWHRTb2Z0d2FyZQBBZG9iZSBJbWFnZVJlYWR5ccllPAAAA2ZpVFh0WE1MOmNvbS5hZG9iZS54bXAAAAAAADw/eHBhY2tldCBiZWdpbj0i77u/IiBpZD0iVzVNME1wQ2VoaUh6cmVTek5UY3prYzlkIj8+IDx4OnhtcG1ldGEgeG1sbnM6eD0iYWRvYmU6bnM6bWV0YS8iIHg6eG1wdGs9IkFkb2JlIFhNUCBDb3JlIDUuMC1jMDYwIDYxLjEzNDc3NywgMjAxMC8wMi8xMi0xNzozMjowMCAgICAgICAgIj4gPHJkZjpSREYgeG1sbnM6cmRmPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5LzAyLzIyLXJkZi1zeW50YXgtbnMjIj4gPHJkZjpEZXNjcmlwdGlvbiByZGY6YWJvdXQ9IiIgeG1sbnM6eG1wTU09Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC9tbS8iIHhtbG5zOnN0UmVmPSJodHRwOi8vbnMuYWRvYmUuY29tL3hhcC8xLjAvc1R5cGUvUmVzb3VyY2VSZWYjIiB4bWxuczp4bXA9Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC8iIHhtcE1NOk9yaWdpbmFsRG9jdW1lbnRJRD0ieG1wLmRpZDo2NzI0QkUxNUVEMjA2ODExODhDNkYyODE1REEzQzU1NSIgeG1wTU06RG9jdW1lbnRJRD0ieG1wLmRpZDpBM0I0RkI2NjNBQTgxMUUyQjJDQTk3QkQzNDQxRUYzMiIgeG1wTU06SW5zdGFuY2VJRD0ieG1wLmlpZDpBM0I0RkI2NTNBQTgxMUUyQjJDQTk3QkQzNDQxRUYzMiIgeG1wOkNyZWF0b3JUb29sPSJBZG9iZSBQaG90b3Nob3AgQ1M1IE1hY2ludG9zaCI+IDx4bXBNTTpEZXJpdmVkRnJvbSBzdFJlZjppbnN0YW5jZUlEPSJ4bXAuaWlkOkU2ODE0QzZBRUUyMDY4MTE4OEM2RjI4MTVEQTNDNTU1IiBzdFJlZjpkb2N1bWVudElEPSJ4bXAuZGlkOjY3MjRCRTE1RUQyMDY4MTE4OEM2RjI4MTVEQTNDNTU1Ii8+IDwvcmRmOkRlc2NyaXB0aW9uPiA8L3JkZjpSREY+IDwveDp4bXBtZXRhPiA8P3hwYWNrZXQgZW5kPSJyIj8+Xe014gAABO5JREFUeNrEV89vVUUYPfPj/up7r6VtCtg0vhaDaYwuBOKGuHDhBjUYE11gjNFo4sq4MzHxb3BnXLFi4UZCjAvjRjQlEUEUpCSkCFgKKRQKbenru+/OnfHMva+lRGNJ7kt4yffunTszd853vvN9M1c45/A4f3qrAeLZN//rsaJ9Rtvrh9CO07741yhr4S5887/vl1tCNAbwLG024EPaiJDykOpvvAshnmf7jaLPdsdwXv9Af3UGxieauHZjvnBT8C/nAtbacTav0Q7LOBZc9Hq+vNIUcQQZaPiwStouzq0MYPdTu5CHEXaP7kCoNf6avzU2c/nqJNL0IF0tvBVJDB2G3wklf4AU044gkzBEo9HYEoDcOgIGpLqwWhIrLvQ1tD5YhN6zkaZkhvdKvkrPj+QmD0Kl8MzoE1D+eWUR8h2GYpqavoind44EnTQbRdqB995TnXcyBEmCiB5nuak34kQ8OTyEqBuKygC6vyg15sCfFy99IK1twuTYEEUQINAB+gmiFoUT9Sg6Gih1mEt/z95W5RDw9zZtSgpxFEodsH7OOrW8KuoiUJIRkNCK3Au8wh6fe7/QPuoFgI9p+3x2gY4jdaV1MWgPgGasRJoJOFu+kt3P0d6rHIKVVN9YWuOrOg71yGFyTFNcDidnsmJ2KFVRl/aMS/RFwK175L0jsNohURBXKgM4tPfvmeCFNTSHFSZ3DqM5XnPHflrFW5/PCdQVGVCUhMT7LyV4bZ/E7YUMc/dSzC44XF905yoD+OTlm+egt9HJQQq/jy73Cak4TcwWnvuwB1pQi3VIHWFksI3tQ23smaD+TGu6MoDU7LgsXJ1FvSEhayxGNaadfaABCjAkC1FcZyNBJkJqxZs2cOG1sHIdCIZmoeIl6IFBoWpkoB9B3FnvpfoVQg+iAOBZCOD4zAlxmyBmq9cBmdyk51eEbgzSmPeD9HZtI398CvoQxDH7FDcfTfFRE6xCl51Qi9UrYTCQQYaX6P2eAoDaRm9Xi1LgM9PnPwsPomSAjTqEZoUswpPPCBfZ6nVAUXgy+oNhgPD3XCSMBiBlOdXX+1IDBKf92ITgIu4d0Rl/rc6A8i+RZ3nj6fBgEIQNNmWxH0jRZSBooBgjA39lR3gewlXfDf2CfOl53i2V269FGPj0K6d6IiK2g5ALk/syOeQCQZwvwPSgFHtP5+CyC7BUf75GAOkDAD4E3PkixcrIfud8vc4JWCxs5GolAI4vdsZy4z/t8lWW5GXEqsW4y4IQgTILIsHMMDTbJojs12IvdrY6AJdnpZnWlDPLBHAXfWKFJ54ugEKErAfuPgGscGzLM3GCE1BY5TpgVtehnHa2cx/C1H1161sHAA+A2WC5uD/AmrU7RHGmZ8dyl6+s315F7s5atPcrq5Fs6IsAKHqRL3eZSn8jsTd6BgDZvY1Tvj+YONvar4RGrF2peoZASwIwSzwts/xbc7ynHyaWnm2i40dh5adCBTwDWpQlzzPA+5xZmlOszv38KOp/9BBk85ubp7jJzJGBsXpoSgDC74YGiqHi+peoht97yoDLFjY3F3NnTvIUNFaPkvJ8QG99DRD5XY51JxiMVm8BmPmH284cgWm/WIub24F6kcmhbFEDd864XH/lis/GHgJ4OJ7+3hyDXThVC4dfZ/sdPmgrYb6Ea3/rUGuXYx79i1s87s/zfwQYAOBu3WMkV4BvAAAAAElFTkSuQmCC';
+
+  const projectName = workspaceRoot ? path.basename(workspaceRoot) : 'No project open';
+  const menu = {
+    icon: TRAY_ICON_PNG,
+    title: 'Event Horizon',
+    tooltip: 'Event Horizon',
+    items: [
+      { title: 'Event Horizon',       tooltip: '', checked: false, enabled: false },
+      { title: projectName,           tooltip: '', checked: false, enabled: false },
+      { title: 'Open in Browser',     tooltip: '', checked: false, enabled: true },
+      { title: 'Quit Event Horizon',  tooltip: '', checked: false, enabled: true },
+    ],
+  };
+
+  // The Go tray binary sends {"type":"ready"} before it can accept the menu JSON.
+  let lineBuf = '';
+  let menuSent = false;
+  trayProc.stdout!.on('data', (chunk: Buffer) => {
+    lineBuf += chunk.toString();
+    const lines = lineBuf.split('\n');
+    lineBuf = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const evt = JSON.parse(line);
+        if (!menuSent && evt.type === 'ready') {
+          menuSent = true;
+          trayProc.stdin!.write(JSON.stringify(menu) + '\n');
+        } else if (evt.type === 'clicked') {
+          const title: string = evt.item?.title || '';
+          if (title === 'Open in Browser') openBrowser(`http://localhost:${port}`);
+          else if (title === 'Quit Event Horizon') process.exit(0);
+        }
+      } catch {}
+    }
+  });
+
+  trayProc.on('exit', () => { process.exit(0); });
+  process.on('exit', () => { try { trayProc.kill(); } catch {} });
+}
+
+// ─── Server startup ───────────────────────────────────────────────────────────
+async function startServer() {
+  const PORT = await readPortConfig();
+  const isPkg = (process as any).pkg !== undefined;
+
+  app.listen(PORT, async () => {
+    console.log(`Event Horizon Engine running on port ${PORT}`);
+    if (PORTAL_DIST_EXISTS) {
+      console.log(`Portal:   http://localhost:${PORT}`);
+    }
+
+    // Try to restore workspace: --workspace arg wins, then persisted settings.
+    const cliWorkspace = getCliWorkspace();
+    const settings = await loadAppSettings();
+    const initial = cliWorkspace || settings.workspace || null;
+
+    if (initial && existsSync(path.join(initial, '.flux'))) {
+      await activateWorkspace(initial);
+    } else if (initial) {
+      console.warn(`Saved workspace not found: ${initial} — open the portal to select a folder.`);
+    } else {
+      console.log('No workspace configured. Open the portal to select your project folder.');
+    }
+
+    if (isPkg) {
+      // Auto-open the browser after a short delay to let the engine fully bind.
+      setTimeout(() => openBrowser(`http://localhost:${PORT}`), 800);
+      // Start the system tray icon (non-fatal if it fails).
+      initTray(PORT).catch(e => console.warn('Tray init failed:', e.message));
+    }
+  });
+}
+
+startServer().catch(err => {
+  console.error('Failed to start Event Horizon:', err);
+  process.exit(1);
 });

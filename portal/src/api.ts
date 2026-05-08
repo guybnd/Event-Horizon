@@ -1,6 +1,6 @@
 import type { Task, Config, Doc } from './types';
 
-export const API_URL = 'http://localhost:3001/api';
+export const API_URL = '/api';
 
 function encodeDocPath(docPath: string) {
   return docPath.split('/').map((segment) => encodeURIComponent(segment)).join('/');
@@ -63,10 +63,34 @@ export async function deleteTask(id: string): Promise<void> {
   if (!res.ok) throw new Error('Failed to delete task');
 }
 
-export async function fetchHealth(): Promise<{ status: string }> {
+export async function fetchHealth(): Promise<{ status: string; workspace: string | null }> {
   const res = await fetch(`${API_URL}/health`);
   if (!res.ok) throw new Error('Failed to fetch health');
   return res.json();
+}
+
+export async function fetchWorkspace(): Promise<{ configured: boolean; path: string | null }> {
+  const res = await fetch(`${API_URL}/workspace`);
+  if (!res.ok) throw new Error('Failed to fetch workspace');
+  return res.json();
+}
+
+export async function setWorkspace(folderPath: string): Promise<{ ok: boolean; path: string }> {
+  const res = await fetch(`${API_URL}/workspace`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: folderPath }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to set workspace');
+  return data;
+}
+
+export async function pickWorkspaceFolder(): Promise<string | null> {
+  const res = await fetch(`${API_URL}/workspace/pick`, { method: 'POST' });
+  if (!res.ok) return null;
+  const data = await res.json();
+  return data.path ?? null;
 }
 
 export async function fetchConfig(): Promise<Config> {
@@ -115,7 +139,7 @@ export async function deleteDoc(docPath: string): Promise<void> {
 }
 
 export interface SkillStatus {
-  framework: 'copilot' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'generic';
+  framework: 'copilot' | 'antigravity' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'generic';
   skillSourcePath: string;
   skillInstalledPath: string;
   skillSourceExists: boolean;

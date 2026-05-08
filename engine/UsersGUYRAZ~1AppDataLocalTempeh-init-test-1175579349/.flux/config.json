@@ -1,0 +1,71 @@
+{
+  "columns": [
+    {
+      "name": "Grooming"
+    },
+    {
+      "name": "Todo",
+      "color": "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+    },
+    {
+      "name": "In Progress",
+      "color": "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300"
+    },
+    {
+      "name": "Require Input"
+    },
+    {
+      "name": "Ready"
+    },
+    {
+      "name": "Done"
+    }
+  ],
+  "hiddenStatuses": [
+    {
+      "name": "Backlog"
+    },
+    {
+      "name": "Released",
+      "color": "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300"
+    }
+  ],
+  "projects": [
+    "TEST"
+  ],
+  "users": [],
+  "tags": [],
+  "priorities": [
+    {
+      "name": "Critical",
+      "icon": "AlertCircle",
+      "color": "text-red-500"
+    },
+    {
+      "name": "High",
+      "icon": "ChevronUp",
+      "color": "text-orange-500"
+    },
+    {
+      "name": "Medium",
+      "icon": "Equal",
+      "color": "text-amber-500"
+    },
+    {
+      "name": "Low",
+      "icon": "ChevronDown",
+      "color": "text-emerald-500"
+    },
+    {
+      "name": "None",
+      "icon": "Equal",
+      "color": "text-gray-400"
+    }
+  ],
+  "enableBacklogScreen": true,
+  "requireInputStatus": "Require Input",
+  "readyForMergeStatus": "Ready",
+  "boardCardOpenMode": "full",
+  "animationsEnabled": true,
+  "enableFireworks": true
+}

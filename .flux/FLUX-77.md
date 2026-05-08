@@ -1,8 +1,8 @@
 ---
 title: Serve portal static assets from engine and use relative API URLs
-status: Todo
+status: Done
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 assignee: Agent
 tags:
   - feature
@@ -10,7 +10,7 @@ tags:
   - navigation
 priority: High
 effort: M
-implementationLink: ''
+implementationLink: '63a33eb'
 subtasks: []
 history:
   - type: activity
@@ -29,6 +29,37 @@ history:
     user: Guy
     date: '2026-05-07T07:38:43.897Z'
     comment: 'Updated tags to feature, mvp, navigation.'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-08T00:00:00.000Z'
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-08T01:00:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-08T01:00:00.000Z'
+    comment: >-
+      Implemented. Engine now auto-detects portal/dist via resolvePortalDist()
+      (--portal-dist flag or __dirname/../../../portal/dist default). Static
+      middleware + SPA catch-all registered after all API routes. portal/src/api.ts
+      API_URL changed from hardcoded 'http://localhost:3001/api' to relative '/api'.
+      Vite dev proxy added in vite.config.ts proxying /api to localhost:3001 so
+      two-process dev workflow still works. Validated: board loads with Engine
+      Connected on http://localhost:5173 via proxy and engine prints Workspace
+      and Portal URLs on startup.
+    id: c-flux77-ready
+  - type: comment
+    user: Agent
+    date: '2026-05-08T17:30:00.000Z'
+    comment: >-
+      Completed. Engine serves portal/dist/ at :3001. Portal uses relative /api
+      URLs in production. Dev proxy in vite.config.ts for two-process dev.
+      User confirmed.
+    id: c-flux77-done
 order: 77
 ---
 ## Summary
