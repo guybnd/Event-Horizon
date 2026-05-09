@@ -669,6 +669,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setIsModalOpen(true);
   }, [isModalOpen, modalTask?.id, tasks, tasksLoading]);
 
+  // Keep the open modal's task data in sync with background poll updates.
+  // Only update when something actually changed to avoid spurious re-renders.
+  useEffect(() => {
+    if (!isModalOpen || !modalTask?.id) return;
+    const fresh = tasks.find((t) => t.id === modalTask.id);
+    if (!fresh) return;
+    const changed =
+      fresh.status !== modalTask.status ||
+      fresh.title !== modalTask.title ||
+      fresh.body !== modalTask.body ||
+      fresh.assignee !== modalTask.assignee ||
+      fresh.priority !== modalTask.priority ||
+      fresh.effort !== modalTask.effort ||
+      fresh.implementationLink !== modalTask.implementationLink ||
+      fresh.tags?.length !== modalTask.tags?.length ||
+      fresh.subtasks?.length !== modalTask.subtasks?.length ||
+      fresh.history?.length !== modalTask.history?.length;
+    if (changed) setModalTask(fresh);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tasks]);
+
   return (
     <AppContext.Provider value={{
       currentUser, setCurrentUser,

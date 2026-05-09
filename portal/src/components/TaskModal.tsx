@@ -32,6 +32,13 @@ import { motion, AnimatePresence } from 'framer-motion';
 
 const ACTIVITY_FILTER_STORAGE_KEY = 'flux.activityFilter';
 
+// Claude Code wraps its responses in a single ```text ... ``` fence. Strip it so
+// agent messages render as normal markdown rather than as a code block.
+function unwrapAgentMessage(text: string): string {
+  const match = text.match(/^```[^\n]*\n([\s\S]*?)```\s*$/);
+  return match ? match[1] : text;
+}
+
 type ActivityFilter = 'all' | 'activity' | 'comments' | 'agent';
 
 function getInitialActivityFilter(): ActivityFilter {
@@ -215,6 +222,8 @@ export function TaskModal() {
   const [cliSessionError, setCliSessionError] = useState('');
   const [skipPermissions, setSkipPermissions] = useState(true);
 
+  const openedTaskIdRef = useRef<string | undefined>(undefined);
+
   const commentRef = useRef<HTMLTextAreaElement>(null);
   const liveOutputRef = useRef<HTMLPreElement>(null);
   const replyTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -271,16 +280,58 @@ export function TaskModal() {
   }, [isFullView, openModalScrollToComments, clearOpenModalScrollToComments]);
 
   useEffect(() => {
-    if (modalTask) {
-      setTitle(modalTask.title || '');
-      setBody(modalTask.body || '');
-      setStatus(modalTask.status || 'Todo');
-      setAssignee(modalTask.assignee || 'unassigned');
+    if (!modalTask) return;
+
+    const isNewTicket = openedTaskIdRef.current !== modalTask.id;
+
+    // Sync data fields, but only update state that actually changed to avoid
+    // spurious re-renders while the modal is live-refreshed from poll updates.
+    const nextTitle = modalTask.title || '';
+    const nextBody = modalTask.body || '';
+    const nextStatus = modalTask.status || 'Todo';
+    const nextAssignee = modalTask.assignee || 'unassigned';
+    const nextPriority = modalTask.priority || 'None';
+    const nextEffort = modalTask.effort || 'None';
+    const nextLink = modalTask.implementationLink || '';
+
+    if (isNewTicket) {
+      setTitle(nextTitle);
+      setBody(nextBody);
+      setStatus(nextStatus);
+      setAssignee(nextAssignee);
       setTags(modalTask.tags || []);
-      setPriority(modalTask.priority || 'None');
-      setEffort(modalTask.effort || 'None');
-      setImplementationLink(modalTask.implementationLink || '');
+      setPriority(nextPriority);
+      setEffort(nextEffort);
+      setImplementationLink(nextLink);
       setSubtasks(modalTask.subtasks || []);
+      setCliSession(modalTask.cliSession || null);
+    } else {
+      // Live refresh: only update fields that changed to avoid clobbering
+      // in-progress edits. Use functional setters to compare against current state.
+      setTitle((prev) => (prev !== nextTitle ? nextTitle : prev));
+      setBody((prev) => (prev !== nextBody ? nextBody : prev));
+      setStatus((prev) => (prev !== nextStatus ? nextStatus : prev));
+      setAssignee((prev) => (prev !== nextAssignee ? nextAssignee : prev));
+      setTags((prev) => {
+        const next = modalTask.tags || [];
+        return prev.length !== next.length || prev.some((t, i) => t !== next[i]) ? next : prev;
+      });
+      setPriority((prev) => (prev !== nextPriority ? nextPriority : prev));
+      setEffort((prev) => (prev !== nextEffort ? nextEffort : prev));
+      setImplementationLink((prev) => (prev !== nextLink ? nextLink : prev));
+      setSubtasks((prev) => {
+        const next = modalTask.subtasks || [];
+        return prev.length !== next.length || prev.some((s, i) => s !== next[i]) ? next : prev;
+      });
+      setCliSession((prev) => {
+        const next = modalTask.cliSession || null;
+        return JSON.stringify(prev) !== JSON.stringify(next) ? next : prev;
+      });
+    }
+
+    // Only reset in-progress draft/UI state when a different ticket opens.
+    if (isNewTicket) {
+      openedTaskIdRef.current = modalTask.id;
       setNewComment('');
       setReplyTargetId(null);
       setReplyDraft('');
@@ -296,7 +347,6 @@ export function TaskModal() {
       setReplyAssetError('');
       setIsUploadingCommentAsset(false);
       setIsUploadingReplyAsset(false);
-      setCliSession(modalTask.cliSession || null);
       setCliSessionBusy(false);
       setCliSessionError('');
     }
@@ -1358,14 +1408,40 @@ export function TaskModal() {
 
           {(cliSession != null || modalTask?.tokenMetadata) && (
             <div className="flex flex-wrap gap-3 text-[11px] text-gray-500 dark:text-gray-400">
-              {cliSession != null && (
-                <span title={`↑ ${((cliSession.inputTokens ?? 0) / 1000).toFixed(1)}k / ↓ ${cliSession.outputTokens ?? 0} tokens`}>
-                  Session: ${(cliSession.costUSD ?? 0).toFixed(4)}
-                </span>
-              )}
-              {modalTask?.tokenMetadata && modalTask.tokenMetadata.costUSD > 0 && (
-                <span>Ticket total: ${modalTask.tokenMetadata.costUSD.toFixed(4)}</span>
-              )}
+              {cliSession != null && (() => {
+                const inTok = cliSession.inputTokens ?? 0;
+                const outTok = cliSession.outputTokens ?? 0;
+                const cost = cliSession.costUSD ?? 0;
+                const showTokens = config?.tokenDisplayMode === 'tokens';
+                const label = showTokens
+                  ? (inTok > 0 || outTok > 0 ? `↑${(inTok / 1000).toFixed(1)}k ↓${(outTok / 1000).toFixed(1)}k` : '—')
+                  : cost > 0
+                    ? `$${cost.toFixed(4)}${cliSession.costIsEstimated ? '~' : ''}`
+                    : (inTok > 0 || outTok > 0)
+                      ? `↑${(inTok / 1000).toFixed(1)}k ↓${(outTok / 1000).toFixed(1)}k`
+                      : '$0.00';
+                return (
+                  <span title={`↑ ${inTok.toLocaleString()} input / ↓ ${outTok.toLocaleString()} output tokens`}>
+                    Session: {label}
+                  </span>
+                );
+              })()}
+              {modalTask && (() => {
+                const tm = modalTask.tokenMetadata;
+                const costUSD = tm?.costUSD ?? 0;
+                const inTok = tm?.inputTokens ?? 0;
+                const outTok = tm?.outputTokens ?? 0;
+                const isEstimated = tm?.costIsEstimated ?? false;
+                const showTokens = config?.tokenDisplayMode === 'tokens';
+                const label = showTokens
+                  ? (inTok > 0 || outTok > 0 ? `↑${(inTok / 1000).toFixed(1)}k ↓${(outTok / 1000).toFixed(1)}k` : '—')
+                  : costUSD > 0
+                    ? `$${costUSD.toFixed(4)}${isEstimated ? '~' : ''}`
+                    : (inTok > 0 || outTok > 0)
+                      ? `↑${(inTok / 1000).toFixed(1)}k ↓${(outTok / 1000).toFixed(1)}k`
+                      : '$0.00';
+                return <span title={tm ? `↑ ${inTok.toLocaleString()} input / ↓ ${outTok.toLocaleString()} output tokens${isEstimated ? ' (estimated)' : ''}` : 'No token data recorded yet'}>Ticket total: {label}</span>;
+              })()}
             </div>
           )}
         </div>
@@ -1474,7 +1550,7 @@ export function TaskModal() {
                   <StatusBadge status={entry.to || 'Unknown'} colorClass={getStatusColorClass(config, entry.to || '')} className="text-[10px] font-bold uppercase tracking-[0.16em]" />
                 </div>
               )}
-              {entry.comment && <TaskMarkdown body={entry.comment} taskId={modalTask?.id} compact imageMode={entry.type === 'comment' ? 'comment' : 'inline'} emptyMessage="" />}
+              {entry.comment && <TaskMarkdown body={entry.type === 'agent_message' ? unwrapAgentMessage(entry.comment) : entry.comment} taskId={modalTask?.id} compact imageMode={entry.type === 'comment' ? 'comment' : 'inline'} emptyMessage="" />}
 
               {entry.type === 'comment' && !entry.replyTo && modalTask?.id && !isRequireInput && (
                 <div className="mt-3 flex items-center gap-2">
@@ -1884,16 +1960,41 @@ export function TaskModal() {
                 <Save className="h-4 w-4" />
                 {saving ? 'Saving...' : 'Save'}
               </button>
-              {/* Cost badge in ticket header */}
-              {(modalTask?.tokenMetadata?.costUSD ?? 0) > 0 && (
-                <span
-                  className="flex flex-col items-start rounded-lg border border-gray-200 bg-white/60 px-3 py-1 text-left dark:border-white/10 dark:bg-white/5"
-                  title={`↑ ${modalTask!.tokenMetadata!.inputTokens} input / ↓ ${modalTask!.tokenMetadata!.outputTokens} output tokens`}
-                >
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">Ticket Cost</span>
-                  <span className="text-sm font-semibold text-gray-700 dark:text-gray-200">${modalTask!.tokenMetadata!.costUSD.toFixed(4)}</span>
-                </span>
-              )}
+              {/* Cost / token badge in ticket header */}
+              {modalTask && (() => {
+                const tm = modalTask.tokenMetadata;
+                const isEstimated = tm?.costIsEstimated ?? false;
+                const inTok = tm?.inputTokens ?? 0;
+                const outTok = tm?.outputTokens ?? 0;
+                const costUSD = tm?.costUSD ?? 0;
+                const showTokens = config?.tokenDisplayMode === 'tokens';
+                const titleText = tm
+                  ? `↑ ${inTok.toLocaleString()} input / ↓ ${outTok.toLocaleString()} output tokens${isEstimated ? ' (estimated)' : ''}`
+                  : 'No token data recorded yet';
+                return (
+                  <span
+                    className="flex flex-col items-start rounded-lg border border-gray-200 bg-white/60 px-3 py-1 text-left dark:border-white/10 dark:bg-white/5"
+                    title={titleText}
+                  >
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                      {showTokens ? 'Tokens' : `Ticket Cost${isEstimated ? ' ~' : ''}`}
+                    </span>
+                    {showTokens ? (
+                      <span className="text-sm font-semibold text-gray-700 dark:text-gray-200">
+                        {inTok > 0 || outTok > 0 ? `↑${(inTok / 1000).toFixed(1)}k ↓${(outTok / 1000).toFixed(1)}k` : '—'}
+                      </span>
+                    ) : !tm ? (
+                      <span className="text-sm font-semibold text-gray-400 dark:text-gray-500">$0.00</span>
+                    ) : costUSD > 0 ? (
+                      <span className="text-sm font-semibold text-gray-700 dark:text-gray-200">${costUSD.toFixed(4)}</span>
+                    ) : (
+                      <span className="text-sm font-semibold text-gray-700 dark:text-gray-200">
+                        ↑{(inTok / 1000).toFixed(1)}k ↓{(outTok / 1000).toFixed(1)}k
+                      </span>
+                    )}
+                  </span>
+                );
+              })()}
               {/* Agent Session — always visible in top bar */}
               {modalTask?.id && (() => {
                 const sessionIsActive = Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status));
