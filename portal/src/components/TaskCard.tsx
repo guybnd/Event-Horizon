@@ -8,7 +8,7 @@ import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, Message
 import { useApp } from '../AppContext';
 import { sendTaskCliInput, startTaskCliSession, updateTask } from '../api';
 import { getReadyForMergeStatus, isPromptableStatus, relativeTime } from '../workflow';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, useAnimationControls } from 'framer-motion';
 import { TaskMarkdown } from './TaskMarkdown';
 import { ContextMenu } from './ContextMenu';
 
@@ -50,6 +50,11 @@ export function TaskCard({
   const [popoverReplySaving, setPopoverReplySaving] = useState(false);
   const commentBadgeRef = useRef<HTMLButtonElement | null>(null);
   const commentPopupRef = useRef<HTMLDivElement | null>(null);
+  const commentHoverTimeout = useRef<number | null>(null);
+  const commentOpenedByHover = useRef(false);
+  const commentCloseTimeout = useRef<number | null>(null);
+  const isMouseOverCard = useRef(false);
+  const lastCardRectRef = useRef<DOMRect | null>(null);
   const effortLabel = effortName && effortName !== 'None' ? effortName : null;
   
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -323,6 +328,17 @@ export function TaskCard({
   const isThisTaskOpen = isModalOpen && modalTask?.id === task.id;
   const [isAnimatingZ, setIsAnimatingZ] = useState(false);
   const [isHovering, setIsHovering] = useState(false);
+  const rattleControls = useAnimationControls();
+  const prevLiveOutputLenRef = useRef<number>(task.cliSession?.liveOutput?.length ?? 0);
+
+  useEffect(() => {
+    if (!animationsEnabled || !hasActiveCliSession) return;
+    const currentLen = task.cliSession?.liveOutput?.length ?? 0;
+    if (currentLen > prevLiveOutputLenRef.current) {
+      prevLiveOutputLenRef.current = currentLen;
+      rattleControls.start({ x: [0, -3, 3, -2, 2, 0], transition: { duration: 0.35, ease: 'easeInOut' } });
+    }
+  }, [task.cliSession?.liveOutput, animationsEnabled, hasActiveCliSession, rattleControls]);
   const [popupPos, setPopupPos] = useState({ cardTop: 0, cardHeight: 0, top: 0, left: 'auto' as number | string, right: 'auto' as number | string });
   const hoverTimeout = useRef<number | null>(null);
   const popupRef = useRef<HTMLDivElement>(null);
@@ -356,11 +372,19 @@ export function TaskCard({
     const rect = commentBadgeRef.current.getBoundingClientRect();
     setCommentPopoverPos({ top: rect.bottom + 8, left: rect.left });
     setCommentPopoverOpen(true);
-    // Close the description hover popup when the comment popover opens
+    commentOpenedByHover.current = false;
+    if (commentCloseTimeout.current !== null) {
+      window.clearTimeout(commentCloseTimeout.current);
+      commentCloseTimeout.current = null;
+    }
     setIsHovering(false);
     if (hoverTimeout.current !== null) {
       window.clearTimeout(hoverTimeout.current);
       hoverTimeout.current = null;
+    }
+    if (commentHoverTimeout.current !== null) {
+      window.clearTimeout(commentHoverTimeout.current);
+      commentHoverTimeout.current = null;
     }
   };
 
@@ -370,17 +394,21 @@ export function TaskCard({
   };
 
   const handleMouseEnter = (event: any) => {
+    isMouseOverCard.current = true;
     if (!config?.hoverPopupsEnabled) return;
     if (isDragging) return;
-    if (priorityMenuOpen || effortMenuOpen || assigneeMenuOpen || tagMenuOpen || isEditingTitle || commentPopoverOpen) return;
+    if (priorityMenuOpen || effortMenuOpen || assigneeMenuOpen || tagMenuOpen || isEditingTitle) return;
+    // If comment popover is open and was opened by a click (not hover), don't start description timer
+    if (commentPopoverOpen && !commentOpenedByHover.current) return;
     // Don't trigger the description popup when the mouse enters via the comment badge
     if (commentBadgeRef.current?.contains(event.target as Node)) return;
-    
+
     // Calculate direction before showing
     const currentCard = event.currentTarget.getBoundingClientRect();
+    lastCardRectRef.current = currentCard;
     const margin = 16;
     const popupWidth = 640;
-    
+
     let left: number | string = currentCard.right + margin;
     let right: number | string = 'auto';
 
@@ -394,37 +422,57 @@ export function TaskCard({
       topVal = 180;
     }
 
-    setPopupPos({ 
+    setPopupPos({
       cardTop: currentCard.top,
       cardHeight: currentCard.height,
-      top: topVal, 
-      left, 
-      right 
+      top: topVal,
+      left,
+      right
     });
-    
+
     if (hoverTimeout.current !== null) {
       window.clearTimeout(hoverTimeout.current);
     }
-    
+
     const delay = config?.hoverPopupDelay ?? 1500;
     hoverTimeout.current = window.setTimeout(() => {
       setIsHovering(true);
     }, delay);
   };
 
+  const startDescriptionTimer = () => {
+    if (!config?.hoverPopupsEnabled || isDragging || !lastCardRectRef.current) return;
+    if (hoverTimeout.current !== null) window.clearTimeout(hoverTimeout.current);
+    const delay = config?.hoverPopupDelay ?? 1500;
+    hoverTimeout.current = window.setTimeout(() => {
+      if (isMouseOverCard.current) setIsHovering(true);
+    }, delay);
+  };
+
   const handleMouseLeave = () => {
+    isMouseOverCard.current = false;
     if (hoverTimeout.current !== null) {
       window.clearTimeout(hoverTimeout.current);
       hoverTimeout.current = null;
     }
     setIsHovering(false);
+    // Close hover-opened comment popover after a small delay so moving to it doesn't flicker
+    if (commentOpenedByHover.current && commentCloseTimeout.current === null) {
+      commentCloseTimeout.current = window.setTimeout(() => {
+        commentCloseTimeout.current = null;
+        setCommentPopoverOpen(false);
+        commentOpenedByHover.current = false;
+        // If mouse is still over the card, restart description timer
+        if (isMouseOverCard.current) startDescriptionTimer();
+      }, 200);
+    }
   };
 
   useEffect(() => {
     return () => {
-      if (hoverTimeout.current !== null) {
-        window.clearTimeout(hoverTimeout.current);
-      }
+      if (hoverTimeout.current !== null) window.clearTimeout(hoverTimeout.current);
+      if (commentHoverTimeout.current !== null) window.clearTimeout(commentHoverTimeout.current);
+      if (commentCloseTimeout.current !== null) window.clearTimeout(commentCloseTimeout.current);
     };
   }, []);
 
@@ -483,7 +531,46 @@ export function TaskCard({
               ? openCommentPopover
               : (e) => { e.stopPropagation(); openTaskModal(task); }
             }
-            title={hasUnread ? `${unreadComments.length} unread comment${unreadComments.length === 1 ? '' : 's'}` : comments.length > 0 ? `${comments.length} comment${comments.length === 1 ? '' : 's'}` : 'Add a comment'}
+            title={comments.length === 0 ? 'Add a comment' : undefined}
+            onMouseEnter={(e) => {
+              if (comments.length === 0) return;
+              e.stopPropagation();
+              // Cancel any pending close
+              if (commentCloseTimeout.current !== null) {
+                window.clearTimeout(commentCloseTimeout.current);
+                commentCloseTimeout.current = null;
+              }
+              setIsHovering(false);
+              if (hoverTimeout.current !== null) {
+                window.clearTimeout(hoverTimeout.current);
+                hoverTimeout.current = null;
+              }
+              if (commentHoverTimeout.current !== null) window.clearTimeout(commentHoverTimeout.current);
+              if (!commentPopoverOpen) {
+                commentHoverTimeout.current = window.setTimeout(() => {
+                  if (!commentBadgeRef.current) return;
+                  const rect = commentBadgeRef.current.getBoundingClientRect();
+                  setCommentPopoverPos({ top: rect.bottom + 8, left: rect.left });
+                  commentOpenedByHover.current = true;
+                  setCommentPopoverOpen(true);
+                }, 300);
+              }
+            }}
+            onMouseLeave={() => {
+              if (commentHoverTimeout.current !== null) {
+                window.clearTimeout(commentHoverTimeout.current);
+                commentHoverTimeout.current = null;
+              }
+              // Start close timer for hover-opened popover
+              if (commentOpenedByHover.current && commentCloseTimeout.current === null) {
+                commentCloseTimeout.current = window.setTimeout(() => {
+                  commentCloseTimeout.current = null;
+                  setCommentPopoverOpen(false);
+                  commentOpenedByHover.current = false;
+                  if (isMouseOverCard.current) startDescriptionTimer();
+                }, 200);
+              }
+            }}
             className={`absolute z-20 flex items-center gap-1 rounded-full font-semibold transition-all duration-200 ${
               hasUnread
                 ? `${isPromptStatus ? '-top-3.5 right-7' : '-top-3.5 right-3'} px-2.5 py-1 text-[10px] bg-amber-400 text-white shadow-md hover:bg-amber-500 hover:scale-110 active:scale-95`
@@ -732,7 +819,8 @@ export function TaskCard({
               })()}
 
               <div ref={assigneeMenuRef} className="relative ml-auto">
-                <button
+                <motion.button
+                  animate={rattleControls}
                   onClick={(event) => {
                     event.stopPropagation();
                     if (!isOverlay && !hasActiveCliSession) {
@@ -746,7 +834,7 @@ export function TaskCard({
                 >
                   {hasActiveCliSession ? <Bot className="w-3 h-3" /> : <User className="w-3 h-3" />}
                   <span className="font-medium text-[10px]">{hasActiveCliSession && task.cliSession ? task.cliSession.label : visibleAssignee === 'unassigned' ? 'Unassigned' : visibleAssignee}</span>
-                </button>
+                </motion.button>
                 {assigneeMenuOpen && !isOverlay && !hasActiveCliSession && (
                   <div
                     className="absolute right-0 top-full z-[90] mt-1 min-w-32 rounded-lg border border-gray-200 bg-white p-1 shadow-xl dark:border-white/10 dark:bg-[#252630]"
@@ -803,6 +891,22 @@ export function TaskCard({
               }}
               className="w-[480px] max-h-[520px] overflow-y-auto rounded-xl border border-gray-200/80 bg-white/95 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:bg-[#1a1b23]/95 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 dark:[&::-webkit-scrollbar-thumb]:bg-gray-600 [&::-webkit-scrollbar-track]:bg-transparent"
               onClick={(e) => e.stopPropagation()}
+              onMouseEnter={() => {
+                if (commentCloseTimeout.current !== null) {
+                  window.clearTimeout(commentCloseTimeout.current);
+                  commentCloseTimeout.current = null;
+                }
+              }}
+              onMouseLeave={() => {
+                if (commentOpenedByHover.current && commentCloseTimeout.current === null) {
+                  commentCloseTimeout.current = window.setTimeout(() => {
+                    commentCloseTimeout.current = null;
+                    setCommentPopoverOpen(false);
+                    commentOpenedByHover.current = false;
+                    if (isMouseOverCard.current) startDescriptionTimer();
+                  }, 200);
+                }
+              }}
             >
               <div className="sticky top-0 bg-white/95 dark:bg-[#1a1b23]/95 px-3 py-2 border-b border-gray-100 dark:border-white/5 backdrop-blur-xl flex items-center justify-between">
                 <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider">

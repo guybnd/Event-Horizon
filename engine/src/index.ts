@@ -1893,15 +1893,15 @@ app.put('/api/tasks/:id', requireWorkspace, async (req, res) => {
     findEarliestHistoryDate(existingHistory),
   ).history;
 
-  // If the caller's history is a prefix of existingHistory, they had a stale
-  // snapshot. Rebase their novel entries onto the current history to avoid
-  // dropping comments or entries added by concurrent writes.
-  if (historyPrefixMatches(nextHistory, existingHistory)) {
-    const novelEntries = nextHistory.slice(existingHistory.length);
-    nextHistory = [...existingHistory, ...novelEntries];
-  }
-
+  // Always rebase onto the server's authoritative history: preserve existing entries
+  // verbatim and stamp any novel entries (beyond existingHistory.length) with a
+  // server-side timestamp so agents cannot persist hallucinated or fabricated dates.
   const activityTimestamp = new Date().toISOString();
+  const novelEntries = nextHistory.slice(existingHistory.length).map((entry) => ({
+    ...entry,
+    date: activityTimestamp,
+  }));
+  nextHistory = [...existingHistory, ...novelEntries];
   if (task.status !== frontmatter.status && !hasAppendedStatusChange(existingHistory, nextHistory, task.status, frontmatter.status)) {
     nextHistory.push({
       type: 'status_change',

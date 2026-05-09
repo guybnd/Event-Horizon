@@ -7,9 +7,13 @@ import { TaskModal } from './components/TaskModal';
 import { Settings } from './components/Settings';
 import { ReleasesScreen } from './components/ReleasesScreen';
 import { WorkspaceSelector } from './components/WorkspaceSelector';
+import { OnboardingWizard } from './components/OnboardingWizard';
 
 function AppContent() {
   const { view, workspaceConfigured, isConnected } = useApp();
+
+  const showOnboarding = isConnected && !localStorage.getItem('eh-onboarding-complete');
+  if (showOnboarding) return <OnboardingWizard />;
 
   // Show workspace picker until the engine has a project folder configured.
   // If the engine is offline, skip the picker to show the normal UI with the disconnect banner.
