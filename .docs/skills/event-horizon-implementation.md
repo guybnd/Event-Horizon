@@ -33,6 +33,29 @@ Load this skill when a ticket's status is `Todo` or `In Progress`.
 12. If the user says `finish FLUX-XX` for a ticket in the ready-for-merge status, stage all relevant files and perform the final ticket-close sequence. The commit creation, recording its hash in `implementationLink`, and the status transition to `Done` must happen simultaneously as one atomic step.
 13. Add a descriptive completion comment that explains what changed, what was validated, any follow-up caveats, and the commit reference when available. Then move the ticket to `Done`.
 
+## Ticket Editing — MANDATORY
+
+**Never edit `.flux/*.md` frontmatter (YAML) using direct file-replacement tools.** Doing so frequently breaks YAML formatting and causes tickets to silently vanish from the board.
+
+Use the `patch-ticket` CLI instead. Run from the `engine/` directory:
+
+```
+npm run patch-ticket -- <id> --status "In Progress"
+npm run patch-ticket -- <id> --comment "your message here"
+npm run patch-ticket -- <id> --status "Ready" --comment "implementation complete"
+npm run patch-ticket -- <id> --assignee "Agent" --priority "High" --effort "M"
+```
+
+Or from the repo root (no `cd` required):
+
+```
+npx tsx engine/src/patch-ticket.ts <id> --workspace . --status "In Progress"
+```
+
+Direct file edits are only acceptable for the ticket **body** (the markdown content below the frontmatter `---` block), since that does not involve YAML.
+
+The engine watcher will emit a `[FLUX VALIDATION ERROR]` to the terminal if a `.flux/*.md` file has invalid frontmatter — watch for this and use `patch-ticket` to correct it.
+
 ## Common Project Patterns
 
 - Ticket persistence is handled by the engine, not directly by the portal.
