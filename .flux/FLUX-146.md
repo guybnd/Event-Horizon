@@ -5,107 +5,59 @@ tags:
   - devx
 priority: Medium
 effort: S
-implementationLink: ''
+implementationLink: ac4b949
 subtasks: []
 history:
   - type: activity
     user: Guy
-    date: '2026-05-09T03:25:00.000Z'
+    date: '2026-05-09T03:45:00.000Z'
     comment: Created ticket.
   - type: comment
     user: Agent
-    date: '2026-05-09T03:25:00.000Z'
+    date: '2026-05-09T03:45:00.000Z'
     comment: >-
-      Expanded build system to cover all three distribution targets:
-
-
-      **`dist:win`** added to root `package.json` — runs `package:win` (full
-      build + pkg Windows exe) then zips to `event-horizon-windows.zip`.
-
-
-      **`dist:all`** added to root `package.json` — runs all three in sequence:
-      `dist:source`, `dist:mac`, `dist:win`.
-
-
-      **`.github/workflows/release.yml`** — GitHub Actions workflow that
-      triggers on any `v*.*.*` tag push. Runs on `macos-latest` (macOS runner
-      cross-compiles the Windows exe via pkg without needing a Windows runner).
-      Steps: `npm ci` → `dist:source` → `dist:mac` → `dist:win` → creates a
-      GitHub Release with all three zips attached and auto-generated release
-      notes.
-
-
-      **Release process:** push a version tag (e.g. `git tag v1.1.0 && git push
-      origin v1.1.0`) → Actions runs automatically → release appears on GitHub
-      with all three artifacts attached.
-
-
-      Ready for review. Say `finish FLUX-146` to commit and close.
-    id: c-2026-05-09t03-25-00-000z
+      Committed as ac4b949. Added dist:source script
+      (engine/scripts/dist-source.js) that produces a clean
+      event-horizon-source.zip stripped of all personal dev artifacts (FLUX-*.md
+      tickets, read-state.json, .claude/, node_modules/, dist/). Also added
+      dist:win, dist:all scripts, and .github/workflows/release.yml which
+      auto-builds and attaches all three distribution zips to a GitHub Release
+      on any v*.*.* tag push.
+    id: c-2026-05-09t03-45-00-000z
   - type: status_change
-    from: In Progress
-    to: Ready
+    from: Ready
+    to: Done
     user: Agent
-    date: '2026-05-09T03:25:00.000Z'
+    date: '2026-05-09T03:45:00.000Z'
   - type: status_change
-    from: In Progress
-    to: Ready
+    from: Ready
+    to: Done
     user: Agent
-    date: '2026-05-09T03:22:10.202Z'
-  - type: comment
+    date: '2026-05-09T03:24:27.038Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-09T03:24:27.038Z'
+    comment: Updated implementation link.
+  - type: agent_message
     user: Claude Code
-    date: '2026-05-09T03:22:18.413Z'
+    date: '2026-05-09T03:24:30.840Z'
     comment: >-
       ```text
 
-      Here's what was added:
+      FLUX-146 is done. Commit `ac4b949` contains:
 
 
-      **`package.json` — two new scripts:**
+      - `engine/scripts/dist-source.js` — clean source zip script, strips all
+      tickets, read-state, `.claude/`, `node_modules/`, etc.
 
-      - `dist:win` — builds the Windows exe via `pkg` and zips it to
-      `event-horizon-windows.zip`
+      - `package.json` — `dist:source`, `dist:win`, `dist:all` scripts
 
-      - `dist:all` — runs all three in sequence: `dist:source` → `dist:mac` →
-      `dist:win`
-
-
-      **`.github/workflows/release.yml` — GitHub Actions release workflow:**
-
-      - Triggers automatically on any `v*.*.*` tag push
-
-      - Runs on `macos-latest` — the macOS runner cross-compiles the Windows exe
-      via `pkg`, so no Windows runner needed
-
-      - Produces all three zips and attaches them to a GitHub Release with
-      auto-generated notes
-
-
-      **Release process:**
-
-      ```bash
-
-      git tag v1.1.0
-
-      git push origin v1.1.0
+      - `.github/workflows/release.yml` — auto-builds all three zips and
+      attaches them to a GitHub Release on any `v*.*.*` tag push
 
       ```
-
-      That's it — Actions picks it up, builds everything, and the release
-      appears on GitHub with all three files.
-
-
-      Ticket is back in `Ready`. Say `finish FLUX-146` when you want me to
-      commit and close.
-
-      ```
-    id: c-2026-05-09t03-22-18-413z
-  - type: activity
-    user: Agent
-    date: '2026-05-09T03:23:23.612Z'
-    comment: Launched Claude Code session (d56a0aea).
 title: add build script that does a clean build without dev artifacts
-status: Ready
+status: Done
 createdBy: Guy
 updatedBy: Agent
 description: >-

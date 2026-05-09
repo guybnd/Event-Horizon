@@ -1,6 +1,6 @@
 ---
 title: Provide a robust mechanism for agent ticket edits to prevent ticket corruption
-status: Ready
+status: Done
 createdBy: User
 updatedBy: Agent
 assignee: unassigned
@@ -60,7 +60,30 @@ history:
     user: Agent
     date: '2026-05-09T07:54:22.936Z'
     comment: Launched Claude Code session (8e79ad1a).
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-09T07:54:53.804Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-09T07:54:53.805Z'
+    comment: >-
+      Closed. Commit 27529b2: patch-ticket CLI (engine/src/patch-ticket.ts),
+      YAML validation hook in loadTask() (engine/src/index.ts), docs updated
+      (.docs/skills/event-horizon-implementation.md). FLUX-159 created for the
+      corrupted-ticket UI indicator follow-up.
+    id: c-2026-05-09t07-54-53-805z
+  - type: activity
+    user: Agent
+    date: '2026-05-09T07:55:00.866Z'
+    comment: Claude Code session ended with code 0.
 order: 83
+tokenMetadata:
+  inputTokens: 105
+  outputTokens: 1186
+  costUSD: 0.097904
+  costIsEstimated: false
 ---
 ## Implementation Plan
 

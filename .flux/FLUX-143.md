@@ -121,10 +121,16 @@ history:
       projects we are currently working on. so the new start window pops up to
       let the user select his project folder and IDE etc
     id: c-2026-05-08t14-56-15-522z
+  - type: status_change
+    from: In Progress
+    to: Grooming
+    user: Guy
+    date: '2026-05-09T04:25:05.323Z'
 title: distributable for macos?
-status: In Progress
+status: Grooming
 createdBy: Guy
 updatedBy: Guy
+order: 3
 ---
 
 Add a `dist:mac` npm script that builds the macOS standalone binary then zips it into `event-horizon-macos.zip` for easy sharing.
