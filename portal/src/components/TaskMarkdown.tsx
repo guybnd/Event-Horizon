@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { ImageIcon, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -139,7 +139,7 @@ function MarkdownImage({
   );
 }
 
-export function TaskMarkdown({
+export const TaskMarkdown = memo(function TaskMarkdown({
   body,
   taskId,
   compact = false,
@@ -169,7 +169,7 @@ export function TaskMarkdown({
   const ParagraphTag = imageMode === 'comment' ? 'div' : 'p';
 
   return (
-    <div className={`max-w-none text-sm leading-7 text-gray-700 dark:text-gray-300 ${compact ? '' : ''}`}>
+    <div className={`max-w-none min-w-0 break-words text-sm leading-7 text-gray-700 dark:text-gray-300 ${compact ? '' : ''}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
@@ -196,7 +196,7 @@ export function TaskMarkdown({
             }
             return <code className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-800 dark:bg-black/30 dark:text-gray-100">{children}</code>;
           },
-          pre: ({ children }) => <pre className="mb-4 overflow-x-auto rounded-lg bg-black/90">{children}</pre>,
+          pre: ({ children }) => <pre className="mb-4 max-w-full overflow-x-auto rounded-lg bg-black/90">{children}</pre>,
           blockquote: ({ children }) => (
             <blockquote className="mb-4 border-l-4 border-primary/40 pl-4 italic text-gray-600 dark:text-gray-400">
               {children}
@@ -212,4 +212,4 @@ export function TaskMarkdown({
       </ReactMarkdown>
     </div>
   );
-}
+});

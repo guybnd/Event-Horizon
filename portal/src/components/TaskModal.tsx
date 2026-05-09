@@ -422,7 +422,7 @@ export function TaskModal() {
   const createdAt = modalTask?.history?.[0]?.date;
   const updatedAt = modalTask?.history?.[modalTask.history.length - 1]?.date;
 
-  const originalPayload = JSON.stringify({
+  const originalPayload = useMemo(() => JSON.stringify({
     title: modalTask?.title || '',
     body: normalizeTaskMarkdownBody(modalTask?.body || ''),
     status: modalTask?.status || 'Todo',
@@ -432,9 +432,10 @@ export function TaskModal() {
     effort: modalTask?.effort || 'None',
     implementationLink: modalTask?.implementationLink || '',
     subtasks: modalTask?.subtasks || [],
-  });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [modalTask]);
 
-  const currentPayload = JSON.stringify({
+  const currentPayload = useMemo(() => JSON.stringify({
     title,
     body: normalizeTaskMarkdownBody(body),
     status,
@@ -444,7 +445,8 @@ export function TaskModal() {
     effort,
     implementationLink,
     subtasks,
-  });
+  }), [title, body, status, assignee, tags, priority, effort, implementationLink, subtasks]);
+
   const isDirty = originalPayload !== currentPayload || newComment.trim() !== '';
 
   // When the ticket enters Require Input, default the destination to whatever status it was in before.
@@ -1354,11 +1356,11 @@ export function TaskModal() {
             </div>
           )}
 
-          {(cliSession?.costUSD != null || modalTask?.tokenMetadata) && (
+          {(cliSession != null || modalTask?.tokenMetadata) && (
             <div className="flex flex-wrap gap-3 text-[11px] text-gray-500 dark:text-gray-400">
-              {cliSession?.costUSD != null && cliSession.costUSD > 0 && (
+              {cliSession != null && (
                 <span title={`↑ ${((cliSession.inputTokens ?? 0) / 1000).toFixed(1)}k / ↓ ${cliSession.outputTokens ?? 0} tokens`}>
-                  Session: ${cliSession.costUSD.toFixed(4)}
+                  Session: ${(cliSession.costUSD ?? 0).toFixed(4)}
                 </span>
               )}
               {modalTask?.tokenMetadata && modalTask.tokenMetadata.costUSD > 0 && (
@@ -1383,7 +1385,7 @@ export function TaskModal() {
   const readCommentIds = new Set(readComments[modalTask?.id ?? ''] ?? []);
 
   const unreadCommentCount = (modalTask?.history || []).filter(
-    (e) => e.type === 'comment' && e.id && !readCommentIds.has(e.id)
+    (e) => e.type === 'comment' && e.id && !readCommentIds.has(e.id) && e.user !== currentUser
   ).length;
 
   const activityFilterTabs = (
@@ -1438,12 +1440,12 @@ export function TaskModal() {
               className={`flex-1 min-w-0 rounded-lg border p-3 transition-colors ${
                 entry.type === 'agent_message'
                   ? 'border-dashed border-gray-200 bg-gray-50/50 dark:border-white/5 dark:bg-black/10'
-                  : entry.type === 'comment' && entry.id && !readCommentIds.has(entry.id)
+                  : entry.type === 'comment' && entry.id && !readCommentIds.has(entry.id) && entry.user !== currentUser
                   ? 'border-amber-200/60 bg-amber-50/60 dark:border-amber-500/20 dark:bg-amber-500/5 cursor-pointer hover:bg-amber-100/60 dark:hover:bg-amber-500/10'
                   : 'border-gray-100 bg-gray-50 dark:border-white/5 dark:bg-black/20'
               }`}
               onClick={() => {
-                if (entry.type === 'comment' && entry.id && !readCommentIds.has(entry.id)) {
+                if (entry.type === 'comment' && entry.id && !readCommentIds.has(entry.id) && entry.user !== currentUser) {
                   ctxMarkCommentRead(modalTask!.id!, entry.id);
                 }
               }}
@@ -1456,7 +1458,7 @@ export function TaskModal() {
                       {entry.id}
                     </span>
                   )}
-                  {entry.type === 'comment' && entry.id && !readCommentIds.has(entry.id) && (
+                  {entry.type === 'comment' && entry.id && !readCommentIds.has(entry.id) && entry.user !== currentUser && (
                     <span className="flex items-center gap-1 text-[10px] text-amber-500 dark:text-amber-400">
                       <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
                       unread · click to mark read
