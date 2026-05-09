@@ -65,10 +65,31 @@ history:
       conditional branches. Validated: probe with date 1984-01-01 returned
       2026-05-09 server timestamp.
     id: c-2026-05-09t08-55-39-361z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-09T09:06:31.533Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-09T09:06:31.534Z'
+    comment: >-
+      Fix complete: engine now stamps all novel history entry dates with
+      server-side timestamp, eliminating agent-hallucinated dates. Commit
+      0a81b6a.
+    id: c-2026-05-09t09-06-31-534z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T09:06:34.752Z'
 title: need find a way to enforce better timestamps
-status: Ready
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: 0.2.1
+releasedAt: '2026-05-09T09:06:34.752Z'
+releaseDocPath: release-notes/0.2.1
 ---
 ## Problem
 

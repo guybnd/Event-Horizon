@@ -88,10 +88,28 @@ history:
       0] over 0.35s — a tight rattle rather than a card hop. TypeScript compiles
       clean, no regressions to drag/layout/glow.
     id: c-2026-05-09t08-52-27-357z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-09T09:06:31.534Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-09T09:06:31.534Z'
+    comment: >-
+      Assignee badge rattle animation implemented. Fires x: [0,-3,3,-2,2,0] over
+      0.35s each time liveOutput grows during an active CLI session. Commit
+      0a81b6a.
+    id: c-2026-05-09t09-06-31-534z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T09:06:34.756Z'
 title: >-
   I want a little hop animation on the card every time the agent has a 'thought'
   to kind of indicate its working. 
-status: Ready
+status: Released
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -99,6 +117,9 @@ tokenMetadata:
   outputTokens: 8822
   costUSD: 0.816766
   costIsEstimated: false
+version: 0.2.1
+releasedAt: '2026-05-09T09:06:34.756Z'
+releaseDocPath: release-notes/0.2.1
 ---
 ## Implementation Plan
 

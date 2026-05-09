@@ -158,8 +158,27 @@ history:
 
       To test: open DevTools → Application → Local Storage → delete
       `eh-onboarding-complete` → refresh.
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-09T09:06:31.534Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-09T09:06:31.535Z'
+    comment: >-
+      5-step first-launch onboarding wizard shipped. Gated by
+      eh-onboarding-complete localStorage flag. Steps: folder picker, CLI
+      selector, skippable install, docs callout, celebration finish. Commit
+      0a81b6a.
+    id: c-2026-05-09t09-06-31-535z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T09:06:34.755Z'
 title: new user proper onboarding
-status: Ready
+status: Released
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -167,6 +186,9 @@ tokenMetadata:
   outputTokens: 5430
   costUSD: 0.423122
   costIsEstimated: false
+version: 0.2.1
+releasedAt: '2026-05-09T09:06:34.755Z'
+releaseDocPath: release-notes/0.2.1
 ---
 ## Overview
 

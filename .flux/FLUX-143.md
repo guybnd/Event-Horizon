@@ -126,8 +126,13 @@ history:
     to: Grooming
     user: Guy
     date: '2026-05-09T04:25:05.323Z'
+  - type: status_change
+    from: Grooming
+    to: Archived
+    user: Guy
+    date: '2026-05-09T08:43:46.131Z'
 title: distributable for macos?
-status: Grooming
+status: Archived
 createdBy: Guy
 updatedBy: Guy
 order: 3

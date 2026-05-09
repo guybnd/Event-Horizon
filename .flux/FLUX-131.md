@@ -294,10 +294,32 @@ history:
     to: Ready
     user: Guy
     date: '2026-05-09T09:03:24.872Z'
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-09T09:06:31.534Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-09T09:06:31.535Z'
+    comment: >-
+      Implemented comment hover tooltip using the real interactive popover.
+      Mutual exclusion with description tooltip, closes on mouse-leave with
+      200ms grace, description timer restarts when hover-opened popover closes.
+      Commit 0a81b6a.
+    id: c-2026-05-09t09-06-31-535z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T09:06:34.753Z'
 title: hover on comments in card should switch to that tooltip
-status: Ready
+status: Released
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 order: 1
+version: 0.2.1
+releasedAt: '2026-05-09T09:06:34.753Z'
+releaseDocPath: release-notes/0.2.1
 ---
 
