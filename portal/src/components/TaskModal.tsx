@@ -32,12 +32,13 @@ import { motion, AnimatePresence } from 'framer-motion';
 
 const ACTIVITY_FILTER_STORAGE_KEY = 'flux.activityFilter';
 
-type ActivityFilter = 'all' | 'comments';
+type ActivityFilter = 'all' | 'activity' | 'comments' | 'agent';
 
 function getInitialActivityFilter(): ActivityFilter {
   if (typeof window === 'undefined') return 'all';
   const stored = window.localStorage.getItem(ACTIVITY_FILTER_STORAGE_KEY);
-  return stored === 'comments' ? 'comments' : 'all';
+  if (stored === 'comments' || stored === 'activity' || stored === 'agent') return stored;
+  return 'all';
 }
 
 function TagSelector({
@@ -614,6 +615,10 @@ export function TaskModal() {
   const activityHistory = modalTask?.history || [];
   const filteredHistory = activityFilter === 'comments'
     ? activityHistory.filter((entry) => entry.type === 'comment')
+    : activityFilter === 'activity'
+    ? activityHistory.filter((entry) => entry.type === 'status_change' || entry.type === 'activity')
+    : activityFilter === 'agent'
+    ? activityHistory.filter((entry) => entry.type === 'agent_message')
     : activityHistory;
   const repliesByParent = new Map<string, HistoryEntry[]>();
   const topLevelEntries: HistoryEntry[] = [];
@@ -1348,6 +1353,19 @@ export function TaskModal() {
               </pre>
             </div>
           )}
+
+          {(cliSession?.costUSD != null || modalTask?.tokenMetadata) && (
+            <div className="flex flex-wrap gap-3 text-[11px] text-gray-500 dark:text-gray-400">
+              {cliSession?.costUSD != null && cliSession.costUSD > 0 && (
+                <span title={`↑ ${((cliSession.inputTokens ?? 0) / 1000).toFixed(1)}k / ↓ ${cliSession.outputTokens ?? 0} tokens`}>
+                  Session: ${cliSession.costUSD.toFixed(4)}
+                </span>
+              )}
+              {modalTask?.tokenMetadata && modalTask.tokenMetadata.costUSD > 0 && (
+                <span>Ticket total: ${modalTask.tokenMetadata.costUSD.toFixed(4)}</span>
+              )}
+            </div>
+          )}
         </div>
       )}
       {modalTask?.id && (
@@ -1370,28 +1388,20 @@ export function TaskModal() {
 
   const activityFilterTabs = (
     <div className="flex items-center gap-2 flex-wrap">
-      <button
-        type="button"
-        onClick={() => setActivityFilter('all')}
-        className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
-          activityFilter === 'all'
-            ? 'bg-primary text-white'
-            : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-white/10 dark:text-gray-300 dark:hover:bg-white/15'
-        }`}
-      >
-        All Activity
-      </button>
-      <button
-        type="button"
-        onClick={() => setActivityFilter('comments')}
-        className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
-          activityFilter === 'comments'
-            ? 'bg-primary text-white'
-            : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-white/10 dark:text-gray-300 dark:hover:bg-white/15'
-        }`}
-      >
-        Comments Only
-      </button>
+      {(['all', 'activity', 'comments', 'agent'] as ActivityFilter[]).map((filter) => (
+        <button
+          key={filter}
+          type="button"
+          onClick={() => setActivityFilter(filter)}
+          className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+            activityFilter === filter
+              ? 'bg-primary text-white'
+              : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-white/10 dark:text-gray-300 dark:hover:bg-white/15'
+          }`}
+        >
+          {filter === 'all' ? 'All' : filter === 'activity' ? 'Activity' : filter === 'comments' ? 'Comments' : 'Agent'}
+        </button>
+      ))}
       {unreadCommentCount > 0 && (
         <button
           type="button"
@@ -1415,16 +1425,20 @@ export function TaskModal() {
 
           return (
           <div key={`${entry.id || entry.date}-${index}`} className="flex gap-3">
-            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10">
+            <div className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${entry.type === 'agent_message' ? 'bg-gray-100 dark:bg-white/5' : 'bg-primary/10'}`}>
               {entry.type === 'status_change' ? (
                 <ArrowRight className="h-3 w-3 text-primary" />
+              ) : entry.type === 'agent_message' ? (
+                <Bot className="h-3 w-3 text-gray-400 dark:text-gray-500" />
               ) : (
                 <MessageSquare className="h-3 w-3 text-primary" />
               )}
             </div>
             <div
-              className={`flex-1 rounded-lg border p-3 transition-colors ${
-                entry.type === 'comment' && entry.id && !readCommentIds.has(entry.id)
+              className={`flex-1 min-w-0 rounded-lg border p-3 transition-colors ${
+                entry.type === 'agent_message'
+                  ? 'border-dashed border-gray-200 bg-gray-50/50 dark:border-white/5 dark:bg-black/10'
+                  : entry.type === 'comment' && entry.id && !readCommentIds.has(entry.id)
                   ? 'border-amber-200/60 bg-amber-50/60 dark:border-amber-500/20 dark:bg-amber-500/5 cursor-pointer hover:bg-amber-100/60 dark:hover:bg-amber-500/10'
                   : 'border-gray-100 bg-gray-50 dark:border-white/5 dark:bg-black/20'
               }`}
@@ -1436,7 +1450,7 @@ export function TaskModal() {
             >
               <div className="mb-1 flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <span className="text-xs font-semibold text-gray-800 dark:text-gray-200">{entry.user}</span>
+                  <span className={`text-xs font-semibold ${entry.type === 'agent_message' ? 'text-gray-400 dark:text-gray-500' : 'text-gray-800 dark:text-gray-200'}`}>{entry.user}</span>
                   {entry.type === 'comment' && entry.id && (
                     <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-gray-500 dark:bg-white/10 dark:text-gray-300">
                       {entry.id}

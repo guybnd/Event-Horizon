@@ -1,5 +1,5 @@
 export interface HistoryEntry {
-  type: 'status_change' | 'comment' | 'activity';
+  type: 'status_change' | 'comment' | 'activity' | 'agent_message';
   from?: string;
   to?: string;
   user: string;
@@ -28,6 +28,7 @@ export interface Task {
   releasedAt?: string;
   releaseDocPath?: string;
   cliSession?: CliSessionSummary | null;
+  tokenMetadata?: { inputTokens: number; outputTokens: number; costUSD: number };
 }
 
 export type CliFramework = 'claude' | 'copilot';
@@ -49,6 +50,9 @@ export interface CliSessionSummary {
   blockedReason?: string;
   liveOutput?: string;
   skipPermissions?: boolean;
+  inputTokens?: number;
+  outputTokens?: number;
+  costUSD?: number;
 }
 
 export interface TaskLiveEvent {

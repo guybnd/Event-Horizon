@@ -112,6 +112,9 @@ interface CliSessionSummary {
   blockedReason?: string;
   liveOutput?: string;
   skipPermissions?: boolean;
+  inputTokens?: number;
+  outputTokens?: number;
+  costUSD?: number;
 }
 
 interface CliSessionRecord extends CliSessionSummary {
@@ -202,6 +205,9 @@ function getCliSessionSummaryForTask(taskId: string): CliSessionSummary | undefi
     blockedReason: session.blockedReason,
     liveOutput: session.liveOutputBuffer || undefined,
     skipPermissions: session.skipPermissions,
+    inputTokens: session.inputTokens,
+    outputTokens: session.outputTokens,
+    costUSD: session.costUSD,
   };
 }
 
@@ -307,9 +313,9 @@ function flushSessionOutput(session: CliSessionRecord, force = false) {
     await updateTaskWithHistory(session.taskId, {
       updatedBy: 'Agent',
       entries: [
-        buildCommentEntry(
-          session.label,
+        buildAgentMessageEntry(
           `\`\`\`text\n${clippedText}\n\`\`\``,
+          session.label,
           timestamp,
         ),
       ],
@@ -366,6 +372,15 @@ function buildCommentId(seed: string, usedIds: Set<string>) {
 function buildActivityEntry(comment: string, user: string, date: string) {
   return {
     type: 'activity',
+    user: user || 'Unknown',
+    date,
+    comment,
+  };
+}
+
+function buildAgentMessageEntry(comment: string, user: string, date: string) {
+  return {
+    type: 'agent_message',
     user: user || 'Unknown',
     date,
     comment,
@@ -1101,6 +1116,9 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
     skipPermissions,
     requestedStop: false,
     writeQueue: Promise.resolve(),
+    inputTokens: 0,
+    outputTokens: 0,
+    costUSD: 0,
   };
 
   cliSessionsById.set(sessionId, session);
@@ -1181,6 +1199,12 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
             // All other JSON events are ephemeral — live panel only, never saved
             appendSessionOutput(session, trimmed, 'stdout', false);
           }
+          // Accumulate token usage from result events
+          if (evt.type === 'result' && typeof evt.cost_usd === 'number') {
+            session.costUSD = (session.costUSD ?? 0) + evt.cost_usd;
+            session.inputTokens = (session.inputTokens ?? 0) + (evt.usage?.input_tokens ?? 0);
+            session.outputTokens = (session.outputTokens ?? 0) + (evt.usage?.output_tokens ?? 0);
+          }
           // Detect permission blocks
           if (evt.type === 'tool_use_blocked' || (evt.type === 'result' && evt.is_error && /permission|not allowed|denied/i.test(String(evt.error || '')))) {
             const reason = evt.tool_name
@@ -1236,6 +1260,15 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
       const summary = session.requestedStop
         ? `${label} session stopped.`
         : `${label} session ended with ${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`}.`;
+
+      if (tasksCache[id] && ((session.costUSD ?? 0) > 0 || (session.inputTokens ?? 0) > 0)) {
+        const prev = tasksCache[id].tokenMetadata || { inputTokens: 0, outputTokens: 0, costUSD: 0 };
+        tasksCache[id].tokenMetadata = {
+          inputTokens: (prev.inputTokens ?? 0) + (session.inputTokens ?? 0),
+          outputTokens: (prev.outputTokens ?? 0) + (session.outputTokens ?? 0),
+          costUSD: parseFloat(((prev.costUSD ?? 0) + (session.costUSD ?? 0)).toFixed(6)),
+        };
+      }
 
       await updateTaskWithHistory(id, {
         updatedBy: 'Agent',
@@ -1879,6 +1912,21 @@ app.post('/api/bulk-rename', requireWorkspace, async (req, res) => {
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', workspace: workspaceRoot });
+});
+
+app.get('/api/stats/tokens', requireWorkspace, (req, res) => {
+  const lifetime = { inputTokens: 0, outputTokens: 0, costUSD: 0 };
+  const byTask: Record<string, { inputTokens: number; outputTokens: number; costUSD: number }> = {};
+  for (const [id, task] of Object.entries(tasksCache)) {
+    if (task.tokenMetadata) {
+      const tm = task.tokenMetadata;
+      byTask[id] = { inputTokens: tm.inputTokens ?? 0, outputTokens: tm.outputTokens ?? 0, costUSD: tm.costUSD ?? 0 };
+      lifetime.inputTokens += tm.inputTokens ?? 0;
+      lifetime.outputTokens += tm.outputTokens ?? 0;
+      lifetime.costUSD = parseFloat((lifetime.costUSD + (tm.costUSD ?? 0)).toFixed(6));
+    }
+  }
+  res.json({ lifetime, byTask });
 });
 
 // ─── Native folder picker ────────────────────────────────────────────────────
