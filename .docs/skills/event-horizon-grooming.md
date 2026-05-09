@@ -24,7 +24,7 @@ Load this skill when a ticket's status is `Grooming` or `Require Input`.
 3. Treat `Grooming` as a planning phase, not implied permission to code. Review the ticket body, capture likely touchpoints and intended validation, review the applicable ticket metadata, and fill anything that is already inferable from the current context.
 4. Applicable metadata fields to review and fill: `priority`, `effort`, `tags`, hierarchy links, and related-ticket references when they matter for the work.
 5. If implementation-critical choices or applicable metadata values are unresolved, do not silently pick a direction. Move the ticket to the configured user-input status (`requireInputStatus` in `.flux/config.json`, default `Require Input`), leave one explicit question in ticket history, include the proposed fill values or defaults for the missing fields, and wait for the answer.
-6. **[MANDATORY] Rewrite the ticket body into a self-contained implementation plan.** The body IS the plan — not a history comment, not a chat message, not a text response to the user. Use `PUT /api/tasks/:id` with a `description` field to update the body via the API. Another agent must be able to pick up this ticket and implement it without any re-discovery. Writing the plan only as a chat message or history comment is a grooming failure.
+6. **[MANDATORY] Rewrite the ticket body into a self-contained implementation plan.** The body IS the plan — not a history comment, not a chat message, not a text response to the user. Use `PUT /api/tasks/:id` with a `body` field to update the body via the API. Another agent must be able to pick up this ticket and implement it without any re-discovery. Writing the plan only as a chat message or history comment is a grooming failure.
 7. **[HARD GATE] Do not move the ticket to `Todo` until step 6 is complete.** Verify the ticket body has been rewritten before setting `Todo`. A body that still reads as the original user-typed description means grooming is not finished.
 8. Move the ticket to `Todo` when grooming is complete and the body has been rewritten.
 
@@ -58,7 +58,7 @@ Load this skill when a ticket's status is `Grooming` or `Require Input`.
 These are two distinct operations that must not be confused:
 
 - **Text output to the user** — what you write as a chat/response message. This may be visible in the session panel but is NOT saved to the ticket body.
-- **Ticket body update** — an explicit API call (`PUT /api/tasks/:id` with a `description` field). This is the only operation that rewrites the plan into the ticket.
+- **Ticket body update** — an explicit API call (`PUT /api/tasks/:id` with a `body` field). This is the only operation that rewrites the plan into the ticket.
 
 Both must happen during grooming, but they are separate steps. Sending a chat message about the plan does not update the ticket body.
 
