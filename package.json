@@ -14,6 +14,9 @@
     "package:win": "npm run build && npm run package:win -w engine",
     "package:mac": "npm run build && npm run package:mac -w engine",
     "dist:mac": "npm run package:mac && zip -j event-horizon-macos.zip engine/dist/event-horizon",
+    "dist:win": "npm run package:win && zip -j event-horizon-windows.zip engine/dist/event-horizon.exe",
+    "dist:all": "npm run dist:source && npm run dist:mac && npm run dist:win",
+    "dist:source": "node engine/scripts/dist-source.js",
     "install-skill": "npm run install-skill -w engine --"
   },
   "overrides": {
