@@ -156,7 +156,7 @@ export function TaskCard({
       repliesByParentId.set(c.replyTo, bucket);
     }
   }
-  const unreadComments = comments.filter(c => c.id && !readCommentIds.has(c.id));
+  const unreadComments = comments.filter(c => c.id && !readCommentIds.has(c.id) && c.user !== currentUser);
   const hasUnread = unreadComments.length > 0;
 
   const submitPopoverReply = async (parentId: string) => {
@@ -710,6 +710,12 @@ export function TaskCard({
                 )}
               </div>
 
+              {(task.tokenMetadata?.costUSD ?? 0) > 0 && (
+                <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-black/20 dark:text-gray-400" title={`${task.tokenMetadata!.inputTokens + task.tokenMetadata!.outputTokens} tokens`}>
+                  ${task.tokenMetadata!.costUSD.toFixed(4)}
+                </span>
+              )}
+
               <div ref={assigneeMenuRef} className="relative ml-auto">
                 <button
                   onClick={(event) => {
@@ -814,7 +820,7 @@ export function TaskCard({
               </div>
               <div className="divide-y divide-gray-100 dark:divide-white/5">
                 {topLevelComments.map((c, i) => {
-                  const isUnreadItem = !!(c.id && !readCommentIds.has(c.id));
+                  const isUnreadItem = !!(c.id && !readCommentIds.has(c.id) && c.user !== currentUser);
                   const replies = c.id ? (repliesByParentId.get(c.id) ?? []) : [];
                   const isReplying = popoverReplyTarget === (c.id ?? null);
                   return (
@@ -876,7 +882,7 @@ export function TaskCard({
                       {replies.length > 0 && (
                         <div className="mt-2 ml-4 space-y-1.5 border-l-2 border-gray-200/70 dark:border-white/10 pl-3">
                           {replies.map((r, ri) => {
-                            const isUnreadReply = !!(r.id && !readCommentIds.has(r.id));
+                            const isUnreadReply = !!(r.id && !readCommentIds.has(r.id) && r.user !== currentUser);
                             return (
                               <div
                                 key={r.id || ri}

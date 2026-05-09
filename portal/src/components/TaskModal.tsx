@@ -1884,6 +1884,16 @@ export function TaskModal() {
                 <Save className="h-4 w-4" />
                 {saving ? 'Saving...' : 'Save'}
               </button>
+              {/* Cost badge in ticket header */}
+              {(modalTask?.tokenMetadata?.costUSD ?? 0) > 0 && (
+                <span
+                  className="flex flex-col items-start rounded-lg border border-gray-200 bg-white/60 px-3 py-1 text-left dark:border-white/10 dark:bg-white/5"
+                  title={`↑ ${modalTask!.tokenMetadata!.inputTokens} input / ↓ ${modalTask!.tokenMetadata!.outputTokens} output tokens`}
+                >
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">Ticket Cost</span>
+                  <span className="text-sm font-semibold text-gray-700 dark:text-gray-200">${modalTask!.tokenMetadata!.costUSD.toFixed(4)}</span>
+                </span>
+              )}
               {/* Agent Session — always visible in top bar */}
               {modalTask?.id && (() => {
                 const sessionIsActive = Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status));
@@ -2009,7 +2019,7 @@ export function TaskModal() {
                   
                   <div className="flex-1 mb-8">{historyList}</div>
                   
-                  {(!isPromptStatus) && (
+                  {(!isRequireInput) && (
                     <div className="sticky bottom-0 mt-8 pt-4 pb-2 z-10 w-full bg-gradient-to-t from-gray-50/95 via-gray-50/95 to-transparent dark:from-[#1a1b23]/95 dark:via-[#1a1b23]/95 dark:to-transparent pointer-events-none">
                       <div className="pointer-events-auto">
                         {!isCommentBoxVisible ? (
@@ -2281,7 +2291,7 @@ export function TaskModal() {
                   {activityFilterTabs}
                 </div>
                 <div className="mb-4">{historyList}</div>
-                {!isPromptStatus && commentComposer}
+                {!isRequireInput && commentComposer}
                 {isReadyForMerge && readyForMergePrompt}
               </div>
             </div>
