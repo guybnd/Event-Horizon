@@ -5,6 +5,17 @@ import { fetchConfig, fetchTasks, fetchHealth, saveConfig as apiSaveConfig, fetc
 
 type AppView = 'board' | 'backlog' | 'docs' | 'settings' | 'releases';
 export type TaskSortOption = 'default' | 'priority' | 'updated' | 'assignee';
+export type AppTheme = 'light' | 'dark';
+
+function getInitialTheme(): AppTheme {
+  const stored = localStorage.getItem('eh-theme');
+  if (stored === 'light' || stored === 'dark') return stored;
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+function applyTheme(theme: AppTheme) {
+  document.documentElement.classList.toggle('dark', theme === 'dark');
+}
 
 const VIEW_PATHS: Record<AppView, string> = {
   board: '/board',
@@ -145,6 +156,8 @@ interface AppState {
   ensureReadStateLoaded: (ticketId: string) => void;
   markCommentRead: (ticketId: string, commentId: string) => void;
   markAllCommentsRead: (ticketId: string, commentIds: string[]) => void;
+  theme: AppTheme;
+  toggleTheme: () => void;
 }
 
 const AppContext = createContext<AppState | undefined>(undefined);
@@ -175,6 +188,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [workspacePath, setWorkspacePath] = useState<string | null>(null);
   const [config, setConfig] = useState<Config | null>(null);
   const [readComments, setReadComments] = useState<Record<string, string[]>>({});
+  const [theme, setTheme] = useState<AppTheme>(() => {
+    const initial = getInitialTheme();
+    applyTheme(initial);
+    return initial;
+  });
   const readCommentsLoadedRef = useRef(false);
   const configRef = useRef<Config | null>(null);
   const tasksRef = useRef<Task[]>([]);
@@ -414,6 +432,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const closeModal = () => {
     setIsModalOpen(false);
     setTimeout(() => setModalTask(null), 1000);
+  };
+
+  const toggleTheme = () => {
+    setTheme((prev) => {
+      const next: AppTheme = prev === 'dark' ? 'light' : 'dark';
+      applyTheme(next);
+      localStorage.setItem('eh-theme', next);
+      return next;
+    });
   };
 
   const saveConfig = async (newConfig: Config) => {
@@ -672,6 +699,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       workspaceConfigured, workspacePath, notifyWorkspaceSet,
       config, saveConfig,
       readComments, ensureReadStateLoaded, markCommentRead, markAllCommentsRead,
+      theme, toggleTheme,
     }}>
       {children}
     </AppContext.Provider>

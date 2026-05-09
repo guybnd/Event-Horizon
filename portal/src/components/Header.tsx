@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, Search, FileText, Tag, Plus, Power, Bot } from 'lucide-react';
+import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, Search, FileText, Tag, Plus, Power, Bot, Sun, Moon } from 'lucide-react';
 import { useApp } from '../AppContext';
 import { StatusBadge } from './StatusBadge';
 import { getStatusColorClass } from '../statusStyles';
@@ -19,6 +19,8 @@ export function Header() {
     config,
     isConnected,
     openTaskModal,
+    theme,
+    toggleTheme,
   } = useApp();
   const [globalSearchQuery, setGlobalSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -261,6 +263,14 @@ export function Header() {
           className="flex shrink-0 items-center justify-center rounded-xl border border-gray-200 bg-white/60 p-2 text-gray-400 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:bg-white/5 dark:text-gray-500 dark:hover:border-red-500/30 dark:hover:bg-red-500/10 dark:hover:text-red-400"
         >
           <Power className="h-4 w-4" />
+        </button>
+
+        <button
+          onClick={toggleTheme}
+          title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          className="flex shrink-0 items-center justify-center rounded-xl border border-gray-200 bg-white/60 p-2 text-gray-400 transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-primary dark:border-white/10 dark:bg-white/5 dark:text-gray-500 dark:hover:border-primary/30 dark:hover:bg-primary/10 dark:hover:text-primary cursor-pointer"
+        >
+          {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
         </button>
 
         <div className="flex flex-col items-end">
