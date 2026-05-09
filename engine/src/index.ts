@@ -115,6 +115,7 @@ interface CliSessionSummary {
   inputTokens?: number;
   outputTokens?: number;
   costUSD?: number;
+  costIsEstimated?: boolean;
 }
 
 interface CliSessionRecord extends CliSessionSummary {
@@ -128,6 +129,50 @@ interface CliSessionRecord extends CliSessionSummary {
   requestedStop: boolean;
   writeQueue: Promise<void>;
   skipPermissions: boolean;
+}
+
+// Pricing per 1M tokens — loaded from .docs/event-horizon/model-pricing.md, sorted longest-match first.
+let MODEL_PRICING: Array<{ match: RegExp; inputPer1M: number; outputPer1M: number; modelName: string }> = [];
+const DEFAULT_INPUT_PER_1M = 3;
+const DEFAULT_OUTPUT_PER_1M = 15;
+
+function parsePricingDoc(markdown: string) {
+  const rows: Array<{ match: RegExp; inputPer1M: number; outputPer1M: number; modelName: string }> = [];
+  for (const line of markdown.split('\n')) {
+    const cells = line.split('|').map(s => s.trim()).filter(Boolean);
+    if (cells.length < 3) continue;
+    const [model, inputStr, outputStr] = cells;
+    if (!model || model.startsWith('-') || model.toLowerCase() === 'model') continue;
+    const inputPer1M = parseFloat(inputStr);
+    const outputPer1M = parseFloat(outputStr);
+    if (isNaN(inputPer1M) || isNaN(outputPer1M)) continue;
+    rows.push({ match: new RegExp(model.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), inputPer1M, outputPer1M, modelName: model });
+  }
+  // Sort longest model name first so more specific entries match before generic ones
+  rows.sort((a, b) => b.modelName.length - a.modelName.length);
+  return rows;
+}
+
+async function loadPricingDoc() {
+  try {
+    const docPath = path.join(getDocsDir(), 'event-horizon', 'model-pricing.md');
+    const content = await fs.readFile(docPath, 'utf-8');
+    const parsed = matter(content);
+    const rows = parsePricingDoc(parsed.content);
+    if (rows.length > 0) {
+      MODEL_PRICING = rows;
+      console.log(`Loaded ${rows.length} pricing entries from model-pricing.md`);
+    }
+  } catch {
+    // File not present — keep whatever is already loaded
+  }
+}
+
+function estimateCostUSD(modelHint: string | undefined, inputTokens: number, outputTokens: number): number {
+  const pricing = modelHint ? MODEL_PRICING.find((p) => p.match.test(modelHint)) : null;
+  const inputRate  = pricing ? pricing.inputPer1M  : DEFAULT_INPUT_PER_1M;
+  const outputRate = pricing ? pricing.outputPer1M : DEFAULT_OUTPUT_PER_1M;
+  return (inputTokens * inputRate + outputTokens * outputRate) / 1_000_000;
 }
 
 let tasksCache: Record<string, any> = {};
@@ -208,6 +253,7 @@ function getCliSessionSummaryForTask(taskId: string): CliSessionSummary | undefi
     inputTokens: session.inputTokens,
     outputTokens: session.outputTokens,
     costUSD: session.costUSD,
+    costIsEstimated: session.costIsEstimated,
   };
 }
 
@@ -232,6 +278,7 @@ async function updateTaskWithHistory(taskId: string, options: {
   entries?: any[];
   updatedBy?: string;
   nextStatus?: string;
+  tokenMetadata?: { inputTokens: number; outputTokens: number; costUSD: number; costIsEstimated: boolean };
 }) {
   const task = tasksCache[taskId];
   if (!task) {
@@ -242,6 +289,21 @@ async function updateTaskWithHistory(taskId: string, options: {
   const activityTimestamp = new Date().toISOString();
   const entries = Array.isArray(options.entries) ? [...options.entries] : [];
   const { body, _path, id: _id, ...frontmatter } = task;
+
+  // Read fresh from disk so concurrent writes (e.g. user comments) aren't lost
+  try {
+    const rawFile = await fs.readFile(_path, 'utf-8');
+    const parsed = matter(rawFile);
+    if (Array.isArray((parsed.data as any).history)) {
+      frontmatter.history = (parsed.data as any).history;
+      if ((parsed.data as any).status !== undefined) {
+        frontmatter.status = (parsed.data as any).status;
+      }
+    }
+  } catch {
+    // fall back to cache if file read fails
+  }
+
   const normalizedExistingHistory = normalizeHistoryEntries(frontmatter.history || []);
   let nextHistory = ensureCreationActivity(
     normalizedExistingHistory.history,
@@ -263,6 +325,10 @@ async function updateTaskWithHistory(taskId: string, options: {
   nextHistory = normalizeHistoryEntries([...nextHistory, ...entries]).history;
   frontmatter.history = nextHistory;
   frontmatter.updatedBy = actor;
+
+  if (options.tokenMetadata) {
+    frontmatter.tokenMetadata = options.tokenMetadata;
+  }
 
   const fileContent = matter.stringify(body || '', frontmatter);
   await fs.writeFile(_path, fileContent, 'utf-8');
@@ -314,7 +380,7 @@ function flushSessionOutput(session: CliSessionRecord, force = false) {
       updatedBy: 'Agent',
       entries: [
         buildAgentMessageEntry(
-          `\`\`\`text\n${clippedText}\n\`\`\``,
+          clippedText,
           session.label,
           timestamp,
         ),
@@ -926,8 +992,26 @@ async function loadTask(filePath: string) {
   try {
     const fileStats = await fs.stat(filePath);
     const content = await fs.readFile(filePath, 'utf-8');
-    const parsed = matter(content);
-    const id = parsed.data.id || path.basename(filePath, '.md');
+
+    let parsed: matter.GrayMatterFile<string>;
+    try {
+      parsed = matter(content);
+    } catch (yamlErr) {
+      const msg = yamlErr instanceof Error ? yamlErr.message : String(yamlErr);
+      console.error(`\n[FLUX VALIDATION ERROR] ${filePath}\n  YAML frontmatter is invalid: ${msg}\n  The ticket has been removed from the board. Fix the frontmatter and save again.\n`);
+      const id = path.basename(filePath, '.md');
+      delete tasksCache[id];
+      return;
+    }
+
+    if (!parsed.data || !parsed.data['title']) {
+      console.error(`\n[FLUX VALIDATION ERROR] ${filePath}\n  Frontmatter is missing required field: title\n  The ticket has been removed from the board. Fix the frontmatter and save again.\n`);
+      const id = path.basename(filePath, '.md');
+      delete tasksCache[id];
+      return;
+    }
+
+    const id = parsed.data['id'] || path.basename(filePath, '.md');
     const normalizedHistory = normalizeHistoryEntries(parsed.data.history);
     const fallbackCreatedAt = fileStats.birthtimeMs > 0 ? fileStats.birthtime.toISOString() : fileStats.mtime.toISOString();
     const { history } = ensureCreationActivity(
@@ -972,6 +1056,7 @@ async function initDir() {
     // ignore
   }
   await loadConfig();
+  await loadPricingDoc();
 }
 
 // Active chokidar watchers — torn down and recreated when workspace changes.
@@ -1021,8 +1106,8 @@ async function startWatchers() {
   });
 
   activeDocsWatcher
-    .on('add', (filePath) => { if (isDocFile(filePath)) void loadDoc(filePath); })
-    .on('change', (filePath) => { if (isDocFile(filePath)) void loadDoc(filePath); })
+    .on('add', (filePath) => { if (isDocFile(filePath)) { void loadDoc(filePath); void loadPricingDoc(); } })
+    .on('change', (filePath) => { if (isDocFile(filePath)) { void loadDoc(filePath); void loadPricingDoc(); } })
     .on('unlink', (filePath) => {
       const docPath = getDocPathFromFile(filePath);
       if (docPath) { delete docsCache[docPath]; console.log(`Removed doc: ${docPath}`); }
@@ -1200,10 +1285,17 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
             appendSessionOutput(session, trimmed, 'stdout', false);
           }
           // Accumulate token usage from result events
-          if (evt.type === 'result' && typeof evt.cost_usd === 'number') {
-            session.costUSD = (session.costUSD ?? 0) + evt.cost_usd;
-            session.inputTokens = (session.inputTokens ?? 0) + (evt.usage?.input_tokens ?? 0);
-            session.outputTokens = (session.outputTokens ?? 0) + (evt.usage?.output_tokens ?? 0);
+          if (evt.type === 'result' && evt.usage) {
+            const inputTok = evt.usage?.input_tokens ?? 0;
+            const outputTok = evt.usage?.output_tokens ?? 0;
+            session.inputTokens = (session.inputTokens ?? 0) + inputTok;
+            session.outputTokens = (session.outputTokens ?? 0) + outputTok;
+            if (typeof evt.total_cost_usd === 'number') {
+              session.costUSD = (session.costUSD ?? 0) + evt.total_cost_usd;
+            } else {
+              session.costUSD = (session.costUSD ?? 0) + estimateCostUSD(session.claudeSessionId, inputTok, outputTok);
+              session.costIsEstimated = true;
+            }
           }
           // Detect permission blocks
           if (evt.type === 'tool_use_blocked' || (evt.type === 'result' && evt.is_error && /permission|not allowed|denied/i.test(String(evt.error || '')))) {
@@ -1261,18 +1353,22 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
         ? `${label} session stopped.`
         : `${label} session ended with ${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`}.`;
 
-      if (tasksCache[id] && ((session.costUSD ?? 0) > 0 || (session.inputTokens ?? 0) > 0)) {
-        const prev = tasksCache[id].tokenMetadata || { inputTokens: 0, outputTokens: 0, costUSD: 0 };
-        tasksCache[id].tokenMetadata = {
-          inputTokens: (prev.inputTokens ?? 0) + (session.inputTokens ?? 0),
-          outputTokens: (prev.outputTokens ?? 0) + (session.outputTokens ?? 0),
-          costUSD: parseFloat(((prev.costUSD ?? 0) + (session.costUSD ?? 0)).toFixed(6)),
-        };
-      }
+      const tokenUpdate = (session.inputTokens ?? 0) > 0 || (session.outputTokens ?? 0) > 0
+        ? (() => {
+            const prev = tasksCache[id]?.tokenMetadata || { inputTokens: 0, outputTokens: 0, costUSD: 0 };
+            return {
+              inputTokens: (prev.inputTokens ?? 0) + (session.inputTokens ?? 0),
+              outputTokens: (prev.outputTokens ?? 0) + (session.outputTokens ?? 0),
+              costUSD: parseFloat(((prev.costUSD ?? 0) + (session.costUSD ?? 0)).toFixed(6)),
+              costIsEstimated: prev.costIsEstimated || session.costIsEstimated || false,
+            };
+          })()
+        : null;
 
       await updateTaskWithHistory(id, {
         updatedBy: 'Agent',
         entries: [buildActivityEntry(summary, 'Agent', session.endedAt)],
+        tokenMetadata: tokenUpdate ?? undefined,
       });
     });
 
@@ -1376,6 +1472,19 @@ app.post('/api/tasks/:id/cli-session/input', requireWorkspace, async (req, res) 
               session.pendingAssistantText = '';
             }
             appendSessionOutput(session, trimmed, 'stdout', false);
+          }
+          // Accumulate token usage from result events (same as main proc)
+          if (evt.type === 'result' && evt.usage) {
+            const inputTok = evt.usage?.input_tokens ?? 0;
+            const outputTok = evt.usage?.output_tokens ?? 0;
+            session.inputTokens = (session.inputTokens ?? 0) + inputTok;
+            session.outputTokens = (session.outputTokens ?? 0) + outputTok;
+            if (typeof evt.total_cost_usd === 'number') {
+              session.costUSD = (session.costUSD ?? 0) + evt.total_cost_usd;
+            } else {
+              session.costUSD = (session.costUSD ?? 0) + estimateCostUSD(session.claudeSessionId, inputTok, outputTok);
+              session.costIsEstimated = true;
+            }
           }
           if (evt.type === 'tool_use_blocked' || (evt.type === 'result' && evt.is_error && /permission|not allowed|denied/i.test(String(evt.error || '')))) {
             const reason = evt.tool_name
@@ -1777,6 +1886,14 @@ app.put('/api/tasks/:id', requireWorkspace, async (req, res) => {
     findEarliestHistoryDate(existingHistory),
   ).history;
 
+  // If the caller's history is a prefix of existingHistory, they had a stale
+  // snapshot. Rebase their novel entries onto the current history to avoid
+  // dropping comments or entries added by concurrent writes.
+  if (historyPrefixMatches(nextHistory, existingHistory)) {
+    const novelEntries = nextHistory.slice(existingHistory.length);
+    nextHistory = [...existingHistory, ...novelEntries];
+  }
+
   const activityTimestamp = new Date().toISOString();
   if (task.status !== frontmatter.status && !hasAppendedStatusChange(existingHistory, nextHistory, task.status, frontmatter.status)) {
     nextHistory.push({
@@ -1915,15 +2032,21 @@ app.get('/api/health', (req, res) => {
 });
 
 app.get('/api/stats/tokens', requireWorkspace, (req, res) => {
-  const lifetime = { inputTokens: 0, outputTokens: 0, costUSD: 0 };
-  const byTask: Record<string, { inputTokens: number; outputTokens: number; costUSD: number }> = {};
+  const lifetime = { inputTokens: 0, outputTokens: 0, costUSD: 0, costIsEstimated: false };
+  const byTask: Record<string, { inputTokens: number; outputTokens: number; costUSD: number; costIsEstimated: boolean }> = {};
   for (const [id, task] of Object.entries(tasksCache)) {
     if (task.tokenMetadata) {
       const tm = task.tokenMetadata;
-      byTask[id] = { inputTokens: tm.inputTokens ?? 0, outputTokens: tm.outputTokens ?? 0, costUSD: tm.costUSD ?? 0 };
+      byTask[id] = {
+        inputTokens: tm.inputTokens ?? 0,
+        outputTokens: tm.outputTokens ?? 0,
+        costUSD: tm.costUSD ?? 0,
+        costIsEstimated: tm.costIsEstimated ?? false,
+      };
       lifetime.inputTokens += tm.inputTokens ?? 0;
       lifetime.outputTokens += tm.outputTokens ?? 0;
       lifetime.costUSD = parseFloat((lifetime.costUSD + (tm.costUSD ?? 0)).toFixed(6));
+      if (tm.costIsEstimated) lifetime.costIsEstimated = true;
     }
   }
   res.json({ lifetime, byTask });
