@@ -405,6 +405,7 @@ export function Settings() {
   const [docsRoot, setDocsRoot] = useState('.docs');
   const [hoverPopupsEnabled, setHoverPopupsEnabled] = useState(true);
   const [hoverPopupDelay, setHoverPopupDelay] = useState(1500);
+  const [tokenDisplayMode, setTokenDisplayMode] = useState<'cost' | 'tokens'>('cost');
   const [generateDistinctFiles, setGenerateDistinctFiles] = useState(true);
   const [releaseNotesPath, setReleaseNotesPath] = useState('release-notes');
   const [saving, setSaving] = useState(false);
@@ -445,6 +446,7 @@ export function Settings() {
       setDocsRoot(config.docsRoot || '.docs');
       setHoverPopupsEnabled(config.hoverPopupsEnabled ?? true);
       setHoverPopupDelay(config.hoverPopupDelay ?? 1500);
+      setTokenDisplayMode(config.tokenDisplayMode ?? 'cost');
       if (config.releaseSettings) {
         setGenerateDistinctFiles(config.releaseSettings.generateDistinctFiles);
         setReleaseNotesPath(config.releaseSettings.releaseNotesPath || 'release-notes');
@@ -583,6 +585,7 @@ export function Settings() {
         docsRoot,
         hoverPopupsEnabled,
         hoverPopupDelay,
+        tokenDisplayMode,
         releaseSettings: {
           generateDistinctFiles,
           releaseNotesPath
@@ -651,7 +654,8 @@ export function Settings() {
     docsAllowedUsers: docsEditPermissions === 'specified' ? docsAllowedUsers : [],
     docsRoot,
     hoverPopupsEnabled,
-    hoverPopupDelay
+    hoverPopupDelay,
+    tokenDisplayMode
   });
 
   const originalPayload = JSON.stringify({
@@ -674,7 +678,8 @@ export function Settings() {
     docsAllowedUsers: config.docsEditPermissions === 'specified' ? (config.docsAllowedUsers || []) : [],
     docsRoot: config.docsRoot || '.docs',
     hoverPopupsEnabled: config.hoverPopupsEnabled ?? true,
-    hoverPopupDelay: config.hoverPopupDelay ?? 1500
+    hoverPopupDelay: config.hoverPopupDelay ?? 1500,
+    tokenDisplayMode: config.tokenDisplayMode ?? 'cost'
   });
 
   const isDirty = currentSavedPayload !== originalPayload;
@@ -1189,6 +1194,13 @@ export function Settings() {
               </div>
             )}
           </SettingToggleCard>
+
+          <SettingToggleCard
+            title="Show Token Count Instead of Cost"
+            description="Display raw input/output token counts instead of estimated USD cost on cards, the modal, and the top bar."
+            checked={tokenDisplayMode === 'tokens'}
+            onChange={(v) => setTokenDisplayMode(v ? 'tokens' : 'cost')}
+          />
 
           <SettingToggleCard
             title="Enable Backlog Screen"
