@@ -192,11 +192,11 @@ export const TaskMarkdown = memo(function TaskMarkdown({
           code: ({ children, className }) => {
             const isBlock = className?.includes('language-');
             if (isBlock) {
-              return <code className="block overflow-x-auto rounded-lg bg-black/90 p-4 text-sm text-gray-100">{children}</code>;
+              return <code className="block rounded-lg bg-black/90 p-4 text-sm text-gray-100">{children}</code>;
             }
             return <code className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-800 dark:bg-black/30 dark:text-gray-100">{children}</code>;
           },
-          pre: ({ children }) => <pre className="mb-4 max-w-full overflow-x-auto rounded-lg bg-black/90">{children}</pre>,
+          pre: ({ children }) => <pre className="mb-4 w-full overflow-x-auto rounded-lg bg-black/90">{children}</pre>,
           blockquote: ({ children }) => (
             <blockquote className="mb-4 border-l-4 border-primary/40 pl-4 italic text-gray-600 dark:text-gray-400">
               {children}
