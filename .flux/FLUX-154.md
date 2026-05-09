@@ -121,10 +121,15 @@ history:
     user: Agent
     date: '2026-05-09T07:56:15.079Z'
     comment: Claude Code session ended with code 0.
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.356Z'
 title: >-
   card moving status by an agent hwile its currently open breaks the pop up
   display
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -132,6 +137,9 @@ tokenMetadata:
   outputTokens: 710
   costUSD: 0.09427
   costIsEstimated: false
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.356Z'
+releaseDocPath: release-notes/0.2.0
 ---
 ## Problem
 

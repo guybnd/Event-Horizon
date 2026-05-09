@@ -53,10 +53,18 @@ history:
       re-render chain that caused comment input lag.
 
       ```
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.356Z'
 title: commenting inside a ticket full view comment box VERY LAGGY
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.356Z'
+releaseDocPath: release-notes/0.2.0
 ---
 ## Problem
 

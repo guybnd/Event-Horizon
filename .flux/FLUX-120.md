@@ -1,6 +1,6 @@
 ---
 title: UI improvement to make clicking comment box on card more clear
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 assignee: unassigned
@@ -19,15 +19,16 @@ history:
   - type: activity
     user: Guy
     date: '2026-05-08T05:54:19.936Z'
-    comment: Updated description.  - type: comment
+    comment: Updated description.
+  - type: comment
     user: Agent
     date: '2026-05-08T00:00:00.000Z'
     comment: >-
       Plan: in TaskCard.tsx, replace the comment badge so it (1) is always
       visible even when there are no comments (ghost style when empty, opens
-      modal to add comment), (2) is bigger (px-2.5 py-1, icon w-3.5 h-3.5),
-      (3) animates on hover/click (hover:scale-105 active:scale-95), and
-      (4) has stronger hover color in the read/gray state.
+      modal to add comment), (2) is bigger (px-2.5 py-1, icon w-3.5 h-3.5), (3)
+      animates on hover/click (hover:scale-105 active:scale-95), and (4) has
+      stronger hover color in the read/gray state.
     id: c-flux120-plan
   - type: status_change
     from: Todo
@@ -38,18 +39,27 @@ history:
     user: Agent
     date: '2026-05-08T00:01:00.000Z'
     comment: >-
-      Done. TaskCard.tsx comment badge updated: always visible (ghost style
-      on zero-comment cards, opens modal to add comment), bigger hit area
-      (px-2.5 py-1, icon w-3.5 h-3.5), hover scale animation
-      (hover:scale-105 active:scale-95), and hover colour now shifts to
-      primary/violet on read state instead of staying grey. Amber unread
-      state gets stronger hover background. Build clean.
+      Done. TaskCard.tsx comment badge updated: always visible (ghost style on
+      zero-comment cards, opens modal to add comment), bigger hit area (px-2.5
+      py-1, icon w-3.5 h-3.5), hover scale animation (hover:scale-105
+      active:scale-95), and hover colour now shifts to primary/violet on read
+      state instead of staying grey. Amber unread state gets stronger hover
+      background. Build clean.
     id: c-flux120-done
   - type: status_change
     from: In Progress
     to: Done
     user: Agent
-    date: '2026-05-08T00:01:00.000Z'id: FLUX-120
+    date: '2026-05-08T00:01:00.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.337Z'
+id: FLUX-120
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.337Z'
+releaseDocPath: release-notes/0.2.0
 ---
 
 ## Summary

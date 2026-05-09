@@ -7,7 +7,7 @@ tags:
 createdBy: Unknown
 updatedBy: Guy
 title: Return to work button for Ready tickets
-status: Done
+status: Released
 assignee: unassigned
 history:
   - type: activity
@@ -167,17 +167,25 @@ history:
     user: Agent
     date: '2026-05-08T14:30:00.000Z'
     comment: >-
-      Done. Committed 46fd260. Return-to-work button with inline reason textarea,
-      threaded reply to last agent comment, and close-window dismissing the
-      prompt panel all working correctly.
+      Done. Committed 46fd260. Return-to-work button with inline reason
+      textarea, threaded reply to last agent comment, and close-window
+      dismissing the prompt panel all working correctly.
     id: c-flux106-close
   - type: status_change
     from: Ready
     to: Done
     user: Agent
     date: '2026-05-08T14:30:00.000Z'
-implementationLink: '46fd260'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.323Z'
+implementationLink: 46fd260
 subtasks: []
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.322Z'
+releaseDocPath: release-notes/0.2.0
 ---
 # Goal
 

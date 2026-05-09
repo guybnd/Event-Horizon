@@ -72,11 +72,19 @@ history:
     to: Done
     user: Guy
     date: '2026-05-08T00:38:08.254Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.329Z'
 title: add archive status that hides tickets from all surfaces except search
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
 order: 75
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.329Z'
+releaseDocPath: release-notes/0.2.0
 ---
 
 # Goal

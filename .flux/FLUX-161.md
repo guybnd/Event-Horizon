@@ -109,8 +109,13 @@ history:
     user: Agent
     date: '2026-05-09T08:01:27.023Z'
     comment: Claude Code session ended with code 0.
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.359Z'
 title: improvement to card currently active view
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -118,6 +123,9 @@ tokenMetadata:
   outputTokens: 20467
   costUSD: 1.286277
   costIsEstimated: false
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.359Z'
+releaseDocPath: release-notes/0.2.0
 ---
 ## Overview
 

@@ -50,11 +50,19 @@ history:
       instead of overflowing.
 
       ```
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.355Z'
 title: comment boxes from the agent are cutoff
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 order: 1
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.355Z'
+releaseDocPath: release-notes/0.2.0
 ---
 ## Problem
 

@@ -1,6 +1,6 @@
 ---
 title: Add settings to comment tooltip box
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
 assignee: unassigned
@@ -285,7 +285,15 @@ history:
     to: Done
     user: Guy
     date: '2026-05-08T14:42:12.164Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.334Z'
 order: 124
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.334Z'
+releaseDocPath: release-notes/0.2.0
 ---
 
 ## Summary

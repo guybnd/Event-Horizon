@@ -1,6 +1,6 @@
 ---
 title: Add production build and packaging pipeline
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent
@@ -9,7 +9,7 @@ tags:
   - mvp
 priority: High
 effort: M
-implementationLink: '63a33eb'
+implementationLink: 63a33eb
 subtasks: []
 history:
   - type: activity
@@ -39,14 +39,15 @@ history:
     date: '2026-05-08T03:00:00.000Z'
     comment: >-
       Implemented. engine/scripts/build.js: uses esbuild to bundle
-      engine/src/index.ts and engine/src/init.ts into engine/dist/{index,init}.js
-      (CJS, all deps inlined, platform=node). engine/package.json: added 'build'
-      (node scripts/build.js), 'package' (all three targets via @yao-pkg/pkg),
-      'package:win' and 'package:mac' variants. root package.json: 'build' runs
-      portal then engine builds; 'package' runs full build+package.
-      resolvePortalDist() updated with process.pkg check so packaged binary looks
-      for portal/dist/ adjacent to the executable. Validated: npm run build
-      succeeds, engine/dist/index.js starts cleanly with --workspace ..
+      engine/src/index.ts and engine/src/init.ts into
+      engine/dist/{index,init}.js (CJS, all deps inlined, platform=node).
+      engine/package.json: added 'build' (node scripts/build.js), 'package' (all
+      three targets via @yao-pkg/pkg), 'package:win' and 'package:mac' variants.
+      root package.json: 'build' runs portal then engine builds; 'package' runs
+      full build+package. resolvePortalDist() updated with process.pkg check so
+      packaged binary looks for portal/dist/ adjacent to the executable.
+      Validated: npm run build succeeds, engine/dist/index.js starts cleanly
+      with --workspace ..
     id: c-flux78-ready
   - type: comment
     user: Agent
@@ -55,7 +56,15 @@ history:
       Completed. engine/scripts/build.js + @yao-pkg/pkg pipeline producing
       standalone binaries. User confirmed.
     id: c-flux78-done
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.363Z'
 order: 78
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.363Z'
+releaseDocPath: release-notes/0.2.0
 ---
 ## Summary
 

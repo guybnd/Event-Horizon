@@ -1,6 +1,6 @@
 ---
 title: Make workspace path configurable with CWD and CLI override
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent
@@ -9,7 +9,7 @@ tags:
   - mvp
 priority: Critical
 effort: S
-implementationLink: '63a33eb'
+implementationLink: 63a33eb
 subtasks: []
 history:
   - type: activity
@@ -54,7 +54,15 @@ history:
       Completed. --workspace CLI arg and CWD fallback in engine/src/index.ts.
       User confirmed.
     id: c-flux76-done
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.362Z'
 order: 76
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.362Z'
+releaseDocPath: release-notes/0.2.0
 ---
 ## Summary
 

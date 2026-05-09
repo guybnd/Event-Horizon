@@ -1,6 +1,6 @@
 ---
 title: Add Releases surface and released-status workflow
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent
@@ -95,7 +95,15 @@ history:
     to: Done
     user: Agent
     date: '2026-05-07T14:15:00.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.360Z'
 order: 6
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.360Z'
+releaseDocPath: release-notes/0.2.0
 ---
 ## Summary
 

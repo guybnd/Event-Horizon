@@ -1,6 +1,6 @@
 ---
 title: Make default project key configurable instead of hardcoded FLUX
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent
@@ -9,7 +9,7 @@ tags:
   - mvp
 priority: High
 effort: S
-implementationLink: '1a156b4'
+implementationLink: 1a156b4
 subtasks: []
 history:
   - type: activity
@@ -63,7 +63,15 @@ history:
     to: Done
     user: Agent
     date: '2026-05-08T12:22:00.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.361Z'
 order: 74
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.361Z'
+releaseDocPath: release-notes/0.2.0
 ---
 ## Summary
 

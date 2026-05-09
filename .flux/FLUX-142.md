@@ -40,10 +40,18 @@ history:
     user: Agent
     date: '2026-05-08T14:52:08.437Z'
     comment: Claude Code session ended with code 0.
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.349Z'
 title: typing into the 'reason for return' window inj the ready prompt is very laggy
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.349Z'
+releaseDocPath: release-notes/0.2.0
 ---
 
 Typing into the "reason for return" textarea in the Ready prompt is heavily laggy.

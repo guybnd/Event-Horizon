@@ -4,7 +4,7 @@ tags:
   - bug
 priority: Low
 effort: XS
-implementationLink: 'd3ac8f8'
+implementationLink: d3ac8f8
 subtasks: []
 history:
   - type: activity
@@ -21,12 +21,12 @@ history:
     comment: >-
       Groomed. Problem: the title textarea in TaskModal only resizes via its
       onChange handler — so pre-existing long titles overflow the box when a
-      ticket is first opened, because no resize is triggered on mount. Fix:
-      add a `titleRef = useRef<HTMLTextAreaElement>(null)` and a `useEffect`
-      that fires when `[isModalOpen, isFullView, title]` change, resetting
-      height to auto then scrollHeight. Attach the same ref to both title
-      textareas (full-view and popup) — only one is mounted at a time due to
-      conditional rendering. Moving to In Progress.
+      ticket is first opened, because no resize is triggered on mount. Fix: add
+      a `titleRef = useRef<HTMLTextAreaElement>(null)` and a `useEffect` that
+      fires when `[isModalOpen, isFullView, title]` change, resetting height to
+      auto then scrollHeight. Attach the same ref to both title textareas
+      (full-view and popup) — only one is mounted at a time due to conditional
+      rendering. Moving to In Progress.
     id: c-flux107-groom
   - type: status_change
     from: Grooming
@@ -37,11 +37,12 @@ history:
     user: Agent
     date: '2026-05-08T15:50:00.000Z'
     comment: >-
-      Implemented. Added `titleRef` and a `useEffect([isModalOpen, isFullView, title])`
-      in TaskModal that resets the height to auto then scrollHeight whenever the
-      modal opens or switches view. Attached `ref={titleRef}` to both title
-      textareas (full-view sidebar and popup). No TS errors. Ready for review —
-      open any ticket with a long title and confirm the box expands without typing.
+      Implemented. Added `titleRef` and a `useEffect([isModalOpen, isFullView,
+      title])` in TaskModal that resets the height to auto then scrollHeight
+      whenever the modal opens or switches view. Attached `ref={titleRef}` to
+      both title textareas (full-view sidebar and popup). No TS errors. Ready
+      for review — open any ticket with a long title and confirm the box expands
+      without typing.
     id: c-flux107-impl
   - type: status_change
     from: In Progress
@@ -52,18 +53,26 @@ history:
     user: Agent
     date: '2026-05-08T15:55:00.000Z'
     comment: >-
-      Done. Committed d3ac8f8. Title textarea now auto-resizes on modal open
-      via a useEffect on [isModalOpen, isFullView, title]. User confirmed.
+      Done. Committed d3ac8f8. Title textarea now auto-resizes on modal open via
+      a useEffect on [isModalOpen, isFullView, title]. User confirmed.
     id: c-flux107-close
   - type: status_change
     from: Ready
     to: Done
     user: Agent
     date: '2026-05-08T15:55:00.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.326Z'
 title: Title box not scaling sometimes
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.326Z'
+releaseDocPath: release-notes/0.2.0
 ---
 
 ## Problem

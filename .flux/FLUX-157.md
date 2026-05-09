@@ -42,12 +42,20 @@ history:
     user: Agent
     date: '2026-05-09T04:34:06.917Z'
     comment: Updated implementation link.
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.357Z'
 title: >-
   clayude code replies in code blocks in the comments UI so it makes it hard to
   read since no overflow on rows
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.357Z'
+releaseDocPath: release-notes/0.2.0
 ---
 ## Problem
 

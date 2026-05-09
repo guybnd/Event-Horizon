@@ -16,19 +16,18 @@ history:
     date: '2026-05-08T15:00:00.000Z'
     comment: >-
       Groomed. Plan: replace the 4 native `<select>` dropdowns in
-      TaskViewControls.tsx (Sort, Assignee, Priority, Tag) with custom
-      div-based dropdown components so icons and colored swatches can render
-      inside both the pill trigger and the open option list. Priority items
-      use the same icon+color as on cards (AlertCircle, ChevronUp,
-      ChevronDown, Equal from lucide-react with the PriorityDef.color
-      class). Tag items render as colored badge pills matching the
-      `px-1.5 py-0.5 rounded text-[10px] font-medium` style on TaskCard,
-      using TagDef.color. Assignee items show a User icon. Sort items show
-      directional icons. Helper functions (getTagColor, getPriorityIcon)
-      are already in TaskCard.tsx — they will be inlined locally in
-      TaskViewControls since they only need config, not component state.
-      Each custom dropdown closes on outside click (useRef + window
-      mousedown listener). Moving to Todo.
+      TaskViewControls.tsx (Sort, Assignee, Priority, Tag) with custom div-based
+      dropdown components so icons and colored swatches can render inside both
+      the pill trigger and the open option list. Priority items use the same
+      icon+color as on cards (AlertCircle, ChevronUp, ChevronDown, Equal from
+      lucide-react with the PriorityDef.color class). Tag items render as
+      colored badge pills matching the `px-1.5 py-0.5 rounded text-[10px]
+      font-medium` style on TaskCard, using TagDef.color. Assignee items show a
+      User icon. Sort items show directional icons. Helper functions
+      (getTagColor, getPriorityIcon) are already in TaskCard.tsx — they will be
+      inlined locally in TaskViewControls since they only need config, not
+      component state. Each custom dropdown closes on outside click (useRef +
+      window mousedown listener). Moving to Todo.
     id: c-flux114-groom
   - type: status_change
     from: Grooming
@@ -49,9 +48,9 @@ history:
       components. Sort shows ArrowUpDown icons per item. Assignee shows User
       icons. Priority renders the same icon+color as task cards
       (AlertCircle/ChevronUp/Equal/ChevronDown). Tag items render as colored
-      badge pills using TagDef.color, matching the card style exactly.
-      Active filter value is mirrored in the trigger pill. Dropdown closes
-      on outside click via window mousedown listener. No TypeScript errors.
+      badge pills using TagDef.color, matching the card style exactly. Active
+      filter value is mirrored in the trigger pill. Dropdown closes on outside
+      click via window mousedown listener. No TypeScript errors.
     id: c-flux114-impl
   - type: status_change
     from: In Progress
@@ -62,19 +61,28 @@ history:
     user: Agent
     date: '2026-05-08T15:20:00.000Z'
     comment: >-
-      Done. Committed 5242940. Custom dropdowns with icons and colored tag/priority
-      badges are live in TaskViewControls. User confirmed "looking good".
+      Done. Committed 5242940. Custom dropdowns with icons and colored
+      tag/priority badges are live in TaskViewControls. User confirmed "looking
+      good".
     id: c-flux114-close
   - type: status_change
     from: Ready
     to: Done
     user: Agent
     date: '2026-05-08T15:20:00.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.331Z'
 id: FLUX-114
 title: add icons and style to filters in the board view
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.331Z'
+releaseDocPath: release-notes/0.2.0
 ---
 
 ## Goal

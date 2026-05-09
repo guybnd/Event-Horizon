@@ -64,12 +64,20 @@ history:
       caller entries onto the current history instead of replacing it. Both
       paths eliminate the last-write-wins race. Commit: c6a5152.
     id: c-2026-05-09t07-46-42-693z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.358Z'
 title: >-
   sometimes my latest comments or messages are just deleted by an in progress
   agent session.
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.358Z'
+releaseDocPath: release-notes/0.2.0
 ---
 ## Problem
 

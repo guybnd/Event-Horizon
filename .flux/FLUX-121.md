@@ -1,6 +1,6 @@
 ---
 title: Fix init default config and embed skill files in binary
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent
@@ -9,7 +9,7 @@ tags:
   - distribution
 priority: High
 effort: S
-implementationLink: '3f2c84c'
+implementationLink: 3f2c84c
 subtasks: []
 history:
   - type: activity
@@ -80,12 +80,14 @@ history:
     user: Agent
     date: '2026-05-08T17:00:00.000Z'
     comment: >-
-      Scope extended per Guy's question about docs: now also embeds `.docs/event-horizon/` tree
-      (installation, architecture, workflow guides) in the binary and seeds it into new projects
-      on `init`. Changes: build.js adds `.docs/event-horizon/` to staged assets; package.json
-      adds `dist/.docs/event-horizon/**/*` to pkg.assets; init.ts copies embedded EH docs into
-      `.docs/event-horizon/` in the new project so they appear in the Docs screen immediately.
-      Binary rebuilt at 51MB and verified — all 14 EH doc files present in dist. Moving to Ready.
+      Scope extended per Guy's question about docs: now also embeds
+      `.docs/event-horizon/` tree (installation, architecture, workflow guides)
+      in the binary and seeds it into new projects on `init`. Changes: build.js
+      adds `.docs/event-horizon/` to staged assets; package.json adds
+      `dist/.docs/event-horizon/**/*` to pkg.assets; init.ts copies embedded EH
+      docs into `.docs/event-horizon/` in the new project so they appear in the
+      Docs screen immediately. Binary rebuilt at 51MB and verified — all 14 EH
+      doc files present in dist. Moving to Ready.
     id: c-2026-05-08-docs-scope
   - type: comment
     user: Agent
@@ -94,7 +96,15 @@ history:
       Completed. archiveStatus in init config + skills/EH docs embedded in
       binary and seeded on init. User confirmed.
     id: c-flux121-done
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.337Z'
 order: 0
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.337Z'
+releaseDocPath: release-notes/0.2.0
 ---
 
 ## Problem / Motivation

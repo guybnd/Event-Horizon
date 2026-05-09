@@ -5,7 +5,7 @@ tags:
   - ux
 priority: Low
 effort: M
-implementationLink: '988d7c7'
+implementationLink: 988d7c7
 subtasks: []
 history:
   - type: activity
@@ -111,12 +111,14 @@ history:
     comment: >-
       Addressed all four feedback points:
 
-      1. Per-comment read state — opening the popover no longer marks anything as
+      1. Per-comment read state — opening the popover no longer marks anything
+      as
          read. Each unread entry shows "click to mark read" and handles its own
          click via markCommentRead(), persisting only that comment's ID to
          localStorage.
 
-      2. Full comment text — removed line-clamp-4; comments now render fully with
+      2. Full comment text — removed line-clamp-4; comments now render fully
+      with
          whitespace-pre-wrap so line breaks display correctly.
 
       3. Bigger popover — widened from w-80/max-h-80 to w-[420px]/max-h-[480px].
@@ -159,8 +161,8 @@ history:
 
       6. TaskModal activity list also reversed to newest-first.
 
-      Validated visually: popover shows newest-first, relative time, Reply button
-      per comment, threaded replies indented. Modal history newest-first.
+      Validated visually: popover shows newest-first, relative time, Reply
+      button per comment, threaded replies indented. Modal history newest-first.
     id: c-flux93-v3
   - type: status_change
     from: Ready
@@ -223,10 +225,18 @@ history:
     to: Done
     user: Agent
     date: '2026-05-08T17:05:00.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.365Z'
 title: add comments preview to card display
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.365Z'
+releaseDocPath: release-notes/0.2.0
 ---
 
 # Goal

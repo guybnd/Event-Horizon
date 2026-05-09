@@ -65,8 +65,13 @@ history:
       modal UI. The Agent tab is now live in the portal.
 
       ```
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.353Z'
 title: better UI UX for the 'thought process' ai agent section
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 description: >-
@@ -178,6 +183,9 @@ description: >-
 
   - Verify filter preference persists across page reloads
 order: 1
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.353Z'
+releaseDocPath: release-notes/0.2.0
 ---
 -   i do want to see its user messages, just not as t icket comments  
     maybe we add a separate section in the comments so we have  

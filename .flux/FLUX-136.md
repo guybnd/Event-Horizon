@@ -201,12 +201,20 @@ history:
 
       ```
     id: c-2026-05-08t13-57-57-721z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.346Z'
 title: >-
   notification popup should show only the amount of unread not the total
   messages
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.346Z'
+releaseDocPath: release-notes/0.2.0
 ---
 
 ## Bug Fix

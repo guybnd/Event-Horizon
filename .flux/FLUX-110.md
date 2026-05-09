@@ -5,7 +5,7 @@ tags:
   - ux
 priority: Low
 effort: XS
-implementationLink: 'd542b09'
+implementationLink: d542b09
 subtasks: []
 history:
   - type: activity
@@ -34,9 +34,17 @@ history:
     to: Done
     user: Agent
     date: '2026-05-08T14:35:00.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.330Z'
 title: fix dropdown menu styling
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.330Z'
+releaseDocPath: release-notes/0.2.0
 ---
 ![image](assets/FLUX-110/image.png)

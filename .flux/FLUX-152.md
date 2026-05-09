@@ -80,10 +80,18 @@ history:
       Ticket is closed with implementation link recorded.
 
       ```
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.355Z'
 title: agents failing to update stuff correctly
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.355Z'
+releaseDocPath: release-notes/0.2.0
 ---
 ## Problem
 

@@ -1,6 +1,6 @@
 ---
 title: Provide a robust mechanism for agent ticket edits to prevent ticket corruption
-status: Done
+status: Released
 createdBy: User
 updatedBy: Agent
 assignee: unassigned
@@ -78,12 +78,20 @@ history:
     user: Agent
     date: '2026-05-09T07:55:00.866Z'
     comment: Claude Code session ended with code 0.
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.364Z'
 order: 83
 tokenMetadata:
   inputTokens: 105
   outputTokens: 1186
   costUSD: 0.097904
   costIsEstimated: false
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.364Z'
+releaseDocPath: release-notes/0.2.0
 ---
 ## Implementation Plan
 

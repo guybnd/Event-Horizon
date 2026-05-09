@@ -14,22 +14,23 @@ history:
     date: '2026-05-08T02:10:00.000Z'
     comment: >-
       Done. Committed as 40733d6. Shipped: 4 .docs/skills/ phase files, updated
-      workflow-installer.ts (Option A/B per framework), Settings.tsx skill
-      links with doc deep-links, deprecated .flux/skills/event-horizon-agent.md,
+      workflow-installer.ts (Option A/B per framework), Settings.tsx skill links
+      with doc deep-links, deprecated .flux/skills/event-horizon-agent.md,
       updated copilot-instructions source. Fixed doc link path bug in Settings.
     id: c-2026-05-08t02-10-00
   - type: comment
     user: GitHub Copilot
     date: '2026-05-08T02:00:00.000Z'
     comment: >-
-      Implementation complete. Created 4 .docs/skills/ phase files (orchestrator,
-      grooming, implementation, release). Updated workflow-installer.ts: Copilot/Cline
-      use Option B (separate files), all others use Option A (concatenated with XML
-      module tags). Updated Settings.tsx to show all 4 skill source paths as clickable
-      doc links. Added deprecation notice to .flux/skills/event-horizon-agent.md.
-      Updated copilot-instructions source to reference all 4 installed skill files.
-      Reinstalled into .github/skills/event-horizon/ — all 4 files confirmed present.
-      Moving to Ready for review.
+      Implementation complete. Created 4 .docs/skills/ phase files
+      (orchestrator, grooming, implementation, release). Updated
+      workflow-installer.ts: Copilot/Cline use Option B (separate files), all
+      others use Option A (concatenated with XML module tags). Updated
+      Settings.tsx to show all 4 skill source paths as clickable doc links.
+      Added deprecation notice to .flux/skills/event-horizon-agent.md. Updated
+      copilot-instructions source to reference all 4 installed skill files.
+      Reinstalled into .github/skills/event-horizon/ — all 4 files confirmed
+      present. Moving to Ready for review.
     id: c-2026-05-08t02-00-00
   - type: comment
     user: GitHub Copilot
@@ -37,8 +38,8 @@ history:
     comment: >-
       Starting implementation. Plan: (1) create 4 .docs/skills/ split files from
       monolith, (2) update workflow-installer.ts for Option A/B framework split,
-      (3) update Settings.tsx skill links, (4) deprecate old agent.md shim,
-      (5) update copilot-instructions source to reference all 4 skill files.
+      (3) update Settings.tsx skill links, (4) deprecate old agent.md shim, (5)
+      update copilot-instructions source to reference all 4 skill files.
     id: c-2026-05-08t01-00-00
   - type: activity
     user: Guy
@@ -60,10 +61,18 @@ history:
       we should link to those docs and each specific skill from the settings
       section
     id: c-2026-05-07t15-37-10-311z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.319Z'
 title: Split main skill into phase-specific skills and orchestrator
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.319Z'
+releaseDocPath: release-notes/0.2.0
 ---
 Currently, the main `event-horizon/SKILL.md` contains all instructions for grooming, implementing, formatting commits, and releasing. As the project grows, this risks instruction dilution and prompt fatigue for the agent.
 

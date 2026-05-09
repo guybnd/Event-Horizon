@@ -56,8 +56,13 @@ history:
       attaches them to a GitHub Release on any `v*.*.*` tag push
 
       ```
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.351Z'
 title: add build script that does a clean build without dev artifacts
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 description: >-
@@ -150,5 +155,8 @@ description: >-
   "User"}, {"name": "Agent"}]`
 
   - [ ] Script is idempotent — reruns overwrite the previous zip cleanly
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.351Z'
+releaseDocPath: release-notes/0.2.0
 ---
 such as tickets etcc so when we provide a build zip to user it has a clean version without all the tickets and my non user facing stuff or docs etc.

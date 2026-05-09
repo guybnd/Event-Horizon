@@ -36,10 +36,18 @@ history:
     to: Done
     user: Guy
     date: '2026-05-09T07:53:35.697Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.358Z'
 title: reevaluate card architecture
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.358Z'
+releaseDocPath: release-notes/0.2.0
 ---
 
 ## Research: Is Markdown+YAML the Right Storage Format for Tickets?

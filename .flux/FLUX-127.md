@@ -11,15 +11,17 @@ history:
   - type: activity
     user: Guy
     date: '2026-05-08T17:45:00.000Z'
-    comment: Created ticket. Need a full docs pass — update setup, install, and how-to docs to reflect current binary distribution model.
+    comment: >-
+      Created ticket. Need a full docs pass — update setup, install, and how-to
+      docs to reflect current binary distribution model.
   - type: comment
     user: Agent
     date: '2026-05-08T17:45:00.000Z'
     comment: >-
       Groomed. Audited existing docs against current reality:
 
-      Current state of `.docs/event-horizon/`:
-      - `installation.md` — still describes cloning the repo and running `npm
+      Current state of `.docs/event-horizon/`: - `installation.md` — still
+      describes cloning the repo and running `npm
         run init`. Needs to describe downloading the binary and double-clicking
         it.
       - `project-overview.md` — generally fine; needs a note about the binary
@@ -31,8 +33,8 @@ history:
         `workflow-install.md` — may reference old dev-only setup or outdated
         skill paths.
 
-      Key things that changed since docs were last written:
-      1. **Binary distribution** — users download `event-horizon.exe` (or macOS/
+      Key things that changed since docs were last written: 1. **Binary
+      distribution** — users download `event-horizon.exe` (or macOS/
          Linux equivalent), double-click, browser opens automatically. No Node.js,
          no git clone, no npm install.
       2. **`event-horizon.config.json`** — sits next to the exe; edit to change
@@ -43,16 +45,17 @@ history:
       4. **`event-horizon init`** — still needed for first-time project setup,
          but now you run the binary's init command (or `npx event-horizon init`)
          rather than `npm run init -w engine`.
-      5. **System tray** — background process; no terminal window. Quit from tray.
-      6. **Skill install** — Settings → Workspace tab → Install Agent Workflow.
+      5. **System tray** — background process; no terminal window. Quit from
+      tray. 6. **Skill install** — Settings → Workspace tab → Install Agent
+      Workflow.
          Binaries embed the skill files so no internet access needed.
       7. **README.md** at repo root — update to reflect binary-first usage for
          new users, keep developer contribution section for contributors.
 
-      Files to update/create:
-      - `.docs/event-horizon/installation.md` — rewrite as binary-first guide.
-      - `.docs/event-horizon/project-overview.md` — add binary distribution paragraph.
-      - `.docs/event-horizon/architecture/overview.md` — update workspace model
+      Files to update/create: - `.docs/event-horizon/installation.md` — rewrite
+      as binary-first guide. - `.docs/event-horizon/project-overview.md` — add
+      binary distribution paragraph. -
+      `.docs/event-horizon/architecture/overview.md` — update workspace model
         section.
       - `README.md` — update "Install in Your Project" to binary-first; keep
         dev setup section below for contributors.
@@ -71,18 +74,33 @@ history:
     user: Antigravity
     date: '2026-05-08T08:39:20.000Z'
     comment: >-
-      Completed the full documentation pass for the binary distribution model. Rewrote `installation.md`, added the binary context to `project-overview.md` and `architecture/overview.md`, streamlined the `README.md` for a binary-first quick start, and created the new `configuration.md` reference guide. Committed in `5cb795e8db9245c8009a13a36902ae1d5f492e6b`.
+      Completed the full documentation pass for the binary distribution model.
+      Rewrote `installation.md`, added the binary context to
+      `project-overview.md` and `architecture/overview.md`, streamlined the
+      `README.md` for a binary-first quick start, and created the new
+      `configuration.md` reference guide. Committed in
+      `5cb795e8db9245c8009a13a36902ae1d5f492e6b`.
     id: c-2026-05-08t08-39-20-000z
   - type: status_change
     from: Todo
     to: Done
     user: Antigravity
     date: '2026-05-08T08:39:20.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.342Z'
 id: FLUX-127
-title: Docs pass — update setup, install, and architecture docs for binary distribution
-status: Done
+title: >-
+  Docs pass — update setup, install, and architecture docs for binary
+  distribution
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.342Z'
+releaseDocPath: release-notes/0.2.0
 ---
 
 ## Problem / Motivation

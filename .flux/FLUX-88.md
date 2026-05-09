@@ -1,6 +1,6 @@
 ---
 title: Settings Page Polish - Unify Settings Toggle UI
-status: Done
+status: Released
 createdBy: Agent
 updatedBy: Agent
 assignee: unassigned
@@ -55,6 +55,14 @@ history:
       User confirmed completion. Changes committed in
       601fa76f882e1a8149ae7105b11c9a6aa418608d.
     id: c-2026-05-08t10-00-00-000z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.364Z'
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.364Z'
+releaseDocPath: release-notes/0.2.0
 ---
 
 The boolean preferences at the bottom of the page use mixed UI patterns.

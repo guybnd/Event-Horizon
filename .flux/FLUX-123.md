@@ -1,6 +1,6 @@
 ---
 title: Read state resets when I refresh page
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 assignee: unassigned
@@ -55,6 +55,14 @@ history:
 
       ```
     id: c-2026-05-08t14-54-30-914z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.339Z'
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.339Z'
+releaseDocPath: release-notes/0.2.0
 ---
 
 ## Summary

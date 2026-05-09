@@ -46,8 +46,13 @@ history:
 
       ```
     id: c-2026-05-09t03-04-48-386z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.352Z'
 title: add a dark\light mode toggle on top
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 description: >-
@@ -125,5 +130,8 @@ description: >-
   - Preference is restored after page reload.
 
   - OS pref is used as default when no stored preference exists.
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.352Z'
+releaseDocPath: release-notes/0.2.0
 ---
 

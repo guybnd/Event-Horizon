@@ -39,11 +39,19 @@ history:
     user: Agent
     date: '2026-05-09T04:21:24.906Z'
     comment: Claude Code session ended with code 0.
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.347Z'
 title: mark user made comments as already read
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 order: 0
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.347Z'
+releaseDocPath: release-notes/0.2.0
 ---
 ## Problem
 

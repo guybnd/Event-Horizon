@@ -81,8 +81,13 @@ history:
 
       ```
     id: c-2026-05-08t14-59-35-915z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.350Z'
 title: validate claude code skills integration
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 description: >-
@@ -166,6 +171,9 @@ description: >-
   `handleCopyInstallCommand`
 
   - `engine/src/workflow-installer.ts` — `resolveFramework`
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.350Z'
+releaseDocPath: release-notes/0.2.0
 ---
 doo we only supply orchestrator? why not all the individual skills? is the integration buttons setup working correctly?
   Here's my grooming analysis:

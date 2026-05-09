@@ -5,7 +5,7 @@ tags:
   - ux
 priority: Medium
 effort: S
-implementationLink: '5de4ab1'
+implementationLink: 5de4ab1
 subtasks: []
 history:
   - type: activity
@@ -19,11 +19,11 @@ history:
     content: >
       **Plan:** (1) Redesign TaskViewControls to a single always-on-row layout —
       remove the responsive flex-col/xl:flex-row breakpoints so icon+title,
-      search, and action buttons stay on one line at all widths. Shrink search to
-      a fixed ~176px width instead of flex-1. Remove the "X active" count badge
-      (redundant). (2) Add a prominent "Unread only" pill/toggle button between
-      search and Filters that, when active, filters to tasks with ≥1 unread
-      comment (comment IDs not in readComments[task.id]) OR tasks in the
+      search, and action buttons stay on one line at all widths. Shrink search
+      to a fixed ~176px width instead of flex-1. Remove the "X active" count
+      badge (redundant). (2) Add a prominent "Unread only" pill/toggle button
+      between search and Filters that, when active, filters to tasks with ≥1
+      unread comment (comment IDs not in readComments[task.id]) OR tasks in the
       requireInputStatus. State lives in AppContext (filterUnreadOnly bool).
       taskSearch.ts TaskFilterState gets filterUnreadOnly, readComments, and
       requireInputStatus optional fields. Board.tsx and BacklogScreen.tsx pass
@@ -38,14 +38,14 @@ history:
     author: Agent
     date: '2026-05-08T18:30:00.000Z'
     content: >
-      **Implemented.** TaskViewControls redesigned to a single `flex items-center
-      gap-2 flex-wrap` row — no more two-line responsive layout. Search bar
-      shrunk to `w-44` fixed width. The "X active" count badge removed. New
-      "Unread" toggle pill (Inbox icon, turns blue when active) added between
-      search and Filters. When active it filters to tasks with ≥1 unread comment
-      OR tasks in requireInputStatus. filterUnreadOnly bool added to AppContext
-      (with URL param `?unread=1`), TaskFilterState, Board, and BacklogScreen.
-      TypeScript clean.
+      **Implemented.** TaskViewControls redesigned to a single `flex
+      items-center gap-2 flex-wrap` row — no more two-line responsive layout.
+      Search bar shrunk to `w-44` fixed width. The "X active" count badge
+      removed. New "Unread" toggle pill (Inbox icon, turns blue when active)
+      added between search and Filters. When active it filters to tasks with ≥1
+      unread comment OR tasks in requireInputStatus. filterUnreadOnly bool added
+      to AppContext (with URL param `?unread=1`), TaskFilterState, Board, and
+      BacklogScreen. TypeScript clean.
   - type: status_change
     from: In Progress
     to: Ready
@@ -56,11 +56,19 @@ history:
     to: Done
     user: Agent
     date: '2026-05-08T18:31:00.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.333Z'
 id: FLUX-116
 title: board filter improvements
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.333Z'
+releaseDocPath: release-notes/0.2.0
 ---
 
 ## Problem / Motivation

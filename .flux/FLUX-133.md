@@ -1,7 +1,7 @@
 ---
 id: FLUX-133
 title: Stabilize portal dev startup on Node 22 and lock react-draggable
-status: Done
+status: Released
 createdBy: Agent
 updatedBy: Agent
 assignee: unassigned
@@ -10,7 +10,7 @@ tags:
   - devx
 priority: High
 effort: XS
-implementationLink: '1546a87'
+implementationLink: 1546a87
 subtasks: []
 history:
   - type: activity
@@ -62,6 +62,14 @@ history:
     to: Done
     user: Agent
     date: '2026-05-08T12:12:04Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.344Z'
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.344Z'
+releaseDocPath: release-notes/0.2.0
 ---
 
 ## Problem / Motivation

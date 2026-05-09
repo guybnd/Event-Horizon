@@ -1,6 +1,6 @@
 ---
 title: Serve portal static assets from engine and use relative API URLs
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent
@@ -10,7 +10,7 @@ tags:
   - navigation
 priority: High
 effort: M
-implementationLink: '63a33eb'
+implementationLink: 63a33eb
 subtasks: []
 history:
   - type: activity
@@ -45,22 +45,31 @@ history:
     comment: >-
       Implemented. Engine now auto-detects portal/dist via resolvePortalDist()
       (--portal-dist flag or __dirname/../../../portal/dist default). Static
-      middleware + SPA catch-all registered after all API routes. portal/src/api.ts
-      API_URL changed from hardcoded 'http://localhost:3001/api' to relative '/api'.
-      Vite dev proxy added in vite.config.ts proxying /api to localhost:3001 so
-      two-process dev workflow still works. Validated: board loads with Engine
-      Connected on http://localhost:5173 via proxy and engine prints Workspace
-      and Portal URLs on startup.
+      middleware + SPA catch-all registered after all API routes.
+      portal/src/api.ts API_URL changed from hardcoded
+      'http://localhost:3001/api' to relative '/api'. Vite dev proxy added in
+      vite.config.ts proxying /api to localhost:3001 so two-process dev workflow
+      still works. Validated: board loads with Engine Connected on
+      http://localhost:5173 via proxy and engine prints Workspace and Portal
+      URLs on startup.
     id: c-flux77-ready
   - type: comment
     user: Agent
     date: '2026-05-08T17:30:00.000Z'
     comment: >-
       Completed. Engine serves portal/dist/ at :3001. Portal uses relative /api
-      URLs in production. Dev proxy in vite.config.ts for two-process dev.
-      User confirmed.
+      URLs in production. Dev proxy in vite.config.ts for two-process dev. User
+      confirmed.
     id: c-flux77-done
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.362Z'
 order: 77
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.362Z'
+releaseDocPath: release-notes/0.2.0
 ---
 ## Summary
 

@@ -1,6 +1,6 @@
 ---
 title: Write install and setup documentation for external projects
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent
@@ -9,7 +9,7 @@ tags:
   - mvp
 priority: Medium
 effort: S
-implementationLink: '63a33eb'
+implementationLink: 63a33eb
 subtasks: []
 history:
   - type: activity
@@ -22,8 +22,8 @@ history:
     comment: >-
       Created during install-readiness audit. The README currently documents
       dev-mode setup for contributors to the Event Horizon repo itself, but has
-      no section explaining how to install and use Event Horizon as a service
-      in another project.
+      no section explaining how to install and use Event Horizon as a service in
+      another project.
     id: c-2026-05-07t06-50-00-000z-flux-75
   - type: status_change
     from: Todo
@@ -37,11 +37,11 @@ history:
       Implemented. README.md: replaced the single-section Getting Started with
       an "Install in Your Project" section (prerequisites, init, start, open
       portal), a config.json reference table, an updated contributor dev-mode
-      section, and a production build section. .docs/event-horizon/installation.md:
-      full step-by-step install guide (5 steps from clone to first ticket),
-      config schema table, multiple projects note, and cross-links. Both are
-      consistent with the init CLI (FLUX-73) and single-process serving (FLUX-77)
-      that were just implemented.
+      section, and a production build section.
+      .docs/event-horizon/installation.md: full step-by-step install guide (5
+      steps from clone to first ticket), config schema table, multiple projects
+      note, and cross-links. Both are consistent with the init CLI (FLUX-73) and
+      single-process serving (FLUX-77) that were just implemented.
     id: c-flux75-ready
   - type: comment
     user: Agent
@@ -50,7 +50,15 @@ history:
       Completed. README.md and .docs/event-horizon/installation.md both updated.
       User confirmed.
     id: c-flux75-done
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.362Z'
 order: 75
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.362Z'
+releaseDocPath: release-notes/0.2.0
 ---
 ## Summary
 

@@ -5,7 +5,6 @@ tags:
   - feature
 priority: Medium
 effort: XS
-implementationLink: ''
 subtasks: []
 history:
   - type: activity
@@ -63,11 +62,11 @@ history:
     date: '2026-05-08T12:02:00.000Z'
     comment: >-
       Implemented. Added `useMemo` to compute `preRequireInputStatus` from
-      history. Effect now sets `responseDestination` to that status on
-      ticket load (if valid), falling back to the first non-promptable status.
-      Response comment now carries `replyTo: lastAgentComment.id` when a
-      parent comment with an id exists. Created FLUX-106 for the "Return to work"
-      button on Ready tickets as Guy requested.
+      history. Effect now sets `responseDestination` to that status on ticket
+      load (if valid), falling back to the first non-promptable status. Response
+      comment now carries `replyTo: lastAgentComment.id` when a parent comment
+      with an id exists. Created FLUX-106 for the "Return to work" button on
+      Ready tickets as Guy requested.
     id: c-flux101-done
   - type: status_change
     from: In Progress
@@ -86,11 +85,19 @@ history:
     to: Done
     user: Agent
     date: '2026-05-08T12:15:00.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.317Z'
 title: user prompt answer should be an inline comment reply
-status: Done
-implementationLink: '3a8b14a'
+status: Released
+implementationLink: 3a8b14a
 createdBy: Guy
 updatedBy: Agent
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.317Z'
+releaseDocPath: release-notes/0.2.0
 ---
 
 # Goal

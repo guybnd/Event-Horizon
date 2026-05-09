@@ -1,6 +1,6 @@
 ---
 title: Fix the top bar layout
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
 assignee: unassigned
@@ -24,14 +24,27 @@ history:
     user: Antigravity
     date: '2026-05-08T08:33:00.000Z'
     comment: >-
-      Fixed header wrapping issue by transitioning layout to a single horizontally-scrollable flex row (`overflow-x-auto`). Ensured the left segment (branding/nav) is `shrink-0` to maintain fidelity, while the right segment leverages `flex-1 min-w-0` to allow the search input to correctly truncate down to mobile widths without breaking the flex container onto multiple rows. Committed in `ff26f10220abdff9a22c1f49e5bf81c1094577dc`.
+      Fixed header wrapping issue by transitioning layout to a single
+      horizontally-scrollable flex row (`overflow-x-auto`). Ensured the left
+      segment (branding/nav) is `shrink-0` to maintain fidelity, while the right
+      segment leverages `flex-1 min-w-0` to allow the search input to correctly
+      truncate down to mobile widths without breaking the flex container onto
+      multiple rows. Committed in `ff26f10220abdff9a22c1f49e5bf81c1094577dc`.
     id: c-2026-05-08t08-33-00-000z
   - type: status_change
     from: Todo
     to: Done
     user: Antigravity
     date: '2026-05-08T08:33:00.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.341Z'
 id: FLUX-125
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.341Z'
+releaseDocPath: release-notes/0.2.0
 ---
 
 ## Summary

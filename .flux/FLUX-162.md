@@ -8,13 +8,21 @@ assignee: Agent
 updatedBy: Agent
 id: FLUX-162
 title: Atomic requireInput flag to prevent orphaned user-question comments
-status: Done
+status: Released
 createdBy: Agent
 history:
   - type: activity
     user: Agent
     date: '2026-05-09T08:06:44.599Z'
     comment: Created ticket.
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.360Z'
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.360Z'
+releaseDocPath: release-notes/0.2.0
 ---
 ## Problem
 

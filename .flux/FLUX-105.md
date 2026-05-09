@@ -20,10 +20,18 @@ history:
     to: Done
     user: Guy
     date: '2026-05-07T15:55:07.254Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.320Z'
 title: test
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
 order: 8
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.320Z'
+releaseDocPath: release-notes/0.2.0
 ---
 

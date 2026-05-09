@@ -32,11 +32,19 @@ history:
     to: Done
     user: Agent
     date: '2026-05-08T19:35:00.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.336Z'
 id: FLUX-119
 title: add a mark all as read button on top of columns
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.336Z'
+releaseDocPath: release-notes/0.2.0
 ---
 
 ## Problem / Motivation

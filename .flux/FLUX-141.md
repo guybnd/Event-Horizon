@@ -76,10 +76,18 @@ history:
 
       ```
     id: c-2026-05-08t14-27-34-824z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.349Z'
 title: right click launch agent opens the page instead of just launching it
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.349Z'
+releaseDocPath: release-notes/0.2.0
 ---
 
 ## Fix

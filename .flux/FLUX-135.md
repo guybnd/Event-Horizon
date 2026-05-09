@@ -288,13 +288,21 @@ history:
 
       ```
     id: c-2026-05-08t14-15-10-070z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.345Z'
 title: >-
   CLI session permissions: spawn with max permissions, block on prompt, grant
   from ticket UI
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 order: 0
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.345Z'
+releaseDocPath: release-notes/0.2.0
 ---
 ## Problem / Motivation
 

@@ -1,6 +1,6 @@
 ---
 title: Add Antigravity support to the workflow integrator
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
 assignee: unassigned
@@ -53,7 +53,15 @@ history:
     to: Done
     user: Guy
     date: '2026-05-08T08:28:34.202Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.343Z'
 order: 123
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.343Z'
+releaseDocPath: release-notes/0.2.0
 ---
 
 ## Problem / Motivation

@@ -74,8 +74,13 @@ history:
     to: Done
     user: Claude Code
     date: '2026-05-09T08:00:00.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.354Z'
 title: feature to count token spend per card to estimate costs in USD
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Claude Code
 description: >-
@@ -294,6 +299,9 @@ description: >-
   reflects the real price paid).
 
   - Copilot CLI cost tracking (only Claude sessions emit this data).
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.354Z'
+releaseDocPath: release-notes/0.2.0
 ---
 ## Overview
 

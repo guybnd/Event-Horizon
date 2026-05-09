@@ -67,11 +67,19 @@ history:
       smaller grouped icons; header padding tightened to `px-4 py-3`.
 
       ```
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.357Z'
 title: header is. too cramped need to resize the UI
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 order: 2
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.357Z'
+releaseDocPath: release-notes/0.2.0
 ---
 ## Implementation Plan
 

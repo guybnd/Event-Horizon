@@ -20,10 +20,10 @@ history:
       problem the ticket solves, who it benefits, and the reasoning behind the
       approach. A user reading the board can't tell why a ticket exists or why
       it was prioritised without digging into chat history. Fix: update step 6
-      in grooming.md and the matching line in event-horizon-copilot-instructions.md
-      to require that groomed ticket bodies open with a Problem section (1-2
-      sentences on the motivation and user value) before the implementation
-      plan. Moving to In Progress.
+      in grooming.md and the matching line in
+      event-horizon-copilot-instructions.md to require that groomed ticket
+      bodies open with a Problem section (1-2 sentences on the motivation and
+      user value) before the implementation plan. Moving to In Progress.
     id: c-flux111-groom
   - type: status_change
     from: Grooming
@@ -34,21 +34,29 @@ history:
     user: Agent
     date: '2026-05-08T15:35:00.000Z'
     comment: >-
-      Done. Updated grooming.md step 6 to require a Problem / Motivation
-      section before the implementation plan in all groomed ticket bodies.
-      Updated the matching line in event-horizon-copilot-instructions.md and
-      both instances in copilot-instructions.md. No code changes — docs only.
+      Done. Updated grooming.md step 6 to require a Problem / Motivation section
+      before the implementation plan in all groomed ticket bodies. Updated the
+      matching line in event-horizon-copilot-instructions.md and both instances
+      in copilot-instructions.md. No code changes — docs only.
     id: c-flux111-done
   - type: status_change
     from: In Progress
     to: Done
     user: Agent
     date: '2026-05-08T15:35:00.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.330Z'
 id: FLUX-111
 title: improve grooming instructions
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.330Z'
+releaseDocPath: release-notes/0.2.0
 ---
 
 ## Problem

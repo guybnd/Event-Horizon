@@ -5,7 +5,7 @@ tags:
   - ux
 priority: Medium
 effort: M
-implementationLink: '0c3a705'
+implementationLink: 0c3a705
 subtasks: []
 history:
   - type: activity
@@ -17,16 +17,16 @@ history:
     author: Agent
     date: '2026-05-08T18:45:00.000Z'
     content: >
-      **Plan:** Create `portal/src/components/ContextMenu.tsx` — a portal-rendered
-      fixed-position menu triggered by `onContextMenu` on the TaskCard. State:
-      `contextMenuPos | null` tracked in TaskCard; on open, close all existing
-      popovers. Menu items: (1) Mark comments as read (only when unread exist);
-      (2) Transition to > submenu (all statuses minus current, calls updateTask);
-      (3) Copy agent command > submenu with 4 quick commands: Implement, Groom,
-      Finish, Review — copies `<cmd> <FLUX-ID>` to clipboard; (4) Archive —
-      sets status to archiveStatus; (5) Delete — two-step confirm inline; (6)
-      Edit / Open — opens task modal. Dismiss on click-outside or Escape.
-      No new API routes needed.
+      **Plan:** Create `portal/src/components/ContextMenu.tsx` — a
+      portal-rendered fixed-position menu triggered by `onContextMenu` on the
+      TaskCard. State: `contextMenuPos | null` tracked in TaskCard; on open,
+      close all existing popovers. Menu items: (1) Mark comments as read (only
+      when unread exist); (2) Transition to > submenu (all statuses minus
+      current, calls updateTask); (3) Copy agent command > submenu with 4 quick
+      commands: Implement, Groom, Finish, Review — copies `<cmd> <FLUX-ID>` to
+      clipboard; (4) Archive — sets status to archiveStatus; (5) Delete —
+      two-step confirm inline; (6) Edit / Open — opens task modal. Dismiss on
+      click-outside or Escape. No new API routes needed.
   - type: status_change
     from: Grooming
     to: In Progress
@@ -51,11 +51,19 @@ history:
     to: Done
     user: Agent
     date: '2026-05-08T19:00:00.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.332Z'
 id: FLUX-115
 title: add a mouse right-click menu on task cards
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.332Z'
+releaseDocPath: release-notes/0.2.0
 ---
 
 ## Problem / Motivation

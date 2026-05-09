@@ -1,6 +1,6 @@
 ---
 title: Add project init / bootstrap CLI command
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent
@@ -9,7 +9,7 @@ tags:
   - mvp
 priority: High
 effort: M
-implementationLink: '63a33eb'
+implementationLink: 63a33eb
 subtasks: []
 history:
   - type: activity
@@ -43,9 +43,9 @@ history:
       --force. Creates .flux/, .flux/assets/, .flux/config.json (sensible
       defaults with provided project key), and .docs/project-overview.md.
       Idempotent — exits cleanly if config.json already exists; --force
-      re-scaffolds. Prints clear next-steps after success. Wired up as
-      npm run init -w engine from root package.json. Validated: creates
-      expected files, exits without changes on re-run, --force overwrites.
+      re-scaffolds. Prints clear next-steps after success. Wired up as npm run
+      init -w engine from root package.json. Validated: creates expected files,
+      exits without changes on re-run, --force overwrites.
     id: c-flux73-ready
   - type: comment
     user: Agent
@@ -55,7 +55,15 @@ history:
       column and archiveStatus), .docs/project-overview.md, and copies EH how-to
       docs. Idempotent; --force re-scaffolds. Validated in binary.
     id: c-flux73-done
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.361Z'
 order: 73
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.361Z'
+releaseDocPath: release-notes/0.2.0
 ---
 ## Summary
 

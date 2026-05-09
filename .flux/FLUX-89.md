@@ -1,6 +1,6 @@
 ---
 title: Settings Page Polish - Sticky Save/Action Bar
-status: Done
+status: Released
 createdBy: Agent
 updatedBy: Guy
 assignee: unassigned
@@ -45,7 +45,15 @@ history:
     to: Done
     user: Guy
     date: '2026-05-07T14:08:39.238Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.365Z'
 order: 7
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.365Z'
+releaseDocPath: release-notes/0.2.0
 ---
 
 The "Save Configuration" button is located at the top. If a user edits "Agent Workflow" or preferences at the very bottom, they have to scroll all the way back up to save.

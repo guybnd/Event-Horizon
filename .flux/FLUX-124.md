@@ -166,7 +166,8 @@ history:
          binary has no separator support in its JSON protocol — it was rendering
          the literal string as a menu item.
 
-      3. CMD window: added `windowsHide: true` to the `spawn()` call for the tray
+      3. CMD window: added `windowsHide: true` to the `spawn()` call for the
+      tray
          binary. This was the same fix used in the systray JS library. The PE
          header patch suppresses the main exe's console; `windowsHide` suppresses
          the spawned tray process's console.
@@ -204,11 +205,19 @@ history:
     to: Done
     user: Agent
     date: '2026-05-08T00:00:00.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.339Z'
 title: System tray icon for the standalone binary
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 order: 0
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.339Z'
+releaseDocPath: release-notes/0.2.0
 ---
 
 ## Problem / Motivation

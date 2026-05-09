@@ -1,7 +1,7 @@
 ---
 id: FLUX-126
 title: Responding to a prompt shouldn't show up as an unread message
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 assignee: unassigned
@@ -21,7 +21,12 @@ history:
     user: Antigravity
     date: '2026-05-08T08:36:00.000Z'
     comment: >-
-      Implemented auto-read behavior in `portal/src/components/TaskModal.tsx`. When a user submits a response to a prompt, the system now looks up the original agent comment and the newly appended response comment, passing their IDs into `ctxMarkAllCommentsRead` so the user's read state is seamlessly updated without requiring an extra click. Committed in `5ac8bb8c89f19a596630a0ae4fcd73487d7522cb`.
+      Implemented auto-read behavior in `portal/src/components/TaskModal.tsx`.
+      When a user submits a response to a prompt, the system now looks up the
+      original agent comment and the newly appended response comment, passing
+      their IDs into `ctxMarkAllCommentsRead` so the user's read state is
+      seamlessly updated without requiring an extra click. Committed in
+      `5ac8bb8c89f19a596630a0ae4fcd73487d7522cb`.
     id: c-2026-05-08t08-36-00-000z
   - type: status_change
     from: Todo
@@ -33,12 +38,13 @@ history:
     date: '2026-05-08T00:00:00.000Z'
     comment: >-
       Plan: in `submitRequireInputResponse` (TaskModal.tsx), after `updateTask`
-      returns the updated task, find (a) the prompt comment id (`lastAgentComment.id`)
-      and (b) the user's new response comment id (match by `date === submittedAt`
-      and `user === currentUser` in `updatedTask.history`). Call
-      `ctxMarkAllCommentsRead(modalTask.id, [...idsToMark])` before `closeModal()`.
-      The AppContext `markAllCommentsRead` is a synchronous state update with
-      fire-and-forget persistence, so no await is needed.
+      returns the updated task, find (a) the prompt comment id
+      (`lastAgentComment.id`) and (b) the user's new response comment id (match
+      by `date === submittedAt` and `user === currentUser` in
+      `updatedTask.history`). Call `ctxMarkAllCommentsRead(modalTask.id,
+      [...idsToMark])` before `closeModal()`. The AppContext
+      `markAllCommentsRead` is a synchronous state update with fire-and-forget
+      persistence, so no await is needed.
     id: c-flux126-plan
   - type: status_change
     from: Todo
@@ -54,14 +60,22 @@ history:
       new response comment id (matched from `updatedTask.history` by `date` and
       `user`), then calls `ctxMarkAllCommentsRead` before `closeModal()`. Both
       comments are immediately marked read in the local React state with a
-      fire-and-forget persist, so no unread indicator appears after submitting
-      a Require Input response. Build clean.
+      fire-and-forget persist, so no unread indicator appears after submitting a
+      Require Input response. Build clean.
     id: c-flux126-done
   - type: status_change
     from: In Progress
     to: Done
     user: Agent
     date: '2026-05-08T00:01:00.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.341Z'
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.341Z'
+releaseDocPath: release-notes/0.2.0
 ---
 
 ## Summary

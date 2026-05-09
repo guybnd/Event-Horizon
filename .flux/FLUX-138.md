@@ -627,8 +627,13 @@ history:
 
       ```
     id: c-2026-05-08t13-59-03-329z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.347Z'
 title: for 'ready' tickets have a button to tell agent to close the ticket
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 order: 1
@@ -642,5 +647,8 @@ historyEntry:
     when no session is active (engine/src/index.ts), or sends the command
     directly to a running session. Wired through api.ts (startTaskCliSession
     accepts appendPrompt) and TaskModal.tsx. Compiled and committed cleanly.
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.347Z'
+releaseDocPath: release-notes/0.2.0
 ---
 

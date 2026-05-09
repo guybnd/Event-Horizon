@@ -66,11 +66,19 @@ history:
 
       ```
     id: c-2026-05-08t14-17-42-433z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.343Z'
 title: two way integration with CLIs like claude code and copilot CLI
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 order: 1
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.343Z'
+releaseDocPath: release-notes/0.2.0
 ---
 ## Problem / Motivation
 

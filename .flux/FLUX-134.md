@@ -61,11 +61,19 @@ history:
 
       ```
     id: c-2026-05-08t14-53-26-901z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.345Z'
 title: improvements to two-way integration
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 order: 1
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.345Z'
+releaseDocPath: release-notes/0.2.0
 ---
 1.  bot can be spamming a lot wiht messages that are not interesting for ticket. maybe we need a UI thats just the 'thought proccess' and a distinct pathway for the agent bot to contact or update the user with just pertinent things  
     2\. need ot think what happens when the bot needs permission grants into the CLI  
