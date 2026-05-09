@@ -473,7 +473,7 @@ export function TaskCard({
     >
       <motion.div {...contentAnimation} className={`relative flex flex-col rounded-xl border bg-white/80 dark:bg-[#252630]/80 backdrop-blur-md p-0 shadow-sm hover:border-primary/50 hover:shadow-md transition-all ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''} ${isPromptStatus ? 'border-amber-300 dark:border-amber-500/40 ring-1 ring-amber-200/50 dark:ring-amber-500/20' : hasActiveCliSession ? 'border-emerald-400 dark:border-emerald-500/60' : 'border-gray-200/50 dark:border-white/5'} ${liveAnimationClass} ${liveAccentClass} ${hasUnread && !liveAccentClass ? 'ring-2 ring-amber-400/60 dark:ring-amber-500/40' : ''}`}>
         {hasActiveCliSession && !isOverlay && (
-          <div className="pointer-events-none absolute inset-0 rounded-xl animate-pulse ring-2 ring-emerald-400/60 dark:ring-emerald-500/40" />
+          <div className="pointer-events-none absolute inset-0 rounded-xl bot-border-breathe" />
         )}
         {/* Comment badge — fixed top-right anchor; juts above card when there are unread comments */}
         {!isOverlay && (
@@ -565,12 +565,6 @@ export function TaskCard({
                 <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 tracking-wider">
                   {task.id}
                 </span>
-                {hasActiveCliSession && task.cliSession && (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300">
-                    <Bot className="h-3 w-3" />
-                    {task.cliSession.label}
-                  </span>
-                )}
                 {parentTask && (
                   <button
                     type="button"
@@ -710,29 +704,50 @@ export function TaskCard({
                 )}
               </div>
 
-              {(task.tokenMetadata?.costUSD ?? 0) > 0 && (
-                <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-black/20 dark:text-gray-400" title={`${task.tokenMetadata!.inputTokens + task.tokenMetadata!.outputTokens} tokens`}>
-                  ${task.tokenMetadata!.costUSD.toFixed(4)}
-                </span>
-              )}
+              {(() => {
+                const tm = task.tokenMetadata;
+                const costUSD = tm?.costUSD ?? 0;
+                const inTok = tm?.inputTokens ?? 0;
+                const outTok = tm?.outputTokens ?? 0;
+                const isEstimated = tm?.costIsEstimated ?? false;
+                const showTokens = config?.tokenDisplayMode === 'tokens';
+                const label = showTokens
+                  ? (inTok > 0 || outTok > 0 ? `↑${(inTok / 1000).toFixed(1)}k ↓${(outTok / 1000).toFixed(1)}k` : '—')
+                  : costUSD > 0
+                    ? `$${costUSD.toFixed(4)}${isEstimated ? '~' : ''}`
+                    : (inTok > 0 || outTok > 0)
+                      ? `↑${(inTok / 1000).toFixed(1)}k ↓${(outTok / 1000).toFixed(1)}k`
+                      : '$0.00';
+                const titleText = tm
+                  ? `↑ ${inTok.toLocaleString()} input / ↓ ${outTok.toLocaleString()} output tokens${isEstimated ? ' (estimated)' : ''}`
+                  : 'No token data recorded yet';
+                return (
+                  <span
+                    className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-black/20 dark:text-gray-400"
+                    title={titleText}
+                  >
+                    {label}
+                  </span>
+                );
+              })()}
 
               <div ref={assigneeMenuRef} className="relative ml-auto">
                 <button
                   onClick={(event) => {
                     event.stopPropagation();
-                    if (!isOverlay) {
+                    if (!isOverlay && !hasActiveCliSession) {
                       setAssigneeMenuOpen((open) => !open);
                       setPriorityMenuOpen(false);
                       setEffortMenuOpen(false);
                       setTagMenuOpen(false);
                     }
                   }}
-                  className="flex items-center gap-1 rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-500 dark:bg-black/20 dark:text-gray-400"
+                  className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors ${hasActiveCliSession ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300 bot-assignee-glow cursor-default' : 'bg-gray-100 text-gray-500 dark:bg-black/20 dark:text-gray-400'}`}
                 >
-                  <User className="w-3 h-3" />
-                  <span className="font-medium text-[10px]">{visibleAssignee === 'unassigned' ? 'Unassigned' : visibleAssignee}</span>
+                  {hasActiveCliSession ? <Bot className="w-3 h-3" /> : <User className="w-3 h-3" />}
+                  <span className="font-medium text-[10px]">{hasActiveCliSession && task.cliSession ? task.cliSession.label : visibleAssignee === 'unassigned' ? 'Unassigned' : visibleAssignee}</span>
                 </button>
-                {assigneeMenuOpen && !isOverlay && (
+                {assigneeMenuOpen && !isOverlay && !hasActiveCliSession && (
                   <div
                     className="absolute right-0 top-full z-[90] mt-1 min-w-32 rounded-lg border border-gray-200 bg-white p-1 shadow-xl dark:border-white/10 dark:bg-[#252630]"
                     onClick={(event) => event.stopPropagation()}
