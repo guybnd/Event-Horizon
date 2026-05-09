@@ -1869,6 +1869,13 @@ app.put('/api/tasks/:id', requireWorkspace, async (req, res) => {
   }
 
   const actor = updatedBy || task.updatedBy || 'Unknown';
+
+  // requireInput: true atomically sets the status to the configured require-input status
+  if (updates.requireInput === true) {
+    updates.status = configCache.requireInputStatus || 'Require Input';
+    delete updates.requireInput;
+  }
+
   const normalizedExistingHistory = normalizeHistoryEntries(task.history || []);
   const existingHistory = ensureCreationActivity(
     normalizedExistingHistory.history,
