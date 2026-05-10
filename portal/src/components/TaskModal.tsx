@@ -20,7 +20,7 @@ import {
   X,
 } from 'lucide-react';
 import { useApp } from '../AppContext';
-import { createTask, deleteTask, fetchTaskCliSession, fetchTasks, sendTaskCliInput, startTaskCliSession, stopTaskCliSession, updateTask } from '../api';
+import { createTask, deleteTask, fetchTask, fetchTaskCliSession, sendTaskCliInput, startTaskCliSession, stopTaskCliSession, updateTask } from '../api';
 import { LaunchAgentSplitButton } from './LaunchAgentSplitButton';
 import { CodeReviewButton } from './CodeReviewButton';
 import type { ReviewPersona } from './CodeReviewButton';
@@ -164,6 +164,153 @@ function getPriorityIcon(priorityName: string, config: Config | null, className 
       return <Equal className={`${className} text-gray-400`} />;
   }
 }
+
+interface ReadyForMergePromptProps {
+  taskId: string;
+  readyForMergeBanner: React.ReactNode;
+  saving: boolean;
+  finishBusy: boolean;
+  finishError: string;
+  returnToWorkOpen: boolean;
+  reviewBusy: boolean;
+  reviewError: string;
+  cliSessionActive: boolean;
+  isFullView: boolean;
+  returnToWorkReasonRef: React.RefObject<HTMLTextAreaElement | null>;
+  onReturnToWork: () => void;
+  onReturnToWorkAndLaunch: () => void;
+  onFinish: () => void;
+  onCodeReview: (persona: ReviewPersona) => void;
+  onSetReturnToWorkOpen: (open: boolean) => void;
+  onSetIsFullView: (v: boolean) => void;
+  onSetIsPromptModalOpen: (open: boolean) => void;
+}
+
+const ReadyForMergePrompt = memo(function ReadyForMergePrompt({
+  taskId,
+  readyForMergeBanner,
+  saving,
+  finishBusy,
+  finishError,
+  returnToWorkOpen,
+  reviewBusy,
+  reviewError,
+  cliSessionActive,
+  isFullView,
+  returnToWorkReasonRef,
+  onReturnToWork,
+  onReturnToWorkAndLaunch,
+  onFinish,
+  onCodeReview,
+  onSetReturnToWorkOpen,
+  onSetIsFullView,
+  onSetIsPromptModalOpen,
+}: ReadyForMergePromptProps) {
+  return (
+    <div className="rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 to-white p-5 shadow-sm dark:border-amber-500/30 dark:from-amber-900/20 dark:to-[#1a1b23]">
+      <div className="mb-4 flex items-start gap-3">
+        <div className="rounded-xl bg-amber-100 p-2 text-amber-600 dark:bg-amber-500/10 dark:text-amber-300">
+          <AlertCircle className="h-5 w-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Ready for final review</p>
+          <h3 className="mt-1 text-lg font-semibold text-gray-900 dark:text-gray-100">Review and finish the ticket</h3>
+          <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">After reviewing the diff and ticket details, click <span className="font-semibold text-gray-900 dark:text-gray-100">Tell agent to finish</span> to send the close command directly to the agent.</p>
+        </div>
+      </div>
+
+      {readyForMergeBanner}
+
+      <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_220px]">
+        <div className="rounded-xl border border-gray-200 bg-white/80 p-4 text-sm text-gray-600 dark:border-white/10 dark:bg-black/20 dark:text-gray-300">
+          <p className="font-semibold text-gray-900 dark:text-gray-100">Suggested command</p>
+          <p className="mt-2 rounded-lg bg-gray-100 px-3 py-2 font-mono text-sm text-gray-800 dark:bg-black/30 dark:text-gray-200">finish {taskId}</p>
+          <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">This status is configurable in Settings, but the finalization handoff is always driven by the agent command after your review.</p>
+          {returnToWorkOpen && (
+            <div className="mt-4 space-y-2">
+              <label className="block text-xs font-bold uppercase tracking-wider text-gray-400">Reason for returning</label>
+              <textarea
+                autoFocus
+                ref={returnToWorkReasonRef}
+                className="h-24 w-full resize-none rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm outline-none placeholder:text-gray-400 focus:border-primary dark:border-white/10 dark:bg-black/30"
+                placeholder="Describe what needs to be changed..."
+              />
+              <div className="flex flex-col gap-2">
+                <div className="flex gap-2">
+                  <button
+                    disabled={saving}
+                    onClick={onReturnToWork}
+                    className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-700 transition-colors hover:bg-amber-100 disabled:opacity-50 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300 dark:hover:bg-amber-500/20"
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                    {saving ? 'Returning...' : 'Return to work'}
+                  </button>
+                  <button
+                    onClick={() => { onSetReturnToWorkOpen(false); if (returnToWorkReasonRef.current) returnToWorkReasonRef.current.value = ''; }}
+                    className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
+                  >
+                    Cancel
+                  </button>
+                </div>
+                <button
+                  disabled={saving}
+                  onClick={onReturnToWorkAndLaunch}
+                  className="flex w-full items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-amber-600 disabled:opacity-50"
+                >
+                  <Bot className="h-4 w-4" />
+                  {saving ? 'Returning...' : 'Return + Launch Agent'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-2 rounded-xl border border-gray-200 bg-white/80 p-4 dark:border-white/10 dark:bg-black/20">
+          <button
+              disabled={finishBusy || saving}
+              onClick={onFinish}
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <SendHorizontal className="h-4 w-4" />
+              {finishBusy ? 'Sending…' : 'Tell agent to finish'}
+            </button>
+            {finishError && (
+              <p className="text-xs text-red-600 dark:text-red-400">{finishError}</p>
+            )}
+            <button
+              onClick={() => void navigator.clipboard.writeText(`finish ${taskId}`)}
+              className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
+            >
+              Copy finish command
+            </button>
+            <button
+              disabled={saving}
+              onClick={() => onSetReturnToWorkOpen(true)}
+              className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 disabled:opacity-50 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
+            >
+              <RotateCcw className="h-4 w-4" />
+              Return to work
+            </button>
+            <CodeReviewButton
+              busy={reviewBusy}
+              disabled={saving || cliSessionActive}
+              onReview={onCodeReview}
+            />
+            {reviewError && (
+              <p className="text-xs text-red-600 dark:text-red-400">{reviewError}</p>
+            )}
+            <button
+              onClick={() => isFullView ? onSetIsPromptModalOpen(false) : onSetIsFullView(true)}
+              className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
+            >
+              {isFullView ? <X className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+              {isFullView ? 'Close window' : 'Open full ticket'}
+            </button>
+        </div>
+      </div>
+    </div>
+  );
+});
 
 interface HistoryListProps {
   topLevelEntries: HistoryEntry[];
@@ -365,6 +512,7 @@ export function TaskModal() {
     openTaskModal,
     openModalScrollToComments,
     clearOpenModalScrollToComments,
+    openModalInFullView,
     currentProject,
     currentUser,
     refreshTrigger,
@@ -374,6 +522,7 @@ export function TaskModal() {
     ensureReadStateLoaded,
     markCommentRead: ctxMarkCommentRead,
     markAllCommentsRead: ctxMarkAllCommentsRead,
+    tasks: allTasks,
   } = useApp();
 
   const [title, setTitle] = useState('');
@@ -407,7 +556,7 @@ export function TaskModal() {
   const [replyAssetError, setReplyAssetError] = useState('');
   const [isUploadingCommentAsset, setIsUploadingCommentAsset] = useState(false);
   const [isUploadingReplyAsset, setIsUploadingReplyAsset] = useState(false);
-  const [allTasks, setAllTasks] = useState<Task[]>([]);
+  const [isTaskLoading, setIsTaskLoading] = useState(false);
   const [subtasks, setSubtasks] = useState<string[]>([]);
   const [subtaskToAdd, setSubtaskToAdd] = useState('');
   const [selectedCliFramework, setSelectedCliFramework] = useState<CliFramework>('claude');
@@ -417,6 +566,8 @@ export function TaskModal() {
   const [skipPermissions, setSkipPermissions] = useState(true);
 
   const openedTaskIdRef = useRef<string | undefined>(undefined);
+  const cliSessionRef = useRef<CliSessionSummary | null>(null);
+  cliSessionRef.current = cliSession;
 
   const commentRef = useRef<HTMLTextAreaElement>(null);
   const liveOutputRef = useRef<HTMLPreElement>(null);
@@ -428,6 +579,12 @@ export function TaskModal() {
   useEffect(() => {
     if (modalTask?.id) ensureReadStateLoaded(modalTask.id);
   }, [modalTask?.id, ensureReadStateLoaded]);
+
+  useEffect(() => {
+    if (!isModalOpen) return;
+    const view = new URLSearchParams(window.location.search).get('view');
+    if (view === 'full' || openModalInFullView) startTransition(() => setIsFullView(true));
+  }, [isModalOpen, openModalInFullView, config]);
 
   useEffect(() => {
     const el = titleRef.current;
@@ -550,12 +707,13 @@ export function TaskModal() {
   }, [modalTask]);
 
   useEffect(() => {
-    if (!isModalOpen) return;
+    if (!isModalOpen || !modalTask?.id) return;
 
-    fetchTasks()
-      .then((tasks) => startTransition(() => setAllTasks(tasks)))
-      .catch(console.error);
-  }, [isModalOpen, refreshTrigger]);
+    setIsTaskLoading(true);
+    fetchTask(modalTask.id)
+      .then((task) => startTransition(() => { setModalTask(task); setIsTaskLoading(false); }))
+      .catch((err) => { console.error(err); setIsTaskLoading(false); });
+  }, [isModalOpen, modalTask?.id, refreshTrigger]);
 
   useEffect(() => {
     if (!isModalOpen || !modalTask?.id) {
@@ -567,25 +725,30 @@ export function TaskModal() {
       .catch(() => {});
   }, [isModalOpen, modalTask?.id]);
 
+  const sessionIsActive = Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status));
+
   useEffect(() => {
     const taskId = modalTask?.id;
-    if (!isModalOpen || !taskId) {
+    if (!isModalOpen || !taskId || !sessionIsActive) {
       return;
     }
 
-    const sessionIsActive = Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status));
-    if (!sessionIsActive) {
-      return;
-    }
+    const SESSION_STALE_MS = 10 * 60 * 1000;
 
     const timer = window.setInterval(() => {
+      const s = cliSessionRef.current;
+      const lastActivityAt = s?.lastOutputAt ?? s?.startedAt;
+      if (lastActivityAt && Date.now() - new Date(lastActivityAt).getTime() > SESSION_STALE_MS) {
+        window.clearInterval(timer);
+        return;
+      }
       void fetchTaskCliSession(taskId)
         .then((session) => startTransition(() => setCliSession(session)))
         .catch(() => {});
     }, 2500);
 
     return () => window.clearInterval(timer);
-  }, [isModalOpen, modalTask?.id, cliSession]);
+  }, [isModalOpen, modalTask?.id, sessionIsActive]);
 
   useEffect(() => {
     if (liveOutputRef.current) {
@@ -720,7 +883,7 @@ export function TaskModal() {
     return from;
   }, [modalTask?.history, readyForMergeStatus, promptableStatuses, requireInputDestinations]);
 
-  const handleReturnToWork = async () => {
+  const handleReturnToWork = useCallback(async () => {
     if (!modalTask?.id) return;
     const submittedAt = new Date().toISOString();
     const reason = (returnToWorkReasonRef.current?.value ?? '').trim();
@@ -772,9 +935,9 @@ export function TaskModal() {
     } finally {
       setSaving(false);
     }
-  };
+  }, [modalTask, currentUser, readyForMergeStatus, preReadyStatus, title, body, assignee, tags, priority, effort, effortLevel, implementationLink, returnToWorkReasonRef, setModalTask, triggerRefresh, closeModal]);
 
-  const handleReturnToWorkAndLaunch = async () => {
+  const handleReturnToWorkAndLaunch = useCallback(async () => {
     if (!modalTask?.id) return;
     const submittedAt = new Date().toISOString();
     const reason = (returnToWorkReasonRef.current?.value ?? '').trim();
@@ -827,14 +990,14 @@ export function TaskModal() {
     } finally {
       setSaving(false);
     }
-  };
+  }, [modalTask, currentUser, readyForMergeStatus, preReadyStatus, title, body, assignee, tags, priority, effort, effortLevel, implementationLink, returnToWorkReasonRef, selectedCliFramework, skipPermissions, triggerRefresh, closeModal]);
 
   const [finishBusy, setFinishBusy] = useState(false);
   const [finishError, setFinishError] = useState('');
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewError, setReviewError] = useState('');
 
-  const handleSendForCodeReview = async (persona: ReviewPersona) => {
+  const handleSendForCodeReview = useCallback(async (persona: ReviewPersona) => {
     if (!modalTask?.id) return;
     setReviewBusy(true);
     setReviewError('');
@@ -849,9 +1012,9 @@ export function TaskModal() {
     } finally {
       setReviewBusy(false);
     }
-  };
+  }, [modalTask?.id, selectedCliFramework, skipPermissions, triggerRefresh, closeModal]);
 
-  const sendFinishCommand = async () => {
+  const sendFinishCommand = useCallback(async () => {
     if (!modalTask?.id) return;
     const command = `finish ${modalTask.id}`;
     const hasActiveSession = Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status));
@@ -871,7 +1034,7 @@ export function TaskModal() {
     } finally {
       setFinishBusy(false);
     }
-  };
+  }, [modalTask?.id, cliSession, currentUser, selectedCliFramework, triggerRefresh]);
 
   useEffect(() => {
     if (!isRequireInput) return;
@@ -1747,6 +1910,18 @@ export function TaskModal() {
     setReplyAssetError('');
   }, [setReplyAssetError]);
 
+  const readyForMergeBanner = useMemo(() => isReadyForMerge ? (
+    <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-900/20">
+      <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
+      <div className="min-w-0 flex-1">
+        <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-amber-800 dark:text-amber-300">Merge review requested</p>
+        <p className="whitespace-pre-wrap text-sm text-amber-700 dark:text-amber-400">
+          This ticket is waiting in {readyForMergeStatus} for your review and finalization. Look over the ticket and diffs, then click <strong>Tell agent to finish</strong> to close the work.
+        </p>
+      </div>
+    </div>
+  ) : null, [isReadyForMerge, readyForMergeStatus]);
+
   if (!config || (!isModalOpen && !modalTask)) return null;
 
   const commentComposer = (
@@ -1800,18 +1975,6 @@ export function TaskModal() {
         <p className="whitespace-pre-wrap text-sm text-amber-700 dark:text-amber-400">{lastComment.comment}</p>
         <p className="mt-1.5 text-[10px] text-amber-500/70">
           {lastComment.user} · {new Date(lastComment.date).toLocaleString()}
-        </p>
-      </div>
-    </div>
-  ) : null;
-
-  const readyForMergeBanner = isReadyForMerge ? (
-    <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-900/20">
-      <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
-      <div className="min-w-0 flex-1">
-        <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-amber-800 dark:text-amber-300">Merge review requested</p>
-        <p className="whitespace-pre-wrap text-sm text-amber-700 dark:text-amber-400">
-          This ticket is waiting in {readyForMergeStatus} for your review and finalization. Look over the ticket and diffs, then click <strong>Tell agent to finish</strong> to close the work.
         </p>
       </div>
     </div>
@@ -1881,109 +2044,28 @@ export function TaskModal() {
     </div>
   ) : null;
 
+  const cliSessionActive = Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status));
   const readyForMergePrompt = isReadyForMerge && modalTask?.id ? (
-    <div className="rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 to-white p-5 shadow-sm dark:border-amber-500/30 dark:from-amber-900/20 dark:to-[#1a1b23]">
-      <div className="mb-4 flex items-start gap-3">
-        <div className="rounded-xl bg-amber-100 p-2 text-amber-600 dark:bg-amber-500/10 dark:text-amber-300">
-          <AlertCircle className="h-5 w-5" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Ready for final review</p>
-          <h3 className="mt-1 text-lg font-semibold text-gray-900 dark:text-gray-100">Review and finish the ticket</h3>
-          <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">After reviewing the diff and ticket details, click <span className="font-semibold text-gray-900 dark:text-gray-100">Tell agent to finish</span> to send the close command directly to the agent.</p>
-        </div>
-      </div>
-
-      {readyForMergeBanner}
-
-      <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_220px]">
-        <div className="rounded-xl border border-gray-200 bg-white/80 p-4 text-sm text-gray-600 dark:border-white/10 dark:bg-black/20 dark:text-gray-300">
-          <p className="font-semibold text-gray-900 dark:text-gray-100">Suggested command</p>
-          <p className="mt-2 rounded-lg bg-gray-100 px-3 py-2 font-mono text-sm text-gray-800 dark:bg-black/30 dark:text-gray-200">finish {modalTask.id}</p>
-          <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">This status is configurable in Settings, but the finalization handoff is always driven by the agent command after your review.</p>
-          {returnToWorkOpen && (
-            <div className="mt-4 space-y-2">
-              <label className="block text-xs font-bold uppercase tracking-wider text-gray-400">Reason for returning</label>
-              <textarea
-                autoFocus
-                ref={returnToWorkReasonRef}
-                className="h-24 w-full resize-none rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm outline-none placeholder:text-gray-400 focus:border-primary dark:border-white/10 dark:bg-black/30"
-                placeholder="Describe what needs to be changed..."
-              />
-              <div className="flex flex-col gap-2">
-                <div className="flex gap-2">
-                  <button
-                    disabled={saving}
-                    onClick={() => void handleReturnToWork()}
-                    className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-700 transition-colors hover:bg-amber-100 disabled:opacity-50 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300 dark:hover:bg-amber-500/20"
-                  >
-                    <RotateCcw className="h-4 w-4" />
-                    {saving ? 'Returning...' : 'Return to work'}
-                  </button>
-                  <button
-                    onClick={() => { setReturnToWorkOpen(false); if (returnToWorkReasonRef.current) returnToWorkReasonRef.current.value = ''; }}
-                    className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
-                  >
-                    Cancel
-                  </button>
-                </div>
-                <button
-                  disabled={saving}
-                  onClick={() => void handleReturnToWorkAndLaunch()}
-                  className="flex w-full items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-amber-600 disabled:opacity-50"
-                >
-                  <Bot className="h-4 w-4" />
-                  {saving ? 'Returning...' : 'Return + Launch Agent'}
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="space-y-2 rounded-xl border border-gray-200 bg-white/80 p-4 dark:border-white/10 dark:bg-black/20">
-          <button
-              disabled={finishBusy || saving}
-              onClick={() => void sendFinishCommand()}
-              className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <SendHorizontal className="h-4 w-4" />
-              {finishBusy ? 'Sending…' : 'Tell agent to finish'}
-            </button>
-            {finishError && (
-              <p className="text-xs text-red-600 dark:text-red-400">{finishError}</p>
-            )}
-            <button
-              onClick={() => void navigator.clipboard.writeText(`finish ${modalTask.id}`)}
-              className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
-            >
-              Copy finish command
-            </button>
-            <button
-              disabled={saving}
-              onClick={() => setReturnToWorkOpen(true)}
-              className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 disabled:opacity-50 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
-            >
-              <RotateCcw className="h-4 w-4" />
-              Return to work
-            </button>
-            <CodeReviewButton
-              busy={reviewBusy}
-              disabled={saving || Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status))}
-              onReview={(persona) => void handleSendForCodeReview(persona)}
-            />
-            {reviewError && (
-              <p className="text-xs text-red-600 dark:text-red-400">{reviewError}</p>
-            )}
-            <button
-              onClick={() => isFullView ? setIsPromptModalOpen(false) : setIsFullView(true)}
-              className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
-            >
-              {isFullView ? <X className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-              {isFullView ? 'Close window' : 'Open full ticket'}
-            </button>
-        </div>
-      </div>
-    </div>
+    <ReadyForMergePrompt
+      taskId={modalTask.id}
+      readyForMergeBanner={readyForMergeBanner}
+      saving={saving}
+      finishBusy={finishBusy}
+      finishError={finishError}
+      returnToWorkOpen={returnToWorkOpen}
+      reviewBusy={reviewBusy}
+      reviewError={reviewError}
+      cliSessionActive={cliSessionActive}
+      isFullView={isFullView}
+      returnToWorkReasonRef={returnToWorkReasonRef}
+      onReturnToWork={handleReturnToWork}
+      onReturnToWorkAndLaunch={handleReturnToWorkAndLaunch}
+      onFinish={sendFinishCommand}
+      onCodeReview={handleSendForCodeReview}
+      onSetReturnToWorkOpen={setReturnToWorkOpen}
+      onSetIsFullView={setIsFullView}
+      onSetIsPromptModalOpen={setIsPromptModalOpen}
+    />
   ) : null;
 
   const animationsEnabled = config?.animationsEnabled ?? true;
@@ -2153,7 +2235,16 @@ export function TaskModal() {
             </div>
           </div>
 
-          <div className="grid min-h-0 flex-1 relative" style={{ gridTemplateColumns: `minmax(0,1fr) ${sidebarWidth}px` }}>
+          {isTaskLoading && !modalTask?.body && (
+            <div className="flex min-h-0 flex-1 flex-col gap-4 p-6 animate-pulse">
+              <div className="h-4 w-1/3 rounded bg-gray-200 dark:bg-white/10" />
+              <div className="h-4 w-2/3 rounded bg-gray-200 dark:bg-white/10" />
+              <div className="h-4 w-1/2 rounded bg-gray-200 dark:bg-white/10" />
+              <div className="h-4 w-3/4 rounded bg-gray-200 dark:bg-white/10" />
+            </div>
+          )}
+
+          <div className="grid min-h-0 flex-1 relative" style={{ gridTemplateColumns: `minmax(0,1fr) ${sidebarWidth}px`, display: isTaskLoading && !modalTask?.body ? 'none' : undefined }}>
             {isFullView && isPromptStatus && (
               <>
                 <div 
@@ -2180,7 +2271,7 @@ export function TaskModal() {
                      onClick={() => setIsPromptModalOpen(true)} 
                      className="relative flex items-center justify-center p-[2px] overflow-hidden rounded-full shadow-lg hover:scale-105 transition-transform"
                    >
-                     <span className="absolute top-1/2 left-1/2 block aspect-square w-[300px] -translate-x-1/2 -translate-y-1/2 animate-[spin_2s_linear_infinite] bg-[conic-gradient(from_0deg,transparent_0_340deg,rgba(255,255,255,0.8)_360deg)]"></span>
+                     <span className="absolute top-1/2 left-1/2 block aspect-square w-[300px] -translate-x-1/2 -translate-y-1/2 animate-[spin_2s_linear_infinite] bg-[conic-gradient(from_0deg,transparent_0_340deg,rgba(255,255,255,0.8)_360deg)]" style={{ willChange: 'transform' }}></span>
                      <div className="relative flex items-center gap-2 bg-amber-500 text-white px-4 py-2 rounded-full font-bold hover:bg-amber-600 transition-colors w-full h-full">
                        <MessageSquare className="w-4 h-4" />
                        Prompt Pending
