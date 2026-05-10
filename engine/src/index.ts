@@ -1909,8 +1909,8 @@ app.post('/api/tasks', requireWorkspace, async (req, res) => {
 
   const nextId = `${pKey}-${maxId + 1}`;
   const filePath = path.join(getFluxDir(), `${nextId}.md`);
-  const normalizedHistory = normalizeHistoryEntries(rest.history || []);
   const createdAt = new Date().toISOString();
+  const normalizedHistory = normalizeHistoryEntries((rest.history || []).map((e: any) => ({ ...e, date: createdAt })));
   const historyWithCreation = ensureCreationActivity(normalizedHistory.history, author || 'Unknown', createdAt);
   const frontmatter = {
     ...rest,
