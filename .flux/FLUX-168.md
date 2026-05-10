@@ -11,9 +11,13 @@ history:
     user: Guy
     date: '2026-05-10T05:14:32.161Z'
     comment: Created ticket.
-id: FLUX-168
+  - type: status_change
+    from: Grooming
+    to: Backlog
+    user: Guy
+    date: '2026-05-10T14:16:31.393Z'
 title: add full support for GPT codex instead of claude
-status: Grooming
+status: Backlog
 createdBy: Guy
 updatedBy: Guy
 ---

@@ -213,11 +213,36 @@ history:
     user: Agent
     date: '2026-05-10T14:38:49.530Z'
     comment: Launched Claude Code session (052025ca).
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-10T14:39:21.271Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-10T14:39:21.274Z'
+    comment: >-
+      Shipped in commit 30424bd. History window now filters agent_message
+      entries and caps at 3 (was 6). integrations.claudeCode config added with
+      groomingModel/implementationModel fields; engine passes --model to Claude
+      Code based on ticket phase. Settings UI shows Claude Code Models section
+      for claude/auto framework targets. Validation: groomingStatuses filter and
+      selectedModel logic confirmed; Settings dirty-check includes new fields.
+    id: c-2026-05-10t14-39-21-274z
+  - type: activity
+    user: Agent
+    date: '2026-05-10T14:39:26.565Z'
+    comment: Claude Code session ended with code 0.
 title: token spend optimization
-status: Ready
+status: Done
 createdBy: Guy
 updatedBy: Agent
 order: 0
+tokenMetadata:
+  inputTokens: 203382
+  outputTokens: 1203
+  costUSD: 0.122033
+  costIsEstimated: false
 ---
 ## Token Spend Optimization
 
@@ -299,4 +324,5 @@ Only render this section when `targetFramework === "claude"` or `targetFramework
 - Start a Todo ticket session → confirm `--model claude-sonnet-4-6` appears
 - Verify prompt no longer includes `agent_message` history entries
 - Change model via Settings UI → confirm config saved and next session uses new model
+- No regression on existing session start / resume flows
 - No regression on existing session start / resume flows

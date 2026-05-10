@@ -183,16 +183,20 @@ history:
     user: Guy Banda
     date: '2026-05-10T14:00:00.000Z'
     comment: >-
-      Approved and closed. Rules file trimmed from 309 → 121 lines (~3,700 tokens/turn savings).
-      MEMORY.md pruning convention in place.
+      Approved and closed. Rules file trimmed from 309 → 121 lines (~3,700
+      tokens/turn savings). MEMORY.md pruning convention in place.
     id: c-2026-05-10t14-00-00-000z
+  - type: activity
+    user: Agent
+    date: '2026-05-10T13:46:21.725Z'
+    comment: Claude Code session ended with code 0.
 title: Reduce per-turn token cost of the agent workflow
 status: Done
 implementationLink: 'PROJECT-2: reduce per-turn token cost via rules file trimming'
 tokenMetadata:
-  inputTokens: 392947
-  outputTokens: 6308
-  costUSD: 0.360805
+  inputTokens: 584289
+  outputTokens: 8568
+  costUSD: 0.514723
   costIsEstimated: false
 ---
 ## Implementation Plan
@@ -283,5 +287,8 @@ Add a brief note at the top of the index reminding the agent to keep entries con
 
 1. Line count of `.claude/rules/event-horizon.md` reduced by ~160 lines.
 2. `.docs/skills/event-horizon-grooming.md`, `event-horizon-implementation.md`, `event-horizon-release.md` are unchanged.
+3. Engine still starts and serves tickets correctly after rules file edit.
+4. Grooming a test ticket works end-to-end (reads phase skill from `.docs/skills/`).
+re unchanged.
 3. Engine still starts and serves tickets correctly after rules file edit.
 4. Grooming a test ticket works end-to-end (reads phase skill from `.docs/skills/`).

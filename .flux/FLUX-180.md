@@ -251,8 +251,43 @@ history:
     user: Agent
     date: '2026-05-10T14:09:28.509Z'
     comment: Launched Claude Code session (5728c9d2).
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-10T14:10:39.056Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-10T14:10:39.057Z'
+    comment: >-
+      Implementation complete. Fixes shipped across two commits (01b9867 +
+      d5ea8b1): (1) engine/src/index.ts — added GET /api/tasks/:id single-ticket
+      endpoint. (2) portal/src/api.ts — added fetchTask(id). (3) AppContext.tsx
+      — added openModalInFullView flag + ?view=full URL restore. (4)
+      TaskModal.tsx — replaced fetchTasks() with fetchTask(id) on modal open;
+      isTaskLoading skeleton prevents blank page; moved cliSession to ref,
+      removed from poller dep array so interval lives its full lifetime; moved
+      readyForMergeBanner useMemo above early-return guard to fix conditional
+      hook violation. Remaining note: comment-box lag in Vite dev mode is likely
+      dev-mode overhead, not a production bug — not addressed in this ticket.
+    id: c-2026-05-10t14-10-39-057z
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-10T14:10:44.217Z'
+    comment: >-
+      FLUX-180 is closed. Commit `d5ea8b1` contains the engine endpoint, api.ts,
+      and AppContext changes; `01b9867` contains the TaskModal.tsx changes.
+      Ticket is now `Done`.
+  - type: activity
+    user: Agent
+    date: '2026-05-10T14:11:00.370Z'
+    comment: Claude Code session lost (engine restarted).
+  - type: activity
+    user: Agent
+    date: '2026-05-10T14:11:00.372Z'
+    comment: Claude Code session lost (engine restarted).
 title: Fix ticket modal blank page and lag on open
-status: Ready
+status: Done
 order: 1
 ---
 ## Root Cause

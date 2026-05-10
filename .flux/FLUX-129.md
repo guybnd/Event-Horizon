@@ -1,8 +1,8 @@
 ---
 title: Tray icon blank in system tray on Windows
-status: Todo
+status: Grooming
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
 tags:
   - bug
@@ -31,6 +31,12 @@ history:
       requires a specific PNG format, size, or encoding that differs from what
       is currently sent.
     id: c-flux129-created
+  - type: status_change
+    from: Todo
+    to: Grooming
+    user: Guy
+    date: '2026-05-10T14:39:22.564Z'
+order: 0
 ---
 
 ## Problem / Motivation
