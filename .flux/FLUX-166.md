@@ -153,8 +153,30 @@ history:
     user: Agent
     date: '2026-05-10T05:17:34.990Z'
     comment: Launched Claude Code session (0b4e8674).
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-10T05:18:29.471Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-10T05:18:29.472Z'
+    comment: >-
+      Implementation complete. Added GET /api/path-info and POST /api/path-setup
+      to engine/src/index.ts. Added fetchPathInfo() and setupPath() to
+      portal/src/api.ts. Inserted step 4 of 6 in OnboardingWizard.tsx with
+      auto/instructional/skip options; non-pkg users see an 'already in PATH'
+      notice. Steps 4/5 renumbered to 5/6. Committed as dcd35bc.
+    id: c-2026-05-10t05-18-29-472z
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-10T05:18:40.872Z'
+    comment: >-
+      FLUX-166 is done. Commit `dcd35bc` ships the PATH setup step — engine
+      endpoints, portal API functions, and the new wizard step 4 of 6 with
+      auto/instructional/skip options.
 title: 'in onboarding, maybe we should add the project commands to PATH env?'
-status: Ready
+status: Done
 createdBy: Guy
 updatedBy: Agent
 ---

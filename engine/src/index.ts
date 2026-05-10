@@ -1876,6 +1876,22 @@ app.put('/api/tasks/:id', requireWorkspace, async (req, res) => {
     delete updates.requireInput;
   }
 
+  // Guard: transitioning to the require-input status without a question comment is a workflow
+  // violation. Enforce atomicity here so agents cannot split the status change and comment
+  // into separate requests (the second of which may never arrive).
+  const requireInputStatus = configCache.requireInputStatus || 'Require Input';
+  if (updates.status === requireInputStatus && task.status !== requireInputStatus) {
+    const submittedHistory: any[] = Array.isArray(updates.history) ? updates.history : [];
+    const existingLen = (task.history || []).length;
+    const hasNewComment = submittedHistory.slice(existingLen).some((e: any) => e?.type === 'comment');
+    if (!hasNewComment) {
+      return res.status(400).json({
+        error: 'REQUIRE_INPUT_MISSING_COMMENT',
+        message: 'Transitioning to Require Input requires a question comment in the same request.',
+      });
+    }
+  }
+
   const normalizedExistingHistory = normalizeHistoryEntries(task.history || []);
   const existingHistory = ensureCreationActivity(
     normalizedExistingHistory.history,
@@ -2394,10 +2410,12 @@ async function startServer() {
       console.log(`Portal:   http://localhost:${PORT}`);
     }
 
-    // Try to restore workspace: --workspace arg wins, then persisted settings.
+    // Try to restore workspace: --workspace arg wins, then persisted settings,
+    // then fall back to cwd if it contains a .flux directory.
     const cliWorkspace = getCliWorkspace();
     const settings = await loadAppSettings();
-    const initial = cliWorkspace || settings.workspace || null;
+    const cwdFallback = existsSync(path.join(process.cwd(), '.flux')) ? process.cwd() : null;
+    const initial = cliWorkspace || settings.workspace || cwdFallback;
 
     if (initial && existsSync(path.join(initial, '.flux'))) {
       await activateWorkspace(initial);

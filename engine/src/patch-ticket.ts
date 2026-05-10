@@ -82,6 +82,18 @@ if (!fs.existsSync(ticketPath)) {
   process.exit(1);
 }
 
+// Resolve the configured require-input status so we can enforce the comment guard.
+function loadRequireInputStatus(workspace: string): string {
+  try {
+    const configPath = path.resolve(workspace, '.flux', 'config.json');
+    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    return cfg.requireInputStatus || 'Require Input';
+  } catch {
+    return 'Require Input';
+  }
+}
+const requireInputStatus = loadRequireInputStatus(opts.workspace);
+
 let raw: string;
 try {
   raw = fs.readFileSync(ticketPath, 'utf-8');
@@ -101,6 +113,12 @@ try {
 
 const fm = parsed.data as Record<string, unknown>;
 const history: unknown[] = Array.isArray(fm['history']) ? (fm['history'] as unknown[]) : [];
+
+// Guard: transitioning to Require Input without a --comment is a workflow violation.
+if (opts.status === requireInputStatus && String(fm['status'] ?? '') !== requireInputStatus && opts.comment === undefined) {
+  console.error(`patch-ticket: --comment is required when transitioning to "${requireInputStatus}". Include the question in the same command.`);
+  process.exit(1);
+}
 
 // Apply field mutations
 if (opts.status !== undefined) {
