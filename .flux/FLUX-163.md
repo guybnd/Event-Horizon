@@ -177,6 +177,10 @@ history:
     to: Released
     user: Agent
     date: '2026-05-09T09:06:34.755Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-10T06:08:07.555Z'
+    comment: Claude Code session lost (engine restarted).
 title: new user proper onboarding
 status: Released
 createdBy: Guy

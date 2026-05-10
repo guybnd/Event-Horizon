@@ -293,6 +293,10 @@ history:
     to: Released
     user: Agent
     date: '2026-05-09T08:10:27.345Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-10T06:08:07.555Z'
+    comment: Claude Code session lost (engine restarted).
 title: >-
   CLI session permissions: spawn with max permissions, block on prompt, grant
   from ticket UI

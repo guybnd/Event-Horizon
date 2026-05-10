@@ -206,6 +206,10 @@ history:
     to: Released
     user: Agent
     date: '2026-05-09T08:10:27.346Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-10T06:08:07.555Z'
+    comment: Claude Code session lost (engine restarted).
 title: >-
   notification popup should show only the amount of unread not the total
   messages

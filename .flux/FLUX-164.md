@@ -106,6 +106,10 @@ history:
     to: Released
     user: Agent
     date: '2026-05-09T09:06:34.756Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-10T06:08:07.555Z'
+    comment: Claude Code session lost (engine restarted).
 title: >-
   I want a little hop animation on the card every time the agent has a 'thought'
   to kind of indicate its working. 

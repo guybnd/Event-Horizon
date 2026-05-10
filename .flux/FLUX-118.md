@@ -2,7 +2,7 @@
 title: Add settings to comment tooltip box
 status: Released
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 assignee: unassigned
 tags:
   - feature
@@ -290,6 +290,10 @@ history:
     to: Released
     user: Agent
     date: '2026-05-09T08:10:27.334Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-10T06:08:07.555Z'
+    comment: Claude Code session lost (engine restarted).
 order: 124
 version: 0.2.0
 releasedAt: '2026-05-09T08:10:27.334Z'

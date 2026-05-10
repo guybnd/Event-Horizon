@@ -175,6 +175,10 @@ history:
       FLUX-166 is done. Commit `dcd35bc` ships the PATH setup step — engine
       endpoints, portal API functions, and the new wizard step 4 of 6 with
       auto/instructional/skip options.
+  - type: activity
+    user: Agent
+    date: '2026-05-10T06:08:07.555Z'
+    comment: Claude Code session lost (engine restarted).
 title: 'in onboarding, maybe we should add the project commands to PATH env?'
 status: Done
 createdBy: Guy

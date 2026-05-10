@@ -176,8 +176,24 @@ history:
       CLI guard, and skill rule reinforcement across all four skill files.
       Awaiting finish commit.
     id: c-2026-05-10t05-32-03-051z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-10T05:32:23.110Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-10T05:32:23.111Z'
+    comment: >-
+      Shipped in commit 3211696. Engine guard, CLI guard, and skill rule
+      reinforcement all confirmed present in working tree before commit.
+    id: c-2026-05-10t05-32-23-111z
+  - type: activity
+    user: Agent
+    date: '2026-05-10T06:08:07.555Z'
+    comment: Claude Code session lost (engine restarted).
 title: agent sessions end prematurely sometimes
-status: Ready
+status: Done
 createdBy: Guy
 updatedBy: Agent
 ---

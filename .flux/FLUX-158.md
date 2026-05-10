@@ -69,6 +69,10 @@ history:
     to: Released
     user: Agent
     date: '2026-05-09T08:10:27.358Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-10T06:08:07.555Z'
+    comment: Claude Code session lost (engine restarted).
 title: >-
   sometimes my latest comments or messages are just deleted by an in progress
   agent session.

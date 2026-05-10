@@ -19,9 +19,23 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-10T06:00:00.000Z'
+  - type: status_change
+    from: Todo
+    to: Done
+    user: Agent
+    date: '2026-05-10T06:50:43.454Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-10T06:50:43.455Z'
+    comment: >-
+      Shipped in 5791d3f. SIGTERM/SIGINT handler added — engine now kills child
+      sessions and waits 400ms for write queues before exiting. Orphan
+      reconciliation runs on chokidar 'ready' event on startup. Both verified in
+      engine/src/index.ts.
+    id: c-2026-05-10t06-50-43-455z
 id: FLUX-173
 title: engine orphans agent sessions on restart — no SIGTERM handler
-status: Todo
+status: Done
 createdBy: Agent
 updatedBy: Agent
 ---

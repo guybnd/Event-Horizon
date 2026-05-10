@@ -81,6 +81,10 @@ history:
     to: Released
     user: Agent
     date: '2026-05-09T08:10:27.349Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-10T06:08:07.555Z'
+    comment: Claude Code session lost (engine restarted).
 title: right click launch agent opens the page instead of just launching it
 status: Released
 createdBy: Guy

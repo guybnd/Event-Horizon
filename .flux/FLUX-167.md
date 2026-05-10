@@ -197,8 +197,22 @@ history:
     user: Agent
     date: '2026-05-10T06:08:07.555Z'
     comment: Claude Code session lost (engine restarted).
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-05-10T06:52:02.069Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-10T06:52:02.070Z'
+    comment: >-
+      Shipped in 808ca3e. LaunchAgentSplitButton component added (sm + md
+      variants). TaskModal both buttons replaced. ContextMenu gets inline effort
+      submenu under Launch Agent. api.ts effortOverride param wired. Settings
+      Session Cost Controls section live. All TypeScript clean.
+    id: c-2026-05-10t06-52-02-070z
 title: cost optimizations
-status: In Progress
+status: Done
 createdBy: Guy
 updatedBy: Agent
 ---
