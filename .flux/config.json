@@ -30,9 +30,6 @@
       "name": "Backlog"
     }
   ],
-  "projects": [
-    "FLUX"
-  ],
   "users": [
     {
       "name": "Guy"
@@ -210,23 +207,27 @@
       "color": "text-gray-400"
     }
   ],
+  "projects": [
+    "FLUX"
+  ],
   "enableBacklogScreen": true,
   "requireCommentOnStatusChange": false,
   "boardCardOpenMode": "full",
   "animationsEnabled": true,
   "enableFireworks": true,
+  "animationSpeed": "normal",
   "requireInputStatus": "Require Input",
   "readyForMergeStatus": "Ready",
   "archiveStatus": "Archived",
   "docsEditPermissions": "all",
   "docsAllowedUsers": [],
-  "releaseSettings": {
-    "generateDistinctFiles": true,
-    "releaseNotesPath": "release-notes"
-  },
-  "animationSpeed": "normal",
   "docsRoot": ".docs",
   "hoverPopupsEnabled": true,
   "hoverPopupDelay": 450,
-  "tokenDisplayMode": "tokens"
+  "tokenDisplayMode": "tokens",
+  "effortLevel": "high",
+  "releaseSettings": {
+    "generateDistinctFiles": true,
+    "releaseNotesPath": "release-notes"
+  }
 }

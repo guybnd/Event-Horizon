@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../AppContext';
 import { createTask, deleteTask, fetchTaskCliSession, fetchTasks, sendTaskCliInput, startTaskCliSession, stopTaskCliSession, updateTask } from '../api';
+import { LaunchAgentSplitButton } from './LaunchAgentSplitButton';
 import type { CliFramework, CliSessionSummary, Config, HistoryEntry, TagDef, Task } from '../types';
 import { StatusBadge } from './StatusBadge';
 import { getStatusColorClass } from '../statusStyles';
@@ -1349,14 +1350,15 @@ export function TaskModal() {
               <option value="claude">Claude Code</option>
               <option value="copilot">Copilot CLI</option>
             </select>
-            <button
-              type="button"
-              disabled={!modalTask?.id || cliSessionBusy || Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status))}
-              onClick={() => {
+            <LaunchAgentSplitButton
+              size="md"
+              busy={cliSessionBusy}
+              disabled={!modalTask?.id || Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status))}
+              onLaunch={(effortOverride) => {
                 if (!modalTask?.id) return;
                 setCliSessionBusy(true);
                 setCliSessionError('');
-                void startTaskCliSession(modalTask.id, selectedCliFramework, undefined, skipPermissions)
+                void startTaskCliSession(modalTask.id, selectedCliFramework, undefined, skipPermissions, effortOverride)
                   .then((session) => {
                     setCliSession(session);
                     triggerRefresh();
@@ -1366,11 +1368,7 @@ export function TaskModal() {
                   })
                   .finally(() => setCliSessionBusy(false));
               }}
-              className="flex items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Bot className="h-4 w-4" />
-              {cliSessionBusy ? 'Starting…' : 'Launch'}
-            </button>
+            />
             <button
               type="button"
               disabled={!modalTask?.id || cliSessionBusy || !cliSession || !['pending', 'running', 'waiting-input'].includes(cliSession.status)}
@@ -2052,23 +2050,20 @@ export function TaskModal() {
                   );
                 }
                 return (
-                  <button
-                    type="button"
-                    disabled={cliSessionBusy}
-                    onClick={() => {
+                  <LaunchAgentSplitButton
+                    size="sm"
+                    busy={cliSessionBusy}
+                    disabled={!modalTask?.id}
+                    onLaunch={(effortOverride) => {
                       if (!modalTask?.id) return;
                       setCliSessionBusy(true);
                       setCliSessionError('');
-                      void startTaskCliSession(modalTask.id, selectedCliFramework, undefined, skipPermissions)
+                      void startTaskCliSession(modalTask.id, selectedCliFramework, undefined, skipPermissions, effortOverride)
                         .then((session) => { setCliSession(session); triggerRefresh(); })
                         .catch((error: any) => { setCliSessionError(error?.message || 'Failed to start CLI session.'); })
                         .finally(() => setCliSessionBusy(false));
                     }}
-                    className="flex items-center gap-1.5 rounded-md bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-gray-700 disabled:opacity-50 dark:bg-white/10 dark:hover:bg-white/20"
-                  >
-                    <Bot className="h-3.5 w-3.5" />
-                    {cliSessionBusy ? 'Starting…' : 'Launch Agent'}
-                  </button>
+                  />
                 );
               })()}
               <button onClick={handleCloseAttempt} className="rounded p-2 text-gray-400 transition-colors hover:bg-gray-200 hover:text-gray-700 dark:hover:bg-white/5 dark:hover:text-white">
