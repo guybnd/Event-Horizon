@@ -49,10 +49,175 @@ history:
     user: Agent
     date: '2026-05-09T04:27:48.758Z'
     comment: Updated description.
+  - type: activity
+    user: Agent
+    date: '2026-05-10T14:16:49.025Z'
+    comment: Launched Claude Code session (95d47eb5).
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-10T14:17:05.565Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-10T14:17:05.566Z'
+    comment: >-
+      Starting implementation: (1) history filter one-liner, (2) config schema +
+      engine model routing, (3) Settings UI inputs.
+    id: c-2026-05-10t14-17-05-566z
+  - type: activity
+    user: Agent
+    date: '2026-05-10T14:17:38.620Z'
+    comment: Claude Code session stopped.
+  - type: activity
+    user: Agent
+    date: '2026-05-10T14:22:57.097Z'
+    comment: Launched Claude Code session (7e08c7b3).
+  - type: activity
+    user: Agent
+    date: '2026-05-10T14:23:51.271Z'
+    comment: Claude Code session stopped.
+  - type: activity
+    user: Agent
+    date: '2026-05-10T14:30:08.590Z'
+    comment: Launched Claude Code session (cdfecb32).
+  - type: activity
+    user: Agent
+    date: '2026-05-10T14:31:05.886Z'
+    comment: Claude Code session stopped.
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Guy
+    date: '2026-05-10T14:34:28.161Z'
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Guy
+    date: '2026-05-10T14:34:39.942Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-10T14:34:39.992Z'
+    comment: Launched Claude Code session (c634e6c1).
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-10T14:34:46.720Z'
+    comment: >-
+      API Error (claude-sonnet-4-6): 400 The provided model identifier is
+      invalid.. Try --model to switch to
+      us.anthropic.claude-sonnet-4-5-20250929-v1:0.
+  - type: activity
+    user: Agent
+    date: '2026-05-10T14:35:48.806Z'
+    comment: Claude Code session lost (engine restarted).
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Guy
+    date: '2026-05-10T14:36:16.959Z'
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Guy
+    date: '2026-05-10T14:36:23.003Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-10T14:36:23.048Z'
+    comment: Launched Claude Code session (d8b22be4).
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-10T14:37:51.099Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-10T14:37:51.100Z'
+    comment: >-
+      **Architectural review: approved.**
+
+
+      Implementation is structurally sound across all three surfaces.
+
+
+      **What holds up:**
+
+
+      1. **History filter** (line 1250) — Filter-before-slice is the correct
+      order: we want the 3 most recent non-`agent_message` entries, not the last
+      3 of the last 6. One-liner, correct semantics, no helper abstraction
+      needed at this scope.
+
+
+      2. **Empty string → no `--model` flag** — The falsy guard `selectedModel ?
+      [...] : []` correctly treats blank config as 'use Claude Code default'.
+      Since `groomingModel` and `implementationModel` default to `''`, users who
+      never configure this get clean pass-through with zero args change. This is
+      the right graceful degradation.
+
+
+      3. **`framework === 'claude'` guard** — Correct. By the time we reach line
+      1288, `framework` is already resolved to `'claude'` or `'copilot'` by the
+      API validator at line 1207. The UI's `targetFramework === 'auto'`
+      visibility gate is also correct — `'auto'` can legitimately resolve to
+      Claude.
+
+
+      4. **Settings dirty-check symmetry** — `groomingModel` and
+      `implementationModel` are present in both the current and original payload
+      objects, consistent with how `releaseNotesPath` and other nested fields
+      are handled. No drift risk.
+
+
+      5. **Responsibility separation** — UI persists via `PUT /api/config`,
+      engine reads from `configCache`, no direct coupling. Config schema default
+      and `config.json` are in sync.
+
+
+      **One thing to note for future work:** `groomingStatuses` hardcodes
+      `'Grooming'` while using the configurable `requireInputStatus`. This is
+      consistent with how the rest of the codebase treats grooming (it's not
+      configurable today), but if a `groomingStatus` config key is ever added,
+      this line would need updating alongside `requireInputStatus`. Not a
+      current defect — just worth knowing the coupling exists.
+    id: c-2026-05-10t14-37-51-100z
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-10T14:37:56.832Z'
+    comment: >-
+      Architecture is sound. FLUX-150 is now **Ready**.
+
+
+      **Review summary:** All three surfaces are correctly structured. Key
+      points:
+
+
+      - **Filter-before-slice** on the history window is the right order — gives
+      the 3 most recent non-`agent_message` entries, not just the last 3 of the
+      last 6
+
+      - **Empty string → no `--model` flag** is correct graceful degradation;
+      blank config cleanly falls through to Claude Code's own default
+
+      - **`framework === 'claude'` guard** is properly placed; by the time line
+      1288 is reached, `'auto'` has already been rejected by the API validator —
+      no leakage
+
+      - **Dirty-check symmetry** in Settings is maintained consistently with
+      other nested config fields
+
+
+      One future-facing note left in the ticket: `groomingStatuses` hardcodes
+      `'Grooming'` alongside the configurable `requireInputStatus` — fine today,
+      but worth knowing if a `groomingStatus` config key is ever added.
+  - type: activity
+    user: Agent
+    date: '2026-05-10T14:38:49.530Z'
+    comment: Launched Claude Code session (052025ca).
 title: token spend optimization
-status: Todo
+status: Ready
 createdBy: Guy
 updatedBy: Agent
+order: 0
 ---
 ## Token Spend Optimization
 

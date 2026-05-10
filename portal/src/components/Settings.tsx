@@ -407,6 +407,8 @@ export function Settings() {
   const [hoverPopupDelay, setHoverPopupDelay] = useState(1500);
   const [tokenDisplayMode, setTokenDisplayMode] = useState<'cost' | 'tokens'>('cost');
   const [effortLevel, setEffortLevel] = useState<string>('high');
+  const [groomingModel, setGroomingModel] = useState<string>('');
+  const [implementationModel, setImplementationModel] = useState<string>('');
   const [generateDistinctFiles, setGenerateDistinctFiles] = useState(true);
   const [releaseNotesPath, setReleaseNotesPath] = useState('release-notes');
   const [saving, setSaving] = useState(false);
@@ -449,6 +451,8 @@ export function Settings() {
       setHoverPopupDelay(config.hoverPopupDelay ?? 1500);
       setTokenDisplayMode(config.tokenDisplayMode ?? 'cost');
       setEffortLevel((config as any).effortLevel || 'high');
+      setGroomingModel((config as any).integrations?.claudeCode?.groomingModel || '');
+      setImplementationModel((config as any).integrations?.claudeCode?.implementationModel || '');
       if (config.releaseSettings) {
         setGenerateDistinctFiles(config.releaseSettings.generateDistinctFiles);
         setReleaseNotesPath(config.releaseSettings.releaseNotesPath || 'release-notes');
@@ -592,6 +596,12 @@ export function Settings() {
         releaseSettings: {
           generateDistinctFiles,
           releaseNotesPath
+        },
+        integrations: {
+          claudeCode: {
+            groomingModel: groomingModel.trim(),
+            implementationModel: implementationModel.trim(),
+          }
         }
       });
       
@@ -660,6 +670,8 @@ export function Settings() {
     hoverPopupDelay,
     tokenDisplayMode,
     effortLevel,
+    groomingModel,
+    implementationModel,
   });
 
   const originalPayload = JSON.stringify({
@@ -685,6 +697,8 @@ export function Settings() {
     hoverPopupDelay: config.hoverPopupDelay ?? 1500,
     tokenDisplayMode: config.tokenDisplayMode ?? 'cost',
     effortLevel: (config as any).effortLevel || 'high',
+    groomingModel: (config as any).integrations?.claudeCode?.groomingModel || '',
+    implementationModel: (config as any).integrations?.claudeCode?.implementationModel || '',
   });
 
   const isDirty = currentSavedPayload !== originalPayload;
@@ -712,6 +726,8 @@ export function Settings() {
     setHoverPopupsEnabled(config.hoverPopupsEnabled ?? true);
     setHoverPopupDelay(config.hoverPopupDelay ?? 1500);
     setEffortLevel((config as any).effortLevel || 'high');
+    setGroomingModel((config as any).integrations?.claudeCode?.groomingModel || '');
+    setImplementationModel((config as any).integrations?.claudeCode?.implementationModel || '');
     setGenerateDistinctFiles(config.releaseSettings?.generateDistinctFiles ?? true);
     setReleaseNotesPath(config.releaseSettings?.releaseNotesPath || 'release-notes');
   };
@@ -1358,6 +1374,39 @@ export function Settings() {
               </select>
             </div>
           </div>
+
+          {(targetFramework === 'claude' || targetFramework === 'auto') && (
+            <div className="mt-6 rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
+              <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Claude Code Models</h3>
+              <p className="text-xs text-gray-500 mb-4">Model IDs passed via <code className="text-xs font-mono">--model</code> when launching sessions. Grooming-phase tickets use the grooming model; all others use the implementation model.</p>
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                    Grooming model
+                  </label>
+                  <input
+                    type="text"
+                    value={groomingModel}
+                    onChange={(e) => setGroomingModel(e.target.value)}
+                    placeholder="Leave blank to use Claude Code default"
+                    className="w-full rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-mono outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630] dark:text-gray-100"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                    Implementation model
+                  </label>
+                  <input
+                    type="text"
+                    value={implementationModel}
+                    onChange={(e) => setImplementationModel(e.target.value)}
+                    placeholder="Leave blank to use Claude Code default"
+                    className="w-full rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-mono outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630] dark:text-gray-100"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
         </div>
             )}
           </div>

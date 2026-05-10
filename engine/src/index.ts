@@ -231,6 +231,12 @@ let configCache: any = {
   releaseSettings: {
     generateDistinctFiles: true,
     releaseNotesPath: 'release-notes'
+  },
+  integrations: {
+    claudeCode: {
+      groomingModel: '',
+      implementationModel: '',
+    }
   }
 };
 
@@ -1241,7 +1247,7 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
     (task.body || '').trim() || '(No description)',
     '',
     'Latest activity:',
-    ...(Array.isArray(task.history) ? task.history.slice(-6).map((entry: any) => {
+    ...(Array.isArray(task.history) ? task.history.filter((e: any) => e?.type !== 'agent_message').slice(-3).map((entry: any) => {
       if (entry?.type === 'status_change') {
         return `- [${entry.date || ''}] ${entry.user || 'Unknown'} moved ${entry.from || '?'} -> ${entry.to || '?'}`;
       }
@@ -1277,9 +1283,19 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
   cliSessionIdByTaskId.set(id, sessionId);
 
   try {
-    const claudeArgs = skipPermissions
-      ? ['-p', initialPrompt, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions']
-      : ['-p', initialPrompt, '--output-format', 'stream-json', '--verbose'];
+    const claudeIntegration = (configCache as any).integrations?.claudeCode;
+    const groomingStatuses = [(configCache as any).requireInputStatus || 'Require Input', 'Grooming'];
+    const selectedModel = claudeIntegration && framework === 'claude'
+      ? (groomingStatuses.includes(task.status) ? claudeIntegration.groomingModel : claudeIntegration.implementationModel)
+      : null;
+
+    const claudeArgs = [
+      ...(selectedModel ? ['--model', selectedModel] : []),
+      '-p', initialPrompt,
+      '--output-format', 'stream-json',
+      '--verbose',
+      ...(skipPermissions ? ['--dangerously-skip-permissions'] : []),
+    ];
 
     const caps = PROVIDER_CAPABILITIES[framework] ?? PROVIDER_CAPABILITIES['copilot'];
     // effortOverride (per-launch) > per-ticket effortLevel > global config effortLevel.
