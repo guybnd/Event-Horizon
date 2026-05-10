@@ -1171,6 +1171,15 @@ app.get('/api/tasks', requireWorkspace, (req, res) => {
   res.json(Object.values(tasksCache).map(serializeTaskForApi));
 });
 
+app.get('/api/tasks/:id', requireWorkspace, (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+  if (!task) {
+    return res.status(404).json({ error: 'Task not found' });
+  }
+  res.json(serializeTaskForApi(task));
+});
+
 app.get('/api/tasks/:id/cli-session', requireWorkspace, (req, res) => {
   const { id } = req.params;
   const task = tasksCache[id];

@@ -12,6 +12,12 @@ export async function fetchTasks(): Promise<Task[]> {
   return res.json();
 }
 
+export async function fetchTask(id: string): Promise<Task> {
+  const res = await fetch(`${API_URL}/tasks/${id}`);
+  if (!res.ok) throw new Error('Failed to fetch task');
+  return res.json();
+}
+
 export async function updateTask(id: string, updates: Partial<Task>): Promise<Task> {
   const res = await fetch(`${API_URL}/tasks/${id}`, {
     method: 'PUT',

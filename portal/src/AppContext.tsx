@@ -138,6 +138,7 @@ interface AppState {
   openTaskFullView: (task: Partial<Task>, options?: { scrollToComments?: boolean }) => void;
   openModalScrollToComments: boolean;
   clearOpenModalScrollToComments: () => void;
+  openModalInFullView: boolean;
   tasks: Task[];
   tasksLoading: boolean;
   taskLiveEvents: Record<string, TaskLiveEvent>;
@@ -176,6 +177,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [modalTask, setModalTask] = useState<Partial<Task> | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [openModalScrollToComments, setOpenModalScrollToComments] = useState(false);
+  const [openModalInFullView, setOpenModalInFullView] = useState(false);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [tasksLoading, setTasksLoading] = useState(true);
   const [taskLiveEvents, setTaskLiveEvents] = useState<Record<string, TaskLiveEvent>>({});
@@ -410,6 +412,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const openTaskModal = (task?: Partial<Task>) => {
+    setOpenModalInFullView(false);
     const nextTask = task || { status: 'Todo' };
     if (nextTask.id) {
       updateTicketViewUrl(nextTask.id, 'popup');
@@ -424,6 +427,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
     setModalTask(task);
     setIsModalOpen(true);
+    setOpenModalInFullView(true);
     setOpenModalScrollToComments(options?.scrollToComments ?? false);
   };
 
@@ -431,6 +435,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const closeModal = () => {
     setIsModalOpen(false);
+    setOpenModalInFullView(false);
     setTimeout(() => setModalTask(null), 1000);
   };
 
@@ -665,8 +670,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     const task = tasks.find((item) => item.id === ticketId);
     if (!task) return;
-    setModalTask(task);
-    setIsModalOpen(true);
+    const view = params.get('view');
+    if (view === 'full') {
+      openTaskFullView(task);
+    } else {
+      setModalTask(task);
+      setIsModalOpen(true);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isModalOpen, modalTask?.id, tasks, tasksLoading]);
 
   // Keep the open modal's task data in sync with background poll updates.
@@ -707,6 +718,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       openTaskFullView,
       openModalScrollToComments,
       clearOpenModalScrollToComments,
+      openModalInFullView,
       closeModal,
       setModalTask,
       tasks,
