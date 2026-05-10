@@ -45,8 +45,8 @@ function FilterDropdown({
   }, [open]);
 
   return (
-    <div ref={ref} className="relative flex flex-none items-center gap-2 rounded-xl border border-gray-200 bg-gray-50/80 px-3 py-2 dark:border-white/10 dark:bg-white/5">
-      <span className="flex-none text-xs font-medium uppercase tracking-[0.16em] text-gray-400">{label}</span>
+    <div ref={ref} className="relative flex w-full items-center gap-2 rounded-xl border border-gray-200 bg-gray-50/80 px-3 py-2 dark:border-white/10 dark:bg-white/5">
+      <span className="w-[72px] flex-none text-xs font-medium uppercase tracking-[0.16em] text-gray-400">{label}</span>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -166,7 +166,7 @@ export function TaskViewControls({
 
         <button
           onClick={() => setFilterUnreadOnly(!filterUnreadOnly)}
-          className={`inline-flex flex-none items-center gap-1.5 rounded-xl border px-3 py-2 text-sm font-medium transition-all ${
+          className={`inline-flex min-w-[90px] flex-none items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-sm font-medium transition-all ${
             filterUnreadOnly
               ? 'border-amber-400 bg-amber-400 text-white shadow-sm shadow-amber-400/30 dark:border-amber-400 dark:bg-amber-400 dark:text-white'
               : 'border-amber-300/60 bg-amber-50/60 text-amber-600 hover:border-amber-400 hover:bg-amber-100 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400 dark:hover:bg-amber-500/20'
@@ -179,7 +179,7 @@ export function TaskViewControls({
         <div ref={filtersRef} className="relative flex-none">
           <button
             onClick={() => setShowAdvancedFilters((current) => !current)}
-            className={`inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-medium transition-colors ${
+            className={`inline-flex min-w-[90px] items-center justify-center gap-2 rounded-xl border px-3 py-2 text-sm font-medium transition-colors ${
               showAdvancedFilters
                 ? 'border-gray-300 bg-gray-100 text-gray-700 dark:border-white/20 dark:bg-white/10 dark:text-gray-200'
                 : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-100 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10'
@@ -190,7 +190,7 @@ export function TaskViewControls({
           </button>
 
           {showAdvancedFilters && (
-            <div className="absolute left-0 top-full z-50 mt-1.5 flex flex-wrap gap-2 rounded-2xl border border-gray-200 bg-white/95 p-3 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:bg-[#1e1f2a]/95">
+            <div className="absolute left-0 top-full z-50 mt-1.5 flex w-72 flex-col gap-2 rounded-2xl border border-gray-200 bg-white/95 p-3 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:bg-[#1e1f2a]/95">
               {/* Sort */}
               <FilterDropdown
                 label="Sort"
@@ -300,7 +300,7 @@ export function TaskViewControls({
         <button
           onClick={clearTaskFilters}
           disabled={activeFilterCount === 0}
-          className="flex-none rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-500 transition-colors hover:bg-gray-100 disabled:cursor-default disabled:opacity-60 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
+          className="flex-none min-w-[90px] rounded-xl border border-gray-200 bg-white px-3 py-2 text-center text-sm font-medium text-gray-500 transition-colors hover:bg-gray-100 disabled:cursor-default disabled:opacity-60 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
         >
           Clear
         </button>
