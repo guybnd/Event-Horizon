@@ -251,6 +251,25 @@ export async function sendTaskCliInput(taskId: string, message: string, user: st
   return payload.session;
 }
 
+export async function fetchPathInfo(): Promise<{ binaryDir: string | null; isPkg: boolean; platform: string }> {
+  const res = await fetch(`${API_URL}/path-info`);
+  if (!res.ok) throw new Error('Failed to fetch path info');
+  return res.json();
+}
+
+export async function setupPath(mode: 'auto' | 'instructional'): Promise<{ ok: boolean; snippet: string | null; note?: string }> {
+  const res = await fetch(`${API_URL}/path-setup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode }),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to set up PATH');
+  }
+  return res.json();
+}
+
 export async function stopTaskCliSession(taskId: string): Promise<CliSessionSummary> {
   const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/stop`, {
     method: 'POST',

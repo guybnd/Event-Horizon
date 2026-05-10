@@ -2150,6 +2150,66 @@ app.put('/api/config', requireWorkspace, async (req, res) => {
   }
 });
 
+// ─── PATH setup API ──────────────────────────────────────────────────────────
+// GET  /api/path-info   → binary dir, pkg flag, platform
+// POST /api/path-setup  → writes binary dir to shell config (auto) or returns snippet (instructional)
+
+app.get('/api/path-info', (_req, res) => {
+  const isPkg = (process as any).pkg !== undefined;
+  const binaryDir = isPkg ? path.dirname(process.execPath) : null;
+  res.json({ binaryDir, isPkg, platform: process.platform });
+});
+
+app.post('/api/path-setup', async (req, res) => {
+  const mode: string = req.body?.mode;
+  if (mode !== 'auto' && mode !== 'instructional') {
+    return res.status(400).json({ error: 'mode must be "auto" or "instructional"' });
+  }
+
+  const isPkg = (process as any).pkg !== undefined;
+  if (!isPkg) {
+    return res.json({ ok: true, snippet: null, note: 'npm-global — already in PATH' });
+  }
+
+  const binaryDir = path.dirname(process.execPath);
+  const platform = process.platform;
+
+  let snippet: string;
+  if (platform === 'win32') {
+    snippet = `[Environment]::SetEnvironmentVariable('Path', $env:Path + ';${binaryDir}', 'User')`;
+  } else {
+    snippet = `export PATH="${binaryDir}:$PATH"`;
+  }
+
+  if (mode === 'instructional') {
+    return res.json({ ok: true, snippet });
+  }
+
+  // Auto mode — write to shell config or Windows user environment
+  try {
+    if (platform === 'win32') {
+      const ps = `[Environment]::SetEnvironmentVariable('Path', ([Environment]::GetEnvironmentVariable('Path','User') + ';${binaryDir}'), 'User')`;
+      await new Promise<void>((resolve, reject) => {
+        execFile('powershell.exe', ['-NoProfile', '-Command', ps], (err) => {
+          if (err) reject(err); else resolve();
+        });
+      });
+    } else {
+      const rcFile = platform === 'darwin'
+        ? path.join(os.homedir(), '.zprofile')
+        : path.join(os.homedir(), '.profile');
+      const line = `\nexport PATH="${binaryDir}:$PATH"\n`;
+      const existing = await fs.readFile(rcFile, 'utf-8').catch(() => '');
+      if (!existing.includes(binaryDir)) {
+        await fs.appendFile(rcFile, line, 'utf-8');
+      }
+    }
+    return res.json({ ok: true, snippet });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || 'Failed to update PATH' });
+  }
+});
+
 // Static portal serving — only active when portal/dist has been built.
 // API routes above take priority; this catches everything else.
 

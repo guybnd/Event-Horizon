@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   FolderOpen,
   Rocket,
@@ -8,8 +8,10 @@ import {
   CheckCircle,
   Loader2,
   AlertCircle,
+  Copy,
+  Check,
 } from 'lucide-react';
-import { pickWorkspaceFolder, setWorkspace, installWorkspaceSkill } from '../api';
+import { pickWorkspaceFolder, setWorkspace, installWorkspaceSkill, fetchPathInfo, setupPath } from '../api';
 import { useApp } from '../AppContext';
 
 const COMPLETE_KEY = 'eh-onboarding-complete';
@@ -55,6 +57,15 @@ export function OnboardingWizard() {
   const [installing, setInstalling] = useState(false);
   const [installDone, setInstallDone] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
+
+  // Step 4 — PATH setup
+  const [pathInfo, setPathInfo] = useState<{ binaryDir: string | null; isPkg: boolean; platform: string } | null>(null);
+  const [pathAction, setPathAction] = useState<'auto' | 'instructional' | null>(null);
+  const [pathLoading, setPathLoading] = useState(false);
+  const [pathDone, setPathDone] = useState(false);
+  const [pathError, setPathError] = useState<string | null>(null);
+  const [pathSnippet, setPathSnippet] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   function complete() {
     localStorage.setItem(COMPLETE_KEY, '1');
@@ -114,13 +125,42 @@ export function OnboardingWizard() {
     setStep(4);
   }
 
-  // Step 4 — docs
+  // Step 4 — PATH setup
+  useEffect(() => {
+    if (step !== 4) return;
+    fetchPathInfo().then(setPathInfo).catch(() => setPathInfo({ binaryDir: null, isPkg: false, platform: '' }));
+  }, [step]);
+
+  async function handlePathSetup(mode: 'auto' | 'instructional') {
+    setPathAction(mode);
+    setPathLoading(true);
+    setPathError(null);
+    try {
+      const result = await setupPath(mode);
+      setPathSnippet(result.snippet);
+      setPathDone(mode === 'auto');
+    } catch (err: any) {
+      setPathError(err.message || 'Failed to update PATH.');
+    } finally {
+      setPathLoading(false);
+    }
+  }
+
+  function handleCopySnippet() {
+    if (!pathSnippet) return;
+    navigator.clipboard.writeText(pathSnippet).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+
+  // Step 5 — docs
   function handleGoDocs() {
     complete();
     setView('docs');
   }
 
-  // Step 5 — finish
+  // Step 6 — finish
   function handleFirstTicket() {
     complete();
   }
@@ -128,7 +168,7 @@ export function OnboardingWizard() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-gray-50 dark:bg-bg-dark p-8">
       <div className="w-full max-w-lg">
-        <StepDots current={step} total={5} />
+        <StepDots current={step} total={6} />
 
         {step === 1 && (
           <div>
@@ -307,6 +347,96 @@ export function OnboardingWizard() {
           <div>
             <div className="mb-8 flex flex-col items-center gap-3 text-center">
               <div className="flex items-center justify-center rounded-2xl bg-primary/10 p-4">
+                <Terminal className="h-8 w-8 text-primary" />
+              </div>
+              <h1 className="text-2xl font-bold tracking-tight text-gray-900 dark:text-white">
+                Add to PATH
+              </h1>
+              <p className="text-sm text-gray-500 dark:text-gray-400 max-w-sm">
+                Run <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-xs dark:bg-white/10">event-horizon</code> from any terminal without typing its full path.
+              </p>
+            </div>
+
+            {pathInfo === null ? (
+              <div className="flex justify-center py-4">
+                <Loader2 className="h-5 w-5 animate-spin text-gray-400" />
+              </div>
+            ) : !pathInfo.isPkg ? (
+              <div className="mb-6 flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-400">
+                <CheckCircle className="h-5 w-5 shrink-0" />
+                <span>Already in PATH via npm — nothing to do.</span>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-3">
+                {pathError && (
+                  <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400">
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>{pathError}</span>
+                  </div>
+                )}
+
+                {pathDone && (
+                  <div className="mb-2 flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-400">
+                    <CheckCircle className="h-5 w-5 shrink-0" />
+                    <span>PATH updated! Restart your terminal for it to take effect.</span>
+                  </div>
+                )}
+
+                {pathSnippet && pathAction === 'instructional' && (
+                  <div className="rounded-xl border border-gray-200 bg-gray-50 p-3 dark:border-white/10 dark:bg-white/5">
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <span className="text-xs font-medium text-gray-500 dark:text-gray-400">Run this in your terminal</span>
+                      <button
+                        onClick={handleCopySnippet}
+                        className="flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
+                      >
+                        {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                        {copied ? 'Copied!' : 'Copy'}
+                      </button>
+                    </div>
+                    <code className="block break-all font-mono text-xs text-gray-800 dark:text-gray-200">{pathSnippet}</code>
+                  </div>
+                )}
+
+                {!pathDone && (
+                  <button
+                    onClick={() => handlePathSetup('auto')}
+                    disabled={pathLoading && pathAction === 'auto'}
+                    className="flex h-11 items-center justify-center gap-2 rounded-2xl bg-primary px-6 text-sm font-semibold text-white shadow-sm transition-all hover:bg-primary-hover disabled:opacity-50"
+                  >
+                    {pathLoading && pathAction === 'auto' ? (
+                      <><Loader2 className="h-4 w-4 animate-spin" /> Adding…</>
+                    ) : 'Add automatically'}
+                  </button>
+                )}
+
+                {!pathDone && !pathSnippet && (
+                  <button
+                    onClick={() => handlePathSetup('instructional')}
+                    disabled={pathLoading && pathAction === 'instructional'}
+                    className="flex h-11 items-center justify-center rounded-2xl border border-gray-200 bg-white px-6 text-sm font-medium text-gray-700 shadow-sm transition-all hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
+                  >
+                    {pathLoading && pathAction === 'instructional' ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : 'Show me the command'}
+                  </button>
+                )}
+              </div>
+            )}
+
+            <button
+              onClick={() => setStep(5)}
+              className="mt-3 flex h-11 w-full items-center justify-center rounded-2xl border border-gray-200 bg-white px-6 text-sm font-medium text-gray-700 shadow-sm transition-all hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
+            >
+              {pathDone ? 'Continue →' : 'Skip'}
+            </button>
+          </div>
+        )}
+
+        {step === 5 && (
+          <div>
+            <div className="mb-8 flex flex-col items-center gap-3 text-center">
+              <div className="flex items-center justify-center rounded-2xl bg-primary/10 p-4">
                 <BookOpen className="h-8 w-8 text-primary" />
               </div>
               <h1 className="text-2xl font-bold tracking-tight text-gray-900 dark:text-white">
@@ -325,7 +455,7 @@ export function OnboardingWizard() {
                 Open the docs
               </button>
               <button
-                onClick={() => setStep(5)}
+                onClick={() => setStep(6)}
                 className="flex h-11 items-center justify-center rounded-2xl border border-gray-200 bg-white px-6 text-sm font-medium text-gray-700 shadow-sm transition-all hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
               >
                 I'll check later
@@ -334,7 +464,7 @@ export function OnboardingWizard() {
           </div>
         )}
 
-        {step === 5 && (
+        {step === 6 && (
           <div>
             <div className="mb-8 flex flex-col items-center gap-3 text-center">
               <div className="flex items-center justify-center rounded-2xl bg-primary/10 p-4">
