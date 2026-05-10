@@ -135,5 +135,6 @@ export interface Config {
   };
   enableFireworks?: boolean;
   tokenDisplayMode?: 'cost' | 'tokens';
+  effortLevel?: string;
 }
 

@@ -1209,9 +1209,24 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
   const sessionId = randomUUID();
   const label = cliLabelForFramework(framework);
   const startedAt = new Date().toISOString();
+  const readyStatus = (configCache as any)?.readyForMergeStatus || 'Ready';
+  const taskStatus = (task as any).status || 'Unknown';
+  const actionInstruction = (() => {
+    if (taskStatus === 'In Progress') {
+      return `The ticket is currently In Progress. If the implementation is already complete, move it to "${readyStatus}" status and post a completion summary comment. If work remains, complete it then move to "${readyStatus}". Do not exit without updating the ticket status.`;
+    }
+    if (taskStatus === 'Todo') {
+      return `The ticket is in Todo. Begin implementation: move it to In Progress, complete the work, then move it to "${readyStatus}" when done.`;
+    }
+    if (taskStatus === readyStatus) {
+      return `The ticket is in ${readyStatus} awaiting user review. Do not move it further — wait for the user to say "finish ${task.id}".`;
+    }
+    return 'Respond with implementation progress updates and blockers. Keep updates concise.';
+  })();
   const promptLines = [
     `You are working on ticket ${task.id}.`,
     `Title: ${task.title || 'Untitled ticket'}`,
+    `Current status: ${taskStatus}`,
     '',
     'Ticket description:',
     (task.body || '').trim() || '(No description)',
@@ -1224,7 +1239,7 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
       return `- [${entry?.date || ''}] ${entry?.user || 'Unknown'}: ${entry?.comment || entry?.type || 'activity'}`;
     }) : ['- (No history)']),
     '',
-    'Respond with implementation progress updates and blockers. Keep updates concise.',
+    actionInstruction,
     ...(appendPrompt ? ['', appendPrompt] : []),
   ];
   const initialPrompt = promptLines.join('\n');
@@ -1339,7 +1354,9 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
           }
           // Accumulate token usage from result events
           if (evt.type === 'result' && evt.usage) {
-            const inputTok = evt.usage?.input_tokens ?? 0;
+            const inputTok = (evt.usage?.input_tokens ?? 0)
+              + (evt.usage?.cache_read_input_tokens ?? 0)
+              + (evt.usage?.cache_creation_input_tokens ?? 0);
             const outputTok = evt.usage?.output_tokens ?? 0;
             session.inputTokens = (session.inputTokens ?? 0) + inputTok;
             session.outputTokens = (session.outputTokens ?? 0) + outputTok;
@@ -1528,7 +1545,9 @@ app.post('/api/tasks/:id/cli-session/input', requireWorkspace, async (req, res) 
           }
           // Accumulate token usage from result events (same as main proc)
           if (evt.type === 'result' && evt.usage) {
-            const inputTok = evt.usage?.input_tokens ?? 0;
+            const inputTok = (evt.usage?.input_tokens ?? 0)
+              + (evt.usage?.cache_read_input_tokens ?? 0)
+              + (evt.usage?.cache_creation_input_tokens ?? 0);
             const outputTok = evt.usage?.output_tokens ?? 0;
             session.inputTokens = (session.inputTokens ?? 0) + inputTok;
             session.outputTokens = (session.outputTokens ?? 0) + outputTok;
@@ -2323,7 +2342,7 @@ app.post('/api/shutdown', (_req, res) => {
 // to the executable so users can change the port before launching.
 async function readPortConfig(): Promise<number> {
   const isPkg = (process as any).pkg !== undefined;
-  if (!isPkg) return parseInt(process.env.PORT || '3001', 10);
+  if (!isPkg) return parseInt(process.env.PORT || '3067', 10);
 
   const cfgPath = path.join(path.dirname(process.execPath), 'event-horizon.config.json');
   try {
@@ -2333,10 +2352,10 @@ async function readPortConfig(): Promise<number> {
   } catch {
     // Create a default config file so users know it exists and can edit it.
     try {
-      await fs.writeFile(cfgPath, JSON.stringify({ port: 3001 }, null, 2), 'utf-8');
+      await fs.writeFile(cfgPath, JSON.stringify({ port: 3067 }, null, 2), 'utf-8');
     } catch {}
   }
-  return 3001;
+  return 3067;
 }
 
 // ─── Open browser ─────────────────────────────────────────────────────────────
