@@ -2128,15 +2128,6 @@ app.post('/api/workspace', async (req, res) => {
     return res.status(400).json({ error: `Folder not found: ${newRoot}` });
   }
 
-  // Validate it has a .flux/ directory (or inform user to init).
-  const fluxPath = path.join(newRoot, '.flux');
-  if (!existsSync(fluxPath)) {
-    return res.status(400).json({
-      error: `No .flux/ directory found in ${newRoot}. Run event-horizon init in your project root first, or choose a different folder.`,
-      code: 'NO_FLUX_DIR',
-    });
-  }
-
   try {
     await activateWorkspace(newRoot);
     await saveAppSettings({ workspace: newRoot });

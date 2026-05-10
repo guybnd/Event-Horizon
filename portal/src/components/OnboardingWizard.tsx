@@ -141,15 +141,15 @@ export function OnboardingWizard() {
               </h1>
               <p className="text-sm text-gray-500 dark:text-gray-400 max-w-sm">
                 Let's get you set up. First, pick the project folder you want to
-                track. It should contain a{' '}
+                track. The wizard will create a{' '}
                 <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-xs dark:bg-white/10">
                   .flux/
                 </code>{' '}
-                directory — run{' '}
+                directory automatically if it doesn't exist. You can also run{' '}
                 <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-xs dark:bg-white/10">
                   event-horizon init
                 </code>{' '}
-                to create one.
+                manually as an alternative.
               </p>
             </div>
 
