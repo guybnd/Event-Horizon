@@ -22,6 +22,8 @@ import {
 import { useApp } from '../AppContext';
 import { createTask, deleteTask, fetchTaskCliSession, fetchTasks, sendTaskCliInput, startTaskCliSession, stopTaskCliSession, updateTask } from '../api';
 import { LaunchAgentSplitButton } from './LaunchAgentSplitButton';
+import { CodeReviewButton } from './CodeReviewButton';
+import type { ReviewPersona } from './CodeReviewButton';
 import type { CliFramework, CliSessionSummary, Config, HistoryEntry, TagDef, Task } from '../types';
 import { StatusBadge } from './StatusBadge';
 import { getStatusColorClass } from '../statusStyles';
@@ -639,6 +641,25 @@ export function TaskModal() {
 
   const [finishBusy, setFinishBusy] = useState(false);
   const [finishError, setFinishError] = useState('');
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewError, setReviewError] = useState('');
+
+  const handleSendForCodeReview = async (persona: ReviewPersona) => {
+    if (!modalTask?.id) return;
+    setReviewBusy(true);
+    setReviewError('');
+    try {
+      await updateTask(modalTask.id, { status: 'In Progress' });
+      const session = await startTaskCliSession(modalTask.id, selectedCliFramework, persona.prompt, skipPermissions);
+      setCliSession(session);
+      triggerRefresh();
+      closeModal();
+    } catch (error: any) {
+      setReviewError(error?.message || 'Failed to start review session.');
+    } finally {
+      setReviewBusy(false);
+    }
+  };
 
   const sendFinishCommand = async () => {
     if (!modalTask?.id) return;
@@ -1893,6 +1914,14 @@ export function TaskModal() {
               <RotateCcw className="h-4 w-4" />
               Return to work
             </button>
+            <CodeReviewButton
+              busy={reviewBusy}
+              disabled={saving || Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status))}
+              onReview={(persona) => void handleSendForCodeReview(persona)}
+            />
+            {reviewError && (
+              <p className="text-xs text-red-600 dark:text-red-400">{reviewError}</p>
+            )}
             <button
               onClick={() => isFullView ? setIsPromptModalOpen(false) : setIsFullView(true)}
               className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
