@@ -190,6 +190,7 @@ export function TaskModal() {
   const [tags, setTags] = useState<string[]>([]);
   const [priority, setPriority] = useState<string>('None');
   const [effort, setEffort] = useState<string>('None');
+  const [effortLevel, setEffortLevel] = useState<string>('');
   const [implementationLink, setImplementationLink] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -292,6 +293,7 @@ export function TaskModal() {
     const nextAssignee = modalTask.assignee || 'unassigned';
     const nextPriority = modalTask.priority || 'None';
     const nextEffort = modalTask.effort || 'None';
+    const nextThinkingBudget = (modalTask as any).effortLevel || '';
     const nextLink = modalTask.implementationLink || '';
 
     if (isNewTicket) {
@@ -302,6 +304,7 @@ export function TaskModal() {
       setTags(modalTask.tags || []);
       setPriority(nextPriority);
       setEffort(nextEffort);
+      setEffortLevel(nextThinkingBudget);
       setImplementationLink(nextLink);
       setSubtasks(modalTask.subtasks || []);
       setCliSession(modalTask.cliSession || null);
@@ -318,6 +321,7 @@ export function TaskModal() {
       });
       setPriority((prev) => (prev !== nextPriority ? nextPriority : prev));
       setEffort((prev) => (prev !== nextEffort ? nextEffort : prev));
+      setEffortLevel((prev) => (prev !== nextThinkingBudget ? nextThinkingBudget : prev));
       setImplementationLink((prev) => (prev !== nextLink ? nextLink : prev));
       setSubtasks((prev) => {
         const next = modalTask.subtasks || [];
@@ -480,6 +484,7 @@ export function TaskModal() {
     tags: modalTask?.tags || [],
     priority: modalTask?.priority || 'None',
     effort: modalTask?.effort || 'None',
+    effortLevel: (modalTask as any)?.effortLevel || '',
     implementationLink: modalTask?.implementationLink || '',
     subtasks: modalTask?.subtasks || [],
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -493,9 +498,10 @@ export function TaskModal() {
     tags,
     priority,
     effort,
+    effortLevel,
     implementationLink,
     subtasks,
-  }), [title, body, status, assignee, tags, priority, effort, implementationLink, subtasks]);
+  }), [title, body, status, assignee, tags, priority, effort, effortLevel, implementationLink, subtasks]);
 
   const isDirty = originalPayload !== currentPayload || newComment.trim() !== '';
 
@@ -556,6 +562,7 @@ export function TaskModal() {
         tags,
         priority,
         effort,
+        effortLevel: effortLevel || undefined,
         implementationLink: implementationLink.trim(),
         order: modalTask.order,
         history: [...(modalTask.history || []), ...newEntries],
@@ -609,6 +616,7 @@ export function TaskModal() {
         tags,
         priority,
         effort,
+        effortLevel: effortLevel || undefined,
         implementationLink: implementationLink.trim(),
         order: modalTask.order,
         history: [...(modalTask.history || []), ...newEntries],
@@ -704,7 +712,7 @@ export function TaskModal() {
   const handleSave = async (customHistory?: any[], keepOpen = false) => {
     setSaving(true);
     setSaveError(null);
-    const payload = { title, body, status, assignee, tags, priority, effort, implementationLink: implementationLink.trim(), subtasks, order: modalTask?.order };
+    const payload = { title, body, status, assignee, tags, priority, effort, effortLevel: effortLevel || undefined, implementationLink: implementationLink.trim(), subtasks, order: modalTask?.order };
     let historyUpdates: any[] = customHistory || [];
 
     if (!customHistory && newComment.trim()) {
@@ -878,6 +886,7 @@ export function TaskModal() {
         tags,
         priority,
         effort,
+        effortLevel: effortLevel || undefined,
         implementationLink: implementationLink.trim(),
         order: modalTask.order,
         history: [...(modalTask.history || []), ...historyUpdates],
@@ -1138,6 +1147,22 @@ export function TaskModal() {
               {item}
             </option>
           ))}
+        </select>
+      </div>
+
+      <div>
+        <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Effort Override</label>
+        <select
+          className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
+          value={effortLevel}
+          onChange={(e) => setEffortLevel(e.target.value)}
+        >
+          <option value="">Uses global default</option>
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+          <option value="xhigh">xhigh</option>
+          <option value="max">max</option>
         </select>
       </div>
 
