@@ -10,7 +10,7 @@ Event Horizon is designed so the repository itself is the application's data sto
 
 Event Horizon is distributed as a single executable that bundles both the engine API and the portal UI.
 
-- The binary starts a local server (defaulting to `http://localhost:3001`). The UI is served directly from this same origin.
+- The binary starts a local server (defaulting to `http://localhost:3067`). The UI is served directly from this same origin.
 - A **System Tray** manager keeps the service running in the background. Closing your browser does not stop the engine; you must explicitly quit from the tray or the portal header.
 - Both runtime layers read from the same repository-backed sources: `.flux/` for tasks and workflow assets, and `.docs/` for project documentation.
 

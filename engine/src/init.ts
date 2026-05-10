@@ -239,7 +239,7 @@ Next steps:
        npm run dev
 
   2. Open the portal in your browser:
-       http://localhost:3001
+       http://localhost:3067
 
   3. Create your first ticket using the "+ New ticket" button on the board.
 

@@ -15,7 +15,7 @@ Event Horizon ships as a standalone binary with an embedded IDE-style workspace 
 
 1. **Download the Binary**: Get the latest `event-horizon` executable for your platform (Windows, macOS, or Linux).
 2. **Run the App**: Double-click the executable.
-3. **Connect**: Your default web browser will automatically open the Event Horizon portal (typically at `http://localhost:3001`).
+3. **Connect**: Your default web browser will automatically open the Event Horizon portal (typically at `http://localhost:3067`).
 4. **Select Workspace**: If it's your first time, the portal will prompt you to select a workspace. Click **Browse** and select your project folder, or type the path. If the folder hasn't been initialized, the portal will guide you through setting it up.
 
 ---

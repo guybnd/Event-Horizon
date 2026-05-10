@@ -13,7 +13,7 @@ This file sits directly next to your `event-horizon` binary or inside your sourc
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `port` | `number` | The local port the API and portal are served on (default: `3001`). |
+| `port` | `number` | The local port the API and portal are served on (default: `3067`). |
 
 *Note: Changes to this file require restarting the Event Horizon engine.*
 

@@ -303,7 +303,7 @@ app.put('/api/config', async (req, res) => {
         res.status(500).json({ error: 'Failed to save config' });
     }
 });
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3067;
 app.listen(PORT, () => {
     console.log(`Event Horizon Engine running on port ${PORT}`);
 });

@@ -69,8 +69,8 @@ When running against the local engine, use these endpoints:
 
 Default local URLs used by this project:
 
-- Portal: `http://localhost:5173`
-- Engine: `http://localhost:3001`
+- Portal: `http://localhost:5167`
+- Engine: `http://localhost:3067`
 
 ## Agent Workflow
 

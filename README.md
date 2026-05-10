@@ -34,7 +34,7 @@ The project is split into three main areas:
 Event Horizon ships as a standalone, zero-dependency executable (Windows, macOS, Linux).
 
 1. **Download & Run:** Download the latest binary for your platform and double-click it. 
-2. **Connect:** Your browser will automatically open the portal (at `http://localhost:3001`).
+2. **Connect:** Your browser will automatically open the portal (at `http://localhost:3067`).
 3. **Select Workspace:** Click "Browse" in the portal UI to select the project directory you want to manage. If it's an uninitialized folder, the UI will guide you through setting up your `.flux/` configuration.
 
 *(No Node.js, CLI, or `npm install` is required for end users. The backend server and frontend portal run entirely inside the background system tray application).*
@@ -71,7 +71,7 @@ cd engine
 npm install
 npm run dev
 ```
-> The Engine runs on `http://localhost:3001` and auto-reloads on source changes.
+> The Engine runs on `http://localhost:3067` and auto-reloads on source changes.
 > The portal is also served from this port when `portal/dist/` exists.
 
 ### 2. Start the Frontend Portal (dev mode with hot reload)
@@ -80,7 +80,7 @@ cd portal
 npm install
 npm run dev
 ```
-> The Portal dev server runs on `http://localhost:5173` and proxies `/api` calls to the engine.
+> The Portal dev server runs on `http://localhost:5167` and proxies `/api` calls to the engine.
 
 ---
 
