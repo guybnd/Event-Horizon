@@ -179,10 +179,18 @@ history:
     user: Agent
     date: '2026-05-10T06:08:07.555Z'
     comment: Claude Code session lost (engine restarted).
-title: 'in onboarding, maybe we should add the project commands to PATH env?'
-status: Done
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-10T11:10:25.933Z'
+title: Add project CLI commands to PATH during onboarding
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: v0.3.0
+releasedAt: '2026-05-10T11:10:25.933Z'
+releaseDocPath: release-notes/v0.3.0
 ---
 ## Add PATH Setup Step to Onboarding Wizard
 

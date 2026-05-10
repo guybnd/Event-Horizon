@@ -30,10 +30,18 @@ history:
       ~/.event-horizon/settings.json → cwd fallback → prompt user. Change in
       engine/src/index.ts startup block (~line 2413).
     id: c-2026-05-10t05-26-50-000z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-10T11:10:25.935Z'
 title: Engine startup should fall back to cwd when no workspace is configured
-status: Done
+status: Released
 createdBy: Agent
 updatedBy: Agent
+version: v0.3.0
+releasedAt: '2026-05-10T11:10:25.935Z'
+releaseDocPath: release-notes/v0.3.0
 ---
 ## Problem
 

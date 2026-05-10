@@ -90,9 +90,17 @@ history:
     user: Agent
     date: '2026-05-10T06:08:07.555Z'
     comment: Claude Code session lost (engine restarted).
-title: every time open ticket fullscreen it think its data is dirty
-status: Done
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-10T11:10:25.936Z'
+title: Fix false dirty-state detection when opening a ticket in fullscreen
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: v0.3.0
+releasedAt: '2026-05-10T11:10:25.936Z'
+releaseDocPath: release-notes/v0.3.0
 ---
 prompting to ask for confirmation uypon exit even if there was no changes to save.. need to check

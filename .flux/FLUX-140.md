@@ -192,10 +192,18 @@ history:
     user: Agent
     date: '2026-05-10T06:08:07.555Z'
     comment: Claude Code session lost (engine restarted).
-title: agent sessions end prematurely sometimes
-status: Done
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-10T11:10:25.931Z'
+title: Fix agent sessions terminating prematurely during active work
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: v0.3.0
+releasedAt: '2026-05-10T11:10:25.931Z'
+releaseDocPath: release-notes/v0.3.0
 ---
 ## Problem
 

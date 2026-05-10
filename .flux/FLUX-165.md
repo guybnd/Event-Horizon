@@ -126,10 +126,18 @@ history:
     user: Agent
     date: '2026-05-10T06:08:07.555Z'
     comment: Claude Code session lost (engine restarted).
-title: user reports issues with onboarding
-status: Done
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-10T11:10:25.932Z'
+title: Fix onboarding flow failures for new users
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: v0.3.0
+releasedAt: '2026-05-10T11:10:25.932Z'
+releaseDocPath: release-notes/v0.3.0
 ---
 ## Problem
 

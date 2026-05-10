@@ -36,10 +36,18 @@ history:
       replyTextareaRef prop type in HistoryListProps to
       RefObject<HTMLTextAreaElement | null>.
     id: c-2026-05-10t09-00-01-000z
-title: FLUX-174 regression repair — hooks-after-early-return caused blank screen
-status: Done
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-10T11:10:25.938Z'
+title: Fix blank screen crash caused by hooks running after early return
+status: Released
 createdBy: Agent
 updatedBy: Agent
+version: v0.3.0
+releasedAt: '2026-05-10T11:10:25.938Z'
+releaseDocPath: release-notes/v0.3.0
 ---
 
 ## What happened

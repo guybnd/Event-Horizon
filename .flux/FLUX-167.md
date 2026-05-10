@@ -211,10 +211,18 @@ history:
       submenu under Launch Agent. api.ts effortOverride param wired. Settings
       Session Cost Controls section live. All TypeScript clean.
     id: c-2026-05-10t06-52-02-070z
-title: cost optimizations
-status: Done
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-10T11:10:25.934Z'
+title: Reduce Claude API token costs through prompt and caching optimizations
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: v0.3.0
+releasedAt: '2026-05-10T11:10:25.934Z'
+releaseDocPath: release-notes/v0.3.0
 ---
 ## Cost Optimizations — Thinking Budget + Context Compaction (Multi-Provider Architecture)
 

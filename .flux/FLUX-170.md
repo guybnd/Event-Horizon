@@ -265,10 +265,46 @@ history:
     user: Agent
     date: '2026-05-10T08:30:10.334Z'
     comment: Launched Claude Code session (c5b87727).
-title: 'add send for code review step on ready '
-status: Ready
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-10T08:30:52.081Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-10T08:30:52.081Z'
+    comment: >-
+      Shipped in commit 5bbaa45. CodeReviewButton.tsx adds five reviewer
+      personas (Senior Friendly Dev, Angry Linus, Architect Genius, Performance
+      Expert, UX/UI Expert), each with a distinct appendPrompt. TaskModal.tsx
+      wires handleSendForCodeReview into the Ready prompt panel with busy/error
+      state. UX/UI Expert persona added per user request during session.
+      Validated: button appears in Ready status, all five personas present in
+      dropdown, disabled when session active.
+    id: c-2026-05-10t08-30-52-081z
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-10T08:30:57.203Z'
+    comment: >-
+      FLUX-170 is done. Commit `5bbaa45` ships `CodeReviewButton.tsx` (five
+      reviewer personas) and the `handleSendForCodeReview` handler wired into
+      the Ready prompt panel in `TaskModal.tsx`. Ticket moved to Done.
+  - type: activity
+    user: Agent
+    date: '2026-05-10T08:50:02.126Z'
+    comment: Claude Code session lost (engine restarted).
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-10T11:10:25.935Z'
+title: Add Send for Code Review action on tickets in Ready status
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: v0.3.0
+releasedAt: '2026-05-10T11:10:25.935Z'
+releaseDocPath: release-notes/v0.3.0
 ---
 ## Summary
 

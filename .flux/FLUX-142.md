@@ -45,7 +45,7 @@ history:
     to: Released
     user: Agent
     date: '2026-05-09T08:10:27.349Z'
-title: typing into the 'reason for return' window inj the ready prompt is very laggy
+title: Fix input lag in the reason-for-return field on the Ready prompt
 status: Released
 createdBy: Guy
 updatedBy: Agent
@@ -58,7 +58,7 @@ Typing into the "reason for return" textarea in the Ready prompt is heavily lagg
 
       ```
     id: c-2026-05-08t14-52-08-437z
-title: typing into the 'reason for return' window inj the ready prompt is very laggy
+title: Fix input lag in the reason-for-return field on the Ready prompt
 status: Done
 createdBy: Guy
 updatedBy: Agent

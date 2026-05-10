@@ -24,16 +24,24 @@ history:
       status field and a generic "respond with progress updates" closing line.
       When relaunched on a ticket whose prior session completed the work but
       left it In Progress, the agent saw no actionable context and exited
-      cleanly with code 0. Fixed by adding `Current status` to the prompt
-      header and a status-aware action instruction: In Progress instructs the
-      agent to move to Ready with a completion comment if work is done and not
-      to exit without updating status; Todo instructs it to begin and close out;
-      Ready instructs it to wait for the finish command.
+      cleanly with code 0. Fixed by adding `Current status` to the prompt header
+      and a status-aware action instruction: In Progress instructs the agent to
+      move to Ready with a completion comment if work is done and not to exit
+      without updating status; Todo instructs it to begin and close out; Ready
+      instructs it to wait for the finish command.
     id: c-2026-05-10t10-50-01-000z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-10T11:10:25.940Z'
 title: agent sessions exit without closing ticket when relaunched on In Progress work
-status: Done
+status: Released
 createdBy: Agent
 updatedBy: Agent
+version: v0.3.0
+releasedAt: '2026-05-10T11:10:25.940Z'
+releaseDocPath: release-notes/v0.3.0
 ---
 
 ## Problem

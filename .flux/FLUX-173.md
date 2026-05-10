@@ -33,11 +33,19 @@ history:
       reconciliation runs on chokidar 'ready' event on startup. Both verified in
       engine/src/index.ts.
     id: c-2026-05-10t06-50-43-455z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-10T11:10:25.937Z'
 id: FLUX-173
 title: engine orphans agent sessions on restart — no SIGTERM handler
-status: Done
+status: Released
 createdBy: Agent
 updatedBy: Agent
+version: v0.3.0
+releasedAt: '2026-05-10T11:10:25.937Z'
+releaseDocPath: release-notes/v0.3.0
 ---
 ## Problem
 
