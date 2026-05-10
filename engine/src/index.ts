@@ -94,6 +94,21 @@ interface StoredDoc extends DocRecord {
 }
 
 type CliFramework = 'claude' | 'copilot';
+
+// Effort levels accepted by the --effort CLI flag, in ascending order.
+const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+type EffortLevel = typeof EFFORT_LEVELS[number];
+
+interface ProviderCapabilities {
+  supportsEffort: boolean;
+  effortFlag: string;
+}
+
+const PROVIDER_CAPABILITIES: Record<string, ProviderCapabilities> = {
+  claude: { supportsEffort: true, effortFlag: '--effort' },
+  copilot: { supportsEffort: false, effortFlag: '' },
+};
+
 type CliSessionStatus = 'pending' | 'running' | 'waiting-input' | 'completed' | 'failed' | 'cancelled';
 
 interface CliSessionSummary {
@@ -1088,6 +1103,7 @@ async function startWatchers() {
       if (isTopLevelTaskFile(filePath)) void loadTask(filePath);
       if (filePath === configFile) void loadConfig();
     })
+    .on('ready', () => { void reconcileOrphanedSessions(); })
     .on('unlink', (filePath) => {
       if (isTopLevelTaskFile(filePath)) {
         const taskEntry = Object.entries(tasksCache).find(([, task]) => task._path === filePath);
@@ -1112,6 +1128,32 @@ async function startWatchers() {
       const docPath = getDocPathFromFile(filePath);
       if (docPath) { delete docsCache[docPath]; console.log(`Removed doc: ${docPath}`); }
     });
+}
+
+// After the watcher's initial scan, write a cleanup activity for any ticket that
+// has a dangling "Launched … session" entry with no follow-up "session ended/stopped".
+// This happens when the engine is killed (SIGTERM) while a session is running and
+// the handler didn't have time to flush — or the engine was killed before this fix.
+async function reconcileOrphanedSessions() {
+  const now = new Date().toISOString();
+  for (const task of Object.values(tasksCache)) {
+    const history: any[] = Array.isArray(task.history) ? task.history : [];
+    const lastLaunch = [...history].reverse().find(
+      (e) => e.type === 'activity' && typeof e.comment === 'string' && /Launched .+ session \(/.test(e.comment)
+    );
+    if (!lastLaunch) continue;
+    const launchIdx = history.lastIndexOf(lastLaunch);
+    const hasEnd = history.slice(launchIdx + 1).some(
+      (e) => e.type === 'activity' && typeof e.comment === 'string' &&
+        /session ended|session stopped|session failed|session lost/i.test(e.comment)
+    );
+    if (!hasEnd) {
+      await updateTaskWithHistory(task.id, {
+        updatedBy: 'Agent',
+        entries: [buildActivityEntry('Claude Code session lost (engine restarted).', 'Agent', now)],
+      });
+    }
+  }
 }
 
 // Activate a workspace: set the root, reset caches, load data, start watchers.
@@ -1153,6 +1195,7 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
   const framework = frameworkRaw as CliFramework;
   const appendPrompt = typeof req.body?.appendPrompt === 'string' ? req.body.appendPrompt.trim() : '';
   const skipPermissions = req.body?.skipPermissions !== false;
+  const effortOverrideRaw = typeof req.body?.effortOverride === 'string' ? req.body.effortOverride.trim() : '';
 
   const existingSessionId = cliSessionIdByTaskId.get(id);
   if (existingSessionId) {
@@ -1213,6 +1256,16 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
     const claudeArgs = skipPermissions
       ? ['-p', initialPrompt, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions']
       : ['-p', initialPrompt, '--output-format', 'stream-json', '--verbose'];
+
+    const caps = PROVIDER_CAPABILITIES[framework] ?? PROVIDER_CAPABILITIES['copilot'];
+    // effortOverride (per-launch) > per-ticket effortLevel > global config effortLevel.
+    const globalEffort = (configCache as any).effortLevel as string | undefined;
+    const taskEffort = (task as any).effortLevel as string | undefined;
+    const effectiveEffort = (effortOverrideRaw || taskEffort || globalEffort || '') as string;
+    if (caps.supportsEffort && EFFORT_LEVELS.includes(effectiveEffort as EffortLevel)) {
+      claudeArgs.push(caps.effortFlag, effectiveEffort);
+    }
+
     const proc = spawn(binaryName, claudeArgs, {
       cwd: workspaceRoot!,
       env: process.env,
@@ -2433,6 +2486,19 @@ async function startServer() {
     }
   });
 }
+
+// ─── Graceful shutdown (SIGTERM from tsx watch, SIGINT from Ctrl-C) ──────────
+// Without this, tsx watch sends SIGTERM and the engine dies instantly, orphaning
+// all child `claude` processes — they keep running, burn tokens, and the ticket
+// never gets a "session ended" activity entry.
+async function gracefulShutdown(signal: string) {
+  stopAllCliSessions(signal);
+  // Give the child proc exit handlers (and their write queues) a moment to flush.
+  await new Promise(r => setTimeout(r, 400));
+  process.exit(0);
+}
+process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM'); });
+process.on('SIGINT',  () => { void gracefulShutdown('SIGINT'); });
 
 startServer().catch(err => {
   console.error('Failed to start Event Horizon:', err);
