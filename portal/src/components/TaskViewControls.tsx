@@ -117,6 +117,7 @@ export function TaskViewControls({
     setFilterTag,
     filterUnreadOnly,
     setFilterUnreadOnly,
+    totalUnreadCount,
     clearTaskFilters,
     config,
   } = useApp();
@@ -173,7 +174,7 @@ export function TaskViewControls({
           }`}
         >
           <Inbox className="h-4 w-4" />
-          Unread
+          {totalUnreadCount > 0 ? `Unread (${totalUnreadCount})` : 'Unread'}
         </button>
 
         <div ref={filtersRef} className="relative flex-none">

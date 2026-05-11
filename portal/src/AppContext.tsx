@@ -1,7 +1,8 @@
-import { createContext, startTransition, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, startTransition, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { ColumnLiveEvent, Config, Task, TaskLiveEvent } from './types';
 import { fetchConfig, fetchTasks, fetchHealth, saveConfig as apiSaveConfig, fetchReadState, saveReadState, fetchWorkspace } from './api';
+import { getArchiveStatus } from './workflow';
 
 export type AppView = 'board' | 'backlog' | 'docs' | 'settings' | 'releases';
 export type TaskSortOption = 'default' | 'priority' | 'updated' | 'assignee';
@@ -154,6 +155,7 @@ interface AppState {
   config: Config | null;
   saveConfig: (updates: Config) => Promise<void>;
   readComments: Record<string, string[]>;
+  totalUnreadCount: number;
   ensureReadStateLoaded: (ticketId: string) => void;
   markCommentRead: (ticketId: string, commentId: string) => void;
   markAllCommentsRead: (ticketId: string, commentIds: string[]) => void;
@@ -701,6 +703,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasks]);
 
+  const totalUnreadCount = useMemo(() => {
+    const archiveStatus = getArchiveStatus(config);
+    const hiddenStatusNames = new Set(config?.hiddenStatuses?.map(s => s.name) ?? []);
+    return tasks.reduce((sum, task) => {
+      if (task.status === 'Released' || task.status === archiveStatus || hiddenStatusNames.has(task.status)) {
+        return sum;
+      }
+      const readIds = new Set(readComments[task.id] ?? []);
+      const count = (task.history ?? []).filter(
+        e => e.type === 'comment' && e.id && e.user !== currentUser && !readIds.has(e.id)
+      ).length;
+      return sum + count;
+    }, 0);
+  }, [tasks, readComments, currentUser, config]);
+
   return (
     <AppContext.Provider value={{
       currentUser, setCurrentUser,
@@ -731,7 +748,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       isConnected,
       workspaceConfigured, workspacePath, notifyWorkspaceSet,
       config, saveConfig,
-      readComments, ensureReadStateLoaded, markCommentRead, markAllCommentsRead,
+      readComments, totalUnreadCount, ensureReadStateLoaded, markCommentRead, markAllCommentsRead,
       theme, toggleTheme,
     }}>
       {children}
