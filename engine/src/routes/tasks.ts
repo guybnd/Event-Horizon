@@ -29,7 +29,7 @@ router.get('/:id', (req, res) => {
 
 router.post('/', async (req, res) => {
   const { projectKey, status, author, title, body, ...rest } = req.body;
-  const pKey = projectKey || 'PROJECT';
+  const pKey = projectKey || configCache.projects?.[0] || 'PROJECT';
 
   let maxId = 0;
   Object.keys(tasksCache).forEach((key) => {
