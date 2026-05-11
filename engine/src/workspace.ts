@@ -1,0 +1,58 @@
+import fs from 'fs/promises';
+import { existsSync } from 'fs';
+import path from 'path';
+import os from 'os';
+
+export let workspaceRoot: string | null = null;
+
+export function setWorkspaceRoot(root: string) {
+  workspaceRoot = root;
+}
+
+export function getFluxDir() { return path.join(workspaceRoot!, '.flux'); }
+export function getConfigFile() { return path.join(getFluxDir(), 'config.json'); }
+export function getTaskAssetsDir() { return path.join(getFluxDir(), 'assets'); }
+export function getReadStateFile() { return path.join(getFluxDir(), 'read-state.json'); }
+
+const APP_SETTINGS_DIR = path.join(os.homedir(), '.event-horizon');
+const APP_SETTINGS_FILE = path.join(APP_SETTINGS_DIR, 'settings.json');
+
+export async function loadAppSettings(): Promise<{ workspace?: string }> {
+  try {
+    const raw = await fs.readFile(APP_SETTINGS_FILE, 'utf-8');
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+export async function saveAppSettings(settings: { workspace?: string }) {
+  await fs.mkdir(APP_SETTINGS_DIR, { recursive: true });
+  await fs.writeFile(APP_SETTINGS_FILE, JSON.stringify(settings, null, 2), 'utf-8');
+}
+
+export function getCliWorkspace(): string | null {
+  const args = process.argv.slice(2);
+  const idx = args.indexOf('--workspace');
+  if (idx !== -1 && args[idx + 1]) return path.resolve(args[idx + 1]);
+  return null;
+}
+
+export function resolveSkillSourceRoot(): string {
+  const isPkg = (process as any).pkg !== undefined;
+  if (isPkg) return __dirname;
+  return path.resolve(__dirname, '..', '..');
+}
+
+export function resolvePortalDist(): string {
+  const args = process.argv.slice(2);
+  const idx = args.indexOf('--portal-dist');
+  if (idx !== -1 && args[idx + 1]) return path.resolve(args[idx + 1]);
+  const isPkg = (process as any).pkg !== undefined;
+  if (isPkg) return path.join(__dirname, 'portal', 'dist');
+  return path.resolve(__dirname, '..', '..', 'portal', 'dist');
+}
+
+export function hasCwdFlux(): boolean {
+  return existsSync(path.join(process.cwd(), '.flux'));
+}
