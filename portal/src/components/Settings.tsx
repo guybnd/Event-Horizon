@@ -35,6 +35,7 @@ export function Settings() {
   const [hoverPopupsEnabled, setHoverPopupsEnabled] = useState(true);
   const [hoverPopupDelay, setHoverPopupDelay] = useState(1500);
   const [tokenDisplayMode, setTokenDisplayMode] = useState<'cost' | 'tokens'>('cost');
+  const [tokenCostThresholds, setTokenCostThresholds] = useState<{ green: number; yellow: number }>({ green: 0.10, yellow: 0.50 });
   const [effortLevel, setEffortLevel] = useState<string>('high');
   const [groomingModel, setGroomingModel] = useState<string>('');
   const [implementationModel, setImplementationModel] = useState<string>('');
@@ -65,6 +66,7 @@ export function Settings() {
       setHoverPopupsEnabled(config.hoverPopupsEnabled ?? true);
       setHoverPopupDelay(config.hoverPopupDelay ?? 1500);
       setTokenDisplayMode(config.tokenDisplayMode ?? 'cost');
+      setTokenCostThresholds(config.tokenCostThresholds ?? { green: 0.10, yellow: 0.50 });
       setEffortLevel((config as any).effortLevel || 'high');
       setGroomingModel((config as any).integrations?.claudeCode?.groomingModel || '');
       setImplementationModel((config as any).integrations?.claudeCode?.implementationModel || '');
@@ -188,6 +190,7 @@ export function Settings() {
         hoverPopupsEnabled,
         hoverPopupDelay,
         tokenDisplayMode,
+        tokenCostThresholds,
         effortLevel,
         releaseSettings: {
           generateDistinctFiles,
@@ -233,6 +236,7 @@ export function Settings() {
     setDocsRoot(config.docsRoot || '.docs');
     setHoverPopupsEnabled(config.hoverPopupsEnabled ?? true);
     setHoverPopupDelay(config.hoverPopupDelay ?? 1500);
+    setTokenCostThresholds(config.tokenCostThresholds ?? { green: 0.10, yellow: 0.50 });
     setEffortLevel((config as any).effortLevel || 'high');
     setGroomingModel((config as any).integrations?.claudeCode?.groomingModel || '');
     setImplementationModel((config as any).integrations?.claudeCode?.implementationModel || '');
@@ -405,6 +409,8 @@ export function Settings() {
                   setHoverPopupDelay={setHoverPopupDelay}
                   tokenDisplayMode={tokenDisplayMode}
                   setTokenDisplayMode={setTokenDisplayMode}
+                  tokenCostThresholds={tokenCostThresholds}
+                  setTokenCostThresholds={setTokenCostThresholds}
                   enableBacklog={enableBacklog}
                   setEnableBacklog={setEnableBacklog}
                   requireComment={requireComment}

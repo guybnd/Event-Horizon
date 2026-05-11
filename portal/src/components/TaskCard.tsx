@@ -5,6 +5,7 @@ import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { Task, TaskLiveEvent } from '../types';
 import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, MessageCircle, Bot, SendHorizontal, Maximize2 } from 'lucide-react';
+import { TokenBadge } from './TokenBadge';
 import { useApp } from '../AppContext';
 import { sendTaskCliInput, startTaskCliSession, updateTask } from '../api';
 import { getReadyForMergeStatus, isPromptableStatus, relativeTime } from '../workflow';
@@ -26,7 +27,7 @@ export function TaskCard({
   travelDirection?: -1 | 0 | 1;
 }) {
   const EFFORT_OPTIONS = ['None', 'XS', 'S', 'M', 'L', 'XL'];
-  const { openTaskModal, openTaskFullView, config, currentUser, triggerRefresh, readComments, ensureReadStateLoaded, markCommentRead: ctxMarkCommentRead, markAllCommentsRead: ctxMarkAllCommentsRead } = useApp();
+  const { openTaskModal, openTaskFullView, config, saveConfig, currentUser, triggerRefresh, readComments, ensureReadStateLoaded, markCommentRead: ctxMarkCommentRead, markAllCommentsRead: ctxMarkAllCommentsRead } = useApp();
   const [priorityMenuOpen, setPriorityMenuOpen] = useState(false);
   const [effortMenuOpen, setEffortMenuOpen] = useState(false);
   const [assigneeMenuOpen, setAssigneeMenuOpen] = useState(false);
@@ -791,32 +792,12 @@ export function TaskCard({
                 )}
               </div>
 
-              {(() => {
-                const tm = task.tokenMetadata;
-                const costUSD = tm?.costUSD ?? 0;
-                const inTok = tm?.inputTokens ?? 0;
-                const outTok = tm?.outputTokens ?? 0;
-                const isEstimated = tm?.costIsEstimated ?? false;
-                const showTokens = config?.tokenDisplayMode === 'tokens';
-                const label = showTokens
-                  ? (inTok > 0 || outTok > 0 ? `↑${(inTok / 1000).toFixed(1)}k ↓${(outTok / 1000).toFixed(1)}k` : '—')
-                  : costUSD > 0
-                    ? `$${costUSD.toFixed(4)}${isEstimated ? '~' : ''}`
-                    : (inTok > 0 || outTok > 0)
-                      ? `↑${(inTok / 1000).toFixed(1)}k ↓${(outTok / 1000).toFixed(1)}k`
-                      : '$0.00';
-                const titleText = tm
-                  ? `↑ ${inTok.toLocaleString()} input / ↓ ${outTok.toLocaleString()} output tokens${isEstimated ? ' (estimated)' : ''}`
-                  : 'No token data recorded yet';
-                return (
-                  <span
-                    className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-black/20 dark:text-gray-400"
-                    title={titleText}
-                  >
-                    {label}
-                  </span>
-                );
-              })()}
+              <TokenBadge
+                data={task.tokenMetadata}
+                config={config}
+                variant="card"
+                onToggle={config ? () => void saveConfig({ ...config, tokenDisplayMode: config.tokenDisplayMode === 'tokens' ? 'cost' : 'tokens' }) : undefined}
+              />
 
               <div ref={assigneeMenuRef} className="relative ml-auto">
                 <motion.button

@@ -131,6 +131,8 @@ interface CliSessionSummary {
   outputTokens?: number;
   costUSD?: number;
   costIsEstimated?: boolean;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
 }
 
 interface CliSessionRecord extends CliSessionSummary {
@@ -275,6 +277,8 @@ function getCliSessionSummaryForTask(taskId: string): CliSessionSummary | undefi
     outputTokens: session.outputTokens,
     costUSD: session.costUSD,
     costIsEstimated: session.costIsEstimated,
+    cacheReadTokens: session.cacheReadTokens,
+    cacheCreationTokens: session.cacheCreationTokens,
   };
 }
 
@@ -299,7 +303,7 @@ async function updateTaskWithHistory(taskId: string, options: {
   entries?: any[];
   updatedBy?: string;
   nextStatus?: string;
-  tokenMetadata?: { inputTokens: number; outputTokens: number; costUSD: number; costIsEstimated: boolean };
+  tokenMetadata?: { inputTokens: number; outputTokens: number; costUSD: number; costIsEstimated: boolean; cacheReadTokens?: number; cacheCreationTokens?: number };
 }) {
   const task = tasksCache[taskId];
   if (!task) {
@@ -1379,12 +1383,15 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
           }
           // Accumulate token usage from result events
           if (evt.type === 'result' && evt.usage) {
-            const inputTok = (evt.usage?.input_tokens ?? 0)
-              + (evt.usage?.cache_read_input_tokens ?? 0)
-              + (evt.usage?.cache_creation_input_tokens ?? 0);
+            const cacheRead = evt.usage?.cache_read_input_tokens ?? 0;
+            const cacheCreation = evt.usage?.cache_creation_input_tokens ?? 0;
+            const freshInput = evt.usage?.input_tokens ?? 0;
+            const inputTok = freshInput + cacheRead + cacheCreation;
             const outputTok = evt.usage?.output_tokens ?? 0;
             session.inputTokens = (session.inputTokens ?? 0) + inputTok;
             session.outputTokens = (session.outputTokens ?? 0) + outputTok;
+            session.cacheReadTokens = (session.cacheReadTokens ?? 0) + cacheRead;
+            session.cacheCreationTokens = (session.cacheCreationTokens ?? 0) + cacheCreation;
             if (typeof evt.total_cost_usd === 'number') {
               session.costUSD = (session.costUSD ?? 0) + evt.total_cost_usd;
             } else {
@@ -1456,6 +1463,8 @@ app.post('/api/tasks/:id/cli-session/start', requireWorkspace, async (req, res) 
               outputTokens: (prev.outputTokens ?? 0) + (session.outputTokens ?? 0),
               costUSD: parseFloat(((prev.costUSD ?? 0) + (session.costUSD ?? 0)).toFixed(6)),
               costIsEstimated: prev.costIsEstimated || session.costIsEstimated || false,
+              cacheReadTokens: (prev.cacheReadTokens ?? 0) + (session.cacheReadTokens ?? 0),
+              cacheCreationTokens: (prev.cacheCreationTokens ?? 0) + (session.cacheCreationTokens ?? 0),
             };
           })()
         : null;
@@ -1570,12 +1579,15 @@ app.post('/api/tasks/:id/cli-session/input', requireWorkspace, async (req, res) 
           }
           // Accumulate token usage from result events (same as main proc)
           if (evt.type === 'result' && evt.usage) {
-            const inputTok = (evt.usage?.input_tokens ?? 0)
-              + (evt.usage?.cache_read_input_tokens ?? 0)
-              + (evt.usage?.cache_creation_input_tokens ?? 0);
+            const cacheRead = evt.usage?.cache_read_input_tokens ?? 0;
+            const cacheCreation = evt.usage?.cache_creation_input_tokens ?? 0;
+            const freshInput = evt.usage?.input_tokens ?? 0;
+            const inputTok = freshInput + cacheRead + cacheCreation;
             const outputTok = evt.usage?.output_tokens ?? 0;
             session.inputTokens = (session.inputTokens ?? 0) + inputTok;
             session.outputTokens = (session.outputTokens ?? 0) + outputTok;
+            session.cacheReadTokens = (session.cacheReadTokens ?? 0) + cacheRead;
+            session.cacheCreationTokens = (session.cacheCreationTokens ?? 0) + cacheCreation;
             if (typeof evt.total_cost_usd === 'number') {
               session.costUSD = (session.costUSD ?? 0) + evt.total_cost_usd;
             } else {

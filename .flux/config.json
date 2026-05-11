@@ -246,6 +246,6 @@
   "docsRoot": ".docs",
   "hoverPopupsEnabled": true,
   "hoverPopupDelay": 450,
-  "tokenDisplayMode": "tokens",
+  "tokenDisplayMode": "cost",
   "effortLevel": "high"
 }
