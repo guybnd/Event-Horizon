@@ -40,6 +40,10 @@ app.use('/api/stats', requireWorkspace, statsRouter);
 app.use('/api/read-state', requireWorkspace, readStateRouter);
 app.use('/api/events', eventsRouter);
 
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', workspace: workspaceRoot });
+});
+
 app.post('/api/shutdown', (_req, res) => {
   stopAllCliSessions('shutdown');
   res.json({ ok: true });
