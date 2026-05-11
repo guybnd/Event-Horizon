@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { DndContext, DragOverlay, pointerWithin } from '@dnd-kit/core';
 import type { DragEndEvent, DragStartEvent } from '@dnd-kit/core';
 import { arrayMove } from '@dnd-kit/sortable';
@@ -35,6 +35,9 @@ export function Board() {
     filterUnreadOnly,
     readComments,
   } = useApp();
+
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const savedScrollRef = useRef<number>(0);
 
   const [pendingStatusChange, setPendingStatusChange] = useState<{taskId: string, newStatus: string, oldStatus: string} | null>(null);
   const [commentText, setCommentText] = useState('');
@@ -112,11 +115,16 @@ export function Board() {
     const { active } = event;
     const task = tasks.find(t => t.id === active.id);
     if (task) setActiveTask(task);
+    savedScrollRef.current = scrollerRef.current?.scrollLeft ?? 0;
   };
 
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
     setActiveTask(null);
+    const savedScroll = savedScrollRef.current;
+    requestAnimationFrame(() => {
+      if (scrollerRef.current) scrollerRef.current.scrollLeft = savedScroll;
+    });
     if (!over) return;
 
     const activeTaskId = active.id as string;
@@ -216,7 +224,7 @@ export function Board() {
 
         <div className="min-h-0 flex-1">
           <DndContext onDragStart={handleDragStart} onDragEnd={handleDragEnd} collisionDetection={pointerWithin}>
-            <div className="flex h-full min-h-0 gap-6 overflow-x-auto pb-4 items-start">
+            <div ref={scrollerRef} className="flex h-full min-h-0 gap-6 overflow-x-auto pb-4 items-start">
               {allColumns.map(columnId => (
                 <Column
                   key={columnId}
