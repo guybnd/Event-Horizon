@@ -28,7 +28,7 @@ export interface Task {
   releasedAt?: string;
   releaseDocPath?: string;
   cliSession?: CliSessionSummary | null;
-  tokenMetadata?: { inputTokens: number; outputTokens: number; costUSD: number; costIsEstimated?: boolean };
+  tokenMetadata?: { inputTokens: number; outputTokens: number; costUSD: number; costIsEstimated?: boolean; cacheReadTokens?: number; cacheCreationTokens?: number };
 }
 
 export type CliFramework = 'claude' | 'copilot';
@@ -54,6 +54,8 @@ export interface CliSessionSummary {
   outputTokens?: number;
   costUSD?: number;
   costIsEstimated?: boolean;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
 }
 
 export interface TaskLiveEvent {
@@ -135,6 +137,7 @@ export interface Config {
   };
   enableFireworks?: boolean;
   tokenDisplayMode?: 'cost' | 'tokens';
+  tokenCostThresholds?: { green: number; yellow: number };
   effortLevel?: string;
 }
 

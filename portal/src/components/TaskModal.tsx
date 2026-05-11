@@ -1,18 +1,14 @@
-import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Rnd } from 'react-rnd';
 import {
   AlertCircle,
   ArrowLeft,
-  ArrowRight,
-  Bot,
-  CircleDot,
   ChevronDown,
   ChevronUp,
   Equal,
   Maximize2,
   MessageSquare,
   PanelRight,
-  RotateCcw,
   Save,
   Square,
   SendHorizontal,
@@ -20,27 +16,25 @@ import {
   X,
 } from 'lucide-react';
 import { useApp } from '../AppContext';
-import { createTask, deleteTask, fetchTask, fetchTaskCliSession, sendTaskCliInput, startTaskCliSession, stopTaskCliSession, updateTask } from '../api';
+import { createTask, deleteTask, fetchTask, sendTaskCliInput, startTaskCliSession, updateTask } from '../api';
 import { LaunchAgentSplitButton } from './LaunchAgentSplitButton';
-import { CodeReviewButton } from './CodeReviewButton';
 import type { ReviewPersona } from './CodeReviewButton';
-import type { CliFramework, CliSessionSummary, Config, HistoryEntry, TagDef, Task } from '../types';
+import type { Config, HistoryEntry, Task } from '../types';
 import { StatusBadge } from './StatusBadge';
 import { getStatusColorClass } from '../statusStyles';
-import { buildUnsupportedImageMessage, uploadTaskImageMarkdownLinks } from '../taskAssetUploads';
 import { normalizeTaskMarkdownBody, TaskDescriptionSurface } from './TaskDescriptionSurface';
-import { TaskMarkdown } from './TaskMarkdown';
-import { DEFAULT_READY_FOR_MERGE_STATUS, getRequireInputStatus, relativeTime } from '../workflow';
+import { DEFAULT_READY_FOR_MERGE_STATUS, getRequireInputStatus } from '../workflow';
 import { motion, AnimatePresence } from 'framer-motion';
-
+import { useTaskForm } from '../hooks/useTaskForm';
+import { useCliSession } from '../hooks/useCliSession';
+import { useImageAttachment } from '../hooks/useImageAttachment';
+import { MetadataPanel } from './task-modal/MetadataPanel';
+import { CommentBox } from './task-modal/CommentBox';
+import { CliSessionPanel } from './task-modal/CliSessionPanel';
+import { ReadyForMergePrompt } from './task-modal/ReadyForMergePrompt';
+import { TokenBadge } from './TokenBadge';
+import { HistoryList } from './task-modal/HistoryList';
 const ACTIVITY_FILTER_STORAGE_KEY = 'flux.activityFilter';
-
-// Claude Code wraps its responses in a single ```text ... ``` fence. Strip it so
-// agent messages render as normal markdown rather than as a code block.
-function unwrapAgentMessage(text: string): string {
-  const match = text.match(/^```[^\n]*\n([\s\S]*?)```\s*$/);
-  return match ? match[1] : text;
-}
 
 type ActivityFilter = 'all' | 'activity' | 'comments' | 'agent';
 
@@ -51,106 +45,9 @@ function getInitialActivityFilter(): ActivityFilter {
   return 'all';
 }
 
-function TagSelector({
-  tags,
-  onChange,
-  availableTags,
-  configTags,
-}: {
-  tags: string[];
-  onChange: (tags: string[]) => void;
-  availableTags: string[];
-  configTags: TagDef[];
-}) {
-  const [input, setInput] = useState('');
-  const [focused, setFocused] = useState(false);
-
-  const addTag = (tag: string) => {
-    if (!tags.includes(tag)) onChange([...tags, tag]);
-    setInput('');
-  };
-
-  const removeTag = (tag: string) => {
-    onChange(tags.filter((currentTag) => currentTag !== tag));
-  };
-
-  const handleKeyDown = (event: React.KeyboardEvent) => {
-    if (event.key === 'Enter' && input.trim()) {
-      event.preventDefault();
-      addTag(input.trim());
-    } else if (event.key === 'Backspace' && !input && tags.length > 0) {
-      removeTag(tags[tags.length - 1]);
-    }
-  };
-
-  const unselected = availableTags.filter(
-    (tag) => !tags.includes(tag) && tag.toLowerCase().includes(input.toLowerCase())
-  );
-
-  return (
-    <div className="relative flex-1">
-      <div
-        className={`flex min-h-[38px] w-full cursor-text flex-wrap items-center gap-1.5 rounded-lg border px-2 py-1.5 transition-colors ${
-          focused
-            ? 'border-primary'
-            : 'border-gray-200 bg-gray-50 dark:border-white/10 dark:bg-black/20'
-        }`}
-        onClick={() => document.getElementById('tag-input')?.focus()}
-      >
-        {tags.map((tag) => {
-          const color =
-            configTags.find((configTag) => configTag.name === tag)?.color ||
-            'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300';
-          return (
-            <span key={tag} className={`flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium ${color}`}>
-              {tag}
-              <button
-                onClick={(event) => {
-                  event.stopPropagation();
-                  removeTag(tag);
-                }}
-                className="hover:opacity-70"
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </span>
-          );
-        })}
-        <input
-          id="tag-input"
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          onKeyDown={handleKeyDown}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setTimeout(() => setFocused(false), 200)}
-          className="min-w-[60px] flex-1 bg-transparent text-sm text-gray-800 outline-none dark:text-gray-200"
-          placeholder={tags.length === 0 ? 'Add tags...' : ''}
-        />
-      </div>
-      {focused && unselected.length > 0 && (
-        <div className="absolute left-0 right-0 top-full z-[60] mt-1 max-h-40 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-xl dark:border-white/10 dark:bg-[#252630]">
-          {unselected.map((tag) => (
-            <div
-              key={tag}
-              onMouseDown={(event) => {
-                event.preventDefault();
-                addTag(tag);
-              }}
-              className="cursor-pointer px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/5"
-            >
-              {tag}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function getPriorityIcon(priorityName: string, config: Config | null, className = 'h-4 w-4') {
   const priority = config?.priorities.find((item) => item.name === priorityName);
   const color = priority?.color || 'text-gray-400';
-
   switch (priority?.icon) {
     case 'AlertCircle':
       return <AlertCircle className={`${className} ${color}`} />;
@@ -165,345 +62,7 @@ function getPriorityIcon(priorityName: string, config: Config | null, className 
   }
 }
 
-interface ReadyForMergePromptProps {
-  taskId: string;
-  readyForMergeBanner: React.ReactNode;
-  saving: boolean;
-  finishBusy: boolean;
-  finishError: string;
-  returnToWorkOpen: boolean;
-  reviewBusy: boolean;
-  reviewError: string;
-  cliSessionActive: boolean;
-  isFullView: boolean;
-  returnToWorkReasonRef: React.RefObject<HTMLTextAreaElement | null>;
-  onReturnToWork: () => void;
-  onReturnToWorkAndLaunch: () => void;
-  onFinish: () => void;
-  onCodeReview: (persona: ReviewPersona) => void;
-  onSetReturnToWorkOpen: (open: boolean) => void;
-  onSetIsFullView: (v: boolean) => void;
-  onSetIsPromptModalOpen: (open: boolean) => void;
-}
-
-const ReadyForMergePrompt = memo(function ReadyForMergePrompt({
-  taskId,
-  readyForMergeBanner,
-  saving,
-  finishBusy,
-  finishError,
-  returnToWorkOpen,
-  reviewBusy,
-  reviewError,
-  cliSessionActive,
-  isFullView,
-  returnToWorkReasonRef,
-  onReturnToWork,
-  onReturnToWorkAndLaunch,
-  onFinish,
-  onCodeReview,
-  onSetReturnToWorkOpen,
-  onSetIsFullView,
-  onSetIsPromptModalOpen,
-}: ReadyForMergePromptProps) {
-  return (
-    <div className="rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 to-white p-5 shadow-sm dark:border-amber-500/30 dark:from-amber-900/20 dark:to-[#1a1b23]">
-      <div className="mb-4 flex items-start gap-3">
-        <div className="rounded-xl bg-amber-100 p-2 text-amber-600 dark:bg-amber-500/10 dark:text-amber-300">
-          <AlertCircle className="h-5 w-5" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Ready for final review</p>
-          <h3 className="mt-1 text-lg font-semibold text-gray-900 dark:text-gray-100">Review and finish the ticket</h3>
-          <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">After reviewing the diff and ticket details, click <span className="font-semibold text-gray-900 dark:text-gray-100">Tell agent to finish</span> to send the close command directly to the agent.</p>
-        </div>
-      </div>
-
-      {readyForMergeBanner}
-
-      <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_220px]">
-        <div className="rounded-xl border border-gray-200 bg-white/80 p-4 text-sm text-gray-600 dark:border-white/10 dark:bg-black/20 dark:text-gray-300">
-          <p className="font-semibold text-gray-900 dark:text-gray-100">Suggested command</p>
-          <p className="mt-2 rounded-lg bg-gray-100 px-3 py-2 font-mono text-sm text-gray-800 dark:bg-black/30 dark:text-gray-200">finish {taskId}</p>
-          <p className="mt-3 text-xs text-gray-500 dark:text-gray-400">This status is configurable in Settings, but the finalization handoff is always driven by the agent command after your review.</p>
-          {returnToWorkOpen && (
-            <div className="mt-4 space-y-2">
-              <label className="block text-xs font-bold uppercase tracking-wider text-gray-400">Reason for returning</label>
-              <textarea
-                autoFocus
-                ref={returnToWorkReasonRef}
-                className="h-24 w-full resize-none rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm outline-none placeholder:text-gray-400 focus:border-primary dark:border-white/10 dark:bg-black/30"
-                placeholder="Describe what needs to be changed..."
-              />
-              <div className="flex flex-col gap-2">
-                <div className="flex gap-2">
-                  <button
-                    disabled={saving}
-                    onClick={onReturnToWork}
-                    className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-700 transition-colors hover:bg-amber-100 disabled:opacity-50 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300 dark:hover:bg-amber-500/20"
-                  >
-                    <RotateCcw className="h-4 w-4" />
-                    {saving ? 'Returning...' : 'Return to work'}
-                  </button>
-                  <button
-                    onClick={() => { onSetReturnToWorkOpen(false); if (returnToWorkReasonRef.current) returnToWorkReasonRef.current.value = ''; }}
-                    className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
-                  >
-                    Cancel
-                  </button>
-                </div>
-                <button
-                  disabled={saving}
-                  onClick={onReturnToWorkAndLaunch}
-                  className="flex w-full items-center justify-center gap-2 rounded-lg bg-amber-500 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-amber-600 disabled:opacity-50"
-                >
-                  <Bot className="h-4 w-4" />
-                  {saving ? 'Returning...' : 'Return + Launch Agent'}
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="space-y-2 rounded-xl border border-gray-200 bg-white/80 p-4 dark:border-white/10 dark:bg-black/20">
-          <button
-              disabled={finishBusy || saving}
-              onClick={onFinish}
-              className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <SendHorizontal className="h-4 w-4" />
-              {finishBusy ? 'Sending…' : 'Tell agent to finish'}
-            </button>
-            {finishError && (
-              <p className="text-xs text-red-600 dark:text-red-400">{finishError}</p>
-            )}
-            <button
-              onClick={() => void navigator.clipboard.writeText(`finish ${taskId}`)}
-              className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
-            >
-              Copy finish command
-            </button>
-            <button
-              disabled={saving}
-              onClick={() => onSetReturnToWorkOpen(true)}
-              className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 disabled:opacity-50 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
-            >
-              <RotateCcw className="h-4 w-4" />
-              Return to work
-            </button>
-            <CodeReviewButton
-              busy={reviewBusy}
-              disabled={saving || cliSessionActive}
-              onReview={onCodeReview}
-            />
-            {reviewError && (
-              <p className="text-xs text-red-600 dark:text-red-400">{reviewError}</p>
-            )}
-            <button
-              onClick={() => isFullView ? onSetIsPromptModalOpen(false) : onSetIsFullView(true)}
-              className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
-            >
-              {isFullView ? <X className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-              {isFullView ? 'Close window' : 'Open full ticket'}
-            </button>
-        </div>
-      </div>
-    </div>
-  );
-});
-
-interface HistoryListProps {
-  topLevelEntries: HistoryEntry[];
-  repliesByParent: Map<string, HistoryEntry[]>;
-  collapsedThreads: Record<string, boolean>;
-  replyTargetId: string | null;
-  replyDraft: string;
-  replyAssetError: string;
-  isUploadingReplyAsset: boolean;
-  saving: boolean;
-  readCommentIds: Set<string>;
-  currentUser: string;
-  isRequireInput: boolean;
-  taskId: string | undefined;
-  config: Config;
-  replyTextareaRef: React.RefObject<HTMLTextAreaElement | null>;
-  onMarkCommentRead: (taskId: string, commentId: string) => void;
-  onToggleReply: (entryId: string | undefined) => void;
-  onSetReplyDraft: (value: string) => void;
-  onClearReplyAssetError: () => void;
-  onToggleCollapsed: (entryId: string) => void;
-  onSendReply: (parentId: string) => void;
-  onCancelReply: () => void;
-  onReplyPaste: (event: React.ClipboardEvent<HTMLTextAreaElement>) => void;
-  onReplyDragOver: (event: React.DragEvent<HTMLTextAreaElement>) => void;
-  onReplyDrop: (event: React.DragEvent<HTMLTextAreaElement>) => void;
-}
-
-const HistoryList = memo(function HistoryList({
-  topLevelEntries, repliesByParent, collapsedThreads, replyTargetId, replyDraft,
-  replyAssetError, isUploadingReplyAsset, saving, readCommentIds, currentUser,
-  isRequireInput, taskId, config, replyTextareaRef,
-  onMarkCommentRead, onToggleReply, onSetReplyDraft, onClearReplyAssetError,
-  onToggleCollapsed, onSendReply, onCancelReply, onReplyPaste, onReplyDragOver, onReplyDrop,
-}: HistoryListProps) {
-  return (
-    <div className="space-y-4">
-      {topLevelEntries.length === 0 ? (
-        <p className="text-sm italic text-gray-500">No activity yet.</p>
-      ) : (
-        [...topLevelEntries].reverse().map((entry, index) => {
-          const replies = entry.id ? repliesByParent.get(entry.id) || [] : [];
-          const isCollapsed = entry.id ? collapsedThreads[entry.id] : false;
-
-          return (
-          <div key={`${entry.id || entry.date}-${index}`} className="flex gap-3">
-            <div className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${entry.type === 'agent_message' ? 'bg-gray-100 dark:bg-white/5' : 'bg-primary/10'}`}>
-              {entry.type === 'status_change' ? (
-                <ArrowRight className="h-3 w-3 text-primary" />
-              ) : entry.type === 'agent_message' ? (
-                <Bot className="h-3 w-3 text-gray-400 dark:text-gray-500" />
-              ) : (
-                <MessageSquare className="h-3 w-3 text-primary" />
-              )}
-            </div>
-            <div
-              className={`flex-1 min-w-0 rounded-lg border p-3 transition-colors ${
-                entry.type === 'agent_message'
-                  ? 'border-dashed border-gray-200 bg-gray-50/50 dark:border-white/5 dark:bg-black/10'
-                  : entry.type === 'comment' && entry.id && !readCommentIds.has(entry.id) && entry.user !== currentUser
-                  ? 'border-amber-200/60 bg-amber-50/60 dark:border-amber-500/20 dark:bg-amber-500/5 cursor-pointer hover:bg-amber-100/60 dark:hover:bg-amber-500/10'
-                  : 'border-gray-100 bg-gray-50 dark:border-white/5 dark:bg-black/20'
-              }`}
-              onClick={() => {
-                if (entry.type === 'comment' && entry.id && !readCommentIds.has(entry.id) && entry.user !== currentUser) {
-                  onMarkCommentRead(taskId!, entry.id);
-                }
-              }}
-            >
-              <div className="mb-1 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className={`text-xs font-semibold ${entry.type === 'agent_message' ? 'text-gray-400 dark:text-gray-500' : 'text-gray-800 dark:text-gray-200'}`}>{entry.user}</span>
-                  {entry.type === 'comment' && entry.id && (
-                    <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-gray-500 dark:bg-white/10 dark:text-gray-300">
-                      {entry.id}
-                    </span>
-                  )}
-                  {entry.type === 'comment' && entry.id && !readCommentIds.has(entry.id) && entry.user !== currentUser && (
-                    <span className="flex items-center gap-1 text-[10px] text-amber-500 dark:text-amber-400">
-                      <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
-                      unread · click to mark read
-                    </span>
-                  )}
-                </div>
-                <span className="text-[10px] text-gray-500" title={new Date(entry.date).toLocaleString()}>{relativeTime(entry.date)}</span>
-              </div>
-              {entry.type === 'status_change' && (
-                <div className="mb-1.5 flex items-center gap-2 text-xs text-gray-500">
-                  Moved from <StatusBadge status={entry.from || 'Unknown'} colorClass={getStatusColorClass(config, entry.from || '')} className="text-[10px] font-bold uppercase tracking-[0.16em]" />
-                  <ArrowRight className="h-3 w-3" />
-                  <StatusBadge status={entry.to || 'Unknown'} colorClass={getStatusColorClass(config, entry.to || '')} className="text-[10px] font-bold uppercase tracking-[0.16em]" />
-                </div>
-              )}
-              {entry.comment && <TaskMarkdown body={entry.type === 'agent_message' ? unwrapAgentMessage(entry.comment) : entry.comment} taskId={taskId} compact imageMode={entry.type === 'comment' ? 'comment' : 'inline'} emptyMessage="" />}
-
-              {entry.type === 'comment' && !entry.replyTo && taskId && !isRequireInput && (
-                <div className="mt-3 flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => onToggleReply(entry.id)}
-                    className="rounded-md px-2 py-1 text-xs font-semibold text-primary transition-colors hover:bg-primary/10"
-                  >
-                    Reply
-                  </button>
-                  {replies.length > 0 && entry.id && (
-                    <button
-                      type="button"
-                      onClick={() => onToggleCollapsed(entry.id!)}
-                      className="rounded-md px-2 py-1 text-xs font-semibold text-gray-500 transition-colors hover:bg-gray-200 dark:hover:bg-white/10"
-                    >
-                      {isCollapsed ? `Show replies (${replies.length})` : `Hide replies (${replies.length})`}
-                    </button>
-                  )}
-                </div>
-              )}
-
-              {replyTargetId === entry.id && !isRequireInput && (
-                <div className="mt-3 rounded-lg border border-primary/20 bg-white p-3 dark:border-primary/20 dark:bg-[#1f2028]">
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-primary">Replying inline</p>
-                  <textarea
-                    ref={replyTextareaRef}
-                    className="h-24 w-full resize-none rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm outline-none focus:border-primary dark:border-white/10 dark:bg-black/20"
-                    value={replyDraft}
-                    onChange={(event) => {
-                      onSetReplyDraft(event.target.value);
-                      if (replyAssetError) {
-                        onClearReplyAssetError();
-                      }
-                    }}
-                    onPaste={onReplyPaste}
-                    onDragOver={onReplyDragOver}
-                    onDrop={onReplyDrop}
-                    placeholder="Write a reply..."
-                  />
-                  <div className="mt-2 flex items-center justify-between gap-3 text-[11px] text-gray-500 dark:text-gray-400">
-                    <span>Paste or drop PNG, JPG, or SVG images.</span>
-                    {isUploadingReplyAsset && <span className="font-semibold text-primary">Uploading image...</span>}
-                  </div>
-                  {replyAssetError && (
-                    <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
-                      {replyAssetError}
-                    </div>
-                  )}
-                  <div className="mt-2 flex justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={onCancelReply}
-                      className="rounded-md px-3 py-1.5 text-xs font-semibold text-gray-500 transition-colors hover:bg-gray-200 dark:hover:bg-white/10"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      disabled={saving || isUploadingReplyAsset || !replyDraft.trim()}
-                      onClick={() => entry.id && onSendReply(entry.id)}
-                      className="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {saving ? 'Replying...' : 'Reply'}
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {replies.length > 0 && !isCollapsed && (
-                <div className="mt-4 space-y-3 border-l-2 border-primary/20 pl-4">
-                  {replies.map((reply) => (
-                    <div key={reply.id || reply.date} className="rounded-lg border border-gray-100 bg-white p-3 dark:border-white/5 dark:bg-[#1f2028]">
-                      <div className="mb-1 flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-semibold text-gray-800 dark:text-gray-200">{reply.user}</span>
-                          {reply.id && (
-                            <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-500 dark:bg-white/10 dark:text-gray-300">
-                              {reply.id}
-                            </span>
-                          )}
-                        </div>
-                        <span className="text-[10px] text-gray-500" title={new Date(reply.date).toLocaleString()}>{relativeTime(reply.date)}</span>
-                      </div>
-                      {reply.comment && <TaskMarkdown body={reply.comment} taskId={taskId} compact imageMode="comment" emptyMessage="" />}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        )})
-      )}
-    </div>
-  );
-});
-
 export function TaskModal() {
-  const EFFORT_OPTIONS = ['None', 'XS', 'S', 'M', 'L', 'XL'];
   const {
     isModalOpen,
     closeModal,
@@ -518,6 +77,7 @@ export function TaskModal() {
     refreshTrigger,
     triggerRefresh,
     config,
+    saveConfig,
     readComments,
     ensureReadStateLoaded,
     markCommentRead: ctxMarkCommentRead,
@@ -525,17 +85,42 @@ export function TaskModal() {
     tasks: allTasks,
   } = useApp();
 
-  const [title, setTitle] = useState('');
-  const [body, setBody] = useState('');
-  const [status, setStatus] = useState('Todo');
-  const [assignee, setAssignee] = useState('');
-  const [tags, setTags] = useState<string[]>([]);
-  const [priority, setPriority] = useState<string>('None');
-  const [effort, setEffort] = useState<string>('None');
-  const [effortLevel, setEffortLevel] = useState<string>('');
-  const [implementationLink, setImplementationLink] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const liveOutputRef = useRef<HTMLPreElement>(null);
+  const commentRef = useRef<HTMLTextAreaElement>(null);
+  const replyTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const commentSectionRef = useRef<HTMLDivElement>(null);
+  const promptModalRef = useRef<HTMLDivElement>(null);
+  const titleRef = useRef<HTMLTextAreaElement>(null);
+  const returnToWorkReasonRef = useRef<HTMLTextAreaElement>(null);
+
+  const {
+    title, setTitle,
+    body, setBody,
+    status, setStatus,
+    assignee, setAssignee,
+    tags, setTags,
+    priority, setPriority,
+    effort, setEffort,
+    effortLevel, setEffortLevel,
+    implementationLink, setImplementationLink,
+    subtasks, setSubtasks,
+    saving, setSaving,
+    saveError, setSaveError,
+    isDirty: formIsDirty,
+    openedTaskIdRef,
+  } = useTaskForm(modalTask);
+
+  const {
+    cliSession, setCliSession,
+    cliSessionBusy, setCliSessionBusy,
+    cliSessionError, setCliSessionError,
+    selectedCliFramework, setSelectedCliFramework,
+    skipPermissions, setSkipPermissions,
+    sessionIsActive,
+    launchSession,
+    stopSession,
+  } = useCliSession({ isModalOpen, taskId: modalTask?.id, liveOutputRef, onSessionChange: triggerRefresh });
+
   const [newComment, setNewComment] = useState('');
   const [activityFilter, setActivityFilter] = useState<ActivityFilter>(getInitialActivityFilter);
   const [replyTargetId, setReplyTargetId] = useState<string | null>(null);
@@ -543,7 +128,7 @@ export function TaskModal() {
   const [collapsedThreads, setCollapsedThreads] = useState<Record<string, boolean>>({});
   const [responseDestination, setResponseDestination] = useState('Todo');
   const [returnToWorkOpen, setReturnToWorkOpen] = useState(false);
-  const returnToWorkReasonRef = useRef<HTMLTextAreaElement>(null);
+  const [subtaskToAdd, setSubtaskToAdd] = useState('');
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [isWideMode, setIsWideMode] = useState(false);
@@ -557,24 +142,33 @@ export function TaskModal() {
   const [isUploadingCommentAsset, setIsUploadingCommentAsset] = useState(false);
   const [isUploadingReplyAsset, setIsUploadingReplyAsset] = useState(false);
   const [isTaskLoading, setIsTaskLoading] = useState(false);
-  const [subtasks, setSubtasks] = useState<string[]>([]);
-  const [subtaskToAdd, setSubtaskToAdd] = useState('');
-  const [selectedCliFramework, setSelectedCliFramework] = useState<CliFramework>('claude');
-  const [cliSession, setCliSession] = useState<CliSessionSummary | null>(null);
-  const [cliSessionBusy, setCliSessionBusy] = useState(false);
-  const [cliSessionError, setCliSessionError] = useState('');
-  const [skipPermissions, setSkipPermissions] = useState(true);
+  const [finishBusy, setFinishBusy] = useState(false);
+  const [finishError, setFinishError] = useState('');
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewError, setReviewError] = useState('');
 
-  const openedTaskIdRef = useRef<string | undefined>(undefined);
-  const cliSessionRef = useRef<CliSessionSummary | null>(null);
-  cliSessionRef.current = cliSession;
+  const {
+    handleCommentPaste,
+    handleCommentDragOver,
+    handleCommentDrop,
+    handleReplyPaste,
+    handleReplyDragOver,
+    handleReplyDrop,
+  } = useImageAttachment({
+    taskId: modalTask?.id,
+    newComment,
+    setNewComment,
+    replyDraft,
+    setReplyDraft,
+    commentRef,
+    replyTextareaRef,
+    setCommentAssetError,
+    setIsUploadingCommentAsset,
+    setReplyAssetError,
+    setIsUploadingReplyAsset,
+  });
 
-  const commentRef = useRef<HTMLTextAreaElement>(null);
-  const liveOutputRef = useRef<HTMLPreElement>(null);
-  const replyTextareaRef = useRef<HTMLTextAreaElement>(null);
-  const commentSectionRef = useRef<HTMLDivElement>(null);
-  const promptModalRef = useRef<HTMLDivElement>(null);
-  const titleRef = useRef<HTMLTextAreaElement>(null);
+  const isDirty = formIsDirty || newComment.trim() !== '';
 
   useEffect(() => {
     if (modalTask?.id) ensureReadStateLoaded(modalTask.id);
@@ -599,7 +193,6 @@ export function TaskModal() {
         setIsPromptModalOpen(false);
       }
     };
-    
     if (isPromptModalOpen) {
       document.addEventListener('mousedown', handleOutsideClick);
     }
@@ -613,9 +206,7 @@ export function TaskModal() {
     const currentRef = commentSectionRef.current;
     if (!currentRef) return;
     const observer = new IntersectionObserver(([entry]) => {
-      if (entry.isIntersecting) {
-        setIsCommentBoxVisible(true);
-      }
+      if (entry.isIntersecting) setIsCommentBoxVisible(true);
     }, { threshold: 0.1, rootMargin: '0px 0px -50px 0px' });
     observer.observe(currentRef);
     return () => observer.disconnect();
@@ -630,131 +221,34 @@ export function TaskModal() {
     return () => clearTimeout(timer);
   }, [isFullView, openModalScrollToComments, clearOpenModalScrollToComments]);
 
+  // Reset per-ticket UI state when a different ticket opens.
   useEffect(() => {
     if (!modalTask) return;
-
-    const isNewTicket = openedTaskIdRef.current !== modalTask.id;
-
-    // Sync data fields, but only update state that actually changed to avoid
-    // spurious re-renders while the modal is live-refreshed from poll updates.
-    const nextTitle = modalTask.title || '';
-    const nextBody = modalTask.body || '';
-    const nextStatus = modalTask.status || 'Todo';
-    const nextAssignee = modalTask.assignee || 'unassigned';
-    const nextPriority = modalTask.priority || 'None';
-    const nextEffort = modalTask.effort || 'None';
-    const nextThinkingBudget = (modalTask as any).effortLevel || '';
-    const nextLink = modalTask.implementationLink || '';
-
-    if (isNewTicket) {
-      setTitle(nextTitle);
-      setBody(nextBody);
-      setStatus(nextStatus);
-      setAssignee(nextAssignee);
-      setTags(modalTask.tags || []);
-      setPriority(nextPriority);
-      setEffort(nextEffort);
-      setEffortLevel(nextThinkingBudget);
-      setImplementationLink(nextLink);
-      setSubtasks(modalTask.subtasks || []);
-      setCliSession(modalTask.cliSession || null);
-    } else {
-      // Live refresh: only update fields that changed to avoid clobbering
-      // in-progress edits. Use functional setters to compare against current state.
-      setTitle((prev) => (prev !== nextTitle ? nextTitle : prev));
-      setBody((prev) => (prev !== nextBody ? nextBody : prev));
-      setStatus((prev) => (prev !== nextStatus ? nextStatus : prev));
-      setAssignee((prev) => (prev !== nextAssignee ? nextAssignee : prev));
-      setTags((prev) => {
-        const next = modalTask.tags || [];
-        return prev.length !== next.length || prev.some((t, i) => t !== next[i]) ? next : prev;
-      });
-      setPriority((prev) => (prev !== nextPriority ? nextPriority : prev));
-      setEffort((prev) => (prev !== nextEffort ? nextEffort : prev));
-      setEffortLevel((prev) => (prev !== nextThinkingBudget ? nextThinkingBudget : prev));
-      setImplementationLink((prev) => (prev !== nextLink ? nextLink : prev));
-      setSubtasks((prev) => {
-        const next = modalTask.subtasks || [];
-        return prev.length !== next.length || prev.some((s, i) => s !== next[i]) ? next : prev;
-      });
-      setCliSession((prev) => {
-        const next = modalTask.cliSession || null;
-        return JSON.stringify(prev) !== JSON.stringify(next) ? next : prev;
-      });
-    }
-
-    // Only reset in-progress draft/UI state when a different ticket opens.
-    if (isNewTicket) {
-      openedTaskIdRef.current = modalTask.id;
-      setNewComment('');
-      setReplyTargetId(null);
-      setReplyDraft('');
-      setCollapsedThreads({});
-      setResponseDestination('Todo');
-      setReturnToWorkOpen(false);
-      if (returnToWorkReasonRef.current) returnToWorkReasonRef.current.value = '';
-      setConfirmDiscard(false);
-      setConfirmDelete(false);
-      setIsWideMode(false);
-      setIsFullView(new URLSearchParams(window.location.search).get('view') === 'full');
-      setCommentAssetError('');
-      setReplyAssetError('');
-      setIsUploadingCommentAsset(false);
-      setIsUploadingReplyAsset(false);
-      setCliSessionBusy(false);
-      setCliSessionError('');
-    }
-  }, [modalTask]);
-
-  useEffect(() => {
-    if (!isModalOpen || !modalTask?.id) return;
-
-    setIsTaskLoading(true);
-    fetchTask(modalTask.id)
-      .then((task) => startTransition(() => { setModalTask(task); setIsTaskLoading(false); }))
-      .catch((err) => { console.error(err); setIsTaskLoading(false); });
-  }, [isModalOpen, modalTask?.id, refreshTrigger]);
-
-  useEffect(() => {
-    if (!isModalOpen || !modalTask?.id) {
-      return;
-    }
-
-    void fetchTaskCliSession(modalTask.id)
-      .then((session) => startTransition(() => setCliSession(session)))
-      .catch(() => {});
-  }, [isModalOpen, modalTask?.id]);
-
-  const sessionIsActive = Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status));
-
-  useEffect(() => {
-    const taskId = modalTask?.id;
-    if (!isModalOpen || !taskId || !sessionIsActive) {
-      return;
-    }
-
-    const SESSION_STALE_MS = 10 * 60 * 1000;
-
-    const timer = window.setInterval(() => {
-      const s = cliSessionRef.current;
-      const lastActivityAt = s?.lastOutputAt ?? s?.startedAt;
-      if (lastActivityAt && Date.now() - new Date(lastActivityAt).getTime() > SESSION_STALE_MS) {
-        window.clearInterval(timer);
-        return;
-      }
-      void fetchTaskCliSession(taskId)
-        .then((session) => startTransition(() => setCliSession(session)))
-        .catch(() => {});
-    }, 2500);
-
-    return () => window.clearInterval(timer);
-  }, [isModalOpen, modalTask?.id, sessionIsActive]);
-
-  useEffect(() => {
-    if (liveOutputRef.current) {
-      liveOutputRef.current.scrollTop = liveOutputRef.current.scrollHeight;
-    }
-  }, [cliSession?.liveOutput]);
+    if (openedTaskIdRef.current === modalTask.id) return;
+    setNewComment('');
+    setSubtaskToAdd('');
+    setReplyTargetId(null);
+    setReplyDraft('');
+    setCollapsedThreads({});
+    setResponseDestination('Todo');
+    setReturnToWorkOpen(false);
+    if (returnToWorkReasonRef.current) returnToWorkReasonRef.current.value = '';
+    setConfirmDiscard(false);
+    setConfirmDelete(false);
+    setIsWideMode(false);
+    setIsFullView(new URLSearchParams(window.location.search).get('view') === 'full');
+    setIsPromptModalOpen(true);
+    setIsCommentBoxVisible(false);
+    setCommentAssetError('');
+    setReplyAssetError('');
+    setIsUploadingCommentAsset(false);
+    setIsUploadingReplyAsset(false);
+    setCliSessionBusy(false);
+    setCliSessionError('');
+    // sync cliSession from the freshly loaded task
+    setCliSession(modalTask.cliSession || null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modalTask?.id]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -766,10 +260,6 @@ export function TaskModal() {
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
-      if (isFullView) {
-        handleCloseAttempt();
-        return;
-      }
       handleCloseAttempt();
     };
 
@@ -777,10 +267,7 @@ export function TaskModal() {
       if (!isDraggingSidebar) return;
       setSidebarWidth(() => Math.max(250, Math.min(window.innerWidth * 0.5, window.innerWidth - e.clientX)));
     };
-    
-    const handleMouseUp = () => {
-      setIsDraggingSidebar(false);
-    };
+    const handleMouseUp = () => setIsDraggingSidebar(false);
 
     if (isDraggingSidebar) {
       document.body.style.cursor = 'col-resize';
@@ -802,7 +289,6 @@ export function TaskModal() {
   useEffect(() => {
     const url = new URL(window.location.href);
     const hasPendingTicket = url.searchParams.has('ticket');
-
     if (isModalOpen && modalTask?.id) {
       url.searchParams.set('ticket', modalTask.id);
       url.searchParams.set('view', isFullView ? 'full' : 'popup');
@@ -812,9 +298,16 @@ export function TaskModal() {
       url.searchParams.delete('ticket');
       url.searchParams.delete('view');
     }
-
     window.history.replaceState({}, '', url);
   }, [isModalOpen, isFullView, modalTask?.id]);
+
+  useEffect(() => {
+    if (!isModalOpen || !modalTask?.id) return;
+    setIsTaskLoading(true);
+    fetchTask(modalTask.id)
+      .then((task) => startTransition(() => { setModalTask(task); setIsTaskLoading(false); }))
+      .catch((err) => { console.error(err); setIsTaskLoading(false); });
+  }, [isModalOpen, modalTask?.id, refreshTrigger]);
 
   const allStatuses = config ? [...config.columns, ...config.hiddenStatuses].map((item) => item.name) : [];
   const allUsers = config?.users.map((item) => item.name) || [];
@@ -832,37 +325,6 @@ export function TaskModal() {
   const createdAt = modalTask?.history?.[0]?.date;
   const updatedAt = modalTask?.history?.[modalTask.history.length - 1]?.date;
 
-  const originalPayload = useMemo(() => JSON.stringify({
-    title: modalTask?.title || '',
-    body: normalizeTaskMarkdownBody(modalTask?.body || ''),
-    status: modalTask?.status || 'Todo',
-    assignee: modalTask?.assignee || 'unassigned',
-    tags: modalTask?.tags || [],
-    priority: modalTask?.priority || 'None',
-    effort: modalTask?.effort || 'None',
-    effortLevel: (modalTask as any)?.effortLevel || '',
-    implementationLink: modalTask?.implementationLink || '',
-    subtasks: modalTask?.subtasks || [],
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [modalTask]);
-
-  const currentPayload = useMemo(() => JSON.stringify({
-    title,
-    body: normalizeTaskMarkdownBody(body),
-    status,
-    assignee,
-    tags,
-    priority,
-    effort,
-    effortLevel,
-    implementationLink,
-    subtasks,
-  }), [title, body, status, assignee, tags, priority, effort, effortLevel, implementationLink, subtasks]);
-
-  const isDirty = originalPayload !== currentPayload || newComment.trim() !== '';
-
-  // When the ticket enters Require Input, default the destination to whatever status it was in before.
-  // Ready is excluded from requireInputDestinations so it's naturally filtered out.
   const preRequireInputStatus = useMemo(() => {
     const history = modalTask?.history || [];
     const idx = [...history].reverse().findIndex(
@@ -882,159 +344,6 @@ export function TaskModal() {
     if (!from || promptableStatuses.includes(from)) return requireInputDestinations[0] || 'In Progress';
     return from;
   }, [modalTask?.history, readyForMergeStatus, promptableStatuses, requireInputDestinations]);
-
-  const handleReturnToWork = useCallback(async () => {
-    if (!modalTask?.id) return;
-    const submittedAt = new Date().toISOString();
-    const reason = (returnToWorkReasonRef.current?.value ?? '').trim();
-    const lastReadySummary = [...(modalTask.history || [])].reverse().find(
-      (e) => e.type === 'comment' && e.id
-    );
-    setSaving(true);
-    try {
-      const newEntries: any[] = [];
-      if (reason) {
-        newEntries.push({
-          type: 'comment',
-          user: currentUser,
-          date: submittedAt,
-          comment: reason,
-          ...(lastReadySummary?.id ? { replyTo: lastReadySummary.id } : {}),
-        });
-      }
-      newEntries.push({
-        type: 'status_change',
-        from: readyForMergeStatus,
-        to: preReadyStatus,
-        user: currentUser,
-        date: submittedAt,
-        comment: 'Returned to work',
-      });
-      const updatedTask = await updateTask(modalTask.id, {
-        title,
-        body,
-        status: preReadyStatus,
-        assignee,
-        tags,
-        priority,
-        effort,
-        effortLevel: effortLevel || undefined,
-        implementationLink: implementationLink.trim(),
-        order: modalTask.order,
-        history: [...(modalTask.history || []), ...newEntries],
-        updatedBy: currentUser,
-      } as any);
-      setModalTask(updatedTask);
-      setStatus(preReadyStatus);
-      setReturnToWorkOpen(false);
-      if (returnToWorkReasonRef.current) returnToWorkReasonRef.current.value = '';
-      triggerRefresh();
-      closeModal();
-    } catch (error) {
-      console.error(error);
-    } finally {
-      setSaving(false);
-    }
-  }, [modalTask, currentUser, readyForMergeStatus, preReadyStatus, title, body, assignee, tags, priority, effort, effortLevel, implementationLink, returnToWorkReasonRef, setModalTask, triggerRefresh, closeModal]);
-
-  const handleReturnToWorkAndLaunch = useCallback(async () => {
-    if (!modalTask?.id) return;
-    const submittedAt = new Date().toISOString();
-    const reason = (returnToWorkReasonRef.current?.value ?? '').trim();
-    const lastReadySummary = [...(modalTask.history || [])].reverse().find(
-      (e) => e.type === 'comment' && e.id
-    );
-    setSaving(true);
-    try {
-      const newEntries: any[] = [];
-      if (reason) {
-        newEntries.push({
-          type: 'comment',
-          user: currentUser,
-          date: submittedAt,
-          comment: reason,
-          ...(lastReadySummary?.id ? { replyTo: lastReadySummary.id } : {}),
-        });
-      }
-      newEntries.push({
-        type: 'status_change',
-        from: readyForMergeStatus,
-        to: preReadyStatus,
-        user: currentUser,
-        date: submittedAt,
-        comment: 'Returned to work',
-      });
-      await updateTask(modalTask.id, {
-        title,
-        body,
-        status: preReadyStatus,
-        assignee,
-        tags,
-        priority,
-        effort,
-        effortLevel: effortLevel || undefined,
-        implementationLink: implementationLink.trim(),
-        order: modalTask.order,
-        history: [...(modalTask.history || []), ...newEntries],
-        updatedBy: currentUser,
-      } as any);
-      setReturnToWorkOpen(false);
-      if (returnToWorkReasonRef.current) returnToWorkReasonRef.current.value = '';
-      triggerRefresh();
-      const session = await startTaskCliSession(modalTask.id, selectedCliFramework, undefined, skipPermissions);
-      setCliSession(session);
-      triggerRefresh();
-      closeModal();
-    } catch (error) {
-      console.error(error);
-    } finally {
-      setSaving(false);
-    }
-  }, [modalTask, currentUser, readyForMergeStatus, preReadyStatus, title, body, assignee, tags, priority, effort, effortLevel, implementationLink, returnToWorkReasonRef, selectedCliFramework, skipPermissions, triggerRefresh, closeModal]);
-
-  const [finishBusy, setFinishBusy] = useState(false);
-  const [finishError, setFinishError] = useState('');
-  const [reviewBusy, setReviewBusy] = useState(false);
-  const [reviewError, setReviewError] = useState('');
-
-  const handleSendForCodeReview = useCallback(async (persona: ReviewPersona) => {
-    if (!modalTask?.id) return;
-    setReviewBusy(true);
-    setReviewError('');
-    try {
-      await updateTask(modalTask.id, { status: 'In Progress' });
-      const session = await startTaskCliSession(modalTask.id, selectedCliFramework, persona.prompt, skipPermissions);
-      setCliSession(session);
-      triggerRefresh();
-      closeModal();
-    } catch (error: any) {
-      setReviewError(error?.message || 'Failed to start review session.');
-    } finally {
-      setReviewBusy(false);
-    }
-  }, [modalTask?.id, selectedCliFramework, skipPermissions, triggerRefresh, closeModal]);
-
-  const sendFinishCommand = useCallback(async () => {
-    if (!modalTask?.id) return;
-    const command = `finish ${modalTask.id}`;
-    const hasActiveSession = Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status));
-    setFinishBusy(true);
-    setFinishError('');
-    try {
-      if (hasActiveSession) {
-        const nextSession = await sendTaskCliInput(modalTask.id, command, currentUser);
-        setCliSession(nextSession);
-      } else {
-        const nextSession = await startTaskCliSession(modalTask.id, selectedCliFramework, command);
-        setCliSession(nextSession);
-      }
-      triggerRefresh();
-    } catch (error: any) {
-      setFinishError(error?.message || 'Failed to send finish command.');
-    } finally {
-      setFinishBusy(false);
-    }
-  }, [modalTask?.id, cliSession, currentUser, selectedCliFramework, triggerRefresh]);
 
   useEffect(() => {
     if (!isRequireInput) return;
@@ -1112,7 +421,6 @@ export function TaskModal() {
             comment: newComment.trim() ? 'Included with comment' : undefined,
           });
         }
-
         const newHistory = [...(modalTask.history || []), ...historyUpdates];
         const updatedTask = await updateTask(modalTask.id, {
           ...payload,
@@ -1123,7 +431,6 @@ export function TaskModal() {
       } else {
         await createTask({ ...payload, history: historyUpdates, projectKey: currentProject, author: currentUser });
       }
-
       triggerRefresh();
       if (!keepOpen && !customHistory) closeModal();
     } catch (error: any) {
@@ -1152,9 +459,7 @@ export function TaskModal() {
 
   const sendCommentDirectly = async () => {
     if (!newComment.trim() || !modalTask?.id) return;
-
     const commentText = newComment.trim();
-
     if (cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status)) {
       setCliSessionBusy(true);
       setCliSessionError('');
@@ -1171,23 +476,14 @@ export function TaskModal() {
       }
       return;
     }
-
-    const commentEntry = {
-      type: 'comment',
-      user: currentUser,
-      date: new Date().toISOString(),
-      comment: commentText,
-    };
-
+    const commentEntry = { type: 'comment', user: currentUser, date: new Date().toISOString(), comment: commentText };
     setNewComment('');
     await handleSave([commentEntry], true);
   };
 
   const sendReplyDirectly = useCallback(async (parentId: string) => {
     if (!replyDraft.trim() || !modalTask?.id) return;
-
     const replyText = replyDraft.trim();
-
     if (cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status)) {
       setCliSessionBusy(true);
       setCliSessionError('');
@@ -1206,15 +502,7 @@ export function TaskModal() {
       }
       return;
     }
-
-    const replyEntry = {
-      type: 'comment',
-      user: currentUser,
-      date: new Date().toISOString(),
-      comment: replyText,
-      replyTo: parentId,
-    };
-
+    const replyEntry = { type: 'comment', user: currentUser, date: new Date().toISOString(), comment: replyText, replyTo: parentId };
     setReplyDraft('');
     setReplyTargetId(null);
     await handleSave([replyEntry], true);
@@ -1223,17 +511,14 @@ export function TaskModal() {
 
   const submitRequireInputResponse = async () => {
     if (!modalTask?.id || !newComment.trim()) return;
-
     const targetStatus = requireInputDestinations.includes(responseDestination)
       ? responseDestination
       : requireInputDestinations[0] || 'Todo';
     const submittedAt = new Date().toISOString();
     const responseComment = newComment.trim();
-
     const lastAgentComment = [...(modalTask.history || [])].reverse().find(
       (e) => e.type === 'comment' && e.id
     );
-
     const historyUpdates = [
       {
         type: 'comment',
@@ -1251,48 +536,33 @@ export function TaskModal() {
         comment: 'Response submitted',
       },
     ];
-
     setSaving(true);
     try {
       const updatedTask = await updateTask(modalTask.id, {
-        title,
-        body,
-        status: targetStatus,
-        assignee,
-        tags,
-        priority,
-        effort,
+        title, body, status: targetStatus, assignee, tags, priority, effort,
         effortLevel: effortLevel || undefined,
         implementationLink: implementationLink.trim(),
         order: modalTask.order,
         history: [...(modalTask.history || []), ...historyUpdates],
         updatedBy: currentUser,
       } as any);
-
       const newResponseComment = [...(updatedTask.history || [])].reverse().find(
         (e) => e.type === 'comment' && e.user === currentUser && e.date === submittedAt
       );
       const idsToMarkRead: string[] = [];
       if (lastAgentComment?.id) idsToMarkRead.push(lastAgentComment.id);
       if (newResponseComment?.id) idsToMarkRead.push(newResponseComment.id);
-      if (idsToMarkRead.length > 0) {
-        ctxMarkAllCommentsRead(updatedTask.id, idsToMarkRead);
-      }
-
+      if (idsToMarkRead.length > 0) ctxMarkAllCommentsRead(updatedTask.id, idsToMarkRead);
       setModalTask(updatedTask);
       setNewComment('');
       setStatus(targetStatus);
-
-      // Auto-mark the prompt and the user's response as read so they don't
-      // show as unread after submitting.
-      const idsToMark: string[] = [];
-      if (lastAgentComment?.id) idsToMark.push(lastAgentComment.id);
       const responseEntry = (updatedTask.history || []).find(
         (e: HistoryEntry) => e.type === 'comment' && e.date === submittedAt && e.user === currentUser,
       );
+      const idsToMark: string[] = [];
+      if (lastAgentComment?.id) idsToMark.push(lastAgentComment.id);
       if (responseEntry?.id) idsToMark.push(responseEntry.id);
       if (idsToMark.length > 0) ctxMarkAllCommentsRead(modalTask.id, idsToMark);
-
       triggerRefresh();
       closeModal();
     } catch (error) {
@@ -1302,264 +572,284 @@ export function TaskModal() {
     }
   };
 
-  const insertTextIntoDraft = (
-    currentValue: string,
-    setValue: (value: string) => void,
-    targetTextArea: HTMLTextAreaElement | null,
-    text: string,
-    selectionStart?: number,
-    selectionEnd?: number,
-  ) => {
-    const start = selectionStart ?? targetTextArea?.selectionStart ?? currentValue.length;
-    const end = selectionEnd ?? targetTextArea?.selectionEnd ?? currentValue.length;
-    const nextValue = currentValue.substring(0, start) + text + currentValue.substring(end);
-
-    setValue(nextValue);
-
-    setTimeout(() => {
-      if (!targetTextArea) {
-        return;
-      }
-
-      const nextCursorPosition = start + text.length;
-      targetTextArea.focus();
-      targetTextArea.setSelectionRange(nextCursorPosition, nextCursorPosition);
-    }, 0);
-  };
-
-  const attachImageFilesToDraft = async ({
-    files,
-    currentValue,
-    setValue,
-    targetTextArea,
-    selectionStart,
-    selectionEnd,
-    setError,
-    setUploading,
-  }: {
-    files: File[];
-    currentValue: string;
-    setValue: (value: string) => void;
-    targetTextArea: HTMLTextAreaElement | null;
-    selectionStart?: number;
-    selectionEnd?: number;
-    setError: (value: string) => void;
-    setUploading: (value: boolean) => void;
-  }) => {
-    if (files.length === 0) {
-      return;
-    }
-
-    if (!modalTask?.id) {
-      setError('Save the ticket before attaching images.');
-      return;
-    }
-
-    setUploading(true);
-    setError('');
-
+  const handleReturnToWork = useCallback(async ({ launch = false }: { launch?: boolean } = {}) => {
+    if (!modalTask?.id) return;
+    const submittedAt = new Date().toISOString();
+    const reason = (returnToWorkReasonRef.current?.value ?? '').trim();
+    const lastReadySummary = [...(modalTask.history || [])].reverse().find(
+      (e) => e.type === 'comment' && e.id
+    );
+    setSaving(true);
     try {
-      const { markdownLinks, unsupportedFiles } = await uploadTaskImageMarkdownLinks(modalTask.id, files);
-
-      if (markdownLinks.length === 0) {
-        setError(buildUnsupportedImageMessage(unsupportedFiles));
-        return;
+      const newEntries: any[] = [];
+      if (reason) {
+        newEntries.push({
+          type: 'comment',
+          user: currentUser,
+          date: submittedAt,
+          comment: reason,
+          ...(lastReadySummary?.id ? { replyTo: lastReadySummary.id } : {}),
+        });
       }
-
-      insertTextIntoDraft(currentValue, setValue, targetTextArea, markdownLinks.join('\n\n'), selectionStart, selectionEnd);
-
-      if (unsupportedFiles.length > 0) {
-        setError(buildUnsupportedImageMessage(unsupportedFiles));
+      newEntries.push({
+        type: 'status_change',
+        from: readyForMergeStatus,
+        to: preReadyStatus,
+        user: currentUser,
+        date: submittedAt,
+        comment: 'Returned to work',
+      });
+      const updatedTask = await updateTask(modalTask.id, {
+        title, body, status: preReadyStatus, assignee, tags, priority, effort,
+        effortLevel: effortLevel || undefined,
+        implementationLink: implementationLink.trim(),
+        order: modalTask.order,
+        history: [...(modalTask.history || []), ...newEntries],
+        updatedBy: currentUser,
+      } as any);
+      setReturnToWorkOpen(false);
+      if (returnToWorkReasonRef.current) returnToWorkReasonRef.current.value = '';
+      triggerRefresh();
+      if (launch) {
+        await launchSession();
+      } else {
+        setModalTask(updatedTask);
+        setStatus(preReadyStatus);
       }
+      closeModal();
     } catch (error) {
       console.error(error);
-      setError(error instanceof Error ? error.message : 'Failed to attach image.');
     } finally {
-      setUploading(false);
+      setSaving(false);
     }
-  };
+  }, [modalTask, currentUser, readyForMergeStatus, preReadyStatus, title, body, assignee, tags, priority, effort, effortLevel, implementationLink, setModalTask, triggerRefresh, closeModal, launchSession]);
 
-  const attachCommentImageFiles = async (files: File[], selectionStart?: number, selectionEnd?: number) => {
-    await attachImageFilesToDraft({
-      files,
-      currentValue: newComment,
-      setValue: setNewComment,
-      targetTextArea: commentRef.current,
-      selectionStart,
-      selectionEnd,
-      setError: setCommentAssetError,
-      setUploading: setIsUploadingCommentAsset,
-    });
-  };
-
-  const attachReplyImageFiles = async (files: File[], selectionStart?: number, selectionEnd?: number) => {
-    await attachImageFilesToDraft({
-      files,
-      currentValue: replyDraft,
-      setValue: setReplyDraft,
-      targetTextArea: replyTextareaRef.current,
-      selectionStart,
-      selectionEnd,
-      setError: setReplyAssetError,
-      setUploading: setIsUploadingReplyAsset,
-    });
-  };
-  const attachReplyImageFilesRef = useRef(attachReplyImageFiles);
-  attachReplyImageFilesRef.current = attachReplyImageFiles;
-
-  const handleCommentPaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = Array.from(event.clipboardData.files || []);
-    if (files.length === 0) {
-      return;
+  const handleSendForCodeReview = useCallback(async (persona: ReviewPersona) => {
+    if (!modalTask?.id) return;
+    setReviewBusy(true);
+    setReviewError('');
+    try {
+      await updateTask(modalTask.id, { status: 'In Progress' });
+      const session = await startTaskCliSession(modalTask.id, selectedCliFramework, persona.prompt, skipPermissions);
+      setCliSession(session);
+      triggerRefresh();
+      closeModal();
+    } catch (error: any) {
+      setReviewError(error?.message || 'Failed to start review session.');
+    } finally {
+      setReviewBusy(false);
     }
+  }, [modalTask?.id, selectedCliFramework, skipPermissions, setCliSession, triggerRefresh, closeModal]);
 
-    event.preventDefault();
-    void attachCommentImageFiles(files, event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
-  };
-
-  const handleCommentDragOver = (event: React.DragEvent<HTMLTextAreaElement>) => {
-    if (!Array.from(event.dataTransfer.types || []).includes('Files')) {
-      return;
+  const sendFinishCommand = useCallback(async () => {
+    if (!modalTask?.id) return;
+    const command = `finish ${modalTask.id}`;
+    const hasActiveSession = Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status));
+    setFinishBusy(true);
+    setFinishError('');
+    try {
+      if (hasActiveSession) {
+        const nextSession = await sendTaskCliInput(modalTask.id, command, currentUser);
+        setCliSession(nextSession);
+      } else {
+        const nextSession = await startTaskCliSession(modalTask.id, selectedCliFramework, command);
+        setCliSession(nextSession);
+      }
+      triggerRefresh();
+    } catch (error: any) {
+      setFinishError(error?.message || 'Failed to send finish command.');
+    } finally {
+      setFinishBusy(false);
     }
+  }, [modalTask?.id, cliSession, currentUser, selectedCliFramework, triggerRefresh]);
 
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'copy';
-  };
-
-  const handleCommentDrop = (event: React.DragEvent<HTMLTextAreaElement>) => {
-    const files = Array.from(event.dataTransfer.files || []);
-    if (files.length === 0) {
-      return;
-    }
-
-    event.preventDefault();
-    void attachCommentImageFiles(files, event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
-  };
-
-  const handleReplyPaste = useCallback((event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const files = Array.from(event.clipboardData.files || []);
-    if (files.length === 0) {
-      return;
-    }
-
-    event.preventDefault();
-    void attachReplyImageFilesRef.current(files, event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
+  const handleToggleReply = useCallback((entryId: string | undefined) => {
+    setReplyTargetId((current) => current === entryId ? null : entryId || null);
+    setReplyDraft('');
   }, []);
 
-  const handleReplyDragOver = useCallback((event: React.DragEvent<HTMLTextAreaElement>) => {
-    if (!Array.from(event.dataTransfer.types || []).includes('Files')) {
-      return;
-    }
-
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'copy';
+  const handleCancelReply = useCallback(() => {
+    setReplyTargetId(null);
+    setReplyDraft('');
   }, []);
 
-  const handleReplyDrop = useCallback((event: React.DragEvent<HTMLTextAreaElement>) => {
-    const files = Array.from(event.dataTransfer.files || []);
-    if (files.length === 0) {
-      return;
-    }
-
-    event.preventDefault();
-    void attachReplyImageFilesRef.current(files, event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
+  const handleToggleCollapsed = useCallback((entryId: string) => {
+    setCollapsedThreads((current) => ({ ...current, [entryId]: !current[entryId] }));
   }, []);
 
-  const metadataFields = (
-    <div className="space-y-5 rounded-xl border border-gray-100 bg-gray-50 p-4 dark:border-white/5 dark:bg-black/10">
-      <div>
-        <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Status</label>
-        <select
-          className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
-          value={status}
-          onChange={(event) => setStatus(event.target.value)}
+  const handleClearReplyAssetError = useCallback(() => setReplyAssetError(''), []);
+
+  const readCommentIds = new Set(readComments[modalTask?.id ?? ''] ?? []);
+  const unreadCommentCount = (modalTask?.history || []).filter(
+    (e) => e.type === 'comment' && e.id && !readCommentIds.has(e.id) && e.user !== currentUser
+  ).length;
+
+  const activityFilterTabs = (
+    <div className="flex items-center gap-2 flex-wrap">
+      {(['all', 'activity', 'comments', 'agent'] as ActivityFilter[]).map((filter) => (
+        <button
+          key={filter}
+          type="button"
+          onClick={() => setActivityFilter(filter)}
+          className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+            activityFilter === filter
+              ? 'bg-primary text-white'
+              : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-white/10 dark:text-gray-300 dark:hover:bg-white/15'
+          }`}
         >
-          {allStatuses.map((item) => (
-            <option key={item} value={item}>
-              {item}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div>
-        <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Assignee</label>
-        <select
-          className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
-          value={assignee}
-          onChange={(event) => setAssignee(event.target.value)}
+          {filter === 'all' ? 'All' : filter === 'activity' ? 'Activity' : filter === 'comments' ? 'Comments' : 'Agent'}
+        </button>
+      ))}
+      {unreadCommentCount > 0 && (
+        <button
+          type="button"
+          onClick={() => modalTask?.id && ctxMarkAllCommentsRead(modalTask.id, (modalTask.history || []).filter(e => e.type === 'comment' && e.id).map(e => e.id!))}
+          className="ml-auto rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-700 transition-colors hover:bg-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:hover:bg-amber-500/25"
         >
-          <option value="unassigned">Unassigned</option>
-          {allUsers.map((item) => (
-            <option key={item} value={item}>
-              {item}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div>
-        <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Priority</label>
-        <select
-          className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
-          value={priority}
-          onChange={(event) => setPriority(event.target.value)}
-        >
-          {availablePriorities.map((item) => (
-            <option key={item.name} value={item.name}>
-              {item.name}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div>
-        <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Effort</label>
-        <select
-          className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
-          value={effort}
-          onChange={(event) => setEffort(event.target.value)}
-        >
-          {EFFORT_OPTIONS.map((item) => (
-            <option key={item} value={item}>
-              {item}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <div>
-        <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Effort Override</label>
-        <select
-          className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
-          value={effortLevel}
-          onChange={(e) => setEffortLevel(e.target.value)}
-        >
-          <option value="">Uses global default</option>
-          <option value="low">low</option>
-          <option value="medium">medium</option>
-          <option value="high">high</option>
-          <option value="xhigh">xhigh</option>
-          <option value="max">max</option>
-        </select>
-      </div>
-
-      <div>
-        <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Implementation Link</label>
-        <input
-          className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
-          value={implementationLink}
-          onChange={(event) => setImplementationLink(event.target.value)}
-          placeholder="https://github.com/..."
-        />
-      </div>
-
-      <div>
-        <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Tags</label>
-        <TagSelector tags={tags} onChange={setTags} availableTags={allTags} configTags={config?.tags ?? []} />
-      </div>
+          Mark all read ({unreadCommentCount})
+        </button>
+      )}
     </div>
   );
+
+  const readyForMergeBanner = useMemo(() => isReadyForMerge ? (
+    <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-900/20">
+      <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
+      <div className="min-w-0 flex-1">
+        <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-amber-800 dark:text-amber-300">Merge review requested</p>
+        <p className="whitespace-pre-wrap text-sm text-amber-700 dark:text-amber-400">
+          This ticket is waiting in {readyForMergeStatus} for your review and finalization. Look over the ticket and diffs, then click <strong>Tell agent to finish</strong> to close the work.
+        </p>
+      </div>
+    </div>
+  ) : null, [isReadyForMerge, readyForMergeStatus]);
+
+  if (!config || (!isModalOpen && !modalTask)) return null;
+
+  const requireInputBanner = isRequireInput && lastComment ? (
+    <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-900/20">
+      <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
+      <div className="min-w-0 flex-1">
+        <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-amber-800 dark:text-amber-300">Response Needed</p>
+        <p className="whitespace-pre-wrap text-sm text-amber-700 dark:text-amber-400">{lastComment.comment}</p>
+        <p className="mt-1.5 text-[10px] text-amber-500/70">
+          {lastComment.user} · {new Date(lastComment.date).toLocaleString()}
+        </p>
+      </div>
+    </div>
+  ) : null;
+
+  const requireInputPrompt = isRequireInput && modalTask?.id ? (
+    <div className="rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 to-white p-5 shadow-sm dark:border-amber-500/30 dark:from-amber-900/20 dark:to-[#1a1b23]">
+      <div className="mb-4 flex items-start gap-3">
+        <div className="rounded-xl bg-amber-100 p-2 text-amber-600 dark:bg-amber-500/10 dark:text-amber-300">
+          <AlertCircle className="h-5 w-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Awaiting your input</p>
+          <h3 className="mt-1 text-lg font-semibold text-gray-900 dark:text-gray-100">Respond and route the ticket</h3>
+          <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">Answer the pending question, then choose where the ticket should go next.</p>
+        </div>
+      </div>
+      {requireInputBanner}
+      <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_180px]">
+        <div>
+          <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Your response</label>
+          <textarea
+            ref={commentRef}
+            autoFocus
+            className="h-44 w-full resize-none rounded-xl border border-amber-200 bg-white px-4 py-3 text-sm outline-none placeholder:text-gray-400 focus:border-primary dark:border-amber-500/20 dark:bg-black/30"
+            value={newComment}
+            onChange={(event) => setNewComment(event.target.value)}
+            placeholder="Type the answer you want to send back..."
+          />
+        </div>
+        <div className="space-y-4 rounded-xl border border-gray-200 bg-white/80 p-4 dark:border-white/10 dark:bg-black/20">
+          <div>
+            <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Send ticket to</label>
+            <select
+              className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
+              value={responseDestination}
+              onChange={(event) => setResponseDestination(event.target.value)}
+            >
+              {requireInputDestinations.map((item) => (
+                <option key={item} value={item}>{item}</option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-2">
+            <button
+              disabled={saving || !newComment.trim()}
+              onClick={submitRequireInputResponse}
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <SendHorizontal className="h-4 w-4" />
+              {saving ? 'Submitting...' : 'Send Response'}
+            </button>
+            <button
+              onClick={() => setIsFullView(true)}
+              className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
+            >
+              <Maximize2 className="h-4 w-4" />
+              Open full ticket
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
+  const cliSessionActive = Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status));
+  const readyForMergePrompt = isReadyForMerge && modalTask?.id ? (
+    <ReadyForMergePrompt
+      taskId={modalTask.id}
+      readyForMergeBanner={readyForMergeBanner}
+      saving={saving}
+      finishBusy={finishBusy}
+      finishError={finishError}
+      returnToWorkOpen={returnToWorkOpen}
+      reviewBusy={reviewBusy}
+      reviewError={reviewError}
+      cliSessionActive={cliSessionActive}
+      isFullView={isFullView}
+      returnToWorkReasonRef={returnToWorkReasonRef}
+      onReturnToWork={() => void handleReturnToWork()}
+      onReturnToWorkAndLaunch={() => void handleReturnToWork({ launch: true })}
+      onFinish={sendFinishCommand}
+      onCodeReview={handleSendForCodeReview}
+      onSetReturnToWorkOpen={setReturnToWorkOpen}
+      onSetIsFullView={setIsFullView}
+      onSetIsPromptModalOpen={setIsPromptModalOpen}
+    />
+  ) : null;
+
+  const animationsEnabled = config?.animationsEnabled ?? true;
+  const speedMap = { fast: 0.2, normal: 0.4, slow: 0.7 };
+  const duration = speedMap[config?.animationSpeed || 'normal'];
+  const Container = animationsEnabled ? motion.div : 'div';
+  const layoutProps = animationsEnabled ? {
+    layoutId: `ticket-${modalTask?.id}`,
+    transition: { type: 'spring' as const, bounce: 0.15, duration: duration + 0.3 },
+    style: { zIndex: 60 }
+  } : {};
+  const contentAnimation = animationsEnabled ? {
+    initial: { opacity: 0 },
+    animate: { opacity: 1, transition: { duration: 0.2, delay: duration * 0.4 } },
+    exit: { opacity: 0, transition: { duration: 0.05, delay: 0 } },
+  } : {};
+
+  const metadataPanelProps = {
+    status, setStatus,
+    assignee, setAssignee,
+    priority, setPriority,
+    effort, setEffort,
+    effortLevel, setEffortLevel,
+    implementationLink, setImplementationLink,
+    tags, setTags,
+    allStatuses, allUsers, allTags,
+    configTags: config?.tags ?? [],
+    availablePriorities,
+  };
 
   const subtasksPanel = (
     <div className="space-y-4 rounded-xl border border-gray-100 bg-white/70 p-4 dark:border-white/5 dark:bg-white/5">
@@ -1572,7 +862,6 @@ export function TaskModal() {
           {subtasks.length}
         </span>
       </div>
-
       {modalTask?.id ? (
         <div className="flex gap-2">
           <select
@@ -1603,7 +892,6 @@ export function TaskModal() {
       ) : (
         <p className="text-sm text-gray-500">Save the ticket first, then attach existing subtasks.</p>
       )}
-
       {linkedSubtasks.length === 0 && danglingSubtaskIds.length === 0 ? (
         <p className="text-sm italic text-gray-500">No subtasks linked yet.</p>
       ) : (
@@ -1706,145 +994,23 @@ export function TaskModal() {
         )}
       </div>
       {modalTask?.id && (
-        <div className="space-y-3 rounded-xl border border-gray-100 bg-gray-50 p-3 dark:border-white/5 dark:bg-black/20">
-          <div className="flex items-center justify-between gap-3">
-            <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Agent Session</p>
-            {cliSession && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-gray-200 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-gray-700 dark:bg-white/10 dark:text-gray-300">
-                <CircleDot className="h-3 w-3" />
-                {cliSession.status}
-              </span>
-            )}
-          </div>
-
-          <div className="flex gap-2">
-            <select
-              className="flex-1 min-w-0 cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary disabled:cursor-not-allowed disabled:opacity-60 dark:border-white/10 dark:bg-[#252630]"
-              value={selectedCliFramework}
-              onChange={(event) => setSelectedCliFramework(event.target.value as CliFramework)}
-              disabled={Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status)) || cliSessionBusy}
-            >
-              <option value="claude">Claude Code</option>
-              <option value="copilot">Copilot CLI</option>
-            </select>
-            <LaunchAgentSplitButton
-              size="md"
-              busy={cliSessionBusy}
-              disabled={!modalTask?.id || Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status))}
-              onLaunch={(effortOverride) => {
-                if (!modalTask?.id) return;
-                setCliSessionBusy(true);
-                setCliSessionError('');
-                void startTaskCliSession(modalTask.id, selectedCliFramework, undefined, skipPermissions, effortOverride)
-                  .then((session) => {
-                    setCliSession(session);
-                    triggerRefresh();
-                  })
-                  .catch((error: any) => {
-                    setCliSessionError(error?.message || 'Failed to start CLI session.');
-                  })
-                  .finally(() => setCliSessionBusy(false));
-              }}
-            />
-            <button
-              type="button"
-              disabled={!modalTask?.id || cliSessionBusy || !cliSession || !['pending', 'running', 'waiting-input'].includes(cliSession.status)}
-              onClick={() => {
-                if (!modalTask?.id) return;
-                setCliSessionBusy(true);
-                setCliSessionError('');
-                void stopTaskCliSession(modalTask.id)
-                  .then((session) => {
-                    setCliSession(session);
-                    triggerRefresh();
-                  })
-                  .catch((error: any) => {
-                    setCliSessionError(error?.message || 'Failed to stop CLI session.');
-                  })
-                  .finally(() => setCliSessionBusy(false));
-              }}
-              className="flex items-center justify-center gap-1.5 rounded-lg border border-gray-300 px-3 py-2 text-xs font-semibold text-gray-700 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/10 dark:text-gray-200 dark:hover:bg-white/5"
-            >
-              <Square className="h-4 w-4" />
-              Stop
-            </button>
-          </div>
-
-          <label className="flex cursor-pointer items-center gap-2">
-            <input
-              type="checkbox"
-              checked={skipPermissions}
-              onChange={(e) => setSkipPermissions(e.target.checked)}
-              disabled={Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status))}
-              className="rounded"
-            />
-            <span className="text-xs text-gray-600 dark:text-gray-400">Skip permission prompts (run freely)</span>
-          </label>
-
-          {cliSession?.blockedReason && (
-            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-500/20 dark:bg-amber-500/10">
-              <p className="text-xs font-semibold text-amber-700 dark:text-amber-300">Agent blocked — waiting for permission</p>
-              <p className="mt-0.5 text-[11px] text-amber-600 dark:text-amber-400">{cliSession.blockedReason}</p>
-            </div>
-          )}
-
-          {cliSessionError && (
-            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300">
-              {cliSessionError}
-            </div>
-          )}
-
-          {cliSession?.liveOutput && (
-            <div>
-              <p className="mb-1 text-[10px] font-bold uppercase tracking-wider text-gray-400">Live Output</p>
-              <pre
-                ref={liveOutputRef}
-                className="max-h-48 overflow-y-auto rounded-lg bg-gray-900 p-2 text-[10px] leading-relaxed text-gray-200 dark:bg-black/60 whitespace-pre-wrap break-words"
-              >
-                {cliSession.liveOutput}
-              </pre>
-            </div>
-          )}
-
-          {(cliSession != null || modalTask?.tokenMetadata) && (
-            <div className="flex flex-wrap gap-3 text-[11px] text-gray-500 dark:text-gray-400">
-              {cliSession != null && (() => {
-                const inTok = cliSession.inputTokens ?? 0;
-                const outTok = cliSession.outputTokens ?? 0;
-                const cost = cliSession.costUSD ?? 0;
-                const showTokens = config?.tokenDisplayMode === 'tokens';
-                const label = showTokens
-                  ? (inTok > 0 || outTok > 0 ? `↑${(inTok / 1000).toFixed(1)}k ↓${(outTok / 1000).toFixed(1)}k` : '—')
-                  : cost > 0
-                    ? `$${cost.toFixed(4)}${cliSession.costIsEstimated ? '~' : ''}`
-                    : (inTok > 0 || outTok > 0)
-                      ? `↑${(inTok / 1000).toFixed(1)}k ↓${(outTok / 1000).toFixed(1)}k`
-                      : '$0.00';
-                return (
-                  <span title={`↑ ${inTok.toLocaleString()} input / ↓ ${outTok.toLocaleString()} output tokens`}>
-                    Session: {label}
-                  </span>
-                );
-              })()}
-              {modalTask && (() => {
-                const tm = modalTask.tokenMetadata;
-                const costUSD = tm?.costUSD ?? 0;
-                const inTok = tm?.inputTokens ?? 0;
-                const outTok = tm?.outputTokens ?? 0;
-                const isEstimated = tm?.costIsEstimated ?? false;
-                const showTokens = config?.tokenDisplayMode === 'tokens';
-                const label = showTokens
-                  ? (inTok > 0 || outTok > 0 ? `↑${(inTok / 1000).toFixed(1)}k ↓${(outTok / 1000).toFixed(1)}k` : '—')
-                  : costUSD > 0
-                    ? `$${costUSD.toFixed(4)}${isEstimated ? '~' : ''}`
-                    : (inTok > 0 || outTok > 0)
-                      ? `↑${(inTok / 1000).toFixed(1)}k ↓${(outTok / 1000).toFixed(1)}k`
-                      : '$0.00';
-                return <span title={tm ? `↑ ${inTok.toLocaleString()} input / ↓ ${outTok.toLocaleString()} output tokens${isEstimated ? ' (estimated)' : ''}` : 'No token data recorded yet'}>Ticket total: {label}</span>;
-              })()}
-            </div>
-          )}
-        </div>
+        <CliSessionPanel
+          taskId={modalTask.id}
+          cliSession={cliSession}
+          cliSessionBusy={cliSessionBusy}
+          cliSessionError={cliSessionError}
+          selectedCliFramework={selectedCliFramework}
+          setSelectedCliFramework={setSelectedCliFramework}
+          skipPermissions={skipPermissions}
+          setSkipPermissions={setSkipPermissions}
+          sessionIsActive={sessionIsActive}
+          liveOutputRef={liveOutputRef}
+          config={config}
+          tokenMetadata={modalTask.tokenMetadata}
+          onLaunch={launchSession}
+          onStop={stopSession}
+          onToggleDisplayMode={config ? () => void saveConfig({ ...config, tokenDisplayMode: config.tokenDisplayMode === 'tokens' ? 'cost' : 'tokens' }) : undefined}
+        />
       )}
       {modalTask?.id && (
         <button
@@ -1858,232 +1024,47 @@ export function TaskModal() {
     </div>
   );
 
-  const readCommentIds = new Set(readComments[modalTask?.id ?? ''] ?? []);
+  const historyListProps = {
+    topLevelEntries,
+    repliesByParent,
+    collapsedThreads,
+    replyTargetId,
+    replyDraft,
+    replyAssetError,
+    isUploadingReplyAsset,
+    saving,
+    readCommentIds,
+    currentUser,
+    isRequireInput,
+    taskId: modalTask?.id,
+    config,
+    replyTextareaRef,
+    onMarkCommentRead: ctxMarkCommentRead,
+    onToggleReply: handleToggleReply,
+    onSetReplyDraft: setReplyDraft,
+    onClearReplyAssetError: handleClearReplyAssetError,
+    onToggleCollapsed: handleToggleCollapsed,
+    onSendReply: sendReplyDirectly,
+    onCancelReply: handleCancelReply,
+    onReplyPaste: handleReplyPaste,
+    onReplyDragOver: handleReplyDragOver,
+    onReplyDrop: handleReplyDrop,
+  };
 
-  const unreadCommentCount = (modalTask?.history || []).filter(
-    (e) => e.type === 'comment' && e.id && !readCommentIds.has(e.id) && e.user !== currentUser
-  ).length;
-
-  const activityFilterTabs = (
-    <div className="flex items-center gap-2 flex-wrap">
-      {(['all', 'activity', 'comments', 'agent'] as ActivityFilter[]).map((filter) => (
-        <button
-          key={filter}
-          type="button"
-          onClick={() => setActivityFilter(filter)}
-          className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
-            activityFilter === filter
-              ? 'bg-primary text-white'
-              : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-white/10 dark:text-gray-300 dark:hover:bg-white/15'
-          }`}
-        >
-          {filter === 'all' ? 'All' : filter === 'activity' ? 'Activity' : filter === 'comments' ? 'Comments' : 'Agent'}
-        </button>
-      ))}
-      {unreadCommentCount > 0 && (
-        <button
-          type="button"
-          onClick={() => modalTask?.id && ctxMarkAllCommentsRead(modalTask.id, (modalTask.history || []).filter(e => e.type === 'comment' && e.id).map(e => e.id!))}
-          className="ml-auto rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-700 transition-colors hover:bg-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:hover:bg-amber-500/25"
-        >
-          Mark all read ({unreadCommentCount})
-        </button>
-      )}
-    </div>
-  );
-
-  const handleToggleReply = useCallback((entryId: string | undefined) => {
-    setReplyTargetId((current) => current === entryId ? null : entryId || null);
-    setReplyDraft('');
-  }, [setReplyTargetId, setReplyDraft]);
-
-  const handleCancelReply = useCallback(() => {
-    setReplyTargetId(null);
-    setReplyDraft('');
-  }, [setReplyTargetId, setReplyDraft]);
-
-  const handleToggleCollapsed = useCallback((entryId: string) => {
-    setCollapsedThreads((current) => ({ ...current, [entryId]: !current[entryId] }));
-  }, [setCollapsedThreads]);
-
-  const handleClearReplyAssetError = useCallback(() => {
-    setReplyAssetError('');
-  }, [setReplyAssetError]);
-
-  const readyForMergeBanner = useMemo(() => isReadyForMerge ? (
-    <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-900/20">
-      <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
-      <div className="min-w-0 flex-1">
-        <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-amber-800 dark:text-amber-300">Merge review requested</p>
-        <p className="whitespace-pre-wrap text-sm text-amber-700 dark:text-amber-400">
-          This ticket is waiting in {readyForMergeStatus} for your review and finalization. Look over the ticket and diffs, then click <strong>Tell agent to finish</strong> to close the work.
-        </p>
-      </div>
-    </div>
-  ) : null, [isReadyForMerge, readyForMergeStatus]);
-
-  if (!config || (!isModalOpen && !modalTask)) return null;
-
-  const commentComposer = (
-    <div className="relative">
-      <textarea
-        ref={commentRef}
-        autoFocus={isRequireInput}
-        style={{ minHeight: '80px' }}
-        className="w-full resize-none overflow-hidden rounded-xl border border-gray-200 bg-white px-4 py-3 pb-12 text-sm outline-none placeholder:text-gray-400 focus:border-primary dark:border-white/10 dark:bg-black/40 transition-all"
-        value={newComment}
-        onChange={(event) => {
-          setNewComment(event.target.value);
-          if (commentAssetError) {
-            setCommentAssetError('');
-          }
-          event.target.style.height = 'auto';
-          event.target.style.height = event.target.scrollHeight + 'px';
-        }}
-        onPaste={handleCommentPaste}
-        onDragOver={handleCommentDragOver}
-        onDrop={handleCommentDrop}
-        placeholder={isRequireInput ? 'Type your response...' : 'Add a comment...'}
-      />
-      <div className="mt-2 flex items-center justify-between gap-3 px-1 text-[11px] text-gray-500 dark:text-gray-400">
-        <span>Paste or drop PNG, JPG, or SVG images to attach them.</span>
-        {isUploadingCommentAsset && <span className="font-semibold text-primary">Uploading image...</span>}
-      </div>
-      {commentAssetError && (
-        <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
-          {commentAssetError}
-        </div>
-      )}
-      <div className="absolute bottom-3 right-3 flex items-center">
-        <button
-          disabled={saving || isUploadingCommentAsset || !newComment.trim() || !modalTask?.id}
-          onClick={sendCommentDirectly}
-          className="flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-4 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-primary-hover disabled:opacity-50"
-        >
-          <SendHorizontal className="h-3.5 w-3.5" />
-          {saving ? 'Sending...' : 'Send'}
-        </button>
-      </div>
-    </div>
-  );
-
-  const requireInputBanner = isRequireInput && lastComment ? (
-    <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-900/20">
-      <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
-      <div className="min-w-0 flex-1">
-        <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-amber-800 dark:text-amber-300">Response Needed</p>
-        <p className="whitespace-pre-wrap text-sm text-amber-700 dark:text-amber-400">{lastComment.comment}</p>
-        <p className="mt-1.5 text-[10px] text-amber-500/70">
-          {lastComment.user} · {new Date(lastComment.date).toLocaleString()}
-        </p>
-      </div>
-    </div>
-  ) : null;
-
-  const requireInputPrompt = isRequireInput && modalTask?.id ? (
-    <div className="rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 to-white p-5 shadow-sm dark:border-amber-500/30 dark:from-amber-900/20 dark:to-[#1a1b23]">
-      <div className="mb-4 flex items-start gap-3">
-        <div className="rounded-xl bg-amber-100 p-2 text-amber-600 dark:bg-amber-500/10 dark:text-amber-300">
-          <AlertCircle className="h-5 w-5" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">Awaiting your input</p>
-          <h3 className="mt-1 text-lg font-semibold text-gray-900 dark:text-gray-100">Respond and route the ticket</h3>
-          <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">Answer the pending question, then choose where the ticket should go next.</p>
-        </div>
-      </div>
-
-      {requireInputBanner}
-
-      <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_180px]">
-        <div>
-          <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Your response</label>
-          <textarea
-            ref={commentRef}
-            autoFocus
-            className="h-44 w-full resize-none rounded-xl border border-amber-200 bg-white px-4 py-3 text-sm outline-none placeholder:text-gray-400 focus:border-primary dark:border-amber-500/20 dark:bg-black/30"
-            value={newComment}
-            onChange={(event) => setNewComment(event.target.value)}
-            placeholder="Type the answer you want to send back..."
-          />
-        </div>
-
-        <div className="space-y-4 rounded-xl border border-gray-200 bg-white/80 p-4 dark:border-white/10 dark:bg-black/20">
-          <div>
-            <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Send ticket to</label>
-            <select
-              className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
-              value={responseDestination}
-              onChange={(event) => setResponseDestination(event.target.value)}
-            >
-              {requireInputDestinations.map((item) => (
-                <option key={item} value={item}>{item}</option>
-              ))}
-            </select>
-          </div>
-
-          <div className="space-y-2">
-            <button
-              disabled={saving || !newComment.trim()}
-              onClick={submitRequireInputResponse}
-              className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <SendHorizontal className="h-4 w-4" />
-              {saving ? 'Submitting...' : 'Send Response'}
-            </button>
-            <button
-              onClick={() => setIsFullView(true)}
-              className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
-            >
-              <Maximize2 className="h-4 w-4" />
-              Open full ticket
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  ) : null;
-
-  const cliSessionActive = Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status));
-  const readyForMergePrompt = isReadyForMerge && modalTask?.id ? (
-    <ReadyForMergePrompt
-      taskId={modalTask.id}
-      readyForMergeBanner={readyForMergeBanner}
-      saving={saving}
-      finishBusy={finishBusy}
-      finishError={finishError}
-      returnToWorkOpen={returnToWorkOpen}
-      reviewBusy={reviewBusy}
-      reviewError={reviewError}
-      cliSessionActive={cliSessionActive}
-      isFullView={isFullView}
-      returnToWorkReasonRef={returnToWorkReasonRef}
-      onReturnToWork={handleReturnToWork}
-      onReturnToWorkAndLaunch={handleReturnToWorkAndLaunch}
-      onFinish={sendFinishCommand}
-      onCodeReview={handleSendForCodeReview}
-      onSetReturnToWorkOpen={setReturnToWorkOpen}
-      onSetIsFullView={setIsFullView}
-      onSetIsPromptModalOpen={setIsPromptModalOpen}
-    />
-  ) : null;
-
-  const animationsEnabled = config?.animationsEnabled ?? true;
-  const speedMap = { fast: 0.2, normal: 0.4, slow: 0.7 };
-  const duration = speedMap[config?.animationSpeed || 'normal'];
-
-  const Container = animationsEnabled ? motion.div : 'div';
-  const layoutProps = animationsEnabled ? { 
-    layoutId: `ticket-${modalTask?.id}`,
-    transition: { type: 'spring' as const, bounce: 0.15, duration: duration + 0.3 },
-    style: { zIndex: 60 }
-  } : {};
-
-  const contentAnimation = animationsEnabled ? {
-    initial: { opacity: 0 },
-    animate: { opacity: 1, transition: { duration: 0.2, delay: duration * 0.4 } },
-    exit: { opacity: 0, transition: { duration: 0.05, delay: 0 } },
-  } : {};
+  const commentBoxProps = {
+    value: newComment,
+    onChange: (v: string) => { setNewComment(v); if (commentAssetError) setCommentAssetError(''); },
+    onPaste: handleCommentPaste,
+    onDragOver: handleCommentDragOver,
+    onDrop: handleCommentDrop,
+    onSend: sendCommentDirectly,
+    saving,
+    isUploading: isUploadingCommentAsset,
+    assetError: commentAssetError,
+    isRequireInput,
+    disabled: !modalTask?.id,
+    textareaRef: commentRef,
+  };
 
   return (
     <AnimatePresence>
@@ -2100,7 +1081,7 @@ export function TaskModal() {
       )}
 
       {isModalOpen && config && isFullView && (
-        <Container 
+        <Container
           key="modal-content-full"
           {...layoutProps}
           className="pointer-events-auto fixed inset-3 z-[60] flex flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-white/10 dark:bg-[#1a1b23]"
@@ -2146,44 +1127,15 @@ export function TaskModal() {
                 <Save className="h-4 w-4" />
                 {saving ? 'Saving...' : 'Save'}
               </button>
-              {/* Cost / token badge in ticket header */}
-              {modalTask && (() => {
-                const tm = modalTask.tokenMetadata;
-                const isEstimated = tm?.costIsEstimated ?? false;
-                const inTok = tm?.inputTokens ?? 0;
-                const outTok = tm?.outputTokens ?? 0;
-                const costUSD = tm?.costUSD ?? 0;
-                const showTokens = config?.tokenDisplayMode === 'tokens';
-                const titleText = tm
-                  ? `↑ ${inTok.toLocaleString()} input / ↓ ${outTok.toLocaleString()} output tokens${isEstimated ? ' (estimated)' : ''}`
-                  : 'No token data recorded yet';
-                return (
-                  <span
-                    className="flex flex-col items-start rounded-lg border border-gray-200 bg-white/60 px-3 py-1 text-left dark:border-white/10 dark:bg-white/5"
-                    title={titleText}
-                  >
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500">
-                      {showTokens ? 'Tokens' : `Ticket Cost${isEstimated ? ' ~' : ''}`}
-                    </span>
-                    {showTokens ? (
-                      <span className="text-sm font-semibold text-gray-700 dark:text-gray-200">
-                        {inTok > 0 || outTok > 0 ? `↑${(inTok / 1000).toFixed(1)}k ↓${(outTok / 1000).toFixed(1)}k` : '—'}
-                      </span>
-                    ) : !tm ? (
-                      <span className="text-sm font-semibold text-gray-400 dark:text-gray-500">$0.00</span>
-                    ) : costUSD > 0 ? (
-                      <span className="text-sm font-semibold text-gray-700 dark:text-gray-200">${costUSD.toFixed(4)}</span>
-                    ) : (
-                      <span className="text-sm font-semibold text-gray-700 dark:text-gray-200">
-                        ↑{(inTok / 1000).toFixed(1)}k ↓{(outTok / 1000).toFixed(1)}k
-                      </span>
-                    )}
-                  </span>
-                );
-              })()}
-              {/* Agent Session — always visible in top bar */}
+              {modalTask && (
+                <TokenBadge
+                  data={modalTask.tokenMetadata}
+                  config={config}
+                  variant="modal"
+                  onToggle={config ? () => void saveConfig({ ...config, tokenDisplayMode: config.tokenDisplayMode === 'tokens' ? 'cost' : 'tokens' }) : undefined}
+                />
+              )}
               {modalTask?.id && (() => {
-                const sessionIsActive = Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status));
                 if (sessionIsActive && cliSession) {
                   const statusColor = cliSession.status === 'running' ? 'bg-green-500' : cliSession.status === 'waiting-input' ? 'bg-amber-500' : 'bg-gray-400';
                   return (
@@ -2195,15 +1147,7 @@ export function TaskModal() {
                       <button
                         type="button"
                         disabled={cliSessionBusy}
-                        onClick={() => {
-                          if (!modalTask?.id) return;
-                          setCliSessionBusy(true);
-                          setCliSessionError('');
-                          void stopTaskCliSession(modalTask.id)
-                            .then((session) => { setCliSession(session); triggerRefresh(); })
-                            .catch((error: any) => { setCliSessionError(error?.message || 'Failed to stop CLI session.'); })
-                            .finally(() => setCliSessionBusy(false));
-                        }}
+                        onClick={stopSession}
                         className="flex items-center gap-1 rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-100 disabled:opacity-50 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
                       >
                         <Square className="h-3 w-3" />
@@ -2217,15 +1161,7 @@ export function TaskModal() {
                     size="sm"
                     busy={cliSessionBusy}
                     disabled={!modalTask?.id}
-                    onLaunch={(effortOverride) => {
-                      if (!modalTask?.id) return;
-                      setCliSessionBusy(true);
-                      setCliSessionError('');
-                      void startTaskCliSession(modalTask.id, selectedCliFramework, undefined, skipPermissions, effortOverride)
-                        .then((session) => { setCliSession(session); triggerRefresh(); })
-                        .catch((error: any) => { setCliSessionError(error?.message || 'Failed to start CLI session.'); })
-                        .finally(() => setCliSessionBusy(false));
-                    }}
+                    onLaunch={launchSession}
                   />
                 );
               })()}
@@ -2247,35 +1183,34 @@ export function TaskModal() {
           <div className="grid min-h-0 flex-1 relative" style={{ gridTemplateColumns: `minmax(0,1fr) ${sidebarWidth}px`, display: isTaskLoading && !modalTask?.body ? 'none' : undefined }}>
             {isFullView && isPromptStatus && (
               <>
-                <div 
+                <div
                   ref={promptModalRef}
                   className={`absolute top-6 left-6 z-50 rounded-2xl bg-white/95 backdrop-blur-md shadow-2xl dark:bg-[#1a1b23]/95 border border-amber-200 dark:border-amber-500/30 transition-all duration-300 origin-top-right ${isPromptModalOpen ? 'opacity-100 scale-100 translate-y-0 pointer-events-auto' : 'opacity-0 scale-50 -translate-y-4 pointer-events-none'}`}
                   style={{ right: `${sidebarWidth + 24}px` }}
                 >
-                   <div className="flex justify-between items-center border-b border-gray-100 px-4 py-2 dark:border-white/5">
-                      <span className="text-xs font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">Prompt Active</span>
-                      <button onClick={() => setIsPromptModalOpen(false)} className="p-1 hover:bg-gray-100 rounded dark:hover:bg-white/10 text-gray-500 transition-colors">
-                        <X className="w-4 h-4"/>
-                      </button>
-                   </div>
-                   <div className="p-2 max-h-[80vh] overflow-y-auto">
-                     {isRequireInput ? requireInputPrompt : readyForMergePrompt}
-                   </div>
+                  <div className="flex justify-between items-center border-b border-gray-100 px-4 py-2 dark:border-white/5">
+                    <span className="text-xs font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">Prompt Active</span>
+                    <button onClick={() => setIsPromptModalOpen(false)} className="p-1 hover:bg-gray-100 rounded dark:hover:bg-white/10 text-gray-500 transition-colors">
+                      <X className="w-4 h-4"/>
+                    </button>
+                  </div>
+                  <div className="p-2 max-h-[80vh] overflow-y-auto">
+                    {isRequireInput ? requireInputPrompt : readyForMergePrompt}
+                  </div>
                 </div>
-              
-                <div 
-                   className={`absolute top-6 z-40 transition-all duration-300 pointer-events-auto ${!isPromptModalOpen ? 'opacity-100 scale-100' : 'opacity-0 scale-90 pointer-events-none'}`}
-                   style={{ right: `${sidebarWidth + 24}px` }}
+                <div
+                  className={`absolute top-6 z-40 transition-all duration-300 pointer-events-auto ${!isPromptModalOpen ? 'opacity-100 scale-100' : 'opacity-0 scale-90 pointer-events-none'}`}
+                  style={{ right: `${sidebarWidth + 24}px` }}
                 >
-                  <button 
-                     onClick={() => setIsPromptModalOpen(true)} 
-                     className="relative flex items-center justify-center p-[2px] overflow-hidden rounded-full shadow-lg hover:scale-105 transition-transform"
-                   >
-                     <span className="absolute top-1/2 left-1/2 block aspect-square w-[300px] -translate-x-1/2 -translate-y-1/2 animate-[spin_2s_linear_infinite] bg-[conic-gradient(from_0deg,transparent_0_340deg,rgba(255,255,255,0.8)_360deg)]" style={{ willChange: 'transform' }}></span>
-                     <div className="relative flex items-center gap-2 bg-amber-500 text-white px-4 py-2 rounded-full font-bold hover:bg-amber-600 transition-colors w-full h-full">
-                       <MessageSquare className="w-4 h-4" />
-                       Prompt Pending
-                     </div>
+                  <button
+                    onClick={() => setIsPromptModalOpen(true)}
+                    className="relative flex items-center justify-center p-[2px] overflow-hidden rounded-full shadow-lg hover:scale-105 transition-transform"
+                  >
+                    <span className="absolute top-1/2 left-1/2 block aspect-square w-[300px] -translate-x-1/2 -translate-y-1/2 animate-[spin_2s_linear_infinite] bg-[conic-gradient(from_0deg,transparent_0_340deg,rgba(255,255,255,0.8)_360deg)]" style={{ willChange: 'transform' }}></span>
+                    <div className="relative flex items-center gap-2 bg-amber-500 text-white px-4 py-2 rounded-full font-bold hover:bg-amber-600 transition-colors w-full h-full">
+                      <MessageSquare className="w-4 h-4" />
+                      Prompt Pending
+                    </div>
                   </button>
                 </div>
               </>
@@ -2284,7 +1219,6 @@ export function TaskModal() {
             <div className="min-h-0 border-r border-gray-200 dark:border-white/10 overflow-y-auto relative">
               <div className="flex flex-col min-h-full">
                 {requireInputBanner && <div className="border-b border-gray-200 p-6 dark:border-white/10">{requireInputBanner}</div>}
-
                 <div className="flex-1 flex flex-col border-b border-gray-200 dark:border-white/10">
                   <div className="flex items-center justify-between px-6 py-4">
                     <div>
@@ -2309,49 +1243,22 @@ export function TaskModal() {
                     <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Activity & Comments</p>
                     {activityFilterTabs}
                   </div>
-                  
-                  <div className="flex-1 mb-8"><HistoryList
-                    topLevelEntries={topLevelEntries}
-                    repliesByParent={repliesByParent}
-                    collapsedThreads={collapsedThreads}
-                    replyTargetId={replyTargetId}
-                    replyDraft={replyDraft}
-                    replyAssetError={replyAssetError}
-                    isUploadingReplyAsset={isUploadingReplyAsset}
-                    saving={saving}
-                    readCommentIds={readCommentIds}
-                    currentUser={currentUser}
-                    isRequireInput={isRequireInput}
-                    taskId={modalTask?.id}
-                    config={config}
-                    replyTextareaRef={replyTextareaRef}
-                    onMarkCommentRead={ctxMarkCommentRead}
-                    onToggleReply={handleToggleReply}
-                    onSetReplyDraft={setReplyDraft}
-                    onClearReplyAssetError={handleClearReplyAssetError}
-                    onToggleCollapsed={handleToggleCollapsed}
-                    onSendReply={sendReplyDirectly}
-                    onCancelReply={handleCancelReply}
-                    onReplyPaste={handleReplyPaste}
-                    onReplyDragOver={handleReplyDragOver}
-                    onReplyDrop={handleReplyDrop}
-                  /></div>
-                  
+                  <div className="flex-1 mb-8"><HistoryList {...historyListProps} /></div>
                   {(!isRequireInput) && (
                     <div className="sticky bottom-0 mt-8 pt-4 pb-2 z-10 w-full bg-gradient-to-t from-gray-50/95 via-gray-50/95 to-transparent dark:from-[#1a1b23]/95 dark:via-[#1a1b23]/95 dark:to-transparent pointer-events-none">
                       <div className="pointer-events-auto">
                         {!isCommentBoxVisible ? (
-                           <div className="flex justify-end">
-                             <button
-                               onClick={() => setIsCommentBoxVisible(true)}
-                               className="bg-primary text-white px-4 py-2 rounded-full font-bold shadow-md hover:bg-primary-hover text-sm"
-                             >
-                               Reply
-                             </button>
-                           </div>
+                          <div className="flex justify-end">
+                            <button
+                              onClick={() => setIsCommentBoxVisible(true)}
+                              className="bg-primary text-white px-4 py-2 rounded-full font-bold shadow-md hover:bg-primary-hover text-sm"
+                            >
+                              Reply
+                            </button>
+                          </div>
                         ) : (
                           <div className="rounded-xl shadow-lg border border-gray-200 bg-white dark:bg-[#1f2028] dark:border-white/10 backdrop-blur-md w-full">
-                            {commentComposer}
+                            <CommentBox {...commentBoxProps} />
                           </div>
                         )}
                       </div>
@@ -2364,10 +1271,7 @@ export function TaskModal() {
             <div
               className="absolute top-0 bottom-0 z-40 w-2 cursor-col-resize hover:bg-primary/20 hover:backdrop-blur-sm transition-colors"
               style={{ right: `${sidebarWidth - 4}px` }}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                setIsDraggingSidebar(true);
-              }}
+              onMouseDown={(e) => { e.preventDefault(); setIsDraggingSidebar(true); }}
             />
 
             <aside className="min-h-0 min-w-0 overflow-y-auto bg-gray-50/80 p-6 dark:bg-black/10" style={{ width: `${sidebarWidth}px`, overflowX: 'hidden' }}>
@@ -2387,7 +1291,7 @@ export function TaskModal() {
                     placeholder="Task title..."
                   />
                 </div>
-                {metadataFields}
+                <MetadataPanel {...metadataPanelProps} />
                 {subtasksPanel}
                 <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 dark:border-white/5 dark:bg-black/10">
                   <div className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-200">
@@ -2414,7 +1318,7 @@ export function TaskModal() {
           dragHandleClassName="modal-handle"
           className="pointer-events-auto !z-[60]"
         >
-          <Container 
+          <Container
             {...layoutProps}
             className="flex h-full w-full flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl dark:border-white/10 dark:bg-[#1a1b23]">
             <motion.div {...contentAnimation} className="flex h-full w-full flex-col overflow-hidden">
@@ -2506,73 +1410,7 @@ export function TaskModal() {
                   </div>
                 </div>
 
-                <div className={isWideMode ? 'flex items-end gap-4' : 'flex flex-wrap items-end gap-3'}>
-                  <div className={isWideMode ? 'w-32' : 'w-36'}>
-                    <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Status</label>
-                    <select
-                      className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-1.5 font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
-                      value={status}
-                      onChange={(event) => setStatus(event.target.value)}
-                    >
-                      {allStatuses.map((item) => (
-                        <option key={item} value={item}>
-                          {item}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className={isWideMode ? 'w-32' : 'w-40'}>
-                    <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Assignee</label>
-                    <select
-                      className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-1.5 font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
-                      value={assignee}
-                      onChange={(event) => setAssignee(event.target.value)}
-                    >
-                      <option value="unassigned">Unassigned</option>
-                      {allUsers.map((item) => (
-                        <option key={item} value={item}>
-                          {item}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className={isWideMode ? 'w-40' : 'w-40'}>
-                    <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Priority</label>
-                    <select
-                      className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-1.5 font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
-                      value={priority}
-                      onChange={(event) => setPriority(event.target.value)}
-                    >
-                      {availablePriorities.map((item) => (
-                        <option key={item.name} value={item.name}>
-                          {item.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className={isWideMode ? 'w-28' : 'w-28'}>
-                    <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Effort</label>
-                    <select
-                      className="w-full cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-1.5 font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
-                      value={effort}
-                      onChange={(event) => setEffort(event.target.value)}
-                    >
-                      {EFFORT_OPTIONS.map((item) => (
-                        <option key={item} value={item}>
-                          {item}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className={isWideMode ? 'w-64' : 'min-w-[240px] flex-1'}>
-                    <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Tags</label>
-                    <TagSelector tags={tags} onChange={setTags} availableTags={allTags} configTags={config?.tags ?? []} />
-                  </div>
-                </div>
+                <MetadataPanel {...metadataPanelProps} variant="popup" isWideMode={isWideMode} />
               </div>
 
               <div className="flex min-h-[280px] flex-1 flex-col gap-2">
@@ -2608,33 +1446,8 @@ export function TaskModal() {
                   </h3>
                   {activityFilterTabs}
                 </div>
-                <div className="mb-4"><HistoryList
-                    topLevelEntries={topLevelEntries}
-                    repliesByParent={repliesByParent}
-                    collapsedThreads={collapsedThreads}
-                    replyTargetId={replyTargetId}
-                    replyDraft={replyDraft}
-                    replyAssetError={replyAssetError}
-                    isUploadingReplyAsset={isUploadingReplyAsset}
-                    saving={saving}
-                    readCommentIds={readCommentIds}
-                    currentUser={currentUser}
-                    isRequireInput={isRequireInput}
-                    taskId={modalTask?.id}
-                    config={config}
-                    replyTextareaRef={replyTextareaRef}
-                    onMarkCommentRead={ctxMarkCommentRead}
-                    onToggleReply={handleToggleReply}
-                    onSetReplyDraft={setReplyDraft}
-                    onClearReplyAssetError={handleClearReplyAssetError}
-                    onToggleCollapsed={handleToggleCollapsed}
-                    onSendReply={sendReplyDirectly}
-                    onCancelReply={handleCancelReply}
-                    onReplyPaste={handleReplyPaste}
-                    onReplyDragOver={handleReplyDragOver}
-                    onReplyDrop={handleReplyDrop}
-                  /></div>
-                {!isRequireInput && commentComposer}
+                <div className="mb-4"><HistoryList {...historyListProps} /></div>
+                {!isRequireInput && <CommentBox {...commentBoxProps} />}
                 {isReadyForMerge && readyForMergePrompt}
               </div>
             </div>
