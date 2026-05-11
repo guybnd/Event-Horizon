@@ -22,7 +22,7 @@ interface MetadataPanelProps {
   allUsers: string[];
   allTags: string[];
   configTags: TagDef[];
-  availablePriorities: { name: string; icon: string; color: string }[];
+  availablePriorities: { name: string; icon?: string; color: string }[];
   /** "popup" renders a compact horizontal bar; default renders the full sidebar panel */
   variant?: 'popup';
   isWideMode?: boolean;

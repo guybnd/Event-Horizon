@@ -6,11 +6,8 @@ interface WorkflowSectionProps {
   setColumns: (items: StatusDef[]) => void;
   hiddenStatuses: StatusDef[];
   setHiddenStatuses: (items: StatusDef[]) => void;
-  requireInputStatus: string;
   setRequireInputStatus: (v: string) => void;
-  readyForMergeStatus: string;
   setReadyForMergeStatus: (v: string) => void;
-  archiveStatus: string;
   setArchiveStatus: (v: string) => void;
   statusOptions: string[];
   normalizedRequireInputStatus: string;
@@ -27,11 +24,8 @@ export function WorkflowSection({
   setColumns,
   hiddenStatuses,
   setHiddenStatuses,
-  requireInputStatus,
   setRequireInputStatus,
-  readyForMergeStatus,
   setReadyForMergeStatus,
-  archiveStatus,
   setArchiveStatus,
   statusOptions,
   normalizedRequireInputStatus,

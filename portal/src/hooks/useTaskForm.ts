@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Task } from '../types';
 import { normalizeTaskMarkdownBody } from '../components/TaskDescriptionSurface';
 
-export function useTaskForm(modalTask: Task | null | undefined) {
+export function useTaskForm(modalTask: Task | Partial<Task> | null | undefined) {
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [status, setStatus] = useState('Todo');

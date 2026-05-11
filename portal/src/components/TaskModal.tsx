@@ -998,7 +998,6 @@ export function TaskModal() {
       </div>
       {modalTask?.id && (
         <CliSessionPanel
-          taskId={modalTask.id}
           cliSession={cliSession}
           cliSessionBusy={cliSessionBusy}
           cliSessionError={cliSessionError}

@@ -350,11 +350,8 @@ export function Settings() {
                   setColumns={setColumns}
                   hiddenStatuses={hiddenStatuses}
                   setHiddenStatuses={setHiddenStatuses}
-                  requireInputStatus={requireInputStatus}
                   setRequireInputStatus={setRequireInputStatus}
-                  readyForMergeStatus={readyForMergeStatus}
                   setReadyForMergeStatus={setReadyForMergeStatus}
-                  archiveStatus={archiveStatus}
                   setArchiveStatus={setArchiveStatus}
                   statusOptions={statusOptions}
                   normalizedRequireInputStatus={normalizedRequireInputStatus}

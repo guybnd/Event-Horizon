@@ -4,7 +4,6 @@ import type { CliFramework, CliSessionSummary, Config } from '../../types';
 import { TokenBadge } from '../TokenBadge';
 
 interface CliSessionPanelProps {
-  taskId: string;
   cliSession: CliSessionSummary | null;
   cliSessionBusy: boolean;
   cliSessionError: string;
@@ -22,7 +21,6 @@ interface CliSessionPanelProps {
 }
 
 export function CliSessionPanel({
-  taskId,
   cliSession, cliSessionBusy, cliSessionError,
   selectedCliFramework, setSelectedCliFramework,
   skipPermissions, setSkipPermissions,
