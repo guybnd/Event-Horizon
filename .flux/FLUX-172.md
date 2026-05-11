@@ -95,8 +95,35 @@ history:
 
       **Three follow-on implementation tickets are proposed** in the body. All
       refactors are structural-only — no behaviour changes.
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-10T14:41:50.762Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-10T14:41:50.763Z'
+    comment: >-
+      Creating three follow-on implementation tickets: FLUX-182 (engine split),
+      FLUX-183 (TaskModal extraction), FLUX-184 (Settings split).
+    id: c-2026-05-10t14-41-50-763z
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-05-10T14:43:49.452Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-10T14:43:49.453Z'
+    comment: >-
+      Created three follow-on implementation tickets from the refactor plan:
+      FLUX-182 (Split engine/src/index.ts into focused modules, effort L),
+      FLUX-183 (Extract TaskModal hooks and sub-components, effort L), FLUX-184
+      (Split Settings.tsx into per-section components, effort M). All three are
+      in Grooming status, ready for implementation planning.
+    id: c-2026-05-10t14-43-49-453z
 title: identify refactor opportunities to make code more readable
-status: Todo
+status: Done
 createdBy: Guy
 updatedBy: Agent
 ---
