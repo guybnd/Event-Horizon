@@ -262,6 +262,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     session.endedAt = new Date().toISOString();
     commitPending();
     flushSessionOutput(session, true);
+    await session.writeQueue;
     await updateTaskWithHistory(id, {
       updatedBy: 'Agent',
       entries: [
@@ -273,6 +274,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   proc.on('exit', async (code, signal) => {
     commitPending();
     flushSessionOutput(session, true);
+    await session.writeQueue;
     session.endedAt = new Date().toISOString();
     if (session.requestedStop) {
       session.status = 'cancelled';
