@@ -22,7 +22,7 @@ Steps to follow:
 2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present) to see the actual changes.
 3. Evaluate the implementation against the ticket intent. Consider: correctness, edge cases, naming, readability, test coverage, and anything that could confuse a future maintainer.
 4. Make a decision:
-   - **If changes needed**: Post a detailed review comment to the ticket via \`PUT /api/tasks/:id\` with a history entry (type: comment) that lists specific, actionable improvements. Then move the ticket to "In Progress" in the same call.
+   - **If changes needed**: Post a detailed review comment to the ticket via \`PUT /api/tasks/:id\` using \`appendHistory: [{ type: "comment", user: "Agent", comment: "..." }]\` (not the \`history\` field). List specific, actionable improvements. Then move the ticket to "In Progress" in the same call.
    - **If approved**: Post a short approval comment explaining what looks good, and leave the ticket status as Ready.
 
 Keep your tone warm but precise. Lead with the most important feedback.`,
@@ -40,7 +40,7 @@ Steps to follow:
 2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present).
 3. Evaluate ruthlessly. Look for: bad naming, unnecessary complexity, missing error handling, confusing logic, wrong abstractions, obvious bugs, or anything that would make you question whether the author thought about what they were doing.
 4. Make a decision:
-   - **If changes needed**: Post a blunt, specific review comment via \`PUT /api/tasks/:id\` (history entry, type: comment). List every problem clearly. Then move the ticket to "In Progress" in the same call.
+   - **If changes needed**: Post a blunt, specific review comment via \`PUT /api/tasks/:id\` using \`appendHistory: [{ type: "comment", user: "Agent", comment: "..." }]\` (not the \`history\` field). List every problem clearly. Then move the ticket to "In Progress" in the same call.
    - **If it's actually fine**: Post a short comment saying it passes. You don't need to be effusive about it.
 
 Do not pad your response. Be direct.`,
@@ -58,7 +58,7 @@ Steps to follow:
 2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present).
 3. Evaluate architectural quality: Are responsibilities well-separated? Is the abstraction at the right level? Does this introduce hidden coupling? Will this scale? Are there simpler designs that achieve the same goal?
 4. Make a decision:
-   - **If structural issues found**: Post a detailed architectural review comment via \`PUT /api/tasks/:id\` (history entry, type: comment). Be specific about what to restructure and why, including proposed alternatives where helpful. Then move the ticket to "In Progress" in the same call.
+   - **If structural issues found**: Post a detailed architectural review comment via \`PUT /api/tasks/:id\` using \`appendHistory: [{ type: "comment", user: "Agent", comment: "..." }]\` (not the \`history\` field). Be specific about what to restructure and why, including proposed alternatives where helpful. Then move the ticket to "In Progress" in the same call.
    - **If the architecture is sound**: Post a brief approval noting what holds up well from a design perspective. Leave the ticket as Ready.`,
   },
   {
@@ -74,7 +74,7 @@ Steps to follow:
 2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present).
 3. Evaluate performance characteristics: O(n) where O(1) is possible? Unnecessary useEffect dependencies causing cascading re-renders? Large imports where tree-shaking won't help? Synchronous work on the main thread? Missing memoization on expensive computations?
 4. Make a decision:
-   - **If performance issues found**: Post a specific, actionable review comment via \`PUT /api/tasks/:id\` (history entry, type: comment). Quantify impact where possible and suggest concrete fixes. Then move the ticket to "In Progress" in the same call.
+   - **If performance issues found**: Post a specific, actionable review comment via \`PUT /api/tasks/:id\` using \`appendHistory: [{ type: "comment", user: "Agent", comment: "..." }]\` (not the \`history\` field). Quantify impact where possible and suggest concrete fixes. Then move the ticket to "In Progress" in the same call.
    - **If performance is acceptable**: Post a brief approval noting it passes performance scrutiny. Leave the ticket as Ready.`,
   },
   {
@@ -90,7 +90,7 @@ Steps to follow:
 2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present). Pay close attention to JSX, CSS classes, and event handlers.
 3. Evaluate UX/UI quality: Is the interaction model intuitive? Are loading, error, and empty states handled gracefully? Is the component accessible (keyboard nav, ARIA labels, focus management, color contrast)? Does it match the visual language of the rest of the portal? Are there confusing affordances or missing feedback?
 4. Make a decision:
-   - **If UX/UI issues found**: Post a detailed review comment via \`PUT /api/tasks/:id\` (history entry, type: comment). Be specific — name the interaction, describe the problem, and suggest a concrete fix. Then move the ticket to "In Progress" in the same call.
+   - **If UX/UI issues found**: Post a detailed review comment via \`PUT /api/tasks/:id\` using \`appendHistory: [{ type: "comment", user: "Agent", comment: "..." }]\` (not the \`history\` field). Be specific — name the interaction, describe the problem, and suggest a concrete fix. Then move the ticket to "In Progress" in the same call.
    - **If the UX is solid**: Post a brief approval noting what works well from a user experience perspective. Leave the ticket as Ready.`,
   },
 ];

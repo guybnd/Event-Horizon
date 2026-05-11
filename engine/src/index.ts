@@ -1967,6 +1967,11 @@ app.put('/api/tasks/:id', requireWorkspace, async (req, res) => {
 
   const actor = updatedBy || task.updatedBy || 'Unknown';
 
+  // appendHistory: entries to append directly without the rebase-slice logic.
+  // Agents that only want to add a comment without sending the full history use this.
+  const appendHistoryEntries: any[] = Array.isArray(updates.appendHistory) ? updates.appendHistory : [];
+  delete updates.appendHistory;
+
   // requireInput: true atomically sets the status to the configured require-input status
   if (updates.requireInput === true) {
     updates.status = configCache.requireInputStatus || 'Require Input';
@@ -1980,7 +1985,9 @@ app.put('/api/tasks/:id', requireWorkspace, async (req, res) => {
   if (updates.status === requireInputStatus && task.status !== requireInputStatus) {
     const submittedHistory: any[] = Array.isArray(updates.history) ? updates.history : [];
     const existingLen = (task.history || []).length;
-    const hasNewComment = submittedHistory.slice(existingLen).some((e: any) => e?.type === 'comment');
+    const hasNewComment =
+      submittedHistory.slice(existingLen).some((e: any) => e?.type === 'comment') ||
+      appendHistoryEntries.some((e: any) => e?.type === 'comment');
     if (!hasNewComment) {
       return res.status(400).json({
         error: 'REQUIRE_INPUT_MISSING_COMMENT',
@@ -2028,6 +2035,10 @@ app.put('/api/tasks/:id', requireWorkspace, async (req, res) => {
   const fieldChangeMessages = summarizeFieldChanges(task, frontmatter, body);
   if (fieldChangeMessages.length > 0) {
     nextHistory.push(buildActivityEntry(fieldChangeMessages.join(' '), actor, activityTimestamp));
+  }
+
+  for (const entry of appendHistoryEntries) {
+    nextHistory.push({ ...entry, date: activityTimestamp });
   }
 
   frontmatter.history = normalizeHistoryEntries(nextHistory).history;
