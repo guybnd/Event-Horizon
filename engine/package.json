@@ -12,9 +12,9 @@
     "install-skill": "tsx src/skill-installer.ts",
     "flux:release": "tsx src/release.ts",
     "patch-ticket": "tsx src/patch-ticket.ts",
-    "package": "npm run build && npx @yao-pkg/pkg . --targets node18-win-x64,node18-macos-x64,node18-linux-x64 --output dist/event-horizon",
-    "package:win": "npm run build && npx @yao-pkg/pkg . --targets node18-win-x64 --output dist/event-horizon && node scripts/patch-pe.js",
-    "package:mac": "npm run build && npx @yao-pkg/pkg . --targets node18-macos-x64 --output dist/event-horizon",
+    "package": "npm run build && node scripts/package-release.js",
+    "package:win": "npm run build && node scripts/package-release.js --platform win",
+    "package:mac": "npm run build && node scripts/package-release.js --platform mac",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

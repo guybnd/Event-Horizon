@@ -7,3 +7,4 @@ build/
 .npm-cache/
 .claude/
 .clauderc
+releases/
