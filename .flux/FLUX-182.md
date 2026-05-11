@@ -7,8 +7,8 @@ tags:
 assignee: unassigned
 createdBy: Unknown
 title: Split engine/src/index.ts into focused modules
-status: Ready
-updatedBy: Agent
+status: Done
+updatedBy: Guy
 history:
   - type: activity
     user: Unknown
@@ -261,6 +261,16 @@ history:
     user: Agent
     date: '2026-05-11T04:55:02.581Z'
     comment: Launched Claude Code session (f961c97a).
+  - type: activity
+    user: Agent
+    date: '2026-05-11T05:01:07.552Z'
+    comment: Claude Code session lost (engine restarted).
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Guy
+    date: '2026-05-11T05:04:05.269Z'
+order: 2
 ---
 ## Goal
 

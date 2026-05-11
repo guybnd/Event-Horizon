@@ -102,6 +102,10 @@ history:
     comment: >-
       FLUX-189 is done. Commit `a1b0b7c` — ticket closed with
       `implementationLink` set.
+  - type: activity
+    user: Agent
+    date: '2026-05-11T05:01:07.552Z'
+    comment: Claude Code session lost (engine restarted).
 title: all tickets are maked as dirty even with no changes
 status: Done
 createdBy: Guy

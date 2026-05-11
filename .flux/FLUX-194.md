@@ -582,17 +582,43 @@ history:
     user: Agent
     date: '2026-05-11T05:52:50.317Z'
     comment: Launched Claude Code session (ce9dcbc0).
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-11T05:54:13.757Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-11T05:54:13.758Z'
+    comment: >-
+      Shipped in commit 5315853. Activity badge now renders on TaskCards during
+      active sessions with shimmer animation and per-activity color classes. SSE
+      /api/events endpoint added for instant push updates; fast-poll path
+      remains as fallback. currentActivity flows from claude-code.ts tool-use
+      events → session-store → API → portal types → TaskCard render.
+    id: c-2026-05-11t05-54-13-758z
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-11T05:54:20.589Z'
+    comment: >-
+      FLUX-194 is done. Commit `5315853` ships the animated activity badge —
+      color-coded shimmer badge on TaskCards tracking what the agent is doing in
+      real time, with SSE push updates and fast-poll fallback.
+  - type: activity
+    user: Agent
+    date: '2026-05-11T05:54:20.599Z'
+    comment: Claude Code session ended with code 0.
 title: add badges describing what an agent is doing with nice animation
-status: Ready
+status: Done
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
-  inputTokens: 6111238
-  outputTokens: 67728
-  costUSD: 3.841335
+  inputTokens: 6301773
+  outputTokens: 72209
+  costUSD: 4.002242
   costIsEstimated: false
-  cacheReadTokens: 82374
-  cacheCreationTokens: 8082
+  cacheReadTokens: 262608
+  cacheCreationTokens: 17943
 ---
 stuff like  
 'grooming'  

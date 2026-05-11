@@ -201,6 +201,10 @@ history:
       session-end history entries now write sequentially, eliminating the race.
       TypeScript compiles cleanly.
     id: c-2026-05-11t04-56-46-909z
+  - type: activity
+    user: Agent
+    date: '2026-05-11T05:01:07.552Z'
+    comment: Claude Code session lost (engine restarted).
 title: token counter broken after last refactor
 status: Done
 createdBy: Guy
