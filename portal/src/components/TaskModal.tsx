@@ -189,6 +189,12 @@ export function TaskModal() {
   }, [isModalOpen, isFullView, title]);
 
   useEffect(() => {
+    if (!isModalOpen || modalTask?.id) return;
+    const timer = setTimeout(() => titleRef.current?.focus(), 50);
+    return () => clearTimeout(timer);
+  }, [isModalOpen, modalTask?.id]);
+
+  useEffect(() => {
     const handleOutsideClick = (event: MouseEvent) => {
       if (isPromptModalOpen && promptModalRef.current && !promptModalRef.current.contains(event.target as Node)) {
         setIsPromptModalOpen(false);
@@ -238,7 +244,7 @@ export function TaskModal() {
     setConfirmDiscard(false);
     setConfirmDelete(false);
     setIsWideMode(false);
-    setIsFullView(new URLSearchParams(window.location.search).get('view') === 'full');
+    setIsFullView(!!modalTask.id && new URLSearchParams(window.location.search).get('view') === 'full');
     setIsPromptModalOpen(true);
     setIsCommentBoxVisible(false);
     setCommentAssetError('');
