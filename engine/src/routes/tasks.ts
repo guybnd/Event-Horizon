@@ -177,7 +177,7 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-router.post('/bulk-rename', async (req, res) => {
+export async function bulkRenameHandler(req: express.Request, res: express.Response) {
   const { tags = {}, statuses = {}, users = {}, priorities = {} } = req.body;
   let modifiedCount = 0;
 
@@ -231,7 +231,7 @@ router.post('/bulk-rename', async (req, res) => {
     console.error('Failed bulk rename:', err);
     res.status(500).json({ error: 'Failed bulk rename' });
   }
-});
+}
 
 router.post('/:id/assets', async (req, res) => {
   const { id } = req.params;

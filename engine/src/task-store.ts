@@ -1,7 +1,8 @@
 import fs from 'fs/promises';
 import path from 'path';
 import matter from 'gray-matter';
-import { getFluxDir, getTaskAssetsDir } from './workspace.js';
+import chokidar from 'chokidar';
+import { getFluxDir, getTaskAssetsDir, setWorkspaceRoot } from './workspace.js';
 import { configCache, loadConfig, autoRegisterUnknownTags } from './config.js';
 import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate } from './history.js';
 import { getCliSessionSummaryForTask } from './session-store.js';
@@ -261,4 +262,67 @@ export async function initDir() {
   }
   await loadConfig();
   await loadPricingDoc();
+}
+
+let activeFluxWatcher: ReturnType<typeof chokidar.watch> | null = null;
+let activeDocsWatcher: ReturnType<typeof chokidar.watch> | null = null;
+
+export async function startWatchers() {
+  if (activeFluxWatcher) { await activeFluxWatcher.close(); activeFluxWatcher = null; }
+  if (activeDocsWatcher) { await activeDocsWatcher.close(); activeDocsWatcher = null; }
+
+  const fluxDir = getFluxDir();
+  const configFile = path.join(fluxDir, 'config.json');
+
+  activeFluxWatcher = chokidar.watch(fluxDir, {
+    ignored: (filePath: string) => {
+      const basename = path.basename(filePath);
+      return basename.startsWith('.') && basename !== '.flux';
+    },
+    persistent: true,
+  });
+
+  activeFluxWatcher
+    .on('add', (filePath) => {
+      if (isTopLevelTaskFile(filePath)) void loadTask(filePath);
+      if (filePath === configFile) void loadConfig();
+    })
+    .on('change', (filePath) => {
+      if (isTopLevelTaskFile(filePath)) void loadTask(filePath);
+      if (filePath === configFile) void loadConfig();
+    })
+    .on('ready', () => { void reconcileOrphanedSessions(); })
+    .on('unlink', (filePath) => {
+      if (isTopLevelTaskFile(filePath)) {
+        const taskEntry = Object.entries(tasksCache).find(([, task]) => task._path === filePath);
+        const id = taskEntry?.[0] || path.basename(filePath, '.md');
+        delete tasksCache[id];
+        console.log(`Removed task: ${id}`);
+      }
+    });
+
+  activeDocsWatcher = chokidar.watch(getDocsDir(), {
+    ignored: (filePath: string) => {
+      const basename = path.basename(filePath);
+      return basename.startsWith('.') && basename !== '.docs';
+    },
+    persistent: true,
+  });
+
+  activeDocsWatcher
+    .on('add', (filePath) => { if (isDocFile(filePath)) { void loadDoc(filePath); void loadPricingDoc(); } })
+    .on('change', (filePath) => { if (isDocFile(filePath)) { void loadDoc(filePath); void loadPricingDoc(); } })
+    .on('unlink', (filePath) => {
+      const docPath = getDocPathFromFile(filePath);
+      if (docPath) { delete docsCache[docPath]; console.log(`Removed doc: ${docPath}`); }
+    });
+}
+
+export async function activateWorkspace(newRoot: string) {
+  setWorkspaceRoot(newRoot);
+  tasksCache = {};
+  docsCache = {};
+  console.log(`Workspace: ${newRoot}`);
+  await initDir();
+  await startWatchers();
 }

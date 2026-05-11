@@ -4,6 +4,7 @@ import path from 'path';
 import os from 'os';
 import { execFile } from 'child_process';
 import { workspaceRoot, saveAppSettings } from '../workspace.js';
+import { activateWorkspace } from '../task-store.js';
 
 const router = express.Router();
 
@@ -54,12 +55,6 @@ router.get('/', (_req, res) => {
   res.json({ configured: workspaceRoot !== null, path: workspaceRoot });
 });
 
-// activateWorkspace is injected from the app to avoid circular deps with task-store.
-let _activateWorkspace: ((root: string) => Promise<void>) | null = null;
-export function setActivateWorkspaceFn(fn: (root: string) => Promise<void>) {
-  _activateWorkspace = fn;
-}
-
 router.post('/', async (req, res) => {
   const raw = req.body?.path;
   if (typeof raw !== 'string' || !raw.trim()) {
@@ -72,7 +67,7 @@ router.post('/', async (req, res) => {
   }
 
   try {
-    await _activateWorkspace!(newRoot);
+    await activateWorkspace(newRoot);
     await saveAppSettings({ workspace: newRoot });
     res.json({ ok: true, path: newRoot });
   } catch (err: any) {

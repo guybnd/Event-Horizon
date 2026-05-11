@@ -7,8 +7,8 @@ tags:
 assignee: unassigned
 createdBy: Unknown
 title: Split engine/src/index.ts into focused modules
-status: In Progress
-updatedBy: Guy
+status: Ready
+updatedBy: Agent
 history:
   - type: activity
     user: Unknown
@@ -175,6 +175,84 @@ history:
     user: Guy
     date: '2026-05-11T03:42:27.346Z'
     comment: Changed priority from Low to Critical.
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-11T03:59:01.223Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-11T03:59:01.224Z'
+    comment: >-
+      Implementation complete. index.ts is now 222 lines (mostly the tray icon
+      base64 blob; functional code is ~90 lines). All inline route handlers
+      removed and replaced with app.use() router mounts.
+
+
+      Changes made:
+
+      - engine/src/task-store.ts: added startWatchers() and activateWorkspace()
+      (moved from inline in index.ts), added chokidar import
+
+      - engine/src/routes/workspace.ts: removed injected _activateWorkspace fn,
+      now imports activateWorkspace directly from task-store.ts
+
+      - engine/src/routes/tasks.ts: extracted bulk-rename handler as exported
+      bulkRenameHandler() (mounted at /api/bulk-rename in index.ts to preserve
+      the URL the portal expects)
+
+      - engine/src/index.ts: rewritten — imports all routers, wires them up with
+      app.use(), retains startup/shutdown/tray/browser helpers only
+
+
+      Validation:
+
+      - Engine starts cleanly: GET /api/health, /api/tasks, /api/tasks/FLUX-182,
+      /api/config, /api/workspace, /api/skill/status, /api/stats/tokens,
+      /api/read-state all return correct responses
+
+      - No duplicate stdout-processing logic (parseOutput lives only in
+      ClaudeCodeAdapter)
+
+      - No Claude-specific code in routes/cli-session.ts
+
+      - agents/index.ts registry resolves claude-code to ClaudeCodeAdapter
+    id: c-2026-05-11t03-59-01-224z
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-11T03:59:09.997Z'
+    comment: >-
+      Done. Here's what changed:
+
+
+      **`engine/src/index.ts`**: Rewritten from 2574 lines to 222 lines. All
+      inline route handlers removed. The file now only contains: router mounts,
+      portal static serving, port config, browser opener, tray init, and
+      graceful shutdown.
+
+
+      **`engine/src/task-store.ts`**: Added `startWatchers()` and
+      `activateWorkspace()` (moved from the monolith), with `chokidar` import.
+
+
+      **`engine/src/routes/workspace.ts`**: Removed the injected
+      `_activateWorkspace` function pattern; now imports `activateWorkspace`
+      directly from `task-store.ts`.
+
+
+      **`engine/src/routes/tasks.ts`**: Extracted `bulk-rename` out of the
+      router (since the portal calls `/api/bulk-rename`, not
+      `/api/tasks/bulk-rename`) and exported it as `bulkRenameHandler`. Index.ts
+      registers it at the correct path.
+
+
+      All routes validated against the running engine: tasks, config, workspace,
+      skill, stats, read-state, and health all respond correctly. FLUX-182 moved
+      to Ready.
+  - type: activity
+    user: Agent
+    date: '2026-05-11T04:02:37.180Z'
+    comment: Launched Claude Code session (188bbefe).
 ---
 ## Goal
 
