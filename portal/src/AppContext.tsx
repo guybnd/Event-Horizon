@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import type { ColumnLiveEvent, Config, Task, TaskLiveEvent } from './types';
 import { fetchConfig, fetchTasks, fetchHealth, saveConfig as apiSaveConfig, fetchReadState, saveReadState, fetchWorkspace } from './api';
 
-type AppView = 'board' | 'backlog' | 'docs' | 'settings' | 'releases';
+export type AppView = 'board' | 'backlog' | 'docs' | 'settings' | 'releases';
 export type TaskSortOption = 'default' | 'priority' | 'updated' | 'assignee';
 export type AppTheme = 'light' | 'dark';
 
