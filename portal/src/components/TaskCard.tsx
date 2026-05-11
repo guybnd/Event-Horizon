@@ -147,6 +147,7 @@ export function TaskCard({
 
   const readCommentIds = new Set(readComments[task.id] ?? []);
   const hasActiveCliSession = Boolean(task.cliSession && ['pending', 'running', 'waiting-input'].includes(task.cliSession.status));
+  const currentActivity = hasActiveCliSession ? (task.cliSession?.currentActivity ?? 'Running') : undefined;
 
   const isPromptStatus = isPromptableStatus(task.status, config);
   const readyForMergeStatus = getReadyForMergeStatus(config);
@@ -799,7 +800,12 @@ export function TaskCard({
                 onToggle={config ? () => void saveConfig({ ...config, tokenDisplayMode: config.tokenDisplayMode === 'tokens' ? 'cost' : 'tokens' }) : undefined}
               />
 
-              <div ref={assigneeMenuRef} className="relative ml-auto">
+              <div ref={assigneeMenuRef} className="relative ml-auto flex items-center gap-1.5">
+                {currentActivity && (
+                  <span className={`activity-badge activity-badge--${currentActivity.toLowerCase().replace(/\s+/g, '-')}`}>
+                    {currentActivity}
+                  </span>
+                )}
                 <motion.button
                   animate={rattleControls}
                   onClick={(event) => {

@@ -3,6 +3,7 @@ import { configCache } from '../config.js';
 import { buildActivityEntry, buildCommentEntry, buildAgentMessageEntry } from '../history.js';
 import { updateTaskWithHistory, tasksCache, estimateCostUSD } from '../task-store.js';
 import { cliSessionsById, cliSessionIdByTaskId } from '../session-store.js';
+import { broadcastEvent } from '../events.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
 
 // Effort levels accepted by the --effort CLI flag, in ascending order.
@@ -17,6 +18,17 @@ export const PROVIDER_CAPABILITIES = {
 export function cliLabelForFramework(framework: 'claude' | 'copilot') {
   return framework === 'claude' ? 'Claude Code' : 'Copilot CLI';
 }
+
+const TOOL_ACTIVITY_MAP: Record<string, string> = {
+  Bash: 'Running command',
+  Edit: 'Editing',
+  Write: 'Editing',
+  Read: 'Reading',
+  WebFetch: 'Researching',
+  WebSearch: 'Researching',
+  Agent: 'Delegating',
+  TodoWrite: 'Planning',
+};
 
 export function appendSessionOutput(session: CliSessionRecord, chunk: Buffer | string, source: 'stdout' | 'stderr', isAssistantText = false) {
   const text = String(chunk ?? '').replace(/\r\n/g, '\n');
@@ -141,16 +153,19 @@ export function attachStdoutProcessing(
           session.claudeSessionId = evt.session_id;
         }
         if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
-          const hasToolUse = evt.message.content.some((b: any) => b.type === 'tool_use');
-          if (hasToolUse) {
+          const toolBlock = evt.message.content.find((b: any) => b.type === 'tool_use');
+          if (toolBlock) {
             session.pendingAssistantText = '';
+            session.currentActivity = TOOL_ACTIVITY_MAP[toolBlock.name] ?? 'Working';
           } else {
             commitPendingAssistantText();
+            session.currentActivity = 'Thinking';
           }
+          broadcastEvent('activity', { taskId, activity: session.currentActivity });
           for (const block of evt.message.content) {
             if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
               session.liveOutputBuffer += block.text;
-              if (!hasToolUse) {
+              if (!toolBlock) {
                 session.pendingAssistantText += block.text;
               }
             }
@@ -162,6 +177,10 @@ export function attachStdoutProcessing(
             session.pendingAssistantText = '';
           }
           appendSessionOutput(session, trimmed, 'stdout', false);
+        }
+        if (evt.type === 'result') {
+          session.currentActivity = undefined;
+          broadcastEvent('activity', { taskId, activity: null });
         }
         if (evt.type === 'result' && evt.usage) {
           const cacheRead = evt.usage?.cache_read_input_tokens ?? 0;

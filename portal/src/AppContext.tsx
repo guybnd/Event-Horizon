@@ -35,7 +35,8 @@ function normalizeTaskList(tasks: Task[]) {
 
 function buildTaskSignature(task: Task) {
   return JSON.stringify({
-    ...task,
+    id: task.id,
+    status: task.status,
     title: task.title || '',
     body: task.body || '',
     assignee: task.assignee || 'unassigned',
@@ -46,6 +47,11 @@ function buildTaskSignature(task: Task) {
     tags: task.tags || [],
     subtasks: task.subtasks || [],
     history: task.history || [],
+    // cliSession fields that matter for UI — liveOutput is excluded (append-only, grows unboundedly)
+    sessionStatus: task.cliSession?.status ?? null,
+    sessionActivity: task.cliSession?.currentActivity ?? null,
+    sessionLabel: task.cliSession?.label ?? null,
+    tokenMetadata: task.tokenMetadata ?? null,
   });
 }
 
@@ -601,20 +607,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const refreshIfVisible = () => {
-      if (document.hidden) {
-        return;
-      }
-
-      void loadTasks();
+      if (!document.hidden) void loadTasks();
     };
 
     const handleVisibilityChange = () => {
       const visible = !document.hidden;
       setIsWindowVisible(visible);
-
-      if (visible) {
-        refreshIfVisible();
-      }
+      if (visible) void loadTasks();
     };
 
     const handleFocus = () => {
@@ -623,7 +622,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
 
     const intervalId = window.setInterval(refreshIfVisible, LIVE_TASK_POLL_INTERVAL_MS);
-
     window.addEventListener('focus', handleFocus);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
@@ -633,6 +631,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [loadTasks]);
+
+  // SSE: receive instant activity pushes from the engine instead of polling for them.
+  useEffect(() => {
+    if (!isConnected) return;
+    const es = new EventSource('/api/events');
+    es.addEventListener('activity', (e: MessageEvent) => {
+      const { taskId, activity } = JSON.parse(e.data) as { taskId: string; activity: string | null };
+      startTransition(() => {
+        setTasks(prev => prev.map(t =>
+          t.id === taskId
+            ? { ...t, cliSession: t.cliSession ? { ...t.cliSession, currentActivity: activity ?? undefined } : t.cliSession }
+            : t
+        ));
+      });
+    });
+    return () => es.close();
+  }, [isConnected]);
 
   useEffect(() => {
     updateViewUrl(getViewFromLocation(), 'replace');

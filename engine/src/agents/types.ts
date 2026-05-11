@@ -32,6 +32,7 @@ export interface CliSessionSummary {
   lastInputAt?: string;
   blockedReason?: string;
   liveOutput?: string;
+  currentActivity?: string;
   skipPermissions?: boolean;
   inputTokens?: number;
   outputTokens?: number;

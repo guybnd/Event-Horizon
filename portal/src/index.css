@@ -164,6 +164,50 @@ body {
   animation: bot-assignee-glow 2s ease-in-out infinite;
 }
 
+@keyframes activity-shimmer {
+  0% { background-position: 200% center; }
+  100% { background-position: -200% center; }
+}
+
+.activity-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 9999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  background-size: 200% auto;
+  background-image: linear-gradient(90deg, #334155, #475569, #334155, #1e293b, #334155);
+  animation: activity-shimmer 2.5s linear infinite;
+  color: white;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Thinking uses project primary purple so it doesn't pile onto the emerald border/pill glow */
+.activity-badge--thinking {
+  background-image: linear-gradient(90deg, #6d28d9, #9333ea, #6d28d9, #581c87, #6d28d9);
+}
+.activity-badge--running-command {
+  background-image: linear-gradient(90deg, #92400e, #b45309, #92400e, #78350f, #92400e);
+}
+.activity-badge--editing {
+  background-image: linear-gradient(90deg, #7c3aed, #8b5cf6, #7c3aed, #6d28d9, #7c3aed);
+}
+.activity-badge--reading {
+  background-image: linear-gradient(90deg, #0369a1, #0284c7, #0369a1, #075985, #0369a1);
+}
+.activity-badge--researching {
+  background-image: linear-gradient(90deg, #0f766e, #0d9488, #0f766e, #115e59, #0f766e);
+}
+.activity-badge--delegating {
+  background-image: linear-gradient(90deg, #4338ca, #4f46e5, #4338ca, #3730a3, #4338ca);
+}
+.activity-badge--planning {
+  background-image: linear-gradient(90deg, #047857, #059669, #047857, #064e3b, #047857);
+}
+
 .column-live-badge,
 .header-live-prompts {
   animation: live-pill-pulse 900ms cubic-bezier(0.22, 1, 0.32, 1);

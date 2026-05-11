@@ -24,6 +24,7 @@ export function getCliSessionSummaryForTask(taskId: string): CliSessionSummary |
     lastInputAt: session.lastInputAt,
     blockedReason: session.blockedReason,
     liveOutput: session.liveOutputBuffer || undefined,
+    currentActivity: session.currentActivity,
     skipPermissions: session.skipPermissions,
     inputTokens: session.inputTokens,
     outputTokens: session.outputTokens,
