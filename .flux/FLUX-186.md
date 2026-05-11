@@ -91,8 +91,45 @@ history:
     user: Agent
     date: '2026-05-11T02:01:59.979Z'
     comment: Launched Claude Code session (34fa03a2).
+  - type: activity
+    user: Agent
+    date: '2026-05-11T03:29:41.494Z'
+    comment: Claude Code session lost (engine restarted).
+  - type: activity
+    user: Agent
+    date: '2026-05-11T03:33:21.778Z'
+    comment: Launched Claude Code session (bb5b4f62).
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-11T03:33:46.524Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-11T03:33:46.525Z'
+    comment: >-
+      Closed. Fix shipped in commit d831d6e: added appendHistory support to PUT
+      handler so review comments are appended directly without the rebase-slice
+      logic discarding them. Updated all 5 persona prompts in
+      CodeReviewButton.tsx to use appendHistory. REQUIRE_INPUT guard updated to
+      recognise appendHistory comments. Validated with curl and TypeScript
+      checks.
+    id: c-2026-05-11t03-33-46-525z
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-11T03:33:55.481Z'
+    comment: >-
+      FLUX-186 is closed. The fix (commit `d831d6e`) added `appendHistory` to
+      the PUT handler so review comments bypass the rebase-slice logic, updated
+      all 5 persona prompts in `CodeReviewButton.tsx`, and patched the
+      `REQUIRE_INPUT` guard to recognise `appendHistory` comments. Ticket is now
+      `Done`.
+  - type: activity
+    user: Agent
+    date: '2026-05-11T03:38:41.545Z'
+    comment: Claude Code session lost (engine restarted).
 title: code review comments are discarded
-status: Ready
+status: Done
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:

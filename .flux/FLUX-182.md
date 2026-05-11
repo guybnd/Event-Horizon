@@ -1,5 +1,5 @@
 ---
-priority: Low
+priority: Critical
 effort: L
 tags:
   - refactor
@@ -7,8 +7,8 @@ tags:
 assignee: unassigned
 createdBy: Unknown
 title: Split engine/src/index.ts into focused modules
-status: Grooming
-updatedBy: Agent
+status: In Progress
+updatedBy: Guy
 history:
   - type: activity
     user: Unknown
@@ -29,6 +29,152 @@ history:
     user: Agent
     date: '2026-05-11T01:31:40.922Z'
     comment: Updated description.
+  - type: status_change
+    from: Grooming
+    to: Ready
+    user: Agent
+    date: '2026-05-11T03:30:11.684Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-11T03:30:11.686Z'
+    comment: >-
+      Fixed the three failures identified in the code review:
+
+
+      1. AgentAdapter interface — added to agents/types.ts with start(),
+      sendInput(), stop(), and labelForFramework() methods, plus AgentProcess
+      interface.
+
+
+      2. agents/index.ts registry — replaced the re-export barrel with a proper
+      Map<string, AgentAdapter> registry and getAdapter(agentType: string):
+      AgentAdapter function. ClaudeCodeAdapter is registered under 'claude'.
+
+
+      3. ClaudeCodeAdapter — added as a class in agents/claude-code.ts
+      implementing AgentAdapter. The class delegates to the existing
+      startCliSession/sendCliSessionInput functions and wraps kill() in stop().
+
+
+      4. routes/cli-session.ts — removed all Claude-specific code. No import
+      from agents/claude-code.js. No session.framework === 'claude' guard. All
+      three route handlers (start, input, stop) now call getAdapter(framework)
+      and delegate to the adapter.
+
+
+      Zero new TypeScript errors introduced — confirmed by diffing tsc output
+      against main. The six pre-existing TS2412/TS18047 errors in claude-code.ts
+      are unchanged.
+    id: c-2026-05-11t03-30-11-686z
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Agent
+    date: '2026-05-11T03:34:43.956Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-11T03:34:43.969Z'
+    comment: Launched Claude Code session (7baaa361).
+  - type: comment
+    user: Agent
+    comment: >-
+      CODE REVIEW — FAILS.
+
+
+      The ticket says "split index.ts into focused modules." index.ts is now
+      2574 lines. It was 2551. It GREW. That is not a split. That is the
+      opposite of a split.
+
+
+      Here is what actually happened: a bunch of module files were created —
+      routes/tasks.ts, routes/cli-session.ts, agents/claude-code.ts, etc. — but
+      none of them are wired into index.ts. Not a single app.use(router) call.
+      The route files are 840 lines of dead code that nothing imports. The
+      GET/POST/PUT/DELETE handlers for /api/tasks, /api/docs, /api/config,
+      /api/workspace, /api/assets, /api/skill, /api/stats are ALL still inline
+      in index.ts at lines 1180-2390.
+
+
+      Specific failures:
+
+
+      1. DEAD CODE. routes/tasks.ts, routes/docs.ts, routes/config.ts,
+      routes/workspace.ts, routes/assets.ts, routes/skill.ts, routes/stats.ts —
+      none registered in index.ts. They export a Router that is never
+      app.use()'d. The running server is still serving everything from the
+      monolith.
+
+
+      2. DUPLICATE TYPES. CliSessionRecord, CliSessionSummary, CliFramework,
+      EFFORT_LEVELS, PROVIDER_CAPABILITIES, cliLabelForFramework,
+      buildCommentEntry, buildActivityEntry are all still defined in index.ts at
+      lines 99-292. They are ALSO defined in agents/types.ts and
+      agents/claude-code.ts. Two sources of truth for the same types.
+
+
+      3. THE MAIN GOAL was not done. index.ts should be ~80 lines of app setup.
+      It is 2574 lines.
+
+
+      4. routes/cli-session.ts is actually correct — clean, adapter-based, no
+      Claude-specific code. The agents/ module structure is correct. This work
+      is good. But it is ALSO duplicated — the identical start/input/stop routes
+      still exist inline in index.ts at lines 1203, 1487, 1643. Which one is
+      actually running? The index.ts versions. The route file is dead.
+
+
+      What needs to happen: wire up the routers (app.use('/api/tasks',
+      tasksRouter) etc.) and delete the corresponding inline handlers from
+      index.ts. Until index.ts is stripped to ~80 lines, this ticket is not
+      done.
+    date: '2026-05-11T03:36:08.097Z'
+    id: c-2026-05-11t03-36-08-097z
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-11T03:36:15.373Z'
+    comment: >-
+      Comment posted. The ticket is still In Progress which is the right status.
+      Here's my verdict:
+
+
+      ---
+
+
+      **The implementation is a fraud.**
+
+
+      The module files exist but are dead code. `index.ts` went from 2551 → 2574
+      lines. Every route handler is still inline. Not a single
+      `app.use(tasksRouter)` call was added. The 840 lines across all those
+      route files do nothing — the server never loads them.
+
+
+      **What's actually good:** `routes/cli-session.ts` and the `agents/`
+      directory are correctly structured. Clean adapter pattern, no
+      Claude-specific leakage in the route layer, registry works. That portion
+      of the work is solid.
+
+
+      **What's broken:** The other 8 route files were created but never wired
+      in. Types are duplicated in `index.ts` and the new modules simultaneously.
+      The whole point — getting `index.ts` down to ~80 lines — was not done.
+
+
+      Ticket stays In Progress. The fix is straightforward: add
+      `app.use('/api/tasks', tasksRouter)` etc. for each route module and delete
+      the corresponding inline handlers from `index.ts`.
+  - type: activity
+    user: Agent
+    date: '2026-05-11T03:37:55.183Z'
+    comment: Launched Claude Code session (390b1945).
+  - type: activity
+    user: Agent
+    date: '2026-05-11T03:38:41.545Z'
+    comment: Claude Code session lost (engine restarted).
+  - type: activity
+    user: Guy
+    date: '2026-05-11T03:42:27.346Z'
+    comment: Changed priority from Low to Critical.
 ---
 ## Goal
 

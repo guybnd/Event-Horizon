@@ -38,6 +38,10 @@ history:
       section. Parent reduces to ~100-150 lines of tab switching + state + save
       handler.
     id: c-2026-05-11t01-31-56-130z
+  - type: activity
+    user: Agent
+    date: '2026-05-11T03:29:41.494Z'
+    comment: Claude Code session lost (engine restarted).
 ---
 ## Goal
 

@@ -9,7 +9,7 @@ assignee: unassigned
 effort: M
 createdBy: Unknown
 title: 'token cost badge: clickable toggle, cached/fresh split, color thresholds'
-status: Ready
+status: Done
 updatedBy: Agent
 history:
   - type: activity
@@ -203,6 +203,44 @@ history:
     user: Agent
     date: '2026-05-11T02:27:25.656Z'
     comment: Launched Claude Code session (b2f8152f).
+  - type: activity
+    user: Agent
+    date: '2026-05-11T03:29:41.494Z'
+    comment: Claude Code session lost (engine restarted).
+  - type: activity
+    user: Agent
+    date: '2026-05-11T03:38:08.633Z'
+    comment: Launched Claude Code session (73e2a3ac).
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-11T03:38:31.065Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-11T03:38:31.066Z'
+    comment: >-
+      Shipped in commit 3c5875e. Implemented three enhancements: (1) cost badge
+      is now clickable to toggle between USD cost and raw token count, updating
+      the global tokenDisplayMode preference so both TaskCard and
+      CliSessionPanel stay in sync; (2) engine now tracks cacheReadTokens and
+      cacheCreationTokens separately from inputTokens, with a hover tooltip
+      showing the fresh/cached breakdown; (3) color-coded thresholds
+      (green/yellow/red) configurable via a new Preferences section with
+      defaults /bin/zsh.10//bin/zsh.50. Validated TypeScript clean.
+    id: c-2026-05-11t03-38-31-066z
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-11T03:38:37.934Z'
+    comment: >-
+      FLUX-187 is closed. Ticket moved to Done with commit `3c5875e` recorded as
+      the implementation link. The three shipped improvements: clickable
+      cost/token toggle, cached vs fresh token split with hover tooltip, and
+      color-coded thresholds with Preferences UI.
+  - type: activity
+    user: Agent
+    date: '2026-05-11T03:38:41.545Z'
+    comment: Claude Code session lost (engine restarted).
 implementationLink: ''
 subtasks: []
 ---

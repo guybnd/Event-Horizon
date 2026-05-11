@@ -122,6 +122,10 @@ history:
       (Split Settings.tsx into per-section components, effort M). All three are
       in Grooming status, ready for implementation planning.
     id: c-2026-05-10t14-43-49-453z
+  - type: activity
+    user: Agent
+    date: '2026-05-11T03:29:41.494Z'
+    comment: Claude Code session lost (engine restarted).
 title: identify refactor opportunities to make code more readable
 status: Done
 createdBy: Guy
