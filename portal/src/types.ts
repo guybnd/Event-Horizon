@@ -135,6 +135,12 @@ export interface Config {
     generateDistinctFiles: boolean;
     releaseNotesPath: string;
   };
+  integrations?: {
+    claudeCode?: {
+      groomingModel?: string;
+      implementationModel?: string;
+    };
+  };
   enableFireworks?: boolean;
   tokenDisplayMode?: 'cost' | 'tokens';
   tokenCostThresholds?: { green: number; yellow: number };

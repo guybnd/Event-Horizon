@@ -1,8 +1,13 @@
+import { forwardRef, useImperativeHandle, useRef, useState } from 'react';
 import { SendHorizontal } from 'lucide-react';
 
+export interface CommentBoxHandle {
+  getValue(): string;
+  reset(): void;
+  setValue(value: string): void;
+}
+
 interface CommentBoxProps {
-  value: string;
-  onChange: (value: string) => void;
   onPaste: (event: React.ClipboardEvent<HTMLTextAreaElement>) => void;
   onDragOver: (event: React.DragEvent<HTMLTextAreaElement>) => void;
   onDrop: (event: React.DragEvent<HTMLTextAreaElement>) => void;
@@ -15,10 +20,33 @@ interface CommentBoxProps {
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
 }
 
-export function CommentBox({
-  value, onChange, onPaste, onDragOver, onDrop, onSend,
+export const CommentBox = forwardRef<CommentBoxHandle, CommentBoxProps>(function CommentBox({
+  onPaste, onDragOver, onDrop, onSend,
   saving, isUploading, assetError, isRequireInput, disabled, textareaRef,
-}: CommentBoxProps) {
+}, ref) {
+  const valueRef = useRef('');
+  const [value, setValueState] = useState('');
+
+  const setLocalValue = (newValue: string) => {
+    valueRef.current = newValue;
+    setValueState(newValue);
+  };
+
+  useImperativeHandle(ref, () => ({
+    getValue: () => valueRef.current,
+    reset: () => {
+      valueRef.current = '';
+      setValueState('');
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto';
+      }
+    },
+    setValue: (newValue: string) => {
+      valueRef.current = newValue;
+      setValueState(newValue);
+    },
+  }), [textareaRef]);
+
   return (
     <div className="relative">
       <textarea
@@ -28,7 +56,7 @@ export function CommentBox({
         className="w-full resize-none overflow-hidden rounded-xl border border-gray-200 bg-white px-4 py-3 pb-12 text-sm outline-none placeholder:text-gray-400 focus:border-primary dark:border-white/10 dark:bg-black/40 transition-all"
         value={value}
         onChange={(event) => {
-          onChange(event.target.value);
+          setLocalValue(event.target.value);
           event.target.style.height = 'auto';
           event.target.style.height = event.target.scrollHeight + 'px';
         }}
@@ -58,4 +86,4 @@ export function CommentBox({
       </div>
     </div>
   );
-}
+});

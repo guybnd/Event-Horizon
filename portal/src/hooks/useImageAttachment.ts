@@ -1,10 +1,10 @@
 import { useCallback, useRef } from 'react';
 import { buildUnsupportedImageMessage, uploadTaskImageMarkdownLinks } from '../taskAssetUploads';
+import type { CommentBoxHandle } from '../components/task-modal/CommentBox';
 
 interface UseImageAttachmentOptions {
   taskId: string | undefined;
-  newComment: string;
-  setNewComment: (value: string) => void;
+  commentBoxRef: React.RefObject<CommentBoxHandle | null>;
   replyDraft: string;
   setReplyDraft: (value: string) => void;
   commentRef: React.RefObject<HTMLTextAreaElement | null>;
@@ -37,8 +37,7 @@ function insertTextIntoDraft(
 
 export function useImageAttachment({
   taskId,
-  newComment,
-  setNewComment,
+  commentBoxRef,
   replyDraft,
   setReplyDraft,
   commentRef,
@@ -93,10 +92,11 @@ export function useImageAttachment({
   };
 
   const attachCommentImageFiles = async (files: File[], selectionStart?: number, selectionEnd?: number) => {
+    const current = commentBoxRef.current?.getValue() ?? '';
     await attachImageFilesToDraft({
       files,
-      currentValue: newComment,
-      setValue: setNewComment,
+      currentValue: current,
+      setValue: (newValue) => commentBoxRef.current?.setValue(newValue),
       targetTextArea: commentRef.current,
       selectionStart,
       selectionEnd,

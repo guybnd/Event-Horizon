@@ -22,7 +22,7 @@ import type { ReviewPersona } from './CodeReviewButton';
 import type { Config, HistoryEntry, Task } from '../types';
 import { StatusBadge } from './StatusBadge';
 import { getStatusColorClass } from '../statusStyles';
-import { normalizeTaskMarkdownBody, TaskDescriptionSurface } from './TaskDescriptionSurface';
+import { TaskDescriptionSurface } from './TaskDescriptionSurface';
 import { DEFAULT_READY_FOR_MERGE_STATUS, getRequireInputStatus } from '../workflow';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useTaskForm } from '../hooks/useTaskForm';
@@ -30,6 +30,7 @@ import { useCliSession } from '../hooks/useCliSession';
 import { useImageAttachment } from '../hooks/useImageAttachment';
 import { MetadataPanel } from './task-modal/MetadataPanel';
 import { CommentBox } from './task-modal/CommentBox';
+import type { CommentBoxHandle } from './task-modal/CommentBox';
 import { CliSessionPanel } from './task-modal/CliSessionPanel';
 import { ReadyForMergePrompt } from './task-modal/ReadyForMergePrompt';
 import { TokenBadge } from './TokenBadge';
@@ -86,6 +87,7 @@ export function TaskModal() {
   } = useApp();
 
   const liveOutputRef = useRef<HTMLPreElement>(null);
+  const commentBoxRef = useRef<CommentBoxHandle>(null);
   const commentRef = useRef<HTMLTextAreaElement>(null);
   const replyTextareaRef = useRef<HTMLTextAreaElement>(null);
   const commentSectionRef = useRef<HTMLDivElement>(null);
@@ -121,7 +123,7 @@ export function TaskModal() {
     stopSession,
   } = useCliSession({ isModalOpen, taskId: modalTask?.id, liveOutputRef, onSessionChange: triggerRefresh });
 
-  const [newComment, setNewComment] = useState('');
+  const [requireInputDraft, setRequireInputDraft] = useState('');
   const [activityFilter, setActivityFilter] = useState<ActivityFilter>(getInitialActivityFilter);
   const [replyTargetId, setReplyTargetId] = useState<string | null>(null);
   const [replyDraft, setReplyDraft] = useState('');
@@ -156,8 +158,7 @@ export function TaskModal() {
     handleReplyDrop,
   } = useImageAttachment({
     taskId: modalTask?.id,
-    newComment,
-    setNewComment,
+    commentBoxRef,
     replyDraft,
     setReplyDraft,
     commentRef,
@@ -168,7 +169,7 @@ export function TaskModal() {
     setIsUploadingReplyAsset,
   });
 
-  const isDirty = formIsDirty || newComment.trim() !== '';
+  const isDirty = formIsDirty;
 
   useEffect(() => {
     if (modalTask?.id) ensureReadStateLoaded(modalTask.id);
@@ -225,7 +226,8 @@ export function TaskModal() {
   useEffect(() => {
     if (!modalTask) return;
     if (openedTaskIdRef.current === modalTask.id) return;
-    setNewComment('');
+    commentBoxRef.current?.reset();
+    setRequireInputDraft('');
     setSubtaskToAdd('');
     setReplyTargetId(null);
     setReplyDraft('');
@@ -398,15 +400,16 @@ export function TaskModal() {
     setSaveError(null);
     const payload = { title, body, status, assignee, tags, priority, effort, effortLevel: effortLevel || undefined, implementationLink: implementationLink.trim(), subtasks, order: modalTask?.order };
     let historyUpdates: any[] = customHistory || [];
+    const pendingComment = commentBoxRef.current?.getValue()?.trim() ?? '';
 
-    if (!customHistory && newComment.trim()) {
+    if (!customHistory && pendingComment) {
       historyUpdates.push({
         type: 'comment',
         user: currentUser,
         date: new Date().toISOString(),
-        comment: newComment.trim(),
+        comment: pendingComment,
       });
-      setNewComment('');
+      commentBoxRef.current?.reset();
     }
 
     try {
@@ -418,7 +421,7 @@ export function TaskModal() {
             to: status,
             user: currentUser,
             date: new Date().toISOString(),
-            comment: newComment.trim() ? 'Included with comment' : undefined,
+            comment: pendingComment ? 'Included with comment' : undefined,
           });
         }
         const newHistory = [...(modalTask.history || []), ...historyUpdates];
@@ -458,18 +461,18 @@ export function TaskModal() {
   };
 
   const sendCommentDirectly = async () => {
-    if (!newComment.trim() || !modalTask?.id) return;
-    const commentText = newComment.trim();
+    const commentText = commentBoxRef.current?.getValue()?.trim() ?? '';
+    if (!commentText || !modalTask?.id) return;
     if (cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status)) {
       setCliSessionBusy(true);
       setCliSessionError('');
-      setNewComment('');
+      commentBoxRef.current?.reset();
       try {
         const nextSession = await sendTaskCliInput(modalTask.id, commentText, currentUser);
         setCliSession(nextSession);
         triggerRefresh();
       } catch (error: any) {
-        setNewComment(commentText);
+        commentBoxRef.current?.setValue(commentText);
         setCliSessionError(error?.message || 'Failed to send message to active CLI session.');
       } finally {
         setCliSessionBusy(false);
@@ -477,7 +480,7 @@ export function TaskModal() {
       return;
     }
     const commentEntry = { type: 'comment', user: currentUser, date: new Date().toISOString(), comment: commentText };
-    setNewComment('');
+    commentBoxRef.current?.reset();
     await handleSave([commentEntry], true);
   };
 
@@ -510,12 +513,12 @@ export function TaskModal() {
   }, [replyDraft, cliSession, modalTask?.id, currentUser, triggerRefresh]);
 
   const submitRequireInputResponse = async () => {
-    if (!modalTask?.id || !newComment.trim()) return;
+    const responseComment = requireInputDraft.trim();
+    if (!modalTask?.id || !responseComment) return;
     const targetStatus = requireInputDestinations.includes(responseDestination)
       ? responseDestination
       : requireInputDestinations[0] || 'Todo';
     const submittedAt = new Date().toISOString();
-    const responseComment = newComment.trim();
     const lastAgentComment = [...(modalTask.history || [])].reverse().find(
       (e) => e.type === 'comment' && e.id
     );
@@ -554,7 +557,7 @@ export function TaskModal() {
       if (newResponseComment?.id) idsToMarkRead.push(newResponseComment.id);
       if (idsToMarkRead.length > 0) ctxMarkAllCommentsRead(updatedTask.id, idsToMarkRead);
       setModalTask(updatedTask);
-      setNewComment('');
+      setRequireInputDraft('');
       setStatus(targetStatus);
       const responseEntry = (updatedTask.history || []).find(
         (e: HistoryEntry) => e.type === 'comment' && e.date === submittedAt && e.user === currentUser,
@@ -759,8 +762,8 @@ export function TaskModal() {
             ref={commentRef}
             autoFocus
             className="h-44 w-full resize-none rounded-xl border border-amber-200 bg-white px-4 py-3 text-sm outline-none placeholder:text-gray-400 focus:border-primary dark:border-amber-500/20 dark:bg-black/30"
-            value={newComment}
-            onChange={(event) => setNewComment(event.target.value)}
+            value={requireInputDraft}
+            onChange={(event) => setRequireInputDraft(event.target.value)}
             placeholder="Type the answer you want to send back..."
           />
         </div>
@@ -779,7 +782,7 @@ export function TaskModal() {
           </div>
           <div className="space-y-2">
             <button
-              disabled={saving || !newComment.trim()}
+              disabled={saving || !requireInputDraft.trim()}
               onClick={submitRequireInputResponse}
               className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
             >
@@ -1052,8 +1055,6 @@ export function TaskModal() {
   };
 
   const commentBoxProps = {
-    value: newComment,
-    onChange: (v: string) => { setNewComment(v); if (commentAssetError) setCommentAssetError(''); },
     onPaste: handleCommentPaste,
     onDragOver: handleCommentDragOver,
     onDrop: handleCommentDrop,
@@ -1258,7 +1259,7 @@ export function TaskModal() {
                           </div>
                         ) : (
                           <div className="rounded-xl shadow-lg border border-gray-200 bg-white dark:bg-[#1f2028] dark:border-white/10 backdrop-blur-md w-full">
-                            <CommentBox {...commentBoxProps} />
+                            <CommentBox ref={commentBoxRef} {...commentBoxProps} />
                           </div>
                         )}
                       </div>
@@ -1447,7 +1448,7 @@ export function TaskModal() {
                   {activityFilterTabs}
                 </div>
                 <div className="mb-4"><HistoryList {...historyListProps} /></div>
-                {!isRequireInput && <CommentBox {...commentBoxProps} />}
+                {!isRequireInput && <CommentBox ref={commentBoxRef} {...commentBoxProps} />}
                 {isReadyForMerge && readyForMergePrompt}
               </div>
             </div>
