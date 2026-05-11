@@ -7,7 +7,7 @@ tags:
 assignee: unassigned
 createdBy: Unknown
 title: Split engine/src/index.ts into focused modules
-status: Done
+status: Released
 updatedBy: Guy
 history:
   - type: activity
@@ -270,7 +270,15 @@ history:
     to: Done
     user: Guy
     date: '2026-05-11T05:04:05.269Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-11T05:55:56.966Z'
 order: 2
+version: v0.3.1
+releasedAt: '2026-05-11T05:55:56.966Z'
+releaseDocPath: release-notes/v0.3.1
 ---
 ## Goal
 

@@ -233,8 +233,13 @@ history:
     user: Agent
     date: '2026-05-10T14:39:26.565Z'
     comment: Claude Code session ended with code 0.
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-11T05:55:56.911Z'
 title: token spend optimization
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 order: 0
@@ -243,6 +248,9 @@ tokenMetadata:
   outputTokens: 1203
   costUSD: 0.122033
   costIsEstimated: false
+version: v0.3.1
+releasedAt: '2026-05-11T05:55:56.911Z'
+releaseDocPath: release-notes/v0.3.1
 ---
 ## Token Spend Optimization
 

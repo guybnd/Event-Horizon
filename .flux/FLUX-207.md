@@ -122,8 +122,13 @@ history:
     user: Agent
     date: '2026-05-11T05:20:31.512Z'
     comment: Claude Code session lost (engine restarted).
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-11T05:55:57.060Z'
 title: '''unread'' filter pill should show how many unread messages there are '
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -131,6 +136,9 @@ tokenMetadata:
   outputTokens: 5107
   costUSD: 0.416381
   costIsEstimated: false
+version: v0.3.1
+releasedAt: '2026-05-11T05:55:57.060Z'
+releaseDocPath: release-notes/v0.3.1
 ---
 ## Implementation Plan
 

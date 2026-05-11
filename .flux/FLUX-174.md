@@ -257,8 +257,13 @@ history:
     user: Agent
     date: '2026-05-10T14:11:00.370Z'
     comment: Claude Code session lost (engine restarted).
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-11T05:55:56.920Z'
 title: comment box is really choppy
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -266,6 +271,9 @@ tokenMetadata:
   outputTokens: 98478
   costUSD: 2.919287
   costIsEstimated: false
+version: v0.3.1
+releasedAt: '2026-05-11T05:55:56.920Z'
+releaseDocPath: release-notes/v0.3.1
 ---
 in a ticket thats currently inm ready phase and has an active prompt. typing in the comment box is suuuuper slow and laggy and choppy, getting choppier to faster i type.
 never bails out = prompt re-renders on every

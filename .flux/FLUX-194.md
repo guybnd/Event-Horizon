@@ -608,8 +608,13 @@ history:
     user: Agent
     date: '2026-05-11T05:54:20.599Z'
     comment: Claude Code session ended with code 0.
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-11T05:55:57.032Z'
 title: add badges describing what an agent is doing with nice animation
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -619,6 +624,9 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 262608
   cacheCreationTokens: 17943
+version: v0.3.1
+releasedAt: '2026-05-11T05:55:57.032Z'
+releaseDocPath: release-notes/v0.3.1
 ---
 stuff like  
 'grooming'  

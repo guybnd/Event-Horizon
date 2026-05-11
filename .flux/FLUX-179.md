@@ -87,10 +87,18 @@ history:
 
       - GitHub release created with macOS, Linux, and Windows executables
       attached
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-11T05:55:56.931Z'
 title: Make a new release incremental version 0.3
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: v0.3.1
+releasedAt: '2026-05-11T05:55:56.931Z'
+releaseDocPath: release-notes/v0.3.1
 ---
 ## Release v0.3.0
 

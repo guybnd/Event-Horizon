@@ -109,10 +109,18 @@ history:
     user: Agent
     date: '2026-05-11T04:52:31.942Z'
     comment: Claude Code session lost (engine restarted).
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-11T05:55:57.054Z'
 title: new task window improvement UX
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: v0.3.1
+releasedAt: '2026-05-11T05:55:57.054Z'
+releaseDocPath: release-notes/v0.3.1
 ---
 ## Problem
 

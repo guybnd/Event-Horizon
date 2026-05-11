@@ -286,9 +286,17 @@ history:
     user: Agent
     date: '2026-05-10T14:11:00.372Z'
     comment: Claude Code session lost (engine restarted).
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-11T05:55:56.944Z'
 title: Fix ticket modal blank page and lag on open
-status: Done
+status: Released
 order: 1
+version: v0.3.1
+releasedAt: '2026-05-11T05:55:56.944Z'
+releaseDocPath: release-notes/v0.3.1
 ---
 ## Root Cause
 

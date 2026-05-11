@@ -7,7 +7,7 @@ tags:
 assignee: unassigned
 createdBy: Unknown
 title: Portal build breaks repeatedly due to linter reverting unused-var fixes
-status: Done
+status: Released
 updatedBy: Agent
 history:
   - type: activity
@@ -98,11 +98,19 @@ history:
     user: Agent
     date: '2026-05-11T04:09:12.077Z'
     comment: Claude Code session ended with code 0.
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-11T05:55:57.051Z'
 tokenMetadata:
   inputTokens: 165881
   outputTokens: 1186
   costUSD: 0.103011
   costIsEstimated: false
+version: v0.3.1
+releasedAt: '2026-05-11T05:55:57.051Z'
+releaseDocPath: release-notes/v0.3.1
 ---
 ## Problem
 

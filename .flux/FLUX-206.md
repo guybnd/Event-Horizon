@@ -151,8 +151,13 @@ history:
     user: Agent
     date: '2026-05-11T05:20:31.512Z'
     comment: Claude Code session lost (engine restarted).
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-11T05:55:57.058Z'
 title: grooming almost never asks for user input
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -161,6 +166,9 @@ tokenMetadata:
   costUSD: 0.229416
   costIsEstimated: false
 order: 0
+version: v0.3.1
+releasedAt: '2026-05-11T05:55:57.058Z'
+releaseDocPath: release-notes/v0.3.1
 ---
 ## Implementation Plan
 

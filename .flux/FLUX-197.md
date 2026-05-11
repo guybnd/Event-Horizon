@@ -7,7 +7,7 @@ tags:
 assignee: unassigned
 createdBy: Unknown
 title: POST /api/tasks should default projectKey to the configured project
-status: Done
+status: Released
 updatedBy: Agent
 history:
   - type: activity
@@ -80,11 +80,19 @@ history:
     user: Agent
     date: '2026-05-11T04:52:31.942Z'
     comment: Claude Code session lost (engine restarted).
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-11T05:55:57.053Z'
 tokenMetadata:
   inputTokens: 109596
   outputTokens: 646
   costUSD: 0.09006
   costIsEstimated: false
+version: v0.3.1
+releasedAt: '2026-05-11T05:55:57.053Z'
+releaseDocPath: release-notes/v0.3.1
 ---
 ## Problem
 

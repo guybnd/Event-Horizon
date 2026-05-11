@@ -190,14 +190,22 @@ history:
     user: Agent
     date: '2026-05-10T13:46:21.725Z'
     comment: Claude Code session ended with code 0.
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-11T05:55:57.063Z'
 title: Reduce per-turn token cost of the agent workflow
-status: Done
+status: Released
 implementationLink: 'PROJECT-2: reduce per-turn token cost via rules file trimming'
 tokenMetadata:
   inputTokens: 584289
   outputTokens: 8568
   costUSD: 0.514723
   costIsEstimated: false
+version: v0.3.1
+releasedAt: '2026-05-11T05:55:57.063Z'
+releaseDocPath: release-notes/v0.3.1
 ---
 ## Implementation Plan
 

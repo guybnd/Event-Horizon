@@ -230,8 +230,13 @@ history:
     user: Agent
     date: '2026-05-11T03:03:20.926Z'
     comment: Claude Code session lost (engine restarted).
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-11T05:55:57.001Z'
 title: lag on typing comment box of a ticket whose currently active agent session
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -240,6 +245,9 @@ tokenMetadata:
   costUSD: 0.541912
   costIsEstimated: false
 order: 0
+version: v0.3.1
+releasedAt: '2026-05-11T05:55:57.001Z'
+releaseDocPath: release-notes/v0.3.1
 ---
 ## Problem
 

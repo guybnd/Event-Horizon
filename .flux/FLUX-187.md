@@ -9,7 +9,7 @@ assignee: unassigned
 effort: M
 createdBy: Unknown
 title: 'token cost badge: clickable toggle, cached/fresh split, color thresholds'
-status: Done
+status: Released
 updatedBy: Agent
 history:
   - type: activity
@@ -241,8 +241,16 @@ history:
     user: Agent
     date: '2026-05-11T03:38:41.545Z'
     comment: Claude Code session lost (engine restarted).
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-11T05:55:56.993Z'
 implementationLink: ''
 subtasks: []
+version: v0.3.1
+releasedAt: '2026-05-11T05:55:56.993Z'
+releaseDocPath: release-notes/v0.3.1
 ---
 ## Token Cost Badge Improvements
 

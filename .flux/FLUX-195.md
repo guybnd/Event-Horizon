@@ -9,7 +9,7 @@ createdBy: Agent
 title: >-
   Ticket silently disappears from board after engine restart when file exists on
   disk
-status: Done
+status: Released
 updatedBy: Agent
 history:
   - type: activity
@@ -105,11 +105,19 @@ history:
     user: Agent
     date: '2026-05-11T05:25:34.409Z'
     comment: Claude Code session ended with code 0.
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-11T05:55:57.047Z'
 tokenMetadata:
   inputTokens: 640137
   outputTokens: 4938
   costUSD: 0.447621
   costIsEstimated: false
+version: v0.3.1
+releasedAt: '2026-05-11T05:55:57.047Z'
+releaseDocPath: release-notes/v0.3.1
 ---
 ## Implementation Plan
 

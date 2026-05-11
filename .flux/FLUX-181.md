@@ -10,7 +10,7 @@ tags:
 createdBy: Unknown
 updatedBy: Agent
 title: 'Engine should stamp history entry dates server-side, not trust client'
-status: Done
+status: Released
 history:
   - type: activity
     user: Unknown
@@ -103,6 +103,14 @@ history:
     user: Agent
     date: '2026-05-10T14:17:39.918Z'
     comment: Claude Code session lost (engine restarted).
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-11T05:55:56.960Z'
+version: v0.3.1
+releasedAt: '2026-05-11T05:55:56.960Z'
+releaseDocPath: release-notes/v0.3.1
 ---
 ## Root Cause
 

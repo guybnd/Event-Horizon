@@ -128,8 +128,13 @@ history:
     user: Agent
     date: '2026-05-11T03:38:41.545Z'
     comment: Claude Code session lost (engine restarted).
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-11T05:55:56.981Z'
 title: code review comments are discarded
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -137,6 +142,9 @@ tokenMetadata:
   outputTokens: 31640
   costUSD: 1.151565
   costIsEstimated: false
+version: v0.3.1
+releasedAt: '2026-05-11T05:55:56.981Z'
+releaseDocPath: release-notes/v0.3.1
 ---
 ## Root Cause
 

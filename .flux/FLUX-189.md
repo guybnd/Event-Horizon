@@ -106,10 +106,18 @@ history:
     user: Agent
     date: '2026-05-11T05:01:07.552Z'
     comment: Claude Code session lost (engine restarted).
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-11T05:55:57.019Z'
 title: all tickets are maked as dirty even with no changes
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: v0.3.1
+releasedAt: '2026-05-11T05:55:57.019Z'
+releaseDocPath: release-notes/v0.3.1
 ---
 ## Root Cause
 
