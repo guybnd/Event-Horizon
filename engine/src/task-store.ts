@@ -262,6 +262,12 @@ export async function initDir() {
   }
   await loadConfig();
   await loadPricingDoc();
+  const fluxFiles = await fs.readdir(getFluxDir()).catch(() => [] as string[]);
+  for (const name of fluxFiles) {
+    if (isTopLevelTaskFile(path.join(getFluxDir(), name))) {
+      await loadTask(path.join(getFluxDir(), name));
+    }
+  }
 }
 
 let activeFluxWatcher: ReturnType<typeof chokidar.watch> | null = null;
