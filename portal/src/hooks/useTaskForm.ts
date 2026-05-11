@@ -17,6 +17,10 @@ export function useTaskForm(modalTask: Task | null | undefined) {
   const [saveError, setSaveError] = useState<string | null>(null);
 
   const openedTaskIdRef = useRef<string | undefined>(undefined);
+  // Tracks the last ticket ID whose state has been fully synced from modalTask.
+  // isDirty is suppressed until this matches modalTask.id to prevent false-dirty
+  // flashes on open caused by stale state from the previous ticket.
+  const syncedTaskIdRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     if (!modalTask) return;
@@ -65,6 +69,7 @@ export function useTaskForm(modalTask: Task | null | undefined) {
     if (isNewTicket) {
       openedTaskIdRef.current = modalTask.id;
     }
+    syncedTaskIdRef.current = modalTask.id;
   }, [modalTask]);
 
   const originalPayload = useMemo(() => JSON.stringify({
@@ -94,7 +99,7 @@ export function useTaskForm(modalTask: Task | null | undefined) {
     subtasks,
   }), [title, body, status, assignee, tags, priority, effort, effortLevel, implementationLink, subtasks]);
 
-  const isDirty = originalPayload !== currentPayload;
+  const isDirty = syncedTaskIdRef.current === modalTask?.id && originalPayload !== currentPayload;
 
   return {
     title, setTitle,
