@@ -21,6 +21,8 @@ history:
     user: Unknown
     date: '2026-05-12T09:17:16.654Z'
 version: 0.4.0
+releasedAt: '2026-05-12T07:32:17.144Z'
+releaseDocPath: release-notes/0.4.0
 ---
 ## Summary
 
