@@ -100,15 +100,79 @@ From that point, a file watcher monitors `.flux-store/` and auto-commits and pus
 
 ## 🤖 Agent Workflow
 
-Event Horizon provides a structured workflow that keeps AI agents and humans on the same page throughout a ticket's lifecycle.
+Event Horizon is designed around an autonomous loop: the agent drives the work forward, surfaces decisions when it needs one, and the portal is the interface you use to steer it — without touching a chat window for most of the process.
+
+### The Idea
+
+Traditional AI-assisted development puts you in the middle of every step. You write a prompt, read the output, write another prompt, repeat. Event Horizon inverts this: you describe what you want as a ticket, hand it off, and the agent works autonomously until it genuinely needs a human decision. The portal is your command center for reviewing progress, answering questions, and approving work — all from the board view or ticket modal, without going back to the chat.
 
 ### The Ticket Lifecycle
 
-1. **Grooming:** Drop a ticket onto the board. Instruct your agent to groom it — the agent reads the ticket, fleshes out requirements, estimates effort and priority, and rewrites the ticket body as a concrete implementation plan.
-2. **Require Input:** If the agent needs a decision before it can proceed, it posts one focused question to the ticket history and moves the ticket to **Require Input**. The portal surfaces this as a visual prompt on the card.
-3. **Todo → In Progress:** Once the plan is solid, the ticket moves to **Todo** and your agent picks it up for implementation.
-4. **Ready:** When implementation is complete, the agent stages nothing and moves the ticket to **Ready** for your review.
-5. **Finish:** You review the changes. When satisfied, say `finish FLUX-XX` in chat. The agent commits all changes, records the commit hash in `implementationLink`, and closes the ticket to **Done** — atomically in one step.
+**1. Create & Groom**
+
+Create a ticket from the portal with a title and a rough description. Assign it to **Grooming** and tell your agent once: *"groom FLUX-42."* From that point the agent works autonomously:
+
+- Reads the ticket body and any relevant project docs
+- Identifies missing requirements and ambiguities
+- Fills in metadata (priority, effort, tags) based on context
+- Rewrites the ticket body as a full, self-contained implementation plan
+
+The plan is written directly into the ticket — not into chat — so the next agent session can pick it up cold without any re-briefing.
+
+**2. Require Input — Decisions Without Chat**
+
+When the agent hits a genuine fork in the road during grooming or implementation, it does not guess and it does not ask you in chat. Instead:
+
+- It posts one focused question to the ticket history — describing the tradeoff, listing the options, and proposing a default
+- It moves the ticket to **Require Input** automatically
+- The portal surfaces this as a highlighted prompt directly on the board card
+
+You answer by clicking the card and typing your response in the ticket's comment box. The portal routes your answer back to the agent and moves the ticket to the next status. **The entire decision loop happens in the UI** — no chat session needed.
+
+**3. Implementation**
+
+Once the plan is approved, the agent moves the ticket to **In Progress** and works through the implementation. Progress comments appear in the ticket history as the work unfolds. If the agent hits a blocker mid-implementation, it uses the same **Require Input** mechanism rather than stalling silently.
+
+**4. Ready for Review**
+
+When implementation is complete, the agent moves the ticket to **Ready** and leaves all changes uncommitted. This is a deliberate gate: the code exists on disk but no commit has been made, so you can review the full diff before anything lands in history.
+
+From the ticket modal you can see:
+- What changed (the completion comment describes key files and validation performed)
+- The active session's token usage and cost
+- The full history of decisions made during the work
+
+If you spot something that needs fixing, click **Return to Work** on the ticket card — the agent picks it back up without losing context.
+
+**5. Finish — Atomic Close**
+
+When you're satisfied, say `finish FLUX-42` in chat (or any equivalent instruction). The agent performs a single atomic operation:
+- Stages all relevant files
+- Creates the commit with a descriptive message
+- Records the commit hash in `implementationLink` on the ticket
+- Moves the ticket to **Done**
+
+If you'd rather batch several tickets into one commit, say so — the agent will skip the commit and note the deferral in the completion comment instead.
+
+---
+
+### Staying in the Portal
+
+For most of the lifecycle you do not need to interact with the agent directly at all:
+
+| Action | How to do it from the portal |
+|--------|------------------------------|
+| Create a ticket | Board → drag a new card, or use the + button |
+| Answer an agent question | Click the **Require Input** card → type in the comment box |
+| Check implementation progress | Open the ticket modal → read the history timeline |
+| Send a ticket back for more work | Click **Return to Work** on a **Ready** card |
+| Edit the plan mid-flight | Open the ticket modal → edit the body directly |
+| Reassign or re-prioritize | Drag cards between columns, or edit frontmatter fields inline |
+| Review token usage | Open the ticket → session cost is shown in the activity history |
+
+The portal is the primary interface. Chat with the agent for initial handoff and final approval — everything else happens on the board.
+
+---
 
 ### Installing the Workflow
 
@@ -123,10 +187,10 @@ The installer patches only the Event Horizon blocks in your instructions file, l
 
 Event Horizon integrates with AI coding CLIs (Claude Code, Copilot CLI) for a live session loop:
 
-- Agent sessions launched from a ticket appear in the ticket's activity history
-- Session end/exit is recorded automatically
-- User prompts arriving from the CLI are displayed as inline comment replies on the ticket
-- Token usage and cost estimates are tracked per session
+- Agent sessions launched from a ticket card are tracked in the ticket's activity history
+- Session start, end, and exit code are recorded automatically
+- Prompts you send from the CLI appear as inline comment replies on the ticket in the portal
+- Token usage and cost estimates are recorded per session and displayed in the ticket modal
 
 ---
 
