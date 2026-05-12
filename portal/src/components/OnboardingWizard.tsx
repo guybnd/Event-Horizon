@@ -10,8 +10,10 @@ import {
   AlertCircle,
   Copy,
   Check,
+  GitBranch,
+  HardDrive,
 } from 'lucide-react';
-import { pickWorkspaceFolder, setWorkspace, installWorkspaceSkill, fetchPathInfo, setupPath } from '../api';
+import { pickWorkspaceFolder, setWorkspace, installWorkspaceSkill, fetchPathInfo, setupPath, migrateStorage } from '../api';
 import { useApp } from '../AppContext';
 
 const COMPLETE_KEY = 'eh-onboarding-complete';
@@ -53,6 +55,12 @@ export function OnboardingWizard() {
   const [folderError, setFolderError] = useState<string | null>(null);
   const [folderLoading, setFolderLoading] = useState(false);
   const [picking, setPicking] = useState(false);
+
+  // Step 2 — sync mode
+  const [selectedMode, setSelectedMode] = useState<'in-repo' | 'orphan'>('in-repo');
+  const [modeLoading, setModeLoading] = useState(false);
+  const [modeError, setModeError] = useState<string | null>(null);
+
   const [selectedFramework, setSelectedFramework] = useState('claude');
   const [installing, setInstalling] = useState(false);
   const [installDone, setInstallDone] = useState(false);
@@ -106,6 +114,24 @@ export function OnboardingWizard() {
     }
   }
 
+  // Step 2 — sync mode
+  async function handleModeConfirm() {
+    if (selectedMode === 'in-repo') {
+      setStep(3);
+      return;
+    }
+    setModeLoading(true);
+    setModeError(null);
+    try {
+      await migrateStorage();
+      setStep(3);
+    } catch (err: any) {
+      setModeError(err.message || 'Migration failed. You can continue with In-Repo mode instead.');
+    } finally {
+      setModeLoading(false);
+    }
+  }
+
   // Step 3 — install
   async function handleInstall() {
     setInstalling(true);
@@ -122,12 +148,12 @@ export function OnboardingWizard() {
 
   function handleSkipInstall() {
     localStorage.setItem(SKIP_INSTALL_KEY, 'true');
-    setStep(4);
+    setStep(5);
   }
 
-  // Step 4 — PATH setup
+  // Step 5 — PATH setup
   useEffect(() => {
-    if (step !== 4) return;
+    if (step !== 5) return;
     fetchPathInfo().then(setPathInfo).catch(() => setPathInfo({ binaryDir: null, isPkg: false, platform: '' }));
   }, [step]);
 
@@ -168,7 +194,7 @@ export function OnboardingWizard() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-gray-50 dark:bg-bg-dark p-8">
       <div className="w-full max-w-lg">
-        <StepDots current={step} total={6} />
+        <StepDots current={step} total={7} />
 
         {step === 1 && (
           <div>
@@ -244,6 +270,108 @@ export function OnboardingWizard() {
           <div>
             <div className="mb-8 flex flex-col items-center gap-3 text-center">
               <div className="flex items-center justify-center rounded-2xl bg-primary/10 p-4">
+                <HardDrive className="h-8 w-8 text-primary" />
+              </div>
+              <h1 className="text-2xl font-bold tracking-tight text-gray-900 dark:text-white">
+                Choose your storage mode
+              </h1>
+              <p className="text-sm text-gray-500 dark:text-gray-400 max-w-sm">
+                Pick how Event Horizon stores your tickets. You can change this later in Settings.
+              </p>
+            </div>
+
+            <div className="flex flex-col gap-3 mb-6">
+              {/* In-Repo card */}
+              <button
+                aria-pressed={selectedMode === 'in-repo'}
+                onClick={() => { setSelectedMode('in-repo'); setModeError(null); }}
+                className={`rounded-2xl border p-4 text-left transition-all ${
+                  selectedMode === 'in-repo'
+                    ? 'border-primary bg-primary/10'
+                    : 'border-gray-200 bg-white hover:border-primary/50 dark:border-white/10 dark:bg-white/5'
+                }`}
+              >
+                <div className="flex items-center gap-3 mb-2">
+                  <HardDrive className={`h-5 w-5 shrink-0 ${selectedMode === 'in-repo' ? 'text-primary' : 'text-gray-400'}`} />
+                  <span className={`font-semibold text-sm ${selectedMode === 'in-repo' ? 'text-primary' : 'text-gray-900 dark:text-white'}`}>
+                    In-Repo
+                    <span className="ml-2 text-xs font-normal opacity-60">(default)</span>
+                  </span>
+                </div>
+                <ul className="ml-8 space-y-1 text-xs text-gray-500 dark:text-gray-400 list-disc list-inside">
+                  <li>Tickets live in <code className="rounded bg-gray-100 px-1 dark:bg-white/10">.flux/</code> alongside your code</li>
+                  <li>No extra git setup — works out of the box</li>
+                  <li>Ticket history appears in your code commits</li>
+                </ul>
+                <p className="ml-8 mt-2 text-xs text-gray-400 dark:text-gray-500">
+                  <strong>Best for:</strong> solo projects or teams that don't mind tickets in git history
+                </p>
+              </button>
+
+              {/* Git Sync / Orphan card */}
+              <button
+                aria-pressed={selectedMode === 'orphan'}
+                onClick={() => { setSelectedMode('orphan'); setModeError(null); }}
+                className={`rounded-2xl border p-4 text-left transition-all ${
+                  selectedMode === 'orphan'
+                    ? 'border-primary bg-primary/10'
+                    : 'border-gray-200 bg-white hover:border-primary/50 dark:border-white/10 dark:bg-white/5'
+                }`}
+              >
+                <div className="flex items-center gap-3 mb-2">
+                  <GitBranch className={`h-5 w-5 shrink-0 ${selectedMode === 'orphan' ? 'text-primary' : 'text-gray-400'}`} />
+                  <span className={`font-semibold text-sm ${selectedMode === 'orphan' ? 'text-primary' : 'text-gray-900 dark:text-white'}`}>
+                    Git Sync
+                  </span>
+                </div>
+                <ul className="ml-8 space-y-1 text-xs text-gray-500 dark:text-gray-400 list-disc list-inside">
+                  <li>Tickets live on a separate <code className="rounded bg-gray-100 px-1 dark:bg-white/10">flux-data</code> orphan branch</li>
+                  <li>Never touches your main commit graph</li>
+                  <li>Sync across machines via <code className="rounded bg-gray-100 px-1 dark:bg-white/10">git push/pull</code></li>
+                  <li>Requires a git repo with a remote</li>
+                </ul>
+                <p className="ml-8 mt-2 text-xs text-gray-400 dark:text-gray-500">
+                  <strong>Best for:</strong> teams or multi-machine workflows that want clean history
+                </p>
+              </button>
+            </div>
+
+            {modeError && (
+              <div className="mb-4 flex flex-col gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span>{modeError}</span>
+                </div>
+                <button
+                  onClick={() => { setSelectedMode('in-repo'); setModeError(null); setStep(3); }}
+                  className="self-start ml-6 text-xs underline underline-offset-2 hover:no-underline"
+                >
+                  Switch to In-Repo and continue
+                </button>
+              </div>
+            )}
+
+            <button
+              onClick={handleModeConfirm}
+              disabled={modeLoading}
+              className="flex h-11 w-full items-center justify-center gap-2 rounded-2xl bg-primary px-6 text-sm font-semibold text-white shadow-sm transition-all hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {modeLoading ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Setting up Git Sync…
+                </>
+              ) : (
+                'Continue →'
+              )}
+            </button>
+          </div>
+        )}
+
+        {step === 3 && (
+          <div>
+            <div className="mb-8 flex flex-col items-center gap-3 text-center">
+              <div className="flex items-center justify-center rounded-2xl bg-primary/10 p-4">
                 <Terminal className="h-8 w-8 text-primary" />
               </div>
               <h1 className="text-2xl font-bold tracking-tight text-gray-900 dark:text-white">
@@ -274,7 +402,7 @@ export function OnboardingWizard() {
             </div>
 
             <button
-              onClick={() => setStep(3)}
+              onClick={() => setStep(4)}
               className="flex h-11 w-full items-center justify-center rounded-2xl bg-primary px-6 text-sm font-semibold text-white shadow-sm transition-all hover:bg-primary-hover"
             >
               Continue →
@@ -282,7 +410,7 @@ export function OnboardingWizard() {
           </div>
         )}
 
-        {step === 3 && (
+        {step === 4 && (
           <div>
             <div className="mb-8 flex flex-col items-center gap-3 text-center">
               <div className="flex items-center justify-center rounded-2xl bg-primary/10 p-4">
@@ -337,7 +465,7 @@ export function OnboardingWizard() {
               )}
               {installDone && (
                 <button
-                  onClick={() => setStep(4)}
+                  onClick={() => setStep(5)}
                   className="flex h-11 items-center justify-center rounded-2xl bg-primary px-6 text-sm font-semibold text-white shadow-sm transition-all hover:bg-primary-hover"
                 >
                   Continue →
@@ -347,7 +475,7 @@ export function OnboardingWizard() {
           </div>
         )}
 
-        {step === 4 && (
+        {step === 5 && (
           <div>
             <div className="mb-8 flex flex-col items-center gap-3 text-center">
               <div className="flex items-center justify-center rounded-2xl bg-primary/10 p-4">
@@ -429,7 +557,7 @@ export function OnboardingWizard() {
             )}
 
             <button
-              onClick={() => setStep(5)}
+              onClick={() => setStep(6)}
               className="mt-3 flex h-11 w-full items-center justify-center rounded-2xl border border-gray-200 bg-white px-6 text-sm font-medium text-gray-700 shadow-sm transition-all hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
             >
               {pathDone ? 'Continue →' : 'Skip'}
@@ -437,7 +565,7 @@ export function OnboardingWizard() {
           </div>
         )}
 
-        {step === 5 && (
+        {step === 6 && (
           <div>
             <div className="mb-8 flex flex-col items-center gap-3 text-center">
               <div className="flex items-center justify-center rounded-2xl bg-primary/10 p-4">
@@ -459,7 +587,7 @@ export function OnboardingWizard() {
                 Open the docs
               </button>
               <button
-                onClick={() => setStep(6)}
+                onClick={() => setStep(7)}
                 className="flex h-11 items-center justify-center rounded-2xl border border-gray-200 bg-white px-6 text-sm font-medium text-gray-700 shadow-sm transition-all hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
               >
                 I'll check later
@@ -468,7 +596,7 @@ export function OnboardingWizard() {
           </div>
         )}
 
-        {step === 6 && (
+        {step === 7 && (
           <div>
             <div className="mb-8 flex flex-col items-center gap-3 text-center">
               <div className="flex items-center justify-center rounded-2xl bg-primary/10 p-4">
