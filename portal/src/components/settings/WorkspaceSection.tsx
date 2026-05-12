@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import type { UserDef, DocsEditPermissions } from '../../types';
 import { SimpleEditor } from './shared';
-import { setWorkspace as apiSetWorkspace, pickWorkspaceFolder } from '../../api';
+import { setWorkspace as apiSetWorkspace, pickWorkspaceFolder, fetchStorageMode, migrateStorage, restoreStorage } from '../../api';
 
 interface WorkspaceSectionProps {
   users: UserDef[];
@@ -36,6 +36,15 @@ export function WorkspaceSection({
   const [workspaceSwitchError, setWorkspaceSwitchError] = useState<string | null>(null);
   const [workspaceSwitching, setWorkspaceSwitching] = useState(false);
   const [workspacePicking, setWorkspacePicking] = useState(false);
+
+  const [storageMode, setStorageMode] = useState<'in-repo' | 'orphan' | null>(null);
+  const [storageBusy, setStorageBusy] = useState(false);
+  const [storageError, setStorageError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!workspacePath) return;
+    fetchStorageMode().then((r) => setStorageMode(r.mode)).catch(() => setStorageMode('in-repo'));
+  }, [workspacePath]);
 
   return (
     <div className="grid grid-cols-2 gap-10">
@@ -92,6 +101,75 @@ export function WorkspaceSection({
           <p className="mt-2 text-xs text-red-500">{workspaceSwitchError}</p>
         )}
       </div>
+
+      {workspacePath && (
+        <div className="col-span-2 rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
+          <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Storage Mode</h3>
+          <p className="text-xs text-gray-500 mb-4">
+            Tickets live in <code className="font-mono bg-gray-100 dark:bg-white/10 px-1 rounded">.flux/</code> by default.
+            Enable Git Sync to move them to an orphan <code className="font-mono bg-gray-100 dark:bg-white/10 px-1 rounded">flux-data</code> branch,
+            keeping ticket history off your main branch and enabling multi-machine sync.
+          </p>
+          <div className="flex items-center gap-4 flex-wrap">
+            <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${
+              storageMode === 'orphan'
+                ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                : 'bg-gray-100 text-gray-600 dark:bg-white/10 dark:text-gray-300'
+            }`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${storageMode === 'orphan' ? 'bg-green-500' : 'bg-gray-400'}`} />
+              {storageMode === null ? 'Loading…' : storageMode === 'orphan' ? 'Git Sync (orphan branch)' : 'In-Repo (.flux/)'}
+            </span>
+            {storageMode === 'in-repo' && (
+              <button
+                disabled={storageBusy}
+                onClick={async () => {
+                  setStorageError(null);
+                  setStorageBusy(true);
+                  try {
+                    const result = await migrateStorage();
+                    setStorageMode(result.mode as 'in-repo' | 'orphan');
+                  } catch (err: any) {
+                    setStorageError(err.message);
+                  } finally {
+                    setStorageBusy(false);
+                  }
+                }}
+                className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {storageBusy ? 'Migrating…' : 'Enable Git Sync'}
+              </button>
+            )}
+            {storageMode === 'orphan' && (
+              <button
+                disabled={storageBusy}
+                onClick={async () => {
+                  setStorageError(null);
+                  setStorageBusy(true);
+                  try {
+                    const result = await restoreStorage();
+                    setStorageMode(result.mode as 'in-repo' | 'orphan');
+                  } catch (err: any) {
+                    setStorageError(err.message);
+                  } finally {
+                    setStorageBusy(false);
+                  }
+                }}
+                className="rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/5 px-4 py-2 text-sm font-semibold text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/10 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {storageBusy ? 'Restoring…' : 'Restore to In-Repo'}
+              </button>
+            )}
+          </div>
+          {storageError && (
+            <p className="mt-2 text-xs text-red-500">{storageError}</p>
+          )}
+          {storageMode === 'orphan' && (
+            <p className="mt-3 text-xs text-gray-500">
+              Changes are auto-committed and pushed to <code className="font-mono bg-gray-100 dark:bg-white/10 px-1 rounded">flux-data</code> after 30 seconds of inactivity.
+            </p>
+          )}
+        </div>
+      )}
 
       <div>
         <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Users & Agents</h3>

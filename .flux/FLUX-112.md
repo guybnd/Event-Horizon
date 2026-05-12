@@ -13,14 +13,28 @@ history:
   - type: activity
     user: Guy
     date: '2026-05-08T00:22:50.913Z'
+    comment: Created ticket.
+  - type: activity
+    user: Guy
+    date: '2026-05-08T00:22:50.913Z'
     comment: >-
       Captured from FLUX-106 review comment. When a ticket reaches Ready, in
       addition to showing the prompt inside the ticket modal, allow the Ready
       prompt to surface as a distinct popup outside the ticket — triggered from
       a notification ticker. Logged here for grooming.
+  - type: status_change
+    from: Todo
+    to: Grooming
+    user: Guy
+    date: '2026-05-11T05:58:54.572Z'
+  - type: status_change
+    from: Grooming
+    to: Todo
+    user: Guy
+    date: '2026-05-11T05:58:58.230Z'
 createdBy: Guy
 updatedBy: Guy
-id: FLUX-112
+order: 160
 ---
 
 ## Summary

@@ -55,17 +55,98 @@ history:
     user: Agent
     date: '2026-05-11T05:56:16.480Z'
     comment: Claude Code session ended with code 0.
+  - type: activity
+    user: Agent
+    date: '2026-05-11T05:58:03.297Z'
+    comment: Launched Claude Code session (99f36c9e).
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-11T05:58:19.204Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-11T05:58:19.205Z'
+    comment: >-
+      Starting implementation: add scrollerRef and savedScrollRef to Board.tsx,
+      save scrollLeft on dragStart, restore via requestAnimationFrame in
+      handleDragEnd.
+    id: c-2026-05-11t05-58-19-205z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-11T05:58:40.452Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-11T05:58:40.453Z'
+    comment: >-
+      Implementation complete. Added scrollerRef (attached to the
+      overflow-x-auto columns wrapper) and savedScrollRef to Board.tsx.
+      handleDragStart saves scrollLeft; handleDragEnd schedules a
+      requestAnimationFrame to restore it after dnd-kit finishes its post-drag
+      cleanup. Only Board.tsx changed.
+    id: c-2026-05-11t05-58-40-453z
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-11T05:58:43.533Z'
+    comment: >-
+      Done. The fix is in `portal/src/components/Board.tsx`:
+
+
+      - `scrollerRef` attached to the `overflow-x-auto` columns wrapper
+
+      - `savedScrollRef` captures `scrollLeft` in `handleDragStart`
+
+      - `handleDragEnd` restores it via `requestAnimationFrame` so it runs after
+      dnd-kit's post-drag scroll cleanup
+
+
+      Ticket is now in **Ready** — say `finish FLUX-193` when you're ready to
+      commit.
+  - type: activity
+    user: Agent
+    date: '2026-05-11T05:58:43.537Z'
+    comment: Claude Code session ended with code 0.
+  - type: activity
+    user: Agent
+    date: '2026-05-11T06:04:01.861Z'
+    comment: Launched Claude Code session (db5be20e).
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-11T06:04:27.854Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-11T06:04:27.855Z'
+    comment: >-
+      Closed. Commit 49842f2: added scrollerRef + savedScrollRef to Board.tsx.
+      handleDragStart saves scrollLeft; handleDragEnd schedules a
+      requestAnimationFrame to restore it after dnd-kit finishes post-drag
+      cleanup. Only Board.tsx changed.
+    id: c-2026-05-11t06-04-27-855z
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-11T06:04:37.018Z'
+    comment: >-
+      Done. Commit `49842f2` staged only `portal/src/components/Board.tsx` and
+      FLUX-193 is now `Done`.
+  - type: activity
+    user: Agent
+    date: '2026-05-11T06:04:37.026Z'
+    comment: Claude Code session ended with code 0.
 title: dragging ticket between column resets the view
-status: Todo
+status: Done
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
-  inputTokens: 1007853
-  outputTokens: 15575
-  costUSD: 0.655407
+  inputTokens: 1351731
+  outputTokens: 17928
+  costUSD: 0.908187
   costIsEstimated: false
-  cacheReadTokens: 973154
-  cacheCreationTokens: 33756
+  cacheReadTokens: 1284437
+  cacheCreationTokens: 66333
 ---
 ## Problem
 

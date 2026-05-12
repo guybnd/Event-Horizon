@@ -21,6 +21,8 @@ import skillRouter from './routes/skill.js';
 import statsRouter from './routes/stats.js';
 import readStateRouter from './routes/read-state.js';
 import eventsRouter from './routes/events.js';
+import storageRouter from './routes/storage.js';
+import { startSyncWatcher } from './sync-watcher.js';
 
 const app = express();
 app.use(cors());
@@ -39,6 +41,7 @@ app.use('/api/skill', requireWorkspace, skillRouter);
 app.use('/api/stats', requireWorkspace, statsRouter);
 app.use('/api/read-state', requireWorkspace, readStateRouter);
 app.use('/api/events', eventsRouter);
+app.use('/api/storage', requireWorkspace, storageRouter);
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', workspace: workspaceRoot });
@@ -198,6 +201,7 @@ async function startServer() {
 
     if (initial && existsSync(path.join(initial, '.flux'))) {
       await activateWorkspace(initial);
+      startSyncWatcher();
     } else if (initial) {
       console.warn(`Saved workspace not found: ${initial} — open the portal to select a folder.`);
     } else {

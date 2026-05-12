@@ -10,8 +10,15 @@ export function setWorkspaceRoot(root: string) {
 }
 
 export function getFluxDir() { return path.join(workspaceRoot!, '.flux'); }
-export function getConfigFile() { return path.join(getFluxDir(), 'config.json'); }
-export function getTaskAssetsDir() { return path.join(getFluxDir(), 'assets'); }
+export function getFluxStoreDir() { return path.join(workspaceRoot!, '.flux-store'); }
+export function isOrphanMode() { return existsSync(getFluxStoreDir()); }
+export function getActiveFluxDir() { return isOrphanMode() ? getFluxStoreDir() : getFluxDir(); }
+export function getConfigFile() {
+  const storeConfig = path.join(getFluxStoreDir(), 'config.json');
+  if (isOrphanMode() && existsSync(storeConfig)) return storeConfig;
+  return path.join(getFluxDir(), 'config.json');
+}
+export function getTaskAssetsDir() { return path.join(getActiveFluxDir(), 'assets'); }
 export function getReadStateFile() { return path.join(getFluxDir(), 'read-state.json'); }
 
 const APP_SETTINGS_DIR = path.join(os.homedir(), '.event-horizon');

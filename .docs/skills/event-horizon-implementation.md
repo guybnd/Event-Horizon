@@ -67,6 +67,23 @@ The engine watcher will emit a `[FLUX VALIDATION ERROR]` to the terminal if a `.
 - URL/view state is coordinated through `portal/src/AppContext.tsx`.
 - Installer logic lives in `engine/src/workflow-installer.ts` and `engine/src/skill-installer.ts`.
 
+## Storage Mode Awareness
+
+The engine supports two storage modes. Mode is detected at runtime — never assume in-repo mode.
+
+| Mode | Ticket files location | How to detect |
+|------|-----------------------|---------------|
+| **In-repo** (default) | `.flux/*.md` | `.flux-store/` worktree does **not** exist |
+| **Orphan branch** (opt-in) | `.flux-store/*.md` | `.flux-store/` worktree exists |
+
+Key facts for implementation work:
+- `engine/src/workspace.ts` exports `isOrphanMode()` and `getActiveFluxDir()` — use these instead of hardcoding `.flux/` paths when writing engine code that reads or writes ticket files.
+- The `patch-ticket` CLI already resolves the active flux dir automatically — no change needed there.
+- When editing ticket files directly (body-only writes), target `getActiveFluxDir()`, not `getFluxDir()`.
+- `engine/src/storage-sync.ts` owns migration logic (`migrateToOrphan`, `restoreToInRepo`, `attachWorktreeIfPresent`).
+- `engine/src/sync-watcher.ts` auto-commits `.flux-store/` changes to the `flux-data` branch with a 30s debounce.
+- The Settings UI Storage Mode card lives in `portal/src/components/settings/WorkspaceSection.tsx`.
+
 ## Commit Guidance
 
 - Prefer one focused commit per completed ticket or tightly related ticket slice.

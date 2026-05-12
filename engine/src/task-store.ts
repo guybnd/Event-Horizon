@@ -2,7 +2,8 @@ import fs from 'fs/promises';
 import path from 'path';
 import matter from 'gray-matter';
 import chokidar from 'chokidar';
-import { getFluxDir, getTaskAssetsDir, setWorkspaceRoot } from './workspace.js';
+import { getFluxDir, getActiveFluxDir, getTaskAssetsDir, setWorkspaceRoot } from './workspace.js';
+import { attachWorktreeIfPresent } from './storage-sync.js';
 import { configCache, loadConfig, autoRegisterUnknownTags } from './config.js';
 import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate } from './history.js';
 import { getCliSessionSummaryForTask } from './session-store.js';
@@ -262,10 +263,11 @@ export async function initDir() {
   }
   await loadConfig();
   await loadPricingDoc();
-  const fluxFiles = await fs.readdir(getFluxDir()).catch(() => [] as string[]);
+  const activeDir = getActiveFluxDir();
+  const fluxFiles = await fs.readdir(activeDir).catch(() => [] as string[]);
   for (const name of fluxFiles) {
-    if (isTopLevelTaskFile(path.join(getFluxDir(), name))) {
-      await loadTask(path.join(getFluxDir(), name));
+    if (isTopLevelTaskFile(path.join(activeDir, name))) {
+      await loadTask(path.join(activeDir, name));
     }
   }
 }
@@ -277,7 +279,7 @@ export async function startWatchers() {
   if (activeFluxWatcher) { await activeFluxWatcher.close(); activeFluxWatcher = null; }
   if (activeDocsWatcher) { await activeDocsWatcher.close(); activeDocsWatcher = null; }
 
-  const fluxDir = getFluxDir();
+  const fluxDir = getActiveFluxDir();
   const configFile = path.join(fluxDir, 'config.json');
 
   activeFluxWatcher = chokidar.watch(fluxDir, {
@@ -329,6 +331,7 @@ export async function activateWorkspace(newRoot: string) {
   tasksCache = {};
   docsCache = {};
   console.log(`Workspace: ${newRoot}`);
+  await attachWorktreeIfPresent(newRoot);
   await initDir();
   await startWatchers();
 }

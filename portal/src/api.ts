@@ -287,3 +287,27 @@ export async function stopTaskCliSession(taskId: string): Promise<CliSessionSumm
   const payload = await res.json();
   return payload.session;
 }
+
+export async function fetchStorageMode(): Promise<{ mode: 'in-repo' | 'orphan' }> {
+  const res = await fetch(`${API_URL}/storage/mode`);
+  if (!res.ok) throw new Error('Failed to fetch storage mode');
+  return res.json();
+}
+
+export async function migrateStorage(): Promise<{ ok: boolean; mode: string }> {
+  const res = await fetch(`${API_URL}/storage/migrate`, { method: 'POST' });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Migration failed');
+  }
+  return res.json();
+}
+
+export async function restoreStorage(): Promise<{ ok: boolean; mode: string }> {
+  const res = await fetch(`${API_URL}/storage/restore`, { method: 'POST' });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Restore failed');
+  }
+  return res.json();
+}
