@@ -37,7 +37,6 @@ export function Board() {
   } = useApp();
 
   const scrollerRef = useRef<HTMLDivElement>(null);
-  const savedScrollRef = useRef<number>(0);
 
   const [pendingStatusChange, setPendingStatusChange] = useState<{taskId: string, newStatus: string, oldStatus: string} | null>(null);
   const [commentText, setCommentText] = useState('');
@@ -115,16 +114,11 @@ export function Board() {
     const { active } = event;
     const task = tasks.find(t => t.id === active.id);
     if (task) setActiveTask(task);
-    savedScrollRef.current = scrollerRef.current?.scrollLeft ?? 0;
   };
 
   const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
     setActiveTask(null);
-    const savedScroll = savedScrollRef.current;
-    requestAnimationFrame(() => {
-      if (scrollerRef.current) scrollerRef.current.scrollLeft = savedScroll;
-    });
     if (!over) return;
 
     const activeTaskId = active.id as string;

@@ -1,10 +1,19 @@
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { configCache } from '../config.js';
 import { buildActivityEntry, buildCommentEntry, buildAgentMessageEntry } from '../history.js';
 import { updateTaskWithHistory, tasksCache, estimateCostUSD } from '../task-store.js';
 import { cliSessionsById, cliSessionIdByTaskId } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
+
+function checkBinaryInstalled(binaryName: string): void {
+  const checkCmd = process.platform === 'win32' ? `where ${binaryName}` : `which ${binaryName}`;
+  try {
+    execSync(checkCmd, { stdio: 'ignore' });
+  } catch {
+    throw new Error(`"${binaryName}" is not installed or not on PATH. Please install it before starting an agent session.`);
+  }
+}
 
 // Effort levels accepted by the --effort CLI flag, in ascending order.
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -229,6 +238,8 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   const label = session.label;
   const id = session.taskId;
 
+  checkBinaryInstalled(binaryName);
+
   const claudeIntegration = (configCache as any).integrations?.claudeCode;
   const groomingStatuses = [(configCache as any).requireInputStatus || 'Require Input', 'Grooming'];
   const selectedModel = claudeIntegration && framework === 'claude'
@@ -362,6 +373,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 export async function sendCliSessionInput(session: CliSessionRecord, message: string, user: string, workspaceRoot: string) {
   const id = session.taskId;
   const binaryName = session.command;
+
+  checkBinaryInstalled(binaryName);
 
   const inputAt = new Date().toISOString();
   session.lastInputAt = inputAt;
