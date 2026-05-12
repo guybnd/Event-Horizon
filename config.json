@@ -240,7 +240,7 @@
   "docsRoot": ".docs",
   "hoverPopupsEnabled": true,
   "hoverPopupDelay": 450,
-  "tokenDisplayMode": "cost",
+  "tokenDisplayMode": "tokens",
   "tokenCostThresholds": {
     "green": 0.4,
     "yellow": 0.85
