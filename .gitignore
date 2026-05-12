@@ -13,3 +13,4 @@ releases/
 .flux/*.md
 .flux/config.json
 .flux/assets/
+.flux/read-state.json
