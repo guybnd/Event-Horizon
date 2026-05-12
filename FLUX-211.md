@@ -119,6 +119,26 @@ history:
 
 
       No new TypeScript errors introduced.
+  - type: comment
+    user: Agent
+    date: '2026-05-12T03:47:59.989Z'
+    comment: >-
+      Fixed all three issues from the code review:
+
+
+      1. OnboardingWizard.tsx:186 — updated copy to mention both .flux/ and
+      .flux-store/ directories
+
+      2. patch-ticket.ts:93 — removed duplicate existsSync call in
+      loadRequireInputStatus; now uses the already-computed fluxSubdir
+      module-level variable
+
+      3. WorkspaceSection.tsx:174 — gated the Sync Timing inputs block on
+      storageMode === 'orphan' so they only appear when sync is actually active
+
+
+      Portal TypeScript compiles clean. Engine errors are pre-existing in
+      claude-code.ts, unrelated to this ticket.
 title: do a pass after the git sync feature
 status: Ready
 createdBy: Guy
