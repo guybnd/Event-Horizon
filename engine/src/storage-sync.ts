@@ -85,7 +85,7 @@ export async function migrateToOrphan(workspaceRoot: string): Promise<void> {
   const existing = await fs.readFile(gitignorePath, 'utf-8').catch(() => '');
   const marker = '# flux-data orphan mode';
   if (!existing.includes(marker)) {
-    const addition = `\n${marker}\n.flux/*.md\n.flux/config.json\n.flux/assets/\n.flux/read-state.json\n`;
+    const addition = `\n${marker}\n.flux/*.md\n.flux/config.json\n.flux/assets/\n.flux/read-state.json\n.flux-store/\n`;
     await fs.writeFile(gitignorePath, existing + addition, 'utf-8');
   }
 }
@@ -143,7 +143,7 @@ export async function restoreToInRepo(workspaceRoot: string): Promise<void> {
   try {
     const content = await fs.readFile(gitignorePath, 'utf-8');
     const normalized = content.replace(/\r\n/g, '\n');
-    const section = `\n# flux-data orphan mode\n.flux/*.md\n.flux/config.json\n.flux/assets/\n.flux/read-state.json\n`;
+    const section = `\n# flux-data orphan mode\n.flux/*.md\n.flux/config.json\n.flux/assets/\n.flux/read-state.json\n.flux-store/\n`;
     const cleaned = normalized.split(section).join('');
     await fs.writeFile(gitignorePath, cleaned, 'utf-8');
   } catch {
