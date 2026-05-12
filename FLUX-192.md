@@ -75,8 +75,17 @@ history:
     user: Agent
     date: '2026-05-12T09:53:16.015Z'
     comment: Claude Code session ended with code 0.
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Agent
+    date: '2026-05-12T10:22:26.915Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-12T10:22:27.112Z'
+    comment: Launched Claude Code session (96dc780b).
 title: dragging ticket between column resets the view
-status: Ready
+status: In Progress
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
