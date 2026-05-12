@@ -67,9 +67,9 @@ Load this skill when a ticket's status is `Grooming` or `Require Input`.
 These are two distinct operations that must not be confused:
 
 - **Text output to the user** — what you write as a chat/response message. This may be visible in the session panel but is NOT saved to the ticket body.
-- **Ticket body update** — an explicit API call (`PUT /api/tasks/:id` with a `body` field). This is the only operation that rewrites the plan into the ticket.
+- **Ticket body update** — use `patch-ticket` with `--body "..."` or `--body-file <path>`, or a `PUT /api/tasks/:id` API call with a `body` field. These are the only operations that rewrite the plan into the ticket.
 
-Both must happen during grooming, but they are separate steps. Sending a chat message about the plan does not update the ticket body.
+Both must happen during grooming, but they are separate steps. Sending a chat message about the plan does not update the ticket body. Moving the ticket to `Todo` with `patch-ticket --status` does not update the body either — body and status are separate flags and must both be passed explicitly.
 
 ## Comment Conventions for Grooming
 

@@ -44,6 +44,8 @@ npm run patch-ticket -- <id> --status "In Progress"
 npm run patch-ticket -- <id> --comment "your message here"
 npm run patch-ticket -- <id> --status "Ready" --comment "implementation complete"
 npm run patch-ticket -- <id> --assignee "Agent" --priority "High" --effort "M"
+npm run patch-ticket -- <id> --body "## Plan\n\nFull markdown plan here."
+npm run patch-ticket -- <id> --body-file /tmp/plan.md
 ```
 
 Or from the repo root (no `cd` required):
@@ -52,7 +54,7 @@ Or from the repo root (no `cd` required):
 npx tsx engine/src/patch-ticket.ts <id> --workspace . --status "In Progress"
 ```
 
-Direct file edits are only acceptable for the ticket **body** (the markdown content below the frontmatter `---` block), since that does not involve YAML.
+Use `--body` or `--body-file` to update the ticket body (the markdown plan below the frontmatter). Do not edit the `.flux/*.md` file directly even for body-only changes — use `patch-ticket` so the write is atomic and safe.
 
 The engine watcher will emit a `[FLUX VALIDATION ERROR]` to the terminal if a `.flux/*.md` file has invalid frontmatter — watch for this and use `patch-ticket` to correct it.
 

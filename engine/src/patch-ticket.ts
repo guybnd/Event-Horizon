@@ -14,6 +14,8 @@
  *   --assignee <value>   Set the assignee field
  *   --priority <value>   Set the priority field
  *   --effort <value>     Set the effort field
+ *   --body <text>        Replace the ticket body (markdown below frontmatter)
+ *   --body-file <path>   Replace the ticket body from a file
  *   --workspace <path>   Workspace root (default: cwd)
  */
 
@@ -27,7 +29,7 @@ function parseArgs(argv: string[]) {
   const args = argv.slice(2);
   const id = args.find(a => !a.startsWith('--'));
   if (!id) {
-    console.error('Usage: patch-ticket <id> [--status <value>] [--comment <text>] [--assignee <value>] [--priority <value>] [--effort <value>] [--workspace <path>]');
+    console.error('Usage: patch-ticket <id> [--status <value>] [--comment <text>] [--assignee <value>] [--priority <value>] [--effort <value>] [--body <text>] [--body-file <path>] [--workspace <path>]');
     process.exit(1);
   }
 
@@ -43,6 +45,8 @@ function parseArgs(argv: string[]) {
     assignee: flag('assignee'),
     priority: flag('priority'),
     effort: flag('effort'),
+    body: flag('body'),
+    bodyFile: flag('body-file'),
     workspace: flag('workspace') ?? process.cwd(),
   };
 }
@@ -140,8 +144,21 @@ if (opts.comment !== undefined) {
 fm['history'] = history;
 fm['updatedBy'] = 'Agent';
 
+// Resolve the new body content (inline flag takes precedence over file)
+let nextBody = parsed.content;
+if (opts.body !== undefined) {
+  nextBody = opts.body;
+} else if (opts.bodyFile !== undefined) {
+  try {
+    nextBody = fs.readFileSync(path.resolve(opts.bodyFile), 'utf-8');
+  } catch (err) {
+    console.error(`patch-ticket: failed to read body file ${opts.bodyFile}:`, err);
+    process.exit(1);
+  }
+}
+
 try {
-  const output = matter.stringify(parsed.content, fm);
+  const output = matter.stringify(nextBody, fm);
   fs.writeFileSync(ticketPath, output, 'utf-8');
   console.log(`Updated ${opts.id}`);
 } catch (err) {
