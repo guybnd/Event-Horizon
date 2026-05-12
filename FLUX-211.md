@@ -160,6 +160,10 @@ history:
     to: Released
     user: Agent
     date: '2026-05-12T07:32:17.154Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-12T09:02:39.829Z'
+    comment: Moved to Released under v0.4.0.
 title: do a pass after the git sync feature
 status: Released
 createdBy: Guy

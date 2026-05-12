@@ -55,13 +55,3 @@ releaseDocPath: release-notes/0.2.0
 ---
 
 Typing into the "reason for return" textarea in the Ready prompt is heavily laggy.
-
-      ```
-    id: c-2026-05-08t14-52-08-437z
-title: Fix input lag in the reason-for-return field on the Ready prompt
-status: Done
-createdBy: Guy
-updatedBy: Agent
----
-
-Typing into the "reason for return" textarea in the Ready prompt is heavily laggy.

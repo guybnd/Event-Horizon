@@ -47,6 +47,10 @@ history:
     to: Released
     user: Agent
     date: '2026-05-12T07:32:17.155Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-12T09:02:44.179Z'
+    comment: Moved to Released under v0.4.0.
 id: FLUX-212
 version: 0.4.0
 releasedAt: '2026-05-12T07:32:17.155Z'
