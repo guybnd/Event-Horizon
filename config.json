@@ -30,9 +30,6 @@
       "name": "Backlog"
     }
   ],
-  "projects": [
-    "FLUX"
-  ],
   "users": [
     {
       "name": "Guy"
@@ -96,59 +93,59 @@
     },
     {
       "name": "validation",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+      "color": "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
     },
     {
       "name": "agent",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+      "color": "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
     },
     {
       "name": "backend",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+      "color": "bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400"
     },
     {
       "name": "ai",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+      "color": "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
     },
     {
       "name": "portal",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+      "color": "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
     },
     {
       "name": "ui",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+      "color": "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
     },
     {
       "name": "animation",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+      "color": "bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400"
     },
     {
       "name": "config",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+      "color": "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
     },
     {
       "name": "reliability",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+      "color": "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
     },
     {
       "name": "agent-workflow",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+      "color": "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
     },
     {
       "name": "documentation",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+      "color": "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
     },
     {
       "name": "ui-polish",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+      "color": "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
     },
     {
       "name": "settings",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+      "color": "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
     },
     {
       "name": "board",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+      "color": "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
     },
     {
       "name": "skills",
@@ -226,16 +223,29 @@
       "color": "text-gray-400"
     }
   ],
+  "projects": [
+    "FLUX"
+  ],
   "enableBacklogScreen": true,
   "requireCommentOnStatusChange": false,
   "boardCardOpenMode": "full",
   "animationsEnabled": true,
   "enableFireworks": true,
+  "animationSpeed": "normal",
   "requireInputStatus": "Require Input",
   "readyForMergeStatus": "Ready",
   "archiveStatus": "Archived",
   "docsEditPermissions": "all",
   "docsAllowedUsers": [],
+  "docsRoot": ".docs",
+  "hoverPopupsEnabled": true,
+  "hoverPopupDelay": 450,
+  "tokenDisplayMode": "cost",
+  "tokenCostThresholds": {
+    "green": 0.4,
+    "yellow": 0.85
+  },
+  "effortLevel": "high",
   "releaseSettings": {
     "generateDistinctFiles": true,
     "releaseNotesPath": "release-notes"
@@ -246,14 +256,8 @@
       "implementationModel": ""
     }
   },
-  "animationSpeed": "normal",
-  "docsRoot": ".docs",
-  "hoverPopupsEnabled": true,
-  "hoverPopupDelay": 450,
-  "tokenDisplayMode": "cost",
-  "tokenCostThresholds": {
-    "green": 0.2,
-    "yellow": 0.65
-  },
-  "effortLevel": "high"
+  "syncSettings": {
+    "debounceMs": 30000,
+    "maxWaitMs": 300000
+  }
 }
