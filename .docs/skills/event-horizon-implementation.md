@@ -28,8 +28,12 @@ Load this skill when a ticket's status is `Todo` or `In Progress`.
 7. Make small, local changes and validate immediately after the first substantive edit.
 8. Post progress comments when scope changes, validation fails, or the user redirects the work.
 9. If clarification is required during implementation, do not ask only in chat. Leave one explicit question in ticket history and **set `"requireInput": true` in the same `PUT /api/tasks/:id` call** — the engine will atomically transition the ticket to the configured user-input status. Never post a question as a history comment without `"requireInput": true` in the same request. The engine enforces this: a `PUT` that sets status to `Require Input` without a new `comment` entry in `history` is rejected with `REQUIRE_INPUT_MISSING_COMMENT`.
-10. When a ticket enters the configured ready-for-merge status (`readyForMergeStatus` in `.flux/config.json`, default `Ready`), treat it as awaiting user review rather than fully closed work. Keep files uncommitted or on a working branch at this stage.
-11. Before moving a ticket to `Ready` or `Done`, review whether `.docs/`, `README.md`, or `.docs/skills/*.md` should be updated and refresh the relevant docs when behaviour, workflow expectations, or touchpoints changed.
+10. **[HARD GATE] When implementation work is complete, you MUST — before ending the session:**
+    - Review whether `.docs/`, `README.md`, or `.docs/skills/*.md` should be updated and refresh them when behaviour, workflow expectations, or touchpoints changed.
+    - Post a descriptive `comment` to the ticket (using `patch-ticket --comment`) summarising what changed, what was validated, and any follow-up caveats. An `agent_message` auto-logged from the chat session is NOT a substitute for this step.
+    - Move the ticket to `Ready` using `patch-ticket --status "Ready"`. Telling the user in chat that work is done is not a substitute for this transition.
+    - **Never end a session leaving the ticket at `In Progress`** without completing all three sub-steps above.
+11. While a ticket is in the `Ready` status, treat it as awaiting user review — keep files uncommitted or on a working branch.
 12. If the user says `finish FLUX-XX` for a ticket in the ready-for-merge status, stage all relevant files and perform the final ticket-close sequence. The commit creation, recording its hash in `implementationLink`, and the status transition to `Done` must happen simultaneously as one atomic step.
 13. Add a descriptive completion comment that explains what changed, what was validated, any follow-up caveats, and the commit reference when available. Then move the ticket to `Done`.
 
