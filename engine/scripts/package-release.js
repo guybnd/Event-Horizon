@@ -88,8 +88,13 @@ function buildWin() {
   const exeDest = path.join(releasesDir, exeName);
   fs.renameSync(`${tmpBase}.exe`, exeDest);
 
-  console.log(`Win artifact → releases/${exeName}`);
-  return exeDest;
+  const zipName = `event-horizon-win-${version}.zip`;
+  const zipPath = path.join(releasesDir, zipName);
+  execFileSync('zip', ['-j', zipPath, exeDest], { stdio: 'inherit' });
+  fs.rmSync(exeDest, { force: true });
+
+  console.log(`Win artifact → releases/${zipName}`);
+  return zipPath;
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
