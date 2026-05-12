@@ -139,8 +139,24 @@ history:
 
       Portal TypeScript compiles clean. Engine errors are pre-existing in
       claude-code.ts, unrelated to this ticket.
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-12T03:56:48.021Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-12T03:56:48.022Z'
+    comment: >-
+      Implementation complete. Commit 6999ead covers all six fixes:
+      getActiveFluxDir() in routes/tasks.ts, isValidWorkspaceRoot() helper in
+      index.ts, orphan-mode path detection in patch-ticket.ts, --workspace flag
+      and orphan detection in release.ts, dynamic basename in task-store.ts
+      chokidar filter, and updated portal copy in
+      WorkspaceSelector/OnboardingWizard/WorkspaceSection. implementationLink:
+      6999ead
 title: do a pass after the git sync feature
-status: Ready
+status: Done
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
