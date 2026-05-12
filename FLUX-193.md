@@ -140,7 +140,7 @@ history:
     from: Done
     to: Released
     user: Agent
-    date: '2026-05-12T07:32:17.151Z'
+    date: '2026-05-12T09:17:16.559Z'
 title: dragging ticket between column resets the view
 status: Released
 createdBy: Guy
@@ -153,8 +153,6 @@ tokenMetadata:
   cacheReadTokens: 1284437
   cacheCreationTokens: 66333
 version: 0.4.0
-releasedAt: '2026-05-12T07:32:17.151Z'
-releaseDocPath: release-notes/0.4.0
 ---
 ## Problem
 

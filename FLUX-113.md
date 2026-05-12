@@ -450,8 +450,8 @@ history:
   - type: status_change
     from: Done
     to: Released
-    user: Agent
-    date: '2026-05-12T07:32:17.147Z'
+    user: Guy
+    date: '2026-05-12T09:17:16.449Z'
 order: 1
 tokenMetadata:
   inputTokens: 735857
@@ -461,8 +461,6 @@ tokenMetadata:
   cacheReadTokens: 587483
   cacheCreationTokens: 136777
 version: 0.4.0
-releasedAt: '2026-05-12T07:32:17.147Z'
-releaseDocPath: release-notes/0.4.0
 ---
 ## Plan
 

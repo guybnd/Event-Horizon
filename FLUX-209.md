@@ -663,8 +663,8 @@ history:
   - type: status_change
     from: Done
     to: Released
-    user: Agent
-    date: '2026-05-12T07:32:17.151Z'
+    user: Guy
+    date: '2026-05-12T09:17:16.605Z'
 implementationLink: ''
 subtasks: []
 tokenMetadata:
@@ -676,8 +676,6 @@ tokenMetadata:
   cacheCreationTokens: 301123
 order: 2
 version: 0.4.0
-releasedAt: '2026-05-12T07:32:17.151Z'
-releaseDocPath: release-notes/0.4.0
 ---
 ## Overview
 

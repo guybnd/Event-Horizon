@@ -1,5 +1,4 @@
 ---
-id: FLUX-210
 priority: Low
 effort: XS
 assignee: Agent
@@ -19,11 +18,9 @@ history:
   - type: status_change
     from: Done
     to: Released
-    user: Agent
-    date: '2026-05-12T07:32:17.153Z'
+    user: Unknown
+    date: '2026-05-12T09:17:16.654Z'
 version: 0.4.0
-releasedAt: '2026-05-12T07:32:17.153Z'
-releaseDocPath: release-notes/0.4.0
 ---
 ## Summary
 

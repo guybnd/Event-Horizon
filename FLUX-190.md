@@ -208,7 +208,7 @@ history:
     from: Done
     to: Released
     user: Agent
-    date: '2026-05-12T07:32:17.150Z'
+    date: '2026-05-12T09:17:16.512Z'
 title: do release 0.3.1
 status: Released
 createdBy: Guy
@@ -222,8 +222,6 @@ tokenMetadata:
   cacheCreationTokens: 67656
 order: 0
 version: 0.4.0
-releasedAt: '2026-05-12T07:32:17.150Z'
-releaseDocPath: release-notes/0.4.0
 ---
 ## Release v0.3.1
 
