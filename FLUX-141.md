@@ -1,0 +1,99 @@
+---
+assignee: unassigned
+tags: []
+priority: Low
+effort: XS
+implementationLink: 835253c
+subtasks: []
+history:
+  - type: activity
+    user: Guy
+    date: '2026-05-08T14:24:25.573Z'
+    comment: Created ticket.
+  - type: activity
+    user: Agent
+    date: '2026-05-08T14:24:28.149Z'
+    comment: Launched Claude Code session (7372896f).
+  - type: comment
+    user: Agent
+    date: '2026-05-09T00:00:00.000Z'
+    comment: >-
+      Fixed in `portal/src/components/ContextMenu.tsx`. The `handleLaunchAgent`
+      handler was calling both `startTaskCliSession` and
+      `openTaskFullView`/`openTaskModal`, causing the ticket page to open
+      alongside the agent launch. Removed the page-open calls — "Launch Agent"
+      now only starts the session and closes the menu.
+    id: c-2026-05-09t00-00-00-000z
+  - type: status_change
+    from: Grooming
+    to: Ready
+    user: Agent
+    date: '2026-05-09T00:00:01.000Z'
+  - type: comment
+    user: Claude Code
+    date: '2026-05-08T14:25:17.673Z'
+    comment: >-
+      ```text
+
+      Fixed. The bug was in `ContextMenu.tsx:79-87` — `handleLaunchAgent` was
+      calling both `startTaskCliSession` and `openTaskFullView`/`openTaskModal`,
+      so it launched the agent *and* navigated to the ticket page. Removed the
+      navigation calls; now it only starts the session.
+
+
+      Ticket is in `Ready` for your review. Say `finish FLUX-141` to commit and
+      close.
+
+      ```
+    id: c-2026-05-08t14-25-17-673z
+  - type: activity
+    user: Agent
+    date: '2026-05-08T14:26:49.686Z'
+    comment: Launched Claude Code session (78bb42da).
+  - type: comment
+    user: Agent
+    date: '2026-05-09T12:00:00.000Z'
+    comment: >-
+      Committed as 835253c. Removed the 5-line navigation block from
+      `handleLaunchAgent` in `ContextMenu.tsx` — "Launch Agent" now only calls
+      `onClose()` and `startTaskCliSession`, no page navigation. Validated via
+      git diff before committing.
+    id: c-2026-05-09t12-00-00-000z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-09T12:00:01.000Z'
+  - type: comment
+    user: Claude Code
+    date: '2026-05-08T14:27:34.824Z'
+    comment: >-
+      ```text
+
+      FLUX-141 is done. Committed as `835253c` — the 5-line navigation block
+      removed from `handleLaunchAgent` in `ContextMenu.tsx`, ticket closed at
+      `32a0d96`.
+
+      ```
+    id: c-2026-05-08t14-27-34-824z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-09T08:10:27.349Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-10T06:08:07.555Z'
+    comment: Claude Code session lost (engine restarted).
+title: right click launch agent opens the page instead of just launching it
+status: Released
+createdBy: Guy
+updatedBy: Agent
+version: 0.2.0
+releasedAt: '2026-05-09T08:10:27.349Z'
+releaseDocPath: release-notes/0.2.0
+---
+
+## Fix
+
+Remove the `openTaskFullView`/`openTaskModal` calls from `handleLaunchAgent` in `ContextMenu.tsx`. The right-click "Launch Agent" action should only fire the session start — it should not navigate to the ticket page.
