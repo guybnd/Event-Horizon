@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*.*.*'
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   release:
     runs-on: macos-latest
@@ -16,7 +19,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '22'
           cache: 'npm'
 
       - name: Install dependencies
@@ -41,7 +44,7 @@ jobs:
           generate_release_notes: true
           files: |
             event-horizon-source.zip
-            event-horizon-macos.zip
-            event-horizon-windows.zip
+            releases/event-horizon-macos-*.zip
+            releases/event-horizon-win-*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
