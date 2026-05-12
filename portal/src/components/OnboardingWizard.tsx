@@ -185,7 +185,11 @@ export function OnboardingWizard() {
                 <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-xs dark:bg-white/10">
                   .flux/
                 </code>{' '}
-                directory automatically if it doesn't exist. You can also run{' '}
+                (or{' '}
+                <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-xs dark:bg-white/10">
+                  .flux-store/
+                </code>
+                ) directory automatically if it doesn't exist. You can also run{' '}
                 <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-xs dark:bg-white/10">
                   event-horizon init
                 </code>{' '}

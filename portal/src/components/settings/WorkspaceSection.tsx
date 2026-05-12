@@ -16,6 +16,10 @@ interface WorkspaceSectionProps {
   setDocsAllowedUsers: (v: string[] | ((current: string[]) => string[])) => void;
   workspacePath: string | null;
   notifyWorkspaceSet: () => void;
+  syncDebounceMs: number;
+  setSyncDebounceMs: (v: number) => void;
+  syncMaxWaitMs: number;
+  setSyncMaxWaitMs: (v: number) => void;
 }
 
 export function WorkspaceSection({
@@ -31,6 +35,10 @@ export function WorkspaceSection({
   setDocsAllowedUsers,
   workspacePath,
   notifyWorkspaceSet,
+  syncDebounceMs,
+  setSyncDebounceMs,
+  syncMaxWaitMs,
+  setSyncMaxWaitMs,
 }: WorkspaceSectionProps) {
   const [newWorkspacePath, setNewWorkspacePath] = useState('');
   const [workspaceSwitchError, setWorkspaceSwitchError] = useState<string | null>(null);
@@ -50,7 +58,7 @@ export function WorkspaceSection({
     <div className="grid grid-cols-2 gap-10">
       <div className="col-span-2 rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
         <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Project Folder</h3>
-        <p className="text-xs text-gray-500 mb-4">Switch to a different project. The folder must contain a <code className="font-mono bg-gray-100 dark:bg-white/10 px-1 rounded">.flux/</code> directory.</p>
+        <p className="text-xs text-gray-500 mb-4">Switch to a different project. The folder must contain a <code className="font-mono bg-gray-100 dark:bg-white/10 px-1 rounded">.flux/</code> or <code className="font-mono bg-gray-100 dark:bg-white/10 px-1 rounded">.flux-store/</code> directory.</p>
         {workspacePath && (
           <p className="mb-3 rounded-lg bg-gray-100 dark:bg-black/20 px-3 py-2 font-mono text-xs text-gray-600 dark:text-gray-300 break-all">{workspacePath}</p>
         )}
@@ -104,20 +112,20 @@ export function WorkspaceSection({
 
       {workspacePath && (
         <div className="col-span-2 rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
-          <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Storage Mode</h3>
+          <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Git Sync</h3>
           <p className="text-xs text-gray-500 mb-4">
             Tickets live in <code className="font-mono bg-gray-100 dark:bg-white/10 px-1 rounded">.flux/</code> by default.
             Enable Git Sync to move them to an orphan <code className="font-mono bg-gray-100 dark:bg-white/10 px-1 rounded">flux-data</code> branch,
             keeping ticket history off your main branch and enabling multi-machine sync.
           </p>
-          <div className="flex items-center gap-4 flex-wrap">
+          <div className="flex items-center gap-4 flex-wrap mb-4">
             <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${
               storageMode === 'orphan'
                 ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
                 : 'bg-gray-100 text-gray-600 dark:bg-white/10 dark:text-gray-300'
             }`}>
               <span className={`w-1.5 h-1.5 rounded-full ${storageMode === 'orphan' ? 'bg-green-500' : 'bg-gray-400'}`} />
-              {storageMode === null ? 'Loading…' : storageMode === 'orphan' ? 'Git Sync (orphan branch)' : 'In-Repo (.flux/)'}
+              {storageMode === null ? 'Loading…' : storageMode === 'orphan' ? 'Git Sync active (orphan branch)' : 'In-Repo (.flux/)'}
             </span>
             {storageMode === 'in-repo' && (
               <button
@@ -161,13 +169,46 @@ export function WorkspaceSection({
             )}
           </div>
           {storageError && (
-            <p className="mt-2 text-xs text-red-500">{storageError}</p>
+            <p className="mb-4 text-xs text-red-500">{storageError}</p>
           )}
-          {storageMode === 'orphan' && (
-            <p className="mt-3 text-xs text-gray-500">
-              Changes are auto-committed and pushed to <code className="font-mono bg-gray-100 dark:bg-white/10 px-1 rounded">flux-data</code> after 30 seconds of inactivity.
-            </p>
-          )}
+          {storageMode === 'orphan' && <div className="border-t border-gray-200 dark:border-white/10 pt-4 mt-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-3">Sync Timing</p>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                  Debounce delay (seconds)
+                </label>
+                <input
+                  type="number"
+                  min={5}
+                  value={Math.round(syncDebounceMs / 1000)}
+                  onChange={(e) => {
+                    const v = Math.max(5, parseInt(e.target.value, 10) || 5);
+                    setSyncDebounceMs(v * 1000);
+                    if (v * 1000 > syncMaxWaitMs) setSyncMaxWaitMs(v * 1000);
+                  }}
+                  className="w-full rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary"
+                />
+                <p className="mt-1 text-[11px] text-gray-500">Sync fires this many seconds after the last file change. Resets on each new change.</p>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                  Max wait (seconds)
+                </label>
+                <input
+                  type="number"
+                  min={Math.round(syncDebounceMs / 1000)}
+                  value={Math.round(syncMaxWaitMs / 1000)}
+                  onChange={(e) => {
+                    const v = Math.max(Math.round(syncDebounceMs / 1000), parseInt(e.target.value, 10) || Math.round(syncDebounceMs / 1000));
+                    setSyncMaxWaitMs(v * 1000);
+                  }}
+                  className="w-full rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary"
+                />
+                <p className="mt-1 text-[11px] text-gray-500">Sync is forced after this many seconds even if changes keep arriving. Prevents indefinite deferral.</p>
+              </div>
+            </div>
+          </div>}
         </div>
       )}
 

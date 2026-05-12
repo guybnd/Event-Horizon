@@ -41,6 +41,8 @@ export function Settings() {
   const [implementationModel, setImplementationModel] = useState<string>('');
   const [generateDistinctFiles, setGenerateDistinctFiles] = useState(true);
   const [releaseNotesPath, setReleaseNotesPath] = useState('release-notes');
+  const [syncDebounceMs, setSyncDebounceMs] = useState(30000);
+  const [syncMaxWaitMs, setSyncMaxWaitMs] = useState(300000);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -74,6 +76,8 @@ export function Settings() {
         setGenerateDistinctFiles(config.releaseSettings.generateDistinctFiles);
         setReleaseNotesPath(config.releaseSettings.releaseNotesPath || 'release-notes');
       }
+      setSyncDebounceMs(config.syncSettings?.debounceMs ?? 30000);
+      setSyncMaxWaitMs(config.syncSettings?.maxWaitMs ?? 300000);
     }
   }, [config]);
 
@@ -201,7 +205,11 @@ export function Settings() {
             groomingModel: groomingModel.trim(),
             implementationModel: implementationModel.trim(),
           }
-        }
+        },
+        syncSettings: {
+          debounceMs: syncDebounceMs,
+          maxWaitMs: syncMaxWaitMs,
+        },
       });
 
       triggerRefresh();
@@ -242,6 +250,8 @@ export function Settings() {
     setImplementationModel((config as any).integrations?.claudeCode?.implementationModel || '');
     setGenerateDistinctFiles(config.releaseSettings?.generateDistinctFiles ?? true);
     setReleaseNotesPath(config.releaseSettings?.releaseNotesPath || 'release-notes');
+    setSyncDebounceMs(config.syncSettings?.debounceMs ?? 30000);
+    setSyncMaxWaitMs(config.syncSettings?.maxWaitMs ?? 300000);
   };
 
   if (!config) return null;
@@ -271,6 +281,8 @@ export function Settings() {
     effortLevel,
     groomingModel,
     implementationModel,
+    syncDebounceMs,
+    syncMaxWaitMs,
   });
 
   const originalPayload = JSON.stringify({
@@ -298,6 +310,8 @@ export function Settings() {
     effortLevel: (config as any).effortLevel || 'high',
     groomingModel: (config as any).integrations?.claudeCode?.groomingModel || '',
     implementationModel: (config as any).integrations?.claudeCode?.implementationModel || '',
+    syncDebounceMs: config.syncSettings?.debounceMs ?? 30000,
+    syncMaxWaitMs: config.syncSettings?.maxWaitMs ?? 300000,
   });
 
   const isDirty = currentSavedPayload !== originalPayload;
@@ -387,6 +401,10 @@ export function Settings() {
                   setDocsAllowedUsers={setDocsAllowedUsers}
                   workspacePath={workspacePath}
                   notifyWorkspaceSet={notifyWorkspaceSet}
+                  syncDebounceMs={syncDebounceMs}
+                  setSyncDebounceMs={setSyncDebounceMs}
+                  syncMaxWaitMs={syncMaxWaitMs}
+                  setSyncMaxWaitMs={setSyncMaxWaitMs}
                 />
               )}
 

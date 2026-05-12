@@ -51,6 +51,10 @@ export function WorkspaceSelector() {
             <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-xs dark:bg-white/10">
               .flux/
             </code>{' '}
+            or{' '}
+            <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-xs dark:bg-white/10">
+              .flux-store/
+            </code>{' '}
             directory. Run{' '}
             <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-xs dark:bg-white/10">
               event-horizon init

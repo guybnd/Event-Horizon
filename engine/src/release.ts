@@ -1,16 +1,22 @@
 import fs from 'fs/promises';
+import { existsSync } from 'fs';
 import path from 'path';
 import matter from 'gray-matter';
 
-const FLUX_DIR = path.join(__dirname, '../../.flux');
-const CONFIG_FILE = path.join(FLUX_DIR, 'config.json');
-
 async function run() {
-  const version = process.argv[2];
+  const args = process.argv.slice(2);
+  const workspaceIdx = args.indexOf('--workspace');
+  const workspaceRoot = workspaceIdx !== -1 ? (args[workspaceIdx + 1] ?? process.cwd()) : path.join(__dirname, '../..');
+  const skipIndices = new Set(workspaceIdx !== -1 ? [workspaceIdx, workspaceIdx + 1] : []);
+  const version = args.find((a, i) => !a.startsWith('--') && !skipIndices.has(i));
   if (!version) {
-    console.error('Usage: npm run flux:release <version>');
+    console.error('Usage: npm run flux:release <version> [--workspace <path>]');
     process.exit(1);
   }
+
+  const fluxSubdir = existsSync(path.join(workspaceRoot, '.flux-store')) ? '.flux-store' : '.flux';
+  const FLUX_DIR = path.join(workspaceRoot, fluxSubdir);
+  const CONFIG_FILE = path.join(FLUX_DIR, 'config.json');
 
   let config: any = {};
   try {
@@ -25,7 +31,7 @@ async function run() {
     releaseNotesPath: 'release-notes'
   };
 
-  const REPO_ROOT = path.resolve(FLUX_DIR, '..');
+  const REPO_ROOT = workspaceRoot;
   const DOCS_DIR = path.join(REPO_ROOT, config.docsRoot || '.docs');
 
   // Load all tasks

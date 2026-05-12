@@ -24,6 +24,10 @@ import eventsRouter from './routes/events.js';
 import storageRouter from './routes/storage.js';
 import { startSyncWatcher } from './sync-watcher.js';
 
+function isValidWorkspaceRoot(dir: string): boolean {
+  return existsSync(path.join(dir, '.flux')) || existsSync(path.join(dir, '.flux-store'));
+}
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -196,10 +200,10 @@ async function startServer() {
 
     const cliWorkspace = getCliWorkspace();
     const settings = await loadAppSettings();
-    const cwdFallback = existsSync(path.join(process.cwd(), '.flux')) ? process.cwd() : null;
+    const cwdFallback = isValidWorkspaceRoot(process.cwd()) ? process.cwd() : null;
     const initial = cliWorkspace || settings.workspace || cwdFallback;
 
-    if (initial && existsSync(path.join(initial, '.flux'))) {
+    if (initial && isValidWorkspaceRoot(initial)) {
       await activateWorkspace(initial);
       startSyncWatcher();
     } else if (initial) {

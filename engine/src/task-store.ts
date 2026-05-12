@@ -285,7 +285,7 @@ export async function startWatchers() {
   activeFluxWatcher = chokidar.watch(fluxDir, {
     ignored: (filePath: string) => {
       const basename = path.basename(filePath);
-      return basename.startsWith('.') && basename !== '.flux';
+      return basename.startsWith('.') && basename !== path.basename(getActiveFluxDir());
     },
     persistent: true,
   });

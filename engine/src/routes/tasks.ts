@@ -2,7 +2,7 @@ import express from 'express';
 import fs from 'fs/promises';
 import path from 'path';
 import matter from 'gray-matter';
-import { getFluxDir, getTaskAssetsDir } from '../workspace.js';
+import { getFluxDir, getActiveFluxDir, getTaskAssetsDir } from '../workspace.js';
 import { configCache, autoRegisterUnknownTags } from '../config.js';
 import {
   normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry,
@@ -40,7 +40,7 @@ router.post('/', async (req, res) => {
   });
 
   const nextId = `${pKey}-${maxId + 1}`;
-  const filePath = path.join(getFluxDir(), `${nextId}.md`);
+  const filePath = path.join(getActiveFluxDir(), `${nextId}.md`);
   const createdAt = new Date().toISOString();
   const normalizedHistory = normalizeHistoryEntries((rest.history || []).map((e: any) => ({ ...e, date: createdAt })));
   const historyWithCreation = ensureCreationActivity(normalizedHistory.history, author || 'Unknown', createdAt);
@@ -266,7 +266,7 @@ router.post('/:id/assets', async (req, res) => {
 
     await fs.writeFile(filePath, fileBuffer);
 
-    const assetPath = normalizeRelativePath(path.relative(getFluxDir(), filePath));
+    const assetPath = normalizeRelativePath(path.relative(getActiveFluxDir(), filePath));
     const apiAssetPath = normalizeRelativePath(path.relative(getTaskAssetsDir(), filePath));
     res.status(201).json({
       path: assetPath,

@@ -146,5 +146,9 @@ export interface Config {
   tokenDisplayMode?: 'cost' | 'tokens';
   tokenCostThresholds?: { green: number; yellow: number };
   effortLevel?: string;
+  syncSettings?: {
+    debounceMs: number;
+    maxWaitMs: number;
+  };
 }
 

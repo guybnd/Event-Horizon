@@ -79,7 +79,8 @@ function appendComment(history: unknown[], text: string) {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 const opts = parseArgs(process.argv);
-const ticketPath = path.resolve(opts.workspace, '.flux', `${opts.id}.md`);
+const fluxSubdir = fs.existsSync(path.join(opts.workspace, '.flux-store')) ? '.flux-store' : '.flux';
+const ticketPath = path.resolve(opts.workspace, fluxSubdir, `${opts.id}.md`);
 
 if (!fs.existsSync(ticketPath)) {
   console.error(`patch-ticket: ticket file not found: ${ticketPath}`);
@@ -89,7 +90,7 @@ if (!fs.existsSync(ticketPath)) {
 // Resolve the configured require-input status so we can enforce the comment guard.
 function loadRequireInputStatus(workspace: string): string {
   try {
-    const configPath = path.resolve(workspace, '.flux', 'config.json');
+    const configPath = path.resolve(workspace, fluxSubdir, 'config.json');
     const cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     return cfg.requireInputStatus || 'Require Input';
   } catch {

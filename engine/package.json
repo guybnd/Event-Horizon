@@ -15,7 +15,7 @@
     "package": "npm run build && node scripts/package-release.js",
     "package:win": "npm run build && node scripts/package-release.js --platform win",
     "package:mac": "npm run build && node scripts/package-release.js --platform mac",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "vitest run"
   },
   "keywords": [],
   "author": "",
@@ -51,6 +51,7 @@
     "@yao-pkg/pkg": "^6.19.0",
     "esbuild": "^0.27.7",
     "tsx": "^4.21.0",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.6"
   }
 }

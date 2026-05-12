@@ -44,7 +44,11 @@ export let configCache: any = {
       groomingModel: '',
       implementationModel: '',
     }
-  }
+  },
+  syncSettings: {
+    debounceMs: 30000,
+    maxWaitMs: 300000,
+  },
 };
 
 export async function loadConfig() {
