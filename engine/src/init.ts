@@ -12,6 +12,7 @@ import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
 import readline from 'readline';
+import { resolveEmbeddedDocsRoot, copyDir, buildStarterProjectOverview } from './docs-seeder.js';
 
 // ---------------------------------------------------------------------------
 // Argument parsing
@@ -103,55 +104,8 @@ function buildDefaultConfig(projectKey: string) {
 }
 
 // ---------------------------------------------------------------------------
-// Embedded EH docs helpers
+// Embedded EH docs helpers and starter docs content are in docs-seeder.ts
 // ---------------------------------------------------------------------------
-
-// In pkg binary mode, __dirname is the snapshot root where we staged
-// dist/.docs/event-horizon/. In dev/compiled mode, walk up from __dirname
-// to the repo root.
-function resolveEmbeddedDocsRoot(): string {
-  const isPkg = (process as any).pkg !== undefined;
-  if (isPkg) return __dirname;
-  return path.resolve(__dirname, '..', '..');
-}
-
-async function copyDir(src: string, dest: string): Promise<void> {
-  await fs.mkdir(dest, { recursive: true });
-  const entries = await fs.readdir(src, { withFileTypes: true });
-  for (const entry of entries) {
-    const srcPath = path.join(src, entry.name);
-    const destPath = path.join(dest, entry.name);
-    if (entry.isDirectory()) {
-      await copyDir(srcPath, destPath);
-    } else {
-      await fs.copyFile(srcPath, destPath);
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Starter docs content
-// ---------------------------------------------------------------------------
-
-function buildStarterProjectOverview(projectKey: string) {
-  return `---
-title: Project Overview
-order: 1
----
-
-# Project Overview
-
-This is your Event Horizon workspace for **${projectKey}**.
-
-Edit this file to describe your project — what it does, its goals, and key decisions.
-
-## Getting Started
-
-- Create tickets on the **Board** view.
-- Use the **Grooming** column to plan work before it is ready to implement.
-- See the **Backlog** for tickets that are not yet prioritised.
-`;
-}
 
 // ---------------------------------------------------------------------------
 // Main

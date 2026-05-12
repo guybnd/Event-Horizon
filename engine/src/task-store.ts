@@ -1,5 +1,4 @@
 import fs from 'fs/promises';
-import { existsSync } from 'node:fs';
 import path from 'path';
 import matter from 'gray-matter';
 import chokidar from 'chokidar';
@@ -10,6 +9,7 @@ import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, fi
 import { getCliSessionSummaryForTask } from './session-store.js';
 import { isTopLevelTaskFile, getDocsDir, isDocFile, getDocPathFromFile, titleFromDocPath, slugifyDocValue, parseDocOrder } from './file-utils.js';
 import type { StoredDoc } from './file-utils.js';
+import { resolveEmbeddedDocsRoot, copyDir, buildStarterProjectOverview } from './docs-seeder.js';
 
 export let tasksCache: Record<string, any> = {};
 export let docsCache: Record<string, StoredDoc> = {};
@@ -253,58 +253,29 @@ export function estimateCostUSD(modelHint: string | undefined, inputTokens: numb
   return (inputTokens * inputRate + outputTokens * outputRate) / 1_000_000;
 }
 
-function resolveEmbeddedDocsRoot(): string {
-  const isPkg = (process as any).pkg !== undefined;
-  if (isPkg) return __dirname;
-  return path.resolve(__dirname, '..', '..');
-}
-
-async function copyDirRecursive(src: string, dest: string): Promise<void> {
-  await fs.mkdir(dest, { recursive: true });
-  const entries = await fs.readdir(src, { withFileTypes: true });
-  for (const entry of entries) {
-    const srcPath = path.join(src, entry.name);
-    const destPath = path.join(dest, entry.name);
-    if (entry.isDirectory()) {
-      await copyDirRecursive(srcPath, destPath);
-    } else {
-      await fs.copyFile(srcPath, destPath);
-    }
-  }
-}
-
-function buildStarterProjectOverview(projectKey: string): string {
-  return `---
-title: Project Overview
-order: 1
----
-
-# Project Overview
-
-This is your Event Horizon workspace for **${projectKey}**.
-
-Edit this file to describe your project — what it does, its goals, and key decisions.
-
-## Getting Started
-
-- Create tickets on the **Board** view.
-- Use the **Grooming** column to plan work before it is ready to implement.
-- See the **Backlog** for tickets that are not yet prioritised.
-`;
-}
-
 async function seedStarterDocs(docsDir: string): Promise<void> {
   const entries = await fs.readdir(docsDir).catch(() => [] as string[]);
   if (entries.length > 0) return;
 
-  const projectKey = path.basename(workspaceRoot || 'PROJECT').toUpperCase().replace(/[^A-Z0-9_-]/g, '') || 'PROJECT';
+  const projects: string[] = Array.isArray(configCache.projects) ? configCache.projects : [];
+  const projectKey = projects[0]
+    || path.basename(workspaceRoot || 'PROJECT').toUpperCase().replace(/[^A-Z0-9_-]/g, '')
+    || 'PROJECT';
+
   const overviewFile = path.join(docsDir, 'project-overview.md');
   await fs.writeFile(overviewFile, buildStarterProjectOverview(projectKey), 'utf-8');
 
   const ehDocsSrc = path.join(resolveEmbeddedDocsRoot(), '.docs', 'event-horizon');
   const ehDocsDest = path.join(docsDir, 'event-horizon');
-  if (existsSync(ehDocsSrc) && !existsSync(ehDocsDest)) {
-    await copyDirRecursive(ehDocsSrc, ehDocsDest).catch(() => undefined);
+  try {
+    await fs.access(ehDocsSrc);
+    try {
+      await fs.access(ehDocsDest);
+    } catch {
+      await copyDir(ehDocsSrc, ehDocsDest);
+    }
+  } catch (err) {
+    console.warn(`[FLUX] Failed to copy EH guide docs to ${ehDocsDest}:`, err);
   }
 }
 
