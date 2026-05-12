@@ -84,17 +84,62 @@ history:
     user: Agent
     date: '2026-05-12T10:22:27.112Z'
     comment: Launched Claude Code session (96dc780b).
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-12T10:23:09.361Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Code review pass.
+
+
+      The fix is correct. Three lines out, broken behavior gone. The browser
+      does keep scroll position where the pointer released — no intervention
+      needed, and the old rAF restore was actively harmful because it fired
+      AFTER dnd-kit had already scrolled the board to the drop target.
+
+
+      One thing left behind: `scrollerRef` is now a dead ref. After this change,
+      `scrollerRef.current` is never read anywhere — it just silently holds a
+      DOM reference that nothing uses. The `ref={scrollerRef}` on the scroller
+      div and the `useRef<HTMLDivElement>(null)` declaration should both be
+      removed. It is not a bug, but it is the kind of cleanup you do not leave
+      half-done.
+
+
+      Minor enough that it does not block merge. Ship it.
+    date: '2026-05-12T10:23:09.361Z'
+    id: c-2026-05-12t10-23-09-361z
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-12T10:23:13.991Z'
+    comment: >-
+      API call succeeded. The ticket is now `Ready`.
+
+
+      The fix itself is correct — 3 lines of scroll-save/restore removed, broken
+      behavior gone. One issue I flagged: `scrollerRef` is now a dead ref. The
+      `useRef` declaration and `ref={scrollerRef}` on the scroller div are both
+      orphaned — nothing reads `scrollerRef.current` anymore. Not a bug, but
+      it's sloppy leftover. Ticket is at `Ready` with that noted in the review
+      comment.
+  - type: activity
+    user: Agent
+    date: '2026-05-12T10:23:13.994Z'
+    comment: Claude Code session ended with code 0.
 title: dragging ticket between column resets the view
-status: In Progress
+status: Ready
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
-  inputTokens: 910805
-  outputTokens: 26523
-  costUSD: 0.926876
+  inputTokens: 1012449
+  outputTokens: 28210
+  costUSD: 1.039888
   costIsEstimated: false
-  cacheReadTokens: 862283
-  cacheCreationTokens: 48496
+  cacheReadTokens: 947295
+  cacheCreationTokens: 61238
 ---
 ## Problem
 
