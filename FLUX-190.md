@@ -221,7 +221,7 @@ tokenMetadata:
   cacheReadTokens: 1053879
   cacheCreationTokens: 67656
 order: 0
-version: 0.4.0
+version: v0.4.0
 releasedAt: '2026-05-12T07:32:17.144Z'
 releaseDocPath: release-notes/0.4.0
 ---
