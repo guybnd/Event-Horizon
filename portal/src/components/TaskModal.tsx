@@ -438,7 +438,8 @@ export function TaskModal() {
         } as any);
         setModalTask(updatedTask);
       } else {
-        await createTask({ ...payload, history: historyUpdates, projectKey: currentProject, author: currentUser });
+        const createdTask = await createTask({ ...payload, history: historyUpdates, projectKey: currentProject, author: currentUser });
+        setModalTask(createdTask);
       }
       triggerRefresh();
       if (!keepOpen && !customHistory) closeModal();
