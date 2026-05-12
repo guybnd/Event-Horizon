@@ -19,7 +19,7 @@ export function getConfigFile() {
   return path.join(getFluxDir(), 'config.json');
 }
 export function getTaskAssetsDir() { return path.join(getActiveFluxDir(), 'assets'); }
-export function getReadStateFile() { return path.join(getFluxDir(), 'read-state.json'); }
+export function getReadStateFile() { return path.join(getActiveFluxDir(), 'read-state.json'); }
 
 const APP_SETTINGS_DIR = path.join(os.homedir(), '.event-horizon');
 const APP_SETTINGS_FILE = path.join(APP_SETTINGS_DIR, 'settings.json');

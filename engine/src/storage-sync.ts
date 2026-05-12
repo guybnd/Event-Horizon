@@ -59,6 +59,13 @@ export async function migrateToOrphan(workspaceRoot: string): Promise<void> {
     await fs.unlink(configSrc);
   }
 
+  // Move read-state.json
+  const readStateSrc = path.join(fluxDir, 'read-state.json');
+  if (existsSync(readStateSrc)) {
+    await fs.copyFile(readStateSrc, path.join(storeDir, 'read-state.json'));
+    await fs.unlink(readStateSrc);
+  }
+
   // Move assets directory
   const assetsSrc = path.join(fluxDir, 'assets');
   if (existsSync(assetsSrc)) {
@@ -78,7 +85,7 @@ export async function migrateToOrphan(workspaceRoot: string): Promise<void> {
   const existing = await fs.readFile(gitignorePath, 'utf-8').catch(() => '');
   const marker = '# flux-data orphan mode';
   if (!existing.includes(marker)) {
-    const addition = `\n${marker}\n.flux/*.md\n.flux/config.json\n.flux/assets/\n`;
+    const addition = `\n${marker}\n.flux/*.md\n.flux/config.json\n.flux/assets/\n.flux/read-state.json\n`;
     await fs.writeFile(gitignorePath, existing + addition, 'utf-8');
   }
 }
@@ -106,6 +113,12 @@ export async function restoreToInRepo(workspaceRoot: string): Promise<void> {
     await fs.copyFile(configSrc, path.join(fluxDir, 'config.json'));
   }
 
+  // Copy read-state.json back
+  const readStateSrc = path.join(storeDir, 'read-state.json');
+  if (existsSync(readStateSrc)) {
+    await fs.copyFile(readStateSrc, path.join(fluxDir, 'read-state.json'));
+  }
+
   // Copy assets directory back
   const assetsSrc = path.join(storeDir, 'assets');
   if (existsSync(assetsSrc)) {
@@ -130,7 +143,7 @@ export async function restoreToInRepo(workspaceRoot: string): Promise<void> {
   try {
     const content = await fs.readFile(gitignorePath, 'utf-8');
     const normalized = content.replace(/\r\n/g, '\n');
-    const section = `\n# flux-data orphan mode\n.flux/*.md\n.flux/config.json\n.flux/assets/\n`;
+    const section = `\n# flux-data orphan mode\n.flux/*.md\n.flux/config.json\n.flux/assets/\n.flux/read-state.json\n`;
     const cleaned = normalized.split(section).join('');
     await fs.writeFile(gitignorePath, cleaned, 'utf-8');
   } catch {
