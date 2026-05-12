@@ -8,3 +8,8 @@ build/
 .claude/
 .clauderc
 releases/
+
+# flux-data orphan mode
+.flux/*.md
+.flux/config.json
+.flux/assets/

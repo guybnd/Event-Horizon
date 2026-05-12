@@ -254,7 +254,7 @@ export function estimateCostUSD(modelHint: string | undefined, inputTokens: numb
 
 export async function initDir() {
   try {
-    await fs.mkdir(getFluxDir(), { recursive: true });
+    await fs.mkdir(getActiveFluxDir(), { recursive: true });
     await fs.mkdir(getDocsDir(), { recursive: true });
     await fs.mkdir(getTaskAssetsDir(), { recursive: true });
     await loadDocsDirectory(getDocsDir());

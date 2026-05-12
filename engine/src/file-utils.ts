@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import matter from 'gray-matter';
-import { getFluxDir, getTaskAssetsDir, workspaceRoot } from './workspace.js';
+import { getFluxDir, getActiveFluxDir, getTaskAssetsDir, workspaceRoot } from './workspace.js';
 import { configCache } from './config.js';
 
 export const SUPPORTED_IMAGE_TYPES = new Map<string, string>([
@@ -32,7 +32,7 @@ export function getDocsDir() {
 // ─── Asset helpers ────────────────────────────────────────────────────────────
 
 export function isTopLevelTaskFile(filePath: string) {
-  return filePath.endsWith('.md') && path.dirname(filePath) === getFluxDir();
+  return filePath.endsWith('.md') && path.dirname(filePath) === getActiveFluxDir();
 }
 
 export function normalizeRelativePath(filePath: string) {

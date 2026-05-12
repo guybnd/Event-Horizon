@@ -69,6 +69,9 @@ export async function migrateToOrphan(workspaceRoot: string): Promise<void> {
   // Initial commit in the worktree
   await git(storeDir, ['add', '-A']);
   await git(storeDir, ['commit', '-m', 'flux: migrate tickets to orphan branch']);
+  await git(workspaceRoot, ['push', 'origin', 'flux-data']).catch(() => {
+    // no remote configured — push is best-effort
+  });
 
   // Add .flux/ data files to .gitignore
   const gitignorePath = path.join(workspaceRoot, '.gitignore');
