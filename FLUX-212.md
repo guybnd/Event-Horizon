@@ -8,7 +8,7 @@ tags:
   - engine
 createdBy: Agent
 title: Fix read-state.json not migrating to orphan branch
-status: Done
+status: Released
 updatedBy: Agent
 history:
   - type: activity
@@ -42,7 +42,15 @@ history:
       .flux/read-state.json to the gitignore block written during migration and
       cleaned up during restore.
     id: c-fix-read-state
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-12T07:32:17.155Z'
 id: FLUX-212
+version: 0.4.0
+releasedAt: '2026-05-12T07:32:17.155Z'
+releaseDocPath: release-notes/0.4.0
 ---
 
 ## Bug: read-state.json not included in orphan mode migration

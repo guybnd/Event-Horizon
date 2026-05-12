@@ -136,8 +136,13 @@ history:
     user: Agent
     date: '2026-05-11T06:04:37.026Z'
     comment: Claude Code session ended with code 0.
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-12T07:32:17.151Z'
 title: dragging ticket between column resets the view
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -147,6 +152,9 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 1284437
   cacheCreationTokens: 66333
+version: 0.4.0
+releasedAt: '2026-05-12T07:32:17.151Z'
+releaseDocPath: release-notes/0.4.0
 ---
 ## Problem
 

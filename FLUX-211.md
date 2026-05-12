@@ -155,8 +155,13 @@ history:
       chokidar filter, and updated portal copy in
       WorkspaceSelector/OnboardingWizard/WorkspaceSection. implementationLink:
       6999ead
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-12T07:32:17.154Z'
 title: do a pass after the git sync feature
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -166,6 +171,9 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 435094
   cacheCreationTokens: 41845
+version: 0.4.0
+releasedAt: '2026-05-12T07:32:17.154Z'
+releaseDocPath: release-notes/0.4.0
 ---
 ## Overview
 

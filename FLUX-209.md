@@ -8,7 +8,7 @@ tags:
   - engine
 createdBy: Unknown
 title: Implement git orphan branch sync for decoupled ticket storage
-status: Done
+status: Released
 updatedBy: Guy
 history:
   - type: activity
@@ -660,6 +660,11 @@ history:
     to: Done
     user: Guy
     date: '2026-05-12T03:31:50.329Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-12T07:32:17.151Z'
 implementationLink: ''
 subtasks: []
 tokenMetadata:
@@ -670,6 +675,9 @@ tokenMetadata:
   cacheReadTokens: 4767840
   cacheCreationTokens: 301123
 order: 2
+version: 0.4.0
+releasedAt: '2026-05-12T07:32:17.151Z'
+releaseDocPath: release-notes/0.4.0
 ---
 ## Overview
 

@@ -30,6 +30,9 @@
       "name": "Backlog"
     }
   ],
+  "projects": [
+    "FLUX"
+  ],
   "users": [
     {
       "name": "Guy"
@@ -190,6 +193,10 @@
     {
       "name": "dx",
       "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "release",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     }
   ],
   "priorities": [
@@ -219,29 +226,16 @@
       "color": "text-gray-400"
     }
   ],
-  "projects": [
-    "FLUX"
-  ],
   "enableBacklogScreen": true,
   "requireCommentOnStatusChange": false,
   "boardCardOpenMode": "full",
   "animationsEnabled": true,
   "enableFireworks": true,
-  "animationSpeed": "normal",
   "requireInputStatus": "Require Input",
   "readyForMergeStatus": "Ready",
   "archiveStatus": "Archived",
   "docsEditPermissions": "all",
   "docsAllowedUsers": [],
-  "docsRoot": ".docs",
-  "hoverPopupsEnabled": true,
-  "hoverPopupDelay": 450,
-  "tokenDisplayMode": "cost",
-  "tokenCostThresholds": {
-    "green": 0.2,
-    "yellow": 0.65
-  },
-  "effortLevel": "high",
   "releaseSettings": {
     "generateDistinctFiles": true,
     "releaseNotesPath": "release-notes"
@@ -251,5 +245,15 @@
       "groomingModel": "",
       "implementationModel": ""
     }
-  }
+  },
+  "animationSpeed": "normal",
+  "docsRoot": ".docs",
+  "hoverPopupsEnabled": true,
+  "hoverPopupDelay": 450,
+  "tokenDisplayMode": "cost",
+  "tokenCostThresholds": {
+    "green": 0.2,
+    "yellow": 0.65
+  },
+  "effortLevel": "high"
 }

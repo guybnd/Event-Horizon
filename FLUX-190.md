@@ -204,8 +204,13 @@ history:
     user: Agent
     date: '2026-05-11T06:05:11.229Z'
     comment: Claude Code session ended with code 0.
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-12T07:32:17.150Z'
 title: do release 0.3.1
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -216,6 +221,9 @@ tokenMetadata:
   cacheReadTokens: 1053879
   cacheCreationTokens: 67656
 order: 0
+version: 0.4.0
+releasedAt: '2026-05-12T07:32:17.150Z'
+releaseDocPath: release-notes/0.4.0
 ---
 ## Release v0.3.1
 

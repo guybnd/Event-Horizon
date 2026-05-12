@@ -9,13 +9,21 @@ tags:
   - agent-workflow
 createdBy: Unknown
 title: Add --body and --body-file flags to patch-ticket CLI
-status: Done
+status: Released
 updatedBy: Unknown
 history:
   - type: activity
     user: Unknown
     date: '2026-05-12T02:22:36.561Z'
     comment: Created ticket.
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-12T07:32:17.153Z'
+version: 0.4.0
+releasedAt: '2026-05-12T07:32:17.153Z'
+releaseDocPath: release-notes/0.4.0
 ---
 ## Summary
 

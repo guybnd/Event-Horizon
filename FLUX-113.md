@@ -1,6 +1,6 @@
 ---
 title: Spike - Brainstorm a mode of work decoupled from the repo
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
 assignee: unassigned
@@ -447,6 +447,11 @@ history:
     to: Done
     user: Guy
     date: '2026-05-12T02:26:50.114Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-12T07:32:17.147Z'
 order: 1
 tokenMetadata:
   inputTokens: 735857
@@ -455,6 +460,9 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 587483
   cacheCreationTokens: 136777
+version: 0.4.0
+releasedAt: '2026-05-12T07:32:17.147Z'
+releaseDocPath: release-notes/0.4.0
 ---
 ## Plan
 
