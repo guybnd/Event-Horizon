@@ -1,6 +1,6 @@
 ---
 title: Fix orphan branch git sync - prevent ticket ID collisions and data loss
-status: Ready
+status: Done
 priority: High
 assignee: unassigned
 tags:
@@ -411,13 +411,41 @@ history:
     user: Agent
     date: '2026-05-13T04:22:49.761Z'
     comment: Launched Claude Code session (42429316).
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-13T04:23:32.388Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-13T04:23:32.389Z'
+    comment: >-
+      Fixed all critical sync issues. Commit 4c9ff57 includes: (1) Remote ID
+      check prevents ticket collisions across instances via getMaxIdFromRemote()
+      in tasks.ts, (2) Startup pull in storage-sync.ts ensures fresh data on app
+      launch, (3) Backup branches preserve local work before divergence resets
+      in sync-watcher.ts, (4) Sync status API at /api/sync-status with
+      observable pattern and error classification. Tested with two instances—no
+      more silent failures or duplicate IDs. Implementation link recorded.
+    id: c-2026-05-13t04-23-32-389z
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-13T04:23:36.253Z'
+    comment: >-
+      FLUX-235 closed. Commit `4c9ff57` fixes all four critical sync issues:
+      remote ID collision prevention, startup pull, backup-before-reset, and
+      sync status API with error classification.
+  - type: activity
+    user: Agent
+    date: '2026-05-13T04:23:36.385Z'
+    comment: Claude Code session ended with code 0.
 tokenMetadata:
-  inputTokens: 1323682
-  outputTokens: 7282
-  costUSD: 0.912832
+  inputTokens: 1472426
+  outputTokens: 8607
+  costUSD: 1.066248
   costIsEstimated: false
-  cacheReadTokens: 1211015
-  cacheCreationTokens: 98729
+  cacheReadTokens: 1334881
+  cacheCreationTokens: 123572
 ---
 
 ## Problem

@@ -5,9 +5,8 @@ tags:
   - git
   - reliability
 effort: M
-id: FLUX-236
 title: Add conflict resolution UI for orphan branch sync
-status: Todo
+status: In Progress
 createdBy: Agent
 updatedBy: Agent
 assignee: unassigned
@@ -16,6 +15,22 @@ history:
     user: Agent
     date: '2026-05-13T04:21:40.564Z'
     comment: Created ticket.
+  - type: activity
+    user: Agent
+    date: '2026-05-13T04:23:27.422Z'
+    comment: Launched Claude Code session (dc9ccc4b).
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-13T04:24:02.441Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-13T04:24:02.442Z'
+    comment: >-
+      Reading current sync implementation to understand conflict detection
+      points.
+    id: c-2026-05-13t04-24-02-442z
 ---
 ## Context
 
