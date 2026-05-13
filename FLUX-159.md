@@ -1,6 +1,6 @@
 ---
 title: Show corrupted ticket indicator in the portal UI
-status: Todo
+status: In Progress
 priority: Medium
 effort: S
 tags:
@@ -73,6 +73,18 @@ history:
     user: Agent
     date: '2026-05-13T11:44:36.503Z'
     comment: Launched Claude Code session (caa54eb3).
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-13T11:45:18.344Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-13T11:45:18.346Z'
+    comment: >-
+      Moving to In Progress. Will add API endpoint for parse errors and UI
+      indicator in the portal.
+    id: c-2026-05-13t11-45-18-346z
 order: 161
 ---
 
