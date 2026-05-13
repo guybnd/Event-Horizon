@@ -284,8 +284,13 @@ history:
       re groom this ticket, adopt the approach the designer added in the
       Session--Centric & Minimal description
     id: c-2026-05-13t12-18-35-061z
+  - type: status_change
+    from: Todo
+    to: Grooming
+    user: Guy
+    date: '2026-05-13T12:18:40.669Z'
 title: 'UX brainstorm: show AI thought \ progress in ticket'
-status: Todo
+status: Grooming
 createdBy: Guy
 updatedBy: Guy
 tokenMetadata:
