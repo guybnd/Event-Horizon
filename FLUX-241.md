@@ -298,17 +298,50 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-13T12:20:57.286Z'
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-13T12:21:10.358Z'
+    comment: >-
+      Grooming complete. I've rewritten FLUX-241 to adopt the session-centric
+      approach from the UX designer's feedback:
+
+
+      **Key changes:**
+
+      - **Simplified UI**: Enhanced status line instead of new thought bubble
+      components
+
+      - **Cleaner data model**: Single `agent_session` history type that groups
+      start/progress/outcome
+
+      - **Fewer filters**: 3 essential tabs (All/Decisions/Sessions) instead of
+      6
+
+      - **Lower complexity**: Collapsible sessions with nested progress, minimal
+      new components
+
+      - **Same enforcement**: All Rules of Engagement preserved (outcome
+      required, Require Input flow, documentation requirements)
+
+
+      The ticket is now in **Todo** status, ready for implementation with a
+      focused plan that achieves the same goals with less UI chrome and
+      cognitive load.
+  - type: activity
+    user: Agent
+    date: '2026-05-13T12:21:10.393Z'
+    comment: Claude Code session ended with code 0.
 title: 'UX brainstorm: show AI thought \ progress in ticket'
 status: Todo
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
-  inputTokens: 1797448
-  outputTokens: 12705
-  costUSD: 1.41677
+  inputTokens: 2478894
+  outputTokens: 20500
+  costUSD: 1.950783
   costIsEstimated: false
-  cacheReadTokens: 1595683
-  cacheCreationTokens: 180856
+  cacheReadTokens: 2216174
+  cacheCreationTokens: 241735
 order: 1
 ---
 ## Problem Summary
