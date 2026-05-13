@@ -591,6 +591,15 @@ history:
     progress: []
     user: Claude Code
     date: '2026-05-13T12:49:20.608Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-13T12:49:51.244Z'
+    comment: >-
+      Identified root cause: progress updates are buffered (1s debounce) and
+      only flushed to ticket history periodically. Need real-time streaming via
+      SSE or WebSocket so portal can show live activity without waiting for file
+      writes.
+    id: c-2026-05-13t12-49-51-244z
 title: Redo Agent Session UX \ UI
 status: In Progress
 createdBy: Guy
