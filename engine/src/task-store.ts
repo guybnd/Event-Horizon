@@ -14,6 +14,7 @@ import { resolveEmbeddedDocsRoot, copyDir, buildStarterProjectOverview } from '.
 
 export let tasksCache: Record<string, any> = {};
 export let docsCache: Record<string, StoredDoc> = {};
+export let parseErrors: Record<string, { id: string; path: string; error: string }> = {};
 export let workspaceActivating = false;
 
 export function serializeTaskForApi(task: any) {
@@ -97,6 +98,7 @@ export async function loadTask(filePath: string) {
       console.error(`\n[FLUX VALIDATION ERROR] ${filePath}\n  YAML frontmatter is invalid: ${msg}\n  The ticket has been removed from the board. Fix the frontmatter and save again.\n`);
       const id = path.basename(filePath, '.md');
       delete tasksCache[id];
+      parseErrors[id] = { id, path: filePath, error: `YAML frontmatter is invalid: ${msg}` };
       return;
     }
 
@@ -104,6 +106,7 @@ export async function loadTask(filePath: string) {
       console.error(`\n[FLUX VALIDATION ERROR] ${filePath}\n  Frontmatter is missing required field: title\n  The ticket has been removed from the board. Fix the frontmatter and save again.\n`);
       const id = path.basename(filePath, '.md');
       delete tasksCache[id];
+      parseErrors[id] = { id, path: filePath, error: 'Frontmatter is missing required field: title' };
       return;
     }
 
@@ -123,6 +126,9 @@ export async function loadTask(filePath: string) {
       body: parsed.content,
       _path: filePath
     };
+
+    // Clear any previous parse error for this ticket
+    delete parseErrors[id];
 
     if (normalizedHistory.changed) {
       const normalizedContent = matter.stringify(parsed.content, normalizedFrontmatter);
@@ -382,6 +388,7 @@ export async function activateWorkspace(newRoot: string) {
     setWorkspaceRoot(newRoot);
     tasksCache = {};
     docsCache = {};
+    parseErrors = {};
     console.log(`Workspace: ${newRoot}`);
     await attachWorktreeIfPresent(newRoot);
     if (isOrphanMode()) await recoverStrayFluxFiles(newRoot);

@@ -14,6 +14,7 @@ import { filterAndSortTasks } from '../taskSearch';
 import { getStatusColorClass } from '../statusStyles';
 import { ReleaseModal } from './ReleaseModal';
 import { getArchiveStatus, getRequireInputStatus } from '../workflow';
+import { ParseErrorButton } from './ParseErrorButton';
 
 export function Board() {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -34,6 +35,7 @@ export function Board() {
     filterTag,
     filterUnreadOnly,
     readComments,
+    parseErrors,
   } = useApp();
 
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -208,13 +210,18 @@ export function Board() {
   return (
     <>
       <div className="flex h-full min-h-0 flex-col gap-6">
-        <TaskViewControls
-          title="Board filters"
-          searchPlaceholder="Filter cards in this board"
-          visibleCount={visibleTasks.length}
-          totalCount={boardTasks.length}
-          itemLabel="board tickets"
-        />
+        <div className="flex items-center gap-3">
+          <div className="flex-1">
+            <TaskViewControls
+              title="Board filters"
+              searchPlaceholder="Filter cards in this board"
+              visibleCount={visibleTasks.length}
+              totalCount={boardTasks.length}
+              itemLabel="board tickets"
+            />
+          </div>
+          <ParseErrorButton errors={parseErrors} />
+        </div>
 
         <div className="min-h-0 flex-1">
           <DndContext onDragStart={handleDragStart} onDragEnd={handleDragEnd} collisionDetection={pointerWithin}>

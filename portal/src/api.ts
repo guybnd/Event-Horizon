@@ -12,6 +12,18 @@ export async function fetchTasks(): Promise<Task[]> {
   return res.json();
 }
 
+export interface ParseError {
+  id: string;
+  path: string;
+  error: string;
+}
+
+export async function fetchParseErrors(): Promise<ParseError[]> {
+  const res = await fetch(`${API_URL}/tasks/errors`);
+  if (!res.ok) throw new Error('Failed to fetch parse errors');
+  return res.json();
+}
+
 export async function fetchTask(id: string): Promise<Task> {
   const res = await fetch(`${API_URL}/tasks/${id}`);
   if (!res.ok) throw new Error('Failed to fetch task');

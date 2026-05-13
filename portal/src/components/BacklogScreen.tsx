@@ -10,6 +10,7 @@ import { normalizeTaskMarkdownBody, TaskDescriptionSurface } from './TaskDescrip
 import { motion, AnimatePresence } from 'framer-motion';
 import { TaskMarkdown } from './TaskMarkdown';
 import type { Task, TaskLiveEvent } from '../types';
+import { ParseErrorButton } from './ParseErrorButton';
 
 function BacklogRow({
   task,
@@ -141,6 +142,7 @@ export function BacklogScreen() {
     tasks: liveTasks,
     tasksLoading,
     taskLiveEvents,
+    parseErrors,
   } = useApp();
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [descriptionDraft, setDescriptionDraft] = useState('');
@@ -230,13 +232,18 @@ export function BacklogScreen() {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-6">
-      <TaskViewControls
-        title="Backlog filters"
-        searchPlaceholder="Filter backlog items"
-        visibleCount={visibleTasks.length}
-        totalCount={tasks.length}
-        itemLabel="backlog tickets"
-      />
+      <div className="flex items-center gap-3">
+        <div className="flex-1">
+          <TaskViewControls
+            title="Backlog filters"
+            searchPlaceholder="Filter backlog items"
+            visibleCount={visibleTasks.length}
+            totalCount={tasks.length}
+            itemLabel="backlog tickets"
+          />
+        </div>
+        <ParseErrorButton errors={parseErrors} />
+      </div>
 
       <div className="flex min-h-0 flex-1 gap-6">
       {/* List View */}

@@ -1,7 +1,7 @@
 import { createContext, startTransition, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { ColumnLiveEvent, Config, Task, TaskLiveEvent } from './types';
-import { fetchConfig, fetchTasks, fetchHealth, saveConfig as apiSaveConfig, fetchReadState, saveReadState, fetchWorkspace } from './api';
+import { fetchConfig, fetchTasks, fetchHealth, saveConfig as apiSaveConfig, fetchReadState, saveReadState, fetchWorkspace, fetchParseErrors, type ParseError } from './api';
 import { getArchiveStatus } from './workflow';
 
 export type AppView = 'board' | 'backlog' | 'docs' | 'settings' | 'releases';
@@ -167,6 +167,8 @@ interface AppState {
   markAllCommentsRead: (ticketId: string, commentIds: string[]) => void;
   theme: AppTheme;
   toggleTheme: () => void;
+  parseErrors: ParseError[];
+  parseErrorsLoading: boolean;
 }
 
 const AppContext = createContext<AppState | undefined>(undefined);
@@ -203,6 +205,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     applyTheme(initial);
     return initial;
   });
+  const [parseErrors, setParseErrors] = useState<ParseError[]>([]);
+  const [parseErrorsLoading, setParseErrorsLoading] = useState(false);
   const readCommentsLoadedRef = useRef(false);
   const configRef = useRef<Config | null>(null);
   const tasksRef = useRef<Task[]>([]);
@@ -393,10 +397,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [applyLiveEvents]);
 
+  const loadParseErrors = useCallback(async () => {
+    if (!workspaceConfigured) return;
+
+    try {
+      const errors = await fetchParseErrors();
+      setParseErrors(errors);
+    } catch (error) {
+      console.error('Failed to fetch parse errors:', error);
+    }
+  }, [workspaceConfigured]);
+
   const triggerRefresh = useCallback(() => {
     setRefreshTrigger((prev) => prev + 1);
     void loadTasks();
-  }, [loadTasks]);
+    void loadParseErrors();
+  }, [loadTasks, loadParseErrors]);
 
   const updateTicketViewUrl = (taskId: string, viewMode: 'popup' | 'full') => {
     const url = new URL(window.location.href);
@@ -543,7 +559,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     void loadTasks();
-  }, [loadTasks]);
+    void loadParseErrors();
+  }, [loadTasks, loadParseErrors]);
 
   // On mount, fetch workspace state. Then poll health alongside connection checks.
   useEffect(() => {
@@ -602,18 +619,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (isConnected) {
       void loadTasks();
+      void loadParseErrors();
     }
-  }, [isConnected, loadTasks]);
+  }, [isConnected, loadTasks, loadParseErrors]);
 
   useEffect(() => {
     const refreshIfVisible = () => {
-      if (!document.hidden) void loadTasks();
+      if (!document.hidden) {
+        void loadTasks();
+        void loadParseErrors();
+      }
     };
 
     const handleVisibilityChange = () => {
       const visible = !document.hidden;
       setIsWindowVisible(visible);
-      if (visible) void loadTasks();
+      if (visible) {
+        void loadTasks();
+        void loadParseErrors();
+      }
     };
 
     const handleFocus = () => {
@@ -630,7 +654,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       window.removeEventListener('focus', handleFocus);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [loadTasks]);
+  }, [loadTasks, loadParseErrors]);
 
   // SSE: receive instant activity pushes from the engine instead of polling for them.
   useEffect(() => {
@@ -765,6 +789,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       config, saveConfig,
       readComments, totalUnreadCount, ensureReadStateLoaded, markCommentRead, markAllCommentsRead,
       theme, toggleTheme,
+      parseErrors, parseErrorsLoading,
     }}>
       {children}
     </AppContext.Provider>
