@@ -39,6 +39,10 @@ history:
       engine status. Shows visual states for idle/syncing/synced/error/offline
       with color coding matching existing header design patterns.
     id: c-2026-05-13t04-25-34-591z
+  - type: activity
+    user: Agent
+    date: '2026-05-13T04:27:43.809Z'
+    comment: Claude Code session lost (engine restarted).
 ---
 ## Context
 

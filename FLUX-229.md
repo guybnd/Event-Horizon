@@ -1,5 +1,4 @@
 ---
-id: FLUX-229
 title: 'Fix Windows agent spawn: EINVAL and missing prompt arguments'
 status: Done
 priority: High
@@ -9,9 +8,9 @@ tags:
   - windows
   - agent
 createdBy: User
-updatedBy: User
+updatedBy: Guy
 effort: S
-implementationLink: '5fd89f9eb7c0e30a3c3e0b09a5bdeaa8fcb9fa58'
+implementationLink: 5fd89f9eb7c0e30a3c3e0b09a5bdeaa8fcb9fa58
 subtasks: []
 history:
   - type: activity
@@ -26,7 +25,31 @@ history:
   - type: activity
     user: User
     date: '2026-05-13T14:35:00.000Z'
-    comment: 'Committed fix in 5fd89f9. Agent spawning now works correctly on Windows.'
+    comment: Committed fix in 5fd89f9. Agent spawning now works correctly on Windows.
+  - type: status_change
+    from: Done
+    to: In Progress
+    user: Agent
+    date: '2026-05-13T04:27:36.872Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-13T04:27:36.873Z'
+    comment: >-
+      Resuming: Steps 1 (exe spawn) and null-byte stripping are already
+      committed. Remaining: fix checkBinaryInstalled to use execFileSync, fix
+      PowerShell injection in workspace.ts, fix HOME fallback for kdialog, add
+      build-script comments.
+    id: c-2026-05-13t04-27-36-873z
+  - type: activity
+    user: Agent
+    date: '2026-05-13T04:27:42.666Z'
+    comment: Claude Code session stopped.
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Guy
+    date: '2026-05-13T04:28:02.980Z'
+order: 2
 ---
 
 ## Problem
