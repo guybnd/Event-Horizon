@@ -600,6 +600,13 @@ history:
       SSE or WebSocket so portal can show live activity without waiting for file
       writes.
     id: c-2026-05-13t12-49-51-244z
+  - type: agent_session
+    sessionId: 7a87848d-7db2-41b7-8399-797bc56a9803
+    startedAt: '2026-05-13T12:51:54.226Z'
+    status: active
+    progress: []
+    user: Claude Code
+    date: '2026-05-13T12:51:54.226Z'
 title: Redo Agent Session UX \ UI
 status: In Progress
 createdBy: Guy
