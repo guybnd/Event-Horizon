@@ -6,7 +6,7 @@ tags:
   - reliability
 effort: M
 title: Add conflict resolution UI for orphan branch sync
-status: In Progress
+status: Ready
 createdBy: Agent
 updatedBy: Agent
 assignee: unassigned
@@ -197,13 +197,68 @@ history:
     user: Agent
     date: '2026-05-13T04:36:18.746Z'
     comment: Launched Claude Code session (e82517dc).
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-13T04:38:45.643Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-13T04:38:45.644Z'
+    comment: 'Fixed all critical issues from code review:'
+    id: c-2026-05-13t04-38-45-644z
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-13T04:38:52.702Z'
+    comment: >-
+      Perfect! All critical issues from the code review have been fixed:
+
+
+      ## Summary
+
+
+      Fixed all 10 critical issues identified in the code review for FLUX-236
+      (conflict resolution UI):
+
+
+      **Key Fixes:**
+
+      1. **Semantic conflict detection** - Now parses YAML frontmatter and
+      compares ticket data fields (title, status, priority, body) instead of raw
+      markdown with timestamps
+
+      2. **Removed broken rename-local** - Eliminated dead code path that lied
+      about renaming but accepted remote
+
+      3. **Strict validation** - Backend validates all resolutions before any
+      file writes, manual merge requires newContent
+
+      4. **Comprehensive backend validation** - Request shape, required fields,
+      strategy values all validated
+
+      5. **Better error handling** - Real error messages instead of "check
+      console", structured error display
+
+      6. **Type safety** - Removed duplicate types, unified on single
+      ConflictInfo definition
+
+      7. **SSE auto-reconnect** - 5s backoff when connection lost
+
+      8. **Atomic updates** - Validate all first, then apply
+
+
+      Ticket moved to **Ready** status for review.
+  - type: activity
+    user: Agent
+    date: '2026-05-13T04:38:52.884Z'
+    comment: Claude Code session ended with code 0.
 tokenMetadata:
-  inputTokens: 1217911
-  outputTokens: 6929
-  costUSD: 0.794902
+  inputTokens: 1726540
+  outputTokens: 17177
+  costUSD: 1.323855
   costIsEstimated: false
-  cacheReadTokens: 1122538
-  cacheCreationTokens: 83757
+  cacheReadTokens: 1566180
+  cacheCreationTokens: 145086
 ---
 ## Context
 
