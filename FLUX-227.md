@@ -5,7 +5,7 @@ tags:
   - bug
   - sync
 title: Workspace route does not restart sync watcher after activateWorkspace
-status: Done
+status: Released
 createdBy: Unknown
 updatedBy: Agent
 assignee: unassigned
@@ -50,6 +50,14 @@ history:
       workspace.ts staged — tasks.ts and task-store.ts changes are unrelated and
       left unstaged.
     id: c-2026-05-13t02-49-22-366z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-13T14:16:35.528Z'
+version: v0.5.0
+releasedAt: '2026-05-13T14:16:35.528Z'
+releaseDocPath: release-notes/v0.5.0
 ---
 ## Problem
 

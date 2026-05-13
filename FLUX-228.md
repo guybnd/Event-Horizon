@@ -7,7 +7,7 @@ tags:
 title: >-
   Tickets written to .flux/ instead of .flux-store/ if worktree not yet attached
   on startup
-status: Done
+status: Released
 createdBy: Unknown
 updatedBy: Guy
 assignee: unassigned
@@ -45,7 +45,15 @@ history:
     to: Done
     user: Guy
     date: '2026-05-13T04:50:07.621Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-13T14:16:35.530Z'
 order: 3
+version: v0.5.0
+releasedAt: '2026-05-13T14:16:35.530Z'
+releaseDocPath: release-notes/v0.5.0
 ---
 ## Problem
 

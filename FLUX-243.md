@@ -8,7 +8,7 @@ tags:
 implementationLink: e47b50f36bf6f76ddb32a8bb2e36f56f96aca817
 id: FLUX-243
 title: 'Fix sync race condition: re-fetch before push'
-status: Done
+status: Released
 createdBy: Unknown
 updatedBy: Unknown
 history:
@@ -16,6 +16,14 @@ history:
     user: Unknown
     date: '2026-05-13T11:57:54.861Z'
     comment: Created ticket.
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-13T14:16:35.551Z'
+version: v0.5.0
+releasedAt: '2026-05-13T14:16:35.551Z'
+releaseDocPath: release-notes/v0.5.0
 ---
 ## Problem
 Sync was failing with push rejection error: `cannot lock ref 'refs/heads/flux-data': is at fd99a9811... but expected 4c7bbdfeac...`

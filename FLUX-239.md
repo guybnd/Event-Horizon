@@ -6,7 +6,7 @@ tags:
   - engine
 id: FLUX-239
 title: Enforce completion comment when transitioning ticket to Ready
-status: Done
+status: Released
 createdBy: Agent
 updatedBy: Agent
 assignee: unassigned
@@ -29,6 +29,14 @@ history:
       clean. Resolves the pattern of agent sessions ending without updating
       ticket status.
     id: c-2026-05-13t07-10-00-664z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-13T14:16:35.544Z'
+version: v0.5.0
+releasedAt: '2026-05-13T14:16:35.544Z'
+releaseDocPath: release-notes/v0.5.0
 ---
 ## Problem
 

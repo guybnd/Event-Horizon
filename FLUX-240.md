@@ -10,12 +10,20 @@ createdBy: Unknown
 updatedBy: Unknown
 implementationLink: ''
 title: Manual sync trigger on sync status button click
-status: Done
+status: Released
 history:
   - type: activity
     user: Unknown
     date: '2026-05-13T07:44:47.192Z'
     comment: Created ticket.
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-13T14:16:35.545Z'
+version: v0.5.0
+releasedAt: '2026-05-13T14:16:35.545Z'
+releaseDocPath: release-notes/v0.5.0
 ---
 ## What was done
 

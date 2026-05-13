@@ -1,6 +1,6 @@
 ---
 title: Show corrupted ticket indicator in the portal UI
-status: Done
+status: Released
 priority: Medium
 effort: S
 tags:
@@ -250,6 +250,11 @@ history:
       expandable details and auto-clear when files are fixed. Commit: f674a2d
     date: '2026-05-13T12:06:24.662Z'
     id: c-2026-05-13t12-06-24-662z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-13T14:16:35.512Z'
 order: 161
 tokenMetadata:
   inputTokens: 1048333
@@ -258,6 +263,9 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 959450
   cacheCreationTokens: 85068
+version: v0.5.0
+releasedAt: '2026-05-13T14:16:35.512Z'
+releaseDocPath: release-notes/v0.5.0
 ---
 
 ## Summary

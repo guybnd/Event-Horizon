@@ -1,6 +1,6 @@
 ---
 title: Deep dive into Windows compatibility
-status: Done
+status: Released
 priority: High
 assignee: Agent
 tags:
@@ -219,16 +219,17 @@ history:
     user: Agent
     date: '2026-05-13T07:05:36.843Z'
     comment: Claude Code session lost (engine restarted).
-<<<<<<< HEAD
   - type: status_change
     from: In Progress
     to: Done
     user: Guy
     date: '2026-05-13T07:33:50.968Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-13T14:16:35.543Z'
 order: 4
-=======
-order: 1
->>>>>>> origin/flux-data
 tokenMetadata:
   inputTokens: 395655
   outputTokens: 7502
@@ -236,6 +237,9 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 364732
   cacheCreationTokens: 29384
+version: v0.5.0
+releasedAt: '2026-05-13T14:16:35.543Z'
+releaseDocPath: release-notes/v0.5.0
 ---
 
 ## Overview

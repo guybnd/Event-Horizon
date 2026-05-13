@@ -662,8 +662,13 @@ history:
     to: Done
     user: Agent
     date: '2026-05-13T14:06:38.643Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-13T14:16:35.547Z'
 title: Redo Agent Session UX \ UI
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -707,6 +712,9 @@ entries:
 
       Build validated successfully.
     id: c-2026-05-13t13-10-00-000z
+version: v0.5.0
+releasedAt: '2026-05-13T14:16:35.547Z'
+releaseDocPath: release-notes/v0.5.0
 ---
 ## Problem Summary
 

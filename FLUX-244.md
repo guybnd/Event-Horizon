@@ -6,7 +6,7 @@ tags:
   - bugfix
   - session-management
 title: Auto-stop CLI session when ticket moves to Ready
-status: Done
+status: Released
 createdBy: Unknown
 updatedBy: Agent
 history:
@@ -32,7 +32,15 @@ history:
       terminate the CLI process. Commit: 3531a19
     date: '2026-05-13T12:03:16.403Z'
     id: c-2026-05-13t12-03-16-403z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-13T14:16:35.552Z'
 implementationLink: 3531a19c6ed8b4c9428e09e6d93eac42e5f84d51
+version: v0.5.0
+releasedAt: '2026-05-13T14:16:35.552Z'
+releaseDocPath: release-notes/v0.5.0
 ---
 ## Problem
 When a ticket moved to Ready status, the CLI agent session remained open and running. The agent was instructed to "wait for finish command" but the session should have been terminated automatically.

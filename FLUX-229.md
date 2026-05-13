@@ -1,6 +1,6 @@
 ---
 title: 'Fix Windows agent spawn: EINVAL and missing prompt arguments'
-status: Done
+status: Released
 priority: High
 assignee: unassigned
 tags:
@@ -49,7 +49,15 @@ history:
     to: Done
     user: Guy
     date: '2026-05-13T04:28:02.980Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-13T14:16:35.531Z'
 order: 2
+version: v0.5.0
+releasedAt: '2026-05-13T14:16:35.531Z'
+releaseDocPath: release-notes/v0.5.0
 ---
 
 ## Problem

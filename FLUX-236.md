@@ -6,7 +6,7 @@ tags:
   - reliability
 effort: M
 title: Add conflict resolution UI for orphan branch sync
-status: Done
+status: Released
 createdBy: Agent
 updatedBy: Guy
 assignee: unassigned
@@ -677,6 +677,11 @@ history:
     to: Done
     user: Guy
     date: '2026-05-13T07:49:19.933Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-13T14:16:35.536Z'
 tokenMetadata:
   inputTokens: 5502557
   outputTokens: 41709
@@ -685,6 +690,9 @@ tokenMetadata:
   cacheReadTokens: 5074286
   cacheCreationTokens: 401959
 order: 5
+version: v0.5.0
+releasedAt: '2026-05-13T14:16:35.536Z'
+releaseDocPath: release-notes/v0.5.0
 ---
 ## Context
 

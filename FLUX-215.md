@@ -268,8 +268,13 @@ history:
       Release v0.4.0 properly closed. FLUX-211/212 migrated to .flux-store and
       moved to Released.
     id: c-2026-05-12t09-11-15-710z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-13T14:16:35.521Z'
 title: 'New release, 0.4.0'
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -280,6 +285,9 @@ tokenMetadata:
   cacheReadTokens: 3156647
   cacheCreationTokens: 117573
 order: 0
+version: v0.5.0
+releasedAt: '2026-05-13T14:16:35.521Z'
+releaseDocPath: release-notes/v0.5.0
 ---
 ## Release 0.4.0
 

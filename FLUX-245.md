@@ -6,7 +6,7 @@ tags:
   - bugfix
   - windows
 title: 'Fix npm prefix lookup: use execSync instead of execFileSync'
-status: Done
+status: Released
 createdBy: Unknown
 updatedBy: Agent
 history:
@@ -26,7 +26,15 @@ history:
       e1d78d5
     date: '2026-05-13T12:07:39.678Z'
     id: c-2026-05-13t12-07-39-678z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-13T14:16:35.553Z'
 implementationLink: e1d78d5f8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e8e
+version: v0.5.0
+releasedAt: '2026-05-13T14:16:35.553Z'
+releaseDocPath: release-notes/v0.5.0
 ---
 ## Problem
 The code was using `execFileSync('npm.cmd', ['prefix', '-g'])` to find the global npm prefix on Windows. This is unnecessarily complex and may fail in some shell environments.

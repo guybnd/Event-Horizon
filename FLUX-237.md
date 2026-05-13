@@ -5,7 +5,7 @@ tags:
   - ux
 effort: S
 title: Add sync status indicator to portal UI
-status: Done
+status: Released
 createdBy: Agent
 updatedBy: Guy
 assignee: unassigned
@@ -267,6 +267,11 @@ history:
     to: Done
     user: Guy
     date: '2026-05-13T07:49:15.417Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-13T14:16:35.540Z'
 tokenMetadata:
   inputTokens: 3039125
   outputTokens: 22095
@@ -275,6 +280,9 @@ tokenMetadata:
   cacheReadTokens: 2872181
   cacheCreationTokens: 159569
 order: 4
+version: v0.5.0
+releasedAt: '2026-05-13T14:16:35.540Z'
+releaseDocPath: release-notes/v0.5.0
 ---
 ## Context
 

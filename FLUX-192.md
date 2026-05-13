@@ -134,8 +134,13 @@ history:
     to: Done
     user: Guy
     date: '2026-05-13T02:47:10.925Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-13T14:16:35.518Z'
 title: dragging ticket between column resets the view
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
 tokenMetadata:
@@ -146,6 +151,9 @@ tokenMetadata:
   cacheReadTokens: 947295
   cacheCreationTokens: 61238
 order: 1
+version: v0.5.0
+releasedAt: '2026-05-13T14:16:35.518Z'
+releaseDocPath: release-notes/v0.5.0
 ---
 ## Problem
 

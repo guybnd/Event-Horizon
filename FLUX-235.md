@@ -1,6 +1,6 @@
 ---
 title: Fix orphan branch git sync - prevent ticket ID collisions and data loss
-status: Done
+status: Released
 priority: High
 assignee: unassigned
 tags:
@@ -439,6 +439,11 @@ history:
     user: Agent
     date: '2026-05-13T04:23:36.385Z'
     comment: Claude Code session ended with code 0.
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-13T14:16:35.533Z'
 tokenMetadata:
   inputTokens: 1472426
   outputTokens: 8607
@@ -446,6 +451,9 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 1334881
   cacheCreationTokens: 123572
+version: v0.5.0
+releasedAt: '2026-05-13T14:16:35.533Z'
+releaseDocPath: release-notes/v0.5.0
 ---
 
 ## Problem

@@ -204,10 +204,15 @@ history:
     user: Agent
     date: '2026-05-12T11:42:56.682Z'
     comment: Claude Code session ended with code 0.
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-13T14:16:35.526Z'
 title: >-
   bug: trying to run agent on a environment where agent is not setup cause
   engine to crash
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -217,6 +222,9 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 2238925
   cacheCreationTokens: 103773
+version: v0.5.0
+releasedAt: '2026-05-13T14:16:35.526Z'
+releaseDocPath: release-notes/v0.5.0
 ---
 ## Bug: Starting Agent on Environment Where CLI Is Not Installed Crashes Engine
 

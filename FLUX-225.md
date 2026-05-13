@@ -216,8 +216,13 @@ history:
     user: Agent
     date: '2026-05-12T11:46:25.006Z'
     comment: Claude Code session ended with code 0.
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-13T14:16:35.524Z'
 title: 'bug: new project setup starts without docs'
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -227,6 +232,9 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 4373290
   cacheCreationTokens: 148226
+version: v0.5.0
+releasedAt: '2026-05-13T14:16:35.524Z'
+releaseDocPath: release-notes/v0.5.0
 ---
 ## Root Cause
 

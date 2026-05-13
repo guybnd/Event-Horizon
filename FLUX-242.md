@@ -8,7 +8,7 @@ tags:
 implementationLink: d5f8125e1b4c9528a2e8c42a17221c662c7e0c45
 id: FLUX-242
 title: 'Fix engine crash: ES module compatibility'
-status: Done
+status: Released
 createdBy: Unknown
 updatedBy: Unknown
 history:
@@ -16,6 +16,14 @@ history:
     user: Unknown
     date: '2026-05-13T11:57:41.934Z'
     comment: Created ticket.
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-13T14:16:35.550Z'
+version: v0.5.0
+releasedAt: '2026-05-13T14:16:35.550Z'
+releaseDocPath: release-notes/v0.5.0
 ---
 ## Problem
 Engine crashed on startup with `ReferenceError: __dirname is not defined in ES module scope`. TypeScript 6 with strict module syntax checking (`verbatimModuleSyntax`) detected mismatch between package.json declaring `"type": "commonjs"` while source files used ES module syntax.
