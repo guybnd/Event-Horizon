@@ -289,10 +289,14 @@ history:
     to: Grooming
     user: Guy
     date: '2026-05-13T12:18:40.669Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-13T12:18:44.184Z'
+    comment: Launched Claude Code session (a6ac2407).
 title: 'UX brainstorm: show AI thought \ progress in ticket'
 status: Grooming
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 tokenMetadata:
   inputTokens: 1797448
   outputTokens: 12705
