@@ -22,7 +22,6 @@ import statsRouter from './routes/stats.js';
 import readStateRouter from './routes/read-state.js';
 import eventsRouter from './routes/events.js';
 import storageRouter from './routes/storage.js';
-import { startSyncWatcher } from './sync-watcher.js';
 
 function isValidWorkspaceRoot(dir: string): boolean {
   return existsSync(path.join(dir, '.flux')) || existsSync(path.join(dir, '.flux-store'));
@@ -205,7 +204,6 @@ async function startServer() {
 
     if (initial && isValidWorkspaceRoot(initial)) {
       await activateWorkspace(initial);
-      startSyncWatcher();
     } else if (initial) {
       console.warn(`Saved workspace not found: ${initial} — open the portal to select a folder.`);
     } else {
