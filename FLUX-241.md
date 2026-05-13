@@ -335,7 +335,11 @@ history:
     user: Guy
     date: '2026-05-13T12:21:29.510Z'
     comment: Updated title.
-title: Redo Agent Session UX
+  - type: activity
+    user: Guy
+    date: '2026-05-13T12:21:36.835Z'
+    comment: Updated title.
+title: Redo Agent Session UX \ UI
 status: Todo
 createdBy: Guy
 updatedBy: Guy
