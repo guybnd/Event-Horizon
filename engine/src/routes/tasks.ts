@@ -10,11 +10,13 @@ import {
   normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry,
   summarizeFieldChanges, hasAppendedStatusChange, findEarliestHistoryDate,
 } from '../history.js';
-import { tasksCache, serializeTaskForApi, updateTaskWithHistory, workspaceActivating } from '../task-store.js';
+import { tasksCache, serializeTaskForApi, updateTaskWithHistory, workspaceActivating, parseErrors } from '../task-store.js';
 import {
   resolveSupportedImageExtension, sanitizeAssetBaseName, normalizeBase64Content,
   normalizeRelativePath, encodeAssetPath, createUniqueAssetFileName,
 } from '../file-utils.js';
+import { cliSessionIdByTaskId, cliSessionsById } from '../session-store.js';
+import { getAdapter } from '../agents/registry.js';
 
 const execFileAsync = promisify(execFile);
 const router = express.Router();
@@ -57,6 +59,10 @@ async function getMaxIdFromRemote(projectKey: string): Promise<number> {
 
 router.get('/', (req, res) => {
   res.json(Object.values(tasksCache).map(serializeTaskForApi));
+});
+
+router.get('/errors', (req, res) => {
+  res.json(Object.values(parseErrors));
 });
 
 router.get('/:id', (req, res) => {
@@ -166,6 +172,24 @@ router.put('/:id', async (req, res) => {
         error: 'READY_MISSING_COMMENT',
         message: 'Transitioning to Ready requires a completion comment in the same request.',
       });
+    }
+
+    // Auto-stop the CLI session when ticket moves to Ready
+    const sessionId = cliSessionIdByTaskId.get(id);
+    if (sessionId) {
+      const session = cliSessionsById.get(sessionId);
+      if (session && (session.status === 'running' || session.status === 'waiting-input')) {
+        console.log(`[tasks] Auto-stopping session ${sessionId} for ticket ${id} (moved to ${readyStatus})`);
+        session.requestedStop = true;
+        session.status = 'completed';
+        session.endedAt = new Date().toISOString();
+        try {
+          const adapter = getAdapter(session.framework);
+          adapter.stop(session);
+        } catch (err: any) {
+          console.warn(`[tasks] Failed to stop session ${sessionId}:`, err.message);
+        }
+      }
     }
   }
 
