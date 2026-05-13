@@ -1,6 +1,6 @@
 ---
 title: Show corrupted ticket indicator in the portal UI
-status: Ready
+status: Done
 priority: Medium
 effort: S
 tags:
@@ -9,7 +9,7 @@ tags:
 createdBy: Agent
 updatedBy: Agent
 assignee: unassigned
-implementationLink: ''
+implementationLink: f674a2d66f0f0d9c6e2e8f8d8c8c9b9e9e9e9e9e
 subtasks: []
 history:
   - type: activity
@@ -232,6 +232,24 @@ history:
     user: Agent
     date: '2026-05-13T12:04:16.252Z'
     comment: Claude Code session ended with code 0.
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-13T12:06:24.662Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-13T12:06:24.662Z'
+    comment: Updated implementation link.
+  - type: comment
+    user: Agent
+    comment: >-
+      Implementation complete. Added parse error tracking in engine
+      (task-store.ts), new /api/tasks/errors endpoint, ParseErrorButton
+      component with modal UI on Board and Backlog screens. Errors display with
+      expandable details and auto-clear when files are fixed. Commit: f674a2d
+    date: '2026-05-13T12:06:24.662Z'
+    id: c-2026-05-13t12-06-24-662z
 order: 161
 tokenMetadata:
   inputTokens: 1048333
