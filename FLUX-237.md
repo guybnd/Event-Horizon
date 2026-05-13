@@ -219,13 +219,25 @@ history:
     user: Claude Code
     date: '2026-05-13T04:48:01.969Z'
     comment: "Perfect! All changes are in place. Let me create a brief summary for the user:\n\n## Summary\n\nFLUX-237 implementation complete and moved to **Ready** status.\n\n### What was implemented:\n\n**Sync Status Indicator** - Real-time visual indicator in portal header showing:\n- ✅ Synced (with last sync time)\n- \U0001F504 Syncing... (animated spinner)\n- ⚠️ Conflict (with count badge, opens resolution modal)\n- ❌ Error (network/auth/unknown, shows toast with copy button)\n- \U0001F4F5 Offline (distinct slate color for no remote configured)\n\n**Key Features:**\n- SSE connection to `/api/sync-status/stream` for real-time updates\n- Inline error toast with copy-to-clipboard (no browser alerts)\n- Conflict resolution modal with focus trap and keyboard navigation\n- Expandable preview showing full ticket content or semantic field-level diffs\n- Time display updates every 30s\n- Mobile-responsive throughout\n- Full ARIA labels for accessibility\n\n**Files Modified:**\n- `portal/src/components/SyncStatusIndicator.tsx` (new)\n- `portal/src/components/ConflictResolutionModal.tsx` (new)\n- `portal/src/components/Header.tsx` (integrated indicator)\n- `engine/src/sync-watcher.ts` (SSE endpoints)\n- `engine/src/routes/storage.ts` (conflict resolution API)\n\nPortal builds successfully. Ready for user review and testing."
+  - type: activity
+    user: Agent
+    date: '2026-05-13T05:29:28.493Z'
+    comment: Claude Code session stopped.
+  - type: activity
+    user: Agent
+    date: '2026-05-13T05:29:29.015Z'
+    comment: Claude Code session stopped.
+  - type: activity
+    user: Agent
+    date: '2026-05-13T05:29:31.923Z'
+    comment: Launched Claude Code session (dddb9478).
 tokenMetadata:
-  inputTokens: 1142785
-  outputTokens: 11589
-  costUSD: 0.803456
+  inputTokens: 2760404
+  outputTokens: 19659
+  costUSD: 1.557262
   costIsEstimated: false
-  cacheReadTokens: 1061692
-  cacheCreationTokens: 80953
+  cacheReadTokens: 2636751
+  cacheCreationTokens: 122726
 ---
 ## Context
 
