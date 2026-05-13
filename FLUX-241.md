@@ -234,122 +234,214 @@ history:
     user: Agent
     date: '2026-05-13T12:14:21.581Z'
     comment: Launched Claude Code session (a1658ef6).
+  - type: status_change
+    from: Grooming
+    to: Todo
+    user: Agent
+    date: '2026-05-13T12:15:49.834Z'
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-13T12:15:59.706Z'
+    comment: >-
+      Grooming complete. I've updated FLUX-241 with a comprehensive
+      implementation plan that addresses your feedback:
+
+
+      **Key changes from the original:**
+
+
+      1. **Added "Rules of Engagement" section** documenting mandatory session
+      outcomes: every session must result in a visible ticket update, clear
+      summary, and explicit next action
+
+
+      2. **Clarified Require Input flow** with enforcement already in place
+      (backend validates comment + status transition happen atomically)
+
+
+      3. **Simplified scope** by recognizing most backend enforcement already
+      exists — we just need to enhance session end logging and add UI polish
+
+
+      4. **Added Documentation Requirements** as a first-class deliverable, with
+      three specific doc files to create/update
+
+
+      5. **Preserved the UI improvements** for progress bubbles and history
+      visual distinction
+
+
+      The ticket is now in **Todo** status with metadata: assignee=Agent,
+      priority=High, effort=M.
+  - type: activity
+    user: Agent
+    date: '2026-05-13T12:15:59.726Z'
+    comment: Claude Code session ended with code 0.
 title: 'UX brainstorm: show AI thought \ progress in ticket'
-status: Grooming
+status: Todo
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
-  inputTokens: 1462939
-  outputTokens: 8873
-  costUSD: 1.078872
+  inputTokens: 1797448
+  outputTokens: 12705
+  costUSD: 1.41677
   costIsEstimated: false
-  cacheReadTokens: 1313341
-  cacheCreationTokens: 131093
+  cacheReadTokens: 1595683
+  cacheCreationTokens: 180856
 order: 1
 ---
 ## Problem Summary
 
 The current UX makes it difficult to track AI progress on tickets. Agent messages are not surfaced well, progress is invisible during active sessions, and there's no enforcement that agents leave summary comments on status changes or session ends.
 
+## Rules of Engagement
+
+**Every CLI session MUST result in:**
+1. A visible ticket update (status change, comment, or both)
+2. A clear summary of what was done or what is blocked
+3. An explicit next action (ready for review, needs user input, or work continues)
+
+**Sessions ending with "Require Input":**
+- The agent MUST post one clear question as a history comment
+- The agent MUST set `requireInput: true` in the same API call (enforced by backend)
+- The question should propose default/recommended values when possible
+- The user answers through the ticket modal focused response UI
+- After user input, the ticket automatically returns to the workflow (Grooming or In Progress)
+
+**Documentation Requirements:**
+- All enforcement rules must be documented in `.docs/skills/event-horizon-implementation.md`
+- Session lifecycle behavior must be documented in `.docs/agent-workflow.md` (or equivalent)
+- UI behavior for progress display must be documented in `.docs/ui-reference.md` or portal README
+
 ## Implementation Plan
 
-### 1. Activity & Progress Tracking System
+### Phase 1: Backend Enforcement & Lifecycle Hooks
 
-**Backend (engine/src/agents/claude-code.ts)**
-- Extend `currentActivity` tracking to include more granular states
-- Add session lifecycle hooks to automatically create history entries:
-  - On session start: `agent_message` with "Started working on FLUX-XXX"
-  - On session end (completed/failed/cancelled): `agent_message` with summary (duration, token usage, outcome)
-- When status changes during agent session, enforce that a `comment` (not just `agent_message`) accompanies the change
+**1.1 Session Lifecycle Auto-Logging (engine/src/agents/claude-code.ts)**
+- On session start: already logs activity entry "Launched [label] session"
+- On session exit: enhance the existing handler to check if ticket status changed during session
+  - If status is still `In Progress` when session ends normally, log a warning activity entry suggesting the ticket should be moved to Ready or marked blocked
+  - If session failed/cancelled, log the reason clearly
 
-**History Entry Enhancement (engine/src/history.ts)**
-- Add `isAgentProgress` field to `agent_message` type history entries to distinguish:
-  - Progress updates (e.g., "Reading files...", "Running tests...")
-  - Final summaries (e.g., "Implementation complete")
-- Ensure `agent_message` entries get unique IDs like comments do
+**1.2 Enhanced Require Input Enforcement (engine/src/routes/tasks.ts)**
+- Already exists: when `status` becomes `Require Input`, backend validates a comment is included (lines 148-161)
+- No changes needed here — enforcement is working
 
-### 2. Portal UI Components
+**1.3 Ready Status Enforcement (engine/src/routes/tasks.ts)**
+- Already exists: when `status` becomes `Ready`, backend validates a comment is included (lines 163-175)
+- Already auto-stops CLI session on Ready transition (lines 177-194)
+- No changes needed here — enforcement is working
 
-**A. Real-Time Progress Display in TaskCard**
-- Add collapsible "thought bubble" UI element (similar to comment badge)
-- Position: Below title area or as floating badge
-- Show when: Active CLI session with `currentActivity` present
-- Content: Latest `agent_message` entries + live activity state
-- Visual: Pulsing/animated border when active, muted when collapsed
-- Toggle: Click to expand/collapse, setting to auto-hide/show
+**1.4 Agent Message Categorization (engine/src/history.ts)**
+- Add optional `isProgress?: boolean` field to agent_message entries
+- Progress messages: intermediate steps like "Reading files", "Running tests"
+- Summary messages: final outcomes, session end reports, completion notes
+- Backward compatible: existing agent_message entries without the flag render as summaries
 
-**B. TaskModal Activity Section Enhancement**
-- Add dedicated "Agent Progress" filter tab alongside existing "All", "Activity", "Comments", "Agent"
-- Visual distinction: Use Bot icon and different background for `agent_message` entries
-- Filtering logic:
-  - "All": Everything
-  - "Activity": status_change + activity (no agent_message)
+### Phase 2: Real-Time Progress UI (Portal)
+
+**2.1 TaskCard Progress Bubble (portal/src/components/TaskCard.tsx)**
+- Add collapsible "thought bubble" component below title area
+- Show when: active CLI session with `currentActivity` present
+- Visual: Small bot icon with animated pulse, muted background
+- On click: expand to show last 3 `agent_message` entries + live activity state
+- Respect display settings: `agentProgressBubbles.enabled` and `agentProgressBubbles.delay`
+- Store per-ticket mute state in localStorage
+
+**2.2 Activity Display in TaskModal (portal/src/components/TaskModal.tsx)**
+- Enhance existing history filter tabs:
+  - "All": show everything
+  - "Activity": status_change + activity entries (no agent_message)
   - "Comments": user comments only
-  - "Agent": agent_message entries only (NEW: distinguish progress vs summary)
-  - "Agent Progress": Only show `isAgentProgress: true` entries (intermediate steps)
-  - "Agent Summary": Only show final agent summaries (session end, status changes)
+  - "Agent Messages": show all agent_message entries
+- Add toggle button "Show/Hide Progress Steps" to filter `isProgress: true` messages
 
-**C. Settings Toggle**
-- Add to Settings → Display: "Show AI progress bubbles on cards" (default: true)
-- Add delay slider: "Show progress after X seconds" (default: 2s)
-- Store in config as `agentProgressBubbles: { enabled: boolean, delay: number }`
+**2.3 History Visual Distinction (portal/src/components/task-modal/HistoryList.tsx)**
+- Progress entries (`isProgress: true`): lighter background, smaller font, timestamp-focused
+- Summary entries (no flag or `isProgress: false`): full rendering with bot icon and comment-style border
+- Ensure agent_message entries are clearly distinguished from user comments
 
-### 3. Enforcement Rules
+### Phase 3: Settings & Configuration
 
-**On Status Change (engine/src/routes/tasks.ts)**
-- When agent changes ticket status, validate that either:
-  1. A `comment` entry (type=comment) is included in the same update, OR
-  2. An `agent_message` entry with `isSummary: true` is included
-- Return error if neither present: `AGENT_STATUS_CHANGE_MISSING_SUMMARY`
+**3.1 Display Settings (portal/src/components/settings/WorkspaceSection.tsx or new Display section)**
+- Add toggle: "Show AI progress bubbles on cards" (default: true)
+- Add slider: "Show progress after X seconds" (default: 2s, range: 0-10s)
+- Store in config as:
+```json
+{
+  "agentProgressBubbles": {
+    "enabled": true,
+    "delay": 2
+  }
+}
+```
 
-**On Session End (engine/src/agents/claude-code.ts)**
-- When session completes/fails/cancelled, automatically append:
-  - `agent_message` with `isSummary: true`
-  - Content: Session outcome, duration, tokens used, last activity
-  - If session was for a ticket and ticket is still `In Progress`, suggest moving to `Ready` or record blocker
+**3.2 Config Schema (engine/src/config.ts + types)**
+- Add `agentProgressBubbles` to config schema
+- Validate delay is between 0-10 seconds
 
-### 4. UI Polish
+### Phase 4: Documentation Updates
 
-**TaskCard Thought Bubble**
-- Position: Top-right area, below/beside comment badge
-- Visual: Small bot icon with animated pulse when active
-- On hover: Show tooltip with latest activity
-- On click: Expand inline panel showing last 3 agent_message entries
-- Mute button: Suppress bubble for this specific ticket (store in localStorage)
+**4.1 Workflow Documentation (.docs/skills/event-horizon-implementation.md)**
+- Document mandatory session completion requirements
+- Document Require Input flow: question → `requireInput: true` → user answers → workflow continues
+- Document Ready flow: work done → completion comment + Ready status → user reviews → user says "finish FLUX-XX"
+- Document the enforcement rules for status transitions
 
-**HistoryList Component**
-- Distinguish `agent_message` entries with:
-  - Progress entries: Lighter background, smaller font, timestamp-focused
-  - Summary entries: Full comment-style rendering with Bot icon and border
-- Add "Show/Hide Progress Steps" toggle button at top of history section
+**4.2 Agent Workflow Guide (create .docs/agent-workflow.md if missing)**
+- Document full ticket lifecycle: Grooming → Todo → In Progress → Ready → Done
+- Document when to use Require Input vs chat for questions
+- Document session expectations and exit criteria
 
-### 5. Data Migration
-
-- No schema changes needed (history already supports `agent_message` type)
-- Add optional `isAgentProgress`, `isSummary` boolean flags to history entries (backward compatible)
-- Existing `agent_message` entries without flags default to summary display
+**4.3 UI Reference (create .docs/ui-reference.md or update portal/README.md)**
+- Document progress bubble behavior and settings
+- Document history filtering and visual distinctions
+- Document focused response UI for answering agent questions
 
 ## Acceptance Criteria
 
-1. When agent starts working on a ticket, an `agent_message` is logged automatically
-2. During active sessions, TaskCard shows collapsible progress bubble with latest activity
-3. When agent changes ticket status, a user-facing comment or summary is enforced
-4. TaskModal history has clear visual distinction between progress steps and final summaries
-5. User can filter history to see only summaries or only progress steps
-6. Settings allow disabling progress bubbles globally
-7. Session end automatically logs a summary message with outcome and metrics
+1. ✅ Backend already enforces comment on Require Input transition
+2. ✅ Backend already enforces comment on Ready transition
+3. ✅ Backend already auto-stops CLI session on Ready transition
+4. Session end logs a clear outcome (completed/failed/cancelled with context)
+5. If ticket is still In Progress when session ends normally, a warning is logged
+6. TaskCard shows collapsible progress bubble during active sessions
+7. Progress bubble respects display settings (enabled, delay)
+8. TaskModal history has clear visual distinction between progress and summary messages
+9. User can toggle visibility of progress steps in history
+10. Settings allow configuring progress bubble behavior
+11. All enforcement rules and session expectations are documented in `.docs/skills/` and `.docs/`
 
 ## Files to Modify
 
-- `engine/src/agents/claude-code.ts` - Session lifecycle hooks, auto-logging
-- `engine/src/history.ts` - Add helper for agent summary entries
-- `engine/src/routes/tasks.ts` - Enforce summary on status change
-- `portal/src/types.ts` - Extend HistoryEntry type with progress/summary flags
-- `portal/src/components/TaskCard.tsx` - Add progress bubble component
-- `portal/src/components/TaskModal.tsx` - Enhance activity filter UI
-- `portal/src/components/task-modal/HistoryList.tsx` - Visual distinction for agent entries
-- `portal/src/AppContext.tsx` - Settings for progress bubble config
+**Backend:**
+- `engine/src/agents/claude-code.ts` — enhance session end logging
+- `engine/src/history.ts` — add `isProgress` field to agent_message type
+- `engine/src/config.ts` — add agentProgressBubbles config schema
+
+**Frontend:**
+- `portal/src/types.ts` — extend HistoryEntry with isProgress field
+- `portal/src/components/TaskCard.tsx` — add progress bubble component
+- `portal/src/components/TaskModal.tsx` — enhance history filter UI
+- `portal/src/components/task-modal/HistoryList.tsx` — visual distinction for agent messages
+- `portal/src/components/settings/` — add display settings for progress bubbles
+- `portal/src/AppContext.tsx` — expose agentProgressBubbles config
+
+**Documentation:**
+- `.docs/skills/event-horizon-implementation.md` — document session rules
+- `.docs/agent-workflow.md` — document full ticket lifecycle (create if missing)
+- `.docs/ui-reference.md` or `portal/README.md` — document progress UI behavior
+
+## Implementation Sequence
+
+1. **Backend:** Add `isProgress` field support to history.ts and config schema
+2. **Backend:** Enhance session end logging in claude-code.ts
+3. **Frontend:** Extend types and add progress bubble to TaskCard
+4. **Frontend:** Add history visual distinction in HistoryList
+5. **Frontend:** Add display settings UI
+6. **Documentation:** Update all skill and workflow docs
+7. **Testing:** Verify enforcement works, UI displays correctly, settings persist
 
 ## Estimated Effort
 
-**M** (Medium) - Touches multiple surfaces but each change is relatively straightforward
+**M** (Medium) — most backend enforcement already exists, focus is on UI polish and documentation
