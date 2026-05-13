@@ -16,7 +16,7 @@ import {
   normalizeRelativePath, encodeAssetPath, createUniqueAssetFileName,
 } from '../file-utils.js';
 import { cliSessionIdByTaskId, cliSessionsById } from '../session-store.js';
-import { getAdapter } from '../agents/registry.js';
+import { getAdapter } from '../agents/index.js';
 
 const execFileAsync = promisify(execFile);
 const router = express.Router();

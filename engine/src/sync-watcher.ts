@@ -151,12 +151,29 @@ export async function resolveConflicts(
   // Stage resolved files and commit the merge
   pendingConflicts = null;
   updateStatus({ state: 'syncing' });
-  await execFileAsync('git', ['-C', storeDir, 'add', '-A']);
+
+  let addAttempts = 0;
+  while (addAttempts < 3) {
+    try {
+      await execFileAsync('git', ['-C', storeDir, 'add', '-A']);
+      break;
+    } catch (addErr: any) {
+      const msg = addErr.message || String(addErr);
+      if (msg.includes('index.lock') && addAttempts < 2) {
+        console.log(`[sync-watcher] Git lock detected on add, retrying in 1s (attempt ${addAttempts + 1}/3)...`);
+        await new Promise(r => setTimeout(r, 1000));
+        addAttempts++;
+      } else {
+        throw addErr;
+      }
+    }
+  }
+
   await execFileAsync('git', ['-C', storeDir, 'commit', '-m', 'flux: sync (resolved conflicts)']);
   console.log('[sync-watcher] Committed merge with resolved conflicts');
 
   try {
-    await execFileAsync('git', ['-C', workspaceRoot, 'push', 'origin', 'flux-data']);
+    await execFileAsync('git', ['-C', storeDir, 'push', 'origin', 'flux-data']);
     updateStatus({ state: 'synced', lastSyncTime: new Date().toISOString() });
     console.log('[sync-watcher] Pushed resolved conflicts to remote');
   } catch (pushErr: any) {
@@ -171,7 +188,23 @@ async function runSync(storeDir: string): Promise<void> {
 
   try {
     // Step 1: commit any pending local changes first
-    await execFileAsync('git', ['-C', storeDir, 'add', '-A']);
+    let addAttempts = 0;
+    while (addAttempts < 3) {
+      try {
+        await execFileAsync('git', ['-C', storeDir, 'add', '-A']);
+        break;
+      } catch (addErr: any) {
+        const msg = addErr.message || String(addErr);
+        if (msg.includes('index.lock') && addAttempts < 2) {
+          console.log(`[sync-watcher] Git lock detected on add, retrying in 1s (attempt ${addAttempts + 1}/3)...`);
+          await new Promise(r => setTimeout(r, 1000));
+          addAttempts++;
+        } else {
+          throw addErr;
+        }
+      }
+    }
+
     const { stdout: porcelain } = await execFileAsync('git', ['-C', storeDir, 'status', '--porcelain']);
     if (porcelain.trim()) {
       let commitAttempts = 0;
@@ -183,7 +216,7 @@ async function runSync(storeDir: string): Promise<void> {
         } catch (commitErr: any) {
           const msg = commitErr.message || String(commitErr);
           if (msg.includes('index.lock') && commitAttempts < 2) {
-            console.log(`[sync-watcher] Git lock detected, retrying in 1s (attempt ${commitAttempts + 1}/3)...`);
+            console.log(`[sync-watcher] Git lock detected on commit, retrying in 1s (attempt ${commitAttempts + 1}/3)...`);
             await new Promise(r => setTimeout(r, 1000));
             commitAttempts++;
           } else {
@@ -205,7 +238,7 @@ async function runSync(storeDir: string): Promise<void> {
       console.log(`[sync-watcher] fetch failed (${errorType}): ${errorMsg}`);
       // Push what we have locally, remote will catch up later
       try {
-        await execFileAsync('git', ['-C', workspaceRoot, 'push', 'origin', 'flux-data']);
+        await execFileAsync('git', ['-C', storeDir, 'push', 'origin', 'flux-data']);
         updateStatus({ state: 'synced', lastSyncTime: new Date().toISOString() });
       } catch {
         updateStatus({ state: 'error', error: errorMsg, errorType });
@@ -249,18 +282,8 @@ async function runSync(storeDir: string): Promise<void> {
 
     // Step 4: push
     try {
-      // Re-fetch to catch any commits that landed during our merge
-      await execFileAsync('git', ['-C', storeDir, 'fetch', 'origin', 'flux-data']);
-      const { stdout: prePushLocal } = await execFileAsync('git', ['-C', storeDir, 'rev-parse', 'HEAD']);
-      const { stdout: prePushRemote } = await execFileAsync('git', ['-C', storeDir, 'rev-parse', 'origin/flux-data']);
-
-      if (prePushLocal.trim() !== prePushRemote.trim()) {
-        // Remote moved forward during our merge - retry sync from the top
-        console.log('[sync-watcher] Remote updated during sync, retrying...');
-        return runSync(storeDir);
-      }
-
-      await execFileAsync('git', ['-C', workspaceRoot, 'push', 'origin', 'flux-data']);
+      // Push from the worktree directory
+      await execFileAsync('git', ['-C', storeDir, 'push', 'origin', 'flux-data']);
       console.log('[sync-watcher] Pushed flux-data to remote');
       updateStatus({ state: 'synced', lastSyncTime: new Date().toISOString() });
     } catch (pushErr: any) {

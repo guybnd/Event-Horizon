@@ -10,6 +10,25 @@ function git(cwd: string, args: string[]): Promise<{ stdout: string; stderr: str
   return execFileAsync('git', args, { cwd });
 }
 
+async function gitWithRetry(cwd: string, args: string[], maxRetries = 3): Promise<{ stdout: string; stderr: string }> {
+  let attempts = 0;
+  while (attempts < maxRetries) {
+    try {
+      return await git(cwd, args);
+    } catch (err: any) {
+      const msg = err.message || String(err);
+      if (msg.includes('index.lock') && attempts < maxRetries - 1) {
+        console.log(`[storage-sync] Git lock detected, retrying in 1s (attempt ${attempts + 1}/${maxRetries})...`);
+        await new Promise(r => setTimeout(r, 1000));
+        attempts++;
+      } else {
+        throw err;
+      }
+    }
+  }
+  throw new Error('Unreachable');
+}
+
 export async function attachWorktreeIfPresent(workspaceRoot: string): Promise<void> {
   const storeDir = path.join(workspaceRoot, '.flux-store');
   const isNewAttach = !existsSync(storeDir);
@@ -85,7 +104,7 @@ export async function migrateToOrphan(workspaceRoot: string): Promise<void> {
   }
 
   // Initial commit in the worktree
-  await git(storeDir, ['add', '-A']);
+  await gitWithRetry(storeDir, ['add', '-A']);
   await git(storeDir, ['commit', '-m', 'flux: migrate tickets to orphan branch']);
   await git(workspaceRoot, ['push', 'origin', 'flux-data']).catch(() => {
     // no remote configured — push is best-effort
@@ -137,7 +156,7 @@ export async function restoreToInRepo(workspaceRoot: string): Promise<void> {
   }
 
   // Flush any uncommitted changes before removing the worktree
-  await git(storeDir, ['add', '-A']);
+  await gitWithRetry(storeDir, ['add', '-A']);
   const { stdout: dirty } = await git(storeDir, ['status', '--porcelain']);
   if (dirty.trim()) {
     await git(storeDir, ['commit', '-m', 'flux: pre-restore snapshot']);
