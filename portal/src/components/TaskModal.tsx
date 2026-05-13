@@ -1075,7 +1075,7 @@ export function TaskModal() {
 
   return (
     <AnimatePresence>
-      {isModalOpen && config && (
+      {isModalOpen && config && !isFullView && (
         <motion.div
           key="modal-overlay"
           initial={animationsEnabled ? { opacity: 0 } : undefined}
@@ -1083,7 +1083,7 @@ export function TaskModal() {
           exit={animationsEnabled ? { opacity: 0 } : undefined}
           transition={{ duration: 0.2 }}
           className="pointer-events-auto fixed inset-0 z-[55] bg-black/40 backdrop-blur-sm"
-          onClick={isFullView ? undefined : handleCloseAttempt}
+          onClick={handleCloseAttempt}
         />
       )}
 

@@ -750,10 +750,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return sum;
       }
       const readIds = new Set(readComments[task.id] ?? []);
-      const count = (task.history ?? []).filter(
+      const hasUnread = (task.history ?? []).some(
         e => e.type === 'comment' && e.id && e.user !== currentUser && !readIds.has(e.id)
-      ).length;
-      return sum + count;
+      );
+      return sum + (hasUnread ? 1 : 0);
     }, 0);
   }, [tasks, readComments, currentUser, config]);
 
