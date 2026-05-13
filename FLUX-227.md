@@ -5,9 +5,9 @@ tags:
   - bug
   - sync
 title: Workspace route does not restart sync watcher after activateWorkspace
-status: In Progress
+status: Done
 createdBy: Unknown
-updatedBy: Unknown
+updatedBy: Agent
 assignee: unassigned
 history:
   - type: activity
@@ -36,6 +36,19 @@ history:
     to: In Progress
     user: Unknown
     date: '2026-05-13T02:42:14.172Z'
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-05-13T02:49:22.366Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-13T02:49:22.366Z'
+    comment: >-
+      Shipped. Commit 993ffbc: added startSyncWatcher import and call in POST
+      /api/workspace handler, mirroring the storage.ts pattern. Only
+      workspace.ts staged — tasks.ts and task-store.ts changes are unrelated and
+      left unstaged.
 ---
 ## Problem
 
