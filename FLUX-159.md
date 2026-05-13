@@ -93,6 +93,23 @@ history:
     user: Agent
     date: '2026-05-13T11:49:00.892Z'
     comment: Claude Code session stopped.
+  - type: comment
+    user: Guy
+    date: '2026-05-13T11:55:51.696Z'
+    comment: >-
+      This should have a dedicated seciton that is prompted from a button that
+      has like a error notification with amount of errors from it, each distinct
+      error gets its own button to open for details. i dont want it  taking up
+      all the UI space
+    id: c-2026-05-13t11-55-51-691z
+  - type: activity
+    user: Agent
+    date: '2026-05-13T11:55:55.473Z'
+    comment: Launched Claude Code session (8ae392c3).
+  - type: activity
+    user: Agent
+    date: '2026-05-13T11:56:14.014Z'
+    comment: Claude Code session lost (engine restarted).
 order: 161
 ---
 
