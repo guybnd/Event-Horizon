@@ -1,6 +1,6 @@
 ---
 title: Deep dive into Windows compatibility
-status: In Progress
+status: Done
 priority: High
 assignee: Agent
 tags:
@@ -8,7 +8,7 @@ tags:
   - agent
   - integration
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 effort: M
 implementationLink: ''
 subtasks: []
@@ -217,17 +217,14 @@ history:
     comment: Launched Claude Code session (e412ff30).
   - type: activity
     user: Agent
-    date: '2026-05-13T07:01:19.368Z'
-    comment: Claude Code session stopped.
-  - type: comment
-    user: Agent
-    date: '2026-05-13T07:10:43.444Z'
-    comment: >-
-      Committed partial Windows compat work (58c02af): execFileSync for binary
-      checks and npm.cmd calls, safe PowerShell PATH escaping, os.homedir() in
-      kdialog fallback. Remaining items in ticket body still open.
-    id: c-2026-05-13t07-10-43-444z
-order: 1
+    date: '2026-05-13T07:05:36.843Z'
+    comment: Claude Code session lost (engine restarted).
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Guy
+    date: '2026-05-13T07:33:50.968Z'
+order: 4
 tokenMetadata:
   inputTokens: 395655
   outputTokens: 7502
