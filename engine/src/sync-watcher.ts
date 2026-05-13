@@ -249,6 +249,17 @@ async function runSync(storeDir: string): Promise<void> {
 
     // Step 4: push
     try {
+      // Re-fetch to catch any commits that landed during our merge
+      await execFileAsync('git', ['-C', storeDir, 'fetch', 'origin', 'flux-data']);
+      const { stdout: prePushLocal } = await execFileAsync('git', ['-C', storeDir, 'rev-parse', 'HEAD']);
+      const { stdout: prePushRemote } = await execFileAsync('git', ['-C', storeDir, 'rev-parse', 'origin/flux-data']);
+
+      if (prePushLocal.trim() !== prePushRemote.trim()) {
+        // Remote moved forward during our merge - retry sync from the top
+        console.log('[sync-watcher] Remote updated during sync, retrying...');
+        return runSync(storeDir);
+      }
+
       await execFileAsync('git', ['-C', workspaceRoot, 'push', 'origin', 'flux-data']);
       console.log('[sync-watcher] Pushed flux-data to remote');
       updateStatus({ state: 'synced', lastSyncTime: new Date().toISOString() });
