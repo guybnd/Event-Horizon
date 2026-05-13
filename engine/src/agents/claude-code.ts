@@ -1,4 +1,4 @@
-import { spawn, execSync } from 'child_process';
+import { spawn, execSync, execFileSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { configCache } from '../config.js';
@@ -134,7 +134,9 @@ export function buildInitialPrompt(task: any, appendPrompt: string): string {
     actionInstruction,
     ...(appendPrompt ? ['', appendPrompt] : []),
   ];
-  return lines.join('\n');
+  // Node's spawn rejects strings containing null bytes; strip them to prevent
+  // ticket content (e.g. bad escape sequences) from breaking the spawn call.
+  return lines.join('\n').replace(/\0/g, '');
 }
 
 export function attachStdoutProcessing(
@@ -420,9 +422,10 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     entries: [buildCommentEntry(user, message, inputAt)],
   });
 
+  const safeMessage = message.replace(/\0/g, '');
   const resumeArgs = session.claudeSessionId
-    ? ['-p', message, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions']
-    : ['-p', message, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'];
+    ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions']
+    : ['-p', safeMessage, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'];
 
   let replyProc: ReturnType<typeof spawn>;
   if (process.platform === 'win32') {
