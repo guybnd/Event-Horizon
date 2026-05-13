@@ -154,6 +154,21 @@ router.put('/:id', async (req, res) => {
     }
   }
 
+  const readyStatus = configCache.readyForMergeStatus || 'Ready';
+  if (updates.status === readyStatus && task.status !== readyStatus) {
+    const submittedHistory: any[] = Array.isArray(updates.history) ? updates.history : [];
+    const existingLen = (task.history || []).length;
+    const hasNewComment =
+      submittedHistory.slice(existingLen).some((e: any) => e?.type === 'comment') ||
+      appendHistoryEntries.some((e: any) => e?.type === 'comment');
+    if (!hasNewComment) {
+      return res.status(400).json({
+        error: 'READY_MISSING_COMMENT',
+        message: 'Transitioning to Ready requires a completion comment in the same request.',
+      });
+    }
+  }
+
   const normalizedExistingHistory = normalizeHistoryEntries(task.history || []);
   const existingHistory = ensureCreationActivity(
     normalizedExistingHistory.history,

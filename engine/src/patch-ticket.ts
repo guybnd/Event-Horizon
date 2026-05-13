@@ -87,17 +87,20 @@ if (!fs.existsSync(ticketPath)) {
   process.exit(1);
 }
 
-// Resolve the configured require-input status so we can enforce the comment guard.
-function loadRequireInputStatus(workspace: string): string {
+// Resolve configured status names so we can enforce comment guards.
+function loadConfiguredStatuses(workspace: string): { requireInputStatus: string; readyStatus: string } {
   try {
     const configPath = path.resolve(workspace, fluxSubdir, 'config.json');
     const cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-    return cfg.requireInputStatus || 'Require Input';
+    return {
+      requireInputStatus: cfg.requireInputStatus || 'Require Input',
+      readyStatus: cfg.readyForMergeStatus || 'Ready',
+    };
   } catch {
-    return 'Require Input';
+    return { requireInputStatus: 'Require Input', readyStatus: 'Ready' };
   }
 }
-const requireInputStatus = loadRequireInputStatus(opts.workspace);
+const { requireInputStatus, readyStatus } = loadConfiguredStatuses(opts.workspace);
 
 let raw: string;
 try {
@@ -122,6 +125,12 @@ const history: unknown[] = Array.isArray(fm['history']) ? (fm['history'] as unkn
 // Guard: transitioning to Require Input without a --comment is a workflow violation.
 if (opts.status === requireInputStatus && String(fm['status'] ?? '') !== requireInputStatus && opts.comment === undefined) {
   console.error(`patch-ticket: --comment is required when transitioning to "${requireInputStatus}". Include the question in the same command.`);
+  process.exit(1);
+}
+
+// Guard: transitioning to Ready without a --comment is a workflow violation.
+if (opts.status === readyStatus && String(fm['status'] ?? '') !== readyStatus && opts.comment === undefined) {
+  console.error(`patch-ticket: --comment is required when transitioning to "${readyStatus}". Include the completion summary in the same command.`);
   process.exit(1);
 }
 
