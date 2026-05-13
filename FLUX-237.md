@@ -255,6 +255,13 @@ history:
       UX redesign: Error popup now centered modal with backdrop dismiss + test
       endpoint added.
     id: c-2026-05-13t07-05-55-717z
+  - type: comment
+    user: Agent
+    date: '2026-05-13T07:11:15.070Z'
+    comment: >-
+      ROOT CAUSE FIX: Modal now renders at document.body using React Portal - no
+      longer constrained to Header layout.
+    id: c-2026-05-13t07-11-15-070z
 tokenMetadata:
   inputTokens: 3039125
   outputTokens: 22095
