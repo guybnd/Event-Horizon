@@ -215,6 +215,18 @@ history:
     user: Agent
     date: '2026-05-13T07:00:23.594Z'
     comment: Launched Claude Code session (e412ff30).
+  - type: activity
+    user: Agent
+    date: '2026-05-13T07:01:19.368Z'
+    comment: Claude Code session stopped.
+  - type: comment
+    user: Agent
+    date: '2026-05-13T07:10:43.444Z'
+    comment: >-
+      Committed partial Windows compat work (58c02af): execFileSync for binary
+      checks and npm.cmd calls, safe PowerShell PATH escaping, os.homedir() in
+      kdialog fallback. Remaining items in ticket body still open.
+    id: c-2026-05-13t07-10-43-444z
 order: 1
 tokenMetadata:
   inputTokens: 395655
