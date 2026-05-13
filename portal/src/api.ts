@@ -353,6 +353,10 @@ export function subscribeSyncStatus(callback: (status: SyncStatus) => void): () 
   };
 }
 
+export async function triggerSync(): Promise<void> {
+  await fetch(`${API_URL}/sync-status/sync`, { method: 'POST' });
+}
+
 export async function resolveConflicts(
   resolutions: Array<{ ticketId: string; strategy: 'use-remote' | 'rename-local' | 'manual'; newContent?: string }>
 ): Promise<{ ok: boolean }> {

@@ -56,6 +56,12 @@ export function onSyncStatusChange(listener: (status: SyncStatus) => void): () =
   };
 }
 
+export function triggerSync(): void {
+  if (!isOrphanMode()) return;
+  const storeDir = getFluxStoreDir();
+  void runSync(storeDir);
+}
+
 export function triggerTestError(): void {
   updateStatus({
     state: 'error',

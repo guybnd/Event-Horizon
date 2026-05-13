@@ -204,7 +204,7 @@ export function SyncStatusIndicator() {
     }
   };
 
-  const isInteractive = status.state === 'conflict' || status.state === 'error';
+  const isInteractive = true;
 
   const getAriaLabel = () => {
     if (isOffline) return 'Sync status: Offline. No remote configured.';
@@ -228,6 +228,8 @@ export function SyncStatusIndicator() {
       setShowConflictModal(true);
     } else if (status.state === 'error') {
       setShowErrorToast(true);
+    } else if (status.state !== 'syncing') {
+      void api.triggerSync();
     }
   };
 
@@ -250,14 +252,14 @@ export function SyncStatusIndicator() {
     <>
       <button
         type="button"
-        className={`group flex shrink-0 items-center gap-1.5 rounded-xl border px-2.5 py-1.5 transition-all duration-200 overflow-hidden ${getColorClasses()} ${isInteractive ? 'cursor-pointer hover:scale-105 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-primary/50' : 'cursor-default'}`}
-        title={getTooltip()}
+        className={`group flex shrink-0 items-center gap-1.5 rounded-xl border px-2.5 py-1.5 transition-all duration-200 overflow-hidden ${getColorClasses()} ${status.state !== 'syncing' ? 'cursor-pointer hover:scale-105 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-primary/50' : 'cursor-default'}`}
+        title={status.state === 'syncing' ? getTooltip() : `${getTooltip()} — click to sync now`}
         aria-label={getAriaLabel()}
-        onClick={isInteractive ? handleClick : undefined}
-        disabled={!isInteractive}
-        tabIndex={isInteractive ? 0 : -1}
+        onClick={handleClick}
+        disabled={status.state === 'syncing'}
+        tabIndex={0}
         onKeyDown={(e) => {
-          if (isInteractive && (e.key === 'Enter' || e.key === ' ')) {
+          if (status.state !== 'syncing' && (e.key === 'Enter' || e.key === ' ')) {
             e.preventDefault();
             handleClick();
           }

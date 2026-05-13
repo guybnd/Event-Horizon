@@ -1,11 +1,17 @@
 import express from 'express';
-import { getSyncStatus, onSyncStatusChange, triggerTestError } from '../sync-watcher.js';
+import { getSyncStatus, onSyncStatusChange, triggerSync, triggerTestError } from '../sync-watcher.js';
 
 const router = express.Router();
 
 // GET /api/sync-status - returns current sync status
 router.get('/', (_req, res) => {
   res.json(getSyncStatus());
+});
+
+// POST /api/sync-status/sync - trigger an immediate sync
+router.post('/sync', (_req, res) => {
+  triggerSync();
+  res.json({ ok: true });
 });
 
 // POST /api/sync-status/test-error - trigger a test error for UI testing (dev only)
