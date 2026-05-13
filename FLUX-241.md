@@ -331,10 +331,14 @@ history:
     user: Agent
     date: '2026-05-13T12:21:10.393Z'
     comment: Claude Code session ended with code 0.
-title: 'UX brainstorm: show AI thought \ progress in ticket'
+  - type: activity
+    user: Guy
+    date: '2026-05-13T12:21:29.510Z'
+    comment: Updated title.
+title: Redo Agent Session UX
 status: Todo
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 tokenMetadata:
   inputTokens: 2478894
   outputTokens: 20500
