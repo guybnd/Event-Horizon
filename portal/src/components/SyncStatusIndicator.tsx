@@ -204,8 +204,6 @@ export function SyncStatusIndicator() {
     }
   };
 
-  const isInteractive = true;
-
   const getAriaLabel = () => {
     if (isOffline) return 'Sync status: Offline. No remote configured.';
 
