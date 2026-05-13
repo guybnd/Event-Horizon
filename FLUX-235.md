@@ -216,6 +216,14 @@ history:
     user: Agent
     date: '2026-05-13T04:13:11.314Z'
     comment: Launched Claude Code session (ef05ce09).
+  - type: activity
+    user: Agent
+    date: '2026-05-13T04:15:10.533Z'
+    comment: Claude Code session lost (engine restarted).
+  - type: activity
+    user: Agent
+    date: '2026-05-13T04:15:10.623Z'
+    comment: Claude Code session lost (engine restarted).
 tokenMetadata:
   inputTokens: 799361
   outputTokens: 4937
