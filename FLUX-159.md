@@ -1,6 +1,6 @@
 ---
 title: Show corrupted ticket indicator in the portal UI
-status: In Progress
+status: Ready
 priority: Medium
 effort: S
 tags:
@@ -110,6 +110,72 @@ history:
     user: Agent
     date: '2026-05-13T11:56:14.014Z'
     comment: Claude Code session lost (engine restarted).
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-13T11:58:06.404Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-13T11:58:06.405Z'
+    comment: >-
+      Implementation complete. Replaced the ParseErrorBanner with
+      ParseErrorButton that shows a compact button with an error badge count.
+      Clicking the button opens a modal with expandable error cards - each
+      distinct error gets its own collapsible section showing the ticket ID,
+      file path, and detailed error message. The modal includes helpful
+      instructions on how to fix the issues. The button appears in both Board
+      and Backlog screens next to the TaskViewControls. Validated with FLUX-238
+      which currently has a merge conflict in its YAML frontmatter.
+    id: c-2026-05-13t11-58-06-405z
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-13T11:58:15.550Z'
+    comment: >-
+      Perfect! The ticket is now in Ready status. Let me create a quick summary
+      of what was implemented:
+
+
+      ## Implementation Complete
+
+
+      I've successfully implemented the corrupted ticket indicator with a
+      dedicated UI section as requested:
+
+
+      **What Changed:**
+
+
+      1. **Created `ParseErrorButton.tsx`** - A compact button with an error
+      badge that shows the count of corrupted files
+
+      2. **Integrated into Board & Backlog** - The button appears next to
+      TaskViewControls in both views, taking minimal space
+
+      3. **Modal with Expandable Errors** - Clicking the button opens a modal
+      where each distinct error has its own collapsible card showing:
+         - Ticket ID (e.g., FLUX-238.md)
+         - Full file path
+         - Detailed error message
+         - Helpful instructions on how to fix
+
+      **Key Features:**
+
+      - Only appears when there are parse errors (no UI clutter when everything
+      is fine)
+
+      - Badge shows total error count at a glance
+
+      - Each error can be expanded independently for details
+
+      - Includes guidance on fixing YAML frontmatter issues
+
+      - Automatically clears when files are fixed and reloaded
+
+
+      The implementation is currently live and can be tested with FLUX-238,
+      which has a git merge conflict in its YAML frontmatter. The ticket is now
+      in **Ready** status awaiting your review.
 order: 161
 ---
 
