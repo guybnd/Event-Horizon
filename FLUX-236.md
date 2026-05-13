@@ -35,6 +35,107 @@ history:
     user: Agent
     date: '2026-05-13T04:27:43.809Z'
     comment: Claude Code session lost (engine restarted).
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-13T04:33:25.200Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-13T04:33:25.201Z'
+    comment: >-
+      Implementation complete. Fixed API endpoint URL mismatch in
+      SyncStatusIndicator.tsx (changed /api/sync/resolve-conflicts to
+      /api/storage/resolve-conflicts). All backend and frontend components
+      validated and building successfully. Ready for testing with real sync
+      conflicts.
+    id: c-2026-05-13t04-33-25-201z
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-13T04:33:39.290Z'
+    comment: >-
+      Perfect! The ticket has been successfully updated to "Ready" status with a
+      completion comment. Let me create a summary of what was done:
+
+
+      ## Summary
+
+
+      I've successfully completed the implementation review and bug fix for
+      FLUX-236 (Add conflict resolution UI for orphan branch sync).
+
+
+      **Issue Found & Fixed:**
+
+      - **Bug**: `SyncStatusIndicator.tsx` was calling
+      `/api/sync/resolve-conflicts` instead of the correct backend endpoint
+      `/api/storage/resolve-conflicts`
+
+      - **Fix**: Updated line 227 in `SyncStatusIndicator.tsx` to use the
+      correct endpoint path
+
+
+      **Implementation Status:**
+
+
+      All required components are implemented and validated:
+
+
+      **Backend** (engine/src/):
+
+      - `sync-watcher.ts`: Conflict detection logic, `resolveConflicts()`
+      function, and conflict state tracking
+
+      - `routes/storage.ts`: `POST /api/storage/resolve-conflicts` endpoint
+
+      - `routes/sync-status.ts`: `GET /api/sync-status` and SSE stream for
+      real-time updates
+
+
+      **Frontend** (portal/src/):
+
+      - `ConflictResolutionModal.tsx`: Full-featured modal with side-by-side
+      conflict preview
+
+      - `SyncStatusIndicator.tsx`: Live sync status indicator in header (now
+      with correct API endpoint)
+
+      - `App.tsx`: SSE subscription and conflict modal orchestration
+
+      - `api.ts`: Type-safe API functions for sync operations
+
+
+      **Validation:**
+
+      - ✅ Portal builds successfully
+
+      - ✅ Engine routes are properly wired
+
+      - ✅ All API endpoints correctly mapped
+
+
+      **Ticket Status:** Moved to **Ready** - awaiting user review and testing
+      with real sync conflicts.
+  - type: activity
+    user: Agent
+    date: '2026-05-13T04:33:39.506Z'
+    comment: Claude Code session ended with code 0.
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Agent
+    date: '2026-05-13T04:34:09.942Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-13T04:34:10.234Z'
+    comment: Launched Claude Code session (140d7e1c).
+tokenMetadata:
+  inputTokens: 927967
+  outputTokens: 4109
+  costUSD: 0.537461
+  costIsEstimated: false
+  cacheReadTokens: 868458
+  cacheCreationTokens: 47950
 ---
 ## Context
 
