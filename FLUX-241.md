@@ -277,10 +277,17 @@ history:
     user: Agent
     date: '2026-05-13T12:15:59.726Z'
     comment: Claude Code session ended with code 0.
+  - type: comment
+    user: Guy
+    date: '2026-05-13T12:18:35.065Z'
+    comment: >-
+      re groom this ticket, adopt the approach the designer added in the
+      Session--Centric & Minimal description
+    id: c-2026-05-13t12-18-35-061z
 title: 'UX brainstorm: show AI thought \ progress in ticket'
 status: Todo
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 tokenMetadata:
   inputTokens: 1797448
   outputTokens: 12705
