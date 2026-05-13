@@ -580,17 +580,21 @@ history:
   - type: agent_session
     sessionId: bcfecb5f-bfad-49fb-90ee-e715da52be21
     startedAt: '2026-05-13T12:45:30.500Z'
-    status: active
+    status: cancelled
     progress: []
     user: Claude Code
     date: '2026-05-13T12:45:30.500Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-13T13:05:44.657Z'
   - type: agent_session
     sessionId: ee86ff3d-1367-4de9-84c4-21d7af00d4b4
     startedAt: '2026-05-13T12:49:20.608Z'
-    status: active
+    status: cancelled
     progress: []
     user: Claude Code
     date: '2026-05-13T12:49:20.608Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-13T13:05:44.657Z'
   - type: comment
     user: Agent
     date: '2026-05-13T12:49:51.244Z'
@@ -603,22 +607,101 @@ history:
   - type: agent_session
     sessionId: 7a87848d-7db2-41b7-8399-797bc56a9803
     startedAt: '2026-05-13T12:51:54.226Z'
-    status: active
-    progress: []
+    status: completed
+    progress:
+      - timestamp: '2026-05-13T12:54:51.754Z'
+        message: >-
+          ## Summary
+
+
+          Fixed the real-time progress display issue. The root cause was simple:
+          the backend was already broadcasting 'progress' SSE events (since the
+          initial implementation), but the portal was only listening for
+          'activity' events.
+
+
+          **What I changed:**
+
+          - Added 'progress' event listener in `AppContext.tsx` that updates
+          active `agent_session` entries in real-time when progress events
+          arrive from the backend
+
+
+          **Result:** Progress updates now stream live to the UI, so users can
+          see AI activity as it happens instead of only seeing one summary when
+          the session ends.
+
+
+          The ticket has been moved to **Ready** status and awaits your review.
     user: Claude Code
     date: '2026-05-13T12:51:54.226Z'
+    outcome: Claude Code session ended with code 0.
+    endedAt: '2026-05-13T12:54:51.778Z'
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-13T12:54:42.516Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-13T12:54:42.517Z'
+    comment: >-
+      Fixed real-time progress display: Added 'progress' SSE event listener to
+      portal. Backend was already broadcasting progress events, but portal only
+      listened for 'activity' events. Now progress updates append to active
+      agent_session entries in real-time, making live AI progress visible in the
+      UI. Build validated successfully.
+    id: c-2026-05-13t12-54-42-517z
+  - type: comment
+    user: Agent
+    date: '2026-05-13T13:06:57.468Z'
+    comment: 'Fixed both session issues:'
+    id: c-2026-05-13t13-06-57-468z
 title: Redo Agent Session UX \ UI
-status: In Progress
+status: Ready
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
-  inputTokens: 10092056
-  outputTokens: 50113
-  costUSD: 5.181523
+  inputTokens: 11342359
+  outputTokens: 56027
+  costUSD: 5.93942
   costIsEstimated: false
-  cacheReadTokens: 9685783
-  cacheCreationTokens: 381311
+  cacheReadTokens: 10851618
+  cacheCreationTokens: 465252
 order: 1
+entries:
+  - type: comment
+    user: Agent
+    date: '2026-05-13T13:10:00.000Z'
+    comment: >-
+      Fixed both session issues:
+
+
+      1. **Orphaned Sessions Recovery**: Enhanced reconcileOrphanedSessions() to
+      detect and close agent_session entries with status='active' on engine
+      restart. Added logging for recovered sessions.
+
+
+      2. **Frequent Progress Updates**:
+         - Added real-time progress logging when tool activity changes (Read, Edit, Write, Bash with context)
+         - Implemented 15-second heartbeat to log current activity during long operations
+         - Progress now persists to ticket history during work, not just at session end
+         - Activity context includes file names for file ops and command preview for Bash
+
+      Changes in:
+
+      - engine/src/task-store.ts: Updated reconcileOrphanedSessions to handle
+      agent_session entries
+
+      - engine/src/agents/claude-code.ts: Added activity-based progress logging
+      and heartbeat mechanism
+
+      - engine/src/agents/types.ts: Added progressHeartbeat and lastProgressLog
+      fields to CliSessionRecord
+
+
+      Build validated successfully.
+    id: c-2026-05-13t13-10-00-000z
 ---
 ## Problem Summary
 
