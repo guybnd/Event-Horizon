@@ -268,18 +268,12 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     cwd: workspaceRoot,
     env: process.env,
     stdio: 'pipe',
+    shell: process.platform === 'win32',
   });
   session.proc = proc;
   session.pid = proc.pid;
   session.status = 'running';
   session.args = claudeArgs;
-
-  await updateTaskWithHistory(id, {
-    updatedBy: 'Agent',
-    entries: [
-      buildActivityEntry(`Launched ${label} session (${session.id.slice(0, 8)}).`, 'Agent', session.startedAt),
-    ],
-  });
 
   const commitPending = attachStdoutProcessing(proc, session, id);
 
@@ -299,6 +293,14 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
         buildActivityEntry(`${label} session failed to start: ${error.message}`, 'Agent', session.endedAt),
       ],
     });
+    console.error(`[${id}] Failed to spawn ${binaryName}:`, error.message);
+  });
+
+  await updateTaskWithHistory(id, {
+    updatedBy: 'Agent',
+    entries: [
+      buildActivityEntry(`Launched ${label} session (${session.id.slice(0, 8)}).`, 'Agent', session.startedAt),
+    ],
   });
 
   proc.on('exit', async (code, signal) => {
@@ -393,6 +395,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     cwd: workspaceRoot,
     env: process.env,
     stdio: 'pipe',
+    shell: process.platform === 'win32',
   });
   session.proc = replyProc;
   session.pid = replyProc.pid;
@@ -405,10 +408,13 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
 
   replyProc.on('error', async (error) => {
     session.status = 'waiting-input';
+    commitReplyPending();
+    flushSessionOutput(session, true);
     await updateTaskWithHistory(id, {
       updatedBy: 'Agent',
       entries: [buildActivityEntry(`${session.label} reply failed: ${error.message}`, 'Agent', new Date().toISOString())],
     });
+    console.error(`[${id}] Failed to spawn ${binaryName} for reply:`, error.message);
   });
 
   replyProc.on('exit', async () => {
