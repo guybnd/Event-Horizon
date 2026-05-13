@@ -64,6 +64,11 @@ history:
     to: Todo
     user: Guy
     date: '2026-05-11T06:11:21.791Z'
+  - type: comment
+    user: Guy
+    date: '2026-05-13T11:40:24.104Z'
+    comment: should also apply to flux-data mode
+    id: c-2026-05-13t11-40-24-046z
 order: 161
 ---
 
