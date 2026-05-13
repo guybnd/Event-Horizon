@@ -669,6 +669,39 @@ tokenMetadata:
   cacheReadTokens: 10851618
   cacheCreationTokens: 465252
 order: 1
+entries:
+  - type: comment
+    user: Agent
+    date: '2026-05-13T13:10:00.000Z'
+    comment: >-
+      Fixed both session issues:
+
+
+      1. **Orphaned Sessions Recovery**: Enhanced reconcileOrphanedSessions() to
+      detect and close agent_session entries with status='active' on engine
+      restart. Added logging for recovered sessions.
+
+
+      2. **Frequent Progress Updates**:
+         - Added real-time progress logging when tool activity changes (Read, Edit, Write, Bash with context)
+         - Implemented 15-second heartbeat to log current activity during long operations
+         - Progress now persists to ticket history during work, not just at session end
+         - Activity context includes file names for file ops and command preview for Bash
+
+      Changes in:
+
+      - engine/src/task-store.ts: Updated reconcileOrphanedSessions to handle
+      agent_session entries
+
+      - engine/src/agents/claude-code.ts: Added activity-based progress logging
+      and heartbeat mechanism
+
+      - engine/src/agents/types.ts: Added progressHeartbeat and lastProgressLog
+      fields to CliSessionRecord
+
+
+      Build validated successfully.
+    id: c-2026-05-13t13-10-00-000z
 ---
 ## Problem Summary
 
