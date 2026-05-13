@@ -372,6 +372,14 @@ history:
       Completed Phase 2: TaskCard now shows live agent progress. Starting Phase
       3: History filters and session rendering
     id: c-2026-05-13t12-27-09-202z
+  - type: comment
+    user: Agent
+    date: '2026-05-13T12:29:04.431Z'
+    comment: >-
+      Completed Phase 3: History filters updated (All/Decisions/Sessions) and
+      agent_session rendering with collapsible progress. Starting Phase 4:
+      Settings UI
+    id: c-2026-05-13t12-29-04-431z
 title: Redo Agent Session UX \ UI
 status: In Progress
 createdBy: Guy
