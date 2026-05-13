@@ -311,3 +311,59 @@ export async function restoreStorage(): Promise<{ ok: boolean; mode: string }> {
   }
   return res.json();
 }
+
+export interface ConflictInfo {
+  ticketId: string;
+  localContent: string;
+  remoteContent: string;
+}
+
+export interface SyncStatus {
+  state: 'idle' | 'syncing' | 'synced' | 'conflict' | 'error';
+  lastSyncTime?: string;
+  conflicts?: ConflictInfo[];
+  error?: string;
+  errorType?: 'network' | 'auth' | 'conflict' | 'unknown';
+}
+
+export async function fetchSyncStatus(): Promise<SyncStatus> {
+  const res = await fetch(`${API_URL}/sync-status`);
+  if (!res.ok) throw new Error('Failed to fetch sync status');
+  return res.json();
+}
+
+export function subscribeSyncStatus(callback: (status: SyncStatus) => void): () => void {
+  const eventSource = new EventSource(`${API_URL}/sync-status/stream`);
+
+  eventSource.onmessage = (event) => {
+    try {
+      const status = JSON.parse(event.data);
+      callback(status);
+    } catch (err) {
+      console.error('Failed to parse sync status:', err);
+    }
+  };
+
+  eventSource.onerror = (err) => {
+    console.error('Sync status stream error:', err);
+  };
+
+  return () => {
+    eventSource.close();
+  };
+}
+
+export async function resolveConflicts(
+  resolutions: Array<{ ticketId: string; strategy: 'use-remote' | 'rename-local' | 'manual'; newContent?: string }>
+): Promise<{ ok: boolean }> {
+  const res = await fetch(`${API_URL}/storage/resolve-conflicts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ resolutions }),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to resolve conflicts');
+  }
+  return res.json();
+}

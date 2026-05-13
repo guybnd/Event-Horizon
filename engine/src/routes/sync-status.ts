@@ -1,11 +1,17 @@
 import express from 'express';
-import { getSyncStatus, onSyncStatusChange } from '../sync-watcher.js';
+import { getSyncStatus, onSyncStatusChange, triggerTestError } from '../sync-watcher.js';
 
 const router = express.Router();
 
 // GET /api/sync-status - returns current sync status
 router.get('/', (_req, res) => {
   res.json(getSyncStatus());
+});
+
+// POST /api/sync-status/test-error - trigger a test error for UI testing (dev only)
+router.post('/test-error', (_req, res) => {
+  triggerTestError();
+  res.json({ ok: true, message: 'Test error triggered' });
 });
 
 // GET /api/sync-status/stream - SSE endpoint for real-time status updates
@@ -19,13 +25,19 @@ router.get('/stream', (_req, res) => {
 
   // Subscribe to status changes
   const unsubscribe = onSyncStatusChange((status) => {
-    res.write(`data: ${JSON.stringify(status)}\n\n`);
+    if (res.writableEnded) return;
+    try {
+      res.write(`data: ${JSON.stringify(status)}\n\n`);
+    } catch (err) {
+      console.error('[sync-status] Failed to write SSE update:', err);
+      unsubscribe();
+    }
   });
 
   // Clean up on client disconnect
   _req.on('close', () => {
     unsubscribe();
-    res.end();
+    if (!res.writableEnded) res.end();
   });
 });
 

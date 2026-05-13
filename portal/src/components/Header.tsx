@@ -6,6 +6,7 @@ import { getStatusColorClass } from '../statusStyles';
 import { getPromptableStatuses } from '../workflow';
 import type { Task } from '../types';
 import { searchTasks } from '../taskSearch';
+import { SyncStatusIndicator } from './SyncStatusIndicator';
 
 export function Header() {
   const {
@@ -301,6 +302,9 @@ export function Header() {
               </span>
             </button>
           )}
+
+          {/* Sync Status */}
+          <SyncStatusIndicator />
 
           {/* Engine indicator — dot only when connected, full pill when offline */}
           <div
