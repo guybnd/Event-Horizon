@@ -22,6 +22,10 @@ history:
     user: Agent
     date: '2026-05-13T11:49:00.860Z'
     comment: Claude Code session stopped.
+  - type: activity
+    user: Agent
+    date: '2026-05-13T11:59:42.979Z'
+    comment: Launched Claude Code session (5a097dc9).
 title: 'UX brainstorm: show AI thought \ progress in ticket'
 status: Grooming
 createdBy: Guy
