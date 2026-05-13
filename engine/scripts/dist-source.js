@@ -120,7 +120,7 @@ async function main() {
   console.log(`Creating ${path.basename(outputZip)}…`);
   if (fs.existsSync(outputZip)) fs.unlinkSync(outputZip);
 
-  // zip the contents of stagingDir as the root of the archive
+  // macOS/Linux only: requires the `zip` CLI (not available on Windows by default)
   execSync(`zip -r "${outputZip}" .`, { cwd: stagingDir, stdio: 'inherit' });
 
   console.log('Cleaning up staging directory…');

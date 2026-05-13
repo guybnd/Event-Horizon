@@ -61,6 +61,8 @@ function pkg(target, outBase) {
 
 // ── Mac ───────────────────────────────────────────────────────────────────────
 
+// macOS/Linux only: buildMac and buildWin both call execFileSync('zip', ...) which requires
+// the `zip` CLI. This is not available on Windows by default — run from macOS or Linux.
 function buildMac() {
   const tmpBin = path.join(distDir, 'event-horizon-macos');
   pkg('node18-macos-x64', tmpBin);
