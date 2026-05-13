@@ -1,8 +1,8 @@
 ---
 assignee: unassigned
 tags: []
-priority: None
-effort: None
+priority: Medium
+effort: M
 implementationLink: ''
 subtasks: []
 history:
