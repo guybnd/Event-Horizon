@@ -26,6 +26,58 @@ export function buildAgentMessageEntry(comment: string, user: string, date: stri
   };
 }
 
+export interface AgentSessionProgress {
+  timestamp: string;
+  message: string;
+}
+
+export interface AgentSessionEntry {
+  type: 'agent_session';
+  sessionId: string;
+  startedAt: string;
+  endedAt?: string;
+  status: 'active' | 'completed' | 'failed' | 'cancelled';
+  outcome?: string;
+  progress: AgentSessionProgress[];
+  user: string;
+  date: string;
+}
+
+export function buildAgentSessionEntry(
+  sessionId: string,
+  startedAt: string,
+  label: string,
+): AgentSessionEntry {
+  return {
+    type: 'agent_session',
+    sessionId,
+    startedAt,
+    status: 'active',
+    progress: [],
+    user: label,
+    date: startedAt,
+  };
+}
+
+export function appendSessionProgress(
+  session: AgentSessionEntry,
+  message: string,
+  timestamp: string,
+): void {
+  session.progress.push({ timestamp, message });
+}
+
+export function closeAgentSession(
+  session: AgentSessionEntry,
+  status: 'completed' | 'failed' | 'cancelled',
+  outcome: string,
+  endedAt: string,
+): void {
+  session.status = status;
+  session.outcome = outcome;
+  session.endedAt = endedAt;
+}
+
 function buildCommentId(seed: string, usedIds: Set<string>) {
   const normalizedSeed = seed.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'comment';
   let candidate = `c-${normalizedSeed}`;

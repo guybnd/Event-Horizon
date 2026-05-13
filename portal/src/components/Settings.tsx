@@ -43,6 +43,8 @@ export function Settings() {
   const [releaseNotesPath, setReleaseNotesPath] = useState('release-notes');
   const [syncDebounceMs, setSyncDebounceMs] = useState(30000);
   const [syncMaxWaitMs, setSyncMaxWaitMs] = useState(300000);
+  const [agentProgressEnabled, setAgentProgressEnabled] = useState(true);
+  const [agentProgressDelay, setAgentProgressDelay] = useState(2);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -78,6 +80,8 @@ export function Settings() {
       }
       setSyncDebounceMs(config.syncSettings?.debounceMs ?? 30000);
       setSyncMaxWaitMs(config.syncSettings?.maxWaitMs ?? 300000);
+      setAgentProgressEnabled(config.agentProgress?.enabled ?? true);
+      setAgentProgressDelay(config.agentProgress?.inlineDelay ?? 2);
     }
   }, [config]);
 
@@ -209,6 +213,10 @@ export function Settings() {
         syncSettings: {
           debounceMs: syncDebounceMs,
           maxWaitMs: syncMaxWaitMs,
+        },
+        agentProgress: {
+          enabled: agentProgressEnabled,
+          inlineDelay: agentProgressDelay,
         },
       });
 
@@ -405,6 +413,10 @@ export function Settings() {
                   setSyncDebounceMs={setSyncDebounceMs}
                   syncMaxWaitMs={syncMaxWaitMs}
                   setSyncMaxWaitMs={setSyncMaxWaitMs}
+                  agentProgressEnabled={agentProgressEnabled}
+                  setAgentProgressEnabled={setAgentProgressEnabled}
+                  agentProgressDelay={agentProgressDelay}
+                  setAgentProgressDelay={setAgentProgressDelay}
                 />
               )}
 

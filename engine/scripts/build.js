@@ -6,10 +6,13 @@
  * output is self-contained (no node_modules needed at runtime).
  */
 
-const esbuild = require('esbuild');
-const path = require('path');
-const fs = require('fs');
-const fsp = require('fs/promises');
+import esbuild from 'esbuild';
+import path from 'path';
+import fs from 'fs';
+import fsp from 'fs/promises';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const engineRoot = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(engineRoot, '..');

@@ -1,4 +1,24 @@
-export interface HistoryEntry {
+export interface AgentSessionProgress {
+  timestamp: string;
+  message: string;
+}
+
+export interface AgentSessionEntry {
+  type: 'agent_session';
+  sessionId: string;
+  startedAt: string;
+  endedAt?: string;
+  status: 'active' | 'completed' | 'failed' | 'cancelled';
+  outcome?: string;
+  progress: AgentSessionProgress[];
+  user: string;
+  date: string;
+  id?: string;
+  replyTo?: string;
+  comment?: string;
+}
+
+export interface BasicHistoryEntry {
   type: 'status_change' | 'comment' | 'activity' | 'agent_message';
   from?: string;
   to?: string;
@@ -7,6 +27,13 @@ export interface HistoryEntry {
   comment?: string;
   id?: string;
   replyTo?: string;
+}
+
+export type HistoryEntry = BasicHistoryEntry | AgentSessionEntry;
+
+// Type guard to check if a history entry is an agent session
+export function isAgentSession(entry: HistoryEntry): entry is AgentSessionEntry {
+  return entry.type === 'agent_session';
 }
 
 export interface Task {
@@ -29,6 +56,7 @@ export interface Task {
   releaseDocPath?: string;
   cliSession?: CliSessionSummary | null;
   tokenMetadata?: { inputTokens: number; outputTokens: number; costUSD: number; costIsEstimated?: boolean; cacheReadTokens?: number; cacheCreationTokens?: number };
+  sessionHistoryEntry?: AgentSessionEntry;
 }
 
 export type CliFramework = 'claude' | 'copilot';
@@ -149,6 +177,10 @@ export interface Config {
   syncSettings?: {
     debounceMs: number;
     maxWaitMs: number;
+  };
+  agentProgress?: {
+    enabled: boolean;
+    inlineDelay: number;
   };
 }
 

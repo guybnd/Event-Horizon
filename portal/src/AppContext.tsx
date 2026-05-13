@@ -206,7 +206,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return initial;
   });
   const [parseErrors, setParseErrors] = useState<ParseError[]>([]);
-  const [parseErrorsLoading, setParseErrorsLoading] = useState(false);
+  const [parseErrorsLoading] = useState(false);
   const readCommentsLoadedRef = useRef(false);
   const configRef = useRef<Config | null>(null);
   const tasksRef = useRef<Task[]>([]);
@@ -668,6 +668,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
             ? { ...t, cliSession: t.cliSession ? { ...t.cliSession, currentActivity: activity ?? undefined } : t.cliSession }
             : t
         ));
+      });
+    });
+    es.addEventListener('progress', (e: MessageEvent) => {
+      const { taskId, sessionId, timestamp, message } = JSON.parse(e.data) as { taskId: string; sessionId: string; timestamp: string; message: string };
+      startTransition(() => {
+        setTasks(prev => prev.map(t => {
+          if (t.id !== taskId || !t.history) return t;
+          // Find the active agent_session entry and append progress
+          const updatedHistory = t.history.map(entry => {
+            if (entry.type === 'agent_session' && entry.sessionId === sessionId && entry.status === 'active') {
+              return {
+                ...entry,
+                progress: [...entry.progress, { timestamp, message }]
+              };
+            }
+            return entry;
+          });
+          return { ...t, history: updatedHistory };
+        }));
       });
     });
     return () => es.close();

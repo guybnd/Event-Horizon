@@ -49,6 +49,10 @@ export let configCache: any = {
     debounceMs: 30000,
     maxWaitMs: 300000,
   },
+  agentProgress: {
+    enabled: true,
+    inlineDelay: 2,
+  },
 };
 
 export async function loadConfig() {

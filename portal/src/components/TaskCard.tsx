@@ -4,7 +4,7 @@ import type { CSSProperties } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { Task, TaskLiveEvent } from '../types';
-import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, MessageCircle, Bot, SendHorizontal, Maximize2 } from 'lucide-react';
+import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, MessageCircle, Bot, SendHorizontal, Maximize2, Zap } from 'lucide-react';
 import { TokenBadge } from './TokenBadge';
 import { useApp } from '../AppContext';
 import { sendTaskCliInput, startTaskCliSession, updateTask } from '../api';
@@ -148,6 +148,19 @@ export function TaskCard({
   const readCommentIds = new Set(readComments[task.id] ?? []);
   const hasActiveCliSession = Boolean(task.cliSession && ['pending', 'running', 'waiting-input'].includes(task.cliSession.status));
   const currentActivity = hasActiveCliSession ? (task.cliSession?.currentActivity ?? 'Running') : undefined;
+
+  // Check agent session history for recent activity
+  const agentProgressEnabled = config?.agentProgress?.enabled !== false;
+  const agentProgressDelay = (config?.agentProgress?.inlineDelay ?? 2) * 1000;
+  const recentAgentSession = task.history?.find((entry: any) =>
+    entry?.type === 'agent_session' && entry?.status === 'active'
+  ) as any;
+  const latestProgress = recentAgentSession?.progress?.[recentAgentSession.progress.length - 1];
+  const showAgentProgress = agentProgressEnabled && recentAgentSession && latestProgress;
+  const sessionAge = recentAgentSession?.startedAt
+    ? Date.now() - new Date(recentAgentSession.startedAt).getTime()
+    : 0;
+  const shouldShowProgress = showAgentProgress && sessionAge >= agentProgressDelay;
 
   const isPromptStatus = isPromptableStatus(task.status, config);
   const readyForMergeStatus = getReadyForMergeStatus(config);
@@ -801,7 +814,17 @@ export function TaskCard({
               />
 
               <div ref={assigneeMenuRef} className="relative ml-auto flex items-center gap-1.5">
-                {currentActivity && (
+                {shouldShowProgress && latestProgress && (
+                  <span
+                    className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300"
+                    title={`Latest progress: ${latestProgress.message}\n${relativeTime(latestProgress.timestamp)}`}
+                  >
+                    <Zap className="w-2.5 h-2.5" />
+                    <span className="text-gray-500 dark:text-gray-400">Agent:</span>
+                    <span className="max-w-[140px] truncate">{latestProgress.message}</span>
+                  </span>
+                )}
+                {currentActivity && !shouldShowProgress && (
                   <span className={`activity-badge activity-badge--${currentActivity.toLowerCase().replace(/\s+/g, '-')}`}>
                     {currentActivity}
                   </span>

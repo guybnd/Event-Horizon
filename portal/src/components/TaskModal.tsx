@@ -37,12 +37,12 @@ import { TokenBadge } from './TokenBadge';
 import { HistoryList } from './task-modal/HistoryList';
 const ACTIVITY_FILTER_STORAGE_KEY = 'flux.activityFilter';
 
-type ActivityFilter = 'all' | 'activity' | 'comments' | 'agent';
+type ActivityFilter = 'all' | 'decisions' | 'sessions';
 
 function getInitialActivityFilter(): ActivityFilter {
   if (typeof window === 'undefined') return 'all';
   const stored = window.localStorage.getItem(ACTIVITY_FILTER_STORAGE_KEY);
-  if (stored === 'comments' || stored === 'activity' || stored === 'agent') return stored;
+  if (stored === 'decisions' || stored === 'sessions') return stored;
   return 'all';
 }
 
@@ -364,12 +364,14 @@ export function TaskModal() {
 
   const { topLevelEntries, repliesByParent } = useMemo(() => {
     const activityHistory = modalTask?.history || [];
-    const filtered = activityFilter === 'comments'
-      ? activityHistory.filter((entry) => entry.type === 'comment')
-      : activityFilter === 'activity'
-      ? activityHistory.filter((entry) => entry.type === 'status_change' || entry.type === 'activity')
-      : activityFilter === 'agent'
-      ? activityHistory.filter((entry) => entry.type === 'agent_message')
+    const filtered = activityFilter === 'decisions'
+      ? activityHistory.filter((entry) =>
+          entry.type === 'comment' ||
+          entry.type === 'status_change' ||
+          (entry.type === 'agent_session' && (entry as any).outcome)
+        )
+      : activityFilter === 'sessions'
+      ? activityHistory.filter((entry) => entry.type === 'agent_session')
       : activityHistory;
     const replies = new Map<string, HistoryEntry[]>();
     const topLevel: HistoryEntry[] = [];
@@ -696,7 +698,7 @@ export function TaskModal() {
 
   const activityFilterTabs = (
     <div className="flex items-center gap-2 flex-wrap">
-      {(['all', 'activity', 'comments', 'agent'] as ActivityFilter[]).map((filter) => (
+      {(['all', 'decisions', 'sessions'] as ActivityFilter[]).map((filter) => (
         <button
           key={filter}
           type="button"
@@ -707,7 +709,7 @@ export function TaskModal() {
               : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-white/10 dark:text-gray-300 dark:hover:bg-white/15'
           }`}
         >
-          {filter === 'all' ? 'All' : filter === 'activity' ? 'Activity' : filter === 'comments' ? 'Comments' : 'Agent'}
+          {filter === 'all' ? 'All' : filter === 'decisions' ? 'Decisions' : 'Sessions'}
         </button>
       ))}
       {unreadCommentCount > 0 && (
@@ -1075,7 +1077,7 @@ export function TaskModal() {
 
   return (
     <AnimatePresence>
-      {isModalOpen && config && (
+      {isModalOpen && config && !isFullView && (
         <motion.div
           key="modal-overlay"
           initial={animationsEnabled ? { opacity: 0 } : undefined}
@@ -1083,7 +1085,7 @@ export function TaskModal() {
           exit={animationsEnabled ? { opacity: 0 } : undefined}
           transition={{ duration: 0.2 }}
           className="pointer-events-auto fixed inset-0 z-[55] bg-black/40 backdrop-blur-sm"
-          onClick={isFullView ? undefined : handleCloseAttempt}
+          onClick={handleCloseAttempt}
         />
       )}
 
