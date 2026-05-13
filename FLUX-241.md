@@ -561,10 +561,18 @@ history:
       promised. Test that the thing actually runs before claiming it's done.
     date: '2026-05-13T12:42:58.041Z'
     id: c-2026-05-13t12-42-58-041z
+  - type: comment
+    user: Guy
+    date: '2026-05-13T12:44:05.228Z'
+    comment: >-
+      additionally as the user, i do not see any info at all in an agent
+      session. but it looks nice i guess.
+    replyTo: c-2026-05-13t12-42-58-041z
+    id: c-2026-05-13t12-44-05-225z
 title: Redo Agent Session UX \ UI
 status: In Progress
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 tokenMetadata:
   inputTokens: 10092056
   outputTokens: 50113
