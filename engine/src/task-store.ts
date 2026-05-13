@@ -24,6 +24,40 @@ export function serializeTaskForApi(task: any) {
   };
 }
 
+export async function updateAgentSession(taskId: string, sessionId: string, updater: (session: any) => void) {
+  const task = tasksCache[taskId];
+  if (!task) return null;
+
+  const { body, _path, id: _id, ...frontmatter } = task;
+
+  try {
+    const rawFile = await fs.readFile(_path, 'utf-8');
+    const parsed = matter(rawFile);
+    if (Array.isArray((parsed.data as any).history)) {
+      frontmatter.history = (parsed.data as any).history;
+    }
+  } catch {
+    // fall back to cache if file read fails
+  }
+
+  const history = frontmatter.history || [];
+  const sessionIndex = history.findIndex((entry: any) => entry?.type === 'agent_session' && entry?.sessionId === sessionId);
+
+  if (sessionIndex === -1) {
+    console.warn(`updateAgentSession: session ${sessionId} not found in task ${taskId}`);
+    return null;
+  }
+
+  // Apply the update function
+  updater(history[sessionIndex]);
+  frontmatter.updatedBy = 'Agent';
+
+  const fileContent = matter.stringify(body || '', frontmatter);
+  await fs.writeFile(_path, fileContent, 'utf-8');
+  tasksCache[taskId] = { ...frontmatter, body, id: taskId, _path };
+  return tasksCache[taskId];
+}
+
 export async function updateTaskWithHistory(taskId: string, options: {
   entries?: any[];
   updatedBy?: string;
@@ -199,23 +233,49 @@ export async function loadDocsDirectory(directoryPath: string) {
 
 export async function reconcileOrphanedSessions() {
   const now = new Date().toISOString();
+  let recoveredCount = 0;
+
   for (const task of Object.values(tasksCache)) {
     const history: any[] = Array.isArray(task.history) ? task.history : [];
+
+    // Find all active agent_session entries
+    const activeSessions = history.filter(
+      (e) => e.type === 'agent_session' && e.status === 'active'
+    );
+
+    for (const session of activeSessions) {
+      // Close the orphaned session
+      await updateAgentSession(task.id, session.sessionId, (sessionEntry) => {
+        sessionEntry.status = 'cancelled';
+        sessionEntry.outcome = 'Session abandoned (engine restarted).';
+        sessionEntry.endedAt = now;
+      });
+      recoveredCount++;
+      console.log(`Recovered orphaned session ${session.sessionId} in task ${task.id}`);
+    }
+
+    // Also check for old-style activity-based sessions (legacy compatibility)
     const lastLaunch = [...history].reverse().find(
       (e) => e.type === 'activity' && typeof e.comment === 'string' && /Launched .+ session \(/.test(e.comment)
     );
     if (!lastLaunch) continue;
     const launchIdx = history.lastIndexOf(lastLaunch);
     const hasEnd = history.slice(launchIdx + 1).some(
-      (e) => e.type === 'activity' && typeof e.comment === 'string' &&
-        /session ended|session stopped|session failed|session lost/i.test(e.comment)
+      (e) => (e.type === 'activity' && typeof e.comment === 'string' &&
+        /session ended|session stopped|session failed|session lost/i.test(e.comment)) ||
+        (e.type === 'agent_session')
     );
     if (!hasEnd) {
       await updateTaskWithHistory(task.id, {
         updatedBy: 'Agent',
         entries: [buildActivityEntry('Claude Code session lost (engine restarted).', 'Agent', now)],
       });
+      recoveredCount++;
     }
+  }
+
+  if (recoveredCount > 0) {
+    console.log(`Session recovery: closed ${recoveredCount} orphaned session(s)`);
   }
 }
 

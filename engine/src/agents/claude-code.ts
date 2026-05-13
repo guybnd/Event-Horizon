@@ -2,8 +2,8 @@ import { spawn, execSync, execFileSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { configCache } from '../config.js';
-import { buildActivityEntry, buildCommentEntry, buildAgentMessageEntry } from '../history.js';
-import { updateTaskWithHistory, tasksCache, estimateCostUSD } from '../task-store.js';
+import { buildActivityEntry, buildCommentEntry, buildAgentMessageEntry, buildAgentSessionEntry, appendSessionProgress, closeAgentSession, type AgentSessionEntry } from '../history.js';
+import { updateTaskWithHistory, updateAgentSession, tasksCache, estimateCostUSD } from '../task-store.js';
 import { cliSessionsById, cliSessionIdByTaskId } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
@@ -70,17 +70,33 @@ export function flushSessionOutput(session: CliSessionRecord, force = false) {
     if (!bufferedText) return;
 
     const timestamp = new Date().toISOString();
-    const maxLength = 6000;
+    const maxLength = 2000;
     const clippedText = bufferedText.length > maxLength
-      ? `${bufferedText.slice(0, maxLength)}\n\n[output truncated]`
+      ? `${bufferedText.slice(0, maxLength)}...`
       : bufferedText;
 
-    await updateTaskWithHistory(session.taskId, {
-      updatedBy: 'Agent',
-      entries: [
-        buildAgentMessageEntry(clippedText, session.label, timestamp),
-      ],
+    // Broadcast progress immediately via SSE
+    broadcastEvent('progress', {
+      taskId: session.taskId,
+      sessionId: session.sessionHistoryEntry?.sessionId,
+      timestamp,
+      message: clippedText,
     });
+
+    // If we have a session history entry, append progress to it
+    if (session.sessionHistoryEntry && session.sessionHistoryEntry.sessionId) {
+      await updateAgentSession(session.taskId, session.sessionHistoryEntry.sessionId, (sessionEntry) => {
+        sessionEntry.progress.push({ timestamp, message: clippedText });
+      });
+    } else {
+      // Fallback to old behavior if session entry not found
+      await updateTaskWithHistory(session.taskId, {
+        updatedBy: 'Agent',
+        entries: [
+          buildAgentMessageEntry(clippedText, session.label, timestamp),
+        ],
+      });
+    }
   };
 
   if (session.flushTimer) {
@@ -169,7 +185,43 @@ export function attachStdoutProcessing(
           const toolBlock = evt.message.content.find((b: any) => b.type === 'tool_use');
           if (toolBlock) {
             session.pendingAssistantText = '';
-            session.currentActivity = TOOL_ACTIVITY_MAP[toolBlock.name] ?? 'Working';
+            const newActivity = TOOL_ACTIVITY_MAP[toolBlock.name] ?? 'Working';
+            const activityChanged = session.currentActivity !== newActivity;
+            session.currentActivity = newActivity;
+
+            // Reset last progress log when activity changes
+            if (activityChanged) {
+              session.lastProgressLog = undefined;
+            }
+
+            // Log progress when activity changes or for significant tools
+            if (activityChanged && session.sessionHistoryEntry?.sessionId) {
+              const toolName = toolBlock.name;
+              let progressMsg = session.currentActivity;
+
+              // Add context for specific tools if available
+              if (toolBlock.input) {
+                if (toolName === 'Read' && toolBlock.input.file_path) {
+                  progressMsg = `Reading ${path.basename(toolBlock.input.file_path)}`;
+                } else if (toolName === 'Edit' && toolBlock.input.file_path) {
+                  progressMsg = `Editing ${path.basename(toolBlock.input.file_path)}`;
+                } else if (toolName === 'Write' && toolBlock.input.file_path) {
+                  progressMsg = `Writing ${path.basename(toolBlock.input.file_path)}`;
+                } else if (toolName === 'Bash' && toolBlock.input.command) {
+                  const cmd = String(toolBlock.input.command).slice(0, 50);
+                  progressMsg = `Running: ${cmd}${cmd.length >= 50 ? '...' : ''}`;
+                }
+              }
+
+              enqueueSessionWrite(session, async () => {
+                await updateAgentSession(taskId, session.sessionHistoryEntry!.sessionId, (sessionEntry) => {
+                  sessionEntry.progress.push({
+                    timestamp: new Date().toISOString(),
+                    message: progressMsg,
+                  });
+                });
+              });
+            }
           } else {
             commitPendingAssistantText();
             session.currentActivity = 'Thinking';
@@ -317,42 +369,90 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   });
 
   proc.on('error', async (error) => {
+    // Clear heartbeat timer
+    if (session.progressHeartbeat) {
+      clearInterval(session.progressHeartbeat);
+      session.progressHeartbeat = undefined;
+    }
+
     session.status = 'failed';
     session.endedAt = new Date().toISOString();
     commitPending();
     flushSessionOutput(session, true);
     await session.writeQueue;
-    await updateTaskWithHistory(id, {
-      updatedBy: 'Agent',
-      entries: [
-        buildActivityEntry(`${label} session failed to start: ${error.message}`, 'Agent', session.endedAt),
-      ],
-    });
+
+    const outcome = `${label} session failed to start: ${error.message}`;
+
+    if (session.sessionHistoryEntry && session.sessionHistoryEntry.sessionId) {
+      await updateAgentSession(id, session.sessionHistoryEntry.sessionId, (sessionEntry) => {
+        sessionEntry.status = 'failed';
+        sessionEntry.outcome = outcome;
+        sessionEntry.endedAt = session.endedAt;
+      });
+    } else {
+      await updateTaskWithHistory(id, {
+        updatedBy: 'Agent',
+        entries: [buildActivityEntry(outcome, 'Agent', session.endedAt)],
+      });
+    }
+
     console.error(`[${id}] Failed to spawn ${binaryName}:`, error.message);
   });
 
+  // Create agent_session history entry
+  const sessionEntry = buildAgentSessionEntry(session.id, session.startedAt, label);
+  session.sessionHistoryEntry = sessionEntry;
+
   await updateTaskWithHistory(id, {
     updatedBy: 'Agent',
-    entries: [
-      buildActivityEntry(`Launched ${label} session (${session.id.slice(0, 8)}).`, 'Agent', session.startedAt),
-    ],
+    entries: [sessionEntry],
   });
 
+  // Start progress heartbeat - log activity every 15 seconds if no updates
+  session.progressHeartbeat = setInterval(() => {
+    if (session.currentActivity && session.sessionHistoryEntry?.sessionId) {
+      const now = new Date().toISOString();
+      // Only log if we haven't logged this same activity recently
+      if (session.lastProgressLog !== session.currentActivity) {
+        session.lastProgressLog = session.currentActivity;
+        enqueueSessionWrite(session, async () => {
+          await updateAgentSession(id, session.sessionHistoryEntry!.sessionId, (sessionEntry) => {
+            sessionEntry.progress.push({
+              timestamp: now,
+              message: session.currentActivity!,
+            });
+          });
+        });
+      }
+    }
+  }, 15000);
+
   proc.on('exit', async (code, signal) => {
+    // Clear heartbeat timer
+    if (session.progressHeartbeat) {
+      clearInterval(session.progressHeartbeat);
+      session.progressHeartbeat = undefined;
+    }
+
     commitPending();
     flushSessionOutput(session, true);
     await session.writeQueue;
     session.endedAt = new Date().toISOString();
+
+    let finalStatus: 'completed' | 'failed' | 'cancelled';
     if (session.requestedStop) {
       session.status = 'cancelled';
+      finalStatus = 'cancelled';
     } else if (code === 0) {
       session.status = 'completed';
+      finalStatus = 'completed';
     } else {
       session.status = 'failed';
+      finalStatus = 'failed';
     }
 
-    const summary = session.requestedStop
-      ? `${label} session stopped.`
+    const outcome = session.requestedStop
+      ? `${label} session stopped by user.`
       : `${label} session ended with ${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`}.`;
 
     const tokenUpdate = (session.inputTokens ?? 0) > 0 || (session.outputTokens ?? 0) > 0
@@ -369,11 +469,30 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
         })()
       : null;
 
-    await updateTaskWithHistory(id, {
-      updatedBy: 'Agent',
-      entries: [buildActivityEntry(summary, 'Agent', session.endedAt)],
-      tokenMetadata: tokenUpdate ?? undefined,
-    });
+    // Close the session entry with outcome
+    if (session.sessionHistoryEntry && session.sessionHistoryEntry.sessionId) {
+      await updateAgentSession(id, session.sessionHistoryEntry.sessionId, (sessionEntry) => {
+        sessionEntry.status = finalStatus;
+        sessionEntry.outcome = outcome;
+        sessionEntry.endedAt = session.endedAt;
+      });
+
+      // Update token metadata separately
+      if (tokenUpdate) {
+        await updateTaskWithHistory(id, {
+          updatedBy: 'Agent',
+          entries: [],
+          tokenMetadata: tokenUpdate,
+        });
+      }
+    } else {
+      // Fallback to old behavior
+      await updateTaskWithHistory(id, {
+        updatedBy: 'Agent',
+        entries: [buildActivityEntry(outcome, 'Agent', session.endedAt)],
+        tokenMetadata: tokenUpdate ?? undefined,
+      });
+    }
   });
 }
 

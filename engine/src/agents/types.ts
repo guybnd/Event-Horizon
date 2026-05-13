@@ -53,6 +53,9 @@ export interface CliSessionRecord extends CliSessionSummary {
   requestedStop: boolean;
   writeQueue: Promise<void>;
   skipPermissions: boolean;
+  sessionHistoryEntry?: any;
+  progressHeartbeat?: NodeJS.Timeout;
+  lastProgressLog?: string;
 }
 
 export interface AgentEvent {
