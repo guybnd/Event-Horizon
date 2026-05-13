@@ -33,7 +33,7 @@ function spawnFolderPicker(): Promise<string | null> {
     } else {
       execFile('zenity', ['--file-selection', '--directory', '--title=Select project folder'], (err, stdout) => {
         if (!err) return resolve(stdout.trim() || null);
-        execFile('kdialog', ['--getexistingdirectory', process.env.HOME || '/'], (err2, stdout2) => {
+        execFile('kdialog', ['--getexistingdirectory', os.homedir()], (err2, stdout2) => {
           if (err2) return resolve(null);
           resolve(stdout2.trim() || null);
         });
@@ -112,7 +112,8 @@ export async function handlePathSetup(req: express.Request, res: express.Respons
 
   try {
     if (platform === 'win32') {
-      const ps = `[Environment]::SetEnvironmentVariable('Path', ([Environment]::GetEnvironmentVariable('Path','User') + ';${binaryDir}'), 'User')`;
+      const safeBinaryDir = binaryDir.replace(/'/g, "''");
+      const ps = `[Environment]::SetEnvironmentVariable('Path', ([Environment]::GetEnvironmentVariable('Path','User') + ';${safeBinaryDir}'), 'User')`;
       await new Promise<void>((resolve, reject) => {
         execFile('powershell.exe', ['-NoProfile', '-Command', ps], (err) => {
           if (err) reject(err); else resolve();
