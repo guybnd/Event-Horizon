@@ -228,6 +228,10 @@ history:
     user: Agent
     date: '2026-05-13T04:16:31.169Z'
     comment: Launched Claude Code session (12199d36).
+  - type: activity
+    user: Agent
+    date: '2026-05-13T04:17:30.990Z'
+    comment: Claude Code session lost (engine restarted).
 tokenMetadata:
   inputTokens: 799361
   outputTokens: 4937
@@ -458,5 +462,8 @@ This ensures fresh data when opening the app.
 
 - Implementation: `engine/src/sync-watcher.ts`
 - Implementation: `engine/src/routes/tasks.ts`
+- Implementation: `engine/src/storage-sync.ts`
+- Docs: `.docs/event-horizon-orphan-mode.md`
+tion: `engine/src/routes/tasks.ts`
 - Implementation: `engine/src/storage-sync.ts`
 - Docs: `.docs/event-horizon-orphan-mode.md`
