@@ -283,13 +283,99 @@ history:
     user: Agent
     date: '2026-05-13T04:49:32.040Z'
     comment: Launched Claude Code session (17ba6619).
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-13T04:52:57.146Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-13T04:52:57.148Z'
+    comment: 'Implementation complete and validated. All acceptance criteria met:'
+    id: c-2026-05-13t04-52-57-148z
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-13T04:53:04.122Z'
+    comment: >-
+      Perfect! The ticket has been successfully updated to Ready status with a
+      comprehensive completion summary.
+
+
+      ## Summary
+
+
+      FLUX-236 (Add conflict resolution UI for orphan branch sync) is now
+      complete and moved to **Ready** status.
+
+
+      **What was implemented:**
+
+
+      1. **Semantic conflict detection** - Compares actual ticket data fields
+      instead of raw markdown to avoid false positives from timestamp/history
+      changes
+
+      2. **Sync pause on conflicts** - Automatically halts sync when divergence
+      detected and emits conflict state
+
+      3. **Resolution UI** - Full-featured modal with field-by-field diff viewer
+      showing local vs remote changes
+
+      4. **User-driven resolution** - Currently supports "use-remote" strategy
+      with clear note about future enhancements
+
+      5. **Automatic sync continuation** - After conflicts are resolved, sync
+      automatically resumes
+
+
+      **Key files changed:**
+
+      - `engine/src/sync-watcher.ts` - Conflict detection and resolution logic
+
+      - `engine/src/routes/storage.ts` - `/api/storage/resolve-conflicts`
+      endpoint
+
+      - `portal/src/components/ConflictResolutionModal.tsx` - New modal
+      component
+
+      - `portal/src/components/SyncStatusIndicator.tsx` - New status indicator
+      with conflict handling
+
+      - Integration complete in Header component
+
+
+      **Validation:**
+
+      ✅ Both portal and engine build successfully
+
+      ✅ All acceptance criteria met
+
+      ✅ Comprehensive error handling implemented
+
+      ✅ SSE-based real-time updates with auto-reconnect
+
+
+      The implementation is ready for testing with real sync conflicts.
+  - type: activity
+    user: Agent
+    date: '2026-05-13T04:53:04.495Z'
+    comment: Claude Code session ended with code 0.
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Agent
+    date: '2026-05-13T04:53:39.904Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-13T04:53:40.364Z'
+    comment: Launched Claude Code session (5c656a00).
 tokenMetadata:
-  inputTokens: 1871246
-  outputTokens: 18587
-  costUSD: 1.535905
+  inputTokens: 3115165
+  outputTokens: 23430
+  costUSD: 2.12841
   costIsEstimated: false
-  cacheReadTokens: 1668885
-  cacheCreationTokens: 187058
+  cacheReadTokens: 2870500
+  cacheCreationTokens: 229278
 ---
 ## Context
 
