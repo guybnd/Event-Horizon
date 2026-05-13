@@ -339,10 +339,14 @@ history:
     user: Guy
     date: '2026-05-13T12:21:36.835Z'
     comment: Updated title.
+  - type: activity
+    user: Agent
+    date: '2026-05-13T12:21:47.001Z'
+    comment: Launched Claude Code session (97f73da8).
 title: Redo Agent Session UX \ UI
 status: Todo
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 tokenMetadata:
   inputTokens: 2478894
   outputTokens: 20500
