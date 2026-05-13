@@ -343,8 +343,18 @@ history:
     user: Agent
     date: '2026-05-13T12:21:47.001Z'
     comment: Launched Claude Code session (97f73da8).
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-13T12:22:29.614Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-13T12:22:29.616Z'
+    comment: 'Starting Phase 1: Adding agent_session history type to backend'
+    id: c-2026-05-13t12-22-29-616z
 title: Redo Agent Session UX \ UI
-status: Todo
+status: In Progress
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
