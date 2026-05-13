@@ -1,4 +1,6 @@
 import { spawn, execSync } from 'child_process';
+import * as path from 'path';
+import * as fs from 'fs';
 import { configCache } from '../config.js';
 import { buildActivityEntry, buildCommentEntry, buildAgentMessageEntry } from '../history.js';
 import { updateTaskWithHistory, tasksCache, estimateCostUSD } from '../task-store.js';
@@ -266,17 +268,33 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
 
   let proc: ReturnType<typeof spawn>;
   if (process.platform === 'win32') {
-    // On Windows, spawn via cmd.exe to handle .cmd files correctly
-    // Build command line with proper quoting for arguments with spaces
-    const quotedArgs = claudeArgs.map(arg =>
-      arg.includes(' ') || arg.includes('\n') ? `"${arg.replace(/"/g, '\\"')}"` : arg
-    );
-    const cmdLine = `${binaryName} ${quotedArgs.join(' ')}`;
-    proc = spawn('cmd.exe', ['/d', '/s', '/c', cmdLine], {
+    // On Windows, find the actual .exe instead of using cmd.exe wrapper
+    // The npm bin wrapper is a bash script that execs claude.exe
+    // Direct spawn of .exe preserves stdio streams for JSON output
+    let exePath: string | null = null;
+    try {
+      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8' }).trim();
+      const candidateExe = path.join(npmPrefix, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
+      if (fs.existsSync(candidateExe)) {
+        exePath = candidateExe;
+        console.log(`[${id}] Found claude.exe at: ${exePath}`);
+      } else {
+        console.log(`[${id}] claude.exe not found at ${candidateExe}`);
+      }
+    } catch (err) {
+      console.log(`[${id}] Failed to resolve claude.exe path:`, err);
+    }
+
+    if (!exePath) {
+      throw new Error('claude.exe not found. Please install @anthropic-ai/claude-code globally: npm install -g @anthropic-ai/claude-code');
+    }
+
+    console.log(`[${id}] Windows spawn: ${exePath} with ${claudeArgs.length} args`);
+    console.log(`[${id}] Prompt length: ${initialPrompt.length} chars`);
+    proc = spawn(exePath, claudeArgs, {
       cwd: workspaceRoot,
       env: process.env,
       stdio: 'pipe',
-      windowsVerbatimArguments: true,
     });
   } else {
     proc = spawn(binaryName, claudeArgs, {
@@ -408,16 +426,27 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
 
   let replyProc: ReturnType<typeof spawn>;
   if (process.platform === 'win32') {
-    // On Windows, spawn via cmd.exe to handle .cmd files correctly
-    const quotedArgs = resumeArgs.map(arg =>
-      arg.includes(' ') || arg.includes('\n') ? `"${arg.replace(/"/g, '\\"')}"` : arg
-    );
-    const cmdLine = `${binaryName} ${quotedArgs.join(' ')}`;
-    replyProc = spawn('cmd.exe', ['/d', '/s', '/c', cmdLine], {
+    // On Windows, find the actual .exe instead of using cmd.exe wrapper
+    let exePath: string | null = null;
+    try {
+      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8' }).trim();
+      const candidateExe = path.join(npmPrefix, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
+      if (fs.existsSync(candidateExe)) {
+        exePath = candidateExe;
+      }
+    } catch (err) {
+      console.log(`[${id}] Failed to resolve claude.exe path for reply:`, err);
+    }
+
+    if (!exePath) {
+      throw new Error('claude.exe not found. Please install @anthropic-ai/claude-code globally: npm install -g @anthropic-ai/claude-code');
+    }
+
+    console.log(`[${id}] Windows reply spawn: ${exePath} --resume ${session.claudeSessionId || '(new)'}`);
+    replyProc = spawn(exePath, resumeArgs, {
       cwd: workspaceRoot,
       env: process.env,
       stdio: 'pipe',
-      windowsVerbatimArguments: true,
     });
   } else {
     replyProc = spawn(binaryName, resumeArgs, {
