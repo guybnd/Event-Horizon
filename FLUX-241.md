@@ -40,10 +40,46 @@ history:
       ticket requiring changes across engine session lifecycle, history system,
       and portal UI components.
     id: c-2026-05-13t12-01-12-310z
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-13T12:01:30.819Z'
+    comment: >-
+      Grooming complete! I've successfully:
+
+
+      1. **Analyzed the problem** - Reviewed the current system for agent
+      messages, history tracking, and UI components
+
+      2. **Created a comprehensive implementation plan** covering:
+         - Backend session lifecycle hooks for auto-logging progress
+         - Enhanced history entry types to distinguish progress vs summary messages
+         - New UI components (progress bubble on TaskCard, enhanced filters in TaskModal)
+         - Enforcement rules to ensure agents always leave summaries on status changes
+         - Settings for user control over progress visibility
+      3. **Updated ticket metadata**:
+         - Priority: Medium
+         - Effort: M (Medium)
+         - Status: Todo (ready for implementation)
+      4. **Added grooming comment** explaining the plan scope
+
+
+      The ticket is now ready for implementation with a detailed breakdown of
+      the required changes across the engine and portal surfaces.
+  - type: activity
+    user: Agent
+    date: '2026-05-13T12:01:30.855Z'
+    comment: Claude Code session ended with code 0.
 title: 'UX brainstorm: show AI thought \ progress in ticket'
 status: Todo
 createdBy: Guy
 updatedBy: Agent
+tokenMetadata:
+  inputTokens: 922045
+  outputTokens: 3762
+  costUSD: 0.641007
+  costIsEstimated: false
+  cacheReadTokens: 829154
+  cacheCreationTokens: 75406
 ---
 ## Problem Summary
 
