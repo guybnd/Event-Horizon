@@ -309,6 +309,7 @@ history:
     user: Agent
     date: '2026-05-12T09:11:15.175Z'
     comment: Migrated from .flux to .flux-store. Released under v0.4.0.
+    id: c-2026-05-12t09-11-15-175z
 title: test commit sync time for sync mode
 status: Released
 createdBy: Guy

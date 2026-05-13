@@ -49,6 +49,7 @@ history:
       /api/workspace handler, mirroring the storage.ts pattern. Only
       workspace.ts staged — tasks.ts and task-store.ts changes are unrelated and
       left unstaged.
+    id: c-2026-05-13t02-49-22-366z
 ---
 ## Problem
 

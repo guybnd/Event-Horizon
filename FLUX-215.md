@@ -267,6 +267,7 @@ history:
     comment: >-
       Release v0.4.0 properly closed. FLUX-211/212 migrated to .flux-store and
       moved to Released.
+    id: c-2026-05-12t09-11-15-710z
 title: 'New release, 0.4.0'
 status: Done
 createdBy: Guy

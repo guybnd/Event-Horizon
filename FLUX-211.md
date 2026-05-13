@@ -383,6 +383,7 @@ history:
     user: Agent
     date: '2026-05-12T09:11:14.644Z'
     comment: Migrated from .flux to .flux-store. Released under v0.4.0.
+    id: c-2026-05-12t09-11-14-644z
 title: do a pass after the git sync feature
 status: Released
 createdBy: Guy
