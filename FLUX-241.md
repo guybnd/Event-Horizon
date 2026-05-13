@@ -360,6 +360,11 @@ history:
       Completed Phase 1: Backend session model and lifecycle management
       implemented
     id: c-2026-05-13t12-25-33-194z
+  - type: comment
+    user: Agent
+    date: '2026-05-13T12:26:19.358Z'
+    comment: 'Starting Phase 2: Enhancing TaskCard to display agent session activity'
+    id: c-2026-05-13t12-26-19-358z
 title: Redo Agent Session UX \ UI
 status: In Progress
 createdBy: Guy
