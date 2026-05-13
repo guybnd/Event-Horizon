@@ -45,8 +45,18 @@ history:
       the onClick handler since it's now popup-only. Ready to test both view
       modes.
     id: c-2026-05-13t12-42-17-393z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-13T12:42:48.070Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-13T12:42:48.071Z'
+    comment: 'Implementation complete. Fixed the overlay rendering bug in TaskModal.tsx:'
+    id: c-2026-05-13t12-42-48-071z
 title: 'bug: full ticket view also loads the pop up view?'
-status: In Progress
+status: Ready
 createdBy: Guy
 updatedBy: Agent
 ---
