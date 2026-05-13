@@ -264,12 +264,27 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     claudeArgs.push(caps.effortFlag, effectiveEffort);
   }
 
-  const proc = spawn(binaryName, claudeArgs, {
-    cwd: workspaceRoot,
-    env: process.env,
-    stdio: 'pipe',
-    shell: process.platform === 'win32',
-  });
+  let proc: ReturnType<typeof spawn>;
+  if (process.platform === 'win32') {
+    // On Windows, spawn via cmd.exe to handle .cmd files correctly
+    // Build command line with proper quoting for arguments with spaces
+    const quotedArgs = claudeArgs.map(arg =>
+      arg.includes(' ') || arg.includes('\n') ? `"${arg.replace(/"/g, '\\"')}"` : arg
+    );
+    const cmdLine = `${binaryName} ${quotedArgs.join(' ')}`;
+    proc = spawn('cmd.exe', ['/d', '/s', '/c', cmdLine], {
+      cwd: workspaceRoot,
+      env: process.env,
+      stdio: 'pipe',
+      windowsVerbatimArguments: true,
+    });
+  } else {
+    proc = spawn(binaryName, claudeArgs, {
+      cwd: workspaceRoot,
+      env: process.env,
+      stdio: 'pipe',
+    });
+  }
   session.proc = proc;
   session.pid = proc.pid;
   session.status = 'running';
@@ -391,12 +406,26 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     ? ['-p', message, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions']
     : ['-p', message, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'];
 
-  const replyProc = spawn(binaryName, resumeArgs, {
-    cwd: workspaceRoot,
-    env: process.env,
-    stdio: 'pipe',
-    shell: process.platform === 'win32',
-  });
+  let replyProc: ReturnType<typeof spawn>;
+  if (process.platform === 'win32') {
+    // On Windows, spawn via cmd.exe to handle .cmd files correctly
+    const quotedArgs = resumeArgs.map(arg =>
+      arg.includes(' ') || arg.includes('\n') ? `"${arg.replace(/"/g, '\\"')}"` : arg
+    );
+    const cmdLine = `${binaryName} ${quotedArgs.join(' ')}`;
+    replyProc = spawn('cmd.exe', ['/d', '/s', '/c', cmdLine], {
+      cwd: workspaceRoot,
+      env: process.env,
+      stdio: 'pipe',
+      windowsVerbatimArguments: true,
+    });
+  } else {
+    replyProc = spawn(binaryName, resumeArgs, {
+      cwd: workspaceRoot,
+      env: process.env,
+      stdio: 'pipe',
+    });
+  }
   session.proc = replyProc;
   session.pid = replyProc.pid;
 
