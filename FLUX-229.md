@@ -1,7 +1,7 @@
 ---
 id: FLUX-229
 title: 'Fix Windows agent spawn: EINVAL and missing prompt arguments'
-status: Ready
+status: Done
 priority: High
 assignee: unassigned
 tags:
@@ -11,13 +11,22 @@ tags:
 createdBy: User
 updatedBy: User
 effort: S
-implementationLink: ''
+implementationLink: '5fd89f9eb7c0e30a3c3e0b09a5bdeaa8fcb9fa58'
 subtasks: []
 history:
   - type: activity
     user: User
     date: '2026-05-13T14:30:00.000Z'
     comment: Created ticket.
+  - type: status_change
+    from: Ready
+    to: Done
+    user: User
+    date: '2026-05-13T14:35:00.000Z'
+  - type: activity
+    user: User
+    date: '2026-05-13T14:35:00.000Z'
+    comment: 'Committed fix in 5fd89f9. Agent spawning now works correctly on Windows.'
 ---
 
 ## Problem
