@@ -1,6 +1,6 @@
 ---
 title: Deep dive into Windows compatibility
-status: In Progress
+status: Done
 priority: High
 assignee: Agent
 tags:
@@ -8,7 +8,7 @@ tags:
   - agent
   - integration
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 effort: M
 implementationLink: ''
 subtasks: []
@@ -219,7 +219,16 @@ history:
     user: Agent
     date: '2026-05-13T07:05:36.843Z'
     comment: Claude Code session lost (engine restarted).
+<<<<<<< HEAD
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Guy
+    date: '2026-05-13T07:33:50.968Z'
+order: 4
+=======
 order: 1
+>>>>>>> origin/flux-data
 tokenMetadata:
   inputTokens: 395655
   outputTokens: 7502

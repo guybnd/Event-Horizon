@@ -1,33 +1,42 @@
 {
   "columns": [
     {
-      "name": "Grooming"
+      "name": "Grooming",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
       "name": "Todo",
-      "color": "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+      "color": "bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300"
     },
     {
       "name": "In Progress",
-      "color": "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300"
+      "color": "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
     },
     {
-      "name": "Require Input"
+      "name": "Require Input",
+      "color": "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
     },
     {
-      "name": "Ready"
+      "name": "Ready",
+      "color": "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
     },
     {
-      "name": "Done"
-    },
-    {
-      "name": "Archived",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+      "name": "Done",
+      "color": "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
     }
   ],
   "hiddenStatuses": [
     {
-      "name": "Backlog"
+      "name": "Backlog",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "Released",
+      "color": "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300"
+    },
+    {
+      "name": "Archived",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     }
   ],
   "projects": [
@@ -55,100 +64,24 @@
       "color": "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
     },
     {
-      "name": "mvp",
-      "color": "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
-    },
-    {
-      "name": "task",
-      "color": "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
-    },
-    {
-      "name": "navigation",
-      "color": "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
-    },
-    {
-      "name": "git",
-      "color": "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400"
-    },
-    {
-      "name": "workflow",
-      "color": "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
-    },
-    {
       "name": "ux",
-      "color": "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
-    },
-    {
-      "name": "integration",
-      "color": "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
-    },
-    {
-      "name": "architecture",
-      "color": "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
-    },
-    {
-      "name": "logs",
-      "color": "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
-    },
-    {
-      "name": "assets",
-      "color": "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
-    },
-    {
-      "name": "validation",
-      "color": "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
-    },
-    {
-      "name": "agent",
-      "color": "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
-    },
-    {
-      "name": "backend",
-      "color": "bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400"
-    },
-    {
-      "name": "ai",
-      "color": "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
-    },
-    {
-      "name": "portal",
-      "color": "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
-    },
-    {
-      "name": "ui",
-      "color": "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
-    },
-    {
-      "name": "animation",
-      "color": "bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400"
-    },
-    {
-      "name": "config",
-      "color": "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
-    },
-    {
-      "name": "reliability",
-      "color": "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
-    },
-    {
-      "name": "agent-workflow",
-      "color": "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
-    },
-    {
-      "name": "documentation",
-      "color": "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
       "name": "ui-polish",
-      "color": "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
       "name": "settings",
-      "color": "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
       "name": "board",
-      "color": "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "architecture",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
       "name": "skills",
@@ -159,11 +92,7 @@
       "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
-      "name": "test",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "distribution",
+      "name": "workflow",
       "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
@@ -171,7 +100,51 @@
       "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
+      "name": "ui",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "distribution",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "reliability",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "integration",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "backend",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "agent-workflow",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "agent",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
       "name": "devx",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "portal",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "task",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "ai",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "documentation",
       "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
@@ -183,15 +156,19 @@
       "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
-      "name": "performance",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
       "name": "refactor",
       "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
       "name": "dx",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "mvp",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "performance",
       "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
@@ -204,6 +181,34 @@
     },
     {
       "name": "windows",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "git",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "validation",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "logs",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "assets",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "navigation",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "animation",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "config",
       "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     }
   ],
@@ -230,12 +235,12 @@
     },
     {
       "name": "None",
-      "icon": "ChevronDown",
+      "icon": "Equal",
       "color": "text-gray-400"
     }
   ],
   "enableBacklogScreen": true,
-  "requireCommentOnStatusChange": false,
+  "requireCommentOnStatusChange": true,
   "boardCardOpenMode": "full",
   "animationsEnabled": true,
   "enableFireworks": true,
@@ -261,11 +266,11 @@
   "animationSpeed": "normal",
   "docsRoot": ".docs",
   "hoverPopupsEnabled": true,
-  "hoverPopupDelay": 450,
+  "hoverPopupDelay": 1500,
   "tokenDisplayMode": "cost",
   "tokenCostThresholds": {
-    "green": 0.4,
-    "yellow": 0.85
+    "green": 0.1,
+    "yellow": 0.5
   },
   "effortLevel": "high"
 }
