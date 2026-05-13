@@ -30,8 +30,23 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-13T12:41:55.388Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-13T12:42:17.392Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-13T12:42:17.393Z'
+    comment: >-
+      Fixed overlay rendering condition in TaskModal.tsx line 1080. Changed
+      condition from `isModalOpen && config` to `isModalOpen && config &&
+      !isFullView` so the backdrop only renders for popup mode. Also simplified
+      the onClick handler since it's now popup-only. Ready to test both view
+      modes.
+    id: c-2026-05-13t12-42-17-393z
 title: 'bug: full ticket view also loads the pop up view?'
-status: Todo
+status: In Progress
 createdBy: Guy
 updatedBy: Agent
 ---
