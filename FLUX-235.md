@@ -77,6 +77,31 @@ history:
       preventing collisions. Will also implement Priority 4 (pre-sync pull on
       app start) as it's straightforward and improves reliability.
     id: c-2026-05-13t04-01-15-754z
+  - type: comment
+    user: Agent
+    date: '2026-05-13T04:02:50.624Z'
+    comment: >-
+      Implementation in progress. Added code to check remote flux-data branch
+      before allocating ticket IDs (Priority 1) and pull latest changes on app
+      startup (Priority 4). These changes prevent ID collisions when multiple
+      instances create tickets before sync happens.
+    id: c-2026-05-13t04-02-50-624z
+  - type: comment
+    user: Agent
+    date: '2026-05-13T04:03:18.557Z'
+    comment: >-
+      Implementing two critical fixes: (1) Added getMaxIdFromRemote() function
+      in routes/tasks.ts that fetches and checks origin/flux-data for highest
+      ticket ID before allocating new IDs - prevents collisions when multiple
+      instances create tickets before sync. (2) Modified
+      attachWorktreeIfPresent() in storage-sync.ts to pull latest flux-data on
+      startup when worktree exists - ensures fresh data. Both changes only
+      affect orphan mode and are backward compatible.
+    id: c-2026-05-13t04-03-18-557z
+  - type: activity
+    user: Agent
+    date: '2026-05-13T04:03:24.023Z'
+    comment: Claude Code session ended with code 0.
 ---
 
 ## Problem
