@@ -13,12 +13,41 @@ let scheduler: ReturnType<typeof createScheduler> | null = null;
 async function runSync(storeDir: string): Promise<void> {
   const workspaceRoot = path.dirname(storeDir);
   try {
+    // First, fetch and merge remote changes (remote is source of truth)
+    try {
+      await execFileAsync('git', ['-C', storeDir, 'fetch', 'origin', 'flux-data']);
+      // Check if there are remote changes to pull
+      const { stdout: localCommit } = await execFileAsync('git', ['-C', storeDir, 'rev-parse', 'HEAD']);
+      const { stdout: remoteCommit } = await execFileAsync('git', ['-C', storeDir, 'rev-parse', 'origin/flux-data']);
+
+      if (localCommit.trim() !== remoteCommit.trim()) {
+        // Check if we can fast-forward (no local commits ahead)
+        const { stdout: mergeBase } = await execFileAsync('git', ['-C', storeDir, 'merge-base', 'HEAD', 'origin/flux-data']);
+
+        if (mergeBase.trim() === localCommit.trim()) {
+          // Clean fast-forward - just pull
+          await execFileAsync('git', ['-C', storeDir, 'pull', '--ff-only', 'origin', 'flux-data']);
+          console.log('[sync-watcher] Pulled remote changes from flux-data (fast-forward)');
+        } else {
+          // Diverged - remote is source of truth, reset to it
+          console.warn('[sync-watcher] Local and remote have diverged. Remote is source of truth - resetting local.');
+          await execFileAsync('git', ['-C', storeDir, 'reset', '--hard', 'origin/flux-data']);
+          console.log('[sync-watcher] Reset to remote flux-data (source of truth)');
+        }
+      }
+    } catch (fetchErr: any) {
+      // If fetch fails (no remote, no network, etc.), continue with push
+      console.log(`[sync-watcher] fetch skipped: ${fetchErr.message}`);
+    }
+
+    // Then commit and push local changes
     await execFileAsync('git', ['-C', storeDir, 'add', '-A']);
     const { stdout } = await execFileAsync('git', ['-C', storeDir, 'status', '--porcelain']);
     if (!stdout.trim()) return;
     await execFileAsync('git', ['-C', storeDir, 'commit', '-m', 'flux: sync']);
-    await execFileAsync('git', ['-C', workspaceRoot, 'push', 'origin', 'flux-data']).catch(() => {
+    await execFileAsync('git', ['-C', workspaceRoot, 'push', 'origin', 'flux-data']).catch((pushErr: any) => {
       // push is best-effort — no remote is fine
+      console.log(`[sync-watcher] push skipped: ${pushErr.message}`);
     });
     console.log('[sync-watcher] Committed and pushed flux-data');
   } catch (err: any) {
