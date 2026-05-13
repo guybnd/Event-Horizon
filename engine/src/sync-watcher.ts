@@ -110,7 +110,11 @@ async function detectConflicts(storeDir: string): Promise<ConflictInfo[]> {
           'show', `origin/flux-data:${file}`
         ]);
 
-        // Git diff already told us the file differs - that's a conflict
+        // Skip if working tree already matches remote (e.g. just resolved)
+        if (localContent === remoteContent) {
+          console.log(`[sync-watcher] Skipping ${file} - working tree already matches remote`);
+          continue;
+        }
         conflicts.push({ ticketId, localContent, remoteContent });
       } catch (err) {
         // File might not exist on one side - not a conflict, just a new/deleted file
