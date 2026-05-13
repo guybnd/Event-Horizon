@@ -102,6 +102,14 @@ history:
     user: Agent
     date: '2026-05-13T04:03:24.023Z'
     comment: Claude Code session ended with code 0.
+  - type: activity
+    user: Agent
+    date: '2026-05-13T04:05:22.677Z'
+    comment: 'Claude Code session failed to start: spawn claude ENOENT'
+  - type: activity
+    user: Agent
+    date: '2026-05-13T04:05:27.985Z'
+    comment: 'Claude Code session failed to start: spawn claude ENOENT'
 ---
 
 ## Problem
