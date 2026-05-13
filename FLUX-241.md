@@ -1,7 +1,7 @@
 ---
-assignee: unassigned
+assignee: Agent
 tags: []
-priority: Medium
+priority: High
 effort: M
 implementationLink: ''
 subtasks: []
