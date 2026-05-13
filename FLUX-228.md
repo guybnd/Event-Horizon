@@ -7,9 +7,9 @@ tags:
 title: >-
   Tickets written to .flux/ instead of .flux-store/ if worktree not yet attached
   on startup
-status: In Progress
+status: Done
 createdBy: Unknown
-updatedBy: Unknown
+updatedBy: Guy
 assignee: unassigned
 history:
   - type: activity
@@ -40,6 +40,12 @@ history:
     to: In Progress
     user: Unknown
     date: '2026-05-13T02:42:56.418Z'
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Guy
+    date: '2026-05-13T04:50:07.621Z'
+order: 3
 ---
 ## Problem
 
