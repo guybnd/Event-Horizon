@@ -96,59 +96,59 @@
     },
     {
       "name": "validation",
-      "color": "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
       "name": "agent",
-      "color": "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
       "name": "backend",
-      "color": "bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400"
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
       "name": "ai",
-      "color": "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
       "name": "portal",
-      "color": "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
       "name": "ui",
-      "color": "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
       "name": "animation",
-      "color": "bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400"
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
       "name": "config",
-      "color": "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
       "name": "reliability",
-      "color": "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
       "name": "agent-workflow",
-      "color": "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
       "name": "documentation",
-      "color": "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
       "name": "ui-polish",
-      "color": "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
       "name": "settings",
-      "color": "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
       "name": "board",
-      "color": "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     },
     {
       "name": "skills",
@@ -196,26 +196,6 @@
     },
     {
       "name": "release",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "sync",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "windows",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "bugfix",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "infrastructure",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "session-management",
       "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     }
   ],
@@ -266,22 +246,14 @@
       "implementationModel": ""
     }
   },
-  "syncSettings": {
-    "debounceMs": 30000,
-    "maxWaitMs": 300000
-  },
-  "agentProgress": {
-    "enabled": true,
-    "inlineDelay": 2
-  },
   "animationSpeed": "normal",
   "docsRoot": ".docs",
   "hoverPopupsEnabled": true,
   "hoverPopupDelay": 450,
-  "tokenDisplayMode": "tokens",
+  "tokenDisplayMode": "cost",
   "tokenCostThresholds": {
-    "green": 0.4,
-    "yellow": 0.85
+    "green": 0.2,
+    "yellow": 0.65
   },
   "effortLevel": "high"
 }
