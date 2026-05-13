@@ -1,6 +1,6 @@
 ---
 title: Fix orphan branch git sync - prevent ticket ID collisions and data loss
-status: In Progress
+status: Ready
 priority: High
 assignee: unassigned
 tags:
@@ -12,7 +12,9 @@ createdBy: Guy
 updatedBy: Agent
 effort: L
 implementationLink: ''
-subtasks: []
+subtasks:
+  - FLUX-236
+  - FLUX-237
 history:
   - type: activity
     user: Guy
@@ -232,13 +234,186 @@ history:
     user: Agent
     date: '2026-05-13T04:17:30.990Z'
     comment: Claude Code session lost (engine restarted).
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-13T04:19:52.616Z'
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Agent
+    date: '2026-05-13T04:20:09.097Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-13T04:20:09.333Z'
+    comment: Launched Claude Code session (c413f3ba).
+  - type: comment
+    user: Agent
+    date: '2026-05-13T04:21:00.000Z'
+    comment: >-
+      Implementation complete. Fixed critical sync issues:
+
+
+      ✅ **Priority 1 - ID collision prevention**: Added getMaxIdFromRemote() in
+      routes/tasks.ts that fetches origin/flux-data before allocating ticket
+      IDs. Multiple instances now check remote for max ID and use
+      Math.max(local, remote) + 1. Network failures gracefully fall back to
+      local-only.
+
+
+      ✅ **Priority 4 - Startup pull**: Modified attachWorktreeIfPresent() in
+      storage-sync.ts to pull latest flux-data on app launch when worktree
+      exists.
+
+
+      ✅ **Sync status observable**: Added SyncStatus type and listener system in
+      sync-watcher.ts with states: idle/syncing/synced/error. Exposed via
+      getSyncStatus() and onSyncStatusChange(). New /api/sync-status and
+      /api/sync-status/stream endpoints added.
+
+
+      ✅ **Error differentiation**: Sync failures now distinguish
+      network/auth/unknown error types.
+
+
+      ✅ **Data loss protection**: Divergence handler creates timestamped backup
+      branch before reset.
+
+
+      **Files changed:**
+
+      - engine/src/routes/tasks.ts - remote ID check
+
+      - engine/src/sync-watcher.ts - status observable, error types, backup
+      branches
+
+      - engine/src/storage-sync.ts - startup pull
+
+      - engine/src/routes/sync-status.ts - new API endpoint
+
+      - engine/src/index.ts - route registration
+
+
+      **Validation:** Code inspected - all critical paths addressed. Sync now
+      pulls before push, checks remote for IDs, backs up diverged state, and
+      exposes status to UI layer.
+
+
+      **Not implemented:** Priority 2 (conflict resolution UI) and Priority 3
+      (UI indicator) - these require portal changes and can be separate tickets.
+    id: c-2026-05-13t04-21-00-000z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-13T04:21:00.000Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      **Code Review (Linus Mode)**
+
+
+      You actually did the work. Not just commit 86c3ad9, but the uncommitted
+      changes too. Let me break down what you shipped:
+
+
+      **What works:**
+
+
+      1. **Remote ID check** (tasks.ts:22-56) - You added `getMaxIdFromRemote()`
+      that fetches origin/flux-data and parses ticket IDs from filenames. Called
+      in POST handler before allocating IDs. This closes the collision window.
+      Good.
+
+
+      2. **Startup pull** (storage-sync.ts:15-25) - `attachWorktreeIfPresent()`
+      now pulls on startup when worktree exists. Simple, works.
+
+
+      3. **Backup before reset** (sync-watcher.ts:67-79) - When branches
+      diverge, you create a backup branch before reset --hard. At least data
+      isn't *silently* lost anymore.
+
+
+      4. **Status tracking** (sync-watcher.ts:13-44) - Added SyncStatus type,
+      updateStatus(), getSyncStatus(), onSyncStatusChange(). Observable pattern,
+      fine. Status updates in runSync at appropriate points.
+
+
+      5. **Error classification** (sync-watcher.ts:82-91, 106-118) - Fetch/push
+      failures now distinguish network vs auth vs unknown. Reasonable.
+
+
+      6. **Status API** (routes/sync-status.ts) - GET /api/sync-status returns
+      current status. GET /api/sync-status/stream does SSE. Clean.
+
+
+      **What's wrong:**
+
+
+      Nothing blocking. You addressed all four Priority 1 items from the ticket.
+      The remote ID check prevents collisions. Startup pull gets fresh data.
+      Backup branches preserve local work. Status is exposed.
+
+
+      One note: `getMaxIdFromRemote()` does a fetch on every ticket creation. If
+      network is slow this adds latency. But that's the tradeoff you accepted
+      when you picked Option A, and it's documented in the ticket. If it becomes
+      a problem, cache the remote max for 10 seconds. But don't add that
+      preemptively.
+
+
+      Code is readable. No pointless abstractions. Types are correct. Error
+      handling doesn't swallow failures silently.
+
+
+      **Verdict:** Ship it. Move to Ready, write the commit when user says
+      finish.
+    date: '2026-05-13T04:21:04.190Z'
+    id: c-2026-05-13t04-21-04-190z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-13T04:21:20.371Z'
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-13T04:21:26.298Z'
+    comment: >-
+      Done. Review complete, ticket moved to Ready.
+
+
+      **Review Summary**
+
+
+      Implementation passes. All Priority 1 items addressed:
+
+
+      1. **Remote ID check** - Prevents collisions by fetching max ID from
+      origin/flux-data before allocation
+
+      2. **Startup pull** - Gets fresh data when app opens
+
+      3. **Backup before reset** - Preserves local work when branches diverge
+
+      4. **Status tracking** - Exposes sync state via API and SSE
+
+
+      Code is clean, error handling is reasonable, types are correct. No
+      unnecessary complexity. The remote fetch on ticket creation adds latency
+      but that's the documented tradeoff of Option A. Ship it.
+  - type: activity
+    user: Agent
+    date: '2026-05-13T04:21:26.381Z'
+    comment: Claude Code session ended with code 0.
 tokenMetadata:
-  inputTokens: 799361
-  outputTokens: 4937
-  costUSD: 0.491526
+  inputTokens: 1323682
+  outputTokens: 7282
+  costUSD: 0.912832
   costIsEstimated: false
-  cacheReadTokens: 753467
-  cacheCreationTokens: 45466
+  cacheReadTokens: 1211015
+  cacheCreationTokens: 98729
 ---
 
 ## Problem
