@@ -69,17 +69,144 @@ history:
     user: Agent
     date: '2026-05-13T12:01:30.855Z'
     comment: Claude Code session ended with code 0.
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-13T12:02:51.346Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-13T12:02:51.409Z'
+    comment: Launched Claude Code session (a483c84f).
+  - type: status_change
+    from: In Progress
+    to: Todo
+    user: Agent
+    date: '2026-05-13T12:04:01.152Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-13T12:04:10.597Z'
+    comment: >-
+      **UX Review Finding: Work Mismatch Detected**
+
+
+      The uncommitted code changes do not implement FLUX-241's requirements.
+      Instead, they implement parse error detection and display (FLUX-159):
+
+
+      **What was built:**
+
+      - ParseErrorButton & ParseErrorBanner components
+
+      - Backend parse error tracking in task-store.ts
+
+      - API endpoint /tasks/errors
+
+      - Integration into Board and Backlog screens
+
+      - Auto-stop CLI sessions when moving to Ready
+
+
+      **What FLUX-241 requires:**
+
+      - Real-time progress "thought bubbles" on TaskCard
+
+      - Agent progress vs summary distinction in history
+
+      - Enhanced TaskModal activity filters
+
+      - Session lifecycle hooks for auto-logging
+
+      - Settings toggles for progress display
+
+      - Enforcement rules for status change summaries
+
+
+      **Recommendation:**
+
+      1. Commit the parse error work to FLUX-159
+
+      2. Return to FLUX-241 and implement the actual requirements per the ticket
+      body
+
+
+      Moving ticket back to Todo.
+    id: c-ux-review-2026-05-13
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-13T12:04:18.699Z'
+    comment: >-
+      Perfect! The review comment has been posted and the ticket moved back to
+      Todo. Now let me provide a summary to the user:
+
+
+      ## UX Review Complete: Work Mismatch Detected
+
+
+      **Finding:** The uncommitted code changes do **not** implement FLUX-241's
+      requirements. They implement a completely different feature (parse error
+      detection for FLUX-159).
+
+
+      ### What Was Actually Built
+
+      - `ParseErrorButton` & `ParseErrorBanner` components for displaying
+      corrupted ticket files
+
+      - Backend parse error tracking in `task-store.ts` with `/tasks/errors` API
+      endpoint
+
+      - Integration into Board and Backlog screens
+
+      - Auto-stop CLI sessions when tickets move to Ready status
+
+
+      ### What FLUX-241 Actually Requires
+
+      According to the ticket body, these features were planned but **not
+      implemented**:
+
+      - Real-time AI "thought bubble" progress display on TaskCard
+
+      - `isAgentProgress` and `isSummary` flags to distinguish progress vs final
+      summaries
+
+      - Enhanced TaskModal activity filters (Agent Progress, Agent Summary)
+
+      - Session lifecycle hooks for auto-logging progress
+
+      - Settings toggles for progress bubble visibility
+
+      - Enforcement rules requiring summaries on status changes
+
+
+      ### Actions Taken
+
+      1. ✅ Posted detailed review comment to FLUX-241 history
+
+      2. ✅ Moved ticket from "In Progress" back to "Todo"
+
+
+      ### Recommendation
+
+      The parse error work should be committed to **FLUX-159** (the correct
+      ticket), then return to implement FLUX-241's actual requirements as
+      specified in the implementation plan.
+  - type: activity
+    user: Agent
+    date: '2026-05-13T12:04:18.743Z'
+    comment: Claude Code session ended with code 0.
 title: 'UX brainstorm: show AI thought \ progress in ticket'
 status: Todo
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
-  inputTokens: 922045
-  outputTokens: 3762
-  costUSD: 0.641007
+  inputTokens: 1438257
+  outputTokens: 6747
+  costUSD: 0.987483
   costIsEstimated: false
-  cacheReadTokens: 829154
-  cacheCreationTokens: 75406
+  cacheReadTokens: 1303231
+  cacheCreationTokens: 116531
 ---
 ## Problem Summary
 

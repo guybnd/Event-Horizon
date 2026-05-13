@@ -5,16 +5,34 @@ assignee: Agent
 tags:
   - bugfix
   - session-management
-id: FLUX-244
 title: Auto-stop CLI session when ticket moves to Ready
-status: Ready
+status: Done
 createdBy: Unknown
-updatedBy: Unknown
+updatedBy: Agent
 history:
   - type: activity
     user: Unknown
     date: '2026-05-13T12:01:31.919Z'
     comment: Created ticket.
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-13T12:03:16.403Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-13T12:03:16.403Z'
+    comment: Updated implementation link.
+  - type: comment
+    user: Agent
+    comment: >-
+      Implementation complete. Added session auto-stop logic in routes/tasks.ts
+      that triggers when a ticket transitions to Ready status. The fix looks up
+      the active session, marks it as completed, and calls adapter.stop() to
+      terminate the CLI process. Commit: 3531a19
+    date: '2026-05-13T12:03:16.403Z'
+    id: c-2026-05-13t12-03-16-403z
+implementationLink: 3531a19c6ed8b4c9428e09e6d93eac42e5f84d51
 ---
 ## Problem
 When a ticket moved to Ready status, the CLI agent session remained open and running. The agent was instructed to "wait for finish command" but the session should have been terminated automatically.

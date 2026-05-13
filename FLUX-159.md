@@ -176,7 +176,70 @@ history:
       The implementation is currently live and can be tested with FLUX-238,
       which has a git merge conflict in its YAML frontmatter. The ticket is now
       in **Ready** status awaiting your review.
+  - type: activity
+    user: Agent
+    date: '2026-05-13T12:03:30.483Z'
+    comment: Claude Code session stopped.
+  - type: activity
+    user: Agent
+    date: '2026-05-13T12:03:30.587Z'
+    comment: Claude Code session stopped.
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Agent
+    date: '2026-05-13T12:03:37.417Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-13T12:03:37.468Z'
+    comment: Launched Claude Code session (f4750d9c).
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-13T12:04:11.043Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-13T12:04:11.044Z'
+    comment: >-
+      Code review complete. Implementation is solid. Engine tracks parse errors
+      in a separate map, exposes them via GET /tasks/errors, clears on
+      successful reload. Portal polls alongside tasks, surfaces them via button
+      with modal. Auto-clears on fix. No unnecessary abstractions, no missing
+      error cases, clean separation of concerns. Passes.
+    id: c-2026-05-13t12-04-11-044z
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-13T12:04:16.213Z'
+    comment: >-
+      Done. Implementation passes review.
+
+
+      **Summary:**
+
+
+      The code is straightforward and correct. Engine maintains a `parseErrors`
+      map alongside `tasksCache`, populates it on parse failure, clears it on
+      success, exposes via `GET /tasks/errors`. Portal fetches alongside tasks,
+      shows a button with badge count when errors exist, modal displays the
+      error details with expand/collapse. Auto-clears when file is fixed. No
+      over-engineering, no weird abstractions, handles the requirements exactly
+      as specified.
+
+
+      Ticket moved to Ready.
+  - type: activity
+    user: Agent
+    date: '2026-05-13T12:04:16.252Z'
+    comment: Claude Code session ended with code 0.
 order: 161
+tokenMetadata:
+  inputTokens: 1048333
+  outputTokens: 7623
+  costUSD: 0.737874
+  costIsEstimated: false
+  cacheReadTokens: 959450
+  cacheCreationTokens: 85068
 ---
 
 ## Summary
