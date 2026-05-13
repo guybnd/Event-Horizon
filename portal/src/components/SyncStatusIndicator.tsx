@@ -270,12 +270,13 @@ export function SyncStatusIndicator() {
         <span className="text-sm font-semibold leading-none">{getLabel()}</span>
       </button>
 
-      {status.state === 'conflict' && showConflictModal && (
+      {status.state === 'conflict' && showConflictModal && createPortal(
         <ConflictResolutionModal
           conflicts={status.conflicts}
           onResolve={handleResolve}
           onClose={() => setShowConflictModal(false)}
-        />
+        />,
+        document.body
       )}
 
       {status.state === 'error' && showErrorToast && createPortal(
