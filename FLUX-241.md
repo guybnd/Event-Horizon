@@ -478,8 +478,13 @@ history:
     user: Agent
     date: '2026-05-13T12:35:34.116Z'
     comment: Claude Code session ended with code 0.
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Agent
+    date: '2026-05-13T12:41:57.084Z'
 title: Redo Agent Session UX \ UI
-status: Ready
+status: In Progress
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
