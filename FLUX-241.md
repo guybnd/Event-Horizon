@@ -569,6 +569,14 @@ history:
       session. but it looks nice i guess.
     replyTo: c-2026-05-13t12-42-58-041z
     id: c-2026-05-13t12-44-05-225z
+  - type: comment
+    user: Guy
+    date: '2026-05-13T12:45:09.872Z'
+    comment: >-
+      i thought a session would have multiple updates, but it just has one
+      single update when it finishes, and its not very readable
+    replyTo: c-2026-05-13t12-42-58-041z
+    id: c-2026-05-13t12-45-09-863z
 title: Redo Agent Session UX \ UI
 status: In Progress
 createdBy: Guy
