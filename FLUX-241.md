@@ -388,17 +388,107 @@ history:
       delay slider). All implementation phases complete. Moving to testing and
       validation.
     id: c-2026-05-13t12-31-19-542z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-13T12:35:17.240Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-13T12:35:17.241Z'
+    comment: >-
+      Implementation complete and validated. All phases implemented: Phase 1
+      Backend agent_session history type with session lifecycle management,
+      Phase 2 Enhanced TaskCard with live agent progress display, Phase 3
+      Simplified history filters with collapsible agent_session rendering, Phase
+      4 Settings UI for agent progress display. Build validated successfully.
+    id: c-2026-05-13t12-35-17-241z
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-13T12:35:34.087Z'
+    comment: >-
+      Perfect! The implementation is complete and the ticket has been moved to
+      Ready status. Let me provide a summary of what was accomplished:
+
+
+      ## Implementation Complete
+
+
+      I've successfully implemented the Agent Session UX/UI improvements for the
+      Event Horizon ticket system. Here's what was delivered:
+
+
+      ### Phase 1: Backend Session Model ✅
+
+      - Added `agent_session` history entry type to `engine/src/history.ts`
+
+      - Implemented session lifecycle management in
+      `engine/src/agents/claude-code.ts`
+
+      - Created `updateAgentSession()` function in task-store for in-place
+      session updates
+
+      - Sessions now track: sessionId, startedAt, endedAt, status, outcome, and
+      progress array
+
+
+      ### Phase 2: Enhanced Card UI ✅
+
+      - Updated `TaskCard.tsx` to show live agent activity on cards
+
+      - Added lightning bolt (⚡) indicator for active sessions
+
+      - Displays latest progress message inline: "Agent: Running tests ⚡"
+
+      - Respects display settings (enabled/delay)
+
+
+      ### Phase 3: Simplified History UI ✅
+
+      - Reduced history filters from 4 to 3 essential views:
+        - **All**: Everything
+        - **Decisions**: Comments + status changes + session outcomes
+        - **Sessions**: Agent sessions with expandable progress
+      - Created collapsible `SessionHistoryEntry` component in `HistoryList.tsx`
+
+      - Sessions show duration, status, outcome, and nested progress steps
+
+
+      ### Phase 4: Settings & Configuration ✅
+
+      - Added agentProgress settings to Config type and backend
+
+      - Created UI controls in `WorkspaceSection.tsx`:
+        - Toggle: "Show AI progress on cards"
+        - Slider: "Show progress after X seconds" (0-10s, default: 2s)
+      - Settings persist to `.flux/config.json`
+
+
+      ### Build Validation ✅
+
+      - Fixed all TypeScript type issues
+
+      - Portal builds successfully with no errors
+
+      - All type guards and discriminated unions working correctly
+
+
+      The ticket is now in **Ready** status and awaits your review and testing!
+  - type: activity
+    user: Agent
+    date: '2026-05-13T12:35:34.116Z'
+    comment: Claude Code session ended with code 0.
 title: Redo Agent Session UX \ UI
-status: In Progress
+status: Ready
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
-  inputTokens: 2478894
-  outputTokens: 20500
-  costUSD: 1.950783
+  inputTokens: 9728748
+  outputTokens: 48028
+  costUSD: 4.887753
   costIsEstimated: false
-  cacheReadTokens: 2216174
-  cacheCreationTokens: 241735
+  cacheReadTokens: 9364973
+  cacheCreationTokens: 339380
 order: 1
 ---
 ## Problem Summary
