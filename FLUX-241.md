@@ -18,6 +18,10 @@ history:
     user: Agent
     date: '2026-05-13T11:48:36.406Z'
     comment: Claude Code session lost (engine restarted).
+  - type: activity
+    user: Agent
+    date: '2026-05-13T11:49:00.860Z'
+    comment: Claude Code session stopped.
 title: 'UX brainstorm: show AI thought \ progress in ticket'
 status: Grooming
 createdBy: Guy
