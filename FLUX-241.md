@@ -580,17 +580,21 @@ history:
   - type: agent_session
     sessionId: bcfecb5f-bfad-49fb-90ee-e715da52be21
     startedAt: '2026-05-13T12:45:30.500Z'
-    status: active
+    status: cancelled
     progress: []
     user: Claude Code
     date: '2026-05-13T12:45:30.500Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-13T13:05:44.657Z'
   - type: agent_session
     sessionId: ee86ff3d-1367-4de9-84c4-21d7af00d4b4
     startedAt: '2026-05-13T12:49:20.608Z'
-    status: active
+    status: cancelled
     progress: []
     user: Claude Code
     date: '2026-05-13T12:49:20.608Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-13T13:05:44.657Z'
   - type: comment
     user: Agent
     date: '2026-05-13T12:49:51.244Z'
@@ -648,6 +652,11 @@ history:
       agent_session entries in real-time, making live AI progress visible in the
       UI. Build validated successfully.
     id: c-2026-05-13t12-54-42-517z
+  - type: comment
+    user: Agent
+    date: '2026-05-13T13:06:57.468Z'
+    comment: 'Fixed both session issues:'
+    id: c-2026-05-13t13-06-57-468z
 title: Redo Agent Session UX \ UI
 status: Ready
 createdBy: Guy

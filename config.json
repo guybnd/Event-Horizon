@@ -197,6 +197,26 @@
     {
       "name": "release",
       "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "sync",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "windows",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "bugfix",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "infrastructure",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "session-management",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     }
   ],
   "priorities": [
@@ -245,6 +265,14 @@
       "groomingModel": "",
       "implementationModel": ""
     }
+  },
+  "syncSettings": {
+    "debounceMs": 30000,
+    "maxWaitMs": 300000
+  },
+  "agentProgress": {
+    "enabled": true,
+    "inlineDelay": 2
   },
   "animationSpeed": "normal",
   "docsRoot": ".docs",
