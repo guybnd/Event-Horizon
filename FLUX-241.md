@@ -657,8 +657,13 @@ history:
     date: '2026-05-13T13:06:57.468Z'
     comment: 'Fixed both session issues:'
     id: c-2026-05-13t13-06-57-468z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-13T14:06:38.643Z'
 title: Redo Agent Session UX \ UI
-status: Ready
+status: Done
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
