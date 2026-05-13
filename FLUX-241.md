@@ -293,8 +293,13 @@ history:
     user: Agent
     date: '2026-05-13T12:18:44.184Z'
     comment: Launched Claude Code session (a6ac2407).
+  - type: status_change
+    from: Grooming
+    to: Todo
+    user: Agent
+    date: '2026-05-13T12:20:57.286Z'
 title: 'UX brainstorm: show AI thought \ progress in ticket'
-status: Grooming
+status: Todo
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
