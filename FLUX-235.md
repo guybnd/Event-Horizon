@@ -114,6 +114,115 @@ history:
     user: Agent
     date: '2026-05-13T04:07:41.129Z'
     comment: Launched Claude Code session (758466fc).
+  - type: comment
+    user: Agent
+    date: '2026-05-13T04:12:16.921Z'
+    comment: >-
+      Architectural review: Current implementation fixes pull-before-push but
+      leaves critical gaps. (1) ID allocation still only checks local cache -
+      collision window remains open. (2) reset --hard on divergence silently
+      discards local work with no recovery path. (3) Sync state not exposed to
+      app layer - blocks UI integration. (4) Silent failure modes -
+      network/auth/no-remote all produce same console.log. Required before
+      merge: implement remote ID check (ticket Priority 1 Option A), replace
+      reset with merge+backup strategy, expose sync status observable,
+      distinguish error types. See full analysis in history.
+    id: c-2026-05-13t04-12-16-921z
+  - type: comment
+    user: Agent
+    comment: >-
+      Architectural review complete. Current implementation fixes
+      pull-before-push but has critical structural gaps:
+
+
+      **Blockers for merge:**
+
+
+      1. **ID collision window remains open** - Ticket allocation
+      (routes/tasks.ts:34-42) only checks local cache. Two instances can pull
+      same max ID, then both allocate FLUX-N+1 before next sync. The 30s
+      debounce makes this worse. Must implement remote-check before allocation
+      (ticket Priority 1 Option A).
+
+
+      2. **Silent data loss path** - reset --hard on divergence
+      (sync-watcher.ts:34) discards local work with only console.warn. No
+      recovery, no user confirmation. Replace with branch-backup + merge
+      strategy.
+
+
+      3. **Sync state not exposed** - sync-watcher is isolated, no observable
+      status. Blocks UI integration (Priority 3), conflict resolution (Priority
+      2), and offline-aware ticket creation.
+
+
+      4. **Undifferentiated failure modes** - network/auth/no-remote all produce
+      same console.log. User can't distinguish working-offline from broken-sync.
+
+
+      **Architectural issues:**
+
+
+      5. **Conflicting responsibilities** - runSync() does replication, conflict
+      resolution, and publication in one function. Violates SRP, makes
+      divergence handling hard to reason about.
+
+
+      6. **Remote-as-truth inconsistently enforced** - Sync honors it, but ID
+      allocation and startup don't check remote.
+
+
+      **Recommendation:** Fix blockers 1-4 before merge. Item 1 is the highest
+      priority - without remote ID check, collisions will continue. See ticket
+      body Priority 1 Option A for implementation approach.
+    date: '2026-05-13T04:12:50.413Z'
+    id: c-2026-05-13t04-12-50-413z
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-13T04:13:00.997Z'
+    comment: >-
+      Perfect. The architectural review has been posted to the ticket and the
+      status has been moved to "In Progress". 
+
+
+      ## Summary
+
+
+      Completed architectural review of FLUX-235 implementation (commit
+      86c3ad9). The current fix addresses pull-before-push but leaves critical
+      structural issues:
+
+
+      **Blockers identified:**
+
+      1. ID collision window remains - allocation only checks local cache, not
+      remote
+
+      2. Silent data loss via `reset --hard` with no recovery path
+
+      3. Sync state not exposed to application layer
+
+      4. Undifferentiated failure modes (network vs offline vs auth)
+
+
+      **Recommendation:** Fix these blockers before merge, with Priority 1
+      (remote ID check) being most critical. Full analysis posted to ticket
+      history. Ticket moved to In Progress for remediation work.
+  - type: activity
+    user: Agent
+    date: '2026-05-13T04:13:01.055Z'
+    comment: Claude Code session ended with code 0.
+  - type: activity
+    user: Agent
+    date: '2026-05-13T04:13:11.314Z'
+    comment: Launched Claude Code session (ef05ce09).
+tokenMetadata:
+  inputTokens: 799361
+  outputTokens: 4937
+  costUSD: 0.491526
+  costIsEstimated: false
+  cacheReadTokens: 753467
+  cacheCreationTokens: 45466
 ---
 
 ## Problem
