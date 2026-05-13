@@ -2,8 +2,9 @@ import fs from 'fs/promises';
 import path from 'path';
 import matter from 'gray-matter';
 import chokidar from 'chokidar';
-import { getFluxDir, getActiveFluxDir, getTaskAssetsDir, setWorkspaceRoot, workspaceRoot } from './workspace.js';
+import { getFluxDir, getFluxStoreDir, getActiveFluxDir, getTaskAssetsDir, setWorkspaceRoot, workspaceRoot, isOrphanMode } from './workspace.js';
 import { attachWorktreeIfPresent } from './storage-sync.js';
+import { startSyncWatcher } from './sync-watcher.js';
 import { configCache, loadConfig, autoRegisterUnknownTags } from './config.js';
 import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate } from './history.js';
 import { getCliSessionSummaryForTask } from './session-store.js';
@@ -13,6 +14,7 @@ import { resolveEmbeddedDocsRoot, copyDir, buildStarterProjectOverview } from '.
 
 export let tasksCache: Record<string, any> = {};
 export let docsCache: Record<string, StoredDoc> = {};
+export let workspaceActivating = false;
 
 export function serializeTaskForApi(task: any) {
   return {
@@ -354,12 +356,39 @@ export async function startWatchers() {
     });
 }
 
+async function recoverStrayFluxFiles(newRoot: string): Promise<void> {
+  const fluxDir = path.join(newRoot, '.flux');
+  const storeDir = getFluxStoreDir();
+  let stray: string[] = [];
+  try { stray = await fs.readdir(fluxDir); } catch { return; }
+  for (const name of stray) {
+    if (!name.endsWith('.md')) continue;
+    const src = path.join(fluxDir, name);
+    const dst = path.join(storeDir, name);
+    try { await fs.access(dst); continue; } catch { /* not in store yet */ }
+    try {
+      const content = await fs.readFile(src, 'utf-8');
+      const parsed = matter(content);
+      if (!parsed.data || !parsed.data['title'] || !parsed.data['id']) continue;
+    } catch { continue; }
+    await fs.copyFile(src, dst);
+    console.log(`[storage-sync] Recovered stray ticket: ${name}`);
+  }
+}
+
 export async function activateWorkspace(newRoot: string) {
-  setWorkspaceRoot(newRoot);
-  tasksCache = {};
-  docsCache = {};
-  console.log(`Workspace: ${newRoot}`);
-  await attachWorktreeIfPresent(newRoot);
-  await initDir();
-  await startWatchers();
+  workspaceActivating = true;
+  try {
+    setWorkspaceRoot(newRoot);
+    tasksCache = {};
+    docsCache = {};
+    console.log(`Workspace: ${newRoot}`);
+    await attachWorktreeIfPresent(newRoot);
+    if (isOrphanMode()) await recoverStrayFluxFiles(newRoot);
+    await initDir();
+    await startWatchers();
+    startSyncWatcher();
+  } finally {
+    workspaceActivating = false;
+  }
 }

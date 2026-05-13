@@ -8,7 +8,7 @@ import {
   normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry,
   summarizeFieldChanges, hasAppendedStatusChange, findEarliestHistoryDate,
 } from '../history.js';
-import { tasksCache, serializeTaskForApi, updateTaskWithHistory } from '../task-store.js';
+import { tasksCache, serializeTaskForApi, updateTaskWithHistory, workspaceActivating } from '../task-store.js';
 import {
   resolveSupportedImageExtension, sanitizeAssetBaseName, normalizeBase64Content,
   normalizeRelativePath, encodeAssetPath, createUniqueAssetFileName,
@@ -28,6 +28,7 @@ router.get('/:id', (req, res) => {
 });
 
 router.post('/', async (req, res) => {
+  if (workspaceActivating) return res.status(503).json({ error: 'Workspace is activating, please retry' });
   const { projectKey, status, author, title, body, ...rest } = req.body;
   const pKey = projectKey || configCache.projects?.[0] || 'PROJECT';
 
@@ -72,6 +73,7 @@ router.post('/', async (req, res) => {
 });
 
 router.put('/:id', async (req, res) => {
+  if (workspaceActivating) return res.status(503).json({ error: 'Workspace is activating, please retry' });
   const { id } = req.params;
   const { updatedBy, ...updates } = req.body;
   const task = tasksCache[id];

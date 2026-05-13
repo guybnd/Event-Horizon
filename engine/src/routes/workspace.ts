@@ -5,7 +5,6 @@ import os from 'os';
 import { execFile } from 'child_process';
 import { workspaceRoot, saveAppSettings } from '../workspace.js';
 import { activateWorkspace } from '../task-store.js';
-import { startSyncWatcher } from '../sync-watcher.js';
 
 const router = express.Router();
 
@@ -69,7 +68,6 @@ router.post('/', async (req, res) => {
 
   try {
     await activateWorkspace(newRoot);
-    startSyncWatcher();
     await saveAppSettings({ workspace: newRoot });
     res.json({ ok: true, path: newRoot });
   } catch (err: any) {
