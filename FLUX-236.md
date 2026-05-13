@@ -6,9 +6,9 @@ tags:
   - reliability
 effort: M
 title: Add conflict resolution UI for orphan branch sync
-status: In Progress
+status: Done
 createdBy: Agent
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
 history:
   - type: activity
@@ -672,6 +672,11 @@ history:
     user: Agent
     date: '2026-05-13T07:00:09.732Z'
     comment: Claude Code session lost (engine restarted).
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Guy
+    date: '2026-05-13T07:49:19.933Z'
 tokenMetadata:
   inputTokens: 5502557
   outputTokens: 41709
@@ -679,6 +684,7 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 5074286
   cacheCreationTokens: 401959
+order: 5
 ---
 ## Context
 

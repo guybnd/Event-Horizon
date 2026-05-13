@@ -5,9 +5,9 @@ tags:
   - ux
 effort: S
 title: Add sync status indicator to portal UI
-status: Ready
+status: Done
 createdBy: Agent
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
 history:
   - type: activity
@@ -262,6 +262,11 @@ history:
       ROOT CAUSE FIX: Modal now renders at document.body using React Portal - no
       longer constrained to Header layout.
     id: c-2026-05-13t07-11-15-070z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Guy
+    date: '2026-05-13T07:49:15.417Z'
 tokenMetadata:
   inputTokens: 3039125
   outputTokens: 22095
@@ -269,6 +274,7 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 2872181
   cacheCreationTokens: 159569
+order: 4
 ---
 ## Context
 
