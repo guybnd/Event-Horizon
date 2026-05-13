@@ -603,21 +603,62 @@ history:
   - type: agent_session
     sessionId: 7a87848d-7db2-41b7-8399-797bc56a9803
     startedAt: '2026-05-13T12:51:54.226Z'
-    status: active
-    progress: []
+    status: completed
+    progress:
+      - timestamp: '2026-05-13T12:54:51.754Z'
+        message: >-
+          ## Summary
+
+
+          Fixed the real-time progress display issue. The root cause was simple:
+          the backend was already broadcasting 'progress' SSE events (since the
+          initial implementation), but the portal was only listening for
+          'activity' events.
+
+
+          **What I changed:**
+
+          - Added 'progress' event listener in `AppContext.tsx` that updates
+          active `agent_session` entries in real-time when progress events
+          arrive from the backend
+
+
+          **Result:** Progress updates now stream live to the UI, so users can
+          see AI activity as it happens instead of only seeing one summary when
+          the session ends.
+
+
+          The ticket has been moved to **Ready** status and awaits your review.
     user: Claude Code
     date: '2026-05-13T12:51:54.226Z'
+    outcome: Claude Code session ended with code 0.
+    endedAt: '2026-05-13T12:54:51.778Z'
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-13T12:54:42.516Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-13T12:54:42.517Z'
+    comment: >-
+      Fixed real-time progress display: Added 'progress' SSE event listener to
+      portal. Backend was already broadcasting progress events, but portal only
+      listened for 'activity' events. Now progress updates append to active
+      agent_session entries in real-time, making live AI progress visible in the
+      UI. Build validated successfully.
+    id: c-2026-05-13t12-54-42-517z
 title: Redo Agent Session UX \ UI
-status: In Progress
+status: Ready
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
-  inputTokens: 10092056
-  outputTokens: 50113
-  costUSD: 5.181523
+  inputTokens: 11342359
+  outputTokens: 56027
+  costUSD: 5.93942
   costIsEstimated: false
-  cacheReadTokens: 9685783
-  cacheCreationTokens: 381311
+  cacheReadTokens: 10851618
+  cacheCreationTokens: 465252
 order: 1
 ---
 ## Problem Summary
