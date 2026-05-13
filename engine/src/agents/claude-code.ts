@@ -275,7 +275,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     // Direct spawn of .exe preserves stdio streams for JSON output
     let exePath: string | null = null;
     try {
-      const npmPrefix = execFileSync('npm.cmd', ['prefix', '-g'], { encoding: 'utf8' }).trim();
+      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8' }).trim();
       const candidateExe = path.join(npmPrefix, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
       if (fs.existsSync(candidateExe)) {
         exePath = candidateExe;
@@ -432,7 +432,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     // On Windows, find the actual .exe instead of using cmd.exe wrapper
     let exePath: string | null = null;
     try {
-      const npmPrefix = execFileSync('npm.cmd', ['prefix', '-g'], { encoding: 'utf8' }).trim();
+      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8' }).trim();
       const candidateExe = path.join(npmPrefix, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
       if (fs.existsSync(candidateExe)) {
         exePath = candidateExe;
