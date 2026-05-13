@@ -85,6 +85,10 @@ history:
       Moving to In Progress. Will add API endpoint for parse errors and UI
       indicator in the portal.
     id: c-2026-05-13t11-45-18-346z
+  - type: activity
+    user: Agent
+    date: '2026-05-13T11:48:36.406Z'
+    comment: Claude Code session lost (engine restarted).
 order: 161
 ---
 
