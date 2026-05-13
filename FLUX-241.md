@@ -490,6 +490,54 @@ history:
     progress: []
     user: Claude Code
     date: '2026-05-13T12:41:57.151Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      **Build is broken.** You converted to ES modules but left the build script
+      using `require()`. That's not "implementation complete", that's "I didn't
+      test my changes".
+
+
+      **sessionHistoryEntry: any** � Line 56 in types.ts. Really? `any`? You had
+      the types right there in history.ts. Import them. Type it properly as
+      `AgentSessionEntry | undefined`.
+
+
+      **Massive diff without commit** � You changed 15 files and left it all
+      uncommitted. The ticket says "Ready" in history but the actual status
+      never moved there. That's either confused state management or the agent
+      didn't follow its own plan.
+
+
+      **updateAgentSession race condition** � task-store.ts:393-425. You read
+      the file, find the session in the array, mutate it via the callback, then
+      write the whole file back. What happens when two progress updates hit at
+      the same time? You'll lose one. You need atomic updates or at minimum a
+      write queue per task.
+
+
+      **Fallback paths everywhere** � claude-code.ts has "fallback to old
+      behavior if session entry not found" in 3 places. If your new code path
+      doesn't work, fix it. Don't litter the codebase with dual paths that will
+      diverge and rot.
+
+
+      **Missing enforcement** � The ticket explicitly calls for backend
+      enforcement that session close requires non-empty outcome. Where is it? I
+      don't see any validation in routes/tasks.ts that checks this. The ticket
+      says it's a "HARD GATE" but there's no gate.
+
+
+      **UI complexity hidden in TaskCard** � You added agent progress display
+      logic directly in TaskCard.tsx with lookups through history arrays and
+      timestamp math. That belongs in a helper function or a hook, not inline in
+      the render path.
+
+
+      Fix the build. Type your data structures. Add the enforcement you
+      promised. Test that the thing actually runs before claiming it's done.
+    date: '2026-05-13T12:42:58.041Z'
+    id: c-2026-05-13t12-42-58-041z
 title: Redo Agent Session UX \ UI
 status: In Progress
 createdBy: Guy
