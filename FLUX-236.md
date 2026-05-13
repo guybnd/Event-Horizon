@@ -129,13 +129,81 @@ history:
     user: Agent
     date: '2026-05-13T04:34:10.234Z'
     comment: Launched Claude Code session (140d7e1c).
+  - type: comment
+    user: Agent
+    date: '2026-05-13T04:35:35.959Z'
+    comment: >-
+      Code review complete. Implementation is barely functional but ships the
+      minimum viable conflict detection flow.
+
+
+      **Critical issues:**
+
+
+      1. **Rename-local is a lie** - sync-watcher.ts:120-125 says "rename
+      handled by caller" then accepts remote anyway. Remove the dead option or
+      implement it.
+
+      2. **Manual merge silently fails** - Line 127-134, if newContent missing,
+      nothing happens. Should throw.
+
+      3. **Conflict detection is broken** - Line 83 compares raw markdown
+      strings including timestamps. Every edit triggers false conflict. Parse
+      and compare semantic ticket data instead.
+
+      4. **No atomic updates** - resolveConflicts() writes files one-by-one.
+      Fails halfway = partial corruption. Use git operations or stage changes
+      atomically.
+
+      5. **Modal shows useless previews** - 500-char truncated raw content
+      instead of actual diffs. Use a diff library.
+
+      6. **Error handling is garbage** - alert("check console") in 2026. Show
+      the actual error.
+
+      7. **No backend validation** - routes/storage.ts accepts any array,
+      doesn't validate resolution shape. Validate or crash on bad input.
+
+      8. **Auto-sync after resolution** - runSync() fires immediately, no user
+      confirmation. Should be explicit.
+
+      9. **Type duplication** - ConflictInfo defined in two places. Pick one.
+
+      10. **SSE never reconnects** - SyncStatusIndicator loses connection
+      permanently on initial failure.
+
+
+      **What works:** Conflict pause logic, endpoint naming, modal layout,
+      builds pass.
+
+
+      **Verdict:** This will fire false conflicts on every edit and lie about
+      rename-local support. Fix conflict detection (parse YAML, compare
+      semantically) and either implement or remove rename-local before shipping.
+    id: c-2026-05-13t04-35-35-959z
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-13T04:35:40.212Z'
+    comment: >-
+      Review posted. The implementation ships the minimum conflict UI but the
+      core logic is broken — raw string comparison will fire false positives
+      constantly, and rename-local is advertised but doesn't work. Fix those
+      before calling it done.
+  - type: activity
+    user: Agent
+    date: '2026-05-13T04:35:40.374Z'
+    comment: Claude Code session ended with code 0.
+  - type: activity
+    user: Agent
+    date: '2026-05-13T04:36:18.746Z'
+    comment: Launched Claude Code session (e82517dc).
 tokenMetadata:
-  inputTokens: 927967
-  outputTokens: 4109
-  costUSD: 0.537461
+  inputTokens: 1217911
+  outputTokens: 6929
+  costUSD: 0.794902
   costIsEstimated: false
-  cacheReadTokens: 868458
-  cacheCreationTokens: 47950
+  cacheReadTokens: 1122538
+  cacheCreationTokens: 83757
 ---
 ## Context
 
