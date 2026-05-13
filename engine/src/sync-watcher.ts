@@ -10,8 +10,43 @@ const execFileAsync = promisify(execFile);
 let watcher: ReturnType<typeof chokidar.watch> | null = null;
 let scheduler: ReturnType<typeof createScheduler> | null = null;
 
+export type SyncStatus =
+  | { state: 'idle' }
+  | { state: 'syncing' }
+  | { state: 'synced'; lastSyncTime: string }
+  | { state: 'error'; error: string; errorType: 'network' | 'auth' | 'conflict' | 'unknown' };
+
+let currentStatus: SyncStatus = { state: 'idle' };
+const statusListeners: Array<(status: SyncStatus) => void> = [];
+
+function updateStatus(status: SyncStatus): void {
+  currentStatus = status;
+  statusListeners.forEach(listener => {
+    try {
+      listener(status);
+    } catch (err) {
+      console.error('[sync-watcher] Error in status listener:', err);
+    }
+  });
+}
+
+export function getSyncStatus(): SyncStatus {
+  return currentStatus;
+}
+
+export function onSyncStatusChange(listener: (status: SyncStatus) => void): () => void {
+  statusListeners.push(listener);
+  // Return unsubscribe function
+  return () => {
+    const idx = statusListeners.indexOf(listener);
+    if (idx !== -1) statusListeners.splice(idx, 1);
+  };
+}
+
 async function runSync(storeDir: string): Promise<void> {
   const workspaceRoot = path.dirname(storeDir);
+  updateStatus({ state: 'syncing' });
+
   try {
     // First, fetch and merge remote changes (remote is source of truth)
     try {
@@ -29,15 +64,34 @@ async function runSync(storeDir: string): Promise<void> {
           await execFileAsync('git', ['-C', storeDir, 'pull', '--ff-only', 'origin', 'flux-data']);
           console.log('[sync-watcher] Pulled remote changes from flux-data (fast-forward)');
         } else {
-          // Diverged - remote is source of truth, reset to it
-          console.warn('[sync-watcher] Local and remote have diverged. Remote is source of truth - resetting local.');
+          // Diverged - back up local branch, then reset to remote (source of truth)
+          const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+          const backupBranch = `flux-data-backup-${timestamp}`;
+
+          console.warn('[sync-watcher] Local and remote have diverged. Backing up local changes before reset.');
+
+          // Create backup branch at current HEAD
+          await execFileAsync('git', ['-C', storeDir, 'branch', backupBranch, 'HEAD']);
+          console.log(`[sync-watcher] Created backup branch: ${backupBranch}`);
+
+          // Reset to remote (source of truth)
           await execFileAsync('git', ['-C', storeDir, 'reset', '--hard', 'origin/flux-data']);
-          console.log('[sync-watcher] Reset to remote flux-data (source of truth)');
+          console.log(`[sync-watcher] Reset to remote flux-data (source of truth). Local changes backed up to ${backupBranch}`);
         }
       }
     } catch (fetchErr: any) {
-      // If fetch fails (no remote, no network, etc.), continue with push
-      console.log(`[sync-watcher] fetch skipped: ${fetchErr.message}`);
+      // If fetch fails, determine error type and emit status
+      const errorMsg = fetchErr.message || String(fetchErr);
+      let errorType: 'network' | 'auth' | 'unknown' = 'unknown';
+
+      if (errorMsg.includes('Could not resolve host') || errorMsg.includes('network')) {
+        errorType = 'network';
+      } else if (errorMsg.includes('Authentication failed') || errorMsg.includes('Permission denied')) {
+        errorType = 'auth';
+      }
+
+      console.log(`[sync-watcher] fetch failed (${errorType}): ${errorMsg}`);
+      // Don't set error status yet - we can still commit locally
     }
 
     // Then commit and push local changes
@@ -45,13 +99,28 @@ async function runSync(storeDir: string): Promise<void> {
     const { stdout } = await execFileAsync('git', ['-C', storeDir, 'status', '--porcelain']);
     if (!stdout.trim()) return;
     await execFileAsync('git', ['-C', storeDir, 'commit', '-m', 'flux: sync']);
-    await execFileAsync('git', ['-C', workspaceRoot, 'push', 'origin', 'flux-data']).catch((pushErr: any) => {
-      // push is best-effort — no remote is fine
-      console.log(`[sync-watcher] push skipped: ${pushErr.message}`);
-    });
-    console.log('[sync-watcher] Committed and pushed flux-data');
+    try {
+      await execFileAsync('git', ['-C', workspaceRoot, 'push', 'origin', 'flux-data']);
+      console.log('[sync-watcher] Committed and pushed flux-data');
+      updateStatus({ state: 'synced', lastSyncTime: new Date().toISOString() });
+    } catch (pushErr: any) {
+      // Distinguish push failure types
+      const errorMsg = pushErr.message || String(pushErr);
+      let errorType: 'network' | 'auth' | 'unknown' = 'unknown';
+
+      if (errorMsg.includes('Could not resolve host') || errorMsg.includes('network')) {
+        errorType = 'network';
+      } else if (errorMsg.includes('Authentication failed') || errorMsg.includes('Permission denied')) {
+        errorType = 'auth';
+      }
+
+      console.log(`[sync-watcher] push failed (${errorType}): ${errorMsg}`);
+      updateStatus({ state: 'error', error: errorMsg, errorType });
+    }
   } catch (err: any) {
-    console.error(`[sync-watcher] sync failed: ${err.message}`);
+    const errorMsg = err.message || String(err);
+    console.error(`[sync-watcher] sync failed: ${errorMsg}`);
+    updateStatus({ state: 'error', error: errorMsg, errorType: 'unknown' });
   }
 }
 
