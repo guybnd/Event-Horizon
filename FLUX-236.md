@@ -588,13 +588,78 @@ history:
     user: Agent
     date: '2026-05-13T05:45:00.257Z'
     comment: Launched Claude Code session (6f435ea7).
+  - type: comment
+    user: Agent
+    date: '2026-05-13T05:47:10.370Z'
+    comment: >-
+      Code review findings:
+
+
+      **sync-watcher.ts detectConflicts():** Why are you parsing YAML for every
+      ticket to compare "semantic" fields? Git already tells you if files
+      differ. Lines 141-155 are completely unnecessary complexity. If the file
+      changed, it changed. You don't need to JSON.stringify subtasks arrays and
+      compare them field-by-field.
+
+
+      **sync-watcher.ts resolveConflicts():** You validate resolutions in the
+      route handler (storage.ts:52-65), then validate again in this function
+      (lines 186-217) with almost identical logic. Pick one place. Also, line
+      248-251 uses regex to replace the ticket ID for rename-local strategy.
+      What if the ID appears in the body text? You'll corrupt it. Use matter()
+      to parse, modify frontmatter, and serialize properly.
+
+
+      **sync-watcher.ts runSync():** Lines 286-294 check for conflicts during
+      fast-forward. Fast-forward means local hasn't moved. There are no local
+      commits. This block is dead code. Lines 299-323 run detectConflicts()
+      which loops through files running git commands for each one. You already
+      have the commit SHAs. Run git diff once, not in a loop.
+
+
+      **routes/tasks.ts getMaxIdFromRemote():** Lines 23-40 run git ls-tree on
+      the remote branch to list every file just to find max ticket ID. This is
+      insanely slow with hundreds of tickets. Worse, you call this in POST
+      /tasks (lines 83-90), so every ticket creation now waits for a network
+      round-trip. If offline or slow network, ticket creation hangs. Terrible
+      UX.
+
+
+      **ConflictResolutionModal.tsx:** Lines 22-63 hand-roll a YAML parser. Why?
+      The backend uses gray-matter. Import a library. Lines 277-280 default
+      manual merge to localContent. If the user picked manual, don't bias them
+      toward one side. Line 296 has a redundant fallback since you already set
+      newContent on line 279.
+
+
+      **SyncStatusIndicator.tsx:** Lines 100-103 return null if offline + idle,
+      but you're still polling the API every 30s (line 83). Cache the no-remote
+      state and stop trying. Line 241 duplicates the API call that's already in
+      api.ts:346. The modal should import and call api.resolveConflicts()
+      directly, not go through the indicator.
+
+
+      **Verdict:** The conflict resolution UI idea is fine. The implementation
+      is sloppy. Remove the unnecessary complexity, fix the bugs, and stop
+      duplicating logic.
+    id: c-2026-05-13t05-47-10-370z
+  - type: agent_message
+    user: Claude Code
+    date: '2026-05-13T05:47:21.251Z'
+    comment: >-
+      Done. Ticket moved back to In Progress with a full review listing every
+      problem.
+  - type: activity
+    user: Agent
+    date: '2026-05-13T05:47:21.554Z'
+    comment: Claude Code session ended with code 0.
 tokenMetadata:
-  inputTokens: 5173748
-  outputTokens: 38100
-  costUSD: 3.360341
+  inputTokens: 5502557
+  outputTokens: 41709
+  costUSD: 3.752791
   costIsEstimated: false
-  cacheReadTokens: 4815388
-  cacheCreationTokens: 336759
+  cacheReadTokens: 5074286
+  cacheCreationTokens: 401959
 ---
 ## Context
 
