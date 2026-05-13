@@ -39,6 +39,9 @@
       "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     }
   ],
+  "projects": [
+    "FLUX"
+  ],
   "users": [
     {
       "name": "Guy"
@@ -236,29 +239,16 @@
       "color": "text-gray-400"
     }
   ],
-  "projects": [
-    "FLUX"
-  ],
   "enableBacklogScreen": true,
   "requireCommentOnStatusChange": true,
   "boardCardOpenMode": "full",
   "animationsEnabled": true,
   "enableFireworks": true,
-  "animationSpeed": "normal",
   "requireInputStatus": "Require Input",
   "readyForMergeStatus": "Ready",
   "archiveStatus": "Archived",
   "docsEditPermissions": "all",
   "docsAllowedUsers": [],
-  "docsRoot": ".docs",
-  "hoverPopupsEnabled": true,
-  "hoverPopupDelay": 1500,
-  "tokenDisplayMode": "cost",
-  "tokenCostThresholds": {
-    "green": 0.1,
-    "yellow": 0.5
-  },
-  "effortLevel": "high",
   "releaseSettings": {
     "generateDistinctFiles": true,
     "releaseNotesPath": "release-notes"
@@ -272,5 +262,15 @@
   "syncSettings": {
     "debounceMs": 30000,
     "maxWaitMs": 300000
-  }
+  },
+  "animationSpeed": "normal",
+  "docsRoot": ".docs",
+  "hoverPopupsEnabled": true,
+  "hoverPopupDelay": 1500,
+  "tokenDisplayMode": "cost",
+  "tokenCostThresholds": {
+    "green": 0.1,
+    "yellow": 0.5
+  },
+  "effortLevel": "high"
 }
