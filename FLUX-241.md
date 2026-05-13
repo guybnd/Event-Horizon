@@ -220,6 +220,20 @@ history:
     user: Agent
     date: '2026-05-13T12:08:17.251Z'
     comment: Claude Code session ended with code 0.
+  - type: comment
+    user: Guy
+    date: '2026-05-13T12:14:12.442Z'
+    comment: >-
+      lets try the proposed UI. but we need to adhere to the rules of
+      engagement. each session should result in an update, and usually an action
+      like moving a status. this needs to be clearly documented too. we also
+      need to make sure that sessions can end in asking for user input, in fact
+      this is very much needed in some of the steps.
+    id: c-2026-05-13t12-14-12-440z
+  - type: activity
+    user: Agent
+    date: '2026-05-13T12:14:21.581Z'
+    comment: Launched Claude Code session (a1658ef6).
 title: 'UX brainstorm: show AI thought \ progress in ticket'
 status: Grooming
 createdBy: Guy
