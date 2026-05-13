@@ -1,6 +1,6 @@
 ---
 title: Deep dive into Windows compatibility
-status: Todo
+status: In Progress
 priority: High
 assignee: Agent
 tags:
@@ -75,7 +75,21 @@ history:
       The plan in the ticket body walks through each fix with the exact code
       change needed.
     id: c-2026-05-13t04-11-44-334z
-order: 238
+  - type: status_change
+    from: Todo
+    to: Ready
+    user: Guy
+    date: '2026-05-13T06:55:35.825Z'
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Guy
+    date: '2026-05-13T06:55:40.899Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-13T06:55:40.910Z'
+    comment: Launched Claude Code session (a1a8b7f7).
+order: 1
 ---
 
 ## Overview
