@@ -22,6 +22,7 @@ import statsRouter from './routes/stats.js';
 import readStateRouter from './routes/read-state.js';
 import eventsRouter from './routes/events.js';
 import storageRouter from './routes/storage.js';
+import syncStatusRouter from './routes/sync-status.js';
 
 function isValidWorkspaceRoot(dir: string): boolean {
   return existsSync(path.join(dir, '.flux')) || existsSync(path.join(dir, '.flux-store'));
@@ -45,6 +46,7 @@ app.use('/api/stats', requireWorkspace, statsRouter);
 app.use('/api/read-state', requireWorkspace, readStateRouter);
 app.use('/api/events', eventsRouter);
 app.use('/api/storage', requireWorkspace, storageRouter);
+app.use('/api/sync-status', requireWorkspace, syncStatusRouter);
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', workspace: workspaceRoot });

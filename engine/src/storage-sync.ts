@@ -12,7 +12,18 @@ function git(cwd: string, args: string[]): Promise<{ stdout: string; stderr: str
 
 export async function attachWorktreeIfPresent(workspaceRoot: string): Promise<void> {
   const storeDir = path.join(workspaceRoot, '.flux-store');
-  if (existsSync(storeDir)) return;
+  const isNewAttach = !existsSync(storeDir);
+
+  if (!isNewAttach) {
+    // Worktree already attached - pull latest changes on startup
+    try {
+      await git(storeDir, ['pull', '--ff-only', 'origin', 'flux-data']);
+      console.log('[storage-sync] Pulled latest flux-data on startup');
+    } catch (err: any) {
+      console.log(`[storage-sync] Could not pull on startup: ${err.message}`);
+    }
+    return;
+  }
 
   try {
     const { stdout } = await git(workspaceRoot, ['branch', '-r']);
