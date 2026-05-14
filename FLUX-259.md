@@ -531,7 +531,7 @@ history:
   - type: agent_session
     sessionId: 3c6ea1dd-667e-4427-9bcb-6c8519775751
     startedAt: '2026-05-14T08:45:59.475Z'
-    status: active
+    status: completed
     progress:
       - timestamp: '2026-05-14T08:46:21.862Z'
         message: Researching Portal Components
@@ -705,8 +705,130 @@ history:
                         aria-label="Choose effort level"
                       >
             allow_multiple: false
+      - timestamp: '2026-05-14T08:49:31.763Z'
+        message: Editing LaunchAgentSplitButton.tsx
+        type: tool
+        data:
+          toolName: replace
+          parameters:
+            file_path: >-
+              C:\GitHub\EventHorizon\portal\src\components\LaunchAgentSplitButton.tsx
+            new_string: |2-
+                  <div ref={containerRef} className="relative flex">
+                    <button
+                      type="button"
+                      disabled={isDisabled}
+                      onClick={() => onLaunch()}
+                      className="flex flex-1 items-center justify-center gap-1.5 rounded-l-lg bg-primary px-3 py-2 text-xs font-semibold text-white transition-colors cursor-pointer hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <Icon className="h-4 w-4" />
+                      {busy ? 'Starting…' : 'Launch'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isDisabled}
+                      onClick={() => setOpen((v) => !v)}
+                      className="flex items-center justify-center rounded-r-lg border-l border-white/20 bg-primary px-2 py-2 text-white transition-colors cursor-pointer hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+                      aria-label="Choose effort level"
+                    >
+            old_string: |2-
+                  <div ref={containerRef} className="relative flex">
+                    <button
+                      type="button"
+                      disabled={isDisabled}
+                      onClick={() => onLaunch()}
+                      className="flex flex-1 items-center justify-center gap-1.5 rounded-l-lg bg-primary px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <Icon className="h-4 w-4" />
+                      {busy ? 'Starting…' : 'Launch'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isDisabled}
+                      onClick={() => setOpen((v) => !v)}
+                      className="flex items-center justify-center rounded-r-lg border-l border-white/20 bg-primary px-2 py-2 text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+                      aria-label="Choose effort level"
+                    >
+            allow_multiple: false
+            instruction: Add cursor-pointer to both buttons in the md variant.
+      - timestamp: '2026-05-14T08:49:44.691Z'
+        message: 'Running: npm run build'
+        type: tool
+        data:
+          toolName: run_shell_command
+          parameters:
+            description: Verify the portal builds successfully after my changes.
+            command: npm run build
+            dir_path: 'C:\GitHub\EventHorizon\portal'
+      - timestamp: '2026-05-14T08:50:10.568Z'
+        message: Editing Board.tsx
+        type: tool
+        data:
+          toolName: replace
+          parameters:
+            instruction: Remove unused 'isPromptableStatus' import.
+            old_string: >-
+              import { getArchiveStatus, getRequireInputStatus,
+              isPromptableStatus } from '../workflow';
+            new_string: >-
+              import { getArchiveStatus, getRequireInputStatus } from
+              '../workflow';
+            allow_multiple: false
+            file_path: 'C:\GitHub\EventHorizon\portal\src\components\Board.tsx'
+      - timestamp: '2026-05-14T08:50:20.052Z'
+        message: 'Running: npm run build'
+        type: tool
+        data:
+          toolName: run_shell_command
+          parameters:
+            dir_path: 'C:\GitHub\EventHorizon\portal'
+            description: Verify the portal builds successfully after fixing the lint issue.
+            command: npm run build
+      - timestamp: '2026-05-14T08:50:48.146Z'
+        message: Task Complete
+        type: topic
+        data:
+          title: Task Complete
+          summary: >-
+            I have added proper cursor states (`cursor-pointer`,
+            `disabled:cursor-not-allowed`) to the `LaunchAgentSplitButton`
+            components so they provide the expected hover feedback when enabled
+            or disabled. I also removed the redundant `Title` field from the
+            right-hand column in `TaskModal`. Removing the duplicate reference
+            to `titleRef` allows the existing auto-focus logic to correctly
+            target the top title field when opening a new ticket. All tasks are
+            complete and the build succeeds.
+          strategicIntent: Task complete.
+      - timestamp: '2026-05-14T08:51:00.153Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-05-14T08:51:02.016Z'
+        message: >-
+          I've completed the requested changes for FLUX-259:
+
+
+          1. **Agent Button Styling:** I updated the `LaunchAgentSplitButton`
+          components in both sizes to explicitly set `cursor-pointer` (for the
+          active state) and `disabled:cursor-not-allowed` (for when it is
+          inactive), ensuring it properly appears clickable and provides
+          immediate visual feedback. 
+
+          2. **Redundant Title Field:** I removed the extra "Title" field from
+          the right-hand column in the ticket fullscreen view (`TaskModal.tsx`).
+
+          3. **Focus Targeting:** By removing the redundant title field, the
+          single `titleRef` now safely binds to the top-bar title. The existing
+          `autoFocus` logic correctly targets this top-bar title field, so when
+          you open a "New ticket", the focus drops exactly where you want it. 
+
+
+          I also verified that the project still builds correctly without any TS
+          errors. The task is ready for review.
+        type: text
     user: Gemini CLI
     date: '2026-05-14T08:45:59.475Z'
+    outcome: Gemini CLI session ended with code 0.
+    endedAt: '2026-05-14T08:51:02.025Z'
   - type: status_change
     from: Grooming
     to: In Progress
@@ -717,11 +839,11 @@ status: In Progress
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
-  inputTokens: 656708
-  outputTokens: 5642
-  costUSD: 2.054754
+  inputTokens: 1192116
+  outputTokens: 8010
+  costUSD: 3.696498
   costIsEstimated: true
-  cacheReadTokens: 517655
+  cacheReadTokens: 940984
   cacheCreationTokens: 0
 order: 1
 ---
