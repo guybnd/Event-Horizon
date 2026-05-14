@@ -1,6 +1,5 @@
 ---
-id: FLUX-254
-title: Fix Agent AttachConsole failed error on tool execution
+title: Test Update
 status: Todo
 priority: High
 createdBy: Guy
@@ -51,6 +50,10 @@ history:
     to: Todo
     user: Guy
     date: '2026-05-14T03:02:44.033Z'
+  - type: activity
+    user: Guy
+    date: '2026-05-14T03:32:46.399Z'
+    comment: Updated title.
 effort: None
 implementationLink: ''
 subtasks: []
