@@ -39,6 +39,9 @@
       "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     }
   ],
+  "projects": [
+    "FLUX"
+  ],
   "users": [
     {
       "name": "Guy"
@@ -87,6 +90,162 @@
     {
       "name": "ci",
       "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "ux",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "ui-polish",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "settings",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "board",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "architecture",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "skills",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "installer",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "research",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "ui",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "distribution",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "reliability",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "integration",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "backend",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "agent-workflow",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "agent",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "devx",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "portal",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "task",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "ai",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "documentation",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "onboarding",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "refactor",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "dx",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "mvp",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "release",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "sync",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "windows",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "git",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "bugfix",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "infrastructure",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "session-management",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "agents",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "gemini",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "validation",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "logs",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "assets",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "navigation",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "animation",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "config",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     }
   ],
   "priorities": [
@@ -116,33 +275,21 @@
       "color": "text-gray-400"
     }
   ],
-  "projects": [
-    "FLUX"
-  ],
   "enableBacklogScreen": true,
   "requireCommentOnStatusChange": false,
   "boardCardOpenMode": "full",
   "animationsEnabled": true,
   "enableFireworks": true,
-  "animationSpeed": "normal",
   "requireInputStatus": "Require Input",
   "readyForMergeStatus": "Ready",
   "archiveStatus": "Archived",
   "docsEditPermissions": "all",
   "docsAllowedUsers": [],
-  "docsRoot": ".docs",
-  "hoverPopupsEnabled": true,
-  "hoverPopupDelay": 1500,
-  "tokenDisplayMode": "tokens",
-  "tokenCostThresholds": {
-    "green": 0.1,
-    "yellow": 0.5
-  },
-  "effortLevel": "high",
   "releaseSettings": {
     "generateDistinctFiles": true,
     "releaseNotesPath": "release-notes"
   },
+  "defaultAgent": "gemini",
   "integrations": {
     "claudeCode": {
       "groomingModel": "",
@@ -153,7 +300,6 @@
       "implementationModel": "gemini-3.1-pro-preview"
     }
   },
-  "defaultAgent": "gemini",
   "syncSettings": {
     "debounceMs": 30000,
     "maxWaitMs": 300000
@@ -161,5 +307,15 @@
   "agentProgress": {
     "enabled": true,
     "inlineDelay": 2
-  }
+  },
+  "animationSpeed": "normal",
+  "docsRoot": ".docs",
+  "hoverPopupsEnabled": true,
+  "hoverPopupDelay": 1500,
+  "tokenDisplayMode": "tokens",
+  "tokenCostThresholds": {
+    "green": 0.1,
+    "yellow": 0.5
+  },
+  "effortLevel": "high"
 }
