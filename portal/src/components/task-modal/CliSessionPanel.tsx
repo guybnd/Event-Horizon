@@ -1,4 +1,4 @@
-import { CircleDot, Square, Bot, Zap, Monitor, Terminal } from 'lucide-react';
+import { CircleDot, Square, Bot, Zap, Terminal } from 'lucide-react';
 import { LaunchAgentSplitButton } from '../LaunchAgentSplitButton';
 import { FrameworkSelector } from '../FrameworkSelector';
 import type { CliFramework, CliSessionSummary, Config } from '../../types';

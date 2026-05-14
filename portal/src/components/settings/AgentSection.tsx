@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { Bot, Zap } from 'lucide-react';
 import { fetchSkillStatus, installWorkspaceSkill } from '../../api';
 import { FrameworkSelector } from '../FrameworkSelector';
 import type { AppView } from '../../AppContext';

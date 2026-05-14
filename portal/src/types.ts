@@ -169,7 +169,12 @@ export interface Config {
       groomingModel?: string;
       implementationModel?: string;
     };
+    geminiCli?: {
+      groomingModel?: string;
+      implementationModel?: string;
+    };
   };
+  defaultAgent?: CliFramework;
   enableFireworks?: boolean;
   tokenDisplayMode?: 'cost' | 'tokens';
   tokenCostThresholds?: { green: number; yellow: number };
