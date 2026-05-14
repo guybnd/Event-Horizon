@@ -11,10 +11,16 @@ import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.j
 function checkBinaryInstalled(binaryName: string): void {
   const checker = process.platform === 'win32' ? 'where' : 'which';
   try {
-    execFileSync(checker, [binaryName], { stdio: 'ignore' });
+    execFileSync(checker, [binaryName], { stdio: 'ignore', timeout: 10_000 });
   } catch {
     throw new Error(`"${binaryName}" is not installed or not on PATH. Please install it before starting an agent session.`);
   }
+}
+
+function cleanChildEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.NODE_OPTIONS;
+  return env;
 }
 
 // Effort levels accepted by the --effort CLI flag, in ascending order.
@@ -338,7 +344,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     // Direct spawn of .exe preserves stdio streams for JSON output
     let exePath: string | null = null;
     try {
-      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8' }).trim();
+      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', timeout: 10_000 }).trim();
       const candidateExe = path.join(npmPrefix, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
       if (fs.existsSync(candidateExe)) {
         exePath = candidateExe;
@@ -358,14 +364,14 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     console.log(`[${id}] Prompt length: ${initialPrompt.length} chars`);
     proc = spawn(exePath, claudeArgs, {
       cwd: workspaceRoot,
-      env: process.env,
+      env: cleanChildEnv(),
       stdio: 'pipe',
       windowsHide: true,
     });
   } else {
     proc = spawn(binaryName, claudeArgs, {
       cwd: workspaceRoot,
-      env: process.env,
+      env: cleanChildEnv(),
       stdio: 'pipe',
     });
   }
@@ -564,7 +570,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     // On Windows, find the actual .exe instead of using cmd.exe wrapper
     let exePath: string | null = null;
     try {
-      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8' }).trim();
+      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', timeout: 10_000 }).trim();
       const candidateExe = path.join(npmPrefix, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
       if (fs.existsSync(candidateExe)) {
         exePath = candidateExe;
@@ -580,13 +586,13 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     console.log(`[${id}] Windows reply spawn: ${exePath} --resume ${session.claudeSessionId || '(new)'}`);
     replyProc = spawn(exePath, resumeArgs, {
       cwd: workspaceRoot,
-      env: process.env,
+      env: cleanChildEnv(),
       stdio: 'pipe',
     });
   } else {
     replyProc = spawn(binaryName, resumeArgs, {
       cwd: workspaceRoot,
-      env: process.env,
+      env: cleanChildEnv(),
       stdio: 'pipe',
     });
   }

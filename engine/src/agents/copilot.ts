@@ -11,10 +11,16 @@ import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.j
 function checkBinaryInstalled(binaryName: string): void {
   const checker = process.platform === 'win32' ? 'where' : 'which';
   try {
-    execFileSync(checker, [binaryName], { stdio: 'ignore' });
+    execFileSync(checker, [binaryName], { stdio: 'ignore', timeout: 10_000 });
   } catch {
     throw new Error(`"${binaryName}" is not installed or not on PATH. Please install it before starting an agent session.`);
   }
+}
+
+function cleanChildEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.NODE_OPTIONS;
+  return env;
 }
 
 // Effort levels accepted by the --effort CLI flag, in ascending order.
@@ -266,7 +272,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     console.log(`[${id}] Prompt length: ${initialPrompt.length} chars`);
     proc = spawn(exePath, copilotArgs, {
       cwd: workspaceRoot,
-      env: process.env,
+      env: cleanChildEnv(),
       stdio: 'pipe',
       shell: true,
       windowsHide: true,
@@ -274,7 +280,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   } else {
     proc = spawn(binaryName, copilotArgs, {
       cwd: workspaceRoot,
-      env: process.env,
+      env: cleanChildEnv(),
       stdio: 'pipe',
     });
   }
@@ -490,13 +496,13 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     console.log(`[${id}] Windows reply spawn: ${exePath}`);
     replyProc = spawn(exePath, resumeArgs, {
       cwd: workspaceRoot,
-      env: process.env,
+      env: cleanChildEnv(),
       stdio: 'pipe',
     });
   } else {
     replyProc = spawn(binaryName, resumeArgs, {
       cwd: workspaceRoot,
-      env: process.env,
+      env: cleanChildEnv(),
       stdio: 'pipe',
     });
   }

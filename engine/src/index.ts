@@ -1,3 +1,7 @@
+// Strip NODE_OPTIONS early — pkg binaries crash when child processes inherit
+// V8 flags like --max-old-space-size that get misinterpreted as module paths.
+delete process.env.NODE_OPTIONS;
+
 import express from 'express';
 import cors from 'cors';
 import fs from 'fs/promises';

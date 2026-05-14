@@ -11,10 +11,17 @@ import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.j
 function checkBinaryInstalled(binaryName: string): void {
   const checker = process.platform === 'win32' ? 'where' : 'which';
   try {
-    execFileSync(checker, [binaryName], { stdio: 'ignore' });
+    execFileSync(checker, [binaryName], { stdio: 'ignore', timeout: 10_000 });
   } catch {
     throw new Error(`"${binaryName}" is not installed or not on PATH. Please install it before starting an agent session.`);
   }
+}
+
+/** Build a clean env for child processes — strips NODE_OPTIONS and other vars that break pkg-spawned children. */
+function cleanChildEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  delete env.NODE_OPTIONS;
+  return env;
 }
 
 // Effort levels accepted by the --effort CLI flag, in ascending order.
@@ -455,7 +462,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     let exePath: string | null = null;
     let entryPoint: string | null = null;
     try {
-      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8' }).trim();
+      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', timeout: 10_000 }).trim();
       const candidateExe = path.join(npmPrefix, 'node_modules', '@google', 'gemini-cli', 'bin', 'gemini.exe');
       const candidateJs = path.join(npmPrefix, 'node_modules', '@google', 'gemini-cli', 'bundle', 'gemini.js');
       
@@ -468,11 +475,12 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
       console.log(`[${id}] Failed to resolve gemini path:`, err);
     }
 
+    const env = cleanChildEnv();
     if (exePath) {
       console.log(`[${id}] Windows spawn (exe): ${exePath}`);
       proc = spawn(exePath, geminiArgs, {
         cwd: workspaceRoot,
-        env: process.env,
+        env,
         stdio: 'pipe',
         windowsHide: true,
       });
@@ -480,7 +488,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
       console.log(`[${id}] Windows spawn (node): ${entryPoint}`);
       proc = spawn('node', [entryPoint, ...geminiArgs], {
         cwd: workspaceRoot,
-        env: process.env,
+        env,
         stdio: 'pipe',
         windowsHide: true,
       });
@@ -488,7 +496,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
       console.log(`[${id}] Windows spawn (fallback): ${binaryName}`);
       proc = spawn(binaryName, geminiArgs, {
         cwd: workspaceRoot,
-        env: process.env,
+        env,
         stdio: 'pipe',
         shell: true, // Use shell fallback for .cmd/.ps1
         windowsHide: true,
@@ -497,7 +505,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   } else {
     proc = spawn(binaryName, geminiArgs, {
       cwd: workspaceRoot,
-      env: process.env,
+      env: cleanChildEnv(),
       stdio: 'pipe',
     });
   }
@@ -697,7 +705,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     let exePath: string | null = null;
     let entryPoint: string | null = null;
     try {
-      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8' }).trim();
+      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', timeout: 10_000 }).trim();
       const candidateExe = path.join(npmPrefix, 'node_modules', '@google', 'gemini-cli', 'bin', 'gemini.exe');
       const candidateJs = path.join(npmPrefix, 'node_modules', '@google', 'gemini-cli', 'bundle', 'gemini.js');
       
@@ -710,11 +718,12 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       console.log(`[${id}] Failed to resolve gemini path for reply:`, err);
     }
 
+    const env = cleanChildEnv();
     if (exePath) {
       console.log(`[${id}] Windows reply spawn (exe): ${exePath}`);
       replyProc = spawn(exePath, resumeArgs, {
         cwd: workspaceRoot,
-        env: process.env,
+        env,
         stdio: 'pipe',
         windowsHide: true,
       });
@@ -722,7 +731,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       console.log(`[${id}] Windows reply spawn (node): ${entryPoint}`);
       replyProc = spawn('node', [entryPoint, ...resumeArgs], {
         cwd: workspaceRoot,
-        env: process.env,
+        env,
         stdio: 'pipe',
         windowsHide: true,
       });
@@ -730,7 +739,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       console.log(`[${id}] Windows reply spawn (fallback): ${binaryName}`);
       replyProc = spawn(binaryName, resumeArgs, {
         cwd: workspaceRoot,
-        env: process.env,
+        env,
         stdio: 'pipe',
         shell: true,
         windowsHide: true,
@@ -739,7 +748,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   } else {
     replyProc = spawn(binaryName, resumeArgs, {
       cwd: workspaceRoot,
-      env: process.env,
+      env: cleanChildEnv(),
       stdio: 'pipe',
     });
   }
