@@ -3,7 +3,7 @@ title: Fix Agent AttachConsole failed error on tool execution
 status: Todo
 priority: High
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 assignee: unassigned
 tags:
   - bug
@@ -21,6 +21,27 @@ history:
     user: Guy
     date: '2026-05-14T02:55:35.467Z'
     comment: Updated description.
+  - type: agent_session
+    sessionId: 537d561b-0fe4-456d-ac83-819b7784816d
+    startedAt: '2026-05-14T03:00:36.705Z'
+    status: active
+    progress:
+      - timestamp: '2026-05-14T03:00:52.887Z'
+        message: Working
+      - timestamp: '2026-05-14T03:01:07.399Z'
+        message: Working
+    user: Gemini CLI
+    date: '2026-05-14T03:00:36.705Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Guy
+    date: '2026-05-14T03:00:50.881Z'
+  - type: status_change
+    from: In Progress
+    to: Todo
+    user: Guy
+    date: '2026-05-14T03:01:05.789Z'
 effort: None
 implementationLink: ''
 subtasks: []
