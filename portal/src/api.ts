@@ -38,7 +38,17 @@ export async function updateTask(id: string, updates: Partial<Task>): Promise<Ta
     },
     body: JSON.stringify(updates)
   });
-  if (!res.ok) throw new Error('Failed to update task');
+  if (!res.ok) {
+    let message = 'Failed to update task';
+    try {
+      const errorPayload = await res.json();
+      if (errorPayload.message) message = errorPayload.message;
+      else if (errorPayload.error) message = errorPayload.error;
+    } catch {
+      // ignore
+    }
+    throw new Error(message);
+  }
   return res.json();
 }
 

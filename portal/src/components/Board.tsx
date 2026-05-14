@@ -42,40 +42,45 @@ export function Board() {
 
   const [pendingStatusChange, setPendingStatusChange] = useState<{taskId: string, newStatus: string, oldStatus: string} | null>(null);
   const [movingTaskIds, setMovingTaskIds] = useState<Set<string>>(new Set());
+  const [optimisticTasks, setOptimisticTasks] = useState<Record<string, Task>>({});
   const [commentText, setCommentText] = useState('');
 
-  // Keep tasks in sync with liveTasks, but protect those that are currently moving
+  // Sync local tasks with liveTasks + optimistic overrides
   useEffect(() => {
-    setTasks(prev => {
-      const nextTasks = [...liveTasks];
-      return nextTasks.map(task => {
-        if (movingTaskIds.has(task.id)) {
-          const prevTask = prev.find(p => p.id === task.id);
-          return prevTask || task;
-        }
-        return task;
-      });
-    });
-  }, [liveTasks, movingTaskIds]);
+    setTasks(liveTasks.map(task => {
+      if (movingTaskIds.has(task.id) && optimisticTasks[task.id]) {
+        return optimisticTasks[task.id];
+      }
+      return task;
+    }));
+  }, [liveTasks, movingTaskIds, optimisticTasks]);
 
   // Clean up movingTaskIds once liveTasks catches up to the optimistic state
   useEffect(() => {
     if (movingTaskIds.size === 0) return;
 
-    setMovingTaskIds(prev => {
-      const next = new Set(prev);
-      let changed = false;
-      for (const taskId of prev) {
-        const liveTask = liveTasks.find(t => t.id === taskId);
-        const currentTask = tasks.find(t => t.id === taskId);
-        if (liveTask && currentTask && liveTask.status === currentTask.status && liveTask.order === currentTask.order) {
-          next.delete(taskId);
-          changed = true;
-        }
+    const tasksToRemove: string[] = [];
+    for (const taskId of movingTaskIds) {
+      const liveTask = liveTasks.find(t => t.id === taskId);
+      const optimisticTask = optimisticTasks[taskId];
+      if (liveTask && optimisticTask && liveTask.status === optimisticTask.status && liveTask.order === optimisticTask.order) {
+        tasksToRemove.push(taskId);
       }
-      return changed ? next : prev;
-    });
-  }, [liveTasks, tasks, movingTaskIds]);
+    }
+
+    if (tasksToRemove.length > 0) {
+      setMovingTaskIds(prev => {
+        const next = new Set(prev);
+        tasksToRemove.forEach(id => next.delete(id));
+        return next;
+      });
+      setOptimisticTasks(prev => {
+        const next = { ...prev };
+        tasksToRemove.forEach(id => delete next[id]);
+        return next;
+      });
+    }
+  }, [liveTasks, optimisticTasks, movingTaskIds]);
 
   useEffect(() => {
     const fn = (e: any) => {
@@ -165,9 +170,9 @@ export function Board() {
 
     // Case 1: Moving to a DIFFERENT column
     if (activeTaskObj.status !== targetStatus) {
-      const isPromptable = isPromptableStatus(targetStatus, config);
-      // Respect the config setting; only force prompt for promptable statuses if they aren't explicitly allowed to be silent
-      if (config.requireCommentOnStatusChange || isPromptable) {
+      // Respect the config setting for status change comments.
+      // If disabled, we try to move silently and only prompt if the backend requires it (e.g. for Ready/Require Input)
+      if (config.requireCommentOnStatusChange) {
         setPendingStatusChange({ taskId: activeTaskId, newStatus: targetStatus, oldStatus: activeTaskObj.status });
         return;
       }
@@ -197,10 +202,11 @@ export function Board() {
         changedTasks.forEach(t => next.add(t.id));
         return next;
       });
-      setTasks(prev => prev.map(t => {
-        const found = changedTasks.find(ct => ct.id === t.id);
-        return found ? found : t;
-      }));
+      setOptimisticTasks(prev => {
+        const next = { ...prev };
+        changedTasks.forEach(t => next[t.id] = t);
+        return next;
+      });
 
       // Persist changes
       try {
@@ -210,11 +216,16 @@ export function Board() {
         triggerRefresh();
       } catch (err) {
         console.error('Failed to persist reorder:', err);
-        changedTasks.forEach(t => setMovingTaskIds(prev => {
+        setMovingTaskIds(prev => {
           const next = new Set(prev);
-          next.delete(t.id);
+          changedTasks.forEach(t => next.delete(t.id));
           return next;
-        }));
+        });
+        setOptimisticTasks(prev => {
+          const next = { ...prev };
+          changedTasks.forEach(t => delete next[t.id]);
+          return next;
+        });
         triggerRefresh();
       }
     }
@@ -247,21 +258,44 @@ export function Board() {
     });
 
     const finalOrder = newOrder ?? (task.order || 0);
+    const optimisticTask = { ...task, status: newStatus, order: finalOrder, history: newHistory as any };
 
     setMovingTaskIds(prev => new Set(prev).add(taskId));
-    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: newStatus, order: finalOrder, history: newHistory as any } : t));
+    setOptimisticTasks(prev => ({ ...prev, [taskId]: optimisticTask }));
 
     try {
       await updateTask(taskId, { status: newStatus, order: finalOrder, history: newHistory, updatedBy: currentUser } as any);
       triggerRefresh();
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      
+      // Reactive prompting: If backend requires a comment, show the modal
+      if (err.message?.includes('comment is required') || err.message?.includes('_MISSING_COMMENT')) {
+        setMovingTaskIds(prev => {
+          const next = new Set(prev);
+          next.delete(taskId);
+          return next;
+        });
+        setOptimisticTasks(prev => {
+          const next = { ...prev };
+          delete next[taskId];
+          return next;
+        });
+        setPendingStatusChange({ taskId, newStatus, oldStatus });
+        return;
+      }
+
       setMovingTaskIds(prev => {
         const next = new Set(prev);
         next.delete(taskId);
         return next;
       });
-      alert('Failed to update task. Please check the logs.');
+      setOptimisticTasks(prev => {
+        const next = { ...prev };
+        delete next[taskId];
+        return next;
+      });
+      alert('Failed to update task: ' + err.message);
     }
     setPendingStatusChange(null);
     setCommentText('');

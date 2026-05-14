@@ -213,9 +213,9 @@ export function attachStdoutProcessing(
               session.lastProgressLog = undefined;
             }
 
-            if (activityChanged && session.sessionHistoryEntry?.sessionId) {
+            if (session.sessionHistoryEntry?.sessionId) {
               const toolName = toolBlock.name;
-              let progressMsg = session.currentActivity;
+              let progressMsg = newActivity;
               if (toolBlock.input) {
                 if (toolName === 'Read' && toolBlock.input.file_path) {
                   progressMsg = `Reading ${path.basename(toolBlock.input.file_path)}`;
@@ -297,8 +297,8 @@ export function attachStdoutProcessing(
               progressMsg = `Running: ${cmd}${cmd.length >= 50 ? '...' : ''}`;
             }
 
-            // Always log update_topic, but for other tools only log if activity changed
-            if (toolName === 'update_topic' || activityChanged) {
+            // Always log every tool use to document each step of the agent session
+            if (toolName) {
               enqueueSessionWrite(session, async () => {
                 await updateAgentSession(taskId, session.sessionHistoryEntry!.sessionId, (sessionEntry) => {
                   sessionEntry.progress.push({ 
