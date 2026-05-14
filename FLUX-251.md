@@ -346,7 +346,7 @@ history:
   - type: agent_session
     sessionId: 458b8de2-3c94-4076-b541-9e2ccffe8ca4
     startedAt: '2026-05-14T08:02:08.101Z'
-    status: active
+    status: completed
     progress:
       - timestamp: '2026-05-14T08:02:22.560Z'
         message: Working
@@ -354,8 +354,19 @@ history:
         message: Working
     user: Gemini CLI
     date: '2026-05-14T08:02:08.101Z'
+    outcome: Ticket finished as requested.
+    endedAt: '2026-05-14T08:05:00.000Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-14T08:05:00.000Z'
+    comment: 'Ticket finished as requested. Commit hash: ad9e6852f7278497d979f537ed29940d60504acb'
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-14T08:05:00.000Z'
 title: multi agent UI UX improvement
-status: Ready
+status: Done
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
