@@ -1,6 +1,6 @@
 ---
 title: Two-tier instruction architecture for zero-cost non-ticket interactions
-status: Grooming
+status: Ready
 priority: Low
 effort: L
 assignee: unassigned
@@ -464,8 +464,73 @@ history:
               \`.github/copilot-instructions.md\`) in the workspace with the new
               minimal instructions and updated orchestrator skill." --status
               "Todo"
+      - timestamp: '2026-05-14T09:40:30.054Z'
+        message: 'Running: npx tsx engine/src/patch-ticket.ts FLUX-262 --work...'
+        type: tool
+        data:
+          toolName: run_shell_command
+          parameters:
+            command: >-
+              npx tsx engine/src/patch-ticket.ts FLUX-262 --workspace . --status
+              "In Progress" --comment "Starting implementation of two-tier
+              instruction architecture."
+            description: Move FLUX-262 to In Progress with a comment
+      - timestamp: '2026-05-14T09:40:30.144Z'
+        message: 'Running: npx tsx engine/src/patch-ticket.ts FLUX-262 --work...'
+        type: tool
+        data:
+          toolName: run_shell_command
+          parameters:
+            command: >-
+              npx tsx engine/src/patch-ticket.ts FLUX-262 --workspace . --status
+              "Ready" --comment "Implemented two-tier architecture. Always-on
+              instructions drastically reduced in token size and redirect to
+              orchestrator. Critical workflow rules moved to the orchestrator.
+              Verified across Copilot, Gemini, and Claude target formats. Ready
+              for review."
+            description: Move FLUX-262 to Ready with a summary comment
+      - timestamp: '2026-05-14T09:40:48.578Z'
+        message: Task Complete
+        type: topic
+        data:
+          title: Task Complete
+          summary: >-
+            The ticket FLUX-262 implementation is complete. The always-on
+            instruction file has been reduced significantly by migrating
+            detailed workflow and layout policies into the orchestrator. I have
+            run the `skill-installer` to propagate these updates to all agent
+            rule files (`.gemini/instructions.md`,
+            `.github/copilot-instructions.md`, etc.). The ticket has been
+            advanced to `Ready` and awaits user review.
+          strategicIntent: >-
+            Reporting final progress update and blockers as requested by the
+            user.
     user: Gemini CLI
     date: '2026-05-14T09:35:12.229Z'
+  - type: status_change
+    from: Grooming
+    to: Ready
+    user: Agent
+    date: '2026-05-14T09:40:36.200Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-14T09:40:36.201Z'
+    comment: >-
+      Implemented two-tier architecture. Always-on instructions drastically
+      reduced in token size and redirect to orchestrator. Critical workflow
+      rules moved to the orchestrator. Verified across Copilot, Gemini, and
+      Claude target formats. Ready for review.
+    id: c-2026-05-14t09-40-36-201z
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Agent
+    date: '2026-05-14T09:40:36.235Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-14T09:40:36.236Z'
+    comment: Starting implementation of two-tier instruction architecture.
+    id: c-2026-05-14t09-40-36-236z
 ---
 
 ## Problem / Motivation
