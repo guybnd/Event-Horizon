@@ -174,7 +174,7 @@ export interface Config {
       implementationModel?: string;
     };
   };
-  defaultAgent?: CliFramework;
+  defaultAgent?: CliFramework | 'auto';
   enableFireworks?: boolean;
   tokenDisplayMode?: 'cost' | 'tokens';
   tokenCostThresholds?: { green: number; yellow: number };

@@ -14,12 +14,15 @@ import {
   SendHorizontal,
   Trash2,
   X,
+  Bot,
 } from 'lucide-react';
 import { useApp } from '../AppContext';
 import { createTask, deleteTask, fetchTask, sendTaskCliInput, startTaskCliSession, updateTask } from '../api';
 import { LaunchAgentSplitButton } from './LaunchAgentSplitButton';
 import type { ReviewPersona } from './CodeReviewButton';
-import type { Config, HistoryEntry, Task } from '../types';
+import type { Config, HistoryEntry, Task, CliFramework } from '../types';
+import { FRAMEWORK_ICONS } from '../constants';
+
 import { StatusBadge } from './StatusBadge';
 import { getStatusColorClass } from '../statusStyles';
 import { TaskDescriptionSurface } from './TaskDescriptionSurface';
@@ -675,6 +678,21 @@ export function TaskModal() {
     }
   }, [modalTask?.id, cliSession, currentUser, selectedCliFramework, triggerRefresh]);
 
+  const handleGrooming = useCallback(async () => {
+    if (!modalTask?.id) return;
+    setCliSessionBusy(true);
+    setCliSessionError('');
+    try {
+      const session = await startTaskCliSession(modalTask.id, selectedCliFramework, `groom ${modalTask.id}`, skipPermissions);
+      setCliSession(session);
+      triggerRefresh();
+    } catch (error: any) {
+      setCliSessionError(error?.message || 'Failed to start grooming session.');
+    } finally {
+      setCliSessionBusy(false);
+    }
+  }, [modalTask?.id, selectedCliFramework, skipPermissions, setCliSession, triggerRefresh]);
+
   const handleToggleReply = useCallback((entryId: string | undefined) => {
     setReplyTargetId((current) => current === entryId ? null : entryId || null);
     setReplyDraft('');
@@ -735,6 +753,30 @@ export function TaskModal() {
       </div>
     </div>
   ) : null, [isReadyForMerge, readyForMergeStatus]);
+
+  const groomingBanner = status === 'Grooming' ? (
+    <div className="flex items-center justify-between gap-4 rounded-xl border border-primary/20 bg-primary/5 p-4 dark:border-primary/30 dark:bg-primary/10">
+      <div className="flex gap-3">
+        <div className="mt-0.5 rounded-lg bg-primary/10 p-1.5 text-primary dark:bg-primary/20">
+          <Zap className="h-5 w-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="mb-1 text-xs font-bold uppercase tracking-wider text-primary">Grooming phase</p>
+          <p className="text-sm text-gray-700 dark:text-gray-300">
+            This ticket needs a concrete implementation plan. Click <strong>Start Grooming</strong> to have the agent analyze requirements and update the body.
+          </p>
+        </div>
+      </div>
+      <button
+        disabled={cliSessionBusy || sessionIsActive}
+        onClick={handleGrooming}
+        className="shrink-0 flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-bold text-white shadow-md transition-all hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        <Bot className="h-4 w-4" />
+        {cliSessionBusy ? 'Starting...' : 'Start Grooming'}
+      </button>
+    </div>
+  ) : null;
 
   if (!config || (!isModalOpen && !modalTask)) return null;
 
@@ -1171,6 +1213,7 @@ export function TaskModal() {
                     busy={cliSessionBusy}
                     disabled={!modalTask?.id}
                     onLaunch={launchSession}
+                    icon={FRAMEWORK_ICONS[selectedCliFramework]}
                   />
                 );
               })()}
@@ -1227,7 +1270,12 @@ export function TaskModal() {
 
             <div className="min-h-0 border-r border-gray-200 dark:border-white/10 overflow-y-auto relative">
               <div className="flex flex-col min-h-full">
-                {requireInputBanner && <div className="border-b border-gray-200 p-6 dark:border-white/10">{requireInputBanner}</div>}
+                {(requireInputBanner || groomingBanner) && (
+                  <div className="border-b border-gray-200 p-6 dark:border-white/10">
+                    {requireInputBanner}
+                    {groomingBanner}
+                  </div>
+                )}
                 <div className="flex-1 flex flex-col border-b border-gray-200 dark:border-white/10">
                   <div className="flex items-center justify-between px-6 py-4">
                     <div>
@@ -1396,7 +1444,12 @@ export function TaskModal() {
             </div>
 
             <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 text-sm text-gray-800 dark:text-gray-200">
-              {isRequireInput ? requireInputPrompt : requireInputBanner}
+              {isRequireInput ? requireInputPrompt : (
+                <>
+                  {requireInputBanner}
+                  {groomingBanner}
+                </>
+              )}
 
               <div className={isWideMode ? 'flex items-center gap-4 rounded-xl border border-gray-100 bg-gray-50 p-4 dark:border-white/5 dark:bg-black/10' : 'space-y-3 rounded-xl border border-gray-100 bg-gray-50 p-3 dark:border-white/5 dark:bg-black/10'}>
                 <div className={isWideMode ? 'mr-4 flex-1' : 'min-w-0'}>

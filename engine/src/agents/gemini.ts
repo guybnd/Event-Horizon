@@ -347,6 +347,11 @@ export function attachStdoutProcessing(
         }
       } catch {
         appendSessionOutput(session, trimmed, 'stdout', false);
+        // Broadcast that we received some output even if it wasn't valid JSON
+        if (!session.currentActivity) {
+          session.currentActivity = 'Working';
+          broadcastEvent('activity', { taskId, activity: session.currentActivity });
+        }
       }
     }
   });
@@ -359,6 +364,8 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   const binaryName = 'gemini';
   const label = session.label;
   const id = session.taskId;
+
+  console.log(`[${id}] Starting ${framework} session in ${workspaceRoot}`);
 
   checkBinaryInstalled(binaryName);
 
@@ -375,7 +382,13 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     '-p', initialPrompt,
     '--output-format', 'stream-json',
     ...(session.skipPermissions ? ['--yolo'] : []),
+    // --skip-trust is used to bypass the "Are you sure you want to run this?" confirmation 
+    // for commands that are already trusted/validated by the engine's internal logic
+    // or when running in a non-interactive automation context.
+    '--skip-trust',
   ];
+
+  console.log(`[${id}] Args:`, geminiArgs);
 
   const caps = PROVIDER_CAPABILITIES[framework] ?? PROVIDER_CAPABILITIES['copilot'];
   const globalEffort = (configCache as any).effortLevel as string | undefined;
@@ -621,8 +634,8 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
 
   const safeMessage = message.replace(/\0/g, '');
   const resumeArgs = session.claudeSessionId
-    ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--yolo']
-    : ['-p', safeMessage, '--output-format', 'stream-json', '--yolo'];
+    ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--yolo', '--skip-trust']
+    : ['-p', safeMessage, '--output-format', 'stream-json', '--yolo', '--skip-trust'];
 
   let replyProc: ReturnType<typeof spawn>;
   if (process.platform === 'win32') {

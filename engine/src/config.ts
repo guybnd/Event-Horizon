@@ -39,6 +39,7 @@ export let configCache: any = {
     generateDistinctFiles: true,
     releaseNotesPath: 'release-notes'
   },
+  defaultAgent: 'claude',
   integrations: {
     claudeCode: {
       groomingModel: '',

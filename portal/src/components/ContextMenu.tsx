@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Archive, Bot, Check, ChevronDown, ChevronRight, Copy, ExternalLink, GitBranch, MessageCircle, Trash2, X } from 'lucide-react';
-import type { Task } from '../types';
+import { Archive, Bot, ChevronDown, ChevronRight, ExternalLink, GitBranch, MessageCircle, Trash2, X, Zap } from 'lucide-react';
+import type { Task, CliFramework } from '../types';
 import { useApp } from '../AppContext';
 import { deleteTask, startTaskCliSession, updateTask } from '../api';
 import { getArchiveStatus } from '../workflow';
@@ -23,11 +23,13 @@ interface Props {
 }
 
 export function ContextMenu({ task, position, onClose }: Props) {
-  const { config, currentUser, openTaskModal, openTaskFullView, triggerRefresh, readComments, markAllCommentsRead } = useApp();
+  const { config, currentUser, triggerRefresh, readComments, markAllCommentsRead, openTaskModal, openTaskFullView } = useApp();
   const menuRef = useRef<HTMLDivElement>(null);
   const [activeSubmenu, setActiveSubmenu] = useState<'transition' | 'agent' | 'effort' | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [copied, setCopied] = useState<string | null>(null);
+
+  const defaultAgent = (config?.defaultAgent === 'auto' || !config?.defaultAgent) ? 'claude' : config.defaultAgent;
+  const ActiveIcon = defaultAgent === 'gemini' ? Zap : Bot;
 
   // Adjust position to keep menu on screen
   const [pos, setPos] = useState(position);
@@ -81,13 +83,34 @@ export function ContextMenu({ task, position, onClose }: Props) {
 
   const handleLaunchAgent = (effortOverride?: EffortLevel) => {
     onClose();
-    void startTaskCliSession(task.id, 'claude', undefined, true, effortOverride).then(() => triggerRefresh());
+    void startTaskCliSession(task.id, defaultAgent as CliFramework, undefined, true, effortOverride).then(() => triggerRefresh());
   };
 
   const handleTransition = async (status: string) => {
     onClose();
     await updateTask(task.id, { status, updatedBy: currentUser } as any);
     triggerRefresh();
+  };
+
+  const handleAgentCommand = async (cmd: string) => {
+    onClose();
+    try {
+      await startTaskCliSession(task.id, defaultAgent as CliFramework, cmd, true);
+      triggerRefresh();
+    } catch (err) {
+      console.error('Failed to run agent command:', err);
+    }
+  };
+
+  const handleSendForGrooming = async () => {
+    onClose();
+    try {
+      await updateTask(task.id, { status: 'Grooming', updatedBy: currentUser } as any);
+      await startTaskCliSession(task.id, defaultAgent as CliFramework, `groom ${task.id}`, true);
+      triggerRefresh();
+    } catch (err) {
+      console.error('Failed to send for grooming:', err);
+    }
   };
 
   const handleArchive = async () => {
@@ -100,15 +123,6 @@ export function ContextMenu({ task, position, onClose }: Props) {
     onClose();
     await deleteTask(task.id);
     triggerRefresh();
-  };
-
-  const handleCopyCommand = (cmd: string) => {
-    void navigator.clipboard.writeText(cmd);
-    setCopied(cmd);
-    setTimeout(() => {
-      setCopied(null);
-      onClose();
-    }, 900);
   };
 
   const handleMarkRead = () => {
@@ -135,7 +149,7 @@ export function ContextMenu({ task, position, onClose }: Props) {
           onClick={() => handleLaunchAgent()}
           className="flex flex-1 items-center gap-2 px-3 py-1.5 text-left text-xs text-gray-700 transition-colors hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-white/5"
         >
-          <span className="flex-none text-gray-400"><Bot className="h-3.5 w-3.5" /></span>
+          <span className="flex-none text-gray-400">{<ActiveIcon className="h-3.5 w-3.5" />}</span>
           Launch Agent
         </button>
         <button
@@ -147,6 +161,14 @@ export function ContextMenu({ task, position, onClose }: Props) {
           <ChevronDown className={`h-3 w-3 transition-transform ${activeSubmenu === 'effort' ? 'rotate-180' : ''}`} />
         </button>
       </div>
+
+      {/* Groom Ticket */}
+      {task.status !== 'Grooming' && (
+        <MenuItem icon={<Zap className="h-3.5 w-3.5" />} onClick={handleSendForGrooming}>
+          Send for Grooming
+        </MenuItem>
+      )}
+
       {activeSubmenu === 'effort' && (
         <div className="border-t border-gray-100 bg-gray-50/60 dark:border-white/5 dark:bg-white/3">
           <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-400">Effort override</div>
@@ -181,21 +203,19 @@ export function ContextMenu({ task, position, onClose }: Props) {
         ))}
       </SubMenuItem>
 
-      {/* Copy agent command → */}
+      {/* Run agent command → */}
       <SubMenuItem
-        icon={<Copy className="h-3.5 w-3.5" />}
-        label="Copy agent command"
+        icon={<Bot className="h-3.5 w-3.5" />}
+        label="Run agent command"
         open={activeSubmenu === 'agent'}
         onOpen={() => setActiveSubmenu(activeSubmenu === 'agent' ? null : 'agent')}
       >
         {AGENT_COMMANDS.map((item) => {
           const cmd = item.command(task.id);
-          const isCopied = copied === cmd;
           return (
             <MenuItem
               key={item.label}
-              icon={isCopied ? <Check className="h-3.5 w-3.5 text-green-500" /> : undefined}
-              onClick={() => handleCopyCommand(cmd)}
+              onClick={() => handleAgentCommand(cmd)}
             >
               <span className="flex-1">{item.label}</span>
               <span className="ml-2 truncate text-[10px] text-gray-400 dark:text-gray-500">{cmd}</span>

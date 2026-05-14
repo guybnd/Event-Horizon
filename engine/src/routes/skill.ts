@@ -18,10 +18,12 @@ router.get('/status', async (req, res) => {
 router.post('/install', async (req, res) => {
   try {
     const framework = req.body?.framework || 'auto';
+    console.log(`[skill] Installing workflow for framework: ${framework}`);
     const result = await installWorkspaceWorkflow({ sourceRoot: resolveSkillSourceRoot(), targetDir: workspaceRoot!, framework });
+    console.log(`[skill] Installation successful:`, result);
     res.json({ success: true, ...result });
   } catch (error) {
-    console.error('Failed to install skill:', error);
+    console.error('[skill] Failed to install skill:', error);
     res.status(500).json({ error: 'Failed to install skill' });
   }
 });

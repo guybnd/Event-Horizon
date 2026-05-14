@@ -7,6 +7,9 @@ import { getPromptableStatuses } from '../workflow';
 import type { Task } from '../types';
 import { searchTasks } from '../taskSearch';
 import { SyncStatusIndicator } from './SyncStatusIndicator';
+import { FrameworkSelector } from './FrameworkSelector';
+import { ActiveSessionsPopover } from './ActiveSessionsPopover';
+import { AnimatePresence } from 'framer-motion';
 
 export function Header() {
   const {
@@ -21,6 +24,7 @@ export function Header() {
     saveConfig,
     isConnected,
     openTaskModal,
+    openTaskFullView,
     theme,
     toggleTheme,
   } = useApp();
@@ -28,6 +32,7 @@ export function Header() {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isPromptPulseActive, setIsPromptPulseActive] = useState(false);
   const [isStoppingService, setIsStoppingService] = useState(false);
+  const [isSessionsPopoverOpen, setIsSessionsPopoverOpen] = useState(false);
   const [lifetimeCostUSD, setLifetimeCostUSD] = useState<number | null>(null);
   const [lifetimeTokens, setLifetimeTokens] = useState<{ input: number; output: number; estimated: boolean } | null>(null);
   const [costStatsLoaded, setCostStatsLoaded] = useState(false);
@@ -256,20 +261,31 @@ export function Header() {
           </button>
 
           {/* Agent Sessions — compact stat card */}
-          <button
-            onClick={() => setView('board')}
-            className={`group flex shrink-0 items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-left transition-all duration-200 overflow-hidden ${activeSessionCount > 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300' : 'border-gray-200 bg-white/60 text-gray-500 dark:border-white/10 dark:bg-white/5 dark:text-gray-400'}`}
-            title="Active Claude Code agent sessions running on tickets"
-          >
-            <div className="relative shrink-0">
-              <Bot className="h-3.5 w-3.5" />
-              {activeSessionCount > 0 && <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />}
-            </div>
-            <span className="text-sm font-semibold leading-none">{activeSessionCount}</span>
-            <span className="max-w-0 overflow-hidden opacity-0 whitespace-nowrap text-[10px] font-bold uppercase tracking-wider transition-all duration-200 group-hover:max-w-[80px] group-hover:opacity-100 group-hover:ml-0.5">
-              Agents
-            </span>
-          </button>
+          <div className="relative">
+            <button
+              onClick={() => setIsSessionsPopoverOpen(!isSessionsPopoverOpen)}
+              className={`group flex shrink-0 items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-left transition-all duration-200 overflow-hidden ${activeSessionCount > 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300' : 'border-gray-200 bg-white/60 text-gray-500 dark:border-white/10 dark:bg-white/5 dark:text-gray-400'} ${isSessionsPopoverOpen ? 'ring-2 ring-primary/30' : ''}`}
+              title="Active agent sessions running on tickets"
+            >
+              <div className="relative shrink-0">
+                <Bot className="h-3.5 w-3.5" />
+                {activeSessionCount > 0 && <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />}
+              </div>
+              <span className="text-sm font-semibold leading-none">{activeSessionCount}</span>
+              <span className="max-w-0 overflow-hidden opacity-0 whitespace-nowrap text-[10px] font-bold uppercase tracking-wider transition-all duration-200 group-hover:max-w-[80px] group-hover:opacity-100 group-hover:ml-0.5">
+                Agents
+              </span>
+            </button>
+            <AnimatePresence>
+              {isSessionsPopoverOpen && (
+                <ActiveSessionsPopover
+                  tasks={tasks}
+                  onClose={() => setIsSessionsPopoverOpen(false)}
+                  openTask={(t) => openTaskFullView(t)}
+                />
+              )}
+            </AnimatePresence>
+          </div>
 
           {/* Lifetime Cost / Tokens — compact stat card */}
           {costStatsLoaded && (
@@ -305,6 +321,20 @@ export function Header() {
 
           {/* Sync Status */}
           <SyncStatusIndicator />
+
+          {/* Agent Selector */}
+          <div className="flex shrink-0 items-center gap-2 bg-gray-100 dark:bg-black/40 px-3 py-1.5 rounded-xl border border-gray-200 dark:border-white/5">
+            <div className="flex flex-col">
+              <span className="text-[9px] font-bold uppercase tracking-wider text-gray-400 leading-none mb-1">Default Agent</span>
+              <div className="w-36">
+                <FrameworkSelector
+                  value={config?.defaultAgent || 'auto'}
+                  onChange={(v) => config && saveConfig({ ...config, defaultAgent: v as any })}
+                  showAuto
+                />
+              </div>
+            </div>
+          </div>
 
           {/* Engine indicator — dot only when connected, full pill when offline */}
           <div

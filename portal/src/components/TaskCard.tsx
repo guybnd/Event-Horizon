@@ -208,7 +208,8 @@ export function TaskCard({
       if (hasActiveCliSession) {
         await sendTaskCliInput(task.id, command, currentUser);
       } else {
-        await startTaskCliSession(task.id, 'claude', command);
+        const framework = (config?.defaultAgent === 'auto' || !config?.defaultAgent) ? 'claude' : config.defaultAgent;
+        await startTaskCliSession(task.id, framework as any, command);
       }
       triggerRefresh();
     } finally {

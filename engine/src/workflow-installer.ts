@@ -226,9 +226,13 @@ export async function getWorkflowInstallStatus({ sourceRoot, targetDir, framewor
 
 export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framework = 'auto' }: WorkflowInstallerOptions): Promise<WorkflowInstallResult> {
   const resolvedFramework = resolveFramework(targetDir, framework);
+  console.log(`[installer] Resolved framework: ${resolvedFramework}`);
   const { skillSourcePath, skillSourcePaths, instructionsSourcePath } = getSourcePaths(sourceRoot);
   const skillInstalledPath = skillDestinationFor(targetDir, resolvedFramework);
   const instructionsInstalledPath = instructionsDestinationFor(targetDir, resolvedFramework);
+
+  console.log(`[installer] Skill dest: ${skillInstalledPath}`);
+  console.log(`[installer] Instructions dest: ${instructionsInstalledPath}`);
 
   if (!await pathExists(skillSourcePath)) {
     throw new Error(`Skill source file not found: ${skillSourcePath}`);
@@ -236,6 +240,7 @@ export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framewor
 
   if (MODULAR_FRAMEWORKS.includes(resolvedFramework)) {
     // Option B: install one file per skill module
+    console.log(`[installer] Installing modular skill...`);
     for (const [index, module] of SKILL_MODULES.entries()) {
       const src = skillSourcePaths[index];
       const dest = skillModuleDestinationFor(targetDir, resolvedFramework, module);
@@ -244,12 +249,14 @@ export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framewor
     }
   } else {
     // Option A: concatenate all modules wrapped in XML tags
+    console.log(`[installer] Installing concatenated skill...`);
     await fs.mkdir(path.dirname(skillInstalledPath), { recursive: true });
     const concatenated = await buildConcatenatedSkill(skillSourcePaths);
     await fs.writeFile(skillInstalledPath, concatenated, 'utf-8');
   }
 
   if (instructionsInstalledPath) {
+    console.log(`[installer] Patching instructions...`);
     if (!await pathExists(instructionsSourcePath)) {
       throw new Error(`Copilot instructions source file not found: ${instructionsSourcePath}`);
     }
@@ -261,6 +268,7 @@ export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framewor
     await fs.writeFile(instructionsInstalledPath, nextInstructions, 'utf-8');
   }
 
+  console.log(`[installer] Done.`);
   return {
     framework: resolvedFramework,
     skillInstalledPath,

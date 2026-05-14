@@ -1,8 +1,9 @@
-import { CircleDot, Square, Bot, Zap, Terminal } from 'lucide-react';
+import { CircleDot, Square, Bot } from 'lucide-react';
 import { LaunchAgentSplitButton } from '../LaunchAgentSplitButton';
 import { FrameworkSelector } from '../FrameworkSelector';
 import type { CliFramework, CliSessionSummary, Config } from '../../types';
 import { TokenBadge } from '../TokenBadge';
+import { FRAMEWORK_ICONS } from '../../constants';
 
 interface CliSessionPanelProps {
   cliSession: CliSessionSummary | null;
@@ -20,12 +21,6 @@ interface CliSessionPanelProps {
   onStop: () => void;
   onToggleDisplayMode?: () => void;
 }
-
-const FRAMEWORK_ICONS: Record<CliFramework, any> = {
-  claude: Bot,
-  gemini: Zap,
-  copilot: Terminal,
-};
 
 export function CliSessionPanel({
   cliSession, cliSessionBusy, cliSessionError,

@@ -7,6 +7,8 @@ import type { AppView } from '../../AppContext';
 interface AgentSectionProps {
   effortLevel: string;
   setEffortLevel: (v: string) => void;
+  targetFramework: string;
+  setTargetFramework: (v: string) => void;
   groomingModel: string;
   setGroomingModel: (v: string) => void;
   implementationModel: string;
@@ -22,6 +24,8 @@ interface AgentSectionProps {
 export function AgentSection({
   effortLevel,
   setEffortLevel,
+  targetFramework,
+  setTargetFramework,
   groomingModel,
   setGroomingModel,
   implementationModel,
@@ -42,7 +46,6 @@ export function AgentSection({
   const [instructionsInstalledPath, setInstructionsInstalledPath] = useState('');
   const [skillLoading, setSkillLoading] = useState(true);
   const [skillInstalling, setSkillInstalling] = useState(false);
-  const [targetFramework, setTargetFramework] = useState('auto');
 
   useEffect(() => {
     setSkillLoading(true);
