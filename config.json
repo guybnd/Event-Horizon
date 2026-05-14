@@ -30,9 +30,6 @@
       "name": "Backlog"
     }
   ],
-  "projects": [
-    "FLUX"
-  ],
   "users": [
     {
       "name": "Guy"
@@ -258,40 +255,20 @@
       "color": "text-gray-400"
     }
   ],
+  "projects": [
+    "FLUX"
+  ],
   "enableBacklogScreen": true,
   "requireCommentOnStatusChange": false,
   "boardCardOpenMode": "full",
   "animationsEnabled": true,
   "enableFireworks": true,
+  "animationSpeed": "normal",
   "requireInputStatus": "Require Input",
   "readyForMergeStatus": "Ready",
   "archiveStatus": "Archived",
   "docsEditPermissions": "all",
   "docsAllowedUsers": [],
-  "releaseSettings": {
-    "generateDistinctFiles": true,
-    "releaseNotesPath": "release-notes"
-  },
-  "defaultAgent": "gemini",
-  "integrations": {
-    "claudeCode": {
-      "groomingModel": "",
-      "implementationModel": ""
-    },
-    "geminiCli": {
-      "groomingModel": "",
-      "implementationModel": ""
-    }
-  },
-  "syncSettings": {
-    "debounceMs": 30000,
-    "maxWaitMs": 300000
-  },
-  "agentProgress": {
-    "enabled": true,
-    "inlineDelay": 2
-  },
-  "animationSpeed": "normal",
   "docsRoot": ".docs",
   "hoverPopupsEnabled": true,
   "hoverPopupDelay": 450,
@@ -300,5 +277,28 @@
     "green": 0.2,
     "yellow": 0.65
   },
-  "effortLevel": "high"
+  "effortLevel": "high",
+  "releaseSettings": {
+    "generateDistinctFiles": true,
+    "releaseNotesPath": "release-notes"
+  },
+  "integrations": {
+    "claudeCode": {
+      "groomingModel": "",
+      "implementationModel": ""
+    },
+    "geminiCli": {
+      "groomingModel": "gemini-3.1-pro-preview",
+      "implementationModel": ""
+    }
+  },
+  "defaultAgent": "gemini",
+  "syncSettings": {
+    "debounceMs": 30000,
+    "maxWaitMs": 300000
+  },
+  "agentProgress": {
+    "enabled": true,
+    "inlineDelay": 2
+  }
 }
