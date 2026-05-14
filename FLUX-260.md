@@ -212,11 +212,21 @@ history:
     date: '2026-05-14T08:54:58.210Z'
     outcome: Gemini CLI session ended with code 0.
     endedAt: '2026-05-14T08:56:39.809Z'
+  - type: status_change
+    from: Grooming
+    to: Ready
+    user: Guy
+    date: '2026-05-14T09:02:40.094Z'
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Guy
+    date: '2026-05-14T09:02:42.596Z'
 title: fix not being able to drag change status
-status: Grooming
+status: Done
 createdBy: Guy
-updatedBy: Agent
-order: 7
+updatedBy: Guy
+order: 3
 tokenMetadata:
   inputTokens: 191827
   outputTokens: 1026

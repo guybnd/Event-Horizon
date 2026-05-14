@@ -1,9 +1,9 @@
 ---
 title: Fix drag-and-drop race condition in board
-status: In Progress
+status: Done
 priority: Medium
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
 tags:
   - bug
@@ -188,7 +188,17 @@ history:
     date: '2026-05-14T08:24:36.633Z'
     outcome: Gemini CLI session ended with code 1.
     endedAt: '2026-05-14T08:25:10.461Z'
-order: 0
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Guy
+    date: '2026-05-14T09:02:35.920Z'
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Guy
+    date: '2026-05-14T09:02:44.067Z'
+order: 4
 effort: None
 implementationLink: ''
 tokenMetadata:
