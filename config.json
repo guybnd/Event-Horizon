@@ -23,9 +23,6 @@
       "color": "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300"
     }
   ],
-  "projects": [
-    "FLUX"
-  ],
   "users": [
     {
       "name": "Guy"
@@ -75,21 +72,33 @@
       "color": "text-gray-400"
     }
   ],
+  "projects": [
+    "FLUX"
+  ],
   "enableBacklogScreen": true,
   "requireCommentOnStatusChange": true,
   "boardCardOpenMode": "full",
   "animationsEnabled": true,
   "enableFireworks": true,
+  "animationSpeed": "normal",
   "requireInputStatus": "Require Input",
   "readyForMergeStatus": "Ready",
   "archiveStatus": "Archived",
   "docsEditPermissions": "all",
   "docsAllowedUsers": [],
+  "docsRoot": ".docs",
+  "hoverPopupsEnabled": true,
+  "hoverPopupDelay": 1500,
+  "tokenDisplayMode": "tokens",
+  "tokenCostThresholds": {
+    "green": 0.1,
+    "yellow": 0.5
+  },
+  "effortLevel": "high",
   "releaseSettings": {
     "generateDistinctFiles": true,
     "releaseNotesPath": "release-notes"
   },
-  "defaultAgent": "claude",
   "integrations": {
     "claudeCode": {
       "groomingModel": "",
@@ -100,6 +109,7 @@
       "implementationModel": ""
     }
   },
+  "defaultAgent": "gemini",
   "syncSettings": {
     "debounceMs": 30000,
     "maxWaitMs": 300000
@@ -107,6 +117,5 @@
   "agentProgress": {
     "enabled": true,
     "inlineDelay": 2
-  },
-  "tokenDisplayMode": "tokens"
+  }
 }
