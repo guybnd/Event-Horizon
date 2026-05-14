@@ -93,8 +93,24 @@ history:
     date: '2026-05-14T02:39:53.666Z'
     outcome: Gemini CLI session ended with code 0.
     endedAt: '2026-05-14T02:47:45.866Z'
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Agent
+    date: '2026-05-14T02:50:14.621Z'
+  - type: agent_session
+    sessionId: 81d475d6-32c7-47b9-8243-481cce7075c6
+    startedAt: '2026-05-14T02:50:14.665Z'
+    status: active
+    progress:
+      - timestamp: '2026-05-14T02:50:42.318Z'
+        message: Working
+      - timestamp: '2026-05-14T02:50:45.265Z'
+        message: Working
+    user: Gemini CLI
+    date: '2026-05-14T02:50:14.665Z'
 title: multi agent UI UX improvement
-status: Ready
+status: In Progress
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:

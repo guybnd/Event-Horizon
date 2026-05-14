@@ -264,7 +264,7 @@
     "generateDistinctFiles": true,
     "releaseNotesPath": "release-notes"
   },
-  "defaultAgent": "auto",
+  "defaultAgent": "gemini",
   "integrations": {
     "claudeCode": {
       "groomingModel": "",
