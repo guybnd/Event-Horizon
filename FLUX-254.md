@@ -1,6 +1,6 @@
 ---
 title: Test Update
-status: In Progress
+status: Ready
 priority: High
 createdBy: Guy
 updatedBy: Agent
@@ -86,19 +86,65 @@ history:
   - type: agent_session
     sessionId: 75fccb02-3365-41e1-9332-5470d4495568
     startedAt: '2026-05-14T07:55:47.812Z'
-    status: cancelled
+    status: completed
     progress:
       - timestamp: '2026-05-14T07:56:02.292Z'
         message: Working
       - timestamp: '2026-05-14T07:56:03.189Z'
         message: Working
+      - timestamp: '2026-05-14T07:59:28.475Z'
+        message: >-
+          I have completed the investigation and implementation for ticket
+          FLUX-254. The `AttachConsole failed` error on Windows, which was
+          causing agent sessions to fail their final tasks (like updating ticket
+          descriptions), has been addressed through multiple improvements:
+
+
+          1.  **PTY Noise Filtering**: I updated the `appendSessionOutput`
+          function in all agent adapters (`gemini.ts`, `claude-code.ts`,
+          `copilot.ts`) to filter out known Windows-specific PTY errors
+          (`AttachConsole failed`, `conpty_console_list_agent.js`, and `Shared
+          memory agent failed`) from `stderr`. This ensures that these
+          environment-related messages don't clutter the session logs or
+          misleadingly signal failure.
+
+          2.  **Improved Console Management**: Added `windowsHide: true` to all
+          `spawn` calls on Windows across all agent adapters. This prevents
+          child processes from attempting to interact with the parent's console
+          UI, a common trigger for `AttachConsole` errors in `node-pty`.
+
+          3.  **Enhanced Logging and Visibility**: I added explicit handling for
+          `tool_result` events in the Gemini adapter. If an agent tool fails,
+          the error is now specifically captured, logged to the console, and
+          recorded in the task's session history. This provides much better
+          diagnostic information for future issues.
+
+          4.  **Cross-Platform Support**: All changes were implemented with
+          platform-specific checks to ensure they are safe and effective on both
+          Windows and macOS.
+
+
+          The engine has been rebuilt and verified. The ticket FLUX-254 has been
+          moved to **Ready** status with a full completion summary.
     user: Gemini CLI
     date: '2026-05-14T07:55:47.812Z'
-    outcome: Session abandoned (engine restarted).
-    endedAt: '2026-05-14T07:57:22.062Z'
+    outcome: Gemini CLI session ended with code 0.
+    endedAt: '2026-05-14T07:59:28.500Z'
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-14T07:10:00.000Z'
 effort: None
 implementationLink: ''
 subtasks: []
+tokenMetadata:
+  inputTokens: 1879869
+  outputTokens: 7762
+  costUSD: 5.756037
+  costIsEstimated: true
+  cacheReadTokens: 1600479
+  cacheCreationTokens: 0
 ---
 
 ## Problem / Motivation
@@ -115,3 +161,12 @@ This error typically occurs on Windows when a child process attempts to interact
 4.  **Enhanced Logging**: Add better logging in the engine for tool execution failures to distinguish between logic errors and environment/PTY issues.
 
 Make sure you are supporting both mac and win!
+
+## Completion Summary
+
+I have implemented the following improvements to address the `AttachConsole` issues and improve agent session stability on Windows:
+
+1.  **PTY Noise Filtering**: Updated all agent adapters (`gemini.ts`, `claude-code.ts`, `copilot.ts`) to filter out `AttachConsole failed`, `conpty_console_list_agent.js`, and `Shared memory agent failed` errors from `stderr`. This prevents harmless but confusing environment noise from polluting the logs.
+2.  **Improved Console Management**: Added `windowsHide: true` to all process `spawn` calls on Windows. This ensures that child processes don't attempt to attach to or interact with the parent's console UI, which is a common cause of `AttachConsole` failures.
+3.  **Enhanced Tool Failure Logging**: Added explicit handling for `tool_result` events in the Gemini adapter. If a tool call fails, the error is now captured, logged to the console, and added to the session progress history. This provides clear visibility if an agent fails a final task like updating a ticket description.
+4.  **Cross-Platform Safety**: Verified that changes are safe and correctly scoped for both Windows and macOS/Linux.
