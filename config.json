@@ -30,9 +30,6 @@
       "name": "Backlog"
     }
   ],
-  "projects": [
-    "FLUX"
-  ],
   "users": [
     {
       "name": "Guy"
@@ -44,7 +41,7 @@
   "tags": [
     {
       "name": "bug",
-      "color": "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+      "color": "bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400"
     },
     {
       "name": "feature",
@@ -246,22 +243,39 @@
       "color": "text-gray-400"
     }
   ],
+  "projects": [
+    "FLUX"
+  ],
   "enableBacklogScreen": true,
   "requireCommentOnStatusChange": false,
   "boardCardOpenMode": "full",
   "animationsEnabled": true,
   "enableFireworks": true,
+  "animationSpeed": "normal",
   "requireInputStatus": "Require Input",
   "readyForMergeStatus": "Ready",
   "archiveStatus": "Archived",
   "docsEditPermissions": "all",
   "docsAllowedUsers": [],
+  "docsRoot": ".docs",
+  "hoverPopupsEnabled": true,
+  "hoverPopupDelay": 450,
+  "tokenDisplayMode": "tokens",
+  "tokenCostThresholds": {
+    "green": 0.2,
+    "yellow": 0.65
+  },
+  "effortLevel": "high",
   "releaseSettings": {
     "generateDistinctFiles": true,
     "releaseNotesPath": "release-notes"
   },
   "integrations": {
     "claudeCode": {
+      "groomingModel": "",
+      "implementationModel": ""
+    },
+    "geminiCli": {
       "groomingModel": "",
       "implementationModel": ""
     }
@@ -273,15 +287,5 @@
   "agentProgress": {
     "enabled": true,
     "inlineDelay": 2
-  },
-  "animationSpeed": "normal",
-  "docsRoot": ".docs",
-  "hoverPopupsEnabled": true,
-  "hoverPopupDelay": 450,
-  "tokenDisplayMode": "tokens",
-  "tokenCostThresholds": {
-    "green": 0.2,
-    "yellow": 0.65
-  },
-  "effortLevel": "high"
+  }
 }
