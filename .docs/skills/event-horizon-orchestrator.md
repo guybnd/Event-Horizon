@@ -2,53 +2,37 @@
 title: Event Horizon Orchestrator
 order: 1
 ---
-> ⚠️ DO NOT DELETE — This file is required for the Event Horizon agent workflow. Deleting it will break the agent skill routing.
+> ⚠️ DO NOT DELETE — Required for Event Horizon agent workflow.
 
 ## Phase: Orchestrator
-Scope: Route the agent to the correct phase-specific skill based on the active ticket status.
+Scope: Route the agent to the correct phase-specific skill based on ticket status.
 
 ---
 
 # Event Horizon Agent — Orchestrator
 
-Version: 2.0.0
+Version: 2.1.0
 
 ## Overview
 
 Event Horizon is a local-first ticket board backed by markdown files in `.flux/`.
 Each ticket is a markdown document with YAML frontmatter and a markdown body.
-The portal UI and engine API both operate on that file-based source of truth.
 
 ## Skill Routing
 
-When working on a ticket, load the appropriate phase-specific skill based on the ticket's current status:
-
 | Ticket Status | Load Skill |
-|---------------|-----------|
-| `Grooming`, `Require Input` | `event-horizon-grooming.md` |
-| `Todo`, `In Progress` | `event-horizon-implementation.md` |
-| Release orchestration requested | `event-horizon-release.md` |
+|---|---|
+| `Grooming`, `Require Input` | `grooming.md` |
+| `Todo`, `In Progress` | `implementation.md` |
+| Release orchestration | `release.md` |
 
-For read-only tasks (explanation, search, discussion) no phase skill is required.
+Read-only tasks (explanation, search, discussion) need no phase skill.
 
 ## Ticket Model
 
-Each ticket file typically contains:
+Frontmatter fields: `id`, `title`, `status`, `priority`, `assignee`, `tags` (string[]), `createdBy`, `updatedBy`, `history` (event list), `effort` (`None`|`XS`|`S`|`M`|`L`|`XL`), `implementationLink`. Markdown body below frontmatter for description.
 
-- `id`: stable ticket id such as `FLUX-28`
-- `title`: short summary
-- `status`: board column/status name
-- `priority`: configured priority label
-- `assignee`: assigned user or `unassigned`
-- `tags`: string array
-- `createdBy`, `updatedBy`: actor names
-- `history`: chronological event list
-- `effort`: T-shirt estimate (`None`, `XS`, `S`, `M`, `L`, `XL`)
-- `implementationLink`: commit or PR URL when available
-- markdown body below frontmatter for the full ticket description
-
-History entries use one of these shapes:
-
+History entry shapes:
 ```yaml
 - type: comment
   user: Agent
@@ -64,56 +48,38 @@ History entries use one of these shapes:
 
 ## Working Surfaces
 
-- `.flux/*.md`: ticket source files
-- `.flux/config.json`: board configuration and configured priorities/tags/users
-- `.docs/**/*.md`: project documentation served in the Docs screen
-- `.docs/skills/*.md`: editable phase-specific skill files (this directory)
-- `README.md`: repo-level overview and workflow install guidance
-- `.flux/skills/*.md`: source workflow asset templates (bootstrap copies)
-- `engine/src/index.ts`: Express API that reads and writes tickets
-- `portal/src/`: React portal UI for board, backlog, settings, and ticket modal flows
+- `.flux/*.md`: tickets — `.flux/config.json`: board config — `.docs/**/*.md`: project docs
+- `engine/src/`: Express API — `portal/src/`: React UI
+- `.docs/skills/*.md`: editable skill sources — `.flux/skills/*.md`: bootstrap templates
 
-## Available APIs
+## APIs
 
-When running against the local engine, use these endpoints:
-
-- `GET /api/tasks`: list all tickets
-- `POST /api/tasks`: create a ticket
-- `PUT /api/tasks/:id`: update ticket fields and history
-- `DELETE /api/tasks/:id`: delete a ticket
-- `GET /api/config`: read board configuration
-- `PUT /api/config`: update board configuration
-- `POST /api/bulk-rename`: rename tags/users/statuses/priorities across tickets
-
-Default local URLs used by this project:
-
-- Portal: `http://localhost:5167`
-- Engine: `http://localhost:3067`
+- `GET/POST /api/tasks`, `PUT/DELETE /api/tasks/:id` — `GET/PUT /api/config` — `POST /api/bulk-rename`
+- Portal: `localhost:5167` — Engine: `localhost:3067`
 
 ## User Input Routing
 
-- Use normal chat for broad discussion, planning, or non-ticket conversation.
-- Use the ticket system for ticket-specific clarification, approval, or decisions that should remain attached to the work item.
-- Use `Require Input` during grooming when a material implementation choice or applicable metadata value is still open. Include the proposed fill values in that question. After the user answers, route the ticket back to `Grooming` to finish planning or to `Todo` when the plan is ready for pickup.
-- When a ticket is blocked on user input, the canonical path is: status `Require Input` → history comment with one clear question → user answers through the focused response UI → ticket routed back to the next workflow status.
-- When a ticket enters the configured ready-for-merge status, the human review path is: ticket moved to `Ready` → user reviews the work → user tells the agent `finish <ticket>` → agent automatically stages all files, creates the commit, updates the implementationLink, and closes the ticket together.
-- Do not mark a blocked ticket `Done` while the question is still open.
+- Chat for broad discussion. Ticket system for ticket-specific decisions.
+- `Require Input` → history comment with one clear question + proposed defaults → user answers → route back to next status.
+- `Ready` → user reviews → `finish <ticket>` → agent commits + closes atomically.
+
+## Ticket Resolution
+
+- `FLUX-41` → use that ticket. Bare number like `41` or `do 41` → resolve to `FLUX-41`.
+- Repo-changing work without a named ticket → find or create a ticket first.
+- Pure explanation, brainstorming, or read-only discussion does not require ticket state changes.
+
+## Critical Rules
+
+- Treat `.flux/*.md` as schema-sensitive. Use spaces (not tabs) in YAML frontmatter. Do not delete ticket history; append only.
+- The `finish <ticket>` handoff is required before committing. Commit creation, `implementationLink` update, and status → `Done` happen as one atomic step.
 
 ## End-to-End Checklist
 
-- Ticket was read fully
-- Relevant docs were reviewed during grooming or task start-up
-- Grooming tickets were turned into a concrete plan before coding started
-- Applicable ticket metadata was filled or proposed during grooming
-- Implementation-critical choices were clarified with the user before coding when they materially affected the solution
-- Plan comment added
-- Status moved to `Todo` or `In Progress` at the right time for the ticket state
-- Code changed in the smallest owning surface
-- Focused validation passed
-- Relevant docs were refreshed before `Ready` or `Done` when behavior changed
-- Ticket markdown edits were checked for valid frontmatter when `.flux/*.md` files changed
-- Ticket-specific user questions went through the configured user-input status, not only chat
-- Ready-for-merge tickets were only moved to `Done` after the explicit `finish <ticket>` handoff or equivalent user approval
-- Focused commit created for the finished code change, or the reason it was deferred was recorded
-- Ticket updated with descriptive completion notes
-- Status moved to `Done`
+- Ticket read fully — Relevant docs reviewed — Plan comment added
+- Grooming produced a concrete plan with filled metadata
+- Implementation-critical choices clarified before coding
+- Status moved at the right time — Code changed in smallest surface — Validation passed
+- Docs refreshed before `Ready`/`Done` — YAML checked after ticket edits
+- Questions went through `Require Input`, not only chat
+- `finish <ticket>` received before commit — Completion comment added — Status → `Done`
