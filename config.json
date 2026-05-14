@@ -1,34 +1,30 @@
 {
   "columns": [
     {
-      "name": "Grooming"
-    },
-    {
       "name": "Todo",
-      "color": "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+      "color": "bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300"
     },
     {
       "name": "In Progress",
-      "color": "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300"
+      "color": "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
     },
     {
-      "name": "Require Input"
-    },
-    {
-      "name": "Ready"
-    },
-    {
-      "name": "Done"
-    },
-    {
-      "name": "Archived",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+      "name": "Done",
+      "color": "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
     }
   ],
   "hiddenStatuses": [
     {
-      "name": "Backlog"
+      "name": "Backlog",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "Released",
+      "color": "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300"
     }
+  ],
+  "projects": [
+    "FLUX"
   ],
   "users": [
     {
@@ -41,7 +37,7 @@
   "tags": [
     {
       "name": "bug",
-      "color": "bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400"
+      "color": "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
     },
     {
       "name": "feature",
@@ -50,182 +46,6 @@
     {
       "name": "docs",
       "color": "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
-    },
-    {
-      "name": "mvp",
-      "color": "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
-    },
-    {
-      "name": "task",
-      "color": "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
-    },
-    {
-      "name": "navigation",
-      "color": "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
-    },
-    {
-      "name": "git",
-      "color": "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400"
-    },
-    {
-      "name": "workflow",
-      "color": "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
-    },
-    {
-      "name": "ux",
-      "color": "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
-    },
-    {
-      "name": "integration",
-      "color": "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
-    },
-    {
-      "name": "architecture",
-      "color": "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
-    },
-    {
-      "name": "logs",
-      "color": "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
-    },
-    {
-      "name": "assets",
-      "color": "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
-    },
-    {
-      "name": "validation",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "agent",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "backend",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "ai",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "portal",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "ui",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "animation",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "config",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "reliability",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "agent-workflow",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "documentation",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "ui-polish",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "settings",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "board",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "skills",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "installer",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "test",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "distribution",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "research",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "devx",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "engine",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "onboarding",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "performance",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "refactor",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "dx",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "release",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "sync",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "windows",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "bugfix",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "infrastructure",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "session-management",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "ui-ux",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "agents",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
-    },
-    {
-      "name": "gemini",
-      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
     }
   ],
   "priorities": [
@@ -251,48 +71,35 @@
     },
     {
       "name": "None",
-      "icon": "ChevronDown",
+      "icon": "Equal",
       "color": "text-gray-400"
     }
   ],
-  "projects": [
-    "FLUX"
-  ],
   "enableBacklogScreen": true,
-  "requireCommentOnStatusChange": false,
+  "requireCommentOnStatusChange": true,
   "boardCardOpenMode": "full",
   "animationsEnabled": true,
   "enableFireworks": true,
-  "animationSpeed": "normal",
   "requireInputStatus": "Require Input",
   "readyForMergeStatus": "Ready",
   "archiveStatus": "Archived",
   "docsEditPermissions": "all",
   "docsAllowedUsers": [],
-  "docsRoot": ".docs",
-  "hoverPopupsEnabled": true,
-  "hoverPopupDelay": 450,
-  "tokenDisplayMode": "tokens",
-  "tokenCostThresholds": {
-    "green": 0.2,
-    "yellow": 0.65
-  },
-  "effortLevel": "high",
   "releaseSettings": {
     "generateDistinctFiles": true,
     "releaseNotesPath": "release-notes"
   },
+  "defaultAgent": "claude",
   "integrations": {
     "claudeCode": {
       "groomingModel": "",
       "implementationModel": ""
     },
     "geminiCli": {
-      "groomingModel": "gemini-3.1-pro-preview",
+      "groomingModel": "",
       "implementationModel": ""
     }
   },
-  "defaultAgent": "gemini",
   "syncSettings": {
     "debounceMs": 30000,
     "maxWaitMs": 300000
@@ -300,5 +107,6 @@
   "agentProgress": {
     "enabled": true,
     "inlineDelay": 2
-  }
+  },
+  "tokenDisplayMode": "tokens"
 }
