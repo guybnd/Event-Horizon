@@ -503,10 +503,21 @@ history:
     date: '2026-05-14T08:32:19.018Z'
     outcome: Gemini CLI session ended with code 0.
     endedAt: '2026-05-14T08:37:22.482Z'
+  - type: comment
+    user: Guy
+    date: '2026-05-14T08:45:18.262Z'
+    comment: Ready
+    id: c-2026-05-14t08-45-18-261z
+  - type: status_change
+    from: Grooming
+    to: Ready
+    user: Guy
+    date: '2026-05-14T08:45:18.262Z'
+    comment: Included with comment
 title: make the agent button on top bar appear clickable
-status: Grooming
+status: Ready
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 tokenMetadata:
   inputTokens: 656708
   outputTokens: 5642
@@ -514,6 +525,7 @@ tokenMetadata:
   costIsEstimated: true
   cacheReadTokens: 517655
   cacheCreationTokens: 0
+order: 0
 ---
 currently its not, so its misleading. unlike the other buttons which show click icon on hover  
   
