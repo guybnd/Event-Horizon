@@ -280,6 +280,7 @@
       "implementationModel": ""
     }
   },
+  "defaultAgent": "auto",
   "syncSettings": {
     "debounceMs": 30000,
     "maxWaitMs": 300000
