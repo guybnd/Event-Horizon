@@ -192,6 +192,75 @@ history:
                             className={`group flex shrink-0 items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-left transition-all duration-200 overflow-hidden ${activeSessionCount > 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300 agent-session-active' : 'border-gray-200 bg-white/60 text-gray-500 dark:border-white/10 dark:bg-white/5 dark:text-gray-400'} ${isSessionsPopoverOpen ? 'ring-2 ring-primary/30' : ''}`}
             file_path: 'C:\GitHub\EventHorizon\portal\src\components\Header.tsx'
             allow_multiple: false
+      - timestamp: '2026-05-14T08:35:43.056Z'
+        message: Editing TaskModal.tsx
+        type: tool
+        data:
+          toolName: replace
+          parameters:
+            allow_multiple: false
+            old_string: |2-
+                        <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50 px-5 py-4 dark:border-white/5 dark:bg-black/20">
+                          <div className="flex min-w-0 items-center gap-4">
+                            <button
+                              onClick={handleCloseAttempt}
+                              className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-200 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-white/5 dark:hover:text-white"
+                            >
+                              <ArrowLeft className="h-4 w-4" />
+                              Back to Board
+                            </button>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{modalTask?.id || 'New Task'}</p>
+                                <StatusBadge
+                                  status={status}
+                                  colorClass={getStatusColorClass(config, status)}
+                                  className="text-[10px] font-bold uppercase tracking-[0.16em]"
+                                />
+                              </div>
+                              <h2 className="truncate text-lg font-semibold text-gray-900 dark:text-gray-100">{title || 'Untitled Task'}</h2>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-3">
+            new_string: |2-
+                        <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50 px-5 py-4 dark:border-white/5 dark:bg-black/20">
+                          <div className="flex min-w-0 flex-1 items-center gap-4 mr-4">
+                            <button
+                              onClick={handleCloseAttempt}
+                              className="flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-200 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-white/5 dark:hover:text-white"
+                            >
+                              <ArrowLeft className="h-4 w-4" />
+                              Back to Board
+                            </button>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2">
+                                <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{modalTask?.id || 'New Task'}</p>
+                                <StatusBadge
+                                  status={status}
+                                  colorClass={getStatusColorClass(config, status)}
+                                  className="text-[10px] font-bold uppercase tracking-[0.16em]"
+                                />
+                              </div>
+                              <textarea
+                                ref={titleRef}
+                                rows={1}
+                                className="mt-1 w-full resize-none overflow-hidden bg-transparent text-lg font-semibold text-gray-900 outline-none placeholder:text-gray-400 dark:text-gray-100"
+                                value={title}
+                                onChange={(event) => {
+                                  setTitle(event.target.value);
+                                  event.target.style.height = 'auto';
+                                  event.target.style.height = event.target.scrollHeight + 'px';
+                                }}
+                                placeholder="Task title..."
+                              />
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-3">
+            instruction: >-
+              Move the titleRef textarea into the header to replace the h2 in
+              the fullscreen view. Add `flex-1` where necessary to ensure the
+              textarea takes up remaining space.
+            file_path: 'C:\GitHub\EventHorizon\portal\src\components\TaskModal.tsx'
     user: Gemini CLI
     date: '2026-05-14T08:32:19.018Z'
 title: make the agent button on top bar appear clickable
