@@ -5,7 +5,6 @@ tags:
   - performance
 priority: High
 effort: L
-implementationLink: ''
 subtasks: []
 history:
   - type: activity
@@ -47,7 +46,9 @@ history:
     date: '2026-05-14T09:37:00.000Z'
     comment: >-
       Committed as 14e8424. 13 files changed, 215 insertions, 909 deletions.
-      Follow-up tickets FLUX-261 (engine optimizations) and FLUX-262 (two-tier architecture) created.
+      Follow-up tickets FLUX-261 (engine optimizations) and FLUX-262 (two-tier
+      architecture) created.
+    id: c-2026-05-14t09-37-00-000z
   - type: status_change
     from: Ready
     to: Done
