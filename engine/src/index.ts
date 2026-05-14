@@ -229,6 +229,16 @@ async function gracefulShutdown(signal: string) {
 process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM'); });
 process.on('SIGINT',  () => { void gracefulShutdown('SIGINT'); });
 
+process.on('uncaughtException', (err) => {
+  console.error('CRITICAL: Uncaught Exception:', err);
+  stopAllCliSessions('uncaught-exception');
+  setTimeout(() => process.exit(1), 500);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('CRITICAL: Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 startServer().catch(err => {
   console.error('Failed to start Event Horizon:', err);
   stopAllCliSessions('startup-failure');
