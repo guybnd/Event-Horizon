@@ -152,10 +152,15 @@ history:
     user: Agent
     date: '2026-05-13T13:41:18.168Z'
     comment: Claude Code session stopped.
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Guy
+    date: '2026-05-14T03:07:28.296Z'
 title: 'bug: full ticket view also loads the pop up view?'
-status: Ready
+status: Done
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 tokenMetadata:
   inputTokens: 1439885
   outputTokens: 5462
@@ -163,6 +168,7 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 1371234
   cacheCreationTokens: 68608
+order: 2
 ---
 ## Bug Analysis
 
