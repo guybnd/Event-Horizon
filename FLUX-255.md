@@ -68,8 +68,12 @@ history:
         message: Working
     user: Gemini CLI
     date: '2026-05-14T08:02:32.242Z'
-    outcome: Session abandoned (engine restarted).
-    endedAt: '2026-05-14T08:05:37.587Z'
+    outcome: Gemini CLI session stopped by user.
+    endedAt: '2026-05-14T08:06:52.693Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-14T08:06:52.631Z'
+    comment: Gemini CLI session stopped.
 order: 0
 effort: None
 implementationLink: ''
