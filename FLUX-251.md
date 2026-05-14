@@ -43,18 +43,65 @@ history:
   - type: agent_session
     sessionId: 6b15cf7c-aac9-4c44-b860-fd6c3aa7ddb1
     startedAt: '2026-05-14T02:39:53.666Z'
-    status: active
+    status: completed
     progress:
       - timestamp: '2026-05-14T02:40:08.209Z'
         message: Working
       - timestamp: '2026-05-14T02:40:09.238Z'
         message: Working
+      - timestamp: '2026-05-14T02:47:45.844Z'
+        message: >-
+          I have completed the multi-agent UI/UX improvements for ticket
+          **FLUX-251**.
+
+
+          ### Key Improvements:
+
+          1.  **Centralized Agent Selection:** Added a prominent, labeled
+          **"Default Agent"** selector in the global header. This selector syncs
+          with the project configuration and determines which agent (Claude,
+          Gemini, etc.) is used for all automated actions.
+
+          2.  **Global Active Sessions Monitoring:** Re-imagined the "Agents"
+          stat in the header as a trigger for a new **`ActiveSessionsPopover`**.
+          This allows users to monitor all running agent sessions, view live
+          activity, stop sessions, and jump to specific tickets from anywhere in
+          the app.
+
+          3.  **Direct Contextual Actions:** Updated the board's right-click
+          context menu to allow running agent commands (Implement, Groom,
+          Finish, Review) directly using the default agent, instead of just
+          copying them to the clipboard.
+
+          4.  **Integrated Grooming Workflow:**
+              *   Added a **"Send for Grooming"** action to the card context menu that automatically transitions the ticket status and launches the agent.
+              *   Implemented a prominent **"Start Grooming" banner** in the task modal for tickets in the "Grooming" phase, providing a one-click way to start the analysis.
+          5.  **Consistent Activation Pipeline:** Ensured all agent activation
+          points (right-click, in-ticket buttons, "Return to work", and
+          "Finish") strictly use the central agent configuration.
+
+          6.  **Type Safety & Performance:** Fixed various TypeScript type
+          mismatches and removed unused code to ensure a clean, production-ready
+          build.
+
+
+          The project now provides a much more intuitive and centralized
+          experience for managing multiple AI agents across different tasks.
     user: Gemini CLI
     date: '2026-05-14T02:39:53.666Z'
+    outcome: Gemini CLI session ended with code 0.
+    endedAt: '2026-05-14T02:47:45.866Z'
 title: multi agent UI UX improvement
 status: Grooming
 createdBy: Guy
 updatedBy: Agent
+tokenMetadata:
+  inputTokens: 4994435
+  outputTokens: 23707
+  costUSD: 15.33891
+  costIsEstimated: true
+  cacheReadTokens: 3850805
+  cacheCreationTokens: 0
 ---
 need at the top bar a dropdown selector of which default agent to use  
 or maybe in settings  
