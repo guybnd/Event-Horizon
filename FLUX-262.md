@@ -570,6 +570,15 @@ history:
     date: '2026-05-14T09:40:36.236Z'
     comment: Starting implementation of two-tier instruction architecture.
     id: c-2026-05-14t09-40-36-236z
+  - type: comment
+    user: Agent
+    date: '2026-05-14T12:00:00.000Z'
+    comment: >-
+      Reviewed Gemini agent completion. Changes are correct: always-on instructions slimmed to ~100 tokens
+      pointing to orchestrator, ticket resolution and critical rules moved to orchestrator.md. Source templates
+      were already synced (included in 14e8424 commit). Installed copies (.github/, .gemini/, engine/.gemini/)
+      committed as follow-up.
+    id: c-2026-05-14t12-00-00-000z
 tokenMetadata:
   inputTokens: 623482
   outputTokens: 3090
