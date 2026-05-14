@@ -5,7 +5,7 @@ tags:
   - ui-ux
 priority: High
 effort: Medium
-implementationLink: '84f3027f6b4a640199e9b220ac9d46cda912c4e6'
+implementationLink: 84f3027f6b4a640199e9b220ac9d46cda912c4e6
 subtasks: []
 history:
   - type: activity
@@ -96,13 +96,42 @@ history:
   - type: activity
     user: Agent
     date: '2026-05-14T12:57:00.000Z'
-    comment: 'Completed implementation and committed changes (hash: 84f3027). Verifying in Ready state before final close.'
+    comment: >-
+      Completed implementation and committed changes (hash: 84f3027). Verifying
+      in Ready state before final close.
   - type: activity
     user: Agent
     date: '2026-05-14T12:58:00.000Z'
     comment: 'Ticket closed. Commit hash: 84f3027f6b4a640199e9b220ac9d46cda912c4e6'
+  - type: comment
+    user: Guy
+    date: '2026-05-14T07:00:55.123Z'
+    comment: need to review again
+    id: c-2026-05-14t07-00-55-117z
+  - type: status_change
+    from: Done
+    to: Ready
+    user: Guy
+    date: '2026-05-14T07:00:55.123Z'
+    comment: Included with comment
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Guy
+    date: '2026-05-14T07:00:59.474Z'
+  - type: agent_session
+    sessionId: 663a7d2e-9163-427f-a001-f8d142aa3bda
+    startedAt: '2026-05-14T07:00:59.495Z'
+    status: active
+    progress:
+      - timestamp: '2026-05-14T07:01:13.813Z'
+        message: Working
+      - timestamp: '2026-05-14T07:01:14.941Z'
+        message: Working
+    user: Gemini CLI
+    date: '2026-05-14T07:00:59.495Z'
 title: multi agent UI UX improvement
-status: Done
+status: In Progress
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -112,6 +141,7 @@ tokenMetadata:
   costIsEstimated: true
   cacheReadTokens: 3850805
   cacheCreationTokens: 0
+order: 0
 ---
 
 ## Problem / Motivation
