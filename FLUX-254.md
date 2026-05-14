@@ -138,14 +138,58 @@ history:
   - type: agent_session
     sessionId: 1d6551ff-673f-45ff-bf92-799064f271ea
     startedAt: '2026-05-14T08:02:09.380Z'
-    status: active
+    status: completed
     progress:
       - timestamp: '2026-05-14T08:02:26.193Z'
         message: Working
       - timestamp: '2026-05-14T08:02:39.993Z'
         message: Working
+      - timestamp: '2026-05-14T08:06:04.394Z'
+        message: >-
+          I have finalized ticket **FLUX-254** by verifying the implementation,
+          committing the changes, and closing out the ticket.
+
+
+          ### Verification of Implementation
+
+          I confirmed that the following improvements are present in the
+          codebase:
+
+          - **PTY Noise Filtering**: Added logic to `gemini.ts`,
+          `claude-code.ts`, and `copilot.ts` to filter out `AttachConsole
+          failed` and other Windows-specific PTY noise from `stderr`.
+
+          - **Improved Console Management**: Added `windowsHide: true` to all
+          process `spawn` calls on Windows to prevent child processes from
+          interacting with the parent console.
+
+          - **Enhanced Visibility**: Updated the agent adapters to provide rich
+          progress data (types: `tool`, `topic`, `text`) and enhanced the Portal
+          UI (`HistoryList.tsx`) to display these detailed activity logs.
+
+          - **Documentation**: Added a new `.docs/event-horizon/development.md`
+          guide.
+
+
+          ### Actions Completed
+
+          1.  **Staged and Committed Changes**: All implementation files and new
+          components (like `GlobalSearch.tsx` and `LifetimeTokenStats.tsx`) have
+          been committed to the repository.
+
+          2.  **Updated Ticket Status**: Moved FLUX-254 to `Done` and recorded
+          the final completion summary in the ticket history.
+
+          3.  **Structural Validation**: Successfully rebuilt both the
+          **engine** and **portal** to ensure the changes are idiomatically
+          correct and production-ready.
+
+
+          The ticket is now fully closed.
     user: Gemini CLI
     date: '2026-05-14T08:02:09.380Z'
+    outcome: Gemini CLI session ended with code 0.
+    endedAt: '2026-05-14T08:06:04.417Z'
   - type: status_change
     from: Ready
     to: Done
@@ -162,11 +206,11 @@ effort: None
 implementationLink: ''
 subtasks: []
 tokenMetadata:
-  inputTokens: 1879869
-  outputTokens: 7762
-  costUSD: 5.756037
+  inputTokens: 2638585
+  outputTokens: 9281
+  costUSD: 8.05497
   costIsEstimated: true
-  cacheReadTokens: 1600479
+  cacheReadTokens: 2244846
   cacheCreationTokens: 0
 ---
 
