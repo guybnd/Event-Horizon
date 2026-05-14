@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { fetchSkillStatus, installWorkspaceSkill } from '../../api';
+import { FrameworkSelector } from '../FrameworkSelector';
 import type { AppView } from '../../AppContext';
 
 interface AgentSectionProps {
@@ -94,25 +95,15 @@ export function AgentSection({
       <p className="text-xs text-gray-500 mb-4">Install and refresh the Event Horizon skill plus the always-on Copilot instructions for this workspace.</p>
       <div className="rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
         <div className="flex items-start justify-between gap-6">
-          <div className="space-y-3 text-sm text-gray-600 dark:text-gray-300">
+          <div className="space-y-3 text-sm text-gray-600 dark:text-gray-300 min-w-0 flex-1">
             <div>
               <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Target Framework</div>
-              <div className="mt-1">
-                <select
+              <div className="mt-1 w-64">
+                <FrameworkSelector
                   value={targetFramework}
-                  onChange={(e) => setTargetFramework(e.target.value)}
-                  className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
-                >
-                  <option value="auto">Auto-Detect</option>
-                  <option value="copilot">GitHub Copilot</option>
-                  <option value="cursor">Cursor</option>
-                  <option value="cline">Cline</option>
-                  <option value="windsurf">Windsurf</option>
-                  <option value="claude">Claude Code</option>
-                  <option value="antigravity">Antigravity</option>
-                  <option value="gemini">Gemini CLI</option>
-                  <option value="generic">Generic / Other</option>
-                </select>
+                  onChange={setTargetFramework}
+                  showAuto
+                />
               </div>
             </div>
             <div>
@@ -189,7 +180,7 @@ export function AgentSection({
               disabled={skillInstalling}
               className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${skillInstalling ? 'bg-gray-200 text-gray-400 dark:bg-white/10 dark:text-gray-500' : 'bg-primary text-white hover:bg-primary-hover'}`}
             >
-              {skillInstalling ? 'Installing…' : workflowInstalled ? 'Reinstall Workflow' : 'Install Workflow'}
+              {skillInstalling ? 'Installing…' : workflowInstalled ? `Update ${targetFramework === 'auto' ? 'Agent' : targetFramework} Skill` : `Install ${targetFramework === 'auto' ? 'Agent' : targetFramework} Skill`}
             </button>
             <button
               onClick={handleCopyInstallCommand}
@@ -224,9 +215,12 @@ export function AgentSection({
 
       {(targetFramework === 'claude' || targetFramework === 'auto') && (
         <div className="mt-6 rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
-          <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Claude Code Models</h3>
-          <p className="text-xs text-gray-500 mb-4">Model IDs passed via <code className="text-xs font-mono">--model</code> when launching sessions. Grooming-phase tickets use the grooming model; all others use the implementation model.</p>
-          <div className="space-y-3">
+          <div className="flex items-center gap-2 mb-1">
+            <Bot className="h-5 w-5 text-orange-500" />
+            <h3 className="text-base font-bold text-gray-800 dark:text-gray-200">Claude Code Models</h3>
+          </div>
+          <p className="text-xs text-gray-500 mb-4 ml-7">Model IDs passed via <code className="text-xs font-mono">--model</code> when launching sessions. Grooming-phase tickets use the grooming model; all others use the implementation model.</p>
+          <div className="space-y-3 ml-7">
             <div>
               <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
                 Grooming model
@@ -257,9 +251,12 @@ export function AgentSection({
 
       {(targetFramework === 'gemini' || targetFramework === 'auto') && (
         <div className="mt-6 rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
-          <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Gemini CLI Models</h3>
-          <p className="text-xs text-gray-500 mb-4">Model IDs passed via <code className="text-xs font-mono">--model</code> when launching sessions. Grooming-phase tickets use the grooming model; all others use the implementation model.</p>
-          <div className="space-y-3">
+          <div className="flex items-center gap-2 mb-1">
+            <Zap className="h-5 w-5 text-blue-500" />
+            <h3 className="text-base font-bold text-gray-800 dark:text-gray-200">Gemini CLI Models</h3>
+          </div>
+          <p className="text-xs text-gray-500 mb-4 ml-7">Model IDs passed via <code className="text-xs font-mono">--model</code> when launching sessions. Grooming-phase tickets use the grooming model; all others use the implementation model.</p>
+          <div className="space-y-3 ml-7">
             <div>
               <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
                 Grooming model

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bot, ChevronDown } from 'lucide-react';
+import { Bot, ChevronDown, LucideIcon } from 'lucide-react';
 
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 type EffortLevel = typeof EFFORT_LEVELS[number];
@@ -11,9 +11,10 @@ interface Props {
   busy?: boolean;
   /** Visual size variant */
   size?: 'sm' | 'md';
+  icon?: LucideIcon;
 }
 
-export function LaunchAgentSplitButton({ onLaunch, disabled, busy, size = 'md' }: Props) {
+export function LaunchAgentSplitButton({ onLaunch, disabled, busy, size = 'md', icon: Icon = Bot }: Props) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -39,7 +40,7 @@ export function LaunchAgentSplitButton({ onLaunch, disabled, busy, size = 'md' }
           onClick={() => onLaunch()}
           className="flex items-center gap-1.5 rounded-l-md bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-gray-700 disabled:opacity-50 dark:bg-white/10 dark:hover:bg-white/20"
         >
-          <Bot className="h-3.5 w-3.5" />
+          <Icon className="h-3.5 w-3.5" />
           {busy ? 'Starting…' : 'Launch Agent'}
         </button>
         <button
@@ -79,7 +80,7 @@ export function LaunchAgentSplitButton({ onLaunch, disabled, busy, size = 'md' }
         onClick={() => onLaunch()}
         className="flex flex-1 items-center justify-center gap-1.5 rounded-l-lg bg-primary px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
       >
-        <Bot className="h-4 w-4" />
+        <Icon className="h-4 w-4" />
         {busy ? 'Starting…' : 'Launch'}
       </button>
       <button

@@ -1,5 +1,6 @@
-import { CircleDot, Square } from 'lucide-react';
+import { CircleDot, Square, Bot, Zap, Monitor, Terminal } from 'lucide-react';
 import { LaunchAgentSplitButton } from '../LaunchAgentSplitButton';
+import { FrameworkSelector } from '../FrameworkSelector';
 import type { CliFramework, CliSessionSummary, Config } from '../../types';
 import { TokenBadge } from '../TokenBadge';
 
@@ -20,6 +21,12 @@ interface CliSessionPanelProps {
   onToggleDisplayMode?: () => void;
 }
 
+const FRAMEWORK_ICONS: Record<CliFramework, any> = {
+  claude: Bot,
+  gemini: Zap,
+  copilot: Terminal,
+};
+
 export function CliSessionPanel({
   cliSession, cliSessionBusy, cliSessionError,
   selectedCliFramework, setSelectedCliFramework,
@@ -27,6 +34,8 @@ export function CliSessionPanel({
   sessionIsActive, liveOutputRef, config, tokenMetadata,
   onLaunch, onStop, onToggleDisplayMode,
 }: CliSessionPanelProps) {
+  const ActiveIcon = FRAMEWORK_ICONS[selectedCliFramework] || Bot;
+
   return (
     <div className="space-y-3 rounded-xl border border-gray-100 bg-gray-50 p-3 dark:border-white/5 dark:bg-black/20">
       <div className="flex items-center justify-between gap-3">
@@ -40,21 +49,18 @@ export function CliSessionPanel({
       </div>
 
       <div className="flex gap-2">
-        <select
-          className="flex-1 min-w-0 cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium outline-none focus:border-primary disabled:cursor-not-allowed disabled:opacity-60 dark:border-white/10 dark:bg-[#252630]"
+        <FrameworkSelector
           value={selectedCliFramework}
-          onChange={(e) => setSelectedCliFramework(e.target.value as CliFramework)}
+          onChange={setSelectedCliFramework as any}
           disabled={sessionIsActive || cliSessionBusy}
-        >
-          <option value="claude">Claude Code</option>
-          <option value="gemini">Gemini CLI</option>
-          <option value="copilot">Copilot CLI</option>
-        </select>
+          allowedFrameworks={['claude', 'gemini', 'copilot']}
+        />
         <LaunchAgentSplitButton
           size="md"
           busy={cliSessionBusy}
           disabled={sessionIsActive}
           onLaunch={onLaunch}
+          icon={ActiveIcon}
         />
         <button
           type="button"
