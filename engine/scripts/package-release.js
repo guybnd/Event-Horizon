@@ -15,10 +15,12 @@
  *   releases/event-horizon-win-<version>.exe
  */
 
-const { execFileSync, spawnSync } = require('child_process');
-const path = require('path');
-const fs = require('fs');
+import { execFileSync, spawnSync } from 'child_process';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const engineRoot = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(engineRoot, '..');
 const releasesDir = path.join(repoRoot, 'releases');
@@ -65,7 +67,7 @@ function pkg(target, outBase) {
 // the `zip` CLI. This is not available on Windows by default — run from macOS or Linux.
 function buildMac() {
   const tmpBin = path.join(distDir, 'event-horizon-macos');
-  pkg('node18-macos-x64', tmpBin);
+  pkg('node22-macos-arm64', tmpBin);
 
   const zipName = `event-horizon-macos-${version}.zip`;
   const zipPath = path.join(releasesDir, zipName);
@@ -80,7 +82,7 @@ function buildMac() {
 
 function buildWin() {
   const tmpBase = path.join(distDir, 'event-horizon');
-  pkg('node18-win-x64', tmpBase);
+  pkg('node22-win-x64', tmpBase);
 
   // patch-pe changes the exe subsystem to suppress the console window
   const patchResult = spawnSync('node', [path.join(__dirname, 'patch-pe.js'), `${tmpBase}.exe`], { stdio: 'inherit' });
