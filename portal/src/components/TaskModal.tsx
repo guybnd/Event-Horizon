@@ -15,6 +15,7 @@ import {
   Trash2,
   X,
   Bot,
+  Zap,
 } from 'lucide-react';
 import { useApp } from '../AppContext';
 import { createTask, deleteTask, fetchTask, sendTaskCliInput, startTaskCliSession, updateTask } from '../api';
