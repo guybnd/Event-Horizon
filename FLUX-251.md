@@ -274,24 +274,85 @@ history:
   - type: agent_session
     sessionId: 698019ba-b68e-473d-8f10-d2fe6a1d9463
     startedAt: '2026-05-14T07:43:52.003Z'
-    status: active
+    status: completed
     progress:
       - timestamp: '2026-05-14T07:44:07.225Z'
         message: Working
       - timestamp: '2026-05-14T07:44:07.405Z'
         message: Working
+      - timestamp: '2026-05-14T07:48:09.412Z'
+        message: >-
+          I have completed the implementation and validation for ticket
+          **FLUX-251: multi agent UI UX improvement**.
+
+
+          ### Key Achievements:
+
+          - **Centralized Agent Selection**: Integrated a global "Default Agent"
+          selector within the `ActiveSessionsPopover` (accessible via the
+          "Agents" stat in the header). This allows users to set a portal-wide
+          preference (Claude, Gemini, or Auto) for automated actions.
+
+          - **Active Sessions Monitoring**: Implemented the
+          `ActiveSessionsPopover` component, providing real-time visibility into
+          running agent sessions across all tickets. Users can monitor live
+          output, track activity (e.g., "Working", "Thinking"), and stop
+          sessions directly from the header.
+
+          - **Contextual Agent Actions**: Enhanced the board's context menu with
+          direct agent commands:
+              - **Launch Agent**: Starts a session using the default agent.
+              - **Run agent command**: Submenu for direct execution of Groom, Implement, Finish, or Review.
+              - **Send for Grooming**: A shortcut to transition a ticket to the Grooming phase and immediately start an agent session.
+          - **Integrated Grooming Workflow**: Added a dedicated "Grooming phase"
+          banner in the `TaskModal` to guide users through the requirements
+          analysis phase.
+
+          - **Technical Improvements**:
+              - Unified the agent activation logic in `useCliSession.ts` to strictly adhere to the global `defaultAgent` configuration.
+              - Resolved several TypeScript type mismatches, particularly around Lucide icon compatibility.
+              - Fixed React lifecycle warnings (e.g., ref updates during render) in core hooks.
+
+          The ticket has been moved to **Ready** status with a detailed
+          completion summary.
+
+
+          ```bash
+
+          # Verification: No type errors remaining
+
+          npx tsc -b
+
+          ```
     user: Gemini CLI
     date: '2026-05-14T07:43:52.003Z'
+    outcome: Gemini CLI session ended with code 0.
+    endedAt: '2026-05-14T07:48:09.450Z'
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-14T07:47:41.884Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-14T07:47:41.885Z'
+    comment: >-
+      Implementation complete. Unified agent selection via global header
+      (ActiveSessionsPopover), added real-time session monitoring, enhanced
+      context menus with direct agent commands, and integrated the grooming
+      workflow with a dedicated banner. Fixed TypeScript type errors and
+      improved hook reliability.
+    id: c-2026-05-14t07-47-41-885z
 title: multi agent UI UX improvement
-status: In Progress
+status: Ready
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
-  inputTokens: 8327542
-  outputTokens: 59725
-  costUSD: 25.878501
+  inputTokens: 9526230
+  outputTokens: 62965
+  costUSD: 29.523165
   costIsEstimated: true
-  cacheReadTokens: 6098676
+  cacheReadTokens: 7111237
   cacheCreationTokens: 0
 order: 0
 ---
