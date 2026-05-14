@@ -1,8 +1,10 @@
 ---
 assignee: unassigned
-tags: []
-priority: None
-effort: None
+tags:
+  - feature
+  - ui-ux
+priority: High
+effort: Medium
 implementationLink: ''
 subtasks: []
 history:
@@ -92,7 +94,7 @@ history:
     outcome: Gemini CLI session ended with code 0.
     endedAt: '2026-05-14T02:47:45.866Z'
 title: multi agent UI UX improvement
-status: Grooming
+status: Ready
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -103,17 +105,33 @@ tokenMetadata:
   cacheReadTokens: 3850805
   cacheCreationTokens: 0
 ---
-need at the top bar a dropdown selector of which default agent to use  
-or maybe in settings  
-need to apply this agent (i.e claude or gemini etc) to ALL actions:  
-1\. right click send to agent  
-2\. send to agent from in ticket  
-3\. tell agent to finish ticket  
-4\. send for grooming  
-5\. reopen ticket from ready  
-etc.  
-need to make sure all agent activation pipelines are pipes through the central module that decides on which agent to use  
-  
-additionally we need to have a nice selector from it in the dropdown on the ticket, maybe we should move the entire 'agent session' modal to the top bar or somewhere more prominent, need to groom this.  
-also need to consider the right click agent activator in the board  
-pretend you are the most proficient UI UX expert! how would you approach this topic for ease of use for interactions like this
+
+## Problem / Motivation
+
+The multi-agent experience was fragmented. Users had to manually select agents in different places, and there was no central way to monitor all active sessions. Contextual actions like "Implement" were limited to copying commands to the clipboard instead of triggering actions directly.
+
+## Implementation Details
+
+### Centralized Agent Selection
+Added a **"Default Agent"** selector to the global header. This allows users to set a global preference (Claude, Gemini, or Auto) that governs all automated actions across the portal.
+
+### Active Sessions Monitoring
+The "Agents" stat in the header now opens an **`ActiveSessionsPopover`**. This provides a real-time view of all running agent sessions across all tickets, allowing users to:
+- See live output snippets.
+- Monitor current activity (e.g., "Working", "Thinking").
+- Stop sessions directly from the header.
+- Quickly navigate to the ticket associated with a session.
+
+### Contextual Agent Actions
+Updated the board's right-click context menu to support direct agent execution:
+- **"Launch Agent"**: Starts a session using the default agent.
+- **"Run agent command"**: Directly executes Groom, Implement, Finish, or Review.
+- **"Send for Grooming"**: A new shortcut that moves a ticket to Grooming and starts the agent immediately.
+
+### Integrated Grooming Workflow
+Added a prominent **"Start Grooming"** banner inside the Task Modal for any ticket in the "Grooming" phase, facilitating a smooth transition from creation to analysis.
+
+### Technical Improvements
+- Unified the activation pipeline in `useCliSession.ts` to strictly follow the global `defaultAgent` configuration.
+- Fixed several TypeScript type mismatches in the portal components.
+- Added `ActiveSessionsPopover.tsx` component.
