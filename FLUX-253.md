@@ -1,22 +1,35 @@
 ---
 title: Fix settings dirty check missing fields
-status: In Progress
+status: Done
 assignee: Copilot
 priority: High
 created: 2026-05-14T02:41:52.512Z
 updated: 2026-05-14T02:41:52.512Z
 history:
   - type: activity
+    user: Unknown
+    date: '2026-05-14T02:41:52.512Z'
+    comment: Created ticket.
+  - type: activity
     user: Copilot
     date: '2026-05-14T02:41:52.512Z'
     comment: >-
       Created ticket. Settings dirty check is missing several fields, causing
       the save bar not to appear when those settings change. Also handleDiscard
-      does not reset tokenDisplayMode, agentProgressEnabled, or agentProgressDelay.
+      does not reset tokenDisplayMode, agentProgressEnabled, or
+      agentProgressDelay.
 
-      Plan:
-      1. Add tokenCostThresholds, generateDistinctFiles, releaseNotesPath, agentProgressEnabled, agentProgressDelay to currentSavedPayload and originalPayload in the isDirty comparison.
-      2. Add setTokenDisplayMode, setAgentProgressEnabled, setAgentProgressDelay to handleDiscard.
+      Plan: 1. Add tokenCostThresholds, generateDistinctFiles, releaseNotesPath,
+      agentProgressEnabled, agentProgressDelay to currentSavedPayload and
+      originalPayload in the isDirty comparison. 2. Add setTokenDisplayMode,
+      setAgentProgressEnabled, setAgentProgressDelay to handleDiscard.
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Guy
+    date: '2026-05-14T02:57:39.066Z'
+order: 1
+updatedBy: Guy
 ---
 
 ## Problem / Motivation
