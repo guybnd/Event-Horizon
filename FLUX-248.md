@@ -12,6 +12,16 @@ history:
     user: Unknown
     date: '2026-05-13T12:41:41.934Z'
     comment: Created ticket.
+  - type: status_change
+    from: Grooming
+    to: Todo
+    user: Guy
+    date: '2026-05-14T08:46:27.384Z'
+  - type: status_change
+    from: Todo
+    to: Grooming
+    user: Guy
+    date: '2026-05-14T08:46:30.152Z'
 order: 6
 ---
 Multiple TypeScript errors prevent tsc --noEmit from passing. These include missing dependencies, type mismatches from strict mode, and property access issues.

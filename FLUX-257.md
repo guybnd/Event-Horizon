@@ -1,6 +1,6 @@
 ---
 title: Fix Gemini CLI session abandonment bugs
-status: Grooming
+status: Todo
 priority: High
 effort: Medium
 tags:
@@ -14,7 +14,12 @@ history:
     user: Guy
     date: '2026-05-14T07:12:06.914Z'
     comment: Created ticket.
-order: 9
+  - type: status_change
+    from: Grooming
+    to: Todo
+    user: Guy
+    date: '2026-05-14T08:46:19.105Z'
+order: 164
 ---
 
 ## Problem / Motivation
