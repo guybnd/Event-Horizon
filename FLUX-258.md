@@ -1,6 +1,6 @@
 ---
 title: 'Gemini quota exhaustion — model override, error surfacing, and session cleanup'
-status: Grooming
+status: Todo
 priority: High
 effort: Medium
 tags:
@@ -24,66 +24,112 @@ history:
       proper error popup on launch failure, (3) session must end cleanly, (4)
       per-model control for Gemini since different models have different quotas.
     id: c-2026-05-14
+  - date: '2026-05-14'
+    user: Copilot
+    type: comment
+    comment: >
+      Grooming complete. Explored codebase — confirmed exact touchpoints and
+      approach for all three parts. No unresolved choices. Moving to Todo.
+
+      Key clarifications from code exploration:
+
+      Part 1 — The stderr handler at gemini.ts ~line 511 currently just calls
+      appendSessionOutput. Add a quota pattern check before that. Add
+      `failureReason?: string` to CliSessionRecord in types.ts. The exit handler
+      at ~line 575 builds `outcome` from code/signal — branch on failureReason
+      to produce the quota message. Emit `broadcastEvent('session_failed', {
+      taskId, sessionId, outcome })` inside the same exit handler for all failed
+      exits.
+
+      Part 2 — No existing toast infrastructure in the portal. Will add: (a)
+      `sessionFailedAlert` state in AppContext + `clearSessionFailedAlert` action
+      exposed via context; (b) a new SSE listener for `session_failed` in
+      AppContext.tsx ~line 659 that sets the state; (c) a lightweight
+      `SessionFailedToast` component rendered in App.tsx inside AppContent,
+      with dismiss + "Open ticket" that calls `openTaskModal`. The toast fires
+      for ALL framework failures, not just Gemini, since the outcome string
+      already carries the human-readable reason.
+
+      Part 3 — Add `modelOverride?: string` to startTaskCliSession in api.ts
+      and pass it in the JSON body. Route (cli-session.ts ~line 31) reads
+      `req.body.modelOverride` and passes to adapter.start. Extend the
+      AgentAdapter.start signature to accept it. In startCliSession (gemini.ts
+      ~line 411), use modelOverride when provided instead of the
+      config-derived selectedModel. Portal: add `modelOverride` state to
+      useCliSession; when `selectedCliFramework === 'gemini'`, show an
+      inline combobox in CliSessionPanel below the FrameworkSelector,
+      pre-populated with the config model for that ticket status, with a
+      hard-coded suggestion list of known Gemini models.
+    id: c-groom-2026-05-14
 order: 7
-updatedBy: Guy
+updatedBy: Copilot
 ---
 
 ## Problem / Motivation
 
-When the Gemini CLI hits a token quota limit (e.g. `gemini-2.0-flash` daily free tier), the session fails silently:
-
-- Gemini exits non-zero; the engine records `"session ended with code 1"` — indistinguishable from any other crash
-- No UI feedback explains what went wrong; the user sees a failed session badge but no actionable reason
-- There is no quick way to retry the same ticket with a different model (e.g. swap to `gemini-1.5-pro`) without going to Settings, changing the global model, saving, and re-launching
-- The global `groomingModel`/`implementationModel` fields apply to every ticket — you cannot target a single ticket at a different model
-
-Users hit this frequently because Gemini's free-tier quotas are per-model: exhausting one model's daily quota does not mean all Gemini models are unavailable.
+When the Gemini CLI hits a token quota limit (e.g. `gemini-2.0-flash` daily free tier), the session fails silently — the engine logs `"session ended with code 1"` with no human-readable cause, the portal shows a failed badge with no explanation, and there is no way to quickly retry with a different Gemini model without changing global settings. Because Gemini's free-tier quotas are per-model, exhausting one model's daily limit does not mean all Gemini models are unavailable, so a fast per-launch model override dramatically reduces friction.
 
 ---
 
 ## Implementation Plan
 
-### Part 1 — Quota error detection and session cleanup
+### Part 1 — Quota error detection and better outcome messages
 
-In `engine/src/agents/gemini.ts`, inside `attachStdoutProcessing`, scan the parsed JSON stream for quota/rate-limit errors:
+**`engine/src/agents/types.ts`**
+- Add `failureReason?: string` to `CliSessionRecord`.
 
-- Gemini CLI emits errors as `{ type: 'result', is_error: true, error: '...' }` or as a non-JSON line on stderr (e.g. `"RESOURCE_EXHAUSTED"`, `"429"`, `"quota"`)
-- Add a stderr data handler that checks for quota-related patterns:
-  ```
-  /quota|RESOURCE_EXHAUSTED|429|rate.?limit/i
-  ```
-- When detected, set `session.failureReason = 'quota'` (add this field to `CliSessionRecord`)
-- In the `proc.on('exit', ...)` handler, incorporate `session.failureReason` into the outcome string:
-  - Quota: `"Gemini session failed: token quota exhausted for this model. Try a different model."`
-  - Generic non-zero: existing `"session ended with code N"`
-- This ensures the session entry in the ticket file carries a human-readable cause
+**`engine/src/agents/gemini.ts`**
+- In the stderr `data` handler (~line 511), before calling `appendSessionOutput`, check the chunk text against `/quota|RESOURCE_EXHAUSTED|429|rate.?limit/i`. If matched, set `session.failureReason = 'quota'`.
+- In the `proc.on('exit', ...)` handler (~line 575), change the `outcome` string for non-zero exits:
+  - If `session.failureReason === 'quota'`: `"Gemini session failed: token quota exhausted for this model. Try a different model."`
+  - Otherwise: keep existing `"session ended with code N"` message.
+- After closing the session history entry, emit `broadcastEvent('session_failed', { taskId: id, sessionId: session.sessionHistoryEntry?.sessionId, outcome, framework: session.framework })` for all failed (non-cancelled) exits.
 
-### Part 2 — Surface launch failures as a UI error notification
+### Part 2 — Surface failures as a portal notification
 
-The portal receives all session lifecycle events via SSE. Currently a failed session shows a badge but no proactive alert.
+**`engine/src/events.ts`** — no changes needed; `broadcastEvent` is generic.
 
-**Engine side** (`engine/src/events.ts` / exit handler in `gemini.ts`):
-- When a session ends as `failed`, emit a `session_failed` SSE event (or reuse the existing `progress` event with a `failed: true` flag and the `outcome` string)
+**`portal/src/AppContext.tsx`**
+- Add state: `sessionFailedAlert: { taskId: string; title: string; outcome: string } | null` and `clearSessionFailedAlert`.
+- In the SSE block (~line 659), add a listener for `session_failed` that sets the alert state with title `"Agent session failed"` and the `outcome` from the event payload.
+- Expose `sessionFailedAlert` and `clearSessionFailedAlert` via context.
 
-**Portal side**:
-- In the SSE/event handler, when a session transitions to `failed` within the first ~60 seconds of starting (fast failure = launch error), show a toast/popup:
-  - Title: `"Agent session failed to start"`
-  - Body: the `outcome` string from the session entry (e.g. quota message, auth error, binary-not-found)
-  - Action: `"Open ticket"` button that navigates to the failed ticket
+**`portal/src/components/SessionFailedToast.tsx`** (new file)
+- Floating dismissible notification rendered when `sessionFailedAlert` is set.
+- Shows the outcome string. Includes an "Open ticket" button calling `openTaskModal` with the task id, and a dismiss (×) button calling `clearSessionFailedAlert`.
 
-### Part 3 — Per-launch model override (model picker on session start)
+**`portal/src/App.tsx`**
+- Render `<SessionFailedToast />` inside `AppContent`, outside the main layout flow (fixed/absolute positioned).
 
-Currently the engine uses `integrations.geminiCli.groomingModel` / `.implementationModel` globally. Add a per-launch model override.
+### Part 3 — Per-launch model override (Gemini model picker)
 
-**Engine side** (`engine/src/routes/cli-session.ts` or the session launch route):
-- Accept an optional `modelOverride` field in the start-session request body
-- Pass it into `startCliSession` as a new argument
-- When present, use it instead of the config-derived `selectedModel`
+**`engine/src/agents/types.ts`**
+- Extend `AgentAdapter.start` signature: add `modelOverride?: string` parameter.
 
-**Portal side** — model picker in the "Start Agent" dialog:
-- When the selected agent is `gemini`, show a `<select>` (or editable combobox) pre-populated with the configured model for that ticket status
-- Show a short list of known Gemini models as suggestions (e.g. `gemini-2.5-pro`, `gemini-2.0-flash`, `gemini-1.5-pro`, `gemini-1.5-flash`) plus freeform input
-- Selecting a different model passes `modelOverride` in the launch request
-- Keep global settings as the default; the per-launch override does not persist
+**`engine/src/agents/gemini.ts`**
+- `startCliSession`: add `modelOverride?: string` parameter. When present, use it instead of the config-derived `selectedModel`.
+- `GeminiAdapter.start`: pass `modelOverride` through.
 
-**Design note**: The model picker should also be available on the "Retry" / re-launch path so the user can immediately retry with a different model after a quota failure.
+**`engine/src/agents/claude-code.ts` / `copilot.ts`**
+- Update their `start` implementations to accept (and ignore) the new `modelOverride` parameter to satisfy the interface.
+
+**`engine/src/routes/cli-session.ts`**
+- Read `req.body.modelOverride` (optional string) in the start route (~line 31).
+- Pass it to `adapter.start(session, task, appendPrompt, effortOverrideRaw, workspaceRoot, modelOverride)`.
+
+**`portal/src/api.ts`**
+- Add `modelOverride?: string` to `startTaskCliSession`. Include it in the JSON body when present.
+
+**`portal/src/hooks/useCliSession.ts`**
+- Add `modelOverride` state (string, default `''`).
+- Pass `modelOverride || undefined` to `startTaskCliSession` in `launchSession`.
+- Expose `modelOverride` and `setModelOverride` from the hook.
+
+**`portal/src/components/task-modal/CliSessionPanel.tsx`**
+- Add `modelOverride` and `setModelOverride` to props.
+- When `selectedCliFramework === 'gemini'`, render an inline combobox (`<input list="gemini-models">` or a small `<select>`) below the framework/launch row.
+- Hard-coded suggestion list: `gemini-2.5-pro`, `gemini-2.0-flash`, `gemini-1.5-pro`, `gemini-1.5-flash`.
+- Label: "Model override (optional)" — empty means use configured default.
+
+**`portal/src/components/TaskModal.tsx`**
+- Pass `modelOverride`/`setModelOverride` from `useCliSession` through to `CliSessionPanel`.
