@@ -24,7 +24,7 @@ history:
   - type: agent_session
     sessionId: f90279db-c4ae-4da5-a24b-30aac1830129
     startedAt: '2026-05-14T09:35:12.229Z'
-    status: active
+    status: completed
     progress:
       - timestamp: '2026-05-14T09:35:27.936Z'
         message: Investigate Current Instructions
@@ -505,8 +505,47 @@ history:
           strategicIntent: >-
             Reporting final progress update and blockers as requested by the
             user.
+      - timestamp: '2026-05-14T09:41:20.685Z'
+        message: >-
+          I have successfully implemented the two-tier instruction architecture
+          described in FLUX-262.
+
+
+          **Progress Update:**
+
+          - **Tier 1 (Always-On):** Reduced
+          `.flux/skills/event-horizon-copilot-instructions.md` to a minimal ~100
+          token block. It now only declares the presence of the Event Horizon
+          system and directs the agent to load the orchestrator when operating
+          on tickets or files.
+
+          - **Tier 2 (Orchestrator):** Consolidated all critical missing rules
+          (ticket resolution, strict YAML handling, atomic commits) into
+          `.docs/skills/event-horizon-orchestrator.md`.
+
+          - **Propagation:** Successfully executed the `skill-installer` across
+          the repository. The updated two-tier architecture is now reflected in
+          `.gemini/instructions.md`, `.github/copilot-instructions.md`, and
+          `.clauderc` (both at the root and in the `engine` workspace).
+
+          - **Validation:** `git diff` confirms a drastic size reduction in the
+          global instruction footprint. `vitest` suite in the engine passes
+          cleanly.
+
+          - **Workflow State:** FLUX-262 has been moved to `Ready` with a final
+          summary comment attached to the ticket history. Files are unstaged and
+          waiting for your review.
+
+
+          **Blockers:**
+
+          - None. Awaiting your review and explicit `finish FLUX-262` command to
+          proceed with the atomic commit and ticket closure.
+        type: text
     user: Gemini CLI
     date: '2026-05-14T09:35:12.229Z'
+    outcome: Gemini CLI session ended with code 0.
+    endedAt: '2026-05-14T09:41:20.698Z'
   - type: status_change
     from: Grooming
     to: Ready
@@ -531,6 +570,13 @@ history:
     date: '2026-05-14T09:40:36.236Z'
     comment: Starting implementation of two-tier instruction architecture.
     id: c-2026-05-14t09-40-36-236z
+tokenMetadata:
+  inputTokens: 623482
+  outputTokens: 3090
+  costUSD: 1.916796
+  costIsEstimated: true
+  cacheReadTokens: 449763
+  cacheCreationTokens: 0
 ---
 
 ## Problem / Motivation
