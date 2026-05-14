@@ -63,6 +63,17 @@ History entry shapes:
 - `Require Input` → history comment with one clear question + proposed defaults → user answers → route back to next status.
 - `Ready` → user reviews → `finish <ticket>` → agent commits + closes atomically.
 
+## Ticket Resolution
+
+- `FLUX-41` → use that ticket. Bare number like `41` or `do 41` → resolve to `FLUX-41`.
+- Repo-changing work without a named ticket → find or create a ticket first.
+- Pure explanation, brainstorming, or read-only discussion does not require ticket state changes.
+
+## Critical Rules
+
+- Treat `.flux/*.md` as schema-sensitive. Use spaces (not tabs) in YAML frontmatter. Do not delete ticket history; append only.
+- The `finish <ticket>` handoff is required before committing. Commit creation, `implementationLink` update, and status → `Done` happen as one atomic step.
+
 ## End-to-End Checklist
 
 - Ticket read fully — Relevant docs reviewed — Plan comment added
