@@ -13,7 +13,7 @@ history:
   - type: agent_session
     sessionId: bd57bb05-46d0-42ed-9cf0-ec1e4eab13f7
     startedAt: '2026-05-14T02:04:51.888Z'
-    status: active
+    status: cancelled
     progress:
       - timestamp: '2026-05-14T02:05:07.465Z'
         message: Working
@@ -21,6 +21,12 @@ history:
         message: Working
     user: Gemini CLI
     date: '2026-05-14T02:04:51.888Z'
+    outcome: Gemini CLI session stopped by user.
+    endedAt: '2026-05-14T02:07:06.672Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-14T02:07:06.622Z'
+    comment: Gemini CLI session stopped.
 updatedBy: Agent
 ---
 
