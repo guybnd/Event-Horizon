@@ -68,7 +68,7 @@ history:
   - type: agent_session
     sessionId: e8a808c8-dcd8-4b50-964e-4f6f31335bcb
     startedAt: '2026-05-14T06:35:04.724Z'
-    status: active
+    status: cancelled
     progress:
       - timestamp: '2026-05-14T06:35:17.594Z'
         message: Working
@@ -76,6 +76,8 @@ history:
         message: Working
     user: Gemini CLI
     date: '2026-05-14T06:35:04.724Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-14T06:36:35.875Z'
   - type: status_change
     from: Todo
     to: In Progress

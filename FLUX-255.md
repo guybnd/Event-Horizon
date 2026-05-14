@@ -47,7 +47,7 @@ history:
   - type: agent_session
     sessionId: 3fb23965-f840-406b-89a6-ea0e7d2eeacd
     startedAt: '2026-05-14T06:34:38.316Z'
-    status: active
+    status: cancelled
     progress:
       - timestamp: '2026-05-14T06:34:53.157Z'
         message: Working
@@ -55,6 +55,8 @@ history:
         message: Working
     user: Gemini CLI
     date: '2026-05-14T06:34:38.316Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-14T06:36:35.875Z'
 order: 0
 effort: None
 implementationLink: ''
