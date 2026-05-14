@@ -1,6 +1,6 @@
 ---
 title: Test Update
-status: Ready
+status: Done
 priority: High
 createdBy: Guy
 updatedBy: Agent
@@ -146,6 +146,18 @@ history:
         message: Working
     user: Gemini CLI
     date: '2026-05-14T08:02:09.380Z'
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-14T08:04:33.477Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-14T08:04:33.478Z'
+    comment: >-
+      Implementation verified and committed. AttachConsole noise filtered,
+      console management improved on Windows, and tool failure logging enhanced.
+    id: c-2026-05-14t08-04-33-478z
 effort: None
 implementationLink: ''
 subtasks: []

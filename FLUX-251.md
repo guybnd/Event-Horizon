@@ -352,14 +352,33 @@ history:
         message: Working
       - timestamp: '2026-05-14T08:02:23.557Z'
         message: Working
+      - timestamp: '2026-05-14T08:04:27.901Z'
+        message: >-
+          Ticket FLUX-251 is now finished.
+
+
+          **Summary of changes:**
+
+          - **Code committed:** All remaining implementation changes for the
+          multi-agent UI/UX improvements have been committed (hash: `ad9e685`).
+
+          - **Ticket updated:** FLUX-251 status moved to **Done**.
+
+          - **Key Features Delivered:**
+            - Global "Default Agent" selector in the header.
+            - `ActiveSessionsPopover` for real-time monitoring and control of agent sessions.
+            - Enhanced context menus with direct "Launch Agent" and "Run agent command" actions.
+            - Integrated "Grooming phase" banner in the Task Modal.
     user: Gemini CLI
     date: '2026-05-14T08:02:08.101Z'
-    outcome: Ticket finished as requested.
-    endedAt: '2026-05-14T08:05:00.000Z'
+    outcome: Gemini CLI session ended with code 0.
+    endedAt: '2026-05-14T08:04:27.932Z'
   - type: activity
     user: Agent
     date: '2026-05-14T08:05:00.000Z'
-    comment: 'Ticket finished as requested. Commit hash: ad9e6852f7278497d979f537ed29940d60504acb'
+    comment: >-
+      Ticket finished as requested. Commit hash:
+      ad9e6852f7278497d979f537ed29940d60504acb
   - type: status_change
     from: Ready
     to: Done
@@ -370,11 +389,11 @@ status: Done
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
-  inputTokens: 9526230
-  outputTokens: 62965
-  costUSD: 29.523165
+  inputTokens: 9812735
+  outputTokens: 64574
+  costUSD: 30.406815
   costIsEstimated: true
-  cacheReadTokens: 7111237
+  cacheReadTokens: 7330623
   cacheCreationTokens: 0
 order: 0
 ---
