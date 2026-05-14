@@ -13,7 +13,7 @@ import { TaskViewControls } from './TaskViewControls';
 import { filterAndSortTasks } from '../taskSearch';
 import { getStatusColorClass } from '../statusStyles';
 import { ReleaseModal } from './ReleaseModal';
-import { getArchiveStatus, getRequireInputStatus, isPromptableStatus } from '../workflow';
+import { getArchiveStatus, getRequireInputStatus } from '../workflow';
 import { ParseErrorButton } from './ParseErrorButton';
 
 export function Board() {

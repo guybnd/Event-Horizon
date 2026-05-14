@@ -167,7 +167,7 @@ router.put('/:id', async (req, res) => {
     const hasNewComment =
       submittedHistory.slice(existingLen).some((e: any) => (e?.type === 'comment' || (e?.type === 'status_change' && e?.to === readyStatus && e?.comment))) ||
       appendHistoryEntries.some((e: any) => (e?.type === 'comment' || (e?.type === 'status_change' && e?.to === readyStatus && e?.comment)));
-    if (!hasNewComment) {
+    if (!hasNewComment && configCache.requireCommentOnStatusChange !== false) {
       return res.status(400).json({
         error: 'READY_MISSING_COMMENT',
         message: 'Transitioning to Ready requires a completion comment in the same request.',

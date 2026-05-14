@@ -147,7 +147,7 @@ export function Header() {
           {/* User Prompts — compact stat card */}
           <button
             onClick={() => handleSetView('board')}
-            className={`group flex shrink-0 items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-left transition-all duration-200 overflow-hidden ${promptCount > 0 ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300' : 'border-gray-200 bg-white/60 text-gray-500 dark:border-white/10 dark:bg-white/5 dark:text-gray-400'} ${isPromptPulseActive ? 'header-live-prompts' : ''}`}
+            className={`group flex shrink-0 cursor-pointer items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-left transition-all duration-200 overflow-hidden ${promptCount > 0 ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300' : 'border-gray-200 bg-white/60 text-gray-500 dark:border-white/10 dark:bg-white/5 dark:text-gray-400'} ${isPromptPulseActive ? 'header-live-prompts' : ''}`}
             title="Open board to review tickets waiting for input or merge review"
           >
             <div className="relative shrink-0">
@@ -164,7 +164,7 @@ export function Header() {
           <div className="relative">
             <button
               onClick={toggleSessionsPopover}
-              className={`group flex shrink-0 items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-left transition-all duration-200 overflow-hidden ${activeSessionCount > 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300 agent-session-active' : 'border-gray-200 bg-white/60 text-gray-500 dark:border-white/10 dark:bg-white/5 dark:text-gray-400'} ${isSessionsPopoverOpen ? 'ring-2 ring-primary/30' : ''}`}
+              className={`group flex shrink-0 cursor-pointer items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-left transition-all duration-200 overflow-hidden ${activeSessionCount > 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300 agent-session-active' : 'border-gray-200 bg-white/60 text-gray-500 dark:border-white/10 dark:bg-white/5 dark:text-gray-400'} ${isSessionsPopoverOpen ? 'ring-2 ring-primary/30' : ''}`}
               title="Active agent sessions running on tickets"
             >
               <div className="relative shrink-0">

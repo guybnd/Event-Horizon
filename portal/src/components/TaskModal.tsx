@@ -1152,15 +1152,15 @@ export function TaskModal() {
             </div>
           )}
           <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50 px-5 py-4 dark:border-white/5 dark:bg-black/20">
-            <div className="flex min-w-0 items-center gap-4">
+            <div className="flex min-w-0 flex-1 items-center gap-4 mr-4">
               <button
                 onClick={handleCloseAttempt}
-                className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-200 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-white/5 dark:hover:text-white"
+                className="flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-200 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-white/5 dark:hover:text-white"
               >
                 <ArrowLeft className="h-4 w-4" />
                 Back to Board
               </button>
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{modalTask?.id || 'New Task'}</p>
                   <StatusBadge
@@ -1169,10 +1169,21 @@ export function TaskModal() {
                     className="text-[10px] font-bold uppercase tracking-[0.16em]"
                   />
                 </div>
-                <h2 className="truncate text-lg font-semibold text-gray-900 dark:text-gray-100">{title || 'Untitled Task'}</h2>
+                <textarea
+                  ref={titleRef}
+                  rows={1}
+                  className="mt-1 w-full resize-none overflow-hidden bg-transparent text-lg font-semibold text-gray-900 outline-none placeholder:text-gray-400 dark:text-gray-100"
+                  value={title}
+                  onChange={(event) => {
+                    setTitle(event.target.value);
+                    event.target.style.height = 'auto';
+                    event.target.style.height = event.target.scrollHeight + 'px';
+                  }}
+                  placeholder="Task title..."
+                />
               </div>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex shrink-0 items-center gap-3">
               <button
                 disabled={saving || !isDirty}
                 onClick={() => handleSave(undefined, true)}
@@ -1340,21 +1351,6 @@ export function TaskModal() {
 
             <aside className="min-h-0 min-w-0 overflow-y-auto bg-gray-50/80 p-6 dark:bg-black/10" style={{ width: `${sidebarWidth}px`, overflowX: 'hidden' }}>
               <div className="space-y-6 w-full">
-                <div>
-                  <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Title</label>
-                  <textarea
-                    ref={titleRef}
-                    rows={1}
-                    className="w-full resize-none overflow-hidden rounded-lg border border-gray-200 bg-white px-3 py-2 text-base font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-black/40"
-                    value={title}
-                    onChange={(event) => {
-                      setTitle(event.target.value);
-                      event.target.style.height = 'auto';
-                      event.target.style.height = event.target.scrollHeight + 'px';
-                    }}
-                    placeholder="Task title..."
-                  />
-                </div>
                 <MetadataPanel {...metadataPanelProps} />
                 {subtasksPanel}
                 <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 dark:border-white/5 dark:bg-black/10">
@@ -1393,7 +1389,7 @@ export function TaskModal() {
               </div>
             )}
             <div className="modal-handle flex shrink-0 items-center justify-between cursor-move border-b border-gray-100 bg-gray-50 px-4 py-3 dark:border-white/5 dark:bg-black/20">
-              <div className="flex flex-col">
+              <div className="flex flex-col flex-1 min-w-0 mr-4">
                 <div className="mb-0.5 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-gray-400">
                   <span>
                     {modalTask?.id ? modalTask.id : 'New Task'}{' '}
@@ -1405,7 +1401,18 @@ export function TaskModal() {
                     className="text-[10px] font-bold uppercase tracking-[0.16em]"
                   />
                 </div>
-                <h2 className="leading-none font-semibold text-gray-800 dark:text-gray-200">{title || 'Untitled Task'}</h2>
+                <textarea
+                  ref={titleRef}
+                  rows={1}
+                  className="mt-1 w-full resize-none overflow-hidden bg-transparent text-lg font-semibold text-gray-900 outline-none placeholder:text-gray-400 dark:text-gray-100"
+                  value={title}
+                  onChange={(event) => {
+                    setTitle(event.target.value);
+                    event.target.style.height = 'auto';
+                    event.target.style.height = event.target.scrollHeight + 'px';
+                  }}
+                  placeholder="Task title..."
+                />
               </div>
               <div className="flex items-center gap-2.5">
                 {modalTask?.id && (
@@ -1458,27 +1465,7 @@ export function TaskModal() {
                 </>
               )}
 
-              <div className={isWideMode ? 'flex items-center gap-4 rounded-xl border border-gray-100 bg-gray-50 p-4 dark:border-white/5 dark:bg-black/10' : 'space-y-3 rounded-xl border border-gray-100 bg-gray-50 p-3 dark:border-white/5 dark:bg-black/10'}>
-                <div className={isWideMode ? 'mr-4 flex-1' : 'min-w-0'}>
-                  <div>
-                    <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Title</label>
-                    <textarea
-                      ref={titleRef}
-                      rows={1}
-                      className={`w-full resize-none overflow-hidden rounded-lg border border-gray-200 px-3 py-2 font-medium outline-none focus:border-primary dark:border-white/10 ${
-                        isWideMode ? 'bg-white text-sm dark:bg-black/40' : 'bg-gray-50 text-[15px] dark:bg-black/20'
-                      }`}
-                      value={title}
-                      onChange={(event) => {
-                        setTitle(event.target.value);
-                        event.target.style.height = 'auto';
-                        event.target.style.height = event.target.scrollHeight + 'px';
-                      }}
-                      placeholder="Task title..."
-                    />
-                  </div>
-                </div>
-
+              <div className="space-y-3 rounded-xl border border-gray-100 bg-gray-50 p-3 dark:border-white/5 dark:bg-black/10">
                 <MetadataPanel {...metadataPanelProps} variant="popup" isWideMode={isWideMode} />
               </div>
 

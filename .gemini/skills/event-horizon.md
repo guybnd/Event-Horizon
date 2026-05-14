@@ -158,7 +158,7 @@ Load this skill when a ticket's status is `Grooming` or `Require Input`.
    **[HARD GATE] Never post a question as a history comment without also sending `"requireInput": true` in the same request. A history comment ending in `?` without a concurrent status transition to `Require Input` is a grooming failure. The engine enforces this: a `PUT` that sets status to `Require Input` without a new `comment` entry in `history` is rejected with `REQUIRE_INPUT_MISSING_COMMENT`.**
 6. **[MANDATORY] Rewrite the ticket body into a self-contained implementation plan.** The body IS the plan — not a history comment, not a chat message, not a text response to the user. Use `PUT /api/tasks/:id` with a `body` field to update the body via the API. Another agent must be able to pick up this ticket and implement it without any re-discovery. Writing the plan only as a chat message or history comment is a grooming failure.
 7. **[HARD GATE] Do not move the ticket to `Todo` until step 6 is complete.** Verify the ticket body has been rewritten before setting `Todo`. A body that still reads as the original user-typed description means grooming is not finished.
-8. Move the ticket to `Todo` when grooming is complete and the body has been rewritten.
+8. Move the ticket to `Todo` when grooming is complete and the body has been rewritten. **CRITICAL: Once the ticket is moved to `Todo`, you MUST immediately stop execution and wait for further instructions from the user. Do not transition straight to `In Progress` or begin implementation.**
 
 ## Ticket Metadata Conventions
 

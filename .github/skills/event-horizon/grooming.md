@@ -27,7 +27,7 @@ Load this skill when a ticket's status is `Grooming` or `Require Input`.
 6. Once all choices are resolved, rewrite the ticket body with two sections in order:
    - **Problem / Motivation** (1–3 sentences): explain what user problem or pain point this ticket addresses, who benefits, and why it was prioritised. This gives any reader — human or agent — immediate context on why the work matters, not just what to do.
    - **Implementation plan**: the concrete steps, files, and approach so another agent could pick up the work without re-discovery.
-7. Move the ticket to `Todo` when grooming is complete but coding is not starting yet.
+7. Move the ticket to `Todo` when grooming is complete. **CRITICAL: Once the ticket is moved to `Todo`, you MUST immediately stop execution and wait for further instructions from the user. Do not transition straight to `In Progress` or begin implementation.**
 
 ## Ticket Metadata Conventions
 

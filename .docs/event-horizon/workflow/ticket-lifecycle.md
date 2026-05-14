@@ -35,7 +35,7 @@ Event Horizon treats the ticket file as the canonical workflow record. Chat can 
     
 6.  Add a short plan comment when transitioning from grooming into implementation.
     
-7.  Move the ticket to `Todo` when grooming is complete but coding is not starting yet, or move it to `In Progress` when implementation is actually starting.
+7.  Move the ticket to `Todo` when grooming is complete. **CRITICAL: You MUST NOT begin implementation or move the ticket to `In Progress` during the Grooming session. Once the ticket is moved to `Todo`, you must stop, end your execution, and wait for the user to explicitly start the implementation phase.**
     
 8.  Make focused changes and run a narrow validation as soon as the first real edit lands.
     
