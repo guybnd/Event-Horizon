@@ -3,7 +3,7 @@ title: Fix Agent AttachConsole failed error on tool execution
 status: Todo
 priority: High
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
 tags:
   - bug
@@ -42,6 +42,16 @@ history:
     to: Todo
     user: Guy
     date: '2026-05-14T03:01:05.789Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Guy
+    date: '2026-05-14T03:02:27.969Z'
+  - type: status_change
+    from: In Progress
+    to: Todo
+    user: Guy
+    date: '2026-05-14T03:02:44.033Z'
 effort: None
 implementationLink: ''
 subtasks: []
