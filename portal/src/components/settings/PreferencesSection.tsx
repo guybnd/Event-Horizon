@@ -226,6 +226,25 @@ export function PreferencesSection({
           checked={requireComment}
           onChange={setRequireComment}
         />
+
+        <div className="rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <span className="block text-sm font-bold text-gray-800 dark:text-gray-200 mb-0.5">Restart Onboarding Wizard</span>
+              <span className="text-xs text-gray-500">Re-run the first-time setup wizard on next page reload.</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                localStorage.removeItem('eh-onboarding-complete');
+                window.location.reload();
+              }}
+              className="shrink-0 rounded-xl border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
+            >
+              Restart Setup
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

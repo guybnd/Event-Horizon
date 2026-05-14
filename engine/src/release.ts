@@ -1,11 +1,10 @@
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import matter from 'gray-matter';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// __dirname is available natively in CJS (esbuild bundle / pkg).
+// tsx also provides it in ESM dev mode.
 
 async function run() {
   const args = process.argv.slice(2);

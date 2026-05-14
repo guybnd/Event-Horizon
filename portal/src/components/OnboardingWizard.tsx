@@ -12,8 +12,9 @@ import {
   Check,
   GitBranch,
   HardDrive,
+  User,
 } from 'lucide-react';
-import { pickWorkspaceFolder, setWorkspace, installWorkspaceSkill, fetchPathInfo, setupPath, migrateStorage } from '../api';
+import { pickWorkspaceFolder, setWorkspace, installWorkspaceSkill, fetchPathInfo, setupPath, migrateStorage, fetchConfig, saveConfig as apiSaveConfig } from '../api';
 import { useApp } from '../AppContext';
 
 const COMPLETE_KEY = 'eh-onboarding-complete';
@@ -52,6 +53,7 @@ export function OnboardingWizard() {
   const { notifyWorkspaceSet, setView } = useApp();
   const [step, setStep] = useState(1);
   const [folderPath, setFolderPath] = useState('');
+  const [userName, setUserName] = useState('');
   const [folderError, setFolderError] = useState<string | null>(null);
   const [folderLoading, setFolderLoading] = useState(false);
   const [picking, setPicking] = useState(false);
@@ -106,6 +108,20 @@ export function OnboardingWizard() {
     setFolderLoading(true);
     try {
       await setWorkspace(trimmed);
+      // Save user name to config if provided
+      const trimmedName = userName.trim();
+      if (trimmedName) {
+        const cfg = await fetchConfig();
+        const existingUsers = cfg.users || [];
+        const hasUser = existingUsers.some((u: any) => u.name === trimmedName);
+        const hasAgent = existingUsers.some((u: any) => u.name === 'Agent');
+        const newUsers = [
+          ...(hasUser ? [] : [{ name: trimmedName }]),
+          ...existingUsers,
+          ...(hasAgent ? [] : [{ name: 'Agent' }]),
+        ];
+        await apiSaveConfig({ ...cfg, users: newUsers });
+      }
       setStep(2);
     } catch (err: any) {
       setFolderError(err.message || 'Failed to open workspace.');
@@ -225,9 +241,19 @@ export function OnboardingWizard() {
 
             <form onSubmit={handleOpenFolder} className="flex flex-col gap-3">
               <div className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-4 py-3 shadow-sm dark:border-white/10 dark:bg-white/5">
-                <FolderOpen className="h-5 w-5 shrink-0 text-gray-400" />
+                <User className="h-5 w-5 shrink-0 text-gray-400" />
                 <input
                   autoFocus
+                  type="text"
+                  value={userName}
+                  onChange={(e) => setUserName(e.target.value)}
+                  placeholder="Your name"
+                  className="w-full bg-transparent text-sm text-gray-900 outline-none placeholder:text-gray-400 dark:text-white"
+                />
+              </div>
+              <div className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-4 py-3 shadow-sm dark:border-white/10 dark:bg-white/5">
+                <FolderOpen className="h-5 w-5 shrink-0 text-gray-400" />
+                <input
                   type="text"
                   value={folderPath}
                   onChange={(e) => setFolderPath(e.target.value)}

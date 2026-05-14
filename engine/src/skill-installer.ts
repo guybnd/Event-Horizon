@@ -1,11 +1,10 @@
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { getWorkflowInstallStatus, installWorkspaceWorkflow } from './workflow-installer.js';
 
 type Framework = 'auto' | 'copilot' | 'antigravity' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'generic';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// __dirname is available natively in CJS (esbuild bundle / pkg).
+// tsx also provides it in ESM dev mode.
 
 function parseArgs(argv: string[]) {
   const args = new Map<string, string>();
