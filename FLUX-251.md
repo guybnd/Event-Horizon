@@ -30,7 +30,7 @@ history:
   - type: agent_session
     sessionId: 6c71e6b7-c86f-4cc1-b966-2415d2568426
     startedAt: '2026-05-14T02:06:30.843Z'
-    status: active
+    status: cancelled
     progress:
       - timestamp: '2026-05-14T02:06:47.351Z'
         message: Working
@@ -38,6 +38,19 @@ history:
         message: Working
     user: Gemini CLI
     date: '2026-05-14T02:06:30.843Z'
+    outcome: Session orphaned (engine down).
+    endedAt: '2026-05-14T12:07:00.000Z'
+  - type: agent_session
+    sessionId: 6b15cf7c-aac9-4c44-b860-fd6c3aa7ddb1
+    startedAt: '2026-05-14T02:39:53.666Z'
+    status: active
+    progress:
+      - timestamp: '2026-05-14T02:40:08.209Z'
+        message: Working
+      - timestamp: '2026-05-14T02:40:09.238Z'
+        message: Working
+    user: Gemini CLI
+    date: '2026-05-14T02:39:53.666Z'
 title: multi agent UI UX improvement
 status: Grooming
 createdBy: Guy
