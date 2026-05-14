@@ -1,6 +1,6 @@
 ---
 title: Two-tier instruction architecture for zero-cost non-ticket interactions
-status: Ready
+status: Done
 priority: Low
 effort: L
 assignee: unassigned
@@ -579,6 +579,20 @@ history:
       were already synced (included in 14e8424 commit). Installed copies (.github/, .gemini/, engine/.gemini/)
       committed as follow-up.
     id: c-2026-05-14t12-00-00-000z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-14T12:01:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-14T12:01:00.000Z'
+    comment: >-
+      Completed. Always-on instructions slimmed from ~430 tokens to ~100 tokens (3-line orchestrator pointer).
+      Ticket resolution and critical rules relocated to orchestrator.md. 6 files changed, 196 insertions, 600 deletions.
+      Commit 023159f.
+    id: c-2026-05-14t12-01-00-000z
+implementationLink: '023159f'
 tokenMetadata:
   inputTokens: 623482
   outputTokens: 3090
