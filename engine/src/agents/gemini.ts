@@ -314,7 +314,7 @@ export function attachStdoutProcessing(
           broadcastEvent('activity', { taskId, activity: session.currentActivity });
         } else if (evt.type === 'tool_result') {
           if (evt.is_error) {
-            console.error(`[${id}] Tool ${evt.tool_name || 'unknown'} failed:`, evt.error);
+            console.error(`[${taskId}] Tool ${evt.tool_name || 'unknown'} failed:`, evt.error);
             
             enqueueSessionWrite(session, async () => {
               await updateAgentSession(taskId, session.sessionHistoryEntry!.sessionId, (sessionEntry) => {
