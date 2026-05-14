@@ -42,8 +42,20 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-14T09:22:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-14T09:37:00.000Z'
+    comment: >-
+      Committed as 14e8424. 13 files changed, 215 insertions, 909 deletions.
+      Follow-up tickets FLUX-261 (engine optimizations) and FLUX-262 (two-tier architecture) created.
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-14T09:37:00.000Z'
 title: Minimize input token costs across skill and instruction files
-status: Ready
+status: Done
+implementationLink: '14e8424'
 createdBy: Guy
 updatedBy: Agent
 order: 4
