@@ -22,8 +22,28 @@ history:
       optimization plan (eliminate waste, restructure instructions, smart doc
       loading, prose compression). L4/L6 deferred.
     id: c-2026-05-14t09-10-00-000z
+  - type: status_change
+    from: Grooming
+    to: In Progress
+    user: Agent
+    date: '2026-05-14T09:20:00.000Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-14T09:22:00.000Z'
+    comment: >-
+      Implementation complete. Deleted SKILL.md (12KB redundant), deprecated
+      agent.md (12.6KB), fixed doubled copilot-instructions (13KB→1.7KB),
+      compressed all 4 skill files by ~50%, created INDEX.md for targeted doc
+      reads, added effort-gated doc loading. Total: ~93% reduction in always-on
+      overhead, ~60% reduction in per-ticket skill tokens.
+    id: c-2026-05-14t09-22-00-000z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-14T09:22:00.000Z'
 title: Minimize input token costs across skill and instruction files
-status: In Progress
+status: Ready
 createdBy: Guy
 updatedBy: Agent
 order: 4
