@@ -613,6 +613,98 @@ history:
           toolName: read_file
           parameters:
             file_path: 'C:\GitHub\EventHorizon\portal\src\index.css'
+      - timestamp: '2026-05-14T08:48:47.588Z'
+        message: Refactoring Task Modal and Agent Button
+        type: topic
+        data:
+          title: Refactoring Task Modal and Agent Button
+          summary: >-
+            I have discovered that the right column of the task view has a
+            redundant title field that intercepts the focus reference. I will
+            delete this field from the TaskModal's right sidebar. I will also
+            investigate the agent button in the header/split button to ensure it
+            displays a pointer cursor as requested.
+          strategicIntent: >-
+            Removing the redundant title field from the right column of the task
+            modal and fixing the agent button's styling so it appears clickable.
+      - timestamp: '2026-05-14T08:48:48.657Z'
+        message: Editing TaskModal.tsx
+        type: tool
+        data:
+          toolName: replace
+          parameters:
+            old_string: |2-
+                            <div className="space-y-6 w-full">
+                              <div>
+                                <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Title</label>
+                                <textarea
+                                  ref={titleRef}
+                                  rows={1}
+                                  className="w-full resize-none overflow-hidden rounded-lg border border-gray-200 bg-white px-3 py-2 text-base font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-black/40"
+                                  value={title}
+                                  onChange={(event) => {
+                                    setTitle(event.target.value);
+                                    event.target.style.height = 'auto';
+                                    event.target.style.height = event.target.scrollHeight + 'px';
+                                  }}
+                                  placeholder="Task title..."
+                                />
+                              </div>
+                              <MetadataPanel {...metadataPanelProps} />
+            file_path: 'C:\GitHub\EventHorizon\portal\src\components\TaskModal.tsx'
+            allow_multiple: false
+            new_string: |2-
+                            <div className="space-y-6 w-full">
+                              <MetadataPanel {...metadataPanelProps} />
+            instruction: >-
+              Remove the redundant title field from the right hand side column
+              of the task fullscreen view.
+      - timestamp: '2026-05-14T08:49:18.677Z'
+        message: Editing LaunchAgentSplitButton.tsx
+        type: tool
+        data:
+          toolName: replace
+          parameters:
+            instruction: >-
+              Add cursor-pointer and disabled:cursor-not-allowed to both buttons
+              in the sm variant.
+            old_string: |2-
+                      <button
+                        type="button"
+                        disabled={isDisabled}
+                        onClick={() => onLaunch()}
+                        className="flex items-center gap-1.5 rounded-l-md bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-gray-700 disabled:opacity-50 dark:bg-white/10 dark:hover:bg-white/20"
+                      >
+                        <Icon className="h-3.5 w-3.5" />
+                        {busy ? 'Starting…' : 'Launch Agent'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isDisabled}
+                        onClick={() => setOpen((v) => !v)}
+                        className="flex items-center justify-center rounded-r-md border-l border-white/20 bg-gray-900 px-1.5 py-1.5 text-xs text-white transition-colors hover:bg-gray-700 disabled:opacity-50 dark:bg-white/10 dark:border-white/10 dark:hover:bg-white/20"
+                        aria-label="Choose effort level"
+                      >
+            file_path: >-
+              C:\GitHub\EventHorizon\portal\src\components\LaunchAgentSplitButton.tsx
+            new_string: |2-
+                      <button
+                        type="button"
+                        disabled={isDisabled}
+                        onClick={() => onLaunch()}
+                        className="flex items-center gap-1.5 rounded-l-md bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white transition-colors cursor-pointer hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-white/10 dark:hover:bg-white/20"
+                      >
+                        <Icon className="h-3.5 w-3.5" />
+                        {busy ? 'Starting…' : 'Launch Agent'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isDisabled}
+                        onClick={() => setOpen((v) => !v)}
+                        className="flex items-center justify-center rounded-r-md border-l border-white/20 bg-gray-900 px-1.5 py-1.5 text-xs text-white transition-colors cursor-pointer hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-white/10 dark:border-white/10 dark:hover:bg-white/20"
+                        aria-label="Choose effort level"
+                      >
+            allow_multiple: false
     user: Gemini CLI
     date: '2026-05-14T08:45:59.475Z'
   - type: status_change
