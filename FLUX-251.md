@@ -257,7 +257,7 @@ history:
   - type: agent_session
     sessionId: f5853627-19e3-4831-958d-b20ec078183d
     startedAt: '2026-05-14T07:35:09.816Z'
-    status: active
+    status: cancelled
     progress:
       - timestamp: '2026-05-14T07:35:25.995Z'
         message: Working
@@ -265,6 +265,8 @@ history:
         message: Working
     user: Gemini CLI
     date: '2026-05-14T07:35:09.816Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-14T07:36:23.856Z'
 title: multi agent UI UX improvement
 status: In Progress
 createdBy: Guy
