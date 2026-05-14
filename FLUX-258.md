@@ -28,38 +28,9 @@ history:
     user: Copilot
     type: comment
     comment: >
-      Grooming complete. Explored codebase — confirmed exact touchpoints and
-      approach for all three parts. No unresolved choices. Moving to Todo.
-
-      Key clarifications from code exploration:
-
-      Part 1 — The stderr handler at gemini.ts ~line 511 currently just calls
-      appendSessionOutput. Add a quota pattern check before that. Add
-      `failureReason?: string` to CliSessionRecord in types.ts. The exit handler
-      at ~line 575 builds `outcome` from code/signal — branch on failureReason
-      to produce the quota message. Emit `broadcastEvent('session_failed', {
-      taskId, sessionId, outcome })` inside the same exit handler for all failed
-      exits.
-
-      Part 2 — No existing toast infrastructure in the portal. Will add: (a)
-      `sessionFailedAlert` state in AppContext + `clearSessionFailedAlert` action
-      exposed via context; (b) a new SSE listener for `session_failed` in
-      AppContext.tsx ~line 659 that sets the state; (c) a lightweight
-      `SessionFailedToast` component rendered in App.tsx inside AppContent,
-      with dismiss + "Open ticket" that calls `openTaskModal`. The toast fires
-      for ALL framework failures, not just Gemini, since the outcome string
-      already carries the human-readable reason.
-
-      Part 3 — Add `modelOverride?: string` to startTaskCliSession in api.ts
-      and pass it in the JSON body. Route (cli-session.ts ~line 31) reads
-      `req.body.modelOverride` and passes to adapter.start. Extend the
-      AgentAdapter.start signature to accept it. In startCliSession (gemini.ts
-      ~line 411), use modelOverride when provided instead of the
-      config-derived selectedModel. Portal: add `modelOverride` state to
-      useCliSession; when `selectedCliFramework === 'gemini'`, show an
-      inline combobox in CliSessionPanel below the FrameworkSelector,
-      pre-populated with the config model for that ticket status, with a
-      hard-coded suggestion list of known Gemini models.
+      Grooming complete. Codebase explored, all three parts have confirmed
+      touchpoints. No unresolved choices. Implementation plan updated with
+      specific files and line references. Moving to Todo.
     id: c-groom-2026-05-14
 order: 7
 updatedBy: Copilot
