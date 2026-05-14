@@ -1,19 +1,34 @@
 ---
-id: FLUX-255
 title: Fix drag-and-drop race condition in board
-status: In Progress
+status: Ready
 priority: Medium
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
 tags:
   - bug
   - ui-ux
 history:
   - type: activity
+    user: Guy
+    date: '2026-05-14T03:05:00.000Z'
+    comment: Created ticket.
+  - type: activity
     user: Agent
     date: '2026-05-14T03:05:00.000Z'
     comment: Created ticket to track drag-and-drop instability fix.
+  - type: comment
+    user: Guy
+    date: '2026-05-14T06:32:51.122Z'
+    comment: Note
+    id: c-2026-05-14t06-32-51-046z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Guy
+    date: '2026-05-14T06:32:51.122Z'
+    comment: Included with comment
+order: 0
 ---
 
 ## Problem / Motivation
