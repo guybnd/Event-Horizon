@@ -14,10 +14,23 @@ history:
     user: Guy
     date: '2026-05-14T01:35:53.403Z'
     comment: Updated description.
+  - type: agent_session
+    sessionId: c36a5ead-56b4-4e0c-9e98-9c28131afd87
+    startedAt: '2026-05-14T01:36:37.083Z'
+    status: cancelled
+    progress:
+      - timestamp: '2026-05-14T01:36:51.854Z'
+        message: Working
+      - timestamp: '2026-05-14T01:36:52.701Z'
+        message: Working
+    user: Gemini CLI
+    date: '2026-05-14T01:36:37.083Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-14T01:37:14.303Z'
 title: multi agent UI UX improvement
 status: Grooming
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 ---
 need at the top bar a dropdown selector of which default agent to use  
 or maybe in settings  
