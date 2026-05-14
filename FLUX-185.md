@@ -7,15 +7,15 @@ tags:
   - architecture
 assignee: unassigned
 createdBy: Unknown
-id: FLUX-185
 title: 'Design testing strategy, validation UX, and diff visibility for tickets'
 status: Grooming
-updatedBy: Unknown
+updatedBy: Guy
 history:
   - type: activity
     user: Unknown
     date: '2026-05-11T01:39:09.281Z'
     comment: Created ticket.
+order: 2
 ---
 ## Goal
 

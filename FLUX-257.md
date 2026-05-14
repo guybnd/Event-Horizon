@@ -1,5 +1,4 @@
 ---
-id: FLUX-257
 title: Fix Gemini CLI session abandonment bugs
 status: Grooming
 priority: High
@@ -15,6 +14,7 @@ history:
     user: Guy
     date: '2026-05-14T07:12:06.914Z'
     comment: Created ticket.
+order: 9
 ---
 
 ## Problem / Motivation

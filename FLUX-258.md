@@ -1,5 +1,4 @@
 ---
-id: FLUX-258
 title: 'Gemini quota exhaustion — model override, error surfacing, and session cleanup'
 status: Grooming
 priority: High
@@ -25,6 +24,8 @@ history:
       proper error popup on launch failure, (3) session must end cleanly, (4)
       per-model control for Gemini since different models have different quotas.
     id: c-2026-05-14
+order: 7
+updatedBy: Guy
 ---
 
 ## Problem / Motivation

@@ -8,7 +8,7 @@ assignee: unassigned
 createdBy: Unknown
 title: Extract TaskModal hooks and sub-components
 status: Grooming
-updatedBy: Agent
+updatedBy: Guy
 history:
   - type: activity
     user: Unknown
@@ -22,6 +22,7 @@ history:
     user: Agent
     date: '2026-05-11T03:29:41.494Z'
     comment: Claude Code session lost (engine restarted).
+order: 1
 ---
 ## Goal
 
