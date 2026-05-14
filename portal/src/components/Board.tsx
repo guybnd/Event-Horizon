@@ -194,6 +194,7 @@ export function Board() {
 
     const finalOrder = newOrder ?? (task.order || 0);
 
+    setMovingTaskIds(prev => new Set(prev).add(taskId));
     setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: newStatus, order: finalOrder, history: newHistory as any } : t));
 
     try {
@@ -202,6 +203,12 @@ export function Board() {
     } catch (err) {
       console.error(err);
       setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: oldStatus, order: task.order } : t));
+    } finally {
+      setMovingTaskIds(prev => {
+        const next = new Set(prev);
+        next.delete(taskId);
+        return next;
+      });
     }
     setPendingStatusChange(null);
     setCommentText('');
@@ -271,6 +278,16 @@ export function Board() {
               <button 
                 onClick={() => applyStatusChange(pendingStatusChange.taskId, pendingStatusChange.newStatus, pendingStatusChange.oldStatus, commentText)}
                 className="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium cursor-pointer transition-colors"
+              >Save Update</button>
+            </div>
+          </div>
+        </div>
+      )}      
+      {releaseModalTasks && (
+        <ReleaseModal tasks={releaseModalTasks} onClose={() => setReleaseModalTasks(null)} />
+      )}    </>
+  );
+}
               >Save Update</button>
             </div>
           </div>
