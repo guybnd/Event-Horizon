@@ -1,9 +1,9 @@
 ---
 title: Fix drag-and-drop race condition in board
-status: Ready
+status: In Progress
 priority: Medium
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 assignee: unassigned
 tags:
   - bug
@@ -28,7 +28,36 @@ history:
     user: Guy
     date: '2026-05-14T06:32:51.122Z'
     comment: Included with comment
+  - type: comment
+    user: Guy
+    date: '2026-05-14T06:34:38.253Z'
+    comment: >-
+      the problem seemed to have stemmed from the requirement to update comment
+      while changing status. this was fixed, however. now dragging and dropping
+      always requires putting in a comment while changing status, ignoring the
+      actual setting from the settings page which could allow without it
+    replyTo: c-2026-05-14t06-32-51-046z
+    id: c-2026-05-14t06-34-38-221z
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Guy
+    date: '2026-05-14T06:34:38.253Z'
+    comment: Returned to work
+  - type: agent_session
+    sessionId: 3fb23965-f840-406b-89a6-ea0e7d2eeacd
+    startedAt: '2026-05-14T06:34:38.316Z'
+    status: active
+    progress:
+      - timestamp: '2026-05-14T06:34:53.157Z'
+        message: Working
+      - timestamp: '2026-05-14T06:34:53.916Z'
+        message: Working
+    user: Gemini CLI
+    date: '2026-05-14T06:34:38.316Z'
 order: 0
+effort: None
+implementationLink: ''
 ---
 
 ## Problem / Motivation

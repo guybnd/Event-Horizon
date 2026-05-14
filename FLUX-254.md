@@ -1,9 +1,9 @@
 ---
 title: Test Update
-status: Todo
+status: In Progress
 priority: High
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 assignee: unassigned
 tags:
   - bug
@@ -54,6 +54,33 @@ history:
     user: Guy
     date: '2026-05-14T03:32:46.399Z'
     comment: Updated title.
+  - type: agent_session
+    sessionId: 80508eac-9d93-444a-a15d-46dfb1202540
+    startedAt: '2026-05-14T06:33:45.614Z'
+    status: cancelled
+    progress:
+      - timestamp: '2026-05-14T06:34:05.779Z'
+        message: Working
+    user: Gemini CLI
+    date: '2026-05-14T06:33:45.614Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-14T06:34:18.077Z'
+  - type: agent_session
+    sessionId: e8a808c8-dcd8-4b50-964e-4f6f31335bcb
+    startedAt: '2026-05-14T06:35:04.724Z'
+    status: active
+    progress:
+      - timestamp: '2026-05-14T06:35:17.594Z'
+        message: Working
+      - timestamp: '2026-05-14T06:35:20.343Z'
+        message: Working
+    user: Gemini CLI
+    date: '2026-05-14T06:35:04.724Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-14T06:35:39.412Z'
 effort: None
 implementationLink: ''
 subtasks: []
