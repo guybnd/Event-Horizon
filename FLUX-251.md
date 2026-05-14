@@ -239,7 +239,7 @@ history:
   - type: agent_session
     sessionId: 9b897843-800c-4f0c-9cf3-8a0efa865fd2
     startedAt: '2026-05-14T07:17:18.294Z'
-    status: active
+    status: failed
     progress:
       - timestamp: '2026-05-14T07:17:32.107Z'
         message: Working
@@ -247,16 +247,18 @@ history:
         message: Working
     user: Gemini CLI
     date: '2026-05-14T07:17:18.294Z'
+    outcome: Gemini CLI session ended with code 1.
+    endedAt: '2026-05-14T07:32:52.873Z'
 title: multi agent UI UX improvement
 status: In Progress
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
-  inputTokens: 5518627
-  outputTokens: 26956
-  costUSD: 16.960221
+  inputTokens: 8327542
+  outputTokens: 59725
+  costUSD: 25.878501
   costIsEstimated: true
-  cacheReadTokens: 4217415
+  cacheReadTokens: 6098676
   cacheCreationTokens: 0
 order: 0
 ---
