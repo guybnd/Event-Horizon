@@ -150,8 +150,8 @@ router.put('/:id', async (req, res) => {
     const submittedHistory: any[] = Array.isArray(updates.history) ? updates.history : [];
     const existingLen = (task.history || []).length;
     const hasNewComment =
-      submittedHistory.slice(existingLen).some((e: any) => e?.type === 'comment') ||
-      appendHistoryEntries.some((e: any) => e?.type === 'comment');
+      submittedHistory.slice(existingLen).some((e: any) => (e?.type === 'comment' || (e?.type === 'status_change' && e?.to === requireInputStatus && e?.comment))) ||
+      appendHistoryEntries.some((e: any) => (e?.type === 'comment' || (e?.type === 'status_change' && e?.to === requireInputStatus && e?.comment)));
     if (!hasNewComment) {
       return res.status(400).json({
         error: 'REQUIRE_INPUT_MISSING_COMMENT',
@@ -165,8 +165,8 @@ router.put('/:id', async (req, res) => {
     const submittedHistory: any[] = Array.isArray(updates.history) ? updates.history : [];
     const existingLen = (task.history || []).length;
     const hasNewComment =
-      submittedHistory.slice(existingLen).some((e: any) => e?.type === 'comment') ||
-      appendHistoryEntries.some((e: any) => e?.type === 'comment');
+      submittedHistory.slice(existingLen).some((e: any) => (e?.type === 'comment' || (e?.type === 'status_change' && e?.to === readyStatus && e?.comment))) ||
+      appendHistoryEntries.some((e: any) => (e?.type === 'comment' || (e?.type === 'status_change' && e?.to === readyStatus && e?.comment)));
     if (!hasNewComment) {
       return res.status(400).json({
         error: 'READY_MISSING_COMMENT',

@@ -4,7 +4,7 @@ import { Archive, Bot, ChevronDown, ChevronRight, ExternalLink, GitBranch, Messa
 import type { Task, CliFramework } from '../types';
 import { useApp } from '../AppContext';
 import { deleteTask, startTaskCliSession, updateTask } from '../api';
-import { getArchiveStatus } from '../workflow';
+import { getArchiveStatus, isPromptableStatus } from '../workflow';
 
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 type EffortLevel = typeof EFFORT_LEVELS[number];
@@ -88,6 +88,14 @@ export function ContextMenu({ task, position, onClose }: Props) {
 
   const handleTransition = async (status: string) => {
     onClose();
+    if (isPromptableStatus(status, config)) {
+      if (config?.boardCardOpenMode === 'full') {
+        openTaskFullView(task);
+      } else {
+        openTaskModal(task);
+      }
+      return;
+    }
     await updateTask(task.id, { status, updatedBy: currentUser } as any);
     triggerRefresh();
   };

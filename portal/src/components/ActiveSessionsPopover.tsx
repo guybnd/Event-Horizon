@@ -1,9 +1,10 @@
 import { memo, useRef, useEffect, useMemo } from 'react';
-import { Bot, Square, ExternalLink, Zap, Terminal, CircleDot, X } from 'lucide-react';
+import { Bot, Square, ExternalLink, CircleDot, X, Settings2 } from 'lucide-react';
 import type { Task } from '../types';
 import { stopTaskCliSession } from '../api';
 import { useApp } from '../AppContext';
 import { FRAMEWORK_ICONS } from '../constants';
+import { FrameworkSelector } from './FrameworkSelector';
 
 interface Props {
   tasks: Task[];
@@ -75,7 +76,7 @@ const SessionItem = memo(function SessionItem({ task, onClose, openTask, handleS
 });
 
 export const ActiveSessionsPopover = memo(function ActiveSessionsPopover({ tasks, onClose, openTask }: Props) {
-  const { triggerRefresh } = useApp();
+  const { triggerRefresh, config, saveConfig } = useApp();
   const popoverRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -109,13 +110,31 @@ export const ActiveSessionsPopover = memo(function ActiveSessionsPopover({ tasks
       className="absolute right-0 top-full z-[100] mt-2 w-80 rounded-2xl border border-gray-200 bg-white/95 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:bg-[#1a1b23]/95 overflow-hidden"
     >
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 dark:border-white/5">
-        <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Active Agent Sessions</h3>
+        <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500">Agent Management</h3>
         <button onClick={onClose} className="rounded-md p-1 hover:bg-gray-100 dark:hover:bg-white/10 transition-colors">
           <X className="h-4 w-4 text-gray-400" />
         </button>
       </div>
 
-      <div className="max-h-[400px] overflow-y-auto p-2 space-y-2">
+      <div className="p-3 border-b border-gray-100 dark:border-white/5 bg-gray-50/50 dark:bg-white/5">
+        <div className="flex flex-col gap-1.5">
+           <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-400">
+             <Settings2 className="h-3 w-3" />
+             Default Agent
+           </div>
+           <FrameworkSelector
+             value={config?.defaultAgent || 'auto'}
+             onChange={(v) => config && saveConfig({ ...config, defaultAgent: v as any })}
+             showAuto
+           />
+        </div>
+      </div>
+
+      <div className="max-h-[320px] overflow-y-auto p-2 space-y-2">
+        <div className="px-2 pt-1 pb-1 text-[10px] font-bold uppercase tracking-wider text-gray-400 flex items-center gap-1.5">
+           <Bot className="h-3 w-3" />
+           Active Sessions
+        </div>
         {activeTasks.length === 0 ? (
           <div className="py-8 text-center text-sm text-gray-500">
             No active agent sessions.

@@ -7,7 +7,6 @@ import { getPromptableStatuses } from '../workflow';
 import type { Task } from '../types';
 import { searchTasks } from '../taskSearch';
 import { SyncStatusIndicator } from './SyncStatusIndicator';
-import { FrameworkSelector } from './FrameworkSelector';
 import { ActiveSessionsPopover } from './ActiveSessionsPopover';
 import { AnimatePresence } from 'framer-motion';
 
@@ -264,7 +263,7 @@ export function Header() {
           <div className="relative">
             <button
               onClick={() => setIsSessionsPopoverOpen(!isSessionsPopoverOpen)}
-              className={`group flex shrink-0 items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-left transition-all duration-200 overflow-hidden ${activeSessionCount > 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300' : 'border-gray-200 bg-white/60 text-gray-500 dark:border-white/10 dark:bg-white/5 dark:text-gray-400'} ${isSessionsPopoverOpen ? 'ring-2 ring-primary/30' : ''}`}
+              className={`group flex shrink-0 items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-left transition-all duration-200 overflow-hidden ${activeSessionCount > 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300 agent-session-active' : 'border-gray-200 bg-white/60 text-gray-500 dark:border-white/10 dark:bg-white/5 dark:text-gray-400'} ${isSessionsPopoverOpen ? 'ring-2 ring-primary/30' : ''}`}
               title="Active agent sessions running on tickets"
             >
               <div className="relative shrink-0">
@@ -321,20 +320,6 @@ export function Header() {
 
           {/* Sync Status */}
           <SyncStatusIndicator />
-
-          {/* Agent Selector */}
-          <div className="flex shrink-0 items-center gap-2 bg-gray-100 dark:bg-black/40 px-3 py-1.5 rounded-xl border border-gray-200 dark:border-white/5">
-            <div className="flex flex-col">
-              <span className="text-[9px] font-bold uppercase tracking-wider text-gray-400 leading-none mb-1">Default Agent</span>
-              <div className="w-36">
-                <FrameworkSelector
-                  value={config?.defaultAgent || 'auto'}
-                  onChange={(v) => config && saveConfig({ ...config, defaultAgent: v as any })}
-                  showAuto
-                />
-              </div>
-            </div>
-          </div>
 
           {/* Engine indicator — dot only when connected, full pill when offline */}
           <div
