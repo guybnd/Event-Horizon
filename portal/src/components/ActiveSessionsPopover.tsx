@@ -1,6 +1,6 @@
-import { memo, useRef, useEffect, useMemo } from 'react';
+import { memo, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Bot, Square, ExternalLink, CircleDot, X, Settings2 } from 'lucide-react';
-import type { Task } from '../types';
+import type { Task, CliFramework } from '../types';
 import { stopTaskCliSession } from '../api';
 import { useApp } from '../AppContext';
 import { FRAMEWORK_ICONS } from '../constants';
@@ -89,7 +89,7 @@ export const ActiveSessionsPopover = memo(function ActiveSessionsPopover({ tasks
     return () => document.removeEventListener('mousedown', handleDown);
   }, [onClose]);
 
-  const handleStop = async (e: React.MouseEvent, taskId: string) => {
+  const handleStop = useCallback(async (e: React.MouseEvent, taskId: string) => {
     e.stopPropagation();
     try {
       await stopTaskCliSession(taskId);
@@ -97,7 +97,13 @@ export const ActiveSessionsPopover = memo(function ActiveSessionsPopover({ tasks
     } catch (err) {
       console.error('Failed to stop session:', err);
     }
-  };
+  }, [triggerRefresh]);
+
+  const handleAgentChange = useCallback((v: string) => {
+    if (config) {
+      saveConfig({ ...config, defaultAgent: v as CliFramework | 'auto' });
+    }
+  }, [config, saveConfig]);
 
   const activeTasks = useMemo(() => 
     tasks.filter(t => t.cliSession && ['pending', 'running', 'waiting-input'].includes(t.cliSession.status)),
@@ -124,8 +130,9 @@ export const ActiveSessionsPopover = memo(function ActiveSessionsPopover({ tasks
            </div>
            <FrameworkSelector
              value={config?.defaultAgent || 'auto'}
-             onChange={(v) => config && saveConfig({ ...config, defaultAgent: v as any })}
+             onChange={handleAgentChange}
              showAuto
+             allowedFrameworks={['auto', 'claude', 'gemini', 'copilot']}
            />
         </div>
       </div>

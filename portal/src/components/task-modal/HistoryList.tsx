@@ -1,6 +1,9 @@
 import { memo, useState } from 'react';
-import { ArrowRight, Bot, MessageSquare, ChevronDown, ChevronRight } from 'lucide-react';
-import type { Config, HistoryEntry, AgentSessionEntry } from '../../types';
+import { 
+  ArrowRight, Bot, MessageSquare, ChevronDown, ChevronRight, 
+  Search, FileText, Terminal, PenTool, Zap, Info 
+} from 'lucide-react';
+import type { Config, HistoryEntry, AgentSessionEntry, AgentSessionProgress } from '../../types';
 import { StatusBadge } from '../StatusBadge';
 import { getStatusColorClass } from '../../statusStyles';
 import { TaskMarkdown } from '../TaskMarkdown';
@@ -28,6 +31,90 @@ function formatSessionDuration(startedAt: string, endedAt?: string): string {
   }
 }
 
+function ProgressItem({ prog }: { prog: AgentSessionProgress }) {
+  const [showDetails, setShowDetails] = useState(false);
+  
+  const icon = (() => {
+    switch (prog.type) {
+      case 'topic': return <Zap className="h-3 w-3 text-amber-500" />;
+      case 'tool':
+        if (prog.message.toLowerCase().includes('reading')) return <Search className="h-3 w-3 text-blue-500" />;
+        if (prog.message.toLowerCase().includes('editing') || prog.message.toLowerCase().includes('writing')) return <PenTool className="h-3 w-3 text-emerald-500" />;
+        if (prog.message.toLowerCase().includes('running')) return <Terminal className="h-3 w-3 text-purple-500" />;
+        return <FileText className="h-3 w-3 text-gray-500" />;
+      case 'text': return <Bot className="h-3 w-3 text-emerald-500" />;
+      default: return <Info className="h-3 w-3 text-gray-400" />;
+    }
+  })();
+
+  if (prog.type === 'topic') {
+    return (
+      <div className="mt-4 mb-2 first:mt-0">
+        <div className="flex items-center gap-2 mb-1">
+          {icon}
+          <span className="text-[11px] font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">
+            {prog.message}
+          </span>
+          <span className="text-[10px] text-gray-400 font-normal ml-auto">
+            {relativeTime(prog.timestamp)}
+          </span>
+        </div>
+        {prog.data?.summary && (
+          <div className="text-xs text-gray-600 dark:text-gray-400 italic bg-amber-50/50 dark:bg-amber-500/5 p-2 rounded border border-amber-100 dark:border-amber-500/10">
+            {prog.data.summary}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (prog.type === 'text') {
+    return (
+      <div className="my-3 first:mt-0">
+        <div className="flex items-center gap-2 mb-1.5 opacity-50">
+          {icon}
+          <span className="text-[10px] font-semibold text-gray-500">Narration</span>
+          <span className="text-[10px] text-gray-400 ml-auto">{relativeTime(prog.timestamp)}</span>
+        </div>
+        <div className="text-sm">
+          <TaskMarkdown body={prog.message} compact imageMode="inline" emptyMessage="" />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-start gap-2 py-0.5 group">
+      <div className="mt-1 opacity-60 group-hover:opacity-100 transition-opacity">
+        {icon}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-gray-600 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-gray-200 transition-colors">
+            {prog.message}
+          </span>
+          {prog.type === 'tool' && prog.data?.parameters && (
+            <button 
+              onClick={() => setShowDetails(!showDetails)}
+              className="text-[9px] font-bold text-gray-400 hover:text-primary uppercase tracking-tighter"
+            >
+              {showDetails ? 'hide details' : 'view params'}
+            </button>
+          )}
+          <span className="text-[9px] text-gray-400 ml-auto opacity-0 group-hover:opacity-100 transition-opacity">
+            {relativeTime(prog.timestamp)}
+          </span>
+        </div>
+        {showDetails && prog.data?.parameters && (
+          <pre className="mt-1 overflow-x-auto rounded bg-gray-100 p-1.5 text-[10px] text-gray-700 dark:bg-black/40 dark:text-gray-400 border border-gray-200 dark:border-white/5">
+            {JSON.stringify(prog.data.parameters, null, 2)}
+          </pre>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function SessionHistoryEntry({ session }: { session: AgentSessionEntry }) {
   const [isExpanded, setIsExpanded] = useState(session.status === 'active');
   const duration = formatSessionDuration(session.startedAt, session.endedAt);
@@ -37,44 +124,47 @@ function SessionHistoryEntry({ session }: { session: AgentSessionEntry }) {
 
   return (
     <div className="flex gap-3">
-      <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-100 dark:bg-emerald-500/15">
-        <Bot className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+      <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-100 dark:bg-emerald-500/15 border border-emerald-200 dark:border-emerald-500/20">
+        <Bot className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
       </div>
-      <div className="flex-1 min-w-0 rounded-lg border border-emerald-200 bg-emerald-50/50 dark:border-emerald-500/20 dark:bg-emerald-500/5 p-3">
+      <div className="flex-1 min-w-0 rounded-xl border border-emerald-200 bg-emerald-50/30 dark:border-emerald-500/10 dark:bg-emerald-500/5 p-4 shadow-sm">
         <button
           onClick={() => setIsExpanded(!isExpanded)}
-          className="w-full"
+          className="w-full text-left"
         >
-          <div className="mb-1 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              {isExpanded ? <ChevronDown className="h-3 w-3 text-gray-500" /> : <ChevronRight className="h-3 w-3 text-gray-500" />}
-              <Bot className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
-              <span className="text-xs font-bold text-gray-800 dark:text-gray-200">
-                Agent Session • {duration} • {statusLabel}
-              </span>
+          <div className="flex items-center justify-between group">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-5 w-5 items-center justify-center rounded bg-white dark:bg-emerald-500/20 shadow-sm border border-emerald-100 dark:border-emerald-500/30">
+                {isExpanded ? <ChevronDown className="h-3 w-3 text-emerald-600 dark:text-emerald-400" /> : <ChevronRight className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />}
+              </div>
+              <div>
+                <div className="text-xs font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+                  Agent Session
+                  {session.status === 'active' && (
+                    <span className="flex h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  )}
+                </div>
+                <div className="text-[10px] text-gray-500 font-medium">
+                  {duration} • {statusLabel}
+                </div>
+              </div>
             </div>
-            <span className="text-[10px] text-gray-500" title={new Date(session.startedAt).toLocaleString()}>
+            <span className="text-[10px] text-gray-500 font-medium opacity-60 group-hover:opacity-100 transition-opacity" title={new Date(session.startedAt).toLocaleString()}>
               {relativeTime(session.startedAt)}
             </span>
           </div>
         </button>
 
         {session.outcome && (
-          <div className="mt-2 text-xs text-gray-700 dark:text-gray-300">
+          <div className="mt-3 text-xs font-medium text-gray-700 dark:text-gray-300 bg-white/50 dark:bg-black/20 p-2.5 rounded-lg border border-emerald-100 dark:border-emerald-500/10">
             {session.outcome}
           </div>
         )}
 
         {isExpanded && session.progress.length > 0 && (
-          <div className="mt-3 space-y-1.5 pl-5 border-l-2 border-emerald-200 dark:border-emerald-500/20">
+          <div className="mt-4 space-y-1 pl-1 border-l-2 border-emerald-200/50 dark:border-emerald-500/20 ml-2.5">
             {session.progress.map((prog, idx) => (
-              <div key={idx} className="text-xs text-gray-600 dark:text-gray-400">
-                <span className="text-[10px] text-gray-400 dark:text-gray-500">
-                  {relativeTime(prog.timestamp)}
-                </span>
-                {' • '}
-                <span>{prog.message}</span>
-              </div>
+              <ProgressItem key={idx} prog={prog} />
             ))}
           </div>
         )}

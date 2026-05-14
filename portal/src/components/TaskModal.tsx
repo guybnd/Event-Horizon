@@ -21,7 +21,8 @@ import { useApp } from '../AppContext';
 import { createTask, deleteTask, fetchTask, sendTaskCliInput, startTaskCliSession, updateTask } from '../api';
 import { LaunchAgentSplitButton } from './LaunchAgentSplitButton';
 import type { ReviewPersona } from './CodeReviewButton';
-import type { Config, HistoryEntry, Task, CliFramework } from '../types';
+import { isAgentSession } from '../types';
+import type { Config, HistoryEntry, Task } from '../types';
 import { FRAMEWORK_ICONS } from '../constants';
 
 import { StatusBadge } from './StatusBadge';
@@ -344,15 +345,17 @@ export function TaskModal() {
     );
     if (idx === -1) return null;
     const entry = [...history].reverse()[idx];
-    return (entry as any).from as string | undefined;
+    if (entry.type !== 'status_change') return null;
+    return entry.from;
   }, [modalTask?.history, requireInputStatus]);
 
   const preReadyStatus = useMemo(() => {
     const history = modalTask?.history || [];
     const entry = [...history].reverse().find(
-      (e) => e.type === 'status_change' && (e as any).to === readyForMergeStatus
+      (e) => e.type === 'status_change' && e.to === readyForMergeStatus
     );
-    const from = entry ? (entry as any).from as string : null;
+    if (entry?.type !== 'status_change') return requireInputDestinations[0] || 'In Progress';
+    const from = entry.from || null;
     if (!from || promptableStatuses.includes(from)) return requireInputDestinations[0] || 'In Progress';
     return from;
   }, [modalTask?.history, readyForMergeStatus, promptableStatuses, requireInputDestinations]);
@@ -372,10 +375,10 @@ export function TaskModal() {
       ? activityHistory.filter((entry) =>
           entry.type === 'comment' ||
           entry.type === 'status_change' ||
-          (entry.type === 'agent_session' && (entry as any).outcome)
+          (isAgentSession(entry) && entry.outcome)
         )
       : activityFilter === 'sessions'
-      ? activityHistory.filter((entry) => entry.type === 'agent_session')
+      ? activityHistory.filter((entry) => isAgentSession(entry))
       : activityHistory;
     const replies = new Map<string, HistoryEntry[]>();
     const topLevel: HistoryEntry[] = [];
@@ -436,12 +439,12 @@ export function TaskModal() {
             comment: pendingComment ? 'Included with comment' : undefined,
           });
         }
-        const newHistory = [...(modalTask.history || []), ...historyUpdates];
+        const newHistory: HistoryEntry[] = [...(modalTask.history || []), ...historyUpdates];
         const updatedTask = await updateTask(modalTask.id, {
           ...payload,
           history: newHistory,
           updatedBy: currentUser,
-        } as any);
+        });
         setModalTask(updatedTask);
       } else {
         const createdTask = await createTask({ ...payload, history: historyUpdates, projectKey: currentProject, author: currentUser });
@@ -743,19 +746,7 @@ export function TaskModal() {
     </div>
   );
 
-  const readyForMergeBanner = useMemo(() => isReadyForMerge ? (
-    <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-900/20">
-      <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
-      <div className="min-w-0 flex-1">
-        <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-amber-800 dark:text-amber-300">Merge review requested</p>
-        <p className="whitespace-pre-wrap text-sm text-amber-700 dark:text-amber-400">
-          This ticket is waiting in {readyForMergeStatus} for your review and finalization. Look over the ticket and diffs, then click <strong>Tell agent to finish</strong> to close the work.
-        </p>
-      </div>
-    </div>
-  ) : null, [isReadyForMerge, readyForMergeStatus]);
-
-  const groomingBanner = status === 'Grooming' ? (
+  const groomingBanner = useMemo(() => status === 'Grooming' ? (
     <div className="flex items-center justify-between gap-4 rounded-xl border border-primary/20 bg-primary/5 p-4 dark:border-primary/30 dark:bg-primary/10">
       <div className="flex gap-3">
         <div className="mt-0.5 rounded-lg bg-primary/10 p-1.5 text-primary dark:bg-primary/20">
@@ -777,11 +768,9 @@ export function TaskModal() {
         {cliSessionBusy ? 'Starting...' : 'Start Grooming'}
       </button>
     </div>
-  ) : null;
+  ) : null, [status, cliSessionBusy, sessionIsActive, handleGrooming]);
 
-  if (!config || (!isModalOpen && !modalTask)) return null;
-
-  const requireInputBanner = isRequireInput && lastComment ? (
+  const requireInputBanner = useMemo(() => (isRequireInput && lastComment) ? (
     <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-900/20">
       <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
       <div className="min-w-0 flex-1">
@@ -792,7 +781,21 @@ export function TaskModal() {
         </p>
       </div>
     </div>
-  ) : null;
+  ) : null, [isRequireInput, lastComment]);
+
+  const readyForMergeBanner = useMemo(() => isReadyForMerge ? (
+    <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-900/20">
+      <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
+      <div className="min-w-0 flex-1">
+        <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-amber-800 dark:text-amber-300">Merge review requested</p>
+        <p className="whitespace-pre-wrap text-sm text-amber-700 dark:text-amber-400">
+          This ticket is waiting in {readyForMergeStatus} for your review and finalization. Look over the ticket and diffs, then click <strong>Tell agent to finish</strong> to close the work.
+        </p>
+      </div>
+    </div>
+  ) : null, [isReadyForMerge, readyForMergeStatus]);
+
+  if (!config || (!isModalOpen && !modalTask)) return null;
 
   const requireInputPrompt = isRequireInput && modalTask?.id ? (
     <div className="rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 to-white p-5 shadow-sm dark:border-amber-500/30 dark:from-amber-900/20 dark:to-[#1a1b23]">
@@ -806,7 +809,10 @@ export function TaskModal() {
           <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">Answer the pending question, then choose where the ticket should go next.</p>
         </div>
       </div>
-      {requireInputBanner}
+      <div className="space-y-4">
+        {requireInputBanner}
+        {groomingBanner}
+      </div>
       <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_180px]">
         <div>
           <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Your response</label>

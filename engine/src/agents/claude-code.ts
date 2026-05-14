@@ -45,6 +45,15 @@ export function appendSessionOutput(session: CliSessionRecord, chunk: Buffer | s
   const text = String(chunk ?? '').replace(/\r\n/g, '\n');
   if (!text.trim()) return;
 
+  // Filter out noise from Windows ConPTY/AttachConsole failures
+  if (source === 'stderr' && (
+    text.includes('AttachConsole failed') || 
+    text.includes('conpty_console_list_agent.js') ||
+    text.includes('Shared memory agent failed')
+  )) {
+    return;
+  }
+
   const prefix = source === 'stderr' ? '[stderr] ' : '';
   session.liveOutputBuffer += `${prefix}${text}`;
   if (isAssistantText) {
@@ -218,6 +227,8 @@ export function attachStdoutProcessing(
                   sessionEntry.progress.push({
                     timestamp: new Date().toISOString(),
                     message: progressMsg,
+                    type: 'tool',
+                    data: { toolName, parameters: toolBlock.input }
                   });
                 });
               });
@@ -349,6 +360,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
       cwd: workspaceRoot,
       env: process.env,
       stdio: 'pipe',
+      windowsHide: true,
     });
   } else {
     proc = spawn(binaryName, claudeArgs, {
@@ -420,6 +432,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
             sessionEntry.progress.push({
               timestamp: now,
               message: session.currentActivity!,
+              type: 'info',
             });
           });
         });

@@ -1,6 +1,8 @@
 export interface AgentSessionProgress {
   timestamp: string;
   message: string;
+  type?: 'text' | 'topic' | 'tool' | 'info';
+  data?: any;
 }
 
 export interface AgentSessionEntry {
@@ -49,6 +51,7 @@ export interface Task {
   order?: number;
   priority?: string;
   effort?: string;
+  effortLevel?: string;
   implementationLink?: string;
   subtasks?: string[];
   version?: string;

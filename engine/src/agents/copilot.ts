@@ -45,6 +45,15 @@ export function appendSessionOutput(session: CliSessionRecord, chunk: Buffer | s
   const text = String(chunk ?? '').replace(/\r\n/g, '\n');
   if (!text.trim()) return;
 
+  // Filter out noise from Windows ConPTY/AttachConsole failures
+  if (source === 'stderr' && (
+    text.includes('AttachConsole failed') || 
+    text.includes('conpty_console_list_agent.js') ||
+    text.includes('Shared memory agent failed')
+  )) {
+    return;
+  }
+
   const prefix = source === 'stderr' ? '[stderr] ' : '';
   session.liveOutputBuffer += `${prefix}${text}`;
   if (isAssistantText) {
@@ -86,7 +95,11 @@ export function flushSessionOutput(session: CliSessionRecord, force = false) {
     // If we have a session history entry, append progress to it
     if (session.sessionHistoryEntry && session.sessionHistoryEntry.sessionId) {
       await updateAgentSession(session.taskId, session.sessionHistoryEntry.sessionId, (sessionEntry) => {
-        sessionEntry.progress.push({ timestamp, message: clippedText });
+        sessionEntry.progress.push({
+          timestamp,
+          message: clippedText,
+          type: 'text',
+        });
       });
     } else {
       // Fallback to old behavior if session entry not found
@@ -256,6 +269,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
       env: process.env,
       stdio: 'pipe',
       shell: true,
+      windowsHide: true,
     });
   } else {
     proc = spawn(binaryName, copilotArgs, {
@@ -327,6 +341,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
             sessionEntry.progress.push({
               timestamp: now,
               message: session.currentActivity!,
+              type: 'info',
             });
           });
         });

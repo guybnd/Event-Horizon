@@ -30,7 +30,10 @@ export function useCliSession({ isModalOpen, taskId, liveOutputRef, onSessionCha
   }, [config?.defaultAgent]);
 
   const cliSessionRef = useRef<CliSessionSummary | null>(null);
-  cliSessionRef.current = cliSession;
+  
+  useEffect(() => {
+    cliSessionRef.current = cliSession;
+  }, [cliSession]);
 
   const sessionIsActive = Boolean(cliSession && ['pending', 'running', 'waiting-input'].includes(cliSession.status));
 
@@ -74,8 +77,8 @@ export function useCliSession({ isModalOpen, taskId, liveOutputRef, onSessionCha
       const session = await startTaskCliSession(taskId, selectedCliFramework, undefined, skipPermissions, effortOverride);
       setCliSession(session);
       onSessionChange?.();
-    } catch (error: any) {
-      setCliSessionError(error?.message || 'Failed to start CLI session.');
+    } catch (error: unknown) {
+      setCliSessionError(error instanceof Error ? error.message : 'Failed to start CLI session.');
     } finally {
       setCliSessionBusy(false);
     }
@@ -89,8 +92,8 @@ export function useCliSession({ isModalOpen, taskId, liveOutputRef, onSessionCha
       const session = await stopTaskCliSession(taskId);
       setCliSession(session);
       onSessionChange?.();
-    } catch (error: any) {
-      setCliSessionError(error?.message || 'Failed to stop CLI session.');
+    } catch (error: unknown) {
+      setCliSessionError(error instanceof Error ? error.message : 'Failed to stop CLI session.');
     } finally {
       setCliSessionBusy(false);
     }

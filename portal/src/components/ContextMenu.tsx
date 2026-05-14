@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Archive, Bot, ChevronDown, ChevronRight, ExternalLink, GitBranch, MessageCircle, Trash2, X, Zap } from 'lucide-react';
-import type { Task, CliFramework } from '../types';
+import type { Task } from '../types';
 import { useApp } from '../AppContext';
 import { deleteTask, startTaskCliSession, updateTask } from '../api';
 import { getArchiveStatus, isPromptableStatus } from '../workflow';
+import { resolveEffectiveAgent } from '../utils';
 
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 type EffortLevel = typeof EFFORT_LEVELS[number];
@@ -28,8 +29,8 @@ export function ContextMenu({ task, position, onClose }: Props) {
   const [activeSubmenu, setActiveSubmenu] = useState<'transition' | 'agent' | 'effort' | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  const defaultAgent = (config?.defaultAgent === 'auto' || !config?.defaultAgent) ? 'claude' : config.defaultAgent;
-  const ActiveIcon = defaultAgent === 'gemini' ? Zap : Bot;
+  const effectiveAgent = resolveEffectiveAgent(undefined, config?.defaultAgent);
+  const ActiveIcon = effectiveAgent === 'gemini' ? Zap : Bot;
 
   // Adjust position to keep menu on screen
   const [pos, setPos] = useState(position);
@@ -83,7 +84,7 @@ export function ContextMenu({ task, position, onClose }: Props) {
 
   const handleLaunchAgent = (effortOverride?: EffortLevel) => {
     onClose();
-    void startTaskCliSession(task.id, defaultAgent as CliFramework, undefined, true, effortOverride).then(() => triggerRefresh());
+    void startTaskCliSession(task.id, effectiveAgent, undefined, true, effortOverride).then(() => triggerRefresh());
   };
 
   const handleTransition = async (status: string) => {
@@ -96,28 +97,28 @@ export function ContextMenu({ task, position, onClose }: Props) {
       }
       return;
     }
-    await updateTask(task.id, { status, updatedBy: currentUser } as any);
+    await updateTask(task.id, { status, updatedBy: currentUser });
     triggerRefresh();
   };
 
   const handleAgentCommand = async (cmd: string) => {
     onClose();
     try {
-      await startTaskCliSession(task.id, defaultAgent as CliFramework, cmd, true);
+      await startTaskCliSession(task.id, effectiveAgent, cmd, true);
       triggerRefresh();
-    } catch (err) {
-      console.error('Failed to run agent command:', err);
+    } catch (err: unknown) {
+      console.error('Failed to run agent command:', err instanceof Error ? err.message : err);
     }
   };
 
   const handleSendForGrooming = async () => {
     onClose();
     try {
-      await updateTask(task.id, { status: 'Grooming', updatedBy: currentUser } as any);
-      await startTaskCliSession(task.id, defaultAgent as CliFramework, `groom ${task.id}`, true);
+      await updateTask(task.id, { status: 'Grooming', updatedBy: currentUser });
+      await startTaskCliSession(task.id, effectiveAgent, `groom ${task.id}`, true);
       triggerRefresh();
-    } catch (err) {
-      console.error('Failed to send for grooming:', err);
+    } catch (err: unknown) {
+      console.error('Failed to send for grooming:', err instanceof Error ? err.message : err);
     }
   };
 

@@ -9,6 +9,7 @@ import { TokenBadge } from './TokenBadge';
 import { useApp } from '../AppContext';
 import { sendTaskCliInput, startTaskCliSession, updateTask } from '../api';
 import { getReadyForMergeStatus, isPromptableStatus, relativeTime } from '../workflow';
+import { resolveEffectiveAgent } from '../utils';
 import { motion, AnimatePresence, useAnimationControls } from 'framer-motion';
 import { TaskMarkdown } from './TaskMarkdown';
 import { ContextMenu } from './ContextMenu';
@@ -208,8 +209,8 @@ export function TaskCard({
       if (hasActiveCliSession) {
         await sendTaskCliInput(task.id, command, currentUser);
       } else {
-        const framework = (config?.defaultAgent === 'auto' || !config?.defaultAgent) ? 'claude' : config.defaultAgent;
-        await startTaskCliSession(task.id, framework as any, command);
+        const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
+        await startTaskCliSession(task.id, framework, command);
       }
       triggerRefresh();
     } finally {

@@ -29,6 +29,8 @@ export function buildAgentMessageEntry(comment: string, user: string, date: stri
 export interface AgentSessionProgress {
   timestamp: string;
   message: string;
+  type?: 'text' | 'topic' | 'tool' | 'info';
+  data?: any;
 }
 
 export interface AgentSessionEntry {

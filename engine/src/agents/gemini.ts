@@ -45,8 +45,17 @@ const TOOL_ACTIVITY_MAP: Record<string, string> = {
 };
 
 export function appendSessionOutput(session: CliSessionRecord, chunk: Buffer | string, source: 'stdout' | 'stderr', isAssistantText = false) {
-  const text = String(chunk ?? '').replace(/\r\n/g, '\n');
+  let text = String(chunk ?? '').replace(/\r\n/g, '\n');
   if (!text.trim()) return;
+
+  // Filter out noise from Windows ConPTY/AttachConsole failures
+  if (source === 'stderr' && (
+    text.includes('AttachConsole failed') || 
+    text.includes('conpty_console_list_agent.js') ||
+    text.includes('Shared memory agent failed')
+  )) {
+    return;
+  }
 
   const prefix = source === 'stderr' ? '[stderr] ' : '';
   session.liveOutputBuffer += `${prefix}${text}`;
@@ -89,7 +98,11 @@ export function flushSessionOutput(session: CliSessionRecord, force = false) {
     // If we have a session history entry, append progress to it
     if (session.sessionHistoryEntry && session.sessionHistoryEntry.sessionId) {
       await updateAgentSession(session.taskId, session.sessionHistoryEntry.sessionId, (sessionEntry) => {
-        sessionEntry.progress.push({ timestamp, message: clippedText });
+        sessionEntry.progress.push({
+          timestamp,
+          message: clippedText,
+          type: 'text',
+        });
       });
     } else {
       // Fallback to old behavior if session entry not found
@@ -217,7 +230,12 @@ export function attachStdoutProcessing(
               }
               enqueueSessionWrite(session, async () => {
                 await updateAgentSession(taskId, session.sessionHistoryEntry!.sessionId, (sessionEntry) => {
-                  sessionEntry.progress.push({ timestamp: new Date().toISOString(), message: progressMsg });
+                  sessionEntry.progress.push({ 
+                    timestamp: new Date().toISOString(), 
+                    message: progressMsg,
+                    type: 'tool',
+                    data: { toolName, parameters: toolBlock.input }
+                  });
                 });
               });
             }
@@ -257,11 +275,18 @@ export function attachStdoutProcessing(
             session.lastProgressLog = undefined;
           }
 
-          if (activityChanged && session.sessionHistoryEntry?.sessionId) {
+          if (session.sessionHistoryEntry?.sessionId) {
             const toolName = evt.tool_name;
-            let progressMsg = session.currentActivity;
             const params = evt.parameters || {};
-            if (toolName === 'read_file' && params.file_path) {
+            let progressMsg = newActivity;
+            let type: 'tool' | 'topic' = 'tool';
+            let data: any = { toolName, parameters: params };
+
+            if (toolName === 'update_topic') {
+              type = 'topic';
+              progressMsg = params.title || 'Topic Update';
+              data = { title: params.title, summary: params.summary, strategicIntent: params.strategic_intent };
+            } else if (toolName === 'read_file' && params.file_path) {
               progressMsg = `Reading ${path.basename(params.file_path)}`;
             } else if (toolName === 'replace' && params.file_path) {
               progressMsg = `Editing ${path.basename(params.file_path)}`;
@@ -271,13 +296,37 @@ export function attachStdoutProcessing(
               const cmd = String(params.command).slice(0, 50);
               progressMsg = `Running: ${cmd}${cmd.length >= 50 ? '...' : ''}`;
             }
+
+            // Always log update_topic, but for other tools only log if activity changed
+            if (toolName === 'update_topic' || activityChanged) {
+              enqueueSessionWrite(session, async () => {
+                await updateAgentSession(taskId, session.sessionHistoryEntry!.sessionId, (sessionEntry) => {
+                  sessionEntry.progress.push({ 
+                    timestamp: new Date().toISOString(), 
+                    message: progressMsg,
+                    type,
+                    data
+                  });
+                });
+              });
+            }
+          }
+          broadcastEvent('activity', { taskId, activity: session.currentActivity });
+        } else if (evt.type === 'tool_result') {
+          if (evt.is_error) {
+            console.error(`[${id}] Tool ${evt.tool_name || 'unknown'} failed:`, evt.error);
+            
             enqueueSessionWrite(session, async () => {
               await updateAgentSession(taskId, session.sessionHistoryEntry!.sessionId, (sessionEntry) => {
-                sessionEntry.progress.push({ timestamp: new Date().toISOString(), message: progressMsg });
+                sessionEntry.progress.push({ 
+                  timestamp: new Date().toISOString(), 
+                  message: `Tool failed: ${evt.tool_name || 'unknown'}`,
+                  type: 'info', // Use info since error type is not in AgentSessionProgress
+                  data: { toolName: evt.tool_name, error: evt.error }
+                });
               });
             });
           }
-          broadcastEvent('activity', { taskId, activity: session.currentActivity });
         } else {
           if (evt.type !== 'tool_use' && evt.type !== 'tool_result' && evt.type !== 'message' && evt.type !== 'init') {
             commitPendingAssistantText();
@@ -381,6 +430,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     ...(selectedModel ? ['--model', selectedModel] : []),
     '-p', initialPrompt,
     '--output-format', 'stream-json',
+    '--screen-reader',
     ...(session.skipPermissions ? ['--yolo'] : []),
     // --skip-trust is used to bypass the "Are you sure you want to run this?" confirmation 
     // for commands that are already trusted/validated by the engine's internal logic
@@ -424,6 +474,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
         cwd: workspaceRoot,
         env: process.env,
         stdio: 'pipe',
+        windowsHide: true,
       });
     } else if (entryPoint) {
       console.log(`[${id}] Windows spawn (node): ${entryPoint}`);
@@ -431,6 +482,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
         cwd: workspaceRoot,
         env: process.env,
         stdio: 'pipe',
+        windowsHide: true,
       });
     } else {
       console.log(`[${id}] Windows spawn (fallback): ${binaryName}`);
@@ -439,6 +491,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
         env: process.env,
         stdio: 'pipe',
         shell: true, // Use shell fallback for .cmd/.ps1
+        windowsHide: true,
       });
     }
   } else {
@@ -511,6 +564,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
             sessionEntry.progress.push({
               timestamp: now,
               message: session.currentActivity!,
+              type: 'info',
             });
           });
         });
@@ -634,8 +688,8 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
 
   const safeMessage = message.replace(/\0/g, '');
   const resumeArgs = session.claudeSessionId
-    ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--yolo', '--skip-trust']
-    : ['-p', safeMessage, '--output-format', 'stream-json', '--yolo', '--skip-trust'];
+    ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--screen-reader', '--yolo', '--skip-trust']
+    : ['-p', safeMessage, '--output-format', 'stream-json', '--screen-reader', '--yolo', '--skip-trust'];
 
   let replyProc: ReturnType<typeof spawn>;
   if (process.platform === 'win32') {
@@ -662,6 +716,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
         cwd: workspaceRoot,
         env: process.env,
         stdio: 'pipe',
+        windowsHide: true,
       });
     } else if (entryPoint) {
       console.log(`[${id}] Windows reply spawn (node): ${entryPoint}`);
@@ -669,6 +724,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
         cwd: workspaceRoot,
         env: process.env,
         stdio: 'pipe',
+        windowsHide: true,
       });
     } else {
       console.log(`[${id}] Windows reply spawn (fallback): ${binaryName}`);
@@ -677,6 +733,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
         env: process.env,
         stdio: 'pipe',
         shell: true,
+        windowsHide: true,
       });
     }
   } else {
