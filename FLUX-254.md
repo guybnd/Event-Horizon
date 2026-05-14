@@ -1,6 +1,6 @@
 ---
 title: Test Update
-status: Done
+status: Released
 priority: High
 createdBy: Guy
 updatedBy: Agent
@@ -202,6 +202,11 @@ history:
       Implementation verified and committed. AttachConsole noise filtered,
       console management improved on Windows, and tool failure logging enhanced.
     id: c-2026-05-14t08-04-33-478z
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-14T10:59:32.385Z'
 effort: None
 implementationLink: ''
 subtasks: []
@@ -212,6 +217,9 @@ tokenMetadata:
   costIsEstimated: true
   cacheReadTokens: 2244846
   cacheCreationTokens: 0
+version: v0.6.0
+releasedAt: '2026-05-14T10:59:32.385Z'
+releaseDocPath: release-notes/v0.6.0
 ---
 
 ## Problem / Motivation

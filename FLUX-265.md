@@ -1,7 +1,7 @@
 ---
 id: FLUX-265
 title: Fix GitHub Actions release workflow — CJS/ESM and macOS ARM
-status: Done
+status: Released
 priority: High
 effort: S
 assignee: unassigned
@@ -19,9 +19,10 @@ history:
     user: Agent
     date: '2026-05-14T10:47:00.000Z'
     comment: >-
-      Plan: (1) Convert dist-source.js, package-release.js, patch-pe.js from CJS require() to ESM imports
-      (consistent with build.js). (2) Update pkg target from node18-macos-x64 to node22-macos-arm64
-      for ARM runners. (3) Update all script references.
+      Plan: (1) Convert dist-source.js, package-release.js, patch-pe.js from CJS
+      require() to ESM imports (consistent with build.js). (2) Update pkg target
+      from node18-macos-x64 to node22-macos-arm64 for ARM runners. (3) Update
+      all script references.
     id: c-2026-05-14t10-47-00-000z
   - type: status_change
     from: Grooming
@@ -32,16 +33,25 @@ history:
     user: Agent
     date: '2026-05-14T10:52:00.000Z'
     comment: >-
-      Completed. Converted dist-source.js, package-release.js, patch-pe.js from CJS require() to ESM imports.
-      Updated pkg targets: node18-macos-x64 → node22-macos-arm64, node18-win-x64 → node22-win-x64.
-      All scripts parse, dist-source runs past imports successfully, vitest passes. Commit 23f4f3b.
+      Completed. Converted dist-source.js, package-release.js, patch-pe.js from
+      CJS require() to ESM imports. Updated pkg targets: node18-macos-x64 →
+      node22-macos-arm64, node18-win-x64 → node22-win-x64. All scripts parse,
+      dist-source runs past imports successfully, vitest passes. Commit 23f4f3b.
     id: c-2026-05-14t10-52-00-000z
   - type: status_change
     from: In Progress
     to: Done
     user: Agent
     date: '2026-05-14T10:52:00.000Z'
-implementationLink: '23f4f3b'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-14T10:59:32.395Z'
+implementationLink: 23f4f3b
+version: v0.6.0
+releasedAt: '2026-05-14T10:59:32.395Z'
+releaseDocPath: release-notes/v0.6.0
 ---
 
 ## Problem / Motivation

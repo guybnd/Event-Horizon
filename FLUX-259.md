@@ -1241,10 +1241,20 @@ history:
     user: Gemini CLI
     date: '2026-05-14T09:25:00.000Z'
     comment: Completed with commit d301943cb8e12f0697a4d652717969f9f2f23133
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Guy
+    date: '2026-05-14T10:59:08.554Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-14T10:59:32.387Z'
 title: make the agent button on top bar appear clickable
-status: In Progress
+status: Released
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 tokenMetadata:
   inputTokens: 1803977
   outputTokens: 9926
@@ -1252,7 +1262,10 @@ tokenMetadata:
   costIsEstimated: true
   cacheReadTokens: 1332284
   cacheCreationTokens: 0
-order: 0
+order: 5
+version: v0.6.0
+releasedAt: '2026-05-14T10:59:32.387Z'
+releaseDocPath: release-notes/v0.6.0
 ---
 currently its not, so its misleading. unlike the other buttons which show click icon on hover  
   

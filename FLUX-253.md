@@ -1,6 +1,6 @@
 ---
 title: Fix settings dirty check missing fields
-status: Done
+status: Released
 assignee: Copilot
 priority: High
 created: 2026-05-14T02:41:52.512Z
@@ -28,8 +28,16 @@ history:
     to: Done
     user: Guy
     date: '2026-05-14T02:57:39.066Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-14T10:59:32.384Z'
 order: 1
 updatedBy: Guy
+version: v0.6.0
+releasedAt: '2026-05-14T10:59:32.384Z'
+releaseDocPath: release-notes/v0.6.0
 ---
 
 ## Problem / Motivation

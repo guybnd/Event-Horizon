@@ -1,6 +1,6 @@
 ---
 title: Fix drag-and-drop race condition in board
-status: Done
+status: Released
 priority: Medium
 createdBy: Guy
 updatedBy: Guy
@@ -198,6 +198,11 @@ history:
     to: Done
     user: Guy
     date: '2026-05-14T09:02:44.067Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-14T10:59:32.386Z'
 order: 4
 effort: None
 implementationLink: ''
@@ -208,6 +213,9 @@ tokenMetadata:
   costIsEstimated: true
   cacheReadTokens: 23383
   cacheCreationTokens: 0
+version: v0.6.0
+releasedAt: '2026-05-14T10:59:32.386Z'
+releaseDocPath: release-notes/v0.6.0
 ---
 
 ## Problem / Motivation

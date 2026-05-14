@@ -54,12 +54,20 @@ history:
     to: Done
     user: Agent
     date: '2026-05-14T09:37:00.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-14T10:59:32.377Z'
 title: Minimize input token costs across skill and instruction files
-status: Done
+status: Released
 implementationLink: '14e8424'
 createdBy: Guy
 updatedBy: Agent
 order: 4
+version: v0.6.0
+releasedAt: '2026-05-14T10:59:32.377Z'
+releaseDocPath: release-notes/v0.6.0
 ---
 
 ## Problem / Motivation

@@ -1,6 +1,6 @@
 ---
 title: Gemini CLI Agent Integration
-status: Done
+status: Released
 assignee: Gemini
 priority: High
 created: 2026-05-14T11:45:00.000Z
@@ -27,7 +27,15 @@ history:
     user: Agent
     date: '2026-05-14T02:07:06.622Z'
     comment: Gemini CLI session stopped.
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-14T10:59:32.383Z'
 updatedBy: Agent
+version: v0.6.0
+releasedAt: '2026-05-14T10:59:32.383Z'
+releaseDocPath: release-notes/v0.6.0
 ---
 
 Implement and polish the Gemini CLI integration as a supported agent framework in EventHorizon.

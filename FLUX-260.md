@@ -222,8 +222,13 @@ history:
     to: Done
     user: Guy
     date: '2026-05-14T09:02:42.596Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-14T10:59:32.391Z'
 title: fix not being able to drag change status
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
 order: 3
@@ -234,6 +239,9 @@ tokenMetadata:
   costIsEstimated: true
   cacheReadTokens: 121178
   cacheCreationTokens: 0
+version: v0.6.0
+releasedAt: '2026-05-14T10:59:32.391Z'
+releaseDocPath: release-notes/v0.6.0
 ---
 Failed to update task: Transitioning to Ready requires a completion comment in the same request.
 

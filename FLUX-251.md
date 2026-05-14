@@ -384,8 +384,13 @@ history:
     to: Done
     user: Agent
     date: '2026-05-14T08:05:00.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-14T10:59:32.381Z'
 title: multi agent UI UX improvement
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -396,6 +401,9 @@ tokenMetadata:
   cacheReadTokens: 7330623
   cacheCreationTokens: 0
 order: 0
+version: v0.6.0
+releasedAt: '2026-05-14T10:59:32.381Z'
+releaseDocPath: release-notes/v0.6.0
 ---
 
 ## Problem / Motivation
