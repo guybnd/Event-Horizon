@@ -119,6 +119,7 @@ function instructionsDestinationFor(targetDir: string, framework: ResolvedFramew
     case 'copilot':
       return path.join(targetDir, '.github', 'copilot-instructions.md');
     case 'antigravity':
+    case 'gemini':
       return path.join(targetDir, '.gemini', 'instructions.md');
     case 'cursor':
       return path.join(targetDir, '.cursorrules');

@@ -9,6 +9,10 @@ interface AgentSectionProps {
   setGroomingModel: (v: string) => void;
   implementationModel: string;
   setImplementationModel: (v: string) => void;
+  geminiGroomingModel: string;
+  setGeminiGroomingModel: (v: string) => void;
+  geminiImplementationModel: string;
+  setGeminiImplementationModel: (v: string) => void;
   workspacePath: string | null;
   setView: (view: AppView) => void;
 }
@@ -20,6 +24,10 @@ export function AgentSection({
   setGroomingModel,
   implementationModel,
   setImplementationModel,
+  geminiGroomingModel,
+  setGeminiGroomingModel,
+  geminiImplementationModel,
+  setGeminiImplementationModel,
   workspacePath,
   setView,
 }: AgentSectionProps) {
@@ -240,6 +248,39 @@ export function AgentSection({
                 value={implementationModel}
                 onChange={(e) => setImplementationModel(e.target.value)}
                 placeholder="Leave blank to use Claude Code default"
+                className="w-full rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-mono outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630] dark:text-gray-100"
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {(targetFramework === 'gemini' || targetFramework === 'auto') && (
+        <div className="mt-6 rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
+          <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Gemini CLI Models</h3>
+          <p className="text-xs text-gray-500 mb-4">Model IDs passed via <code className="text-xs font-mono">--model</code> when launching sessions. Grooming-phase tickets use the grooming model; all others use the implementation model.</p>
+          <div className="space-y-3">
+            <div>
+              <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                Grooming model
+              </label>
+              <input
+                type="text"
+                value={geminiGroomingModel}
+                onChange={(e) => setGeminiGroomingModel(e.target.value)}
+                placeholder="Leave blank to use Gemini CLI default"
+                className="w-full rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-mono outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630] dark:text-gray-100"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+                Implementation model
+              </label>
+              <input
+                type="text"
+                value={geminiImplementationModel}
+                onChange={(e) => setGeminiImplementationModel(e.target.value)}
+                placeholder="Leave blank to use Gemini CLI default"
                 className="w-full rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-mono outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630] dark:text-gray-100"
               />
             </div>

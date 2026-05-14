@@ -23,10 +23,10 @@ router.post('/:id/cli-session/start', async (req, res) => {
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
   const frameworkRaw = String(req.body?.framework || '').trim().toLowerCase();
-  if (frameworkRaw !== 'claude' && frameworkRaw !== 'copilot') {
-    return res.status(400).json({ error: 'framework must be claude or copilot' });
+  if (frameworkRaw !== 'claude' && frameworkRaw !== 'copilot' && frameworkRaw !== 'gemini') {
+    return res.status(400).json({ error: 'framework must be claude, copilot or gemini' });
   }
-  const framework = frameworkRaw as 'claude' | 'copilot';
+  const framework = frameworkRaw as 'claude' | 'copilot' | 'gemini';
   const appendPrompt = typeof req.body?.appendPrompt === 'string' ? req.body.appendPrompt.trim() : '';
   const skipPermissions = req.body?.skipPermissions !== false;
   const effortOverrideRaw = typeof req.body?.effortOverride === 'string' ? req.body.effortOverride.trim() : '';

@@ -47,6 +47,7 @@ export function CliSessionPanel({
           disabled={sessionIsActive || cliSessionBusy}
         >
           <option value="claude">Claude Code</option>
+          <option value="gemini">Gemini CLI</option>
           <option value="copilot">Copilot CLI</option>
         </select>
         <LaunchAgentSplitButton

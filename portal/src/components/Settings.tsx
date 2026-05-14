@@ -39,6 +39,8 @@ export function Settings() {
   const [effortLevel, setEffortLevel] = useState<string>('high');
   const [groomingModel, setGroomingModel] = useState<string>('');
   const [implementationModel, setImplementationModel] = useState<string>('');
+  const [geminiGroomingModel, setGeminiGroomingModel] = useState<string>('');
+  const [geminiImplementationModel, setGeminiImplementationModel] = useState<string>('');
   const [generateDistinctFiles, setGenerateDistinctFiles] = useState(true);
   const [releaseNotesPath, setReleaseNotesPath] = useState('release-notes');
   const [syncDebounceMs, setSyncDebounceMs] = useState(30000);
@@ -74,6 +76,8 @@ export function Settings() {
       setEffortLevel((config as any).effortLevel || 'high');
       setGroomingModel((config as any).integrations?.claudeCode?.groomingModel || '');
       setImplementationModel((config as any).integrations?.claudeCode?.implementationModel || '');
+      setGeminiGroomingModel((config as any).integrations?.geminiCli?.groomingModel || '');
+      setGeminiImplementationModel((config as any).integrations?.geminiCli?.implementationModel || '');
       if (config.releaseSettings) {
         setGenerateDistinctFiles(config.releaseSettings.generateDistinctFiles);
         setReleaseNotesPath(config.releaseSettings.releaseNotesPath || 'release-notes');
@@ -208,6 +212,10 @@ export function Settings() {
           claudeCode: {
             groomingModel: groomingModel.trim(),
             implementationModel: implementationModel.trim(),
+          },
+          geminiCli: {
+            groomingModel: geminiGroomingModel.trim(),
+            implementationModel: geminiImplementationModel.trim(),
           }
         },
         syncSettings: {
@@ -457,6 +465,10 @@ export function Settings() {
                   setGroomingModel={setGroomingModel}
                   implementationModel={implementationModel}
                   setImplementationModel={setImplementationModel}
+                  geminiGroomingModel={geminiGroomingModel}
+                  setGeminiGroomingModel={setGeminiGroomingModel}
+                  geminiImplementationModel={geminiImplementationModel}
+                  setGeminiImplementationModel={setGeminiImplementationModel}
                   workspacePath={workspacePath}
                   setView={setView}
                 />

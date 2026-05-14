@@ -1,7 +1,7 @@
 import type { ChildProcessWithoutNullStreams } from 'child_process';
 
 export type CliSessionStatus = 'pending' | 'running' | 'waiting-input' | 'completed' | 'failed' | 'cancelled';
-export type CliFramework = 'claude' | 'copilot';
+export type CliFramework = 'claude' | 'copilot' | 'gemini';
 
 export interface AgentProcess {
   proc: ChildProcessWithoutNullStreams;

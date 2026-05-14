@@ -59,7 +59,7 @@ export interface Task {
   sessionHistoryEntry?: AgentSessionEntry;
 }
 
-export type CliFramework = 'claude' | 'copilot';
+export type CliFramework = 'claude' | 'copilot' | 'gemini';
 export type CliSessionStatus = 'pending' | 'running' | 'waiting-input' | 'completed' | 'failed' | 'cancelled';
 
 export interface CliSessionSummary {

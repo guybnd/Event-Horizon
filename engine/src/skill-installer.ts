@@ -1,7 +1,11 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { getWorkflowInstallStatus, installWorkspaceWorkflow } from './workflow-installer.js';
+
 type Framework = 'auto' | 'copilot' | 'antigravity' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'generic';
 
-const path = require('node:path') as typeof import('node:path');
-const { getWorkflowInstallStatus, installWorkspaceWorkflow } = require('./workflow-installer') as typeof import('./workflow-installer');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 function parseArgs(argv: string[]) {
   const args = new Map<string, string>();

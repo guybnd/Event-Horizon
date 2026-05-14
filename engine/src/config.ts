@@ -43,6 +43,10 @@ export let configCache: any = {
     claudeCode: {
       groomingModel: '',
       implementationModel: '',
+    },
+    geminiCli: {
+      groomingModel: '',
+      implementationModel: '',
     }
   },
   syncSettings: {
