@@ -460,8 +460,23 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     // Prefer JS entry point with system node over gemini.exe — the exe is a pkg
     // binary that crashes when NODE_OPTIONS contains V8 flags (e.g. --max-old-space-size)
     // leaked from VS Code terminals or other tools.
+    //
+    // CRITICAL: spawn('node', ...) from within a pkg binary resolves to the pkg binary
+    // itself (not system node) due to Windows CreateProcess search order.
+    // We must resolve the full path to system node via 'where node'.
     let exePath: string | null = null;
     let entryPoint: string | null = null;
+    let systemNodePath: string | null = null;
+    try {
+      const prefixEnv = cleanChildEnv();
+      const whereResult = execSync('where node', { encoding: 'utf8', env: prefixEnv, timeout: 10_000 }).trim().split(/\r?\n/);
+      // Filter out our own exe — pkg binaries ARE node binaries and 'where' may list them
+      const selfExe = process.execPath.toLowerCase();
+      systemNodePath = whereResult.find(p => p.toLowerCase() !== selfExe && fs.existsSync(p)) || null;
+      if (!systemNodePath) systemNodePath = whereResult[0] || null;
+    } catch {
+      // 'where node' failed — will fall back to 'node' bare name (may break in pkg context)
+    }
     try {
       const prefixEnv = cleanChildEnv();
       const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', env: prefixEnv, timeout: 10_000 }).trim();
@@ -502,9 +517,10 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     }
 
     const env = cleanChildEnv();
+    const nodeCmd = systemNodePath || 'node';
     if (entryPoint) {
-      console.log(`[${id}] Windows spawn (node): ${entryPoint}`);
-      proc = spawn('node', [entryPoint, ...geminiArgs], {
+      console.log(`[${id}] Windows spawn (node=${nodeCmd}): ${entryPoint}`);
+      proc = spawn(nodeCmd, [entryPoint, ...geminiArgs], {
         cwd: workspaceRoot,
         env,
         stdio: 'pipe',
@@ -742,6 +758,14 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   if (process.platform === 'win32') {
     let exePath: string | null = null;
     let entryPoint: string | null = null;
+    let systemNodePath: string | null = null;
+    try {
+      const prefixEnv = cleanChildEnv();
+      const whereResult = execSync('where node', { encoding: 'utf8', env: prefixEnv, timeout: 10_000 }).trim().split(/\r?\n/);
+      const selfExe = process.execPath.toLowerCase();
+      systemNodePath = whereResult.find(p => p.toLowerCase() !== selfExe && fs.existsSync(p)) || null;
+      if (!systemNodePath) systemNodePath = whereResult[0] || null;
+    } catch {}
     try {
       const prefixEnv = cleanChildEnv();
       const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', env: prefixEnv, timeout: 10_000 }).trim();
@@ -778,9 +802,10 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     }
 
     const env = cleanChildEnv();
+    const nodeCmd = systemNodePath || 'node';
     if (entryPoint) {
-      console.log(`[${id}] Windows reply spawn (node): ${entryPoint}`);
-      replyProc = spawn('node', [entryPoint, ...resumeArgs], {
+      console.log(`[${id}] Windows reply spawn (node=${nodeCmd}): ${entryPoint}`);
+      replyProc = spawn(nodeCmd, [entryPoint, ...resumeArgs], {
         cwd: workspaceRoot,
         env,
         stdio: 'pipe',
