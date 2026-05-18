@@ -23,9 +23,8 @@ function cleanChildEnv(): NodeJS.ProcessEnv {
   for (const key of Object.keys(env)) {
     if (key.toUpperCase() === 'NODE_OPTIONS') delete env[key];
   }
-  // Explicitly set empty NODE_OPTIONS as a safety net — pkg binaries crash
-  // when V8 flags like --max-old-space-size leak through NODE_OPTIONS.
-  env.NODE_OPTIONS = '';
+  // Do NOT set NODE_OPTIONS to empty string — pkg binaries may still parse it.
+  // Fully removing it from the environment is the safest approach.
   return env;
 }
 
@@ -475,7 +474,31 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
         exePath = candidateExe;
       }
     } catch (err) {
-      console.log(`[${id}] Failed to resolve gemini path:`, err);
+      console.log(`[${id}] Failed to resolve gemini via npm prefix:`, err);
+    }
+
+    // Second attempt: use 'where' to find the gemini cmd/exe and resolve the JS entry
+    if (!entryPoint && !exePath) {
+      try {
+        const prefixEnv = cleanChildEnv();
+        const wherePath = execSync(`where ${binaryName}`, { encoding: 'utf8', env: prefixEnv, timeout: 10_000 }).trim().split(/\r?\n/)[0];
+        if (wherePath) {
+          // The .cmd is usually in the same dir as the npm prefix bin — try to find the JS bundle relative to it
+          const binDir = path.dirname(wherePath);
+          const candidateJs = path.join(binDir, 'node_modules', '@google', 'gemini-cli', 'bundle', 'gemini.js');
+          if (fs.existsSync(candidateJs)) {
+            entryPoint = candidateJs;
+          } else {
+            // Try parent directory pattern (npm global: prefix/bin/gemini.cmd, prefix/node_modules/...)
+            const parentCandidate = path.join(binDir, '..', 'node_modules', '@google', 'gemini-cli', 'bundle', 'gemini.js');
+            if (fs.existsSync(parentCandidate)) {
+              entryPoint = parentCandidate;
+            }
+          }
+        }
+      } catch {
+        // where command failed — will fall through to shell fallback
+      }
     }
 
     const env = cleanChildEnv();
@@ -496,12 +519,13 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
         windowsHide: true,
       });
     } else {
+      // Last resort: use shell. Remove NODE_OPTIONS via explicit prefix to prevent
+      // .cmd wrappers from re-injecting it.
       console.log(`[${id}] Windows spawn (fallback): ${binaryName}`);
-      proc = spawn(binaryName, geminiArgs, {
+      proc = spawn('cmd.exe', ['/c', `set "NODE_OPTIONS=" && ${binaryName}`, ...geminiArgs], {
         cwd: workspaceRoot,
         env,
         stdio: 'pipe',
-        shell: true, // Use shell fallback for .cmd/.ps1
         windowsHide: true,
       });
     }
@@ -733,6 +757,26 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       console.log(`[${id}] Failed to resolve gemini path for reply:`, err);
     }
 
+    // Second attempt: use 'where' to find the JS entry
+    if (!entryPoint && !exePath) {
+      try {
+        const prefixEnv = cleanChildEnv();
+        const wherePath = execSync(`where ${binaryName}`, { encoding: 'utf8', env: prefixEnv, timeout: 10_000 }).trim().split(/\r?\n/)[0];
+        if (wherePath) {
+          const binDir = path.dirname(wherePath);
+          const candidateJs = path.join(binDir, 'node_modules', '@google', 'gemini-cli', 'bundle', 'gemini.js');
+          if (fs.existsSync(candidateJs)) {
+            entryPoint = candidateJs;
+          } else {
+            const parentCandidate = path.join(binDir, '..', 'node_modules', '@google', 'gemini-cli', 'bundle', 'gemini.js');
+            if (fs.existsSync(parentCandidate)) {
+              entryPoint = parentCandidate;
+            }
+          }
+        }
+      } catch {}
+    }
+
     const env = cleanChildEnv();
     if (entryPoint) {
       console.log(`[${id}] Windows reply spawn (node): ${entryPoint}`);
@@ -752,11 +796,10 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       });
     } else {
       console.log(`[${id}] Windows reply spawn (fallback): ${binaryName}`);
-      replyProc = spawn(binaryName, resumeArgs, {
+      replyProc = spawn('cmd.exe', ['/c', `set "NODE_OPTIONS=" && ${binaryName}`, ...resumeArgs], {
         cwd: workspaceRoot,
         env,
         stdio: 'pipe',
-        shell: true,
         windowsHide: true,
       });
     }
