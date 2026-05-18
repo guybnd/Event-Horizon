@@ -140,14 +140,22 @@ export function buildInitialPrompt(task: any, appendPrompt: string): string {
   const readyStatus = (configCache as any)?.readyForMergeStatus || 'Ready';
   const taskStatus = (task as any).status || 'Unknown';
   const actionInstruction = (() => {
+    if (taskStatus === 'Grooming' || taskStatus === 'Require Input') {
+      return `The ticket is in ${taskStatus}. Your job is to GROOM this ticket by editing the ticket file (.flux/${task.id}.md) directly:\n` +
+        `1. Fill inferable metadata in the YAML frontmatter (priority, effort, tags).\n` +
+        `2. Rewrite the markdown body with a clear Problem/Motivation section and an Implementation Plan.\n` +
+        `3. If questions are unresolved, set status to "Require Input" and add a history comment with your question.\n` +
+        `4. When grooming is complete, set status to "Todo" and add a status_change history entry.\n` +
+        `CRITICAL: You MUST edit the .flux/${task.id}.md file to persist all changes. Do not just report findings in chat.`;
+    }
     if (taskStatus === 'In Progress') {
-      return `The ticket is currently In Progress. If the implementation is already complete, move it to "${readyStatus}" status and post a completion summary comment. If work remains, complete it then move to "${readyStatus}". Do not exit without updating the ticket status.`;
+      return `The ticket is currently In Progress. If the implementation is already complete, move it to "${readyStatus}" status and post a completion summary comment. If work remains, complete it then move to "${readyStatus}". Do not exit without updating the ticket status.\nCRITICAL: You MUST edit .flux/${task.id}.md to persist status changes and add history entries.`;
     }
     if (taskStatus === 'Todo') {
-      return `The ticket is in Todo. Begin implementation: move it to In Progress, complete the work, then move it to "${readyStatus}" when done.`;
+      return `The ticket is in Todo. Begin implementation: move it to In Progress, complete the work, then move it to "${readyStatus}" when done.\nCRITICAL: You MUST edit .flux/${task.id}.md to persist status changes and add history entries.`;
     }
     if (taskStatus === readyStatus) {
-      return `The ticket is in ${readyStatus} awaiting user review. Do not move it further â€” wait for the user to say "finish ${task.id}".`;
+      return `The ticket is in ${readyStatus} awaiting user review. Do not move it further — wait for the user to say "finish ${task.id}".`;
     }
     return 'Respond with implementation progress updates and blockers. Keep updates concise.';
   })();
