@@ -11,7 +11,7 @@ import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.j
 function checkBinaryInstalled(binaryName: string): void {
   const checker = process.platform === 'win32' ? 'where' : 'which';
   try {
-    execFileSync(checker, [binaryName], { stdio: 'ignore', timeout: 10_000 });
+    execFileSync(checker, [binaryName], { stdio: 'ignore', env: cleanChildEnv(), timeout: 10_000 });
   } catch {
     throw new Error(`"${binaryName}" is not installed or not on PATH. Please install it before starting an agent session.`);
   }
@@ -19,7 +19,10 @@ function checkBinaryInstalled(binaryName: string): void {
 
 function cleanChildEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
-  delete env.NODE_OPTIONS;
+  for (const key of Object.keys(env)) {
+    if (key.toUpperCase() === 'NODE_OPTIONS') delete env[key];
+  }
+  env.NODE_OPTIONS = '';
   return env;
 }
 
@@ -90,7 +93,7 @@ export function flushSessionOutput(session: CliSessionRecord, force = false) {
       ? `${bufferedText.slice(0, maxLength)}...`
       : bufferedText;
 
-    // Broadcast progress immediately via SSE
+    // Broadcast progress immediately via SSE (UI gets live updates)
     broadcastEvent('progress', {
       taskId: session.taskId,
       sessionId: session.sessionHistoryEntry?.sessionId,
@@ -98,19 +101,12 @@ export function flushSessionOutput(session: CliSessionRecord, force = false) {
       message: clippedText,
     });
 
-    // If we have a session history entry, append progress to it
-    if (session.sessionHistoryEntry && session.sessionHistoryEntry.sessionId) {
-      await updateAgentSession(session.taskId, session.sessionHistoryEntry.sessionId, (sessionEntry) => {
-        sessionEntry.progress.push({ timestamp, message: clippedText });
-      });
-    } else {
-      // Fallback to old behavior if session entry not found
-      await updateTaskWithHistory(session.taskId, {
-        updatedBy: 'Agent',
-        entries: [
-          buildAgentMessageEntry(clippedText, session.label, timestamp),
-        ],
-      });
+    // Accumulate progress in memory only — do NOT write to the ticket file
+    // during an active session. Writing continuously causes the agent to see
+    // the file changing and back off from editing it. The full progress is
+    // flushed to the ticket file once when the session ends.
+    if (session.sessionHistoryEntry) {
+      session.sessionHistoryEntry.progress.push({ timestamp, message: clippedText });
     }
   };
 
@@ -228,16 +224,15 @@ export function attachStdoutProcessing(
                 }
               }
 
-              enqueueSessionWrite(session, async () => {
-                await updateAgentSession(taskId, session.sessionHistoryEntry!.sessionId, (sessionEntry) => {
-                  sessionEntry.progress.push({
-                    timestamp: new Date().toISOString(),
-                    message: progressMsg,
-                    type: 'tool',
-                    data: { toolName, parameters: toolBlock.input }
-                  });
+              // Accumulate tool progress in memory only — written to file at session end
+              if (session.sessionHistoryEntry) {
+                session.sessionHistoryEntry.progress.push({
+                  timestamp: new Date().toISOString(),
+                  message: progressMsg,
+                  type: 'tool',
+                  data: { toolName, parameters: toolBlock.input }
                 });
-              });
+              }
             }
           } else {
             commitPendingAssistantText();
@@ -402,10 +397,12 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     const outcome = `${label} session failed to start: ${error.message}`;
 
     if (session.sessionHistoryEntry && session.sessionHistoryEntry.sessionId) {
+      const accumulatedProgress = session.sessionHistoryEntry.progress || [];
       await updateAgentSession(id, session.sessionHistoryEntry.sessionId, (sessionEntry) => {
         sessionEntry.status = 'failed';
         sessionEntry.outcome = outcome;
         sessionEntry.endedAt = session.endedAt;
+        sessionEntry.progress = accumulatedProgress;
       });
     } else {
       await updateTaskWithHistory(id, {
@@ -426,21 +423,18 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     entries: [sessionEntry],
   });
 
-  // Start progress heartbeat - log activity every 15 seconds if no updates
+  // Start progress heartbeat - accumulate activity in memory every 15 seconds
   session.progressHeartbeat = setInterval(() => {
-    if (session.currentActivity && session.sessionHistoryEntry?.sessionId) {
+    if (session.currentActivity && session.sessionHistoryEntry) {
       const now = new Date().toISOString();
       // Only log if we haven't logged this same activity recently
       if (session.lastProgressLog !== session.currentActivity) {
         session.lastProgressLog = session.currentActivity;
-        enqueueSessionWrite(session, async () => {
-          await updateAgentSession(id, session.sessionHistoryEntry!.sessionId, (sessionEntry) => {
-            sessionEntry.progress.push({
-              timestamp: now,
-              message: session.currentActivity!,
-              type: 'info',
-            });
-          });
+        // Accumulate in memory only — written to file when session ends
+        session.sessionHistoryEntry.progress.push({
+          timestamp: now,
+          message: session.currentActivity,
+          type: 'info',
         });
       }
     }
@@ -488,12 +482,15 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
         })()
       : null;
 
-    // Close the session entry with outcome
+    // Close the session entry with outcome and flush accumulated progress
     if (session.sessionHistoryEntry && session.sessionHistoryEntry.sessionId) {
+      const accumulatedProgress = session.sessionHistoryEntry.progress || [];
       await updateAgentSession(id, session.sessionHistoryEntry.sessionId, (sessionEntry) => {
         sessionEntry.status = finalStatus;
         sessionEntry.outcome = outcome;
         sessionEntry.endedAt = session.endedAt;
+        // Merge in-memory progress accumulated during the session
+        sessionEntry.progress = accumulatedProgress;
       });
 
       // Update token metadata separately

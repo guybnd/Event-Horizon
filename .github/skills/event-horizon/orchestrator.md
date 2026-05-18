@@ -69,6 +69,17 @@ History entry shapes:
 - Repo-changing work without a named ticket → find or create a ticket first.
 - Pure explanation, brainstorming, or read-only discussion does not require ticket state changes.
 
+## Persisting Changes
+
+All ticket updates — status changes, metadata, body rewrites, history comments — **MUST** be persisted by directly editing the `.flux/<id>.md` file using your file-editing tool. Do not consider any ticket work complete until changes are written to disk.
+
+To update a ticket:
+1. Open and edit the `.flux/<id>.md` file — update YAML frontmatter fields and/or the markdown body as needed.
+2. Append new entries to the `history` array for status changes and comments (never replace existing entries).
+3. Set `updatedBy` to reflect who made the change.
+
+Ticket changes that only exist in chat or agent memory are **lost**. The `.flux/` file is the single source of truth.
+
 ## Critical Rules
 
 - Treat `.flux/*.md` as schema-sensitive. Use spaces (not tabs) in YAML frontmatter. Do not delete ticket history; append only.

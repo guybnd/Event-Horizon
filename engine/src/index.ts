@@ -1,6 +1,9 @@
 // Strip NODE_OPTIONS early — pkg binaries crash when child processes inherit
 // V8 flags like --max-old-space-size that get misinterpreted as module paths.
-delete process.env.NODE_OPTIONS;
+// Case-insensitive removal for Windows where env var casing may vary.
+for (const key of Object.keys(process.env)) {
+  if (key.toUpperCase() === 'NODE_OPTIONS') delete process.env[key];
+}
 
 import express from 'express';
 import cors from 'cors';

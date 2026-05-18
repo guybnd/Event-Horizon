@@ -70,6 +70,17 @@ History entry shapes:
 - Repo-changing work without a named ticket → find or create a ticket first.
 - Pure explanation, brainstorming, or read-only discussion does not require ticket state changes.
 
+## Persisting Changes
+
+All ticket updates — status changes, metadata, body rewrites, history comments — **MUST** be persisted by directly editing the `.flux/<id>.md` file using your file-editing tool. Do not consider any ticket work complete until changes are written to disk.
+
+To update a ticket:
+1. Open and edit the `.flux/<id>.md` file — update YAML frontmatter fields and/or the markdown body as needed.
+2. Append new entries to the `history` array for status changes and comments (never replace existing entries).
+3. Set `updatedBy` to reflect who made the change.
+
+Ticket changes that only exist in chat or agent memory are **lost**. The `.flux/` file is the single source of truth.
+
 ## Critical Rules
 
 - Treat `.flux/*.md` as schema-sensitive. Use spaces (not tabs) in YAML frontmatter. Do not delete ticket history; append only.
@@ -111,12 +122,14 @@ Refer to the orchestrator skill for the ticket model, APIs, and end-to-end check
 
 1. Read the full ticket, including all history.
 2. Read `.docs/INDEX.md` to identify relevant docs, then read only those files. Skip docs entirely for XS/S effort tickets.
-3. Treat `Grooming` as a planning phase — do not code. Tighten the ticket body into a concrete plan, fill inferable metadata (`priority`, `effort`, `tags`, hierarchy links).
-4. If implementation-critical choices are unresolved, move to `Require Input`, post one question with proposed defaults in ticket history, and wait.
-5. Once resolved, rewrite the ticket body with:
+3. Treat `Grooming` as a planning phase — do not code. Edit the `.flux/<id>.md` file to tighten the ticket body into a concrete plan and fill inferable metadata (`priority`, `effort`, `tags`, hierarchy links) in the YAML frontmatter.
+4. If implementation-critical choices are unresolved, edit the ticket file to set `status: Require Input` and append a history comment with one question and proposed defaults, then wait.
+5. Once resolved, edit the ticket file to rewrite the markdown body with:
    - **Problem / Motivation** (1–3 sentences): what problem, who benefits, why prioritised.
    - **Implementation plan**: concrete steps so another agent could pick up without re-discovery.
-6. Move to `Todo` when grooming is complete. **CRITICAL: Stop execution after moving to Todo — do not begin implementation.**
+6. Edit the ticket file to set `status: Todo` and append a `status_change` history entry. **CRITICAL: Stop execution after moving to Todo — do not begin implementation.**
+
+All changes above MUST be written to the `.flux/<id>.md` file — see the orchestrator skill's "Persisting Changes" section.
 
 ## Metadata Conventions
 
@@ -162,15 +175,17 @@ Refer to the orchestrator skill for the ticket model, APIs, and end-to-end check
 
 1. Read the full ticket, including all history, before touching any file.
 2. For M+ effort tickets, check `.docs/INDEX.md` for relevant docs. Read nearby implementation files. Prefer the smallest owning surface.
-3. Post a short plan comment before substantial work.
-4. Move to `In Progress` before the first substantive code change.
+3. Edit the ticket file to append a short plan comment to `history` before substantial work.
+4. Edit the ticket file to set `status: In Progress` and append a `status_change` history entry before the first substantive code change.
 5. Make small, local changes and validate immediately after the first edit.
-6. Post progress comments when scope changes, validation fails, or the user redirects.
-7. If clarification is needed, move to `Require Input` with a history comment — do not ask only in chat.
-8. When moving to `Ready`: add a concise summary comment (what was implemented, validated, any caveats). Keep files uncommitted at this stage.
+6. Edit the ticket file to append progress comments to `history` when scope changes, validation fails, or the user redirects.
+7. If clarification is needed, edit the ticket file to set `status: Require Input` and append a history comment — do not ask only in chat.
+8. When moving to `Ready`: edit the ticket file to add a concise summary comment to `history` (what was implemented, validated, any caveats) and set `status: Ready`. Keep code files uncommitted at this stage.
 9. Before `Ready` or `Done`, update `.docs/` when behavior changed.
-10. On `finish <ticket>`: stage all relevant files, create the commit, set `implementationLink`, and move to `Done` — all as one atomic step.
-11. Add a completion comment (what changed, validated, caveats, commit hash) then move to `Done`.
+10. On `finish <ticket>`: stage all relevant files, create the commit, then edit the ticket file to set `implementationLink` and `status: Done` — all as one atomic step.
+11. Edit the ticket file to append a completion comment to `history` (what changed, validated, caveats, commit hash).
+
+All ticket changes above MUST be written to the `.flux/<id>.md` file — see the orchestrator skill's "Persisting Changes" section.
 
 ## Common Project Patterns
 

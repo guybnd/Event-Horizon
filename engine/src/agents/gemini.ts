@@ -11,7 +11,7 @@ import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.j
 function checkBinaryInstalled(binaryName: string): void {
   const checker = process.platform === 'win32' ? 'where' : 'which';
   try {
-    execFileSync(checker, [binaryName], { stdio: 'ignore', timeout: 10_000 });
+    execFileSync(checker, [binaryName], { stdio: 'ignore', env: cleanChildEnv(), timeout: 10_000 });
   } catch {
     throw new Error(`"${binaryName}" is not installed or not on PATH. Please install it before starting an agent session.`);
   }
@@ -20,7 +20,12 @@ function checkBinaryInstalled(binaryName: string): void {
 /** Build a clean env for child processes — strips NODE_OPTIONS and other vars that break pkg-spawned children. */
 function cleanChildEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
-  delete env.NODE_OPTIONS;
+  for (const key of Object.keys(env)) {
+    if (key.toUpperCase() === 'NODE_OPTIONS') delete env[key];
+  }
+  // Explicitly set empty NODE_OPTIONS as a safety net — pkg binaries crash
+  // when V8 flags like --max-old-space-size leak through NODE_OPTIONS.
+  env.NODE_OPTIONS = '';
   return env;
 }
 
@@ -94,7 +99,7 @@ export function flushSessionOutput(session: CliSessionRecord, force = false) {
       ? `${bufferedText.slice(0, maxLength)}...`
       : bufferedText;
 
-    // Broadcast progress immediately via SSE
+    // Broadcast progress immediately via SSE (UI gets live updates)
     broadcastEvent('progress', {
       taskId: session.taskId,
       sessionId: session.sessionHistoryEntry?.sessionId,
@@ -102,22 +107,15 @@ export function flushSessionOutput(session: CliSessionRecord, force = false) {
       message: clippedText,
     });
 
-    // If we have a session history entry, append progress to it
-    if (session.sessionHistoryEntry && session.sessionHistoryEntry.sessionId) {
-      await updateAgentSession(session.taskId, session.sessionHistoryEntry.sessionId, (sessionEntry) => {
-        sessionEntry.progress.push({
-          timestamp,
-          message: clippedText,
-          type: 'text',
-        });
-      });
-    } else {
-      // Fallback to old behavior if session entry not found
-      await updateTaskWithHistory(session.taskId, {
-        updatedBy: 'Agent',
-        entries: [
-          buildAgentMessageEntry(clippedText, session.label, timestamp),
-        ],
+    // Accumulate progress in memory only — do NOT write to the ticket file
+    // during an active session. Writing continuously causes the agent to see
+    // the file changing and back off from editing it. The full progress is
+    // flushed to the ticket file once when the session ends.
+    if (session.sessionHistoryEntry) {
+      session.sessionHistoryEntry.progress.push({
+        timestamp,
+        message: clippedText,
+        type: 'text',
       });
     }
   };
@@ -235,16 +233,15 @@ export function attachStdoutProcessing(
                   progressMsg = `Running: ${cmd}${cmd.length >= 50 ? '...' : ''}`;
                 }
               }
-              enqueueSessionWrite(session, async () => {
-                await updateAgentSession(taskId, session.sessionHistoryEntry!.sessionId, (sessionEntry) => {
-                  sessionEntry.progress.push({ 
-                    timestamp: new Date().toISOString(), 
-                    message: progressMsg,
-                    type: 'tool',
-                    data: { toolName, parameters: toolBlock.input }
-                  });
+              // Accumulate tool progress in memory only — written to file at session end
+              if (session.sessionHistoryEntry) {
+                session.sessionHistoryEntry.progress.push({ 
+                  timestamp: new Date().toISOString(), 
+                  message: progressMsg,
+                  type: 'tool',
+                  data: { toolName, parameters: toolBlock.input }
                 });
-              });
+              }
             }
           } else {
             commitPendingAssistantText();
@@ -304,17 +301,13 @@ export function attachStdoutProcessing(
               progressMsg = `Running: ${cmd}${cmd.length >= 50 ? '...' : ''}`;
             }
 
-            // Always log every tool use to document each step of the agent session
-            if (toolName) {
-              enqueueSessionWrite(session, async () => {
-                await updateAgentSession(taskId, session.sessionHistoryEntry!.sessionId, (sessionEntry) => {
-                  sessionEntry.progress.push({ 
-                    timestamp: new Date().toISOString(), 
-                    message: progressMsg,
-                    type,
-                    data
-                  });
-                });
+            // Accumulate tool progress in memory only — written to file at session end
+            if (toolName && session.sessionHistoryEntry) {
+              session.sessionHistoryEntry.progress.push({ 
+                timestamp: new Date().toISOString(), 
+                message: progressMsg,
+                type,
+                data
               });
             }
           }
@@ -323,16 +316,15 @@ export function attachStdoutProcessing(
           if (evt.is_error) {
             console.error(`[${taskId}] Tool ${evt.tool_name || 'unknown'} failed:`, evt.error);
             
-            enqueueSessionWrite(session, async () => {
-              await updateAgentSession(taskId, session.sessionHistoryEntry!.sessionId, (sessionEntry) => {
-                sessionEntry.progress.push({ 
-                  timestamp: new Date().toISOString(), 
-                  message: `Tool failed: ${evt.tool_name || 'unknown'}`,
-                  type: 'info', // Use info since error type is not in AgentSessionProgress
-                  data: { toolName: evt.tool_name, error: evt.error }
-                });
+            // Accumulate in memory only
+            if (session.sessionHistoryEntry) {
+              session.sessionHistoryEntry.progress.push({ 
+                timestamp: new Date().toISOString(), 
+                message: `Tool failed: ${evt.tool_name || 'unknown'}`,
+                type: 'info',
+                data: { toolName: evt.tool_name, error: evt.error }
               });
-            });
+            }
           }
         } else {
           if (evt.type !== 'tool_use' && evt.type !== 'tool_result' && evt.type !== 'message' && evt.type !== 'init') {
@@ -457,36 +449,39 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
 
   let proc: ReturnType<typeof spawn>;
   if (process.platform === 'win32') {
-    // On Windows, find the actual .exe or entry point instead of using cmd.exe wrapper
-    // The npm bin wrapper is a bash script or .cmd; direct spawn preserves stdio streams for JSON output
+    // On Windows, find the JS entry point or .exe instead of using cmd.exe wrapper.
+    // Prefer JS entry point with system node over gemini.exe — the exe is a pkg
+    // binary that crashes when NODE_OPTIONS contains V8 flags (e.g. --max-old-space-size)
+    // leaked from VS Code terminals or other tools.
     let exePath: string | null = null;
     let entryPoint: string | null = null;
     try {
-      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', timeout: 10_000 }).trim();
-      const candidateExe = path.join(npmPrefix, 'node_modules', '@google', 'gemini-cli', 'bin', 'gemini.exe');
+      const prefixEnv = cleanChildEnv();
+      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', env: prefixEnv, timeout: 10_000 }).trim();
       const candidateJs = path.join(npmPrefix, 'node_modules', '@google', 'gemini-cli', 'bundle', 'gemini.js');
+      const candidateExe = path.join(npmPrefix, 'node_modules', '@google', 'gemini-cli', 'bin', 'gemini.exe');
       
-      if (fs.existsSync(candidateExe)) {
-        exePath = candidateExe;
-      } else if (fs.existsSync(candidateJs)) {
+      if (fs.existsSync(candidateJs)) {
         entryPoint = candidateJs;
+      } else if (fs.existsSync(candidateExe)) {
+        exePath = candidateExe;
       }
     } catch (err) {
       console.log(`[${id}] Failed to resolve gemini path:`, err);
     }
 
     const env = cleanChildEnv();
-    if (exePath) {
-      console.log(`[${id}] Windows spawn (exe): ${exePath}`);
-      proc = spawn(exePath, geminiArgs, {
+    if (entryPoint) {
+      console.log(`[${id}] Windows spawn (node): ${entryPoint}`);
+      proc = spawn('node', [entryPoint, ...geminiArgs], {
         cwd: workspaceRoot,
         env,
         stdio: 'pipe',
         windowsHide: true,
       });
-    } else if (entryPoint) {
-      console.log(`[${id}] Windows spawn (node): ${entryPoint}`);
-      proc = spawn('node', [entryPoint, ...geminiArgs], {
+    } else if (exePath) {
+      console.log(`[${id}] Windows spawn (exe): ${exePath}`);
+      proc = spawn(exePath, geminiArgs, {
         cwd: workspaceRoot,
         env,
         stdio: 'pipe',
@@ -536,10 +531,12 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     const outcome = `${label} session failed to start: ${error.message}`;
 
     if (session.sessionHistoryEntry && session.sessionHistoryEntry.sessionId) {
+      const accumulatedProgress = session.sessionHistoryEntry.progress || [];
       await updateAgentSession(id, session.sessionHistoryEntry.sessionId, (sessionEntry) => {
         sessionEntry.status = 'failed';
         sessionEntry.outcome = outcome;
         sessionEntry.endedAt = session.endedAt;
+        sessionEntry.progress = accumulatedProgress;
       });
     } else {
       await updateTaskWithHistory(id, {
@@ -560,21 +557,18 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     entries: [sessionEntry],
   });
 
-  // Start progress heartbeat - log activity every 15 seconds if no updates
+  // Start progress heartbeat - accumulate activity in memory every 15 seconds
   session.progressHeartbeat = setInterval(() => {
-    if (session.currentActivity && session.sessionHistoryEntry?.sessionId) {
+    if (session.currentActivity && session.sessionHistoryEntry) {
       const now = new Date().toISOString();
       // Only log if we haven't logged this same activity recently
       if (session.lastProgressLog !== session.currentActivity) {
         session.lastProgressLog = session.currentActivity;
-        enqueueSessionWrite(session, async () => {
-          await updateAgentSession(id, session.sessionHistoryEntry!.sessionId, (sessionEntry) => {
-            sessionEntry.progress.push({
-              timestamp: now,
-              message: session.currentActivity!,
-              type: 'info',
-            });
-          });
+        // Accumulate in memory only — written to file when session ends
+        session.sessionHistoryEntry.progress.push({
+          timestamp: now,
+          message: session.currentActivity,
+          type: 'info',
         });
       }
     }
@@ -622,12 +616,15 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
         })()
       : null;
 
-    // Close the session entry with outcome
+    // Close the session entry with outcome and flush accumulated progress
     if (session.sessionHistoryEntry && session.sessionHistoryEntry.sessionId) {
+      const accumulatedProgress = session.sessionHistoryEntry.progress || [];
       await updateAgentSession(id, session.sessionHistoryEntry.sessionId, (sessionEntry) => {
         sessionEntry.status = finalStatus;
         sessionEntry.outcome = outcome;
         sessionEntry.endedAt = session.endedAt;
+        // Merge in-memory progress accumulated during the session
+        sessionEntry.progress = accumulatedProgress;
       });
 
       // Update token metadata separately
@@ -701,35 +698,35 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
 
   let replyProc: ReturnType<typeof spawn>;
   if (process.platform === 'win32') {
-    // On Windows, find the actual .exe or entry point instead of using cmd.exe wrapper
     let exePath: string | null = null;
     let entryPoint: string | null = null;
     try {
-      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', timeout: 10_000 }).trim();
-      const candidateExe = path.join(npmPrefix, 'node_modules', '@google', 'gemini-cli', 'bin', 'gemini.exe');
+      const prefixEnv = cleanChildEnv();
+      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', env: prefixEnv, timeout: 10_000 }).trim();
       const candidateJs = path.join(npmPrefix, 'node_modules', '@google', 'gemini-cli', 'bundle', 'gemini.js');
+      const candidateExe = path.join(npmPrefix, 'node_modules', '@google', 'gemini-cli', 'bin', 'gemini.exe');
       
-      if (fs.existsSync(candidateExe)) {
-        exePath = candidateExe;
-      } else if (fs.existsSync(candidateJs)) {
+      if (fs.existsSync(candidateJs)) {
         entryPoint = candidateJs;
+      } else if (fs.existsSync(candidateExe)) {
+        exePath = candidateExe;
       }
     } catch (err) {
       console.log(`[${id}] Failed to resolve gemini path for reply:`, err);
     }
 
     const env = cleanChildEnv();
-    if (exePath) {
-      console.log(`[${id}] Windows reply spawn (exe): ${exePath}`);
-      replyProc = spawn(exePath, resumeArgs, {
+    if (entryPoint) {
+      console.log(`[${id}] Windows reply spawn (node): ${entryPoint}`);
+      replyProc = spawn('node', [entryPoint, ...resumeArgs], {
         cwd: workspaceRoot,
         env,
         stdio: 'pipe',
         windowsHide: true,
       });
-    } else if (entryPoint) {
-      console.log(`[${id}] Windows reply spawn (node): ${entryPoint}`);
-      replyProc = spawn('node', [entryPoint, ...resumeArgs], {
+    } else if (exePath) {
+      console.log(`[${id}] Windows reply spawn (exe): ${exePath}`);
+      replyProc = spawn(exePath, resumeArgs, {
         cwd: workspaceRoot,
         env,
         stdio: 'pipe',
