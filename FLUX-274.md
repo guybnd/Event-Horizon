@@ -39,6 +39,15 @@ history:
       updateAgentSession/updateTaskWithHistory used stale cached data,
       overwriting agent file edits.
     id: c-2025-05-18t13-40-00-000z
+  - type: agent_session
+    sessionId: 3f92a981-9155-4743-b080-4958559d2f7b
+    startedAt: '2026-05-18T15:22:42.251Z'
+    status: failed
+    progress: []
+    user: Gemini CLI
+    date: '2026-05-18T15:22:42.251Z'
+    outcome: Gemini CLI session ended with code 1.
+    endedAt: '2026-05-18T15:22:43.627Z'
 ---
 
 ## Problem
