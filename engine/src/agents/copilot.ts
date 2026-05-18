@@ -409,8 +409,18 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
         sessionEntry.progress = accumulatedProgress;
       });
 
-      // Update token metadata separately
-      if (tokenUpdate) {
+      // Save the agent's final message as a comment on the ticket
+      const textEntries = accumulatedProgress.filter((p: any) => p.type === 'text' && p.message?.trim());
+      const lastText = textEntries.length > 0 ? textEntries[textEntries.length - 1].message : '';
+      if (lastText && finalStatus === 'completed') {
+        const maxCommentLen = 3000;
+        const commentBody = lastText.length > maxCommentLen ? lastText.slice(0, maxCommentLen) + '...' : lastText;
+        await updateTaskWithHistory(id, {
+          updatedBy: 'Agent',
+          entries: [buildCommentEntry(label, commentBody, session.endedAt)],
+          tokenMetadata: tokenUpdate ?? undefined,
+        });
+      } else if (tokenUpdate) {
         await updateTaskWithHistory(id, {
           updatedBy: 'Agent',
           entries: [],
