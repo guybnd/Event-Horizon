@@ -2,9 +2,13 @@ import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
 import os from 'os';
+import { fileURLToPath } from 'url';
 
 // __dirname is available natively in CJS (esbuild bundle / pkg).
-// tsx also provides it in ESM dev mode.
+// For ESM dev mode, derive it from import.meta.url.
+const __filename_esm = fileURLToPath(import.meta.url);
+const __dirname_esm = path.dirname(__filename_esm);
+const __dirname = typeof globalThis.__dirname === 'string' ? globalThis.__dirname : __dirname_esm;
 
 export let workspaceRoot: string | null = null;
 
