@@ -1,7 +1,6 @@
 ---
-id: FLUX-264
-title: Remove shell:true from Windows agent spawn calls
-status: Grooming
+title: 'Remove shell:true from Windows agent spawn calls'
+status: Backlog
 priority: Medium
 effort: S
 assignee: unassigned
@@ -9,12 +8,23 @@ tags:
   - engine
   - security
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 history:
+  - type: activity
+    user: Guy
+    date: '2026-05-14T09:42:00.000Z'
+    comment: Created ticket.
   - type: activity
     user: Agent
     date: '2026-05-14T09:42:00.000Z'
-    comment: Created from Node DEP0190 warning observed in Gemini CLI session output. shell:true with args is a deprecation path and mild injection risk.
+    comment: >-
+      Created from Node DEP0190 warning observed in Gemini CLI session output.
+      shell:true with args is a deprecation path and mild injection risk.
+  - type: status_change
+    from: Grooming
+    to: Backlog
+    user: Guy
+    date: '2026-05-18T13:52:59.781Z'
 ---
 
 ## Problem / Motivation

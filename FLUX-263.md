@@ -1,7 +1,6 @@
 ---
-id: FLUX-263
 title: Filter noisy stderr from agent CLI sessions
-status: Grooming
+status: Backlog
 priority: Medium
 effort: S
 assignee: unassigned
@@ -9,12 +8,23 @@ tags:
   - engine
   - quality
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 history:
+  - type: activity
+    user: Guy
+    date: '2026-05-14T09:42:00.000Z'
+    comment: Created ticket.
   - type: activity
     user: Agent
     date: '2026-05-14T09:42:00.000Z'
-    comment: Created from observed Gemini CLI session output showing full 429 stack traces and deprecation warnings polluting liveOutputBuffer.
+    comment: >-
+      Created from observed Gemini CLI session output showing full 429 stack
+      traces and deprecation warnings polluting liveOutputBuffer.
+  - type: status_change
+    from: Grooming
+    to: Backlog
+    user: Guy
+    date: '2026-05-18T13:52:52.345Z'
 ---
 
 ## Problem / Motivation
