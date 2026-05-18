@@ -28,16 +28,22 @@ export async function updateAgentSession(taskId: string, sessionId: string, upda
   const task = tasksCache[taskId];
   if (!task) return null;
 
-  const { body, _path, id: _id, ...frontmatter } = task;
+  const { _path } = task;
 
+  // Re-read the FULL file from disk to preserve any changes the agent made
+  let frontmatter: any;
+  let body: string;
   try {
     const rawFile = await fs.readFile(_path, 'utf-8');
     const parsed = matter(rawFile);
-    if (Array.isArray((parsed.data as any).history)) {
-      frontmatter.history = (parsed.data as any).history;
-    }
+    const { content, data } = parsed;
+    body = content || '';
+    frontmatter = { ...data };
   } catch {
-    // fall back to cache if file read fails
+    // Fall back to cache if file read fails
+    const { body: cachedBody, _path: _p, id: _id, ...cachedFm } = task;
+    body = cachedBody || '';
+    frontmatter = { ...cachedFm };
   }
 
   const history = frontmatter.history || [];
@@ -50,9 +56,10 @@ export async function updateAgentSession(taskId: string, sessionId: string, upda
 
   // Apply the update function
   updater(history[sessionIndex]);
+  frontmatter.history = history;
   frontmatter.updatedBy = 'Agent';
 
-  const fileContent = matter.stringify(body || '', frontmatter);
+  const fileContent = matter.stringify(body, frontmatter);
   await fs.writeFile(_path, fileContent, 'utf-8');
   tasksCache[taskId] = { ...frontmatter, body, id: taskId, _path };
   return tasksCache[taskId];
@@ -70,19 +77,21 @@ export async function updateTaskWithHistory(taskId: string, options: {
   const actor = options.updatedBy || task.updatedBy || 'Agent';
   const activityTimestamp = new Date().toISOString();
   const entries = Array.isArray(options.entries) ? [...options.entries] : [];
-  const { body, _path, id: _id, ...frontmatter } = task;
+  const { _path } = task;
 
+  // Re-read the FULL file from disk to preserve any changes the agent made
+  let frontmatter: any;
+  let body: string;
   try {
     const rawFile = await fs.readFile(_path, 'utf-8');
     const parsed = matter(rawFile);
-    if (Array.isArray((parsed.data as any).history)) {
-      frontmatter.history = (parsed.data as any).history;
-      if ((parsed.data as any).status !== undefined) {
-        frontmatter.status = (parsed.data as any).status;
-      }
-    }
+    body = parsed.content || '';
+    frontmatter = { ...parsed.data };
   } catch {
-    // fall back to cache if file read fails
+    // Fall back to cache if file read fails
+    const { body: cachedBody, _path: _p, id: _id, ...cachedFm } = task;
+    body = cachedBody || '';
+    frontmatter = { ...cachedFm };
   }
 
   const normalizedExistingHistory = normalizeHistoryEntries(frontmatter.history || []);
