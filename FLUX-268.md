@@ -29,10 +29,15 @@ history:
     date: '2026-05-18T12:33:47.442Z'
     outcome: Gemini CLI session ended with code 0.
     endedAt: '2026-05-18T12:34:07.833Z'
+  - type: comment
+    user: Guy
+    date: '2026-05-18T12:37:56.073Z'
+    comment: we are testing the flow so... needs to go to to-do with an udpate
+    id: c-2026-05-18t12-37-56-062z
 title: can you read me? testing
 status: Grooming
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 tokenMetadata:
   inputTokens: 12165
   outputTokens: 67
