@@ -34,10 +34,17 @@ history:
     date: '2026-05-18T12:37:56.073Z'
     comment: we are testing the flow so... needs to go to to-do with an udpate
     id: c-2026-05-18t12-37-56-062z
+  - type: agent_session
+    sessionId: 4c613243-c681-4d58-bd14-f667268fcd97
+    startedAt: '2026-05-18T12:41:45.346Z'
+    status: active
+    progress: []
+    user: Gemini CLI
+    date: '2026-05-18T12:41:45.346Z'
 title: can you read me? testing
 status: Grooming
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 tokenMetadata:
   inputTokens: 12165
   outputTokens: 67

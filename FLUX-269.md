@@ -24,9 +24,18 @@ history:
     date: '2026-05-18T12:38:06.217Z'
     comment: we are testing the flow so... needs to go to to-do with an udpate
     id: c-2026-05-18t12-38-06-219z
+  - type: agent_session
+    sessionId: bd0c61bc-9873-4fea-b588-cb48ebd5f313
+    startedAt: '2026-05-18T12:41:39.227Z'
+    status: failed
+    progress: []
+    user: Copilot CLI
+    date: '2026-05-18T12:41:39.227Z'
+    outcome: Copilot CLI session ended with code 1.
+    endedAt: '2026-05-18T12:41:39.271Z'
 title: can y ousee thius? copilot test
 status: Grooming
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 ---
 
