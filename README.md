@@ -75,7 +75,15 @@ Board layout and behaviour are controlled by `.flux/config.json`:
 | `readyForMergeStatus` | Pre-merge review checkpoint status (default `"Ready"`) |
 | `boardCardOpenMode` | `"full"` opens ticket in full view on card click; `"preview"` opens sidebar |
 | `animationsEnabled` | Toggle UI animations |
-| `docsRoot` | Path relative to workspace root where wiki markdown files live (default `.docs`) |
+| `docsRoot` | `string` | Path relative to workspace root where wiki markdown files live (default `.docs`) |
+| `defaultAgent` | `string` | Which agent framework to use by default when launching sessions (`claude`, `gemini`, or `copilot`) |
+| `effortLevel` | `string` | Global effort level for agent sessions: `low`, `medium`, `high`, `xhigh`, or `max` |
+| `integrations.claudeCode.groomingModel` | `string` | Claude model for grooming tasks (e.g. `claude-sonnet-4`) |
+| `integrations.claudeCode.implementationModel` | `string` | Claude model for implementation tasks |
+| `integrations.geminiCli.groomingModel` | `string` | Gemini model for grooming tasks |
+| `integrations.geminiCli.implementationModel` | `string` | Gemini model for implementation tasks |
+| `integrations.copilotCli.groomingModel` | `string` | Copilot model for grooming tasks |
+| `integrations.copilotCli.implementationModel` | `string` | Copilot model for implementation tasks |
 | `syncSettings.debounceMs` | Git Sync: milliseconds of file-write silence before auto-commit fires |
 | `syncSettings.maxWaitMs` | Git Sync: maximum milliseconds before a sync is forced even under sustained writes |
 
@@ -178,23 +186,48 @@ The portal is the primary interface. Chat with the agent for initial handoff and
 
 ---
 
-### Installing the Workflow
+### Agent Integrations
 
-The workflow is a set of phase-specific skill files installed into your project's `.github/` directory (or Anthropic's Claude Code rules format). Install or refresh via:
+Event Horizon supports three AI coding CLI frameworks, all invokable directly from a ticket card in the portal:
+
+| Framework | CLI Binary | Install |
+|-----------|-----------|---------|
+| **Claude Code** | `claude` | `npm install -g @anthropic-ai/claude-code` |
+| **Gemini CLI** | `gemini` | `npm install -g @anthropic-ai/gemini-cli` (or via Google) |
+| **Copilot CLI** | `copilot` | `npm install -g @github/copilot` |
+
+All three share the same lifecycle:
+- Agent sessions launched from a ticket card are tracked in the ticket's activity history
+- Progress updates stream live into the portal while the agent works
+- Prompts you send from the portal comment box are routed to the running session
+- Token usage and cost estimates are recorded per session
+- The agent moves tickets through statuses autonomously (Grooming → Ready, etc.)
+
+**Prerequisites:** Install the CLI binary for your preferred framework and ensure it's authenticated (e.g. `claude` requires an Anthropic API key, `copilot` requires GitHub auth via `gh auth login`).
+
+**Effort levels:** All three frameworks support effort levels (`low`, `medium`, `high`, `xhigh`, `max`) — configurable globally, per-ticket, or per-session.
+
+**Model selection:** Each framework supports separate models for grooming vs implementation tasks. Configure in Settings → Integrations or in `.flux/config.json` under `integrations`.
+
+### Workflow Skills
+
+The workflow is a set of phase-specific skill files installed into your project's agent configuration directory. Install or refresh via:
 
 - **Portal:** Settings → Install Agent Workflow
 - **CLI:** `npx event-horizon install-skill --target /path/to/project`
 
+Supported framework targets:
+
+| Framework | Install Path |
+|-----------|-------------|
+| GitHub Copilot | `.github/skills/event-horizon/` + `.github/copilot-instructions.md` |
+| Claude Code | `.claude/rules/event-horizon.md` |
+| Gemini | `.gemini/skills/event-horizon.md` |
+| Cursor | `.cursor/rules/event-horizon.mdc` |
+| Windsurf | `.windsurf/rules/event-horizon.md` |
+| Generic | `.ai/skills/event-horizon.md` |
+
 The installer patches only the Event Horizon blocks in your instructions file, leaving unrelated custom instructions untouched.
-
-### Two-Way CLI Integration
-
-Event Horizon integrates with AI coding CLIs (Claude Code, Copilot CLI) for a live session loop:
-
-- Agent sessions launched from a ticket card are tracked in the ticket's activity history
-- Session start, end, and exit code are recorded automatically
-- Prompts you send from the CLI appear as inline comment replies on the ticket in the portal
-- Token usage and cost estimates are recorded per session and displayed in the ticket modal
 
 ---
 
@@ -260,6 +293,7 @@ Event Horizon ships with an in-product documentation tree under `.docs/`, served
 
 - **[Project Overview](.docs/event-horizon/project-overview.md)** — System shape and shipped capabilities
 - **[Architecture Overview](.docs/event-horizon/architecture/overview.md)** — Runtime logic, storage models, and request flow
+- **[Agent Integrations](.docs/event-horizon/agent-integrations.md)** — Supported CLIs, prerequisites, configuration, and troubleshooting
 - **[Decoupled Storage](.docs/event-horizon/architecture/decoupled-storage.md)** — Git Sync design, options considered, and the orphan branch implementation
 - **[Docs Workspace](.docs/event-horizon/architecture/docs-workspace.md)** — How the docs tree, live editor, and permissions work
 - **[Repository Map](.docs/event-horizon/architecture/repository-map.md)** — Key codebase surfaces and file locations

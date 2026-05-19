@@ -36,25 +36,32 @@ Event Horizon is primarily distributed as a standalone binary application (Windo
 
 - File-backed ticket board with configurable statuses, column order, tags,
   priorities, effort sizing, subtask hierarchy, and workflow prompt stages.
+- Three-framework agent integration: Claude Code, Gemini CLI, and Copilot CLI —
+  all launchable from ticket cards with live progress streaming, token tracking,
+  and multi-turn interaction via the portal.
 - In-product docs tree backed by `.docs/`, including hierarchy, editing, and
   wiki-oriented navigation.
 - Global fuzzy ticket search in the header, with separate compact board and
   backlog controls for local search, sorting, and collapsible metadata
   filters backed by the URL.
-- Workflow installation that keeps both the skill and Copilot instructions in
+- Workflow skill installation for six IDE targets (Copilot, Claude, Gemini,
+  Cursor, Windsurf, generic) — keeps both the skill and instructions in
   sync inside a target workspace.
 - Activity-aware task history so sorting and audit trails reflect more than
   comments alone.
+- Configurable effort levels and per-framework model selection for grooming
+  vs implementation tasks.
 
 ## Recommended reading order
 
 1. [[Architecture Overview]]
-2. [[Docs Workspace]]
-3. [[Repository Map]]
-4. [[Ticket Model]]
-5. [[Ticket Interactions]]
-6. [[Ticket Lifecycle]]
-7. [[Workflow Install]]
+2. [[Agent Integrations]]
+3. [[Docs Workspace]]
+4. [[Repository Map]]
+5. [[Ticket Model]]
+6. [[Ticket Interactions]]
+7. [[Ticket Lifecycle]]
+8. [[Workflow Install]]
 
 ## Related docs
 

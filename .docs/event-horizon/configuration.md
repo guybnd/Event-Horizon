@@ -35,6 +35,45 @@ This is your primary workspace configuration file. It is tracked in your reposit
 | `boardCardOpenMode` | `"full" \| "preview"` | Controls whether clicking a board card opens the full modal or the side preview. |
 | `animationsEnabled` | `boolean` | Toggles micro-animations on the board interface. |
 | `docsRoot` | `string` | The directory relative to the workspace root where documentation is stored (default: `.docs`). |
+| `defaultAgent` | `string` | Which agent framework to use by default when launching sessions from the portal. Options: `claude`, `gemini`, `copilot`. |
+| `effortLevel` | `string` | Global effort level for agent sessions. Options: `low`, `medium`, `high`, `xhigh`, `max`. Can be overridden per-ticket or per-session. |
+| `integrations` | `object` | Per-framework agent configuration (see below). |
+
+### Integration Settings
+
+The `integrations` object configures model selection for each supported AI framework. Each has two fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `integrations.claudeCode.groomingModel` | `string` | Model used for grooming tasks (e.g. `claude-sonnet-4`). Empty string uses the CLI default. |
+| `integrations.claudeCode.implementationModel` | `string` | Model used for implementation tasks. |
+| `integrations.geminiCli.groomingModel` | `string` | Model used for grooming tasks (e.g. `gemini-2.5-pro`). |
+| `integrations.geminiCli.implementationModel` | `string` | Model used for implementation tasks. |
+| `integrations.copilotCli.groomingModel` | `string` | Model used for grooming tasks. |
+| `integrations.copilotCli.implementationModel` | `string` | Model used for implementation tasks. |
+
+Example:
+
+```json
+{
+  "defaultAgent": "claude",
+  "effortLevel": "high",
+  "integrations": {
+    "claudeCode": {
+      "groomingModel": "claude-sonnet-4",
+      "implementationModel": "claude-sonnet-4"
+    },
+    "geminiCli": {
+      "groomingModel": "",
+      "implementationModel": ""
+    },
+    "copilotCli": {
+      "groomingModel": "",
+      "implementationModel": ""
+    }
+  }
+}
+```
 
 ## 3. `~/.event-horizon/settings.json` (Global User Settings)
 
