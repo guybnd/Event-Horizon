@@ -126,6 +126,76 @@ export async function updateTaskWithHistory(taskId: string, options: {
   return tasksCache[taskId];
 }
 
+/**
+ * Detect inline subtask objects in a ticket's subtasks array and normalize them
+ * into separate ticket files. Returns the normalized string[] of IDs if changes
+ * were made, or null if no normalization needed.
+ */
+async function normalizeInlineSubtasks(frontmatter: any, parentPath: string): Promise<string[] | null> {
+  const subtasks = frontmatter.subtasks;
+  if (!Array.isArray(subtasks) || subtasks.length === 0) return null;
+
+  const hasInlineObjects = subtasks.some((entry: any) => typeof entry === 'object' && entry !== null && entry.id);
+  if (!hasInlineObjects) return null;
+
+  const fluxDir = path.dirname(parentPath);
+  const parentId = frontmatter.id || path.basename(parentPath, '.md');
+  const normalizedIds: string[] = [];
+  const createdAt = new Date().toISOString();
+
+  for (const entry of subtasks) {
+    if (typeof entry === 'string') {
+      normalizedIds.push(entry);
+      continue;
+    }
+
+    if (typeof entry !== 'object' || !entry || !entry.id) continue;
+
+    const childId = entry.id as string;
+    const childPath = path.join(fluxDir, `${childId}.md`);
+
+    // Don't overwrite existing ticket files
+    try {
+      await fs.access(childPath);
+      // File exists — just use the ID reference
+      normalizedIds.push(childId);
+      continue;
+    } catch {
+      // File doesn't exist — create it
+    }
+
+    const childFrontmatter: any = {
+      id: childId,
+      title: entry.title || childId,
+      status: entry.status || 'Todo',
+      priority: entry.priority || 'None',
+      effort: entry.effort || 'None',
+      assignee: entry.assignee || 'unassigned',
+      tags: entry.tags || [],
+      createdBy: 'Agent',
+      updatedBy: 'Agent',
+      history: [
+        { type: 'activity', user: 'Agent', date: createdAt, comment: `Auto-created from inline subtask of ${parentId}.` },
+      ],
+    };
+
+    const childBody = entry.body || `Subtask of ${parentId}.\n`;
+    const childContent = matter.stringify(childBody, childFrontmatter);
+
+    try {
+      await fs.writeFile(childPath, childContent, 'utf-8');
+      console.log(`[subtasks] Auto-created ${childId} from inline subtask of ${parentId}`);
+    } catch (err) {
+      console.error(`[subtasks] Failed to create ${childId}:`, err);
+    }
+
+    normalizedIds.push(childId);
+  }
+
+  console.log(`[subtasks] Normalized ${parentId}: ${subtasks.length} entries → ${normalizedIds.length} string IDs`);
+  return normalizedIds;
+}
+
 export async function loadTask(filePath: string) {
   if (!isTopLevelTaskFile(filePath)) return;
 
@@ -163,6 +233,13 @@ export async function loadTask(filePath: string) {
     );
     const normalizedFrontmatter = { ...parsed.data, history };
 
+    // Normalize inline subtask objects → create separate ticket files and convert to string IDs
+    const subtasksNormalized = await normalizeInlineSubtasks(normalizedFrontmatter, filePath);
+
+    if (subtasksNormalized) {
+      normalizedFrontmatter.subtasks = subtasksNormalized;
+    }
+
     tasksCache[id] = {
       ...normalizedFrontmatter,
       id,
@@ -173,7 +250,7 @@ export async function loadTask(filePath: string) {
     // Clear any previous parse error for this ticket
     delete parseErrors[id];
 
-    if (normalizedHistory.changed) {
+    if (normalizedHistory.changed || subtasksNormalized) {
       const normalizedContent = matter.stringify(parsed.content, normalizedFrontmatter);
       await fs.writeFile(filePath, normalizedContent, 'utf-8');
     }

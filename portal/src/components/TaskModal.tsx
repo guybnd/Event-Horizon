@@ -22,7 +22,7 @@ import { createTask, deleteTask, fetchTask, sendTaskCliInput, startTaskCliSessio
 import { LaunchAgentSplitButton } from './LaunchAgentSplitButton';
 import type { ReviewPersona } from './CodeReviewButton';
 import { isAgentSession } from '../types';
-import type { Config, HistoryEntry, Task } from '../types';
+import type { Config, HistoryEntry, InlineSubtask, Task } from '../types';
 import { FRAMEWORK_ICONS } from '../constants';
 
 import { StatusBadge } from './StatusBadge';
@@ -393,6 +393,15 @@ export function TaskModal() {
     });
     return { filteredHistory: filtered, topLevelEntries: topLevel, repliesByParent: replies };
   }, [modalTask?.history, activityFilter]);
+
+  // Build lookup for inline subtask objects (which carry title/status metadata)
+  const inlineSubtaskMap = useMemo(() => {
+    const map = new Map<string, InlineSubtask>();
+    (modalTask?.subtasks || []).forEach((entry) => {
+      if (typeof entry !== 'string' && entry.id) map.set(entry.id, entry);
+    });
+    return map;
+  }, [modalTask?.subtasks]);
 
   const linkedSubtasks = subtasks
     .map((subtaskId) => allTasks.find((task) => task.id === subtaskId))
@@ -996,18 +1005,37 @@ export function TaskModal() {
               </button>
             </div>
           ))}
-          {danglingSubtaskIds.map((subtaskId) => (
-            <div key={subtaskId} className="flex items-center justify-between rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
-              <span>{subtaskId} is linked but not currently loaded.</span>
-              <button
-                type="button"
-                onClick={() => setSubtasks((current) => current.filter((id) => id !== subtaskId))}
-                className="rounded-md p-1.5 transition-colors hover:bg-amber-100 dark:hover:bg-amber-500/10"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-          ))}
+          {danglingSubtaskIds.map((subtaskId) => {
+            const inline = inlineSubtaskMap.get(subtaskId);
+            return (
+              <div key={subtaskId} className={`flex items-center justify-between rounded-lg border px-3 py-2 text-sm ${inline ? 'border-gray-100 bg-gray-50 text-gray-700 dark:border-white/5 dark:bg-black/20 dark:text-gray-300' : 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300'}`}>
+                <div className="min-w-0 flex-1">
+                  {inline ? (
+                    <>
+                      <p className="text-xs font-bold uppercase tracking-wider text-gray-400">{subtaskId}</p>
+                      <p className="truncate text-sm font-medium text-gray-800 dark:text-gray-200">{inline.title || subtaskId}</p>
+                      {inline.status && (
+                        <StatusBadge
+                          status={inline.status}
+                          colorClass={getStatusColorClass(config, inline.status)}
+                          className="mt-1 text-[10px] font-bold uppercase tracking-[0.16em]"
+                        />
+                      )}
+                    </>
+                  ) : (
+                    <span>{subtaskId} is linked but not currently loaded.</span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSubtasks((current) => current.filter((id) => id !== subtaskId))}
+                  className="rounded-md p-1.5 transition-colors hover:bg-amber-100 dark:hover:bg-amber-500/10"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

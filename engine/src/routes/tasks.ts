@@ -127,6 +127,87 @@ router.post('/', async (req, res) => {
   }
 });
 
+// ─── Create subtask and link to parent ───────────────────────────────────────
+
+router.post('/:parentId/subtasks', async (req, res) => {
+  if (workspaceActivating) return res.status(503).json({ error: 'Workspace is activating, please retry' });
+
+  const { parentId } = req.params;
+  const parent = tasksCache[parentId];
+  if (!parent) return res.status(404).json({ error: 'Parent task not found' });
+
+  const { title, status, priority, effort, body, tags, assignee, author } = req.body;
+  if (!title) return res.status(400).json({ error: 'title is required' });
+
+  const pKey = configCache.projects?.[0] || 'FLUX';
+
+  // Determine next ID
+  let maxId = 0;
+  Object.keys(tasksCache).forEach((key) => {
+    if (key.startsWith(`${pKey}-`)) {
+      const num = parseInt(key.replace(`${pKey}-`, ''), 10);
+      if (!isNaN(num) && num > maxId) maxId = num;
+    }
+  });
+  if (isOrphanMode()) {
+    const remoteMaxId = await getMaxIdFromRemote(pKey);
+    maxId = Math.max(maxId, remoteMaxId);
+  }
+
+  const childId = `${pKey}-${maxId + 1}`;
+  const childPath = path.join(getActiveFluxDir(), `${childId}.md`);
+  const createdAt = new Date().toISOString();
+  const actor = author || 'Agent';
+
+  const childFrontmatter: any = {
+    id: childId,
+    title,
+    status: status || 'Todo',
+    priority: priority || 'None',
+    effort: effort || 'None',
+    assignee: assignee || 'unassigned',
+    tags: tags || [],
+    createdBy: actor,
+    updatedBy: actor,
+    history: [
+      { type: 'activity', user: actor, date: createdAt, comment: `Created as subtask of ${parentId}.` },
+    ],
+  };
+
+  try {
+    if (childFrontmatter.tags.length > 0) {
+      await autoRegisterUnknownTags(childFrontmatter.tags);
+    }
+
+    const childContent = matter.stringify(body || '', childFrontmatter);
+    await fs.writeFile(childPath, childContent, 'utf-8');
+    tasksCache[childId] = { ...childFrontmatter, body: body || '', id: childId, _path: childPath };
+
+    // Link child to parent's subtasks array
+    const parentSubtasks: string[] = Array.isArray(parent.subtasks)
+      ? parent.subtasks.map((s: any) => typeof s === 'string' ? s : s.id).filter(Boolean)
+      : [];
+    parentSubtasks.push(childId);
+
+    // Re-read parent from disk to avoid clobbering
+    const parentRaw = await fs.readFile(parent._path, 'utf-8');
+    const parentParsed = matter(parentRaw);
+    parentParsed.data.subtasks = parentSubtasks;
+    parentParsed.data.updatedBy = actor;
+    const parentContent = matter.stringify(parentParsed.content, parentParsed.data);
+    await fs.writeFile(parent._path, parentContent, 'utf-8');
+
+    // Update cache
+    tasksCache[parentId] = { ...tasksCache[parentId], subtasks: parentSubtasks, updatedBy: actor };
+
+    console.log(`[subtasks] Created ${childId} as subtask of ${parentId}`);
+    res.json(serializeTaskForApi(tasksCache[childId]));
+  } catch (err) {
+    console.error(`Failed to create subtask for ${parentId}:`, err);
+    res.status(500).json({ error: 'Failed to create subtask' });
+  }
+});
+
 router.put('/:id', async (req, res) => {
   if (workspaceActivating) return res.status(503).json({ error: 'Workspace is activating, please retry' });
   const { id } = req.params;

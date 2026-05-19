@@ -38,6 +38,16 @@ export function isAgentSession(entry: HistoryEntry): entry is AgentSessionEntry 
   return entry.type === 'agent_session';
 }
 
+export interface InlineSubtask {
+  id: string;
+  title?: string;
+  status?: string;
+}
+
+export function normalizeSubtaskId(entry: string | InlineSubtask): string {
+  return typeof entry === 'string' ? entry : entry.id;
+}
+
 export interface Task {
   id: string;
   status: string;
@@ -53,7 +63,7 @@ export interface Task {
   effort?: string;
   effortLevel?: string;
   implementationLink?: string;
-  subtasks?: string[];
+  subtasks?: (string | InlineSubtask)[];
   version?: string;
   releasedAt?: string;
   releaseDocPath?: string;

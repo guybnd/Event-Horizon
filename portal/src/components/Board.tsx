@@ -8,6 +8,7 @@ import { TaskCard } from './TaskCard';
 import { updateTask } from '../api';
 import { useApp } from '../AppContext';
 import type { Task, HistoryEntry } from '../types';
+import { normalizeSubtaskId } from '../types';
 import { Loader2 } from 'lucide-react';
 import { TaskViewControls } from './TaskViewControls';
 import { filterAndSortTasks } from '../taskSearch';
@@ -124,7 +125,8 @@ export function Board() {
   [...tasks]
     .sort((left, right) => left.id.localeCompare(right.id))
     .forEach((candidateParent) => {
-      candidateParent.subtasks?.forEach((childId) => {
+      candidateParent.subtasks?.forEach((entry) => {
+        const childId = normalizeSubtaskId(entry);
         if (!parentByChildId.has(childId)) {
           parentByChildId.set(childId, candidateParent);
         }

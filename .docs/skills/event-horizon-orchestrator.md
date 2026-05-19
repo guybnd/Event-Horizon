@@ -30,7 +30,9 @@ Read-only tasks (explanation, search, discussion) need no phase skill.
 
 ## Ticket Model
 
-Frontmatter fields: `id`, `title`, `status`, `priority`, `assignee`, `tags` (string[]), `createdBy`, `updatedBy`, `history` (event list), `effort` (`None`|`XS`|`S`|`M`|`L`|`XL`), `implementationLink`. Markdown body below frontmatter for description.
+Frontmatter fields: `id`, `title`, `status`, `priority`, `assignee`, `tags` (string[]), `createdBy`, `updatedBy`, `history` (event list), `effort` (`None`|`XS`|`S`|`M`|`L`|`XL`), `implementationLink`, `subtasks` (string[] of child ticket IDs). Markdown body below frontmatter for description.
+
+**Subtasks**: The `subtasks` field is an array of ticket ID strings (e.g. `["FLUX-5", "FLUX-6"]`). Each subtask MUST be a separate `.flux/<id>.md` file. Never write inline objects. To create a subtask, use `POST /api/tasks/:parentId/subtasks` with `{ title, status?, priority?, body? }` — this atomically creates the child ticket and links it.
 
 History entry shapes:
 ```yaml
@@ -55,6 +57,7 @@ History entry shapes:
 ## APIs
 
 - `GET/POST /api/tasks`, `PUT/DELETE /api/tasks/:id` — `GET/PUT /api/config` — `POST /api/bulk-rename`
+- `POST /api/tasks/:parentId/subtasks` — create a child ticket and link it to the parent
 - Portal: `localhost:5167` — Engine: `localhost:3067`
 
 ## User Input Routing
