@@ -51,6 +51,10 @@ export let configCache: any = {
     geminiCli: {
       groomingModel: '',
       implementationModel: '',
+    },
+    copilotCli: {
+      groomingModel: '',
+      implementationModel: '',
     }
   },
   syncSettings: {

@@ -242,11 +242,20 @@ export function attachStdoutProcessing(
               }
               // Accumulate tool progress in memory only — written to file at session end
               if (session.sessionHistoryEntry) {
+                const ts = new Date().toISOString();
                 session.sessionHistoryEntry.progress.push({ 
-                  timestamp: new Date().toISOString(), 
+                  timestamp: ts, 
                   message: progressMsg,
                   type: 'tool',
                   data: { toolName, parameters: toolBlock.input }
+                });
+                // Broadcast tool progress via SSE for real-time portal updates
+                broadcastEvent('progress', {
+                  taskId,
+                  sessionId: session.sessionHistoryEntry.sessionId,
+                  timestamp: ts,
+                  message: progressMsg,
+                  type: 'tool',
                 });
               }
             }
@@ -272,8 +281,10 @@ export function attachStdoutProcessing(
           if (typeof evt.content === 'string' && evt.content.trim()) {
             // Append to output buffers for tracking and eventual flush
             session.liveOutputBuffer += evt.content;
-            session.outputBuffer += evt.content; // Use outputBuffer directly to avoid double flush if commitPending is called
+            session.outputBuffer += evt.content;
             session.lastOutputAt = new Date().toISOString();
+            // Trigger debounced flush to broadcast progress via SSE (matching Claude behavior)
+            flushSessionOutput(session);
           }
         } else if (evt.type === 'tool_use') {
           // Gemini CLI tool use schema
@@ -310,11 +321,20 @@ export function attachStdoutProcessing(
 
             // Accumulate tool progress in memory only — written to file at session end
             if (toolName && session.sessionHistoryEntry) {
+              const ts = new Date().toISOString();
               session.sessionHistoryEntry.progress.push({ 
-                timestamp: new Date().toISOString(), 
+                timestamp: ts, 
                 message: progressMsg,
                 type,
                 data
+              });
+              // Broadcast tool progress via SSE for real-time portal updates
+              broadcastEvent('progress', {
+                taskId,
+                sessionId: session.sessionHistoryEntry.sessionId,
+                timestamp: ts,
+                message: progressMsg,
+                type,
               });
             }
           }

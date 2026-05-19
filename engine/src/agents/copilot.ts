@@ -22,7 +22,6 @@ function cleanChildEnv(): NodeJS.ProcessEnv {
   for (const key of Object.keys(env)) {
     if (key.toUpperCase() === 'NODE_OPTIONS') delete env[key];
   }
-  env.NODE_OPTIONS = '';
   return env;
 }
 
@@ -31,23 +30,25 @@ export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 type EffortLevel = typeof EFFORT_LEVELS[number];
 
 export const PROVIDER_CAPABILITIES = {
-  claude: { supportsEffort: true, effortFlag: '--effort' },
-  copilot: { supportsEffort: false, effortFlag: '' },
+  copilot: { supportsEffort: true, effortFlag: '--effort' },
 };
 
-export function cliLabelForFramework(framework: 'claude' | 'copilot' | 'gemini') {
+export function cliLabelForFramework() {
   return 'Copilot CLI';
 }
 
 const TOOL_ACTIVITY_MAP: Record<string, string> = {
-  Bash: 'Running command',
-  Edit: 'Editing',
-  Write: 'Editing',
-  Read: 'Reading',
-  WebFetch: 'Researching',
-  WebSearch: 'Researching',
-  Agent: 'Delegating',
-  TodoWrite: 'Planning',
+  powershell: 'Running command',
+  shell: 'Running command',
+  edit: 'Editing',
+  create: 'Editing',
+  view: 'Reading',
+  glob: 'Searching',
+  grep: 'Searching',
+  web_fetch: 'Researching',
+  ask_user: 'Waiting for input',
+  task: 'Delegating',
+  sql: 'Working',
 };
 
 export function appendSessionOutput(session: CliSessionRecord, chunk: Buffer | string, source: 'stdout' | 'stderr', isAssistantText = false) {
@@ -173,8 +174,6 @@ export function buildInitialPrompt(task: any, appendPrompt: string): string {
     actionInstruction,
     ...(appendPrompt ? ['', appendPrompt] : []),
   ];
-  // Node's spawn rejects strings containing null bytes; strip them to prevent
-  // ticket content (e.g. bad escape sequences) from breaking the spawn call.
   return lines.join('\n').replace(/\0/g, '');
 }
 
@@ -192,56 +191,263 @@ export function attachStdoutProcessing(
   };
 
   let lineBuf = '';
+  let stdoutChunkCount = 0;
   proc.stdout.on('data', (chunk: Buffer) => {
+    stdoutChunkCount++;
     lineBuf += chunk.toString();
     const lines = lineBuf.split('\n');
     lineBuf = lines.pop() ?? '';
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      
-      // Regex heuristics for Copilot activity
-      if (trimmed.startsWith('Running: ') || trimmed.startsWith('$ ')) {
-        session.currentActivity = 'Running command';
-        broadcastEvent('activity', { taskId, activity: session.currentActivity });
-      } else if (trimmed.includes('Reading ') || trimmed.startsWith('Looking at ')) {
-        session.currentActivity = 'Reading';
-        broadcastEvent('activity', { taskId, activity: session.currentActivity });
-      } else if (trimmed.includes('Writing ') || trimmed.startsWith('Editing ')) {
-        session.currentActivity = 'Editing';
-        broadcastEvent('activity', { taskId, activity: session.currentActivity });
-      } else if (trimmed.includes('Thinking')) {
-        session.currentActivity = 'Thinking';
-        broadcastEvent('activity', { taskId, activity: session.currentActivity });
-      }
+      try {
+        const evt = JSON.parse(trimmed);
 
-      appendSessionOutput(session, trimmed + '\n', 'stdout', true);
-      flushSessionOutput(session);
+        // Capture the session ID from the parentId chain for resume support.
+        // The session UUID appears in `assistant.turn_start` parentId or the initial user.message id.
+        if (evt.type === 'user.message' && evt.id) {
+          // The Copilot CLI session ID is embedded in the output — capture from
+          // the parentId of the first user.message or from session metadata.
+          if (!session.claudeSessionId && evt.parentId) {
+            session.claudeSessionId = evt.parentId;
+          }
+        }
+
+        // Handle Copilot CLI JSONL event types
+        if (evt.type === 'assistant.message_delta' && evt.data?.deltaContent) {
+          // Assistant text delta
+          session.pendingAssistantText += evt.data.deltaContent;
+          session.liveOutputBuffer += evt.data.deltaContent;
+          if (!session.currentActivity || session.currentActivity === 'Thinking') {
+            session.currentActivity = 'Responding';
+            broadcastEvent('activity', { taskId, activity: session.currentActivity });
+          }
+        } else if (evt.type === 'assistant.message_start') {
+          commitPendingAssistantText();
+          session.currentActivity = 'Responding';
+          broadcastEvent('activity', { taskId, activity: session.currentActivity });
+        } else if (evt.type === 'assistant.reasoning_delta') {
+          // Reasoning — track activity but don't emit as text
+          if (session.currentActivity !== 'Thinking') {
+            session.currentActivity = 'Thinking';
+            broadcastEvent('activity', { taskId, activity: session.currentActivity });
+          }
+        } else if (evt.type === 'assistant.tool_call_start' || evt.type === 'assistant.tool_call') {
+          // Tool invocation started
+          commitPendingAssistantText();
+          const toolName = evt.data?.toolName || evt.data?.name || 'unknown';
+          const newActivity = TOOL_ACTIVITY_MAP[toolName] ?? 'Working';
+          const activityChanged = session.currentActivity !== newActivity;
+          session.currentActivity = newActivity;
+
+          if (activityChanged) {
+            session.lastProgressLog = undefined;
+          }
+
+          broadcastEvent('activity', { taskId, activity: session.currentActivity });
+
+          // Accumulate tool progress in memory
+          if (session.sessionHistoryEntry) {
+            const params = evt.data?.parameters || evt.data?.input || {};
+            let progressMsg = newActivity;
+            if ((toolName === 'edit' || toolName === 'create') && params.path) {
+              progressMsg = `Editing ${path.basename(params.path)}`;
+            } else if (toolName === 'view' && params.path) {
+              progressMsg = `Reading ${path.basename(params.path)}`;
+            } else if (toolName === 'powershell' && params.command) {
+              const cmd = String(params.command).slice(0, 50);
+              progressMsg = `Running: ${cmd}${cmd.length >= 50 ? '...' : ''}`;
+            } else if ((toolName === 'grep' || toolName === 'glob') && params.pattern) {
+              progressMsg = `Searching: ${String(params.pattern).slice(0, 40)}`;
+            }
+            session.sessionHistoryEntry.progress.push({
+              timestamp: new Date().toISOString(),
+              message: progressMsg,
+              type: 'tool',
+              data: { toolName, parameters: params },
+            });
+          }
+        } else if (evt.type === 'assistant.tool_call_delta') {
+          // Tool call streaming — no-op for progress tracking
+        } else if (evt.type === 'assistant.tool_result') {
+          // Tool completed
+          if (evt.data?.is_error) {
+            console.error(`[${taskId}] Tool failed:`, evt.data.error || evt.data.content);
+            if (session.sessionHistoryEntry) {
+              session.sessionHistoryEntry.progress.push({
+                timestamp: new Date().toISOString(),
+                message: `Tool failed: ${evt.data.toolName || 'unknown'}`,
+                type: 'info',
+                data: { error: evt.data.error || evt.data.content },
+              });
+            }
+          }
+        } else if (evt.type === 'assistant.turn_start') {
+          // New turn
+          session.currentActivity = 'Thinking';
+          broadcastEvent('activity', { taskId, activity: session.currentActivity });
+        } else if (evt.type === 'assistant.turn_end' || evt.type === 'result') {
+          // Turn completed — may contain usage stats
+          commitPendingAssistantText();
+          session.currentActivity = undefined;
+          broadcastEvent('activity', { taskId, activity: null });
+
+          const usage = evt.data?.usage || evt.usage;
+          if (usage) {
+            const inputTok = (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+            const outputTok = usage.output_tokens ?? 0;
+            session.inputTokens = (session.inputTokens ?? 0) + inputTok;
+            session.outputTokens = (session.outputTokens ?? 0) + outputTok;
+            session.cacheReadTokens = (session.cacheReadTokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
+            session.cacheCreationTokens = (session.cacheCreationTokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+            if (typeof usage.total_cost_usd === 'number') {
+              session.costUSD = (session.costUSD ?? 0) + usage.total_cost_usd;
+            } else {
+              session.costUSD = (session.costUSD ?? 0) + estimateCostUSD('copilot', inputTok, outputTok);
+              session.costIsEstimated = true;
+            }
+          }
+        } else if (evt.type === 'session.updated' || evt.type === 'session.created') {
+          // Capture the session ID for resume support
+          if (evt.data?.sessionId || evt.data?.id) {
+            session.claudeSessionId = evt.data.sessionId || evt.data.id;
+          }
+        }
+        // Skip ephemeral session setup events (session.mcp_*, session.tools_updated, etc.)
+      } catch {
+        // Non-JSON output — treat as plain text activity
+        appendSessionOutput(session, trimmed + '\n', 'stdout', true);
+        flushSessionOutput(session);
+        if (!session.currentActivity) {
+          session.currentActivity = 'Working';
+          broadcastEvent('activity', { taskId, activity: session.currentActivity });
+        }
+      }
     }
   });
 
   return commitPendingAssistantText;
 }
 
+/** Resolve the copilot binary path across platforms. */
+function resolveCopilotBinary(id: string): { exePath: string; useShell: boolean } {
+  const isWin = process.platform === 'win32';
+  const ext = isWin ? '.exe' : '';
+
+  // 1. Try PATH first — most reliable if user has installed it globally
+  try {
+    const checker = isWin ? 'where' : 'which';
+    const result = execSync(`${checker} copilot`, { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000 }).trim();
+    const firstMatch = result.split(/\r?\n/)[0];
+    if (firstMatch && fs.existsSync(firstMatch)) {
+      // On Windows prefer the .exe over .cmd to avoid shell overhead
+      if (isWin && firstMatch.endsWith('.cmd')) {
+        const exeVariant = firstMatch.replace(/\.cmd$/, '.exe');
+        if (fs.existsSync(exeVariant)) {
+          console.log(`[${id}] Found copilot.exe on PATH: ${exeVariant}`);
+          return { exePath: exeVariant, useShell: false };
+        }
+        console.log(`[${id}] Found copilot.cmd on PATH: ${firstMatch}`);
+        return { exePath: firstMatch, useShell: true };
+      }
+      console.log(`[${id}] Found copilot on PATH: ${firstMatch}`);
+      return { exePath: firstMatch, useShell: false };
+    }
+  } catch {
+    // Not on PATH — continue to fallback locations
+  }
+
+  // 2. Check VS Code globalStorage (Copilot Chat extension installs the CLI here)
+  const vsCodeCandidates = getVSCodeGlobalStoragePaths();
+  for (const candidate of vsCodeCandidates) {
+    if (fs.existsSync(candidate)) {
+      console.log(`[${id}] Found copilot via VS Code globalStorage: ${candidate}`);
+      return { exePath: candidate, useShell: false };
+    }
+  }
+
+  // 3. Try npm global prefix
+  try {
+    const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000 }).trim();
+    if (isWin) {
+      const candidateExe = path.join(npmPrefix, 'copilot.exe');
+      const candidateCmd = path.join(npmPrefix, 'copilot.cmd');
+      if (fs.existsSync(candidateExe)) {
+        console.log(`[${id}] Found copilot.exe at npm global: ${candidateExe}`);
+        return { exePath: candidateExe, useShell: false };
+      }
+      if (fs.existsSync(candidateCmd)) {
+        console.log(`[${id}] Found copilot.cmd at npm global: ${candidateCmd}`);
+        return { exePath: candidateCmd, useShell: true };
+      }
+    } else {
+      const candidateBin = path.join(npmPrefix, 'bin', 'copilot');
+      if (fs.existsSync(candidateBin)) {
+        console.log(`[${id}] Found copilot at npm global: ${candidateBin}`);
+        return { exePath: candidateBin, useShell: false };
+      }
+    }
+  } catch (err) {
+    console.log(`[${id}] Failed to resolve copilot via npm prefix:`, err);
+  }
+
+  // 4. Final fallback — assume it will resolve at spawn time
+  console.log(`[${id}] copilot not found in known locations, falling back to bare name`);
+  return { exePath: 'copilot', useShell: isWin };
+}
+
+/** Returns candidate paths for the Copilot CLI binary installed by VS Code's Copilot Chat extension. */
+function getVSCodeGlobalStoragePaths(): string[] {
+  const candidates: string[] = [];
+  const binaryName = process.platform === 'win32' ? 'copilot.exe' : 'copilot';
+  const relPath = path.join('User', 'globalStorage', 'github.copilot-chat', 'copilotCli', binaryName);
+
+  // VS Code stores globalStorage in platform-specific locations
+  if (process.platform === 'win32') {
+    const appData = process.env.APPDATA;
+    if (appData) {
+      candidates.push(path.join(appData, 'Code', relPath));
+      candidates.push(path.join(appData, 'Code - Insiders', relPath));
+    }
+  } else if (process.platform === 'darwin') {
+    const home = process.env.HOME;
+    if (home) {
+      candidates.push(path.join(home, 'Library', 'Application Support', 'Code', relPath));
+      candidates.push(path.join(home, 'Library', 'Application Support', 'Code - Insiders', relPath));
+    }
+  } else {
+    // Linux / other
+    const configDir = process.env.XDG_CONFIG_HOME || (process.env.HOME ? path.join(process.env.HOME, '.config') : '');
+    if (configDir) {
+      candidates.push(path.join(configDir, 'Code', relPath));
+      candidates.push(path.join(configDir, 'Code - Insiders', relPath));
+    }
+  }
+  return candidates;
+}
+
 export async function startCliSession(session: CliSessionRecord, task: any, appendPrompt: string, effortOverrideRaw: string, workspaceRoot: string) {
-  const framework = session.framework;
-  const binaryName = 'gh';
   const label = session.label;
   const id = session.taskId;
 
-  const claudeIntegration = (configCache as any).integrations?.copilotCli;
+  console.log(`[${id}] Starting Copilot CLI session in ${workspaceRoot}`);
+
+  const copilotIntegration = (configCache as any).integrations?.copilotCli;
   const groomingStatuses = [(configCache as any).requireInputStatus || 'Require Input', 'Grooming'];
-  const selectedModel = null;
+  const selectedModel = copilotIntegration
+    ? (groomingStatuses.includes(task.status) ? copilotIntegration.groomingModel : copilotIntegration.implementationModel)
+    : null;
 
   const initialPrompt = buildInitialPrompt(task, appendPrompt);
 
   const copilotArgs = [
-    'copilot',
-    'suggest',
-    initialPrompt
+    ...(selectedModel ? ['--model', selectedModel] : []),
+    '-p', initialPrompt,
+    '--output-format', 'json',
+    ...(session.skipPermissions ? ['--yolo'] : ['--allow-all-tools']),
   ];
 
-  const caps = PROVIDER_CAPABILITIES[framework] ?? PROVIDER_CAPABILITIES['copilot'];
+  const caps = PROVIDER_CAPABILITIES['copilot'];
   const globalEffort = (configCache as any).effortLevel as string | undefined;
   const taskEffort = (task as any).effortLevel as string | undefined;
   const effectiveEffort = (effortOverrideRaw || taskEffort || globalEffort || '') as string;
@@ -249,46 +455,23 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     copilotArgs.push(caps.effortFlag, effectiveEffort);
   }
 
+  console.log(`[${id}] Args: [${copilotArgs.map((a, i) => i === copilotArgs.indexOf(initialPrompt) ? `<prompt ${initialPrompt.length} chars>` : a).join(', ')}]`);
+
+  const { exePath, useShell } = resolveCopilotBinary(id);
+
   let proc: ReturnType<typeof spawn>;
-  if (process.platform === 'win32') {
-    // On Windows, find the actual .exe instead of using cmd.exe wrapper
-    // Direct spawn of .exe preserves stdio streams for JSON output
-    let exePath: string | null = null;
-    try {
-      const candidateExe = path.join(process.env.ProgramFiles || 'C:\\Program Files', 'GitHub CLI', 'gh.exe');
-      if (fs.existsSync(candidateExe)) {
-        exePath = candidateExe;
-        console.log(`[${id}] Found gh.exe at: ${exePath}`);
-      }
-    } catch (err) {
-      console.log(`[${id}] Failed to resolve gh.exe path:`, err);
-    }
+  proc = spawn(exePath, copilotArgs, {
+    cwd: workspaceRoot,
+    env: cleanChildEnv(),
+    stdio: 'pipe',
+    shell: useShell,
+    windowsHide: true,
+  });
 
-    if (!exePath) {
-      // gh.exe not at standard location — verify it's on PATH before falling back
-      checkBinaryInstalled(binaryName);
-      exePath = 'gh';
-    }
-
-    console.log(`[${id}] Windows spawn: ${exePath} with ${copilotArgs.length} args`);
-    console.log(`[${id}] Prompt length: ${initialPrompt.length} chars`);
-    proc = spawn(exePath, copilotArgs, {
-      cwd: workspaceRoot,
-      env: cleanChildEnv(),
-      stdio: 'pipe',
-      shell: true,
-      windowsHide: true,
-    });
-  } else {
-    proc = spawn(binaryName, copilotArgs, {
-      cwd: workspaceRoot,
-      env: cleanChildEnv(),
-      stdio: 'pipe',
-    });
-  }
   session.proc = proc;
   session.pid = proc.pid;
   session.status = 'running';
+  session.command = exePath;
   session.args = copilotArgs;
 
   const commitPending = attachStdoutProcessing(proc, session, id);
@@ -298,7 +481,6 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   });
 
   proc.on('error', async (error) => {
-    // Clear heartbeat timer
     if (session.progressHeartbeat) {
       clearInterval(session.progressHeartbeat);
       session.progressHeartbeat = undefined;
@@ -327,7 +509,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
       });
     }
 
-    console.error(`[${id}] Failed to spawn ${binaryName}:`, error.message);
+    console.error(`[${id}] Failed to spawn copilot:`, error.message);
   });
 
   // Create agent_session history entry
@@ -343,10 +525,8 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   session.progressHeartbeat = setInterval(() => {
     if (session.currentActivity && session.sessionHistoryEntry) {
       const now = new Date().toISOString();
-      // Only log if we haven't logged this same activity recently
       if (session.lastProgressLog !== session.currentActivity) {
         session.lastProgressLog = session.currentActivity;
-        // Accumulate in memory only — written to file when session ends
         session.sessionHistoryEntry.progress.push({
           timestamp: now,
           message: session.currentActivity,
@@ -357,7 +537,6 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   }, 15000);
 
   proc.on('exit', async (code, signal) => {
-    // Clear heartbeat timer
     if (session.progressHeartbeat) {
       clearInterval(session.progressHeartbeat);
       session.progressHeartbeat = undefined;
@@ -405,11 +584,9 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
         sessionEntry.status = finalStatus;
         sessionEntry.outcome = outcome;
         sessionEntry.endedAt = session.endedAt;
-        // Merge in-memory progress accumulated during the session
         sessionEntry.progress = accumulatedProgress;
       });
 
-      // Save the agent's final message as a comment on the ticket
       const textEntries = accumulatedProgress.filter((p: any) => p.type === 'text' && p.message?.trim());
       const lastText = textEntries.length > 0 ? textEntries[textEntries.length - 1].message : '';
       if (lastText && finalStatus === 'completed') {
@@ -428,7 +605,6 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
         });
       }
     } else {
-      // Fallback to old behavior
       await updateTaskWithHistory(id, {
         updatedBy: 'Agent',
         entries: [buildActivityEntry(outcome, 'Agent', session.endedAt)],
@@ -446,7 +622,7 @@ export class CopilotAdapter implements AgentAdapter {
     costModel: { inputPerMToken: 3, outputPerMToken: 15, currency: 'usd' },
     capabilities: {
       compacting: true,
-      effortLevels: [],
+      effortLevels: [...EFFORT_LEVELS],
       memoryFiles: true,
     },
   };
@@ -470,7 +646,6 @@ export class CopilotAdapter implements AgentAdapter {
 
 export async function sendCliSessionInput(session: CliSessionRecord, message: string, user: string, workspaceRoot: string) {
   const id = session.taskId;
-  const binaryName = session.command;
 
   const inputAt = new Date().toISOString();
   session.lastInputAt = inputAt;
@@ -482,43 +657,21 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   });
 
   const safeMessage = message.replace(/\0/g, '');
-  const resumeArgs = [
-    'copilot',
-    'suggest',
-    safeMessage
-  ];
+  const resumeArgs = session.claudeSessionId
+    ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'json', '--yolo']
+    : ['-p', safeMessage, '--output-format', 'json', '--yolo'];
 
-  let replyProc: ReturnType<typeof spawn>;
-  if (process.platform === 'win32') {
-    // On Windows, find the actual .exe instead of using cmd.exe wrapper
-    let exePath: string | null = null;
-    try {
-      const candidateExe = path.join(process.env.ProgramFiles || 'C:\\Program Files', 'GitHub CLI', 'gh.exe');
-      if (fs.existsSync(candidateExe)) {
-        exePath = candidateExe;
-      }
-    } catch (err) {
-      console.log(`[${id}] Failed to resolve gh.exe path for reply:`, err);
-    }
+  const { exePath, useShell } = resolveCopilotBinary(id);
 
-    if (!exePath) {
-      checkBinaryInstalled(binaryName);
-      exePath = 'gh';
-    }
+  console.log(`[${id}] Reply spawn: ${exePath}, resume=${session.claudeSessionId || 'none'}`);
+  const replyProc = spawn(exePath, resumeArgs, {
+    cwd: workspaceRoot,
+    env: cleanChildEnv(),
+    stdio: 'pipe',
+    shell: useShell,
+    windowsHide: true,
+  });
 
-    console.log(`[${id}] Windows reply spawn: ${exePath}`);
-    replyProc = spawn(exePath, resumeArgs, {
-      cwd: workspaceRoot,
-      env: cleanChildEnv(),
-      stdio: 'pipe',
-    });
-  } else {
-    replyProc = spawn(binaryName, resumeArgs, {
-      cwd: workspaceRoot,
-      env: cleanChildEnv(),
-      stdio: 'pipe',
-    });
-  }
   session.proc = replyProc;
   session.pid = replyProc.pid;
 
@@ -536,7 +689,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       updatedBy: 'Agent',
       entries: [buildActivityEntry(`${session.label} reply failed: ${error.message}`, 'Agent', new Date().toISOString())],
     });
-    console.error(`[${id}] Failed to spawn ${binaryName} for reply:`, error.message);
+    console.error(`[${id}] Failed to spawn copilot for reply:`, error.message);
   });
 
   replyProc.on('exit', async () => {
