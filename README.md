@@ -79,6 +79,10 @@ Board layout and behaviour are controlled by `.flux/config.json`:
 | `syncSettings.debounceMs` | Git Sync: milliseconds of file-write silence before auto-commit fires |
 | `syncSettings.maxWaitMs` | Git Sync: maximum milliseconds before a sync is forced even under sustained writes |
 
+### Read State (`.flux/read-state.json`)
+
+The `read-state.json` file tracks which ticket comments each user has read. Unlike other `.flux/` data files, **this file is committed to the repository** so that read/unread state propagates across devices for the same user. The engine uses a Set-union merge strategy, so concurrent updates from multiple machines resolve additively without conflicts.
+
 ---
 
 ## 🔀 Git Sync — How It Works

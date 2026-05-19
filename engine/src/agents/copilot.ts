@@ -330,70 +330,87 @@ export function attachStdoutProcessing(
 }
 
 /** Resolve the copilot binary path across platforms. */
-function resolveCopilotBinary(id: string): { exePath: string; useShell: boolean } {
+function resolveCopilotBinary(id: string): { nodePath: string | null; entryPoint: string | null; exePath: string } {
   const isWin = process.platform === 'win32';
-  const ext = isWin ? '.exe' : '';
 
-  // 1. Try PATH first — most reliable if user has installed it globally
+  // On Windows, prefer spawning node + JS entry point to avoid .cmd/.bat path-with-spaces issues.
+  if (isWin) {
+    // 1. Find system node (avoid pkg binary resolving to itself)
+    let systemNodePath: string | null = null;
+    try {
+      const whereResult = execSync('where node', { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000 }).trim().split(/\r?\n/);
+      const selfExe = process.execPath.toLowerCase();
+      systemNodePath = whereResult.find(p => p.toLowerCase() !== selfExe && fs.existsSync(p)) || null;
+      if (!systemNodePath) systemNodePath = whereResult[0] || null;
+    } catch {}
+
+    // 2. Find the JS entry point via npm global prefix
+    let entryPoint: string | null = null;
+    try {
+      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000 }).trim();
+      const candidate = path.join(npmPrefix, 'node_modules', '@github', 'copilot', 'npm-loader.js');
+      if (fs.existsSync(candidate)) {
+        entryPoint = candidate;
+        console.log(`[${id}] Found copilot JS entry: ${entryPoint}`);
+      }
+    } catch (err) {
+      console.log(`[${id}] Failed to resolve copilot via npm prefix:`, err);
+    }
+
+    // 3. Second attempt: derive from 'where copilot' .cmd location
+    if (!entryPoint) {
+      try {
+        const result = execSync('where copilot', { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000 }).trim();
+        const cmdMatch = result.split(/\r?\n/).find(m => m.endsWith('.cmd'));
+        if (cmdMatch) {
+          const binDir = path.dirname(cmdMatch);
+          // npm global: prefix/copilot.cmd → prefix/node_modules/@github/copilot/npm-loader.js
+          const candidate = path.join(binDir, 'node_modules', '@github', 'copilot', 'npm-loader.js');
+          if (fs.existsSync(candidate)) {
+            entryPoint = candidate;
+          }
+        }
+      } catch {}
+    }
+
+    if (entryPoint && systemNodePath) {
+      console.log(`[${id}] Will spawn: ${systemNodePath} ${entryPoint}`);
+      return { nodePath: systemNodePath, entryPoint, exePath: systemNodePath };
+    }
+  }
+
+  // Non-Windows or fallback: use binary from PATH directly
   try {
     const checker = isWin ? 'where' : 'which';
     const result = execSync(`${checker} copilot`, { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000 }).trim();
-    const firstMatch = result.split(/\r?\n/)[0];
-    if (firstMatch && fs.existsSync(firstMatch)) {
-      // On Windows prefer the .exe over .cmd to avoid shell overhead
-      if (isWin && firstMatch.endsWith('.cmd')) {
-        const exeVariant = firstMatch.replace(/\.cmd$/, '.exe');
-        if (fs.existsSync(exeVariant)) {
-          console.log(`[${id}] Found copilot.exe on PATH: ${exeVariant}`);
-          return { exePath: exeVariant, useShell: false };
-        }
-        console.log(`[${id}] Found copilot.cmd on PATH: ${firstMatch}`);
-        return { exePath: firstMatch, useShell: true };
-      }
-      console.log(`[${id}] Found copilot on PATH: ${firstMatch}`);
-      return { exePath: firstMatch, useShell: false };
-    }
-  } catch {
-    // Not on PATH — continue to fallback locations
-  }
+    const matches = result.split(/\r?\n/).filter(Boolean);
 
-  // 2. Check VS Code globalStorage (Copilot Chat extension installs the CLI here)
+    if (isWin) {
+      const exeMatch = matches.find(m => m.endsWith('.exe'));
+      if (exeMatch && fs.existsSync(exeMatch)) {
+        console.log(`[${id}] Found copilot.exe: ${exeMatch}`);
+        return { nodePath: null, entryPoint: null, exePath: exeMatch };
+      }
+    } else {
+      const firstMatch = matches[0];
+      if (firstMatch && fs.existsSync(firstMatch)) {
+        console.log(`[${id}] Found copilot on PATH: ${firstMatch}`);
+        return { nodePath: null, entryPoint: null, exePath: firstMatch };
+      }
+    }
+  } catch {}
+
+  // Check VS Code globalStorage for native binary
   const vsCodeCandidates = getVSCodeGlobalStoragePaths();
   for (const candidate of vsCodeCandidates) {
     if (fs.existsSync(candidate)) {
       console.log(`[${id}] Found copilot via VS Code globalStorage: ${candidate}`);
-      return { exePath: candidate, useShell: false };
+      return { nodePath: null, entryPoint: null, exePath: candidate };
     }
   }
 
-  // 3. Try npm global prefix
-  try {
-    const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000 }).trim();
-    if (isWin) {
-      const candidateExe = path.join(npmPrefix, 'copilot.exe');
-      const candidateCmd = path.join(npmPrefix, 'copilot.cmd');
-      if (fs.existsSync(candidateExe)) {
-        console.log(`[${id}] Found copilot.exe at npm global: ${candidateExe}`);
-        return { exePath: candidateExe, useShell: false };
-      }
-      if (fs.existsSync(candidateCmd)) {
-        console.log(`[${id}] Found copilot.cmd at npm global: ${candidateCmd}`);
-        return { exePath: candidateCmd, useShell: true };
-      }
-    } else {
-      const candidateBin = path.join(npmPrefix, 'bin', 'copilot');
-      if (fs.existsSync(candidateBin)) {
-        console.log(`[${id}] Found copilot at npm global: ${candidateBin}`);
-        return { exePath: candidateBin, useShell: false };
-      }
-    }
-  } catch (err) {
-    console.log(`[${id}] Failed to resolve copilot via npm prefix:`, err);
-  }
-
-  // 4. Final fallback — assume it will resolve at spawn time
-  console.log(`[${id}] copilot not found in known locations, falling back to bare name`);
-  return { exePath: 'copilot', useShell: isWin };
+  console.log(`[${id}] copilot not found, falling back to bare name`);
+  return { nodePath: null, entryPoint: null, exePath: 'copilot' };
 }
 
 /** Returns candidate paths for the Copilot CLI binary installed by VS Code's Copilot Chat extension. */
@@ -402,7 +419,6 @@ function getVSCodeGlobalStoragePaths(): string[] {
   const binaryName = process.platform === 'win32' ? 'copilot.exe' : 'copilot';
   const relPath = path.join('User', 'globalStorage', 'github.copilot-chat', 'copilotCli', binaryName);
 
-  // VS Code stores globalStorage in platform-specific locations
   if (process.platform === 'win32') {
     const appData = process.env.APPDATA;
     if (appData) {
@@ -416,7 +432,6 @@ function getVSCodeGlobalStoragePaths(): string[] {
       candidates.push(path.join(home, 'Library', 'Application Support', 'Code - Insiders', relPath));
     }
   } else {
-    // Linux / other
     const configDir = process.env.XDG_CONFIG_HOME || (process.env.HOME ? path.join(process.env.HOME, '.config') : '');
     if (configDir) {
       candidates.push(path.join(configDir, 'Code', relPath));
@@ -424,6 +439,30 @@ function getVSCodeGlobalStoragePaths(): string[] {
     }
   }
   return candidates;
+}
+
+/** Spawn the copilot process using the resolved binary info. */
+function spawnCopilot(id: string, args: string[], workspaceRoot: string) {
+  const { nodePath, entryPoint, exePath } = resolveCopilotBinary(id);
+
+  if (nodePath && entryPoint) {
+    // Spawn node directly with JS entry point (avoids .cmd path-with-spaces issues on Windows)
+    console.log(`[${id}] Spawning: node ${path.basename(entryPoint)} [${args.length} args]`);
+    return spawn(nodePath, [entryPoint, ...args], {
+      cwd: workspaceRoot,
+      env: cleanChildEnv(),
+      stdio: 'pipe',
+      windowsHide: true,
+    });
+  }
+
+  console.log(`[${id}] Spawning: ${exePath} [${args.length} args]`);
+  return spawn(exePath, args, {
+    cwd: workspaceRoot,
+    env: cleanChildEnv(),
+    stdio: 'pipe',
+    windowsHide: true,
+  });
 }
 
 export async function startCliSession(session: CliSessionRecord, task: any, appendPrompt: string, effortOverrideRaw: string, workspaceRoot: string) {
@@ -457,21 +496,12 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
 
   console.log(`[${id}] Args: [${copilotArgs.map((a, i) => i === copilotArgs.indexOf(initialPrompt) ? `<prompt ${initialPrompt.length} chars>` : a).join(', ')}]`);
 
-  const { exePath, useShell } = resolveCopilotBinary(id);
-
-  let proc: ReturnType<typeof spawn>;
-  proc = spawn(exePath, copilotArgs, {
-    cwd: workspaceRoot,
-    env: cleanChildEnv(),
-    stdio: 'pipe',
-    shell: useShell,
-    windowsHide: true,
-  });
+  let proc = spawnCopilot(id, copilotArgs, workspaceRoot);
 
   session.proc = proc;
   session.pid = proc.pid;
   session.status = 'running';
-  session.command = exePath;
+  session.command = 'copilot';
   session.args = copilotArgs;
 
   const commitPending = attachStdoutProcessing(proc, session, id);
@@ -661,16 +691,8 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'json', '--yolo']
     : ['-p', safeMessage, '--output-format', 'json', '--yolo'];
 
-  const { exePath, useShell } = resolveCopilotBinary(id);
-
-  console.log(`[${id}] Reply spawn: ${exePath}, resume=${session.claudeSessionId || 'none'}`);
-  const replyProc = spawn(exePath, resumeArgs, {
-    cwd: workspaceRoot,
-    env: cleanChildEnv(),
-    stdio: 'pipe',
-    shell: useShell,
-    windowsHide: true,
-  });
+  console.log(`[${id}] Reply spawn, resume=${session.claudeSessionId || 'none'}`);
+  const replyProc = spawnCopilot(id, resumeArgs, workspaceRoot);
 
   session.proc = replyProc;
   session.pid = replyProc.pid;
