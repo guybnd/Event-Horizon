@@ -1,12 +1,11 @@
 ---
-id: FLUX-271
 title: 'testing claude v2, do you read me?'
-status: Require Input
+status: Archived
 priority: None
 assignee: unassigned
 tags: []
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 effort: None
 implementationLink: null
 history:
@@ -37,6 +36,11 @@ history:
     to: Require Input
     user: Agent
     date: '2026-05-18T13:41:30.000Z'
+  - type: status_change
+    from: Require Input
+    to: Archived
+    user: Guy
+    date: '2026-05-19T07:46:36.597Z'
 ---
 
 ## Problem / Motivation
