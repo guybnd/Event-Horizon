@@ -7,6 +7,7 @@ import { attachWorktreeIfPresent } from './storage-sync.js';
 import { startSyncWatcher } from './sync-watcher.js';
 import { configCache, loadConfig, autoRegisterUnknownTags } from './config.js';
 import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate } from './history.js';
+import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
 import { getCliSessionSummaryForTask } from './session-store.js';
 import { isTopLevelTaskFile, getDocsDir, isDocFile, getDocPathFromFile, titleFromDocPath, slugifyDocValue, parseDocOrder } from './file-utils.js';
 import type { StoredDoc } from './file-utils.js';
@@ -238,6 +239,15 @@ export async function loadTask(filePath: string) {
 
     if (subtasksNormalized) {
       normalizedFrontmatter.subtasks = subtasksNormalized;
+    }
+
+    const validationErrors = validateTicketFrontmatter(normalizedFrontmatter);
+    if (validationErrors.length > 0) {
+      const summary = formatValidationErrors(validationErrors);
+      console.error(`\n[FLUX VALIDATION ERROR] ${filePath}\n  Schema validation failed:\n${summary}\n  The ticket has been removed from the board. Fix the frontmatter and save again.\n`);
+      delete tasksCache[id];
+      parseErrors[id] = { id, path: filePath, error: `Schema validation failed:\n${summary}` };
+      return;
     }
 
     tasksCache[id] = {

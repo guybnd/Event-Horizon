@@ -217,6 +217,19 @@ export function normalizeHistoryEntries(history: any[] = []) {
       }
     }
 
+    if (nextEntry.type === 'status_change') {
+      if (nextEntry.from == null && typeof nextEntry.oldStatus === 'string') {
+        nextEntry.from = nextEntry.oldStatus;
+        delete nextEntry.oldStatus;
+        changed = true;
+      }
+      if (nextEntry.to == null && typeof nextEntry.newStatus === 'string') {
+        nextEntry.to = nextEntry.newStatus;
+        delete nextEntry.newStatus;
+        changed = true;
+      }
+    }
+
     return nextEntry;
   });
 

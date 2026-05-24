@@ -48,6 +48,42 @@ History entry shapes:
   date: '2026-05-06T22:31:00.000Z'
 ```
 
+**Schema landmines — get these wrong and the engine silently drops the entry:**
+
+```yaml
+# ✅ CORRECT status_change — uses from/to with a real ISO timestamp
+- type: status_change
+  from: Grooming
+  to: Todo
+  user: Agent
+  date: '2026-05-25T13:42:18.331Z'
+
+# ❌ WRONG — oldStatus/newStatus is not the canonical shape; gates that protect
+#    Require Input / Ready transitions will fail to recognize this entry
+- type: status_change
+  oldStatus: Grooming
+  newStatus: Todo
+  user: Agent
+  date: '2026-05-25T14:00:00.000Z'
+
+# ❌ WRONG — round-number timestamps like 13:42:00.000Z look fabricated.
+#    Use an actual current timestamp (millisecond precision).
+```
+
+**Subtask shape:** `subtasks` is an array of ticket ID strings. Inline objects are silently dropped if they lack an `id` field.
+
+```yaml
+# ✅ CORRECT
+subtasks:
+  - FLUX-282
+  - FLUX-283
+
+# ❌ WRONG — inline subtask objects without id are dropped on load
+subtasks:
+  - title: Research CLI capabilities
+    status: Todo
+```
+
 ## Working Surfaces
 
 - `.flux/*.md`: tickets — `.flux/config.json`: board config — `.docs/**/*.md`: project docs
@@ -74,14 +110,33 @@ History entry shapes:
 
 ## Persisting Changes
 
-All ticket updates — status changes, metadata, body rewrites, history comments — **MUST** be persisted by directly editing the `.flux/<id>.md` file using your file-editing tool. Do not consider any ticket work complete until changes are written to disk.
+All ticket updates — status changes, metadata, body rewrites, history comments — **MUST** go through the engine API at `http://localhost:3067`. Do not edit `.flux/<id>.md` files directly. The engine validates the schema, normalizes timestamps, and writes the file atomically; raw file edits skip those guards and risk silent data loss.
 
-To update a ticket:
-1. Open and edit the `.flux/<id>.md` file — update YAML frontmatter fields and/or the markdown body as needed.
-2. Append new entries to the `history` array for status changes and comments (never replace existing entries).
-3. Set `updatedBy` to reflect who made the change.
+Two write endpoints cover everything an agent needs:
 
-Ticket changes that only exist in chat or agent memory are **lost**. The `.flux/` file is the single source of truth.
+```
+POST /api/tasks
+  Body: { projectKey?, title, status?, priority?, body?, author, ...frontmatterFields }
+  Use: create a new ticket.
+
+PUT  /api/tasks/:id
+  Body: {
+    updatedBy: '<actor>',
+    title?, status?, priority?, effort?, tags?, assignee?, body?,
+    appendHistory?: [ { type: 'comment', user, comment }, ... ],
+  }
+  Use: any change to an existing ticket — status moves, body rewrites, history additions.
+```
+
+Notes:
+- **Server fills `date` automatically** for entries in `appendHistory`. Do not set `date` yourself; it gets overwritten with the server's current time.
+- **Use `appendHistory`, not full `history`.** Sending the entire history array risks clobbering entries written by other actors between your read and your write.
+- A status change without `appendHistory` containing a comment will be rejected when moving to `Require Input` or `Ready`.
+- The schema validator rejects malformed entries (wrong shape, missing required fields). On rejection, the engine returns 400 with a `details` array — fix and retry.
+
+If the engine is unreachable, do not edit the file directly — surface the problem to the user and wait. Direct file edits will be flagged as schema errors on the next read and refuse to render.
+
+Ticket changes that only exist in chat or agent memory are **lost**. The engine is the single source of truth.
 
 ## Critical Rules
 

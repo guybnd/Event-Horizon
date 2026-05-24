@@ -22,17 +22,17 @@ Refer to the orchestrator skill for the ticket model, APIs, and end-to-end check
 
 1. Read the full ticket, including all history, before touching any file.
 2. For M+ effort tickets, check `.docs/INDEX.md` for relevant docs. Read nearby implementation files. Prefer the smallest owning surface.
-3. Edit the ticket file to append a short plan comment to `history` before substantial work.
-4. Edit the ticket file to set `status: In Progress` and append a `status_change` history entry before the first substantive code change.
+3. `PUT /api/tasks/:id` with `appendHistory: [{ type: 'comment', user: 'Agent', comment: '<plan>' }]` before substantial work.
+4. `PUT /api/tasks/:id` with `status: 'In Progress'` before the first substantive code change. The engine appends the status_change entry automatically.
 5. Make small, local changes and validate immediately after the first edit.
-6. Edit the ticket file to append progress comments to `history` when scope changes, validation fails, or the user redirects.
-7. If clarification is needed, edit the ticket file to set `status: Require Input` and append a history comment — do not ask only in chat.
-8. When moving to `Ready`: edit the ticket file to add a concise summary comment to `history` (what was implemented, validated, any caveats) and set `status: Ready`. Keep code files uncommitted at this stage.
+6. `PUT /api/tasks/:id` with `appendHistory` to add progress comments when scope changes, validation fails, or the user redirects.
+7. If clarification is needed, `PUT` with `status: 'Require Input'` and an `appendHistory` comment — do not ask only in chat.
+8. When moving to `Ready`: `PUT` with `status: 'Ready'` and an `appendHistory` summary comment (what was implemented, validated, any caveats). Keep code files uncommitted at this stage.
 9. Before `Ready` or `Done`, update `.docs/` when behavior changed.
-10. On `finish <ticket>`: stage all relevant files, create the commit, then edit the ticket file to set `implementationLink` and `status: Done` — all as one atomic step.
-11. Edit the ticket file to append a completion comment to `history` (what changed, validated, caveats, commit hash).
+10. On `finish <ticket>`: stage all relevant files, create the commit, then `PUT` with `implementationLink` and `status: 'Done'` — all as one atomic step.
+11. Include a completion comment in the same `appendHistory` (what changed, validated, caveats, commit hash).
 
-All ticket changes above MUST be written to the `.flux/<id>.md` file — see the orchestrator skill's "Persisting Changes" section.
+All persistence above goes through the engine API — see the orchestrator skill's "Persisting Changes" section.
 
 ## Common Project Patterns
 

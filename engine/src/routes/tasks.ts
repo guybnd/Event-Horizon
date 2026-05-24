@@ -11,6 +11,7 @@ import {
   summarizeFieldChanges, hasAppendedStatusChange, findEarliestHistoryDate,
 } from '../history.js';
 import { tasksCache, serializeTaskForApi, updateTaskWithHistory, workspaceActivating, parseErrors } from '../task-store.js';
+import { validateTicketFrontmatter, formatValidationErrors } from '../schema.js';
 import {
   resolveSupportedImageExtension, sanitizeAssetBaseName, normalizeBase64Content,
   normalizeRelativePath, encodeAssetPath, createUniqueAssetFileName,
@@ -115,6 +116,15 @@ router.post('/', async (req, res) => {
     tags: rest.tags || [],
     history: historyWithCreation.history,
   };
+
+  const validationErrors = validateTicketFrontmatter(frontmatter);
+  if (validationErrors.length > 0) {
+    return res.status(400).json({
+      error: 'SCHEMA_VALIDATION_FAILED',
+      message: `Ticket schema validation failed:\n${formatValidationErrors(validationErrors)}`,
+      details: validationErrors,
+    });
+  }
 
   try {
     if (frontmatter.tags && Array.isArray(frontmatter.tags)) {
@@ -320,6 +330,15 @@ router.put('/:id', async (req, res) => {
   }
 
   frontmatter.history = normalizeHistoryEntries(nextHistory).history;
+
+  const validationErrors = validateTicketFrontmatter(frontmatter);
+  if (validationErrors.length > 0) {
+    return res.status(400).json({
+      error: 'SCHEMA_VALIDATION_FAILED',
+      message: `Ticket schema validation failed:\n${formatValidationErrors(validationErrors)}`,
+      details: validationErrors,
+    });
+  }
 
   try {
     if (frontmatter.tags && Array.isArray(frontmatter.tags)) {
