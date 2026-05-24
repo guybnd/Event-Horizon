@@ -10,15 +10,19 @@ history:
     user: Guy
     date: '2026-05-24T13:09:31.169Z'
     comment: Created ticket.
-id: FLUX-281
+  - type: activity
+    user: Guy
+    date: '2026-05-24T13:10:13.309Z'
+    comment: Updated description.
 title: multi agent code review
 status: Grooming
 createdBy: Guy
 updatedBy: Guy
 ---
-we should support opening multiple agent sessions with a dropdown to do :  
-  
+we should support opening multiple agent sessions with a dropdown to do :
+
 1\. code review  
 2\. code simplification  
 3\. updating docs  
-4\. reviewing per style guide and updating the style guide
+4\. reviewing per style guide and updating the style guide  
+5\. accessibility reviewer
