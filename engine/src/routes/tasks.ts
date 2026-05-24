@@ -18,7 +18,10 @@ import {
 import { cliSessionIdByTaskId, cliSessionsById } from '../session-store.js';
 import { getAdapter } from '../agents/index.js';
 
-const execFileAsync = promisify(execFile);
+const execFileAsyncRaw = promisify(execFile);
+function execFileAsync(file: string, args: string[]) {
+  return execFileAsyncRaw(file, args, { windowsHide: true });
+}
 const router = express.Router();
 
 /**

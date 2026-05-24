@@ -7,7 +7,10 @@ import matter from 'gray-matter';
 import { isOrphanMode, getFluxStoreDir } from './workspace.js';
 import { configCache } from './config.js';
 
-const execFileAsync = promisify(execFile);
+const execFileAsyncRaw = promisify(execFile);
+function execFileAsync(file: string, args: string[]) {
+  return execFileAsyncRaw(file, args, { windowsHide: true });
+}
 
 let watcher: ReturnType<typeof chokidar.watch> | null = null;
 let scheduler: ReturnType<typeof createScheduler> | null = null;

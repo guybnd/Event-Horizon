@@ -20,7 +20,7 @@ function spawnFolderPicker(): Promise<string | null> {
         '$d.ShowNewFolderButton = $true;',
         'if ($d.ShowDialog() -eq "OK") { Write-Output $d.SelectedPath }',
       ].join(' ');
-      execFile('powershell.exe', ['-NoProfile', '-Command', script], (err, stdout) => {
+      execFile('powershell.exe', ['-NoProfile', '-Command', script], { windowsHide: true }, (err, stdout) => {
         if (err) return reject(err);
         resolve(stdout.trim() || null);
       });
@@ -115,7 +115,7 @@ export async function handlePathSetup(req: express.Request, res: express.Respons
       const safeBinaryDir = binaryDir.replace(/'/g, "''");
       const ps = `[Environment]::SetEnvironmentVariable('Path', ([Environment]::GetEnvironmentVariable('Path','User') + ';${safeBinaryDir}'), 'User')`;
       await new Promise<void>((resolve, reject) => {
-        execFile('powershell.exe', ['-NoProfile', '-Command', ps], (err) => {
+        execFile('powershell.exe', ['-NoProfile', '-Command', ps], { windowsHide: true }, (err) => {
           if (err) reject(err); else resolve();
         });
       });
