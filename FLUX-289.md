@@ -1,6 +1,7 @@
 ---
+id: FLUX-289
 title: 'Engine: enforce ticket schema — reject malformed .flux/*.md writes'
-status: In Progress
+status: Ready
 priority: High
 effort: M
 assignee: unassigned
@@ -62,18 +63,6 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-25T11:30:30.000Z'
-  - type: status_change
-    from: Ready
-    to: In Progress
-    user: Agent
-    date: '2026-05-24T14:33:02.141Z'
-  - type: agent_session
-    sessionId: 309e2a35-427c-472f-8f85-42aafa23fbe5
-    startedAt: '2026-05-24T14:33:02.161Z'
-    status: active
-    progress: []
-    user: Claude Code
-    date: '2026-05-24T14:33:02.161Z'
 ---
 
 ## Problem / Motivation

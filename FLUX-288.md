@@ -1,6 +1,6 @@
 ---
 title: 'Skills: pin WRONG vs RIGHT history-entry examples in orchestrator skill'
-status: In Progress
+status: Ready
 priority: Medium
 effort: XS
 assignee: unassigned
@@ -43,18 +43,20 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-25T10:35:30.000Z'
-  - type: status_change
-    from: Ready
-    to: In Progress
+  - type: comment
     user: Agent
-    date: '2026-05-24T14:32:48.676Z'
-  - type: agent_session
-    sessionId: 93e96aa7-fa42-41ae-9824-1d28b02fba4e
-    startedAt: '2026-05-24T14:32:48.697Z'
-    status: active
-    progress: []
-    user: Claude Code
-    date: '2026-05-24T14:32:48.697Z'
+    comment: >-
+      Moving back to Ready � architecture review passed, no structural issues
+      found.
+    date: '2026-05-24T14:34:24.667Z'
+    id: c-2026-05-24t14-34-24-667z
+tokenMetadata:
+  inputTokens: 238194
+  outputTokens: 3916
+  costUSD: 0.307431
+  costIsEstimated: false
+  cacheReadTokens: 223766
+  cacheCreationTokens: 14417
 ---
 
 ## Problem / Motivation
