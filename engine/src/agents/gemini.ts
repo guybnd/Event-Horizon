@@ -11,7 +11,7 @@ import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.j
 function checkBinaryInstalled(binaryName: string): void {
   const checker = process.platform === 'win32' ? 'where' : 'which';
   try {
-    execFileSync(checker, [binaryName], { stdio: 'ignore', env: cleanChildEnv(), timeout: 10_000 });
+    execFileSync(checker, [binaryName], { stdio: 'ignore', env: cleanChildEnv(), timeout: 10_000, windowsHide: true });
   } catch {
     throw new Error(`"${binaryName}" is not installed or not on PATH. Please install it before starting an agent session.`);
   }
@@ -489,7 +489,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     let systemNodePath: string | null = null;
     try {
       const prefixEnv = cleanChildEnv();
-      const whereResult = execSync('where node', { encoding: 'utf8', env: prefixEnv, timeout: 10_000 }).trim().split(/\r?\n/);
+      const whereResult = execSync('where node', { encoding: 'utf8', env: prefixEnv, timeout: 10_000, windowsHide: true }).trim().split(/\r?\n/);
       // Filter out our own exe — pkg binaries ARE node binaries and 'where' may list them
       const selfExe = process.execPath.toLowerCase();
       systemNodePath = whereResult.find(p => p.toLowerCase() !== selfExe && fs.existsSync(p)) || null;
@@ -499,7 +499,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     }
     try {
       const prefixEnv = cleanChildEnv();
-      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', env: prefixEnv, timeout: 10_000 }).trim();
+      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', env: prefixEnv, timeout: 10_000, windowsHide: true }).trim();
       const candidateJs = path.join(npmPrefix, 'node_modules', '@google', 'gemini-cli', 'bundle', 'gemini.js');
       const candidateExe = path.join(npmPrefix, 'node_modules', '@google', 'gemini-cli', 'bin', 'gemini.exe');
       
@@ -516,7 +516,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     if (!entryPoint && !exePath) {
       try {
         const prefixEnv = cleanChildEnv();
-        const wherePath = execSync(`where ${binaryName}`, { encoding: 'utf8', env: prefixEnv, timeout: 10_000 }).trim().split(/\r?\n/)[0];
+        const wherePath = execSync(`where ${binaryName}`, { encoding: 'utf8', env: prefixEnv, timeout: 10_000, windowsHide: true }).trim().split(/\r?\n/)[0];
         if (wherePath) {
           // The .cmd is usually in the same dir as the npm prefix bin — try to find the JS bundle relative to it
           const binDir = path.dirname(wherePath);
@@ -781,14 +781,14 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     let systemNodePath: string | null = null;
     try {
       const prefixEnv = cleanChildEnv();
-      const whereResult = execSync('where node', { encoding: 'utf8', env: prefixEnv, timeout: 10_000 }).trim().split(/\r?\n/);
+      const whereResult = execSync('where node', { encoding: 'utf8', env: prefixEnv, timeout: 10_000, windowsHide: true }).trim().split(/\r?\n/);
       const selfExe = process.execPath.toLowerCase();
       systemNodePath = whereResult.find(p => p.toLowerCase() !== selfExe && fs.existsSync(p)) || null;
       if (!systemNodePath) systemNodePath = whereResult[0] || null;
     } catch {}
     try {
       const prefixEnv = cleanChildEnv();
-      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', env: prefixEnv, timeout: 10_000 }).trim();
+      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', env: prefixEnv, timeout: 10_000, windowsHide: true }).trim();
       const candidateJs = path.join(npmPrefix, 'node_modules', '@google', 'gemini-cli', 'bundle', 'gemini.js');
       const candidateExe = path.join(npmPrefix, 'node_modules', '@google', 'gemini-cli', 'bin', 'gemini.exe');
       
@@ -805,7 +805,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     if (!entryPoint && !exePath) {
       try {
         const prefixEnv = cleanChildEnv();
-        const wherePath = execSync(`where ${binaryName}`, { encoding: 'utf8', env: prefixEnv, timeout: 10_000 }).trim().split(/\r?\n/)[0];
+        const wherePath = execSync(`where ${binaryName}`, { encoding: 'utf8', env: prefixEnv, timeout: 10_000, windowsHide: true }).trim().split(/\r?\n/)[0];
         if (wherePath) {
           const binDir = path.dirname(wherePath);
           const candidateJs = path.join(binDir, 'node_modules', '@google', 'gemini-cli', 'bundle', 'gemini.js');

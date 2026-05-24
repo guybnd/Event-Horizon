@@ -11,7 +11,7 @@ import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.j
 function checkBinaryInstalled(binaryName: string): void {
   const checker = process.platform === 'win32' ? 'where' : 'which';
   try {
-    execFileSync(checker, [binaryName], { stdio: 'ignore', env: cleanChildEnv(), timeout: 10_000 });
+    execFileSync(checker, [binaryName], { stdio: 'ignore', env: cleanChildEnv(), timeout: 10_000, windowsHide: true });
   } catch {
     throw new Error(`"${binaryName}" is not installed or not on PATH. Please install it before starting an agent session.`);
   }
@@ -338,7 +338,7 @@ function resolveCopilotBinary(id: string): { nodePath: string | null; entryPoint
     // 1. Find system node (avoid pkg binary resolving to itself)
     let systemNodePath: string | null = null;
     try {
-      const whereResult = execSync('where node', { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000 }).trim().split(/\r?\n/);
+      const whereResult = execSync('where node', { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000, windowsHide: true }).trim().split(/\r?\n/);
       const selfExe = process.execPath.toLowerCase();
       systemNodePath = whereResult.find(p => p.toLowerCase() !== selfExe && fs.existsSync(p)) || null;
       if (!systemNodePath) systemNodePath = whereResult[0] || null;
@@ -347,7 +347,7 @@ function resolveCopilotBinary(id: string): { nodePath: string | null; entryPoint
     // 2. Find the JS entry point via npm global prefix
     let entryPoint: string | null = null;
     try {
-      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000 }).trim();
+      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000, windowsHide: true }).trim();
       const candidate = path.join(npmPrefix, 'node_modules', '@github', 'copilot', 'npm-loader.js');
       if (fs.existsSync(candidate)) {
         entryPoint = candidate;
@@ -360,7 +360,7 @@ function resolveCopilotBinary(id: string): { nodePath: string | null; entryPoint
     // 3. Second attempt: derive from 'where copilot' .cmd location
     if (!entryPoint) {
       try {
-        const result = execSync('where copilot', { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000 }).trim();
+        const result = execSync('where copilot', { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000, windowsHide: true }).trim();
         const cmdMatch = result.split(/\r?\n/).find(m => m.endsWith('.cmd'));
         if (cmdMatch) {
           const binDir = path.dirname(cmdMatch);
@@ -382,7 +382,7 @@ function resolveCopilotBinary(id: string): { nodePath: string | null; entryPoint
   // Non-Windows or fallback: use binary from PATH directly
   try {
     const checker = isWin ? 'where' : 'which';
-    const result = execSync(`${checker} copilot`, { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000 }).trim();
+    const result = execSync(`${checker} copilot`, { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000, windowsHide: true }).trim();
     const matches = result.split(/\r?\n/).filter(Boolean);
 
     if (isWin) {

@@ -11,7 +11,7 @@ import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.j
 function checkBinaryInstalled(binaryName: string): void {
   const checker = process.platform === 'win32' ? 'where' : 'which';
   try {
-    execFileSync(checker, [binaryName], { stdio: 'ignore', env: cleanChildEnv(), timeout: 10_000 });
+    execFileSync(checker, [binaryName], { stdio: 'ignore', env: cleanChildEnv(), timeout: 10_000, windowsHide: true });
   } catch {
     throw new Error(`"${binaryName}" is not installed or not on PATH. Please install it before starting an agent session.`);
   }
@@ -347,7 +347,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     // Direct spawn of .exe preserves stdio streams for JSON output
     let exePath: string | null = null;
     try {
-      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', timeout: 10_000 }).trim();
+      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', timeout: 10_000, windowsHide: true }).trim();
       const candidateExe = path.join(npmPrefix, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
       if (fs.existsSync(candidateExe)) {
         exePath = candidateExe;
@@ -585,7 +585,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     // On Windows, find the actual .exe instead of using cmd.exe wrapper
     let exePath: string | null = null;
     try {
-      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', timeout: 10_000 }).trim();
+      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', timeout: 10_000, windowsHide: true }).trim();
       const candidateExe = path.join(npmPrefix, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
       if (fs.existsSync(candidateExe)) {
         exePath = candidateExe;
@@ -603,12 +603,14 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       cwd: workspaceRoot,
       env: cleanChildEnv(),
       stdio: 'pipe',
+      windowsHide: true,
     });
   } else {
     replyProc = spawn(binaryName, resumeArgs, {
       cwd: workspaceRoot,
       env: cleanChildEnv(),
       stdio: 'pipe',
+      windowsHide: true,
     });
   }
   session.proc = replyProc;
