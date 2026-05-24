@@ -18,10 +18,17 @@ history:
     user: Guy
     date: '2026-05-24T13:15:23.381Z'
     comment: Updated description.
+  - type: agent_session
+    sessionId: f5fb9e24-ad19-44de-a200-175212670126
+    startedAt: '2026-05-24T13:19:06.988Z'
+    status: active
+    progress: []
+    user: Gemini CLI
+    date: '2026-05-24T13:19:06.988Z'
 title: multi agent code review
 status: Grooming
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 ---
 we should support opening multiple agent sessions with a dropdown to do :
 

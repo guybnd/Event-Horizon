@@ -1,7 +1,6 @@
 ---
-id: FLUX-279
 title: Hide cmd.exe console windows for git/powershell child processes on Windows
-status: Done
+status: In Progress
 implementationLink: a4339e4
 priority: Medium
 effort: XS
@@ -48,6 +47,30 @@ history:
       routes/tasks.ts; single-line fix in storage-sync.ts and
       routes/workspace.ts. Engine builds clean. Commit: a4339e4.
     id: c-2026-05-24t00-01-00-000z
+  - type: status_change
+    from: Done
+    to: Ready
+    user: Guy
+    date: '2026-05-24T13:19:23.337Z'
+  - type: comment
+    user: Guy
+    date: '2026-05-24T13:19:49.983Z'
+    comment: i still get some popup views when i launch an agent for example
+    id: c-2026-05-24t13-19-49-980z
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Guy
+    date: '2026-05-24T13:19:55.822Z'
+  - type: agent_session
+    sessionId: 6eaea6a5-f94a-4c1f-a013-fea81a2bfc66
+    startedAt: '2026-05-24T13:19:55.846Z'
+    status: active
+    progress: []
+    user: Gemini CLI
+    date: '2026-05-24T13:19:55.846Z'
+order: 0
+subtasks: []
 ---
 
 ## Problem / Motivation
