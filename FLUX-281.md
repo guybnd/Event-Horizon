@@ -958,21 +958,161 @@ history:
   - type: agent_session
     sessionId: 6a3cf9d2-a276-40c3-a996-a0117e737e35
     startedAt: '2026-05-24T14:41:16.704Z'
-    status: active
-    progress: []
+    status: completed
+    progress:
+      - timestamp: '2026-05-24T14:41:34.524Z'
+        message: Reading FLUX-281.md
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\.flux\FLUX-281.md'
+      - timestamp: '2026-05-24T14:41:38.561Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Glob
+          parameters:
+            pattern: .docs/**/*.md
+      - timestamp: '2026-05-24T14:41:40.883Z'
+        message: Delegating
+        type: tool
+        data:
+          toolName: Agent
+          parameters:
+            description: Check subtask tickets
+            subagent_type: Explore
+            prompt: >-
+              Read these four ticket files and report their title, status, and a
+              one-line summary of each:
+
+              - C:\GitHub\EventHorizon\.flux\FLUX-282.md
+
+              - C:\GitHub\EventHorizon\.flux\FLUX-283.md
+
+              - C:\GitHub\EventHorizon\.flux\FLUX-284.md
+
+              - C:\GitHub\EventHorizon\.flux\FLUX-285.md
+      - timestamp: '2026-05-24T14:41:44.458Z'
+        message: Reading FLUX-282.md
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\.flux\FLUX-282.md'
+      - timestamp: '2026-05-24T14:41:44.486Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Glob
+          parameters:
+            pattern: '**/session-store.ts'
+            path: 'C:\GitHub\EventHorizon'
+      - timestamp: '2026-05-24T14:41:44.570Z'
+        message: Reading FLUX-283.md
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\.flux\FLUX-283.md'
+      - timestamp: '2026-05-24T14:41:48.539Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-05-24T14:42:39.181Z'
+        message: 'Running: curl -s http://localhost:3067/api/tasks/FLUX-281 2...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              curl -s http://localhost:3067/api/tasks/FLUX-281 2>/dev/null |
+              head -c 200 || echo "ENGINE_UNREACHABLE"
+            timeout: 5000
+      - timestamp: '2026-05-24T14:42:48.550Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-05-24T14:43:17.024Z'
+        message: 'Running: curl -s -X PUT http://localhost:3067/api/tasks/FLU...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: |-
+              curl -s -X PUT http://localhost:3067/api/tasks/FLUX-281 \
+                -H "Content-Type: application/json" \
+                -d '{
+                  "updatedBy": "Agent",
+                  "status": "Todo",
+                  "appendHistory": [
+                    {
+                      "type": "comment",
+                      "user": "Agent",
+                      "comment": "Reviewed grooming. Plan is concrete: 5 steps with 4 mapped to subtasks (FLUX-282 research, FLUX-283 session-store, FLUX-284 portal UI, FLUX-285 role prompts). Step 5 (coordination guidelines) is documentation-only and can be handled as part of FLUX-285 or a follow-up. Priority High, effort L, tags confirmed. Session-store currently uses 1-to-1 task→session mapping (cliSessionIdByTaskId) which FLUX-283 will refactor to 1-to-many. Moving to Todo."
+                    }
+                  ]
+                }'
+            description: >-
+              Update FLUX-281 via engine API: add grooming comment and move to
+              Todo
+      - timestamp: '2026-05-24T14:43:18.564Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-05-24T14:43:22.175Z'
+        message: 'Running: curl -s http://localhost:3067/api/tasks/FLUX-281 |...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              curl -s http://localhost:3067/api/tasks/FLUX-281 | python -c
+              "import sys,json; d=json.load(sys.stdin); print(f'Status:
+              {d[\"status\"]}, Updated: {d[\"updatedBy\"]}')"
+            timeout: 5000
+      - timestamp: '2026-05-24T14:43:30.453Z'
+        message: >-
+          Grooming complete. FLUX-281 is now in **Todo** status with:
+
+
+          - **Priority:** High | **Effort:** L | **Tags:** feature, multi-agent,
+          workflow
+
+          - **Subtasks:** FLUX-282 (CLI research), FLUX-283 (session-store),
+          FLUX-284 (portal UI), FLUX-285 (role prompts)
+
+          - Plan confirmed: 5 steps, 4 mapped to subtasks, session-store
+          refactor from 1:1 → 1:many identified as the core architectural change
     user: Claude Code
     date: '2026-05-24T14:41:16.704Z'
+    outcome: Claude Code session ended with code 0.
+    endedAt: '2026-05-24T14:43:30.453Z'
+  - type: status_change
+    from: Grooming
+    to: Todo
+    user: Agent
+    date: '2026-05-24T14:43:17.279Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Reviewed grooming. Plan is concrete: 5 steps with 4 mapped to subtasks
+      (FLUX-282 research, FLUX-283 session-store, FLUX-284 portal UI, FLUX-285
+      role prompts). Step 5 (coordination guidelines) is documentation-only and
+      can be handled as part of FLUX-285 or a follow-up. Priority High, effort
+      L, tags confirmed. Session-store currently uses 1-to-1 task?session
+      mapping (cliSessionIdByTaskId) which FLUX-283 will refactor to 1-to-many.
+      Moving to Todo.
+    date: '2026-05-24T14:43:17.279Z'
+    id: c-2026-05-24t14-43-17-279z
 title: multi agent code review
-status: Grooming
+status: Todo
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
-  inputTokens: 356463
-  outputTokens: 7150
-  costUSD: 1.211575
+  inputTokens: 537908
+  outputTokens: 12881
+  costUSD: 1.662377
   costIsEstimated: true
-  cacheReadTokens: 244775
-  cacheCreationTokens: 29168
+  cacheReadTokens: 398356
+  cacheCreationTokens: 57023
 order: 18
 ---
 
