@@ -1,6 +1,6 @@
 ---
 title: Hide cmd.exe console windows for git/powershell child processes on Windows
-status: In Progress
+status: Done
 implementationLink: a4339e4
 priority: Medium
 effort: XS
@@ -9,7 +9,7 @@ tags:
   - engine
   - bug
 createdBy: Agent
-updatedBy: Agent
+updatedBy: Guy
 history:
   - type: activity
     user: Agent
@@ -759,7 +759,12 @@ history:
     date: '2026-05-24T13:53:29.912Z'
     outcome: Claude Code session ended with code 0.
     endedAt: '2026-05-24T13:55:52.687Z'
-order: 0
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Guy
+    date: '2026-05-24T14:52:11.119Z'
+order: 1
 subtasks: []
 tokenMetadata:
   inputTokens: 1927784
