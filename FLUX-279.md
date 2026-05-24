@@ -527,6 +527,13 @@ history:
       pass `windowsHide: true`. Not to mention you missed `replyProc` in
       `claude-code.ts` entirely! Go fix your sloppy mess. Do it right next time.
     id: c-2026-05-24t13-28-54-814z
+  - type: agent_session
+    sessionId: 81c1b715-d920-47a4-9354-627ad94dbeb2
+    startedAt: '2026-05-24T13:53:29.912Z'
+    status: active
+    progress: []
+    user: Claude Code
+    date: '2026-05-24T13:53:29.912Z'
 order: 0
 subtasks: []
 tokenMetadata:
