@@ -541,10 +541,17 @@ history:
     to: Grooming
     user: Guy
     date: '2026-05-24T13:45:12.215Z'
+  - type: agent_session
+    sessionId: 33afa7c1-96ed-4592-962c-c706afb4fd24
+    startedAt: '2026-05-24T13:45:25.968Z'
+    status: active
+    progress: []
+    user: Claude Code
+    date: '2026-05-24T13:45:25.968Z'
 title: multi agent code review
 status: Grooming
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 tokenMetadata:
   inputTokens: 255709
   outputTokens: 3001

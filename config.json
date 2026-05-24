@@ -309,7 +309,7 @@
     "generateDistinctFiles": true,
     "releaseNotesPath": "release-notes"
   },
-  "defaultAgent": "gemini",
+  "defaultAgent": "claude",
   "integrations": {
     "claudeCode": {
       "groomingModel": "",
@@ -332,7 +332,7 @@
   "docsRoot": ".docs",
   "hoverPopupsEnabled": true,
   "hoverPopupDelay": 1500,
-  "tokenDisplayMode": "tokens",
+  "tokenDisplayMode": "cost",
   "tokenCostThresholds": {
     "green": 0.1,
     "yellow": 0.5
