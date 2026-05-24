@@ -1,8 +1,10 @@
 ---
+id: FLUX-288
 title: 'Skills: pin WRONG vs RIGHT history-entry examples in orchestrator skill'
-status: Ready
+status: Done
 priority: Medium
 effort: XS
+implementationLink: c31cb35
 assignee: unassigned
 tags:
   - docs
@@ -43,20 +45,6 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-25T10:35:30.000Z'
-  - type: comment
-    user: Agent
-    comment: >-
-      Moving back to Ready � architecture review passed, no structural issues
-      found.
-    date: '2026-05-24T14:34:24.667Z'
-    id: c-2026-05-24t14-34-24-667z
-tokenMetadata:
-  inputTokens: 238194
-  outputTokens: 3916
-  costUSD: 0.307431
-  costIsEstimated: false
-  cacheReadTokens: 223766
-  cacheCreationTokens: 14417
 ---
 
 ## Problem / Motivation
