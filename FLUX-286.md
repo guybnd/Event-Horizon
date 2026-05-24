@@ -1,6 +1,6 @@
 ---
 id: FLUX-286
-title: "Engine: normalizeInlineSubtasks skips objects without id field"
+title: 'Engine: normalizeInlineSubtasks skips objects without id field'
 status: Grooming
 priority: High
 effort: S
@@ -14,7 +14,20 @@ history:
   - type: activity
     user: Guy
     date: '2026-05-24T14:00:00.000Z'
-    comment: Created ticket. FLUX-281 subtasks were written as inline objects without id fields and silently skipped by the normalizer.
+    comment: Created ticket.
+  - type: activity
+    user: Guy
+    date: '2026-05-24T14:00:00.000Z'
+    comment: >-
+      Created ticket. FLUX-281 subtasks were written as inline objects without
+      id fields and silently skipped by the normalizer.
+  - type: agent_session
+    sessionId: 6e3c4e31-6715-4c84-b29e-e26cbfda063d
+    startedAt: '2026-05-24T14:40:58.020Z'
+    status: active
+    progress: []
+    user: Claude Code
+    date: '2026-05-24T14:40:58.020Z'
 ---
 
 ## Problem & Motivation

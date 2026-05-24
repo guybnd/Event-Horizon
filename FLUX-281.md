@@ -955,6 +955,13 @@ history:
     date: '2026-05-24T13:45:25.968Z'
     outcome: Claude Code session ended with code 0.
     endedAt: '2026-05-24T13:47:38.432Z'
+  - type: agent_session
+    sessionId: 6a3cf9d2-a276-40c3-a996-a0117e737e35
+    startedAt: '2026-05-24T14:41:16.704Z'
+    status: active
+    progress: []
+    user: Claude Code
+    date: '2026-05-24T14:41:16.704Z'
 title: multi agent code review
 status: Grooming
 createdBy: Guy
