@@ -536,8 +536,13 @@ history:
     user: Guy
     date: '2026-05-24T13:42:12.811Z'
     comment: Updated subtasks.
+  - type: status_change
+    from: Todo
+    to: Grooming
+    user: Guy
+    date: '2026-05-24T13:45:12.215Z'
 title: multi agent code review
-status: Todo
+status: Grooming
 createdBy: Guy
 updatedBy: Guy
 tokenMetadata:
@@ -547,6 +552,7 @@ tokenMetadata:
   costIsEstimated: true
   cacheReadTokens: 173195
   cacheCreationTokens: 0
+order: 18
 ---
 
 ## Problem & Motivation
