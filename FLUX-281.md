@@ -8,18 +8,10 @@ priority: High
 effort: L
 implementationLink: ''
 subtasks:
-  - title: 'Research CLI capabilities and arguments for Claude, Gemini, and Copilot'
-    status: Todo
-    assignee: unassigned
-  - title: Extend session store to support multiple agent sessions
-    status: Todo
-    assignee: unassigned
-  - title: Implement role-selection UI in portal dropdown
-    status: Todo
-    assignee: unassigned
-  - title: Define agent system prompts for all 13 mapped roles
-    status: Todo
-    assignee: unassigned
+  - null
+  - null
+  - null
+  - null
 history:
   - type: activity
     user: Guy
@@ -463,10 +455,91 @@ history:
       moving the ticket from `Grooming` to `Todo`, and updated the main status
       field to `Todo`.
     id: c-2026-05-24t13-22-08-976z
+  - type: comment
+    user: Guy
+    date: '2026-05-24T13:42:12.811Z'
+    comment: >-
+      I want to create several frameworks here, ideally we have something like
+      this, lets consider whats the best approaches for us to implement:
+
+
+      Instead of a flat "launch everyone" approach, your Event Horizon
+      initialization needs a way to handle routing. Here are the three most
+      effective orchestration patterns you can build into your workflow:
+
+      1. The Relay Race (Sequential Chaining)
+
+      The simplest and most predictable method. Agents trigger one after the
+      other, with the output of Agent A appending to the context of Agent B.
+
+
+      How it works: You define a strict order. Agent A does its job and outputs
+      a payload. The system pauses, wraps that payload into the prompt for Agent
+      B, and fires.
+
+      Best for: The Review phase.
+
+      Example: The Implementer finishes the code -> hands it to the Pedant (who
+      formats and lints it) -> hands it to the QA Automator (who writes the
+      tests based on the finalized code).
+
+      2. Scatter-Gather (Parallel with a Blocking Merge)
+
+      You launch specific agents at the same time because their work doesn't
+      overlap, but you force a "wait state" before the final agent synthesizes
+      their work.
+
+
+      How it works: Agents A and B run simultaneously. Agent C is blocked until
+      both A and B return a "completed" status.
+
+      Best for: The Grooming and Todo phases, where gathering disparate
+      information is necessary.
+
+      Example: When a ticket enters Grooming, the Interrogator (finding edge
+      cases) and the Context Scout (finding relevant existing code) run in
+      parallel. Once both finish, their combined outputs are fed to the Spec
+      Writer, who generates the final Acceptance Criteria.
+
+      3. The Supervisor (Dynamic Handoff)
+
+      Instead of hardcoding the execution order in your UI, you assign one
+      primary "Lead Agent" to the phase, and give it the other personas as tools
+      it can call.
+
+
+      How it works: You trigger the Lead Architect. The Architect reviews the
+      ticket and decides, "I need the Context Scout to look up this database
+      schema." It halts, waits for the Scout's payload, and then decides its
+      next move.
+
+      Best for: Highly ambiguous tasks where you don't know the critical path
+      upfront.
+
+      Example: The Lead agent is trying to fix a bug. It uses a QA Persona to
+      write a failing test, runs it, gets the failure, and then hands the
+      context to an Implementer Persona to patch it.
+
+      How this impacts your UI setup: Instead of a single multi-select dropdown
+      that implies "run all," you might want to structure the Event Horizon
+      configuration as a mini-pipeline.
+
+      You could have a UI that looks like: Step 1: [ Dropdown: Parallel
+      Gathering Agents ] Step 2: [ Dropdown: Synthesis Agent ] Step 3: [
+      Dropdown: Review/Validation Agent ]
+
+      This gives you the flexibility to define who works on the task, while
+      implicitly controlling when they work so they aren't stepping on each
+      other's toes.
+    id: c-2026-05-24t13-42-12-807z
+  - type: activity
+    user: Guy
+    date: '2026-05-24T13:42:12.811Z'
+    comment: Updated subtasks.
 title: multi agent code review
 status: Todo
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 tokenMetadata:
   inputTokens: 255709
   outputTokens: 3001
