@@ -1,6 +1,6 @@
 ---
 title: Protocol Handler for IDE Navigation
-status: Todo
+status: Backlog
 priority: Medium
 createdBy: Guy
 updatedBy: Guy
@@ -22,6 +22,11 @@ history:
       content into the local IDE so file references become actionable instead of
       just informational.
     id: c-2026-05-06t12-07-00-000z
+  - type: status_change
+    from: Todo
+    to: Backlog
+    user: Guy
+    date: '2026-05-24T13:26:33.492Z'
 effort: M
 implementationLink: ''
 order: 2

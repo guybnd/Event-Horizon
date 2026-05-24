@@ -1,6 +1,6 @@
 ---
 title: Implement Git-Atomic Task Syncing
-status: Todo
+status: Backlog
 priority: Medium
 createdBy: Guy
 updatedBy: Guy
@@ -22,9 +22,15 @@ history:
       code changes in lockstep at the git layer so a task's completion status is
       committed atomically with the implementation it represents.
     id: c-2026-05-06t12-05-00-000z
+  - type: status_change
+    from: Todo
+    to: Backlog
+    user: Guy
+    date: '2026-05-24T13:26:53.360Z'
 effort: L
 implementationLink: ''
 order: 0
+subtasks: []
 ---
 ## Groomed Scope
 

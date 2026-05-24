@@ -8,13 +8,18 @@ tags:
 assignee: unassigned
 createdBy: Unknown
 title: 'Design testing strategy, validation UX, and diff visibility for tickets'
-status: Grooming
+status: Backlog
 updatedBy: Guy
 history:
   - type: activity
     user: Unknown
     date: '2026-05-11T01:39:09.281Z'
     comment: Created ticket.
+  - type: status_change
+    from: Grooming
+    to: Backlog
+    user: Guy
+    date: '2026-05-24T13:26:19.574Z'
 order: 2
 ---
 ## Goal

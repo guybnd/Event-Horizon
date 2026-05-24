@@ -1,6 +1,6 @@
 ---
 title: implement MCP context and command server for passive execution mode
-status: Todo
+status: Grooming
 priority: High
 createdBy: Guy
 updatedBy: Guy
@@ -53,6 +53,11 @@ history:
       retrieval, ticket-status updates, and real-time board sync for external
       agents.
     id: c-2026-05-06t12-40-00-000z
+  - type: status_change
+    from: Todo
+    to: Grooming
+    user: Guy
+    date: '2026-05-24T13:27:15.440Z'
 order: 17
 effort: XL
 ---

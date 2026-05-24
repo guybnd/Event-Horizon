@@ -7,7 +7,7 @@ tags:
 assignee: unassigned
 createdBy: Unknown
 title: Extract TaskModal hooks and sub-components
-status: Grooming
+status: Backlog
 updatedBy: Guy
 history:
   - type: activity
@@ -22,6 +22,11 @@ history:
     user: Agent
     date: '2026-05-11T03:29:41.494Z'
     comment: Claude Code session lost (engine restarted).
+  - type: status_change
+    from: Grooming
+    to: Backlog
+    user: Guy
+    date: '2026-05-24T13:26:13.146Z'
 order: 1
 ---
 ## Goal

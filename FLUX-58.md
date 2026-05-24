@@ -1,6 +1,6 @@
 ---
 title: Add initial keyboard shortcuts
-status: Todo
+status: Backlog
 createdBy: Guy
 updatedBy: Guy
 assignee: unassigned
@@ -33,6 +33,11 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-07T03:53:39.4816199Z'
+  - type: status_change
+    from: Todo
+    to: Backlog
+    user: Guy
+    date: '2026-05-24T13:27:21.003Z'
 order: 9
 ---
 ## Summary

@@ -1,7 +1,6 @@
 ---
-id: FLUX-261
 title: Engine-level prompt optimizations for input token reduction
-status: Grooming
+status: Backlog
 priority: Medium
 effort: M
 assignee: unassigned
@@ -9,14 +8,23 @@ tags:
   - engine
   - performance
 createdBy: Agent
-updatedBy: Agent
+updatedBy: Guy
 relatedTickets:
   - FLUX-208
 history:
   - type: activity
     user: Agent
     date: '2026-05-14T09:33:00.000Z'
+    comment: Created ticket.
+  - type: activity
+    user: Agent
+    date: '2026-05-14T09:33:00.000Z'
     comment: Created as follow-up from FLUX-208 (L4 deferred scope).
+  - type: status_change
+    from: Grooming
+    to: Backlog
+    user: Guy
+    date: '2026-05-24T13:25:51.788Z'
 ---
 
 ## Problem / Motivation
