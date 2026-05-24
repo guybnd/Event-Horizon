@@ -8,10 +8,10 @@ priority: High
 effort: L
 implementationLink: ''
 subtasks:
-  - null
-  - null
-  - null
-  - null
+  - FLUX-282
+  - FLUX-283
+  - FLUX-284
+  - FLUX-285
 history:
   - type: activity
     user: Guy
