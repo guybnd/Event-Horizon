@@ -503,6 +503,19 @@ history:
       performance bottlenecks and adherence to the user's explicit design
       instructions.
     id: c-2026-05-25t15-46-34-062z
+  - type: agent_session
+    sessionId: 109d48a3-44c3-4723-83f5-5216efcadb94
+    startedAt: '2026-05-25T15:47:43.113Z'
+    status: cancelled
+    progress: []
+    user: Claude Code
+    date: '2026-05-25T15:47:43.113Z'
+    outcome: Claude Code session stopped by user.
+    endedAt: '2026-05-25T15:47:50.881Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-25T15:47:48.639Z'
+    comment: Claude Code session stopped.
 title: add indicator on ticket with subtasks how many are done
 status: In Progress
 createdBy: Guy
