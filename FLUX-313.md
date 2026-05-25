@@ -476,8 +476,23 @@ history:
     date: '2026-05-25T11:51:27.845Z'
     outcome: Session abandoned (engine restarted).
     endedAt: '2026-05-25T11:51:36.388Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-25T11:52:44.673Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Implementation plan: 1) Add `parentId` field to Task type + engine schema,
+      2) Handle bidirectional parentId sync in PUT route, 3) Build reusable
+      TicketPicker component (search-based, pattern after TagSelector), 4)
+      Replace subtask `<select>` with TicketPicker, 5) Add parent ticket field
+      with TicketPicker in single-select mode.
+    date: '2026-05-25T11:52:49.830Z'
+    id: c-2026-05-25t11-52-49-830z
 title: subtask picker improvements
-status: Todo
+status: In Progress
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
