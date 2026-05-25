@@ -486,16 +486,33 @@ history:
     comment: Changes needed. Code review failed.
     date: '2026-05-25T15:46:02.815Z'
     id: c-2026-05-25t15-46-02-815z
+  - type: comment
+    user: Gemini CLI
+    date: '2026-05-25T15:46:34.062Z'
+    comment: >-
+      I have reviewed the unstaged changes for `TaskCard.tsx` and the ticket
+      history. The previous implementer completely failed to address Guy's
+      feedback, introduced O(N*M) algorithmic complexity into the board's render
+      cycle, generated unnecessary garbage by instantiating Sets during every
+      render, and hardcoded popover boundaries based on raw window dimensions.
+
+
+      I've posted a blunt, Linus Torvalds-style code review as a comment on
+      ticket **FLUX-317** and explicitly moved its status back to **In
+      Progress** to enforce the required fixes. The review demands fixes to the
+      performance bottlenecks and adherence to the user's explicit design
+      instructions.
+    id: c-2026-05-25t15-46-34-062z
 title: add indicator on ticket with subtasks how many are done
 status: In Progress
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
-  inputTokens: 362573
-  outputTokens: 2881
-  costUSD: 0.551595
-  costIsEstimated: false
-  cacheReadTokens: 310758
+  inputTokens: 555189
+  outputTokens: 3670
+  costUSD: 1.141278
+  costIsEstimated: true
+  cacheReadTokens: 390949
   cacheCreationTokens: 47699
 order: 1
 id: FLUX-317
