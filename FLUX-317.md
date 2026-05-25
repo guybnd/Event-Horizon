@@ -224,9 +224,14 @@ history:
     date: '2026-05-25T15:16:25.281Z'
     outcome: Session abandoned (engine restarted).
     endedAt: '2026-05-25T15:16:33.360Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-25T15:17:28.212Z'
 id: FLUX-317
 title: add indicator on ticket with subtasks how many are done
-status: Todo
+status: In Progress
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
