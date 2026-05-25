@@ -6,6 +6,7 @@ import { DocsScreen } from './components/DocsScreen';
 import { TaskModal } from './components/TaskModal';
 import { Settings } from './components/Settings';
 import { ReleasesScreen } from './components/ReleasesScreen';
+import { WorkflowBuilder } from './components/WorkflowBuilder';
 import { WorkspaceSelector } from './components/WorkspaceSelector';
 import { OnboardingWizard } from './components/OnboardingWizard';
 
@@ -31,6 +32,7 @@ function AppContent() {
           {view === 'docs' && <DocsScreen />}
           {view === 'settings' && <Settings />}
           {view === 'releases' && <ReleasesScreen />}
+          {view === 'workflows' && <WorkflowBuilder />}
         </main>
         <TaskModal />
       </div>

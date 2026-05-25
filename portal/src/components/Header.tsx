@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, memo } from 'react';
-import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, FileText, Tag, Plus, Power, Bot, Sun, Moon } from 'lucide-react';
+import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, FileText, Tag, Plus, Power, Bot, Sun, Moon, Workflow } from 'lucide-react';
 import { useApp, type AppView } from '../AppContext';
 import { SyncStatusIndicator } from './SyncStatusIndicator';
 import { ActiveSessionsPopover } from './ActiveSessionsPopover';
@@ -128,6 +128,7 @@ export function Header() {
             <NavItem view={view} target="backlog" icon={<ListTodo className="w-4 h-4" />} label="Backlog" onClick={handleSetView} />
             <NavItem view={view} target="releases" icon={<Tag className="w-4 h-4" />} label="Releases" onClick={handleSetView} />
             <NavItem view={view} target="docs" icon={<FileText className="w-4 h-4" />} label="Docs" onClick={handleSetView} />
+            <NavItem view={view} target="workflows" icon={<Workflow className="w-4 h-4" />} label="Workflows" onClick={handleSetView} />
             <NavItem view={view} target="settings" icon={<SettingsIcon className="w-4 h-4" />} label="Settings" onClick={handleSetView} />
           </div>
         </div>

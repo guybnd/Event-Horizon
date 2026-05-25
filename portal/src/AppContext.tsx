@@ -4,7 +4,7 @@ import type { ColumnLiveEvent, Config, Task, TaskLiveEvent } from './types';
 import { fetchConfig, fetchTasks, fetchHealth, saveConfig as apiSaveConfig, fetchReadState, saveReadState, fetchWorkspace, fetchParseErrors, fetchNotifications, type ParseError, type Notification } from './api';
 import { getArchiveStatus } from './workflow';
 
-export type AppView = 'board' | 'backlog' | 'docs' | 'settings' | 'releases';
+export type AppView = 'board' | 'backlog' | 'docs' | 'settings' | 'releases' | 'workflows';
 export type TaskSortOption = 'default' | 'priority' | 'updated' | 'assignee';
 export type AppTheme = 'light' | 'dark';
 
@@ -24,6 +24,7 @@ const VIEW_PATHS: Record<AppView, string> = {
   docs: '/docs',
   settings: '/settings',
   releases: '/releases',
+  workflows: '/workflows',
 };
 
 const LIVE_TASK_POLL_INTERVAL_MS = 3000;
@@ -67,6 +68,7 @@ function getViewFromLocation(): AppView {
   if (path === '/docs') return 'docs';
   if (path === '/settings') return 'settings';
   if (path === '/releases') return 'releases';
+  if (path === '/workflows') return 'workflows';
   return 'board';
 }
 
