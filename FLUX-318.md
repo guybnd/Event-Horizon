@@ -2,6 +2,8 @@
 assignee: unassigned
 tags:
   - bug
+  - portal
+  - engine
 priority: Medium
 effort: S
 implementationLink: ''
@@ -316,23 +318,226 @@ history:
   - type: agent_session
     sessionId: a72cea71-5ae8-41c5-b9d1-80f9b9049301
     startedAt: '2026-05-25T15:27:59.000Z'
-    status: cancelled
-    progress: []
+    status: completed
+    progress:
+      - timestamp: '2026-05-25T15:28:13.824Z'
+        message: Working
+        type: tool
+        data:
+          toolName: ToolSearch
+          parameters:
+            query: 'select:get_ticket'
+            max_results: 1
+      - timestamp: '2026-05-25T15:28:15.784Z'
+        message: Working
+        type: info
+      - timestamp: '2026-05-25T15:28:19.703Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp__event-horizon__get_ticket
+          parameters:
+            ticketId: FLUX-318
+      - timestamp: '2026-05-25T15:28:25.238Z'
+        message: Reading notifications.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\notifications.ts'
+      - timestamp: '2026-05-25T15:28:26.259Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: notification|notify|emit.*status
+            path: 'C:\GitHub\EventHorizon\engine\src\task-store.ts'
+            output_mode: content
+            '-n': true
+      - timestamp: '2026-05-25T15:28:29.163Z'
+        message: Reading task-store.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\task-store.ts'
+      - timestamp: '2026-05-25T15:28:30.786Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-05-25T15:28:44.596Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: status|PUT.*tasks
+            path: 'C:\GitHub\EventHorizon\engine\src'
+            glob: '*route*'
+            output_mode: files_with_matches
+      - timestamp: '2026-05-25T15:28:45.789Z'
+        message: Working
+        type: info
+      - timestamp: '2026-05-25T15:28:53.429Z'
+        message: Reading tasks.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\routes\tasks.ts'
+            offset: 234
+            limit: 200
+      - timestamp: '2026-05-25T15:29:00.794Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-05-25T15:29:14.316Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: change_status|changeStatus|change.status
+            path: 'C:\GitHub\EventHorizon\engine\src\mcp-server.ts'
+            output_mode: content
+            '-n': true
+      - timestamp: '2026-05-25T15:29:15.802Z'
+        message: Working
+        type: info
+      - timestamp: '2026-05-25T15:29:18.357Z'
+        message: Reading mcp-server.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\mcp-server.ts'
+            offset: 219
+            limit: 60
+      - timestamp: '2026-05-25T15:29:30.810Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-05-25T15:29:40.302Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp__event-horizon__update_ticket
+          parameters:
+            ticketId: FLUX-318
+            priority: Medium
+            effort: S
+            tags:
+              - bug
+              - portal
+              - engine
+            body: >-
+              ## Problem / Motivation
+
+
+              The notification bell (header alert indicator) only fires for
+              "Require Input" transitions but not for "Ready" or "Done"
+              transitions. This means the user never gets notified when an agent
+              finishes work on a ticket.
+
+
+              **Root cause:** The PUT `/api/tasks/:id` route in
+              `engine/src/routes/tasks.ts` handles status changes inline (lines
+              307-315, writes at 351-352) but never calls
+              `generatePromptNotification` or `generateCompletionNotification`.
+              Only `updateTaskWithHistory` (used by MCP tools/`change_status`)
+              fires notifications (lines 146-153 of `task-store.ts`). So
+              portal-initiated status changes (drag-drop, modal edits) and
+              MCP-tool-initiated changes both go through `updateTaskWithHistory`
+              for MCP, but the REST PUT route bypasses it entirely.
+
+
+              Additionally, the `updateTaskWithHistory` logic at line 149-151
+              correctly checks for both `requireInputStatus` and `readyStatus`,
+              and line 151-153 handles "Done" — so MCP-driven changes should
+              work. The user reports even MCP-driven "Ready" and "Done" don't
+              trigger notifications, suggesting either:
+
+              1. The portal WebSocket isn't receiving/displaying the
+              `notification` event for these types, or
+
+              2. The portal's NotificationPanel filters out `completion` type
+              notifications.
+
+
+              ## Implementation Plan
+
+
+              1. **Add notification generation to the PUT route**
+              (`engine/src/routes/tasks.ts`): After the file write succeeds
+              (around line 352), check if the new status differs from the old
+              status and fire the appropriate notification — same logic as
+              `updateTaskWithHistory` lines 146-153.
+
+
+              2. **Verify portal handles all notification types**: Check
+              `NotificationPanel.tsx` and the SSE/WebSocket listener to ensure
+              `completion` type notifications are rendered (not just `prompt`
+              type). Fix any filtering that excludes them.
+
+
+              3. **Test**: Move a ticket to Ready via drag-drop → bell should
+              show notification. Move a ticket to Done → bell should show
+              completion notification. Verify Require Input still works.
+      - timestamp: '2026-05-25T15:29:45.854Z'
+        message: Working
+        type: info
+      - timestamp: '2026-05-25T15:29:51.486Z'
+        message: >-
+          Grooming complete. FLUX-318 is now in **Todo** with a concrete plan:
+
+
+          - **Root cause**: The REST PUT route (`engine/src/routes/tasks.ts`)
+          writes status changes directly to disk without calling
+          `generatePromptNotification`/`generateCompletionNotification`. Only
+          MCP tool-driven changes (via `updateTaskWithHistory`) fire
+          notifications.
+
+          - **Fix**: Add notification generation after the PUT route's file
+          write, and verify the portal's NotificationPanel renders
+          `completion`-type notifications (not just `prompt`-type).
     user: Claude Code
     date: '2026-05-25T15:27:59.000Z'
-    outcome: Session abandoned (engine restarted).
-    endedAt: '2026-05-25T15:28:07.737Z'
+    outcome: Claude Code session ended with code 0.
+    endedAt: '2026-05-25T15:29:52.634Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-25T15:29:40.318Z'
+    comment: Updated description. Updated tags.
+  - type: status_change
+    from: Grooming
+    to: Todo
+    user: Agent
+    date: '2026-05-25T15:29:44.746Z'
 title: alert indicators not really working
-status: Grooming
+status: Todo
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
-  inputTokens: 1097066
-  outputTokens: 6296
-  costUSD: 1.037468
+  inputTokens: 1569335
+  outputTokens: 10367
+  costUSD: 1.552584
   costIsEstimated: false
-  cacheReadTokens: 1039476
-  cacheCreationTokens: 55617
+  cacheReadTokens: 1481338
+  cacheCreationTokens: 86007
 id: FLUX-318
 ---
-cant get any prompts to pop up...
+## Problem / Motivation
+
+The notification bell (header alert indicator) only fires for "Require Input" transitions but not for "Ready" or "Done" transitions. This means the user never gets notified when an agent finishes work on a ticket.
+
+**Root cause:** The PUT `/api/tasks/:id` route in `engine/src/routes/tasks.ts` handles status changes inline (lines 307-315, writes at 351-352) but never calls `generatePromptNotification` or `generateCompletionNotification`. Only `updateTaskWithHistory` (used by MCP tools/`change_status`) fires notifications (lines 146-153 of `task-store.ts`). So portal-initiated status changes (drag-drop, modal edits) and MCP-tool-initiated changes both go through `updateTaskWithHistory` for MCP, but the REST PUT route bypasses it entirely.
+
+Additionally, the `updateTaskWithHistory` logic at line 149-151 correctly checks for both `requireInputStatus` and `readyStatus`, and line 151-153 handles "Done" — so MCP-driven changes should work. The user reports even MCP-driven "Ready" and "Done" don't trigger notifications, suggesting either:
+1. The portal WebSocket isn't receiving/displaying the `notification` event for these types, or
+2. The portal's NotificationPanel filters out `completion` type notifications.
+
+## Implementation Plan
+
+1. **Add notification generation to the PUT route** (`engine/src/routes/tasks.ts`): After the file write succeeds (around line 352), check if the new status differs from the old status and fire the appropriate notification — same logic as `updateTaskWithHistory` lines 146-153.
+
+2. **Verify portal handles all notification types**: Check `NotificationPanel.tsx` and the SSE/WebSocket listener to ensure `completion` type notifications are rendered (not just `prompt` type). Fix any filtering that excludes them.
+
+3. **Test**: Move a ticket to Ready via drag-drop → bell should show notification. Move a ticket to Done → bell should show completion notification. Verify Require Input still works.
