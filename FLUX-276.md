@@ -47,10 +47,12 @@ history:
   - type: agent_session
     sessionId: 1bdbd2ff-8fe5-433d-bc3f-a079c8633820
     startedAt: '2026-05-25T04:45:26.563Z'
-    status: active
+    status: cancelled
     progress: []
     user: Copilot CLI
     date: '2026-05-25T04:45:26.563Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-25T04:47:00.090Z'
 subtasks: []
 ---
 
