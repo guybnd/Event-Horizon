@@ -1,6 +1,6 @@
 ---
 id: FLUX-276
-title: "API: subtask creation endpoint for agents and portal"
+title: 'API: subtask creation endpoint for agents and portal'
 status: Todo
 priority: Medium
 effort: S
@@ -9,12 +9,19 @@ tags:
   - engine
   - feature
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 history:
   - type: activity
     user: Guy
     date: '2026-05-19T07:39:00.000Z'
     comment: Created ticket.
+  - type: agent_session
+    sessionId: 4c5fd862-ea88-4a2a-9e7d-66d660715402
+    startedAt: '2026-05-25T04:39:51.938Z'
+    status: active
+    progress: []
+    user: Claude Code
+    date: '2026-05-25T04:39:51.938Z'
 ---
 
 ## Problem
