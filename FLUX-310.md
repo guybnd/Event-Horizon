@@ -1,9 +1,8 @@
 ---
-id: FLUX-310
 title: >-
   Copilot CLI MCP tools not loading when spawned by engine (node entrypoint
   bypass)
-status: Ready
+status: Done
 priority: High
 effort: M
 assignee: unassigned
@@ -13,7 +12,7 @@ tags:
   - copilot-cli
   - agent-integration
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 history:
   - type: activity
     user: Guy
@@ -58,6 +57,12 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-25T11:23:43.738Z'
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Guy
+    date: '2026-05-25T11:24:31.480Z'
+order: 1
 ---
 ## Problem / Motivation
 
