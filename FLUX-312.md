@@ -1,6 +1,6 @@
 ---
 title: Agent & Skill Builder UI — modular workflow templates per phase
-status: Todo
+status: In Progress
 priority: High
 effort: XL
 assignee: unassigned
@@ -491,6 +491,11 @@ history:
     date: '2026-05-25T12:35:17.704Z'
     outcome: Session abandoned (engine restarted).
     endedAt: '2026-05-25T12:35:27.820Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-25T12:35:52.485Z'
 implementationLink: ''
 subtasks: []
 id: FLUX-312
