@@ -4,8 +4,9 @@ tags:
   - feature
   - skills
   - agents
-priority: Medium
-effort: L
+  - portal
+priority: High
+effort: XL
 implementationLink: ''
 subtasks: []
 history:
@@ -638,40 +639,567 @@ history:
   - type: agent_session
     sessionId: e2bc2e88-8444-410e-ad9b-cd69718ced98
     startedAt: '2026-05-25T11:22:54.129Z'
-    status: cancelled
-    progress: []
+    status: completed
+    progress:
+      - timestamp: '2026-05-25T11:23:09.787Z'
+        message: Working
+        type: tool
+        data:
+          toolName: ToolSearch
+          parameters:
+            query: 'select:get_ticket,update_ticket,change_status,add_comment'
+            max_results: 4
+      - timestamp: '2026-05-25T11:23:10.471Z'
+        message: Working
+        type: info
+      - timestamp: '2026-05-25T11:23:15.878Z'
+        message: Delegating
+        type: tool
+        data:
+          toolName: Agent
+          parameters:
+            description: Find MCP tools and docs
+            subagent_type: Explore
+            prompt: >-
+              I need to find:
+
+              1. The MCP tools available (get_ticket, update_ticket,
+              change_status, etc.) - how they are invoked in this project
+
+              2. The file `.docs/INDEX.md` 
+
+              3. The file `.flux/FLUX-311.md`
+
+              4. The file `.flux/config.json`
+
+              5. The file `engine/src/skill-installer.ts`
+
+              6. The directory `.docs/skills/` - what files are there
+
+
+              Search in C:\GitHub\EventHorizon. Give me the full content of each
+              file found.
+      - timestamp: '2026-05-25T11:23:17.470Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Glob
+          parameters:
+            pattern: '**/.docs/INDEX.md'
+            path: 'C:\GitHub\EventHorizon'
+      - timestamp: '2026-05-25T11:23:21.707Z'
+        message: Reading config.json
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\.flux\config.json'
+      - timestamp: '2026-05-25T11:23:22.904Z'
+        message: 'Running: ls -la /c/GitHub/EventHorizon/.docs/ 2>/dev/null |...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: ls -la /c/GitHub/EventHorizon/.docs/ 2>/dev/null | head -30
+      - timestamp: '2026-05-25T11:23:25.474Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-05-25T11:23:27.098Z'
+        message: Reading mcp-server.md
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\.docs\event-horizon\mcp-server.md'
+      - timestamp: '2026-05-25T11:23:27.856Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: get_ticket|update_ticket|change_status|create_ticket|finish_ticket
+            path: 'C:\GitHub\EventHorizon\engine\src\mcp-server.ts'
+            output_mode: content
+            head_limit: 100
+      - timestamp: '2026-05-25T11:23:30.354Z'
+        message: 'Running: find /c/GitHub/EventHorizon -name "INDEX.md" -type...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: find /c/GitHub/EventHorizon -name "INDEX.md" -type f 2>/dev/null
+      - timestamp: '2026-05-25T11:23:30.642Z'
+        message: Reading mcp-server.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\mcp-server.ts'
+            limit: 150
+      - timestamp: '2026-05-25T11:23:36.449Z'
+        message: 'Running: ls -la /c/GitHub/EventHorizon/.docs/skills/'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: ls -la /c/GitHub/EventHorizon/.docs/skills/
+      - timestamp: '2026-05-25T11:23:40.480Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-05-25T11:25:41.126Z'
+        message: Reading b4id9r22e.output
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: >-
+              C:\Users\GUYRAZ~1\AppData\Local\Temp\claude\C--GitHub-EventHorizon\06bfd837-d580-4243-a2b3-43c157542410\tasks\b4id9r22e.output
+      - timestamp: '2026-05-25T11:25:55.523Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-05-25T11:25:57.864Z'
+        message: Working
+        type: tool
+        data:
+          toolName: ToolSearch
+          parameters:
+            query: >-
+              select:mcp__event-horizon__get_ticket,mcp__event-horizon__update_ticket,mcp__event-horizon__change_status,mcp__event-horizon__add_comment
+            max_results: 4
+      - timestamp: '2026-05-25T11:26:01.308Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp__event-horizon__get_ticket
+          parameters:
+            ticketId: FLUX-311
+      - timestamp: '2026-05-25T11:26:01.766Z'
+        message: Reading INDEX.md
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\.docs\event-horizon\INDEX.md'
+      - timestamp: '2026-05-25T11:26:08.954Z'
+        message: Reading index.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\agents\index.ts'
+      - timestamp: '2026-05-25T11:26:10.524Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-05-25T11:26:15.090Z'
+        message: Reading types.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\agents\types.ts'
+      - timestamp: '2026-05-25T11:26:25.526Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-05-25T11:26:40.545Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-05-25T11:26:59.964Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp__event-horizon__update_ticket
+          parameters:
+            ticketId: FLUX-311
+            priority: High
+            effort: XL
+            tags:
+              - feature
+              - skills
+              - agents
+              - portal
+            body: >-
+              ## Problem / Motivation
+
+
+              Event Horizon has 4 hardcoded skills (orchestrator, grooming,
+              implementation, release) baked into `.docs/skills/` and installed
+              wholesale via `workflow-installer.ts`. There is no mechanism to
+              add custom skills, no UI for managing a skill library, and no way
+              to control which skills are available per status or agent type.
+              Users want to extend agent behavior with domain-specific skills
+              (code review, testing, project-specific workflows) without
+              modifying core source.
+
+
+              The current `buildInitialPrompt()` in
+              `engine/src/agents/claude-code.ts` builds a static prompt with no
+              skill awareness — agents get the same hardcoded instructions
+              regardless of context.
+
+
+              ## Implementation Plan
+
+
+              ### 1. Skill Registry & Storage (Engine)
+
+
+              **Files:** `engine/src/skill-store.ts` (new),
+              `engine/src/routes/skills.ts` (new, replaces current `skill.ts`)
+
+
+              - Define a `Skill` type: `{ id, title, description, version, tags,
+              statuses: string[], source: 'builtin' | 'custom', enabled:
+              boolean, filePath }`
+
+              - On startup, scan `.docs/skills/*.md` and parse frontmatter to
+              build an in-memory skill registry
+
+              - Watch the directory for changes (live reload)
+
+              - API endpoints:
+                - `GET /api/skills` — list all skills (with filter by status, enabled, source)
+                - `GET /api/skills/:id` — get skill content + metadata
+                - `POST /api/skills` — create a custom skill (writes to `.docs/skills/`)
+                - `PUT /api/skills/:id` — update skill content/metadata
+                - `DELETE /api/skills/:id` — delete custom skill (prevent deleting builtins)
+                - `PUT /api/skills/:id/toggle` — enable/disable
+
+              ### 2. Skill Router (Engine)
+
+
+              **Files:** `engine/src/skill-router.ts` (new), modify
+              `engine/src/agents/claude-code.ts`
+
+
+              - When spawning a session, the router resolves which skills apply
+              based on:
+                1. Ticket status (e.g., Grooming → grooming skill + any custom skills tagged for that status)
+                2. Global defaults from config
+                3. Per-agent-type overrides
+              - Inject a **skill manifest** into the agent prompt: a summary
+              block listing available skills with title + description so the
+              agent can decide what to use
+
+              - The full skill content is included for skills marked as "always
+              inject" (like orchestrator), while others are listed as available
+              references the agent can request via MCP tool
+
+
+              ### 3. Agent Type Configuration (Engine + Config)
+
+
+              **Files:** extend `.flux/config.json` schema,
+              `engine/src/routes/agent-config.ts` (new)
+
+
+              - Add an `agentTypes` section to config:
+                ```json
+                {
+                  "agentTypes": {
+                    "default": {
+                      "prompt": "You are an Event Horizon agent...",
+                      "defaultSkills": ["event-horizon-orchestrator"],
+                      "skillsByStatus": {
+                        "Grooming": ["event-horizon-grooming"],
+                        "Todo": ["event-horizon-implementation"],
+                        "In Progress": ["event-horizon-implementation"]
+                      }
+                    }
+                  }
+                }
+                ```
+              - API endpoints:
+                - `GET /api/agent-config` — get agent type configurations
+                - `PUT /api/agent-config` — update agent type configurations
+
+              ### 4. Portal: Skills Management Page
+
+
+              **Files:** `portal/src/components/skills/` (new directory)
+
+
+              - **SkillsPage.tsx** — dedicated page accessible from nav/settings
+                - List all skills (built-in greyed out / protected, custom editable)
+                - Create new skill button → opens editor
+                - Toggle enable/disable per skill
+                - Edit skill content inline (markdown editor)
+                - Show which statuses each skill is assigned to
+              - **SkillEditor.tsx** — markdown editor with frontmatter form
+              fields
+
+              - **AgentConfigPanel.tsx** — manage agent types:
+                - Default prompt template
+                - Default skills (checkboxes)
+                - Per-status skill assignment (drag/assign UI or multi-select per status column)
+                - Available skills per status
+
+              ### 5. Skill Format
+
+
+              Skills remain as markdown files in `.docs/skills/` with enhanced
+              frontmatter:
+
+
+              ```markdown
+
+              ---
+
+              title: Code Review
+
+              description: Guides agent through systematic code review
+
+              version: 1.0.0
+
+              tags: [review, quality]
+
+              statuses: [In Progress, Ready]
+
+              source: custom
+
+              enabled: true
+
+              inject: on-demand
+
+              ---
+
+
+              ## Phase: Code Review
+
+              ...skill content...
+
+              ```
+
+
+              - `inject: always` — full content is always included in agent
+              prompt when status matches
+
+              - `inject: on-demand` — listed in manifest; agent can request via
+              MCP tool if needed
+
+
+              ### 6. MCP Tool for Skill Access
+
+
+              **Files:** extend `engine/src/mcp-server.ts`
+
+
+              - Add `get_available_skills` tool — returns the manifest of skills
+              available for the current session
+
+              - Add `read_skill` tool — returns full content of a specific skill
+              by ID (for on-demand skills)
+
+
+              ### Subtask Breakdown
+
+
+              This should be split into subtasks:
+
+              1. **Skill store + registry** (engine backend, API)
+
+              2. **Skill router** (prompt injection logic)
+
+              3. **Agent config schema** (config extension + API)
+
+              4. **Portal skills page** (UI)
+
+              5. **MCP skill tools** (get_available_skills, read_skill)
+
+              6. **Migration** — update built-in skills with new frontmatter
+              fields
+
+
+              ### Dependencies & Order
+
+
+              1 → 2 → 5 (backend first), 3 can parallel with 2, 4 depends on
+              1+3, 6 is last.
+      - timestamp: '2026-05-25T11:27:04.673Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp__event-horizon__change_status
+          parameters:
+            ticketId: FLUX-311
+            newStatus: Todo
+      - timestamp: '2026-05-25T11:27:10.551Z'
+        message: Working
+        type: info
+      - timestamp: '2026-05-25T11:27:13.460Z'
+        message: >-
+          Grooming complete. FLUX-311 is now in **Todo** with:
+
+
+          - **Priority:** High
+
+          - **Effort:** XL
+
+          - **Tags:** feature, skills, agents, portal
+
+
+          The implementation plan covers 6 work streams:
+
+          1. Skill store & registry (engine backend + API)
+
+          2. Skill router (resolves skills per status/agent-type, injects
+          manifest into prompt)
+
+          3. Agent type configuration (config schema + dedicated API)
+
+          4. Portal skills management page (dedicated UI for browsing, creating,
+          editing, toggling skills and configuring agent types per status)
+
+          5. MCP tools (`get_available_skills`, `read_skill`) so agents can
+          discover and load on-demand skills
+
+          6. Migration of built-in skills to enhanced frontmatter
+
+
+          This is an XL ticket — recommend splitting into subtasks before
+          implementation begins.
     user: Claude Code
     date: '2026-05-25T11:22:54.129Z'
-    outcome: Session abandoned (engine restarted).
-    endedAt: '2026-05-25T11:23:05.430Z'
+    outcome: Claude Code session ended with code 0.
+    endedAt: '2026-05-25T11:27:14.614Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-25T11:26:59.986Z'
+    comment: >-
+      Updated description. Changed priority to High. Changed effort to XL.
+      Updated tags.
+  - type: status_change
+    from: Grooming
+    to: Todo
+    user: Agent
+    date: '2026-05-25T11:27:04.687Z'
 title: 'Skill Store: install, edit, and manage custom skills for agents'
-status: Grooming
+status: Todo
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
-  inputTokens: 199058
-  outputTokens: 2538
-  costUSD: 0.719217
+  inputTokens: 517473
+  outputTokens: 6053
+  costUSD: 1.354282
   costIsEstimated: false
-  cacheReadTokens: 165699
-  cacheCreationTokens: 33346
+  cacheReadTokens: 432240
+  cacheCreationTokens: 85205
 id: FLUX-311
 ---
 ## Problem / Motivation
 
-Currently, Event Horizon has 4 hardcoded skills (orchestrator, grooming, implementation, release) with no mechanism to add custom or third-party skills. Users want to extend agent behavior with domain-specific skills — e.g., a "code review" skill, a "testing" skill, or project-specific workflows — without modifying the core Event Horizon source.
+Event Horizon has 4 hardcoded skills (orchestrator, grooming, implementation, release) baked into `.docs/skills/` and installed wholesale via `workflow-installer.ts`. There is no mechanism to add custom skills, no UI for managing a skill library, and no way to control which skills are available per status or agent type. Users want to extend agent behavior with domain-specific skills (code review, testing, project-specific workflows) without modifying core source.
 
-The existing `workflow-installer.ts` only handles built-in skills. There's no API for registering external skills, no URL-based installation, no UI for managing a skill library, and no way to assign custom skills to specific agent sessions.
+The current `buildInitialPrompt()` in `engine/src/agents/claude-code.ts` builds a static prompt with no skill awareness — agents get the same hardcoded instructions regardless of context.
 
-## What's Needed
+## Implementation Plan
 
-A skill management system that allows users to:
-1. **Browse/discover** skills (local library + potentially remote sources)
-2. **Install from URLs** (raw markdown, gist, git repo)
-3. **Edit skills locally** in `.docs/skills/` with live reload
-4. **Assign skills to agents** — control which skills are included when spawning CLI sessions
-5. **Version and update** skills over time
+### 1. Skill Registry & Storage (Engine)
 
-## Open Questions (see Require Input comment)
+**Files:** `engine/src/skill-store.ts` (new), `engine/src/routes/skills.ts` (new, replaces current `skill.ts`)
 
-Architecture and scope decisions needed before implementation planning.
+- Define a `Skill` type: `{ id, title, description, version, tags, statuses: string[], source: 'builtin' | 'custom', enabled: boolean, filePath }`
+- On startup, scan `.docs/skills/*.md` and parse frontmatter to build an in-memory skill registry
+- Watch the directory for changes (live reload)
+- API endpoints:
+  - `GET /api/skills` — list all skills (with filter by status, enabled, source)
+  - `GET /api/skills/:id` — get skill content + metadata
+  - `POST /api/skills` — create a custom skill (writes to `.docs/skills/`)
+  - `PUT /api/skills/:id` — update skill content/metadata
+  - `DELETE /api/skills/:id` — delete custom skill (prevent deleting builtins)
+  - `PUT /api/skills/:id/toggle` — enable/disable
+
+### 2. Skill Router (Engine)
+
+**Files:** `engine/src/skill-router.ts` (new), modify `engine/src/agents/claude-code.ts`
+
+- When spawning a session, the router resolves which skills apply based on:
+  1. Ticket status (e.g., Grooming → grooming skill + any custom skills tagged for that status)
+  2. Global defaults from config
+  3. Per-agent-type overrides
+- Inject a **skill manifest** into the agent prompt: a summary block listing available skills with title + description so the agent can decide what to use
+- The full skill content is included for skills marked as "always inject" (like orchestrator), while others are listed as available references the agent can request via MCP tool
+
+### 3. Agent Type Configuration (Engine + Config)
+
+**Files:** extend `.flux/config.json` schema, `engine/src/routes/agent-config.ts` (new)
+
+- Add an `agentTypes` section to config:
+  ```json
+  {
+    "agentTypes": {
+      "default": {
+        "prompt": "You are an Event Horizon agent...",
+        "defaultSkills": ["event-horizon-orchestrator"],
+        "skillsByStatus": {
+          "Grooming": ["event-horizon-grooming"],
+          "Todo": ["event-horizon-implementation"],
+          "In Progress": ["event-horizon-implementation"]
+        }
+      }
+    }
+  }
+  ```
+- API endpoints:
+  - `GET /api/agent-config` — get agent type configurations
+  - `PUT /api/agent-config` — update agent type configurations
+
+### 4. Portal: Skills Management Page
+
+**Files:** `portal/src/components/skills/` (new directory)
+
+- **SkillsPage.tsx** — dedicated page accessible from nav/settings
+  - List all skills (built-in greyed out / protected, custom editable)
+  - Create new skill button → opens editor
+  - Toggle enable/disable per skill
+  - Edit skill content inline (markdown editor)
+  - Show which statuses each skill is assigned to
+- **SkillEditor.tsx** — markdown editor with frontmatter form fields
+- **AgentConfigPanel.tsx** — manage agent types:
+  - Default prompt template
+  - Default skills (checkboxes)
+  - Per-status skill assignment (drag/assign UI or multi-select per status column)
+  - Available skills per status
+
+### 5. Skill Format
+
+Skills remain as markdown files in `.docs/skills/` with enhanced frontmatter:
+
+```markdown
+---
+title: Code Review
+description: Guides agent through systematic code review
+version: 1.0.0
+tags: [review, quality]
+statuses: [In Progress, Ready]
+source: custom
+enabled: true
+inject: on-demand
+---
+
+## Phase: Code Review
+...skill content...
+```
+
+- `inject: always` — full content is always included in agent prompt when status matches
+- `inject: on-demand` — listed in manifest; agent can request via MCP tool if needed
+
+### 6. MCP Tool for Skill Access
+
+**Files:** extend `engine/src/mcp-server.ts`
+
+- Add `get_available_skills` tool — returns the manifest of skills available for the current session
+- Add `read_skill` tool — returns full content of a specific skill by ID (for on-demand skills)
+
+### Subtask Breakdown
+
+This should be split into subtasks:
+1. **Skill store + registry** (engine backend, API)
+2. **Skill router** (prompt injection logic)
+3. **Agent config schema** (config extension + API)
+4. **Portal skills page** (UI)
+5. **MCP skill tools** (get_available_skills, read_skill)
+6. **Migration** — update built-in skills with new frontmatter fields
+
+### Dependencies & Order
+
+1 → 2 → 5 (backend first), 3 can parallel with 2, 4 depends on 1+3, 6 is last.
