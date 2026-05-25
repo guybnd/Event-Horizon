@@ -516,8 +516,56 @@ history:
     user: Agent
     date: '2026-05-25T15:47:48.639Z'
     comment: Claude Code session stopped.
+  - type: comment
+    user: Agent
+    comment: >-
+      Addressed all review feedback:
+
+
+      1. **Hover indicator**: Progress bar now has `ring-1` highlight on hover,
+      a `title="Click to view subtasks"` tooltip, and a `MousePointerClick` icon
+      that fades in on hover — clear affordance that it's clickable.
+
+
+      2. **Description overlap fix**: `onMouseEnter` on the progress bar now
+      calls `setCommentPopoverOpen(false)` in addition to
+      `setIsHovering(false)`, so hovering toward the bar closes both the
+      description popup and comment popover before you can accidentally trigger
+      them.
+
+
+      3. **Bigger, more detailed panel**: Popover widened from 400px→500px,
+      max-height 560→700px, with larger header (icon + bold title), thicker
+      progress bar. Each subtask is now a mini-card with: visible border, ticket
+      ID in indigo, status badge, priority, title, one-line body snippet, and
+      assignee. Hover state adds shadow + border highlight.
+
+
+      4. **Performance — O(N*M) fix**: Built a `useMemo`-backed `taskById` Map
+      from `allTasks`. Subtask resolution now uses `taskById.get(id)` — O(1) per
+      lookup.
+
+
+      5. **Performance — Set allocation**: `doneStatuses` moved into `useMemo`
+      keyed on `config`, no longer re-instantiated every render.
+
+
+      6. **Magic numbers**: Subtask popover boundary calculation now dynamically
+      derives from `resolvedSubtasks.length * 88 + 80` capped at 700, matching
+      the actual max-height. Comment popover boundaries unchanged (they
+      correctly match their fixed CSS dimensions).
+
+
+      TypeScript passes, build succeeds.
+    date: '2026-05-25T15:52:23.415Z'
+    id: c-2026-05-25t15-52-23-415z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-25T15:52:23.415Z'
 title: add indicator on ticket with subtasks how many are done
-status: In Progress
+status: Ready
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
