@@ -1,6 +1,6 @@
 ---
 title: Subtasks should appear under the parent task in the hierarchy
-status: Todo
+status: Backlog
 priority: Medium
 createdBy: Guy
 updatedBy: Guy
@@ -47,6 +47,11 @@ history:
       work is nested rendering, cross-column behavior, and ordering. This is now
       concrete enough to stay in `Todo`.
     id: c-2026-05-07t03-53-39-4816199z-flux-42
+  - type: status_change
+    from: Todo
+    to: Backlog
+    user: Guy
+    date: '2026-05-25T13:25:51.538Z'
 effort: L
 implementationLink: ''
 subtasks: []

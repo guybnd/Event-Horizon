@@ -1,6 +1,6 @@
 ---
 title: Asset Visualization for Dev Tasks
-status: Todo
+status: Backlog
 priority: Low
 createdBy: Guy
 updatedBy: Guy
@@ -22,6 +22,11 @@ history:
       previewing linked art and config assets that commonly appear in Unity or
       Godot workflows.
     id: c-2026-05-06t12-09-00-000z
+  - type: status_change
+    from: Todo
+    to: Backlog
+    user: Guy
+    date: '2026-05-25T13:25:17.698Z'
 effort: M
 implementationLink: ''
 order: 4

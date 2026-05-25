@@ -1,6 +1,6 @@
 ---
 title: Add ticket deep links with hover preview
-status: Todo
+status: Backlog
 createdBy: Guy
 updatedBy: Guy
 assignee: unassigned
@@ -33,6 +33,11 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-07T03:53:39.4816199Z'
+  - type: status_change
+    from: Todo
+    to: Backlog
+    user: Guy
+    date: '2026-05-25T13:25:32.638Z'
 order: 7
 ---
 ## Summary

@@ -1,6 +1,6 @@
 ---
 title: Separate Permanent State from Agent Reasoning
-status: Todo
+status: Backlog
 priority: Medium
 createdBy: Guy
 updatedBy: Guy
@@ -22,6 +22,11 @@ history:
       from verbose agent reasoning so the repository stays readable without
       losing operational traceability.
     id: c-2026-05-06t12-08-00-000z
+  - type: status_change
+    from: Todo
+    to: Backlog
+    user: Guy
+    date: '2026-05-25T13:25:25.513Z'
 effort: M
 implementationLink: ''
 order: 3
