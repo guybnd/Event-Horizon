@@ -349,6 +349,15 @@ router.put('/:id', async (req, res) => {
     });
   }
 
+  // Bidirectional parentId sync
+  const oldParentId = task.parentId || null;
+  const newParentId = frontmatter.parentId !== undefined ? (frontmatter.parentId || null) : oldParentId;
+  if (newParentId) {
+    frontmatter.parentId = newParentId;
+  } else {
+    delete frontmatter.parentId;
+  }
+
   try {
     if (frontmatter.tags && Array.isArray(frontmatter.tags)) {
       await autoRegisterUnknownTags(frontmatter.tags);
@@ -356,6 +365,85 @@ router.put('/:id', async (req, res) => {
     const fileContent = matter.stringify(body || '', frontmatter);
     await fs.writeFile(_path, fileContent, 'utf-8');
     tasksCache[id] = { ...frontmatter, body, id, _path };
+
+    // Sync parent's subtasks array when parentId changes
+    if (newParentId !== oldParentId) {
+      // Remove from old parent's subtasks
+      if (oldParentId && tasksCache[oldParentId]) {
+        const oldParent = tasksCache[oldParentId];
+        const oldParentSubtasks: string[] = (Array.isArray(oldParent.subtasks) ? oldParent.subtasks : [])
+          .map((s: any) => typeof s === 'string' ? s : s.id).filter(Boolean);
+        const filtered = oldParentSubtasks.filter((sid: string) => sid !== id);
+        if (filtered.length !== oldParentSubtasks.length) {
+          const parentRaw = await fs.readFile(oldParent._path, 'utf-8');
+          const parentParsed = matter(parentRaw);
+          parentParsed.data.subtasks = filtered;
+          parentParsed.data.updatedBy = actor;
+          await fs.writeFile(oldParent._path, matter.stringify(parentParsed.content, parentParsed.data), 'utf-8');
+          tasksCache[oldParentId] = { ...tasksCache[oldParentId], subtasks: filtered, updatedBy: actor };
+        }
+      }
+      // Add to new parent's subtasks
+      if (newParentId && tasksCache[newParentId]) {
+        const newParent = tasksCache[newParentId];
+        const newParentSubtasks: string[] = (Array.isArray(newParent.subtasks) ? newParent.subtasks : [])
+          .map((s: any) => typeof s === 'string' ? s : s.id).filter(Boolean);
+        if (!newParentSubtasks.includes(id)) {
+          newParentSubtasks.push(id);
+          const parentRaw = await fs.readFile(newParent._path, 'utf-8');
+          const parentParsed = matter(parentRaw);
+          parentParsed.data.subtasks = newParentSubtasks;
+          parentParsed.data.updatedBy = actor;
+          await fs.writeFile(newParent._path, matter.stringify(parentParsed.content, parentParsed.data), 'utf-8');
+          tasksCache[newParentId] = { ...tasksCache[newParentId], subtasks: newParentSubtasks, updatedBy: actor };
+        }
+      }
+    }
+
+    // When subtasks array changes, sync children's parentId
+    const oldSubtasks: string[] = (Array.isArray(task.subtasks) ? task.subtasks : [])
+      .map((s: any) => typeof s === 'string' ? s : s.id).filter(Boolean);
+    const newSubtasks: string[] = (Array.isArray(frontmatter.subtasks) ? frontmatter.subtasks : [])
+      .map((s: any) => typeof s === 'string' ? s : s.id).filter(Boolean);
+    const removedChildren = oldSubtasks.filter((sid: string) => !newSubtasks.includes(sid));
+    const addedChildren = newSubtasks.filter((sid: string) => !oldSubtasks.includes(sid));
+
+    for (const childId of removedChildren) {
+      const child = tasksCache[childId];
+      if (child && child.parentId === id) {
+        const childRaw = await fs.readFile(child._path, 'utf-8');
+        const childParsed = matter(childRaw);
+        delete childParsed.data.parentId;
+        childParsed.data.updatedBy = actor;
+        await fs.writeFile(child._path, matter.stringify(childParsed.content, childParsed.data), 'utf-8');
+        tasksCache[childId] = { ...tasksCache[childId], parentId: undefined, updatedBy: actor };
+      }
+    }
+    for (const childId of addedChildren) {
+      const child = tasksCache[childId];
+      if (child && child.parentId !== id) {
+        // Remove child from its previous parent if any
+        if (child.parentId && tasksCache[child.parentId]) {
+          const prevParent = tasksCache[child.parentId];
+          const prevSubs: string[] = (Array.isArray(prevParent.subtasks) ? prevParent.subtasks : [])
+            .map((s: any) => typeof s === 'string' ? s : s.id).filter(Boolean)
+            .filter((sid: string) => sid !== childId);
+          const prevRaw = await fs.readFile(prevParent._path, 'utf-8');
+          const prevParsed = matter(prevRaw);
+          prevParsed.data.subtasks = prevSubs;
+          prevParsed.data.updatedBy = actor;
+          await fs.writeFile(prevParent._path, matter.stringify(prevParsed.content, prevParsed.data), 'utf-8');
+          tasksCache[child.parentId] = { ...tasksCache[child.parentId], subtasks: prevSubs, updatedBy: actor };
+        }
+        const childRaw = await fs.readFile(child._path, 'utf-8');
+        const childParsed = matter(childRaw);
+        childParsed.data.parentId = id;
+        childParsed.data.updatedBy = actor;
+        await fs.writeFile(child._path, matter.stringify(childParsed.content, childParsed.data), 'utf-8');
+        tasksCache[childId] = { ...tasksCache[childId], parentId: id, updatedBy: actor };
+      }
+    }
+
     res.json(serializeTaskForApi(tasksCache[id]));
   } catch (err) {
     console.error('Failed to update task:', err);

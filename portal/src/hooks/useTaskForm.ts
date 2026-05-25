@@ -14,6 +14,7 @@ export function useTaskForm(modalTask: Task | Partial<Task> | null | undefined) 
   const [effortLevel, setEffortLevel] = useState<string>('');
   const [implementationLink, setImplementationLink] = useState('');
   const [subtasks, setSubtasks] = useState<string[]>([]);
+  const [parentId, setParentId] = useState<string>('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -36,6 +37,7 @@ export function useTaskForm(modalTask: Task | Partial<Task> | null | undefined) 
     const nextEffort = modalTask.effort || 'None';
     const nextThinkingBudget = (modalTask as any).effortLevel || '';
     const nextLink = modalTask.implementationLink || '';
+    const nextParentId = modalTask.parentId || '';
 
     if (isNewTicket) {
       setTitle(nextTitle);
@@ -48,6 +50,7 @@ export function useTaskForm(modalTask: Task | Partial<Task> | null | undefined) 
       setEffortLevel(nextThinkingBudget);
       setImplementationLink(nextLink);
       setSubtasks((modalTask.subtasks || []).map(normalizeSubtaskId));
+      setParentId(nextParentId);
     } else {
       setTitle((prev) => (prev !== nextTitle ? nextTitle : prev));
       setBody((prev) => (prev !== nextBody ? nextBody : prev));
@@ -65,6 +68,7 @@ export function useTaskForm(modalTask: Task | Partial<Task> | null | undefined) 
         const next = (modalTask.subtasks || []).map(normalizeSubtaskId);
         return prev.length !== next.length || prev.some((s, i) => s !== next[i]) ? next : prev;
       });
+      setParentId((prev) => (prev !== nextParentId ? nextParentId : prev));
     }
 
     if (isNewTicket) {
@@ -84,6 +88,7 @@ export function useTaskForm(modalTask: Task | Partial<Task> | null | undefined) 
     effortLevel: (modalTask as any)?.effortLevel || '',
     implementationLink: modalTask?.implementationLink || '',
     subtasks: (modalTask?.subtasks || []).map(normalizeSubtaskId),
+    parentId: modalTask?.parentId || '',
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [modalTask]);
 
@@ -98,7 +103,8 @@ export function useTaskForm(modalTask: Task | Partial<Task> | null | undefined) 
     effortLevel,
     implementationLink,
     subtasks,
-  }), [title, body, status, assignee, tags, priority, effort, effortLevel, implementationLink, subtasks]);
+    parentId,
+  }), [title, body, status, assignee, tags, priority, effort, effortLevel, implementationLink, subtasks, parentId]);
 
   const isDirty = syncedTaskIdRef.current === modalTask?.id && originalPayload !== currentPayload;
 
@@ -113,6 +119,7 @@ export function useTaskForm(modalTask: Task | Partial<Task> | null | undefined) 
     effortLevel, setEffortLevel,
     implementationLink, setImplementationLink,
     subtasks, setSubtasks,
+    parentId, setParentId,
     saving, setSaving,
     saveError, setSaveError,
     isDirty,

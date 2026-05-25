@@ -34,6 +34,7 @@ import { useTaskForm } from '../hooks/useTaskForm';
 import { useCliSession } from '../hooks/useCliSession';
 import { useImageAttachment } from '../hooks/useImageAttachment';
 import { MetadataPanel } from './task-modal/MetadataPanel';
+import { TicketPicker } from './TicketPicker';
 import { CommentBox } from './task-modal/CommentBox';
 import type { CommentBoxHandle } from './task-modal/CommentBox';
 import { CliSessionPanel } from './task-modal/CliSessionPanel';
@@ -111,6 +112,7 @@ export function TaskModal() {
     effortLevel, setEffortLevel,
     implementationLink, setImplementationLink,
     subtasks, setSubtasks,
+    parentId, setParentId,
     saving, setSaving,
     saveError, setSaveError,
     isDirty: formIsDirty,
@@ -135,7 +137,6 @@ export function TaskModal() {
   const [collapsedThreads, setCollapsedThreads] = useState<Record<string, boolean>>({});
   const [responseDestination, setResponseDestination] = useState('Todo');
   const [returnToWorkOpen, setReturnToWorkOpen] = useState(false);
-  const [subtaskToAdd, setSubtaskToAdd] = useState('');
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [isWideMode, setIsWideMode] = useState(false);
@@ -239,7 +240,6 @@ export function TaskModal() {
     if (openedTaskIdRef.current === modalTask.id) return;
     commentBoxRef.current?.reset();
     setRequireInputDraft('');
-    setSubtaskToAdd('');
     setReplyTargetId(null);
     setReplyDraft('');
     setCollapsedThreads({});
@@ -407,9 +407,6 @@ export function TaskModal() {
     .map((subtaskId) => allTasks.find((task) => task.id === subtaskId))
     .filter((task): task is Task => Boolean(task));
   const danglingSubtaskIds = subtasks.filter((subtaskId) => !linkedSubtasks.some((task) => task.id === subtaskId));
-  const availableSubtasks = allTasks
-    .filter((task) => task.id !== modalTask?.id && !subtasks.includes(task.id))
-    .sort((left, right) => left.id.localeCompare(right.id));
 
   const handleCloseAttempt = () => {
     if (isDirty) {
@@ -422,7 +419,7 @@ export function TaskModal() {
   const handleSave = async (customHistory?: any[], keepOpen = false) => {
     setSaving(true);
     setSaveError(null);
-    const payload = { title, body, status, assignee, tags, priority, effort, effortLevel: effortLevel || undefined, implementationLink: implementationLink.trim(), subtasks, order: modalTask?.order };
+    const payload = { title, body, status, assignee, tags, priority, effort, effortLevel: effortLevel || undefined, implementationLink: implementationLink.trim(), subtasks, parentId: parentId || undefined, order: modalTask?.order };
     let historyUpdates: any[] = customHistory || [];
     const pendingComment = commentBoxRef.current?.getValue()?.trim() ?? '';
 
@@ -921,8 +918,48 @@ export function TaskModal() {
     availablePriorities,
   };
 
+  const parentTask = parentId ? allTasks.find((t) => t.id === parentId) : null;
+
   const subtasksPanel = (
     <div className="space-y-4 rounded-xl border border-gray-100 bg-white/70 p-4 dark:border-white/5 dark:bg-white/5">
+      {/* Parent ticket */}
+      <div className="space-y-2">
+        <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Parent Ticket</p>
+        {parentId ? (
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={() => parentTask && openTaskModal(parentTask)}
+            onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && parentTask) { e.preventDefault(); openTaskModal(parentTask); } }}
+            className="flex cursor-pointer items-center gap-3 rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 transition-colors hover:border-primary/30 hover:bg-primary/5 dark:border-white/5 dark:bg-black/20 dark:hover:bg-white/5"
+          >
+            <div className="min-w-0 flex-1 text-left">
+              <p className="text-xs font-bold uppercase tracking-wider text-gray-400">{parentId}</p>
+              <p className="truncate text-sm font-medium text-gray-800 dark:text-gray-200">{parentTask?.title || 'Untitled'}</p>
+            </div>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setParentId(''); }}
+              className="rounded-md p-1.5 text-gray-400 transition-colors hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/10"
+              title="Detach parent"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        ) : modalTask?.id ? (
+          <TicketPicker
+            tasks={allTasks}
+            config={config}
+            excludeIds={[modalTask.id, ...subtasks]}
+            placeholder="Search for parent ticket..."
+            onSelect={(id) => setParentId(id)}
+          />
+        ) : (
+          <p className="text-sm text-gray-500">Save the ticket first to set a parent.</p>
+        )}
+      </div>
+
+      {/* Subtasks */}
       <div className="flex items-center justify-between gap-3">
         <div>
           <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Subtasks</p>
@@ -933,32 +970,13 @@ export function TaskModal() {
         </span>
       </div>
       {modalTask?.id ? (
-        <div className="flex gap-2">
-          <select
-            className="flex-1 min-w-0 cursor-pointer rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630]"
-            value={subtaskToAdd}
-            onChange={(event) => setSubtaskToAdd(event.target.value)}
-          >
-            <option value="">Attach existing ticket...</option>
-            {availableSubtasks.map((task) => (
-              <option key={task.id} value={task.id}>
-                {task.id} - {task.title || 'Untitled Task'}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            disabled={!subtaskToAdd}
-            onClick={() => {
-              if (!subtaskToAdd) return;
-              setSubtasks((current) => [...current, subtaskToAdd]);
-              setSubtaskToAdd('');
-            }}
-            className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Attach
-          </button>
-        </div>
+        <TicketPicker
+          tasks={allTasks}
+          config={config}
+          excludeIds={[modalTask.id, ...subtasks, ...(parentId ? [parentId] : [])]}
+          placeholder="Search tickets to attach..."
+          onSelect={(id) => setSubtasks((current) => [...current, id])}
+        />
       ) : (
         <p className="text-sm text-gray-500">Save the ticket first, then attach existing subtasks.</p>
       )}

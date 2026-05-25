@@ -63,6 +63,7 @@ export interface Task {
   effort?: string;
   effortLevel?: string;
   implementationLink?: string;
+  parentId?: string;
   subtasks?: (string | InlineSubtask)[];
   version?: string;
   releasedAt?: string;
