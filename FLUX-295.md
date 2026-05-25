@@ -692,11 +692,15 @@ history:
       throughout the process. I have summarized the findings in a completion
       comment on the ticket and moved it to `Ready`.
     id: c-2026-05-25t05-43-46-742z
-id: FLUX-295
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Guy
+    date: '2026-05-25T06:39:28.541Z'
 title: 'gemini, check you can use hte mCP server!'
-status: Ready
+status: Done
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 tokenMetadata:
   inputTokens: 566212
   outputTokens: 2402
@@ -704,6 +708,7 @@ tokenMetadata:
   costIsEstimated: true
   cacheReadTokens: 274336
   cacheCreationTokens: 0
+order: 19
 ---
 ## Problem/Motivation
 The user wants to verify if the Gemini agent has successfully loaded and can utilize the Event Horizon MCP server. This involves running through the full gamut of MCP tool capabilities to ensure correct integration, schema validation, and functionality.

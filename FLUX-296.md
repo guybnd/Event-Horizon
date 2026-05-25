@@ -842,7 +842,83 @@ history:
     user: Copilot
     type: comment
     id: c-2026-05-25t06-37-43-100z
-status: In Progress
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Guy
+    date: '2026-05-25T06:38:47.785Z'
+  - date: '2026-05-25T06:38:47.785Z'
+    comment: >-
+      ## MCP Integration Test Results (Copilot CLI)
+
+
+      **Finding: Event Horizon MCP tools are NOT available in the Copilot CLI
+      agent's tool list.**
+
+
+      The Copilot CLI has GitHub MCP server tools (github-mcp-server-*) but does
+      NOT expose the Event Horizon MCP tools (get_ticket, update_ticket,
+      change_status, add_comment, etc.).
+
+
+      **REST API Fallback: All operations PASS**
+
+
+      | Operation | Method | Result |
+
+      |-----------|--------|--------|
+
+      | Read ticket | GET /api/tasks/:id | ? Pass |
+
+      | List tickets | GET /api/tasks | ? Pass (275 tickets) |
+
+      | Add comment | PUT /api/tasks/:id (appendHistory) | ? Pass |
+
+      | Change status | PUT /api/tasks/:id (status) | ? Pass |
+
+      | Create ticket | POST /api/tasks | ? Pass (FLUX-308) |
+
+      | Create subtask | POST /api/tasks/:parentId/subtasks | ? Pass (FLUX-309)
+      |
+
+      | Delete ticket | DELETE /api/tasks/:id | ? Pass |
+
+
+      **Configuration needed to enable MCP tools for Copilot CLI:**
+
+      The Copilot CLI would need an MCP server configuration (similar to
+      .claude/mcp.json or .cursor equivalent) that points to the Event Horizon
+      MCP server. Currently, only the GitHub MCP server is configured. The REST
+      API at localhost:3067 is a fully functional fallback.
+    user: Copilot
+    type: comment
+    id: c-2026-05-25t06-38-47-785z
+  - date: '2026-05-25T06:38:47.785Z'
+    from: In Progress
+    to: Ready
+    user: Copilot
+    type: status_change
+  - type: agent_session
+    sessionId: a0fc1915-87f8-4874-942d-7392465012c3
+    startedAt: '2026-05-25T06:36:47.011Z'
+    status: cancelled
+    progress:
+      - timestamp: '2026-05-25T06:37:02.637Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-05-25T06:37:44.388Z'
+        message: 'Now let me test write operations - adding a comment via the REST API:'
+        type: text
+    user: Copilot CLI
+    date: '2026-05-25T06:36:47.011Z'
+    outcome: Copilot CLI session stopped by user.
+    endedAt: '2026-05-25T06:38:47.793Z'
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Guy
+    date: '2026-05-25T06:39:25.086Z'
+status: Done
 createdBy: Guy
 updatedBy: Guy
 tokenMetadata:
@@ -852,7 +928,7 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 1433545
   cacheCreationTokens: 96312
-order: 81
+order: 18
 ---
 ## Problem / Motivation
 
