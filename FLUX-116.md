@@ -14,9 +14,9 @@ history:
     comment: Created ticket.
   - type: comment
     id: c-flux116-plan
-    author: Agent
+    user: Agent
     date: '2026-05-08T18:00:00.000Z'
-    content: >
+    comment: >
       **Plan:** (1) Redesign TaskViewControls to a single always-on-row layout —
       remove the responsive flex-col/xl:flex-row breakpoints so icon+title,
       search, and action buttons stay on one line at all widths. Shrink search
@@ -35,9 +35,9 @@ history:
     date: '2026-05-08T18:00:00.000Z'
   - type: comment
     id: c-flux116-done
-    author: Agent
+    user: Agent
     date: '2026-05-08T18:30:00.000Z'
-    content: >
+    comment: >
       **Implemented.** TaskViewControls redesigned to a single `flex
       items-center gap-2 flex-wrap` row — no more two-line responsive layout.
       Search bar shrunk to `w-44` fixed width. The "X active" count badge

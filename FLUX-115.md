@@ -14,9 +14,9 @@ history:
     comment: Created ticket.
   - type: comment
     id: c-flux115-plan
-    author: Agent
+    user: Agent
     date: '2026-05-08T18:45:00.000Z'
-    content: >
+    comment: >
       **Plan:** Create `portal/src/components/ContextMenu.tsx` — a
       portal-rendered fixed-position menu triggered by `onContextMenu` on the
       TaskCard. State: `contextMenuPos | null` tracked in TaskCard; on open,
@@ -34,9 +34,9 @@ history:
     date: '2026-05-08T18:45:00.000Z'
   - type: comment
     id: c-flux115-done
-    author: Agent
+    user: Agent
     date: '2026-05-08T19:00:00.000Z'
-    content: >
+    comment: >
       **Implemented.** Created `portal/src/components/ContextMenu.tsx` — a
       portal-rendered right-click menu on task cards. Items: Edit/Open (respects
       boardCardOpenMode), Mark comments as read (shown only when unread exist),

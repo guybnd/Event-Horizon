@@ -14,9 +14,9 @@ history:
     user: Unknown
     date: '2026-05-14T00:00:00.000Z'
     comment: Created ticket.
-  - date: '2026-05-14'
+  - type: comment
     user: Guy
-    type: comment
+    date: '2026-05-14T00:00:00.000Z'
     comment: >
       Created. User reported: when Gemini hits token quota the session silently
       fails — no clear error message, session may stay dirty, no easy way to
@@ -24,9 +24,9 @@ history:
       proper error popup on launch failure, (3) session must end cleanly, (4)
       per-model control for Gemini since different models have different quotas.
     id: c-2026-05-14
-  - date: '2026-05-14'
+  - type: comment
     user: Copilot
-    type: comment
+    date: '2026-05-14T12:00:00.000Z'
     comment: >
       Grooming complete. Codebase explored, all three parts have confirmed
       touchpoints. No unresolved choices. Implementation plan updated with

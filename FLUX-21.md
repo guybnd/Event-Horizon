@@ -12,7 +12,7 @@ history:
     from: Grooming
     to: Done
     user: Agent
-    date: 2026-05-06T19:00:00.000Z
+    date: '2026-05-06T19:00:00.000Z'
   - type: status_change
     from: Done
     to: Released

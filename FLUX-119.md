@@ -14,9 +14,9 @@ history:
     comment: Created ticket.
   - type: comment
     id: c-flux119-plan
-    author: Agent
+    user: Agent
     date: '2026-05-08T19:30:00.000Z'
-    content: >
+    comment: >
       **Plan:** Add a "Mark all read" button to each column header that appears
       only when the column has ≥1 task with unread comments. Calls
       markAllCommentsRead for every comment ID across all tasks in the column.
