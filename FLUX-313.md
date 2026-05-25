@@ -323,10 +323,16 @@ history:
   - type: agent_session
     sessionId: ca43d809-ffe1-4b83-87e5-008f249a7025
     startedAt: '2026-05-25T11:49:39.651Z'
-    status: active
+    status: cancelled
     progress: []
     user: Claude Code
     date: '2026-05-25T11:49:39.651Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-25T11:49:47.501Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-25T11:50:12.688Z'
+    comment: Updated description.
 title: subtask picker improvements
 status: Grooming
 createdBy: Guy
@@ -350,30 +356,30 @@ The subtask picker in the ticket modal is a plain `<select>` dropdown listing al
 
 - Add optional `parentId: string` field to the `Task` type in `portal/src/types.ts`
 - Engine must persist `parentId` in ticket frontmatter and expose it via the API
-- When `parentId` is set on a child, the engine should also add the child ID to the parent's `subtasks` array (bidirectional sync)
-- When a subtask is detached from a parent, clear the child's `parentId`
+- Bidirectional sync: setting `parentId` on a child automatically adds the child to the parent's `subtasks` array; detaching from either side clears both
 
-### 2. Build a reusable searchable ticket picker component
+### 2. Engine API changes
 
-- Create a `TicketPicker` component (similar pattern to `TagSelector.tsx`)
-- Text input that filters tickets using existing `searchTasks()` from `taskSearch.ts`
-- Dropdown shows scored/filtered results (ID, title, status badge) — limit to ~7 results like `GlobalSearch`
-- Single-select mode (for parent picker) and multi-select mode (for subtask picker)
+- `PUT /api/tasks/:id` accepts `parentId` and handles bidirectional linking
+- When `parentId` changes: remove child from old parent's `subtasks`, add to new parent's `subtasks`
+- When a subtask is detached from a parent ticket, clear the child's `parentId`
+- When `parentId` is cleared on a child, remove from old parent's `subtasks`
+
+### 3. Build a reusable `TicketPicker` component
+
+- Single component used for both parent picker (single-select) and subtask picker (multi-select/attach mode) — same code, no duplication
+- Pattern after `TagSelector.tsx`: text input that filters tickets using existing `searchTasks()` from `taskSearch.ts`
+- Dropdown shows scored/filtered results: ID + title + status badge (same as `GlobalSearch`)
+- Limit to ~7 results
 - Exclude the current ticket and already-linked tickets from results
 
-### 3. Replace the subtask `<select>` with the new picker
+### 4. Replace the subtask `<select>` with `TicketPicker`
 
-- In `TaskModal.tsx` (lines ~924-1042), swap the `<select>` + "Attach" button for the new `TicketPicker` in multi-select/attach mode
+- In `TaskModal.tsx` (subtask section, lines ~924-1042), swap the `<select>` + "Attach" button for `TicketPicker` in attach mode
 - Keep existing display of linked subtasks (clickable list with detach buttons)
 
-### 4. Add "Parent Ticket" field to the metadata/subtask panel
+### 5. Add "Parent Ticket" field to the subtask panel
 
-- Add a `TicketPicker` in single-select mode in the subtask section or metadata panel
+- Add `TicketPicker` in single-select mode above/below the subtask list
 - Shows current parent (if any) with a link to open it and a detach button
-- Selecting a parent calls the API to set `parentId` and sync the parent's `subtasks` array
-
-### 5. Engine API changes
-
-- `PUT /api/tasks/:id` must accept `parentId` and handle bidirectional linking
-- When `parentId` changes: remove child from old parent's subtasks, add to new parent's subtasks
-- When a subtask is detached from a parent ticket, clear the child's `parentId`
+- Selecting a parent calls `PUT /api/tasks/:id` with `parentId` — engine handles bidirectional sync
