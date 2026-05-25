@@ -29,7 +29,7 @@ export function TaskCard({
   travelDirection?: -1 | 0 | 1;
 }) {
   const EFFORT_OPTIONS = ['None', 'XS', 'S', 'M', 'L', 'XL'];
-  const { openTaskModal, openTaskFullView, config, saveConfig, currentUser, triggerRefresh, readComments, ensureReadStateLoaded, markCommentRead: ctxMarkCommentRead, markAllCommentsRead: ctxMarkAllCommentsRead, tasks: allTasks } = useApp();
+  const { openTaskModal, openTaskFullView, config, saveConfig, currentUser, triggerRefresh, readComments, ensureReadStateLoaded, markCommentRead: ctxMarkCommentRead, markAllCommentsRead: ctxMarkAllCommentsRead, taskById } = useApp();
   const [priorityMenuOpen, setPriorityMenuOpen] = useState(false);
   const [effortMenuOpen, setEffortMenuOpen] = useState(false);
   const [assigneeMenuOpen, setAssigneeMenuOpen] = useState(false);
@@ -66,12 +66,6 @@ export function TaskCard({
 
   const subtaskIds = useMemo(() => task.subtasks?.map(normalizeSubtaskId) ?? [], [task.subtasks]);
   const isEpic = subtaskIds.length > 0;
-
-  const taskById = useMemo(() => {
-    const map = new Map<string, Task>();
-    for (const t of allTasks) map.set(t.id, t);
-    return map;
-  }, [allTasks]);
 
   const doneStatuses = useMemo(
     () => new Set(['Done', 'Released', getArchiveStatus(config)].filter(Boolean)),
@@ -1143,7 +1137,7 @@ export function TaskCard({
               transition={{ duration: 0.12 }}
               style={{
                 position: 'fixed',
-                top: Math.min(subtaskPopoverPos.top, window.innerHeight - Math.min(resolvedSubtasks.length * 88 + 80, 700)),
+                top: Math.min(subtaskPopoverPos.top, window.innerHeight - 700),
                 left: Math.min(subtaskPopoverPos.left, window.innerWidth - 520),
                 zIndex: 999999,
               }}

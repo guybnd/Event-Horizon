@@ -149,6 +149,7 @@ interface AppState {
   clearOpenModalScrollToComments: () => void;
   openModalInFullView: boolean;
   tasks: Task[];
+  taskById: Map<string, Task>;
   tasksLoading: boolean;
   taskLiveEvents: Record<string, TaskLiveEvent>;
   columnLiveEvents: Record<string, ColumnLiveEvent>;
@@ -194,6 +195,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [openModalScrollToComments, setOpenModalScrollToComments] = useState(false);
   const [openModalInFullView, setOpenModalInFullView] = useState(false);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const taskById = useMemo(() => {
+    const map = new Map<string, Task>();
+    for (const t of tasks) map.set(t.id, t);
+    return map;
+  }, [tasks]);
   const [tasksLoading, setTasksLoading] = useState(true);
   const [taskLiveEvents, setTaskLiveEvents] = useState<Record<string, TaskLiveEvent>>({});
   const [columnLiveEvents, setColumnLiveEvents] = useState<Record<string, ColumnLiveEvent>>({});
@@ -826,6 +832,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       closeModal,
       setModalTask,
       tasks,
+      taskById,
       tasksLoading,
       taskLiveEvents,
       columnLiveEvents,
