@@ -127,11 +127,15 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-25T06:59:22.627Z'
-id: FLUX-308
+  - type: status_change
+    from: Todo
+    to: Archived
+    user: Guy
+    date: '2026-05-25T09:54:17.874Z'
 title: test mcp usage
-status: Todo
+status: Archived
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 tokenMetadata:
   inputTokens: 167996
   outputTokens: 1285

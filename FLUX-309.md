@@ -116,11 +116,15 @@ history:
 
       ✅ The Event Horizon integration is functional end-to-end via the REST API.
     id: c-2026-05-25t07-23-41-591z
+  - type: status_change
+    from: Todo
+    to: Archived
+    user: Guy
+    date: '2026-05-25T09:54:06.155Z'
 title: Confirm Copilot can use the Event Horizon MCP
-status: Todo
+status: Archived
 createdBy: Guy
-updatedBy: Agent
-id: FLUX-309
+updatedBy: Guy
 ---
 ## Problem / Motivation
 

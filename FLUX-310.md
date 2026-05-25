@@ -13,12 +13,21 @@ tags:
   - copilot-cli
   - agent-integration
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 history:
   - type: activity
     user: Guy
     date: '2026-05-25T07:50:51.255Z'
     comment: Created ticket.
+  - type: agent_session
+    sessionId: 26c1909b-51e8-4358-82d5-0571fee446f7
+    startedAt: '2026-05-25T09:54:13.598Z'
+    status: cancelled
+    progress: []
+    user: Claude Code
+    date: '2026-05-25T09:54:13.598Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-25T09:54:21.740Z'
 ---
 ## Problem / Motivation
 
