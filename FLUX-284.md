@@ -1,9 +1,9 @@
 ---
 id: FLUX-284
-title: Implement role-selection UI in portal dropdown
+title: Live agent session panel — runtime status & controls
 status: Todo
 priority: High
-effort: M
+effort: S
 assignee: unassigned
 tags:
   - feature
@@ -38,54 +38,34 @@ history:
     user: Agent
     date: '2026-05-25T11:49:13.403Z'
     comment: Updated description.
+  - type: activity
+    user: Agent
+    date: '2026-05-25T11:53:49.654Z'
+    comment: Updated title. Updated description. Changed effort to S.
 ---
 
 Subtask of FLUX-281.
 
 ## Problem / Motivation
 
-The current "Launch Agent" UI is a flat dropdown that assumes one agent per ticket. The multi-agent architecture requires a pipeline-step model where users compose agents into orchestrated workflows with visibility into each session's status.
+When multi-agent sessions are running against a ticket, the user needs real-time visibility into what's happening: which agents are active, their status, token usage, and controls to stop/re-run/inspect. This is the **runtime** counterpart to FLUX-312 (design-time workflow configuration).
 
-**Design principle: Claude-first.** The UI defaults to Claude Code as the CLI. Gemini/Copilot are selectable but secondary — the happy path should require zero CLI-type configuration (just pick roles and go).
+**Scope clarification:** FLUX-312 handles workflow template building (choosing which agents run in what pattern). This ticket handles the live execution panel that appears once a workflow is launched.
 
-## Research Findings Informing This Ticket
-
-**Default experience (Claude Code):**
-- All orchestration patterns work: relay, scatter-gather, supervisor
-- All session states are valid: pending, running, waiting (via `--resume`), completed, failed
-- Background mode (`--bg`) enables non-blocking parallel execution
-- No special model config needed — inherits from project settings
-
-**Capability-aware UI constraints:**
-- Gemini sessions will never show "waiting" state (no resume) — hide that status
-- Gemini cannot be assigned as Supervisor lead — disable that option in role picker
-- Copilot's BYOK mode (can use Claude models) is a power-user feature — hide behind advanced toggle
-- Background mode toggle only relevant for Claude — hide for others
-
-**Per-session metadata available from `--output-format json`:**
-- Token usage (input/output/cache)
-- Model used
-- Duration
-- Tool calls made
-- Structured result
+**Design principle: Claude-first.** Claude sessions show the richest state (pending/running/waiting/completed/failed). Gemini sessions show a reduced set (no "waiting" — it can't resume). Copilot similar to Claude.
 
 ## Implementation Plan
 
-1. Replace flat dropdown with pipeline builder component:
-   - Default: Claude Code, no CLI picker shown unless user expands "Advanced"
-   - Step configurator: add/remove/reorder pipeline steps
-   - Per step: select role (required), CLI type (optional, defaults to Claude), orchestration position
-   - Visual indicators for relay (arrows), scatter-gather (fan-out/fan-in), supervisor (tree)
-2. Active agents panel per ticket:
-   - Card per session showing: role, CLI type icon, status badge, elapsed time, token count
-   - Controls: stop, re-run, inspect output, attach/resume (only shown for Claude/Copilot sessions)
-   - Gemini cards show subset of controls (no attach/resume)
-3. Capability-aware controls:
-   - CLI selection conditionally enables/disables pattern options and session actions
-   - Invalid combinations prevented at UI level (greyed out with tooltip explaining why)
-   - Status badges filtered to possible states per CLI type
-4. Pipeline templates: pre-built configurations for common Claude-based workflows:
-   - "Quick Review" = single Pedant session
-   - "Standard Review" = Implementer → Pedant → QA Automator (relay)
-   - "Deep Grooming" = Interrogator + Architect (scatter) → Spec Writer (gather)
-5. Connect to extended session store API (`GET /api/tasks/:id/cli-sessions`)
+1. Active agents panel component (`ActiveAgentsPanel.tsx`) — shown per ticket when sessions exist
+2. Session card per running/completed agent:
+   - Role label, CLI type icon, status badge, elapsed time, token count
+   - Controls: stop (kill process), re-run (relaunch same config), inspect output (expand JSON result)
+   - Attach/resume button — only shown for Claude/Copilot sessions (capability-gated)
+3. Pipeline progress indicator — shows which step in the workflow is currently active (relay arrow, scatter fan-out visual, supervisor tree)
+4. Auto-refresh via polling or SSE from session store API (`GET /api/tasks/:id/cli-sessions`)
+5. Gemini sessions: hide "waiting" status and "attach" control (not supported per FLUX-282 research)
+
+### Dependencies
+
+- FLUX-283 (session store API provides the data)
+- FLUX-312 (workflow config determines what launched — but this ticket is independent of the builder UI)

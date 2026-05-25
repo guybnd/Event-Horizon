@@ -450,6 +450,10 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-25T11:46:11.904Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-25T11:53:50.137Z'
+    comment: Updated description.
 implementationLink: ''
 subtasks: []
 id: FLUX-312
@@ -461,68 +465,134 @@ tokenMetadata:
   cacheReadTokens: 178397
   cacheCreationTokens: 16480
 ---
+
 ## Problem / Motivation
 
 Users have no visual way to configure which agents run during each ticket phase (Grooming, Implementation, Review, Release) or in what order. The multi-agent system (FLUX-283 session orchestration, FLUX-285 role prompts) defines 13+ agent roles, but there's no UI to compose them into pipelines per phase. Without this, users must manually edit config files to set up workflows — a poor experience that blocks adoption of multi-agent execution.
 
+**Design principle: Claude-first.** CLI target defaults to Claude Code. The UI never requires users to think about CLI types unless they want to — the happy path is: pick roles, pick how they run together, go.
+
 ## Confirmed Decisions
 
-- **Persistence**: Global config (start here), with per-project override later. Stored in `.flux/workflows/` (JSON) and `.flux/agents/` (JSON/markdown).
+- **Persistence**: Global config first (`.flux/workflows/`), per-project override later.
 - **Skills picker**: Select from existing `.flux/skills/` only — no inline creation. Shortcut button opens skill in a dedicated editor popup.
 - **Dry run**: Include a "preview pipeline" mode that shows execution order without launching agents.
-- **Phase transitions**: Out of scope for this ticket — handled by FLUX-283 (session orchestration). This ticket builds the configuration UI only.
+- **Phase transitions**: Out of scope — handled by FLUX-283 (session orchestration). This ticket builds the configuration UI only.
+- **Runtime status panel**: Out of scope — handled by FLUX-284 (live session cards, controls, status badges).
+
+## Execution Pattern — What It Means (User-Facing)
+
+The research (FLUX-282) identified three orchestration patterns. In the UI these need human-friendly names and clear explanations of behavior:
+
+| Internal Name | UI Label | User Explanation | Visual |
+|---|---|---|---|
+| Relay | **"One after another"** | Agents run in sequence. Each one sees the previous agent's output before starting. Good when order matters (e.g., implement first, then review). | Numbered list with arrows between steps |
+| Scatter-Gather | **"All at once, then combine"** | A group of agents run simultaneously on the same input. When all finish, a final agent combines their results. Good for getting multiple perspectives fast (e.g., security + perf + style reviews in parallel). | Parallel lanes merging into one |
+| Supervisor | **"One leads, others assist"** | A lead agent runs and can call on other agents as needed during its work. The lead decides when/if to ask for help. Good for complex tasks where the path isn't known upfront. | Tree with one root and optional branches |
+
+**UI behavior per pattern:**
+
+- **"One after another":** Phase column shows numbered steps. Drag to reorder. Each step runs only after the previous completes. User sees: "Step 1 → Step 2 → Step 3".
+- **"All at once, then combine":** Phase shows a parallel group (visually grouped/bracketed) plus one "combiner" step below. Drag agents into the parallel group or the combiner slot. User sees: "These run together: [A, B, C] → Then this combines: [D]".
+- **"One leads, others assist":** Phase shows one "lead" slot (prominent) plus an "available assistants" pool below. The lead calls assistants on-demand — user doesn't control the order. User sees: "Lead: [A]. Can call on: [B, C, D]".
+
+**Capability constraints surfaced in UI:**
+- Gemini agents can't be placed in the "lead" slot of "One leads, others assist" (no supervisor support) — slot shows tooltip: "This CLI doesn't support leading workflows. Use Claude or Copilot."
+- Gemini agents in "All at once" won't show a "waiting" state at runtime — but that's a FLUX-284 concern, not a builder concern.
 
 ## Implementation Plan
 
 ### 1. Data Model & Engine API (engine/)
 
-- Define TypeScript interfaces: `AgentDefinition` (name, cliTarget, systemPrompt, skills[], category, contextBoundaries) and `WorkflowTemplate` (id, name, phases: Record<Phase, WorkflowStep[]>), `WorkflowStep` (agentId, enabled, config overrides).
-- Add CRUD endpoints: `GET/POST /api/workflows`, `GET/PUT/DELETE /api/workflows/:id`, `GET/POST /api/agents`, `GET/PUT/DELETE /api/agents/:id`.
-- File persistence: read/write `.flux/workflows/*.json` and `.flux/agents/*.json`.
-- Seed with a default template matching the confirmed design (Interrogator→Context Scout→Spec Writer for Grooming, etc.).
+```ts
+interface AgentDefinition {
+  id: string;
+  name: string;
+  cliTarget: 'claude' | 'gemini' | 'copilot';  // defaults to 'claude'
+  systemPrompt: string;
+  skills: string[];
+  phase: 'grooming' | 'execution' | 'validation';
+  toolRestrictions: string[];  // from FLUX-285 role templates
+  supportsPatterns: ('relay' | 'scatter' | 'supervisor')[];
+  outputSchema?: object;
+}
+
+interface WorkflowPhaseConfig {
+  pattern: 'relay' | 'scatter' | 'supervisor';
+  // Pattern-specific step layout:
+  steps?: string[];           // relay: ordered agent IDs
+  parallel?: string[];        // scatter: parallel agent IDs
+  combiner?: string;          // scatter: synthesis agent ID
+  lead?: string;              // supervisor: lead agent ID
+  assistants?: string[];      // supervisor: available assistant IDs
+}
+
+interface WorkflowTemplate {
+  id: string;
+  name: string;
+  phases: Record<Phase, WorkflowPhaseConfig>;
+}
+```
+
+- CRUD endpoints: `GET/POST /api/workflows`, `GET/PUT/DELETE /api/workflows/:id`, `GET/POST /api/agents`, `GET/PUT/DELETE /api/agents/:id`.
+- File persistence: `.flux/workflows/*.json` and `.flux/agents/*.json`.
+- Seed with a default template: Grooming = scatter (Interrogator + Architect → Spec Writer), Implementation = relay (Context Scout → Implementer), Review = scatter (Pedant + Auditor + Product Proxy → QA Automator).
 
 ### 2. New Portal View — Workflow Builder (portal/src/)
 
 - Add `workflow-builder` to `AppView` type in `AppContext.tsx`.
-- Add navigation entry (sidebar/topnav) to reach the builder view.
-- Create `WorkflowBuilder.tsx` — top-level view component.
+- Navigation entry to reach the builder view.
+- `WorkflowBuilder.tsx` — top-level view.
 
 ### 3. Agent Library Column
 
-- `AgentLibrary.tsx` — left column listing all defined agents from `/api/agents`.
-- Each agent rendered as a draggable card (`@dnd-kit` draggable) showing name, CLI type badge, category tag.
-- `[+ New Agent]` button at bottom → opens `AgentEditorModal.tsx` (name, CLI target, system prompt via Tiptap, skills multi-select from existing, category, context boundaries).
+- `AgentLibrary.tsx` — left sidebar listing all defined agents from `/api/agents`.
+- Draggable cards (`@dnd-kit`) showing name, phase badge, CLI type icon (small, unobtrusive — Claude is default so most won't show an icon).
+- `[+ New Agent]` button → `AgentEditorModal.tsx`.
+- Agents auto-seeded from FLUX-285 role templates on first load.
 
-### 4. Phase Columns
+### 4. Phase Columns with Pattern Selector
 
-- `PhaseColumn.tsx` — one per phase (Grooming, Implementation, Review, Release). Uses `@dnd-kit` `useDroppable` + `SortableContext` for reordering within.
-- Template dropdown at top of each column (`TemplatePicker.tsx`) — lists saved templates for that phase, with [+ New Template] option.
-- `WorkflowStepCard.tsx` — sortable card in a phase column showing: checkbox (enable/disable), agent name, CLI type, step number (derived from index). Click expands inline config panel.
+- `PhaseColumn.tsx` — one per phase (Grooming, Implementation, Review, Release).
+- **Pattern selector at top of each column** — radio/segmented control with the three user-facing labels:
+  - "One after another" (relay)
+  - "All at once, then combine" (scatter-gather)  
+  - "One leads, others assist" (supervisor)
+- Column layout **changes based on selected pattern**:
+  - Relay → numbered sortable list
+  - Scatter-gather → parallel group zone + combiner slot below
+  - Supervisor → lead slot (prominent) + assistants pool
+- Template dropdown (`TemplatePicker.tsx`) — saved configurations per phase.
 
 ### 5. Drag & Drop Orchestration
 
-- Wrap entire builder in `DndContext` (mirrors Board.tsx pattern).
-- Handle cross-container drag (library → phase column = clone, phase → phase = move).
-- Handle within-column reorder (step reordering).
-- `[+ Add Step]` button per column as non-drag alternative.
+- `DndContext` wrapping builder (mirrors Board.tsx pattern).
+- Cross-container drag (library → phase slot = clone).
+- Within-column reorder (relay steps).
+- Drop-zone validation: reject agents whose `supportsPatterns` doesn't include the column's selected pattern. Show brief toast: "This agent doesn't support this execution style."
+- `[+ Add Step]` button as non-drag alternative.
 
 ### 6. Inline Config Panel (expanded card)
 
-- `StepConfigPanel.tsx` — shown when a step card is clicked/expanded.
-- Fields: system prompt override (Tiptap editor), skills picker (multi-select from `/api/skills`), CLI target selector, context boundaries checkboxes.
-- Skill edit shortcut: button opens `SkillEditorPopup.tsx` for the selected skill in a modal.
+- `StepConfigPanel.tsx` — shown on card click/expand.
+- Fields: system prompt override (Tiptap editor), skills picker (multi-select from existing), CLI target selector (defaults to Claude, collapsed under "Advanced"), context boundaries.
+- Skill edit shortcut → `SkillEditorPopup.tsx` modal.
 
 ### 7. Dry Run / Preview Mode
 
-- `[Preview Pipeline]` button in toolbar.
-- `PipelinePreview.tsx` — visual representation showing execution order per phase, which steps are enabled/disabled, estimated context flow.
-- No actual agent launching — read-only visualization.
+- `[Preview Pipeline]` toolbar button.
+- `PipelinePreview.tsx` — shows execution flow per phase:
+  - Relay: "Agent A → Agent B → Agent C"
+  - Scatter: "Agent A + Agent B + Agent C → Combiner D"
+  - Supervisor: "Lead A (may call B, C, D)"
+- Highlights any warnings (e.g., "Gemini agent in parallel group won't show live status").
+- No agent launching.
 
 ### 8. Persistence & Sync
 
-- Auto-save workflow changes (debounced PUT to `/api/workflows/:id`).
-- Active workflow selection stored in board config (or `.flux/config.json`).
-- Engine reads active workflow when FLUX-283 session orchestration launches agents.
+- Auto-save (debounced PUT).
+- Active workflow stored in `.flux/config.json` or board config.
+- FLUX-283 session orchestrator reads the active workflow to determine launch parameters.
 
 ### Key Files to Create/Modify
 
@@ -534,7 +604,8 @@ Users have no visual way to configure which agents run during each ticket phase 
 | `engine/src/models/agent.ts` | New — interfaces + file I/O |
 | `portal/src/components/WorkflowBuilder.tsx` | New — view shell |
 | `portal/src/components/AgentLibrary.tsx` | New |
-| `portal/src/components/PhaseColumn.tsx` | New |
+| `portal/src/components/PhaseColumn.tsx` | New — pattern-aware layout |
+| `portal/src/components/PatternSelector.tsx` | New — radio/segmented control |
 | `portal/src/components/WorkflowStepCard.tsx` | New |
 | `portal/src/components/StepConfigPanel.tsx` | New |
 | `portal/src/components/AgentEditorModal.tsx` | New |
@@ -546,5 +617,6 @@ Users have no visual way to configure which agents run during each ticket phase 
 
 ### Dependencies
 
-- FLUX-285 (role prompts) provides the default agent definitions to seed the library.
-- FLUX-283 (session orchestration) consumes the workflow config at runtime — but this ticket only builds the configuration UI.
+- FLUX-285 (role prompts) provides default agent definitions to seed the library.
+- FLUX-283 (session orchestration) consumes the workflow config at runtime.
+- FLUX-284 (live session panel) shows runtime execution state — separate from this builder.
