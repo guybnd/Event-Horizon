@@ -11,6 +11,7 @@ import {
   summarizeFieldChanges, hasAppendedStatusChange, findEarliestHistoryDate,
 } from '../history.js';
 import { tasksCache, serializeTaskForApi, updateTaskWithHistory, workspaceActivating, parseErrors } from '../task-store.js';
+import { generatePromptNotification, generateCompletionNotification } from '../notifications.js';
 import { validateTicketFrontmatter, formatValidationErrors } from '../schema.js';
 import {
   resolveSupportedImageExtension, sanitizeAssetBaseName, normalizeBase64Content,
@@ -350,6 +351,14 @@ router.put('/:id', async (req, res) => {
     const fileContent = matter.stringify(body || '', frontmatter);
     await fs.writeFile(_path, fileContent, 'utf-8');
     tasksCache[id] = { ...frontmatter, body, id, _path };
+
+    if (task.status !== frontmatter.status) {
+      if (frontmatter.status === requireInputStatus || frontmatter.status === readyStatus) {
+        generatePromptNotification(id, frontmatter.title || id, frontmatter.status);
+      } else if (frontmatter.status === 'Done') {
+        generateCompletionNotification(id, frontmatter.title || id);
+      }
+    }
 
     // Sync parent's subtasks array when parentId changes
     if (newParentId !== oldParentId) {
