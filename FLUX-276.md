@@ -17,10 +17,12 @@ history:
   - type: agent_session
     sessionId: 4c5fd862-ea88-4a2a-9e7d-66d660715402
     startedAt: '2026-05-25T04:39:51.938Z'
-    status: active
+    status: cancelled
     progress: []
     user: Claude Code
     date: '2026-05-25T04:39:51.938Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-25T04:44:44.763Z'
   - type: status_change
     from: Todo
     to: In Progress
