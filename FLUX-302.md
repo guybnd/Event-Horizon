@@ -831,12 +831,17 @@ history:
       message and have added the required blunt code review comment on FLUX-302.
       I have also ensured the ticket status is set to "In Progress".
     id: c-2026-05-25t09-59-31-702z
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Guy
+    date: '2026-05-25T11:43:34.496Z'
 title: >-
   Agent health notification panel — surface MCP, skills, and instructions
   installation status
-status: In Progress
+status: Done
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 tokenMetadata:
   inputTokens: 445063
   outputTokens: 3653
@@ -844,8 +849,7 @@ tokenMetadata:
   costIsEstimated: true
   cacheReadTokens: 284381
   cacheCreationTokens: 11858
-order: 0
-id: FLUX-302
+order: 2
 ---
 ## Problem / Motivation
 
