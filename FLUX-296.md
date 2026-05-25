@@ -312,10 +312,16 @@ history:
     to: Ready
     user: Copilot CLI
     date: '2026-05-25T05:45:39.319Z'
+  - type: comment
+    user: Guy
+    date: '2026-05-25T06:00:43.372Z'
+    comment: can you retry
+    replyTo: c-2026-05-25t05-45-39-319z
+    id: c-2026-05-25t06-00-43-370z
 title: 'copilot, check you can use hte mCP server!'
 status: Ready
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 ---
 ## Problem / Motivation
 
