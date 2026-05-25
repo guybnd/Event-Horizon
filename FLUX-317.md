@@ -288,8 +288,13 @@ history:
     user: Guy
     date: '2026-05-25T15:25:13.076Z'
     comment: Returned to work
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Guy
+    date: '2026-05-25T15:38:25.988Z'
 title: add indicator on ticket with subtasks how many are done
-status: In Progress
+status: Ready
 createdBy: Guy
 updatedBy: Guy
 tokenMetadata:
@@ -299,6 +304,7 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 310758
   cacheCreationTokens: 47699
+order: 0
 ---
 ## Problem / Motivation
 
