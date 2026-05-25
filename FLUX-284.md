@@ -34,6 +34,10 @@ history:
       pipeline builder, active agents panel, and templates.
     date: '2026-05-25T11:45:16.693Z'
     id: c-2026-05-25t11-45-16-693z
+  - type: activity
+    user: Agent
+    date: '2026-05-25T11:49:13.403Z'
+    comment: Updated description.
 ---
 
 Subtask of FLUX-281.
@@ -42,39 +46,46 @@ Subtask of FLUX-281.
 
 The current "Launch Agent" UI is a flat dropdown that assumes one agent per ticket. The multi-agent architecture requires a pipeline-step model where users compose agents into orchestrated workflows with visibility into each session's status.
 
+**Design principle: Claude-first.** The UI defaults to Claude Code as the CLI. Gemini/Copilot are selectable but secondary — the happy path should require zero CLI-type configuration (just pick roles and go).
+
 ## Research Findings Informing This Ticket
 
-**CLI capabilities the UI must expose:**
-- CLI selection: Claude Code, Gemini CLI, Copilot CLI (each with different flags/capabilities)
-- Mode selection: `plan` (read-only), `autopilot`/`acceptEdits` (full), background (`--bg` Claude only)
-- Model override: `--settings '{"model":"..."}'` (Claude), `-m model` (Gemini), `--model model` (Copilot)
+**Default experience (Claude Code):**
+- All orchestration patterns work: relay, scatter-gather, supervisor
+- All session states are valid: pending, running, waiting (via `--resume`), completed, failed
+- Background mode (`--bg`) enables non-blocking parallel execution
+- No special model config needed — inherits from project settings
 
-**Orchestration patterns the UI must support:**
-1. **Relay Race:** Sequential pipeline — user selects ordered steps, each step is one agent role
-2. **Scatter-Gather:** Parallel group + synthesis agent — user selects N parallel agents and 1 gatherer
-3. **Supervisor:** Single lead agent with ability to spawn children — user selects the lead, children are dynamic
+**Capability-aware UI constraints:**
+- Gemini sessions will never show "waiting" state (no resume) — hide that status
+- Gemini cannot be assigned as Supervisor lead — disable that option in role picker
+- Copilot's BYOK mode (can use Claude models) is a power-user feature — hide behind advanced toggle
+- Background mode toggle only relevant for Claude — hide for others
 
-**Session states to display per agent card:**
-- `pending` (queued in relay, waiting for barrier in scatter)
-- `running` (active CLI process)
-- `waiting` (paused via `--resume` pattern, awaiting input)
-- `completed` (output captured, ready for next step)
-- `failed` (non-zero exit or timeout)
-
-**Per-session metadata to show:**
-- Role label (e.g., "Security Reviewer", "Implementer")
-- CLI type icon (Claude/Gemini/Copilot)
-- Tool restrictions summary (e.g., "read-only", "full access")
-- Token usage (from `--output-format json` metadata)
+**Per-session metadata available from `--output-format json`:**
+- Token usage (input/output/cache)
+- Model used
+- Duration
+- Tool calls made
+- Structured result
 
 ## Implementation Plan
 
 1. Replace flat dropdown with pipeline builder component:
+   - Default: Claude Code, no CLI picker shown unless user expands "Advanced"
    - Step configurator: add/remove/reorder pipeline steps
-   - Per step: select role, CLI type, orchestration position (parallel group or sequential)
+   - Per step: select role (required), CLI type (optional, defaults to Claude), orchestration position
    - Visual indicators for relay (arrows), scatter-gather (fan-out/fan-in), supervisor (tree)
 2. Active agents panel per ticket:
-   - Card per session showing: role, CLI, status badge, elapsed time, token count
-   - Controls: stop, re-run, inspect output, attach (for `--resume` capable CLIs)
-3. Pipeline templates: pre-built configurations for common workflows (e.g., "Standard Review" = Implementer → Pedant → QA)
-4. Connect to extended session store API (`GET /api/tasks/:id/cli-sessions`)
+   - Card per session showing: role, CLI type icon, status badge, elapsed time, token count
+   - Controls: stop, re-run, inspect output, attach/resume (only shown for Claude/Copilot sessions)
+   - Gemini cards show subset of controls (no attach/resume)
+3. Capability-aware controls:
+   - CLI selection conditionally enables/disables pattern options and session actions
+   - Invalid combinations prevented at UI level (greyed out with tooltip explaining why)
+   - Status badges filtered to possible states per CLI type
+4. Pipeline templates: pre-built configurations for common Claude-based workflows:
+   - "Quick Review" = single Pedant session
+   - "Standard Review" = Implementer → Pedant → QA Automator (relay)
+   - "Deep Grooming" = Interrogator + Architect (scatter) → Spec Writer (gather)
+5. Connect to extended session store API (`GET /api/tasks/:id/cli-sessions`)

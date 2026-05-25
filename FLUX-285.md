@@ -34,6 +34,10 @@ history:
       composition.
     date: '2026-05-25T11:45:17.839Z'
     id: c-2026-05-25t11-45-17-839z
+  - type: activity
+    user: Agent
+    date: '2026-05-25T11:49:14.320Z'
+    comment: Updated description.
 ---
 
 Subtask of FLUX-281.
@@ -42,67 +46,92 @@ Subtask of FLUX-281.
 
 Each agent role needs a system prompt template that defines its identity, allowed actions, context boundaries, and output format contract. Research (FLUX-282) established exactly how to inject these prompts and enforce tool boundaries per CLI.
 
+**Design principle: Claude-first.** Role templates are authored primarily for Claude Code invocation (`--append-system-prompt-file` + `--allowedTools`). Gemini/Copilot equivalents are generated from the same source template but are secondary — the Claude invocation path must work perfectly; the others are best-effort.
+
 ## Research Findings Informing This Ticket
 
-**System prompt injection per CLI:**
-- Claude: `--append-system-prompt "..."` or `--append-system-prompt-file ./role.txt` (recommended — additive to base)
-- Gemini: Custom agent files in `.gemini/agents/*.md` with YAML frontmatter (`name`, `tools`, `model`, `temperature`, `max_turns`, `timeout_mins`)
-- Copilot: `.github/instructions/<role>.instructions.md` with `applyTo` frontmatter, or `AGENTS.md` for agent-mode sessions
+**Claude Code (primary — all roles supported):**
+- `--append-system-prompt-file ./role.txt` — recommended injection method (additive to base)
+- `--allowedTools "Read,Glob,Grep"` — enforced tool boundary per invocation
+- `--permission-mode plan` — read-only mode for reviewer roles
+- `--output-format json` — structured output for inter-role chaining
+- No turn/timeout limits — runs until done (bounded externally by orchestrator if needed)
+- Supports Supervisor pattern — can spawn subagents and receive results
 
-**Tool gating per role type:**
+**Gemini CLI (supported, with constraints):**
+- `.gemini/agents/*.md` with frontmatter: `name`, `tools`, `model`, `temperature`, `max_turns`, `timeout_mins`
+- Has unique execution bounds (`max_turns: 10`, `timeout_mins: 5`) — useful for limiting scope
+- Cannot recurse (subagents can't invoke other subagents) — cannot be Supervisor lead
+- `--no-ask-user` implicit in headless — all roles are non-blocking
 
-| Role Type | Claude `--allowedTools` | Gemini `tools:` | Copilot |
-|---|---|---|---|
-| Read-only (Reviewer) | `"Read,Glob,Grep"` | `[read_file, grep_search]` | `--available-tools='shell(git:*)'` |
-| Write (Implementer) | `"Read,Edit,Write,Bash(npm test)"` | `[read_file, write_file, run_shell_command]` | `--allow-tool='write' --allow-tool='shell(npm:*)'` |
-| Planner | `--permission-mode plan` | N/A | `--mode plan` |
-
-**Output format contracts (for chaining):**
-- All CLIs support `--output-format json` — role prompts should define a JSON schema for their output
-- Example: Reviewer outputs `{issues: [{file, line, severity, message}]}`, Implementer outputs `{filesChanged: [...], testsRun: [...]}`
-
-**Context isolation guarantees:**
-- Claude subagents: independent context window, only final result returns to parent
-- Gemini subagents: isolated context, no recursion (cannot invoke other subagents)
-- Copilot: `--no-ask-user` prevents blocking; `--silent` for clean output
+**Copilot CLI (supported):**
+- `.github/instructions/<role>.instructions.md` with `applyTo` frontmatter
+- `--allow-tool` / `--deny-tool` per invocation
+- `--mode autopilot` + `--max-autopilot-continues 10` for bounded execution
+- `--no-ask-user` prevents blocking in headless mode
 
 ## Implementation Plan
 
-### Role Templates to Create
+### Template Format
 
-Each template stored in `.flux/skills/roles/<role>.md` with frontmatter:
+Each role stored in `.flux/skills/roles/<role>.md`:
 ```yaml
 ---
 name: <role-slug>
 phase: grooming | execution | validation
-tools_claude: [...]
-tools_gemini: [...]
-tools_copilot: [...]
-output_schema: <JSON schema for structured output>
+description: One-line role summary
+supports_patterns: [relay, scatter, supervisor]  # which orchestration patterns this role can participate in
+
+# Claude (primary)
+tools_claude: ["Read", "Glob", "Grep"]
+permission_mode_claude: plan | acceptEdits | full
+
+# Gemini (secondary)
+tools_gemini: [read_file, grep_search]
+max_turns_gemini: 10
+timeout_mins_gemini: 5
+
+# Copilot (secondary)
+tools_copilot: ["shell(git:*)"]
+mode_copilot: plan | autopilot | interactive
+
+# Output contract (universal)
+output_schema:
+  type: object
+  properties: ...
 ---
+Role system prompt content here (Claude-native, adapted for others at runtime)
 ```
 
+### Roles to Define
+
 **Grooming Phase (4 roles):**
-1. **Interrogator** — Asks clarifying questions about requirements. Output: `{questions: [...], assumptions: [...]}`
-2. **Architect** — Analyzes codebase structure for impact. Output: `{affectedFiles: [...], dependencies: [...], risks: [...]}`
-3. **Scopesmith** — Estimates effort and breaks into subtasks. Output: `{effort: "M", subtasks: [...], acceptanceCriteria: [...]}`
-4. **Spec Writer** — Synthesizes inputs into implementation spec. Output: `{spec: {problem, plan, constraints, testStrategy}}`
+1. **Interrogator** — Asks clarifying questions. Read-only. Output: `{questions: [...], assumptions: [...]}`
+2. **Architect** — Analyzes codebase for impact. Read-only. Output: `{affectedFiles: [...], dependencies: [...], risks: [...]}`
+3. **Scopesmith** — Estimates effort, breaks into subtasks. Read-only. Output: `{effort, subtasks: [...], acceptanceCriteria: [...]}`
+4. **Spec Writer** — Synthesizes all inputs into spec. Read-only. Output: `{spec: {problem, plan, constraints, testStrategy}}`
 
 **Execution Phase (4 roles):**
-5. **Context Scout** — Gathers relevant code context without modifying. Tools: read-only. Output: `{relevantFiles: [...], patterns: [...], conventions: [...]}`
-6. **Implementer** — Writes code following the spec. Tools: full write. Output: `{filesChanged: [...], decisions: [...]}`
-7. **Refactorer** — Improves code quality post-implementation. Tools: full write. Output: `{refactored: [...], rationale: [...]}`
-8. **Dependency Manager** — Handles package/dependency changes. Tools: write + shell. Output: `{added: [...], removed: [...], upgraded: [...]}`
+5. **Context Scout** — Gathers relevant code context. Read-only. Output: `{relevantFiles: [...], patterns: [...], conventions: [...]}`
+6. **Implementer** — Writes code per spec. Full write access. Output: `{filesChanged: [...], decisions: [...]}`
+7. **Refactorer** — Improves code quality post-implementation. Full write. Output: `{refactored: [...], rationale: [...]}`
+8. **Dependency Manager** — Handles packages. Write + shell. Output: `{added: [...], removed: [...], upgraded: [...]}`
 
 **Validation Phase (5 roles):**
-9. **Pedant** — Code style, naming, consistency review. Tools: read-only. Output: `{issues: [{severity, file, line, message}]}`
-10. **Product Proxy** — Validates against requirements/acceptance criteria. Tools: read-only. Output: `{pass: bool, gaps: [...], suggestions: [...]}`
-11. **QA Automator** — Writes/runs tests. Tools: write + shell(test). Output: `{testsAdded: [...], coverage: {...}, results: [...]}`
-12. **Auditor** — Security and performance review. Tools: read-only. Output: `{vulnerabilities: [...], perfIssues: [...]}`
-13. **Documenter** — Updates docs to match implementation. Tools: write (docs only). Output: `{docsUpdated: [...], changelog: "..."}`
+9. **Pedant** — Style, naming, consistency. Read-only. Output: `{issues: [{severity, file, line, message}]}`
+10. **Product Proxy** — Validates against requirements. Read-only. Output: `{pass: bool, gaps: [...], suggestions: [...]}`
+11. **QA Automator** — Writes/runs tests. Write + shell(test). Output: `{testsAdded: [...], coverage: {...}, results: [...]}`
+12. **Auditor** — Security and perf review. Read-only. Output: `{vulnerabilities: [...], perfIssues: [...]}`
+13. **Documenter** — Updates docs. Write (docs paths only). Output: `{docsUpdated: [...], changelog: "..."}`
 
 ### Hand-off Contracts
 
-Define what each role consumes and produces so the relay/scatter-gather pipeline is machine-parseable:
-- Scatter agents (Interrogator + Architect + Context Scout) → Spec Writer consumes all three outputs
-- Implementer output → Pedant + Auditor + Product Proxy consume in parallel → QA Automator synthesizes
+- Scatter agents produce JSON per `output_schema` → Gather/Synthesis agent consumes array of upstream outputs
+- Relay: each step receives previous step's full output as context injection
+- Supervisor: lead agent receives child outputs as tool-call results (Claude-native, MCP-bridged for others)
+
+### CLI Compatibility Notes
+
+- All 13 roles work with Claude Code (primary path)
+- Gemini: roles with `supports_patterns: [supervisor]` are not assignable; `max_turns`/`timeout_mins` auto-populated from template
+- Copilot: `--no-ask-user` added implicitly to all headless invocations; `--max-autopilot-continues` derived from template bounds
