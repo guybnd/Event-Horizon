@@ -1,5 +1,4 @@
 ---
-id: FLUX-296
 title: 'copilot, check you can use hte mCP server!'
 assignee: unassigned
 tags:
@@ -431,9 +430,27 @@ history:
       works in VS Code). Must use REST API fallback at localhost:3067.
     date: '2026-05-25T06:04:48.276Z'
     id: c-2026-05-25t06-04-48-276z
-status: Ready
+  - type: comment
+    user: Guy
+    date: '2026-05-25T06:05:11.454Z'
+    comment: lets do a nother pass now with copilot CLI
+    id: c-2026-05-25t06-05-11-451z
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Guy
+    date: '2026-05-25T06:05:15.871Z'
+status: In Progress
 createdBy: Guy
-updatedBy: Claude Code
+updatedBy: Guy
+tokenMetadata:
+  inputTokens: 1074750
+  outputTokens: 5799
+  costUSD: 0.969008
+  costIsEstimated: false
+  cacheReadTokens: 1025070
+  cacheCreationTokens: 49646
+order: 1
 ---
 ## Problem / Motivation
 
