@@ -532,7 +532,7 @@ history:
     user: Agent
     date: '2026-05-25T11:59:39.814Z'
 title: subtask picker improvements
-status: Ready
+status: Done
 createdBy: Guy
 updatedBy: Guy
 tokenMetadata:
