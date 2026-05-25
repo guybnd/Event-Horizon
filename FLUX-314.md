@@ -20,7 +20,11 @@ history:
     to: Archived
     user: Guy
     date: '2026-05-25T12:02:39.517Z'
-title: subtask
+  - type: activity
+    user: Guy
+    date: '2026-05-25T12:08:56.354Z'
+    comment: Updated title.
+title: test
 status: Archived
 createdBy: Guy
 updatedBy: Guy
