@@ -1,6 +1,6 @@
 ---
 title: add execution mode controls and status UX to the portal
-status: Todo
+status: Backlog
 priority: Medium
 createdBy: Guy
 updatedBy: Guy
@@ -49,6 +49,11 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-07T03:53:39.4816199Z'
+  - type: status_change
+    from: Todo
+    to: Backlog
+    user: Guy
+    date: '2026-05-25T04:29:51.316Z'
 effort: Medium
 implementationLink: ''
 order: 5
