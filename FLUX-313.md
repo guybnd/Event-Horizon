@@ -531,6 +531,16 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-25T11:59:39.814Z'
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Guy
+    date: '2026-05-25T12:30:17.308Z'
+  - type: status_change
+    from: Done
+    to: Ready
+    user: Guy
+    date: '2026-05-25T12:30:25.988Z'
 title: subtask picker improvements
 status: Ready
 createdBy: Guy
@@ -542,7 +552,6 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 286557
   cacheCreationTokens: 26093
-id: FLUX-313
 ---
 ## Problem / Motivation
 
