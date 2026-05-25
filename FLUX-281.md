@@ -28,20 +28,22 @@ history:
   - type: agent_session
     sessionId: f5fb9e24-ad19-44de-a200-175212670126
     startedAt: '2026-05-24T13:19:06.988Z'
-    status: active
+    status: cancelled
     progress: []
     user: Gemini CLI
     date: '2026-05-24T13:19:06.988Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-25T04:24:30.462Z'
   - type: status_change
     user: Gemini CLI
     date: '2026-05-24T13:20:00.000Z'
-    oldStatus: Grooming
-    newStatus: Todo
+    from: Grooming
+    to: Todo
   - type: status_change
     user: Guy
     date: '2026-05-24T13:45:12.215Z'
-    oldStatus: Todo
-    newStatus: Grooming
+    from: Todo
+    to: Grooming
   - type: comment
     user: Agent
     date: '2026-05-24T14:00:00.000Z'
@@ -54,8 +56,8 @@ history:
   - type: status_change
     user: Agent
     date: '2026-05-24T14:00:00.000Z'
-    oldStatus: Grooming
-    newStatus: Todo
+    from: Grooming
+    to: Todo
 title: multi agent code review
 status: Todo
 createdBy: Guy
