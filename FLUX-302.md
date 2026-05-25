@@ -338,10 +338,58 @@ history:
     date: '2026-05-25T07:25:06.272Z'
     outcome: Session abandoned (engine restarted).
     endedAt: '2026-05-25T07:25:14.905Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Implementation complete. Built the full notification system:
+
+
+      **Engine (already done by prior session + new trigger wiring):**
+
+      - `engine/src/notifications.ts` — in-memory notification store with types
+      (error/prompt/completion), CRUD, health check logic, SSE broadcast
+
+      - `engine/src/routes/notifications.ts` — REST endpoints (GET list, POST
+      read/dismiss/action with reinstall support)
+
+      - `engine/src/task-store.ts` — added notification triggers: generates
+      prompt notifications on Require Input/Ready transitions, completion
+      notifications on Done
+
+
+      **Portal (new):**
+
+      - `portal/src/api.ts` — added Notification types and API functions (fetch,
+      markRead, markAllRead, dismiss, executeAction)
+
+      - `portal/src/components/NotificationPanel.tsx` — dropdown panel with
+      typed cards (red/amber/green left border), dismiss/action buttons,
+      mark-all-read, empty state
+
+      - `portal/src/components/Header.tsx` — converted Prompts pill to
+      notification dropdown with SSE listener for live updates. Pill color
+      reflects highest severity (red > amber > neutral)
+
+
+      **Validation:** Portal builds cleanly (tsc + vite build). Engine
+      type-checks pass on changed files (pre-existing errors in agents/*.ts are
+      unrelated).
+
+
+      **Key design:** Notifications arrive via SSE `notification` events for
+      instant updates. The panel supports generic actions (reinstall, view,
+      dismiss) for extensibility. Clicking a card navigates to the ticket.
+    date: '2026-05-25T07:35:44.115Z'
+    id: c-2026-05-25t07-35-44-115z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-25T07:35:44.116Z'
 title: >-
   Agent health notification panel — surface MCP, skills, and instructions
   installation status
-status: In Progress
+status: Ready
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
