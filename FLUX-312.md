@@ -482,6 +482,15 @@ history:
       since compatibility is handled at the template level.
     date: '2026-05-25T11:57:28.029Z'
     id: c-2026-05-25t11-57-28-029z
+  - type: agent_session
+    sessionId: fbfc55ac-7d80-48b2-be67-46d31141f67a
+    startedAt: '2026-05-25T12:35:17.704Z'
+    status: cancelled
+    progress: []
+    user: Claude Code
+    date: '2026-05-25T12:35:17.704Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-25T12:35:27.820Z'
 implementationLink: ''
 subtasks: []
 id: FLUX-312
