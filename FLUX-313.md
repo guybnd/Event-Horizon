@@ -7,7 +7,8 @@ tags:
 priority: Medium
 effort: M
 implementationLink: ''
-subtasks: []
+subtasks:
+  - FLUX-314
 history:
   - type: activity
     user: Guy
@@ -533,7 +534,7 @@ history:
 title: subtask picker improvements
 status: Ready
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 tokenMetadata:
   inputTokens: 312672
   outputTokens: 3882
