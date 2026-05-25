@@ -334,53 +334,10 @@ export function attachStdoutProcessing(
 function resolveCopilotBinary(id: string): { nodePath: string | null; entryPoint: string | null; exePath: string } {
   const isWin = process.platform === 'win32';
 
-  // On Windows, prefer spawning node + JS entry point to avoid .cmd/.bat path-with-spaces issues.
-  if (isWin) {
-    // 1. Find system node (avoid pkg binary resolving to itself)
-    let systemNodePath: string | null = null;
-    try {
-      const whereResult = execSync('where node', { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000, windowsHide: true }).trim().split(/\r?\n/);
-      const selfExe = process.execPath.toLowerCase();
-      systemNodePath = whereResult.find(p => p.toLowerCase() !== selfExe && fs.existsSync(p)) || null;
-      if (!systemNodePath) systemNodePath = whereResult[0] || null;
-    } catch {}
-
-    // 2. Find the JS entry point via npm global prefix
-    let entryPoint: string | null = null;
-    try {
-      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000, windowsHide: true }).trim();
-      const candidate = path.join(npmPrefix, 'node_modules', '@github', 'copilot', 'npm-loader.js');
-      if (fs.existsSync(candidate)) {
-        entryPoint = candidate;
-        console.log(`[${id}] Found copilot JS entry: ${entryPoint}`);
-      }
-    } catch (err) {
-      console.log(`[${id}] Failed to resolve copilot via npm prefix:`, err);
-    }
-
-    // 3. Second attempt: derive from 'where copilot' .cmd location
-    if (!entryPoint) {
-      try {
-        const result = execSync('where copilot', { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000, windowsHide: true }).trim();
-        const cmdMatch = result.split(/\r?\n/).find(m => m.endsWith('.cmd'));
-        if (cmdMatch) {
-          const binDir = path.dirname(cmdMatch);
-          // npm global: prefix/copilot.cmd → prefix/node_modules/@github/copilot/npm-loader.js
-          const candidate = path.join(binDir, 'node_modules', '@github', 'copilot', 'npm-loader.js');
-          if (fs.existsSync(candidate)) {
-            entryPoint = candidate;
-          }
-        }
-      } catch {}
-    }
-
-    if (entryPoint && systemNodePath) {
-      console.log(`[${id}] Will spawn: ${systemNodePath} ${entryPoint}`);
-      return { nodePath: systemNodePath, entryPoint, exePath: systemNodePath };
-    }
-  }
-
-  // Non-Windows or fallback: use binary from PATH directly
+  // 1. Try to find the compiled binary (copilot.exe on Windows, copilot on Unix).
+  // The compiled binary handles MCP server initialization (.mcp.json reading and
+  // server spawning) as part of its startup. The node + JS entry point path skips
+  // this, causing MCP tools to be unavailable in non-interactive mode.
   try {
     const checker = isWin ? 'where' : 'which';
     const result = execSync(`${checker} copilot`, { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000, windowsHide: true }).trim();
@@ -401,12 +358,55 @@ function resolveCopilotBinary(id: string): { nodePath: string | null; entryPoint
     }
   } catch {}
 
-  // Check VS Code globalStorage for native binary
+  // 2. Check VS Code globalStorage for native binary
   const vsCodeCandidates = getVSCodeGlobalStoragePaths();
   for (const candidate of vsCodeCandidates) {
     if (fs.existsSync(candidate)) {
       console.log(`[${id}] Found copilot via VS Code globalStorage: ${candidate}`);
       return { nodePath: null, entryPoint: null, exePath: candidate };
+    }
+  }
+
+  // 3. Windows fallback: spawn node + JS entry point (MCP tools may not load,
+  // but at least basic functionality works when no .exe is available).
+  if (isWin) {
+    let systemNodePath: string | null = null;
+    try {
+      const whereResult = execSync('where node', { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000, windowsHide: true }).trim().split(/\r?\n/);
+      const selfExe = process.execPath.toLowerCase();
+      systemNodePath = whereResult.find(p => p.toLowerCase() !== selfExe && fs.existsSync(p)) || null;
+      if (!systemNodePath) systemNodePath = whereResult[0] || null;
+    } catch {}
+
+    let entryPoint: string | null = null;
+    try {
+      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000, windowsHide: true }).trim();
+      const candidate = path.join(npmPrefix, 'node_modules', '@github', 'copilot', 'npm-loader.js');
+      if (fs.existsSync(candidate)) {
+        entryPoint = candidate;
+        console.log(`[${id}] Found copilot JS entry (fallback): ${entryPoint}`);
+      }
+    } catch (err) {
+      console.log(`[${id}] Failed to resolve copilot via npm prefix:`, err);
+    }
+
+    if (!entryPoint) {
+      try {
+        const result = execSync('where copilot', { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000, windowsHide: true }).trim();
+        const cmdMatch = result.split(/\r?\n/).find(m => m.endsWith('.cmd'));
+        if (cmdMatch) {
+          const binDir = path.dirname(cmdMatch);
+          const candidate = path.join(binDir, 'node_modules', '@github', 'copilot', 'npm-loader.js');
+          if (fs.existsSync(candidate)) {
+            entryPoint = candidate;
+          }
+        }
+      } catch {}
+    }
+
+    if (entryPoint && systemNodePath) {
+      console.log(`[${id}] Will spawn (node fallback): ${systemNodePath} ${entryPoint}`);
+      return { nodePath: systemNodePath, entryPoint, exePath: systemNodePath };
     }
   }
 
