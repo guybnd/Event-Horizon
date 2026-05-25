@@ -268,10 +268,81 @@ export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framewor
     await fs.writeFile(instructionsInstalledPath, nextInstructions, 'utf-8');
   }
 
+  // Install MCP config for agent tool discovery
+  await installMcpConfig(targetDir, sourceRoot, resolvedFramework);
+
   console.log(`[installer] Done.`);
   return {
     framework: resolvedFramework,
     skillInstalledPath,
     instructionsInstalledPath,
   };
+}
+
+// ─── MCP Config Installation ─────────────────────────────────────────────────
+
+function mcpConfigPathFor(targetDir: string, framework: ResolvedFramework): string {
+  switch (framework) {
+    case 'copilot':
+      return path.join(targetDir, '.github', 'copilot', 'mcp.json');
+    case 'antigravity':
+    case 'gemini':
+      return path.join(targetDir, '.gemini', 'settings.json');
+    case 'cursor':
+      return path.join(targetDir, '.cursor', 'mcp.json');
+    case 'cline':
+      return path.join(targetDir, '.cline', 'mcp.json');
+    case 'windsurf':
+      return path.join(targetDir, '.windsurf', 'mcp.json');
+    case 'claude':
+    case 'generic':
+    default:
+      return path.join(targetDir, '.mcp.json');
+  }
+}
+
+function buildMcpServerEntry(sourceRoot: string, targetDir: string) {
+  const isPkg = (process as any).pkg !== undefined;
+  if (isPkg) {
+    return {
+      command: process.execPath,
+      args: ['--mcp', '--workspace', '.'],
+    };
+  }
+  const mcpEntryPoint = path.relative(targetDir, path.join(sourceRoot, 'engine', 'src', 'mcp-server.ts')).replace(/\\/g, '/');
+  return {
+    command: 'npx',
+    args: ['tsx', mcpEntryPoint, '--workspace', '.'],
+  };
+}
+
+async function installMcpConfig(targetDir: string, sourceRoot: string, framework: ResolvedFramework): Promise<void> {
+  const configPath = mcpConfigPathFor(targetDir, framework);
+  const serverEntry = buildMcpServerEntry(sourceRoot, targetDir);
+
+  if (framework === 'gemini' || framework === 'antigravity') {
+    // Gemini uses settings.json with mcpServers key — merge, don't overwrite
+    let existing: any = {};
+    try {
+      const raw = await fs.readFile(configPath, 'utf-8');
+      existing = JSON.parse(raw);
+    } catch {}
+    existing.mcpServers = existing.mcpServers || {};
+    existing.mcpServers['event-horizon'] = serverEntry;
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    await fs.writeFile(configPath, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
+  } else {
+    // Standard MCP config format — merge mcpServers key
+    let existing: any = {};
+    try {
+      const raw = await fs.readFile(configPath, 'utf-8');
+      existing = JSON.parse(raw);
+    } catch {}
+    existing.mcpServers = existing.mcpServers || {};
+    existing.mcpServers['event-horizon'] = serverEntry;
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    await fs.writeFile(configPath, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
+  }
+
+  console.log(`[installer] MCP config installed: ${configPath}`);
 }

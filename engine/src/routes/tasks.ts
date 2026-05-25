@@ -187,6 +187,15 @@ router.post('/:parentId/subtasks', async (req, res) => {
     ],
   };
 
+  const validationErrors = validateTicketFrontmatter(childFrontmatter);
+  if (validationErrors.length > 0) {
+    return res.status(400).json({
+      error: 'SCHEMA_VALIDATION_FAILED',
+      message: `Subtask schema validation failed:\n${formatValidationErrors(validationErrors)}`,
+      details: validationErrors,
+    });
+  }
+
   try {
     if (childFrontmatter.tags.length > 0) {
       await autoRegisterUnknownTags(childFrontmatter.tags);

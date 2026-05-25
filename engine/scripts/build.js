@@ -75,6 +75,13 @@ async function build() {
     outfile: path.join(outDir, 'init.js'),
   });
 
+  console.log('Building engine/src/mcp-server.ts → engine/dist/mcp-server.js …');
+  await esbuild.build({
+    ...sharedConfig,
+    entryPoints: [path.join(engineRoot, 'src', 'mcp-server.ts')],
+    outfile: path.join(outDir, 'mcp-server.js'),
+  });
+
   // Copy portal/dist into engine/dist/portal/dist so pkg can embed it as assets.
   try {
     await fsp.access(portalSrc);

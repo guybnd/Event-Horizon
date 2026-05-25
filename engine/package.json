@@ -22,12 +22,14 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "chokidar": "^5.0.0",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "gray-matter": "^4.0.3",
     "systray": "^1.0.5",
-    "yaml": "^2.8.4"
+    "yaml": "^2.8.4",
+    "zod": "^4.4.3"
   },
   "pkg": {
     "assets": [

@@ -94,6 +94,7 @@ subtasks:
 
 - `GET/POST /api/tasks`, `PUT/DELETE /api/tasks/:id` — `GET/PUT /api/config` — `POST /api/bulk-rename`
 - `POST /api/tasks/:parentId/subtasks` — create a child ticket and link it to the parent
+- CLI: `npx tsx engine/src/patch-ticket.ts --add-subtask <parentId> --title <value> [--status] [--priority] [--effort] [--body]`
 - Portal: `localhost:5167` — Engine: `localhost:3067`
 
 ## User Input Routing
@@ -110,31 +111,40 @@ subtasks:
 
 ## Persisting Changes
 
-All ticket updates — status changes, metadata, body rewrites, history comments — **MUST** go through the engine API at `http://localhost:3067`. Do not edit `.flux/<id>.md` files directly. The engine validates the schema, normalizes timestamps, and writes the file atomically; raw file edits skip those guards and risk silent data loss.
+All ticket updates — status changes, metadata, body rewrites, history comments — **MUST** use the MCP tools listed below. Do not edit `.flux/<id>.md` files directly. The tools handle schema validation, timestamps, and portal sync automatically.
 
-Two write endpoints cover everything an agent needs:
+### MCP Tools (use these — they appear in your tool list)
 
-```
-POST /api/tasks
-  Body: { projectKey?, title, status?, priority?, body?, author, ...frontmatterFields }
-  Use: create a new ticket.
-
-PUT  /api/tasks/:id
-  Body: {
-    updatedBy: '<actor>',
-    title?, status?, priority?, effort?, tags?, assignee?, body?,
-    appendHistory?: [ { type: 'comment', user, comment }, ... ],
-  }
-  Use: any change to an existing ticket — status moves, body rewrites, history additions.
-```
+| Tool | Use When |
+|------|----------|
+| `get_ticket` | Reading a ticket's full state (frontmatter + body + history) |
+| `list_tickets` | Finding tickets by status, assignee, tag, or priority |
+| `get_board_config` | Checking valid statuses, tags, project key |
+| `create_ticket` | Creating a new ticket |
+| `create_subtask` | Creating a child ticket linked to a parent |
+| `update_ticket` | Changing metadata (title, priority, effort, tags, assignee, body) |
+| `change_status` | Moving to a new status (comment required for Require Input/Ready) |
+| `add_comment` | Adding a comment to ticket history |
+| `log_progress` | Logging a progress update |
+| `finish_ticket` | Completing a ticket (sets implementationLink + Done atomically) |
 
 Notes:
-- **Server fills `date` automatically** for entries in `appendHistory`. Do not set `date` yourself; it gets overwritten with the server's current time.
-- **Use `appendHistory`, not full `history`.** Sending the entire history array risks clobbering entries written by other actors between your read and your write.
-- A status change without `appendHistory` containing a comment will be rejected when moving to `Require Input` or `Ready`.
-- The schema validator rejects malformed entries (wrong shape, missing required fields). On rejection, the engine returns 400 with a `details` array — fix and retry.
+- `change_status` enforces comment requirements: you MUST provide a `comment` when transitioning to `Require Input` (the question) or `Ready` (the completion summary).
+- `finish_ticket` is atomic: it sets the implementation link, adds a completion comment, and moves status to Done in one operation.
+- `create_subtask` creates a child ticket file and links it to the parent's `subtasks` array atomically.
+- All tools handle timestamps, history normalization, and schema validation server-side.
 
-If the engine is unreachable, do not edit the file directly — surface the problem to the user and wait. Direct file edits will be flagged as schema errors on the next read and refuse to render.
+### REST API (fallback if MCP tools are unavailable)
+
+If MCP tools do not appear in your tool list, use the engine REST API at `http://localhost:3067`:
+
+```
+POST /api/tasks — create a ticket
+PUT  /api/tasks/:id — update a ticket (use appendHistory for comments)
+POST /api/tasks/:parentId/subtasks — create a linked subtask
+```
+
+If neither MCP tools nor the API are reachable, surface the problem to the user and wait. Do not edit files directly.
 
 Ticket changes that only exist in chat or agent memory are **lost**. The engine is the single source of truth.
 

@@ -20,16 +20,16 @@ Refer to the orchestrator skill for the ticket model, APIs, and end-to-end check
 
 ## Grooming Workflow
 
-1. Read the full ticket, including all history.
+1. Use `get_ticket` to read the full ticket, including all history.
 2. Read `.docs/INDEX.md` to identify relevant docs, then read only those files. Skip docs entirely for XS/S effort tickets.
-3. Treat `Grooming` as a planning phase — do not code. Edit the `.flux/<id>.md` file to tighten the ticket body into a concrete plan and fill inferable metadata (`priority`, `effort`, `tags`, hierarchy links) in the YAML frontmatter.
-4. If implementation-critical choices are unresolved, edit the ticket file to set `status: Require Input` and append a history comment with one question and proposed defaults, then wait.
-5. Once resolved, edit the ticket file to rewrite the markdown body with:
+3. Treat `Grooming` as a planning phase — do not code. Use `update_ticket` to tighten the ticket body into a concrete plan and fill inferable metadata (`priority`, `effort`, `tags`, hierarchy links).
+4. If implementation-critical choices are unresolved, use `change_status` with `newStatus: 'Require Input'` and a `comment` containing one question + proposed defaults, then wait.
+5. Once resolved, use `update_ticket` to rewrite `body` with:
    - **Problem / Motivation** (1–3 sentences): what problem, who benefits, why prioritised.
    - **Implementation plan**: concrete steps so another agent could pick up without re-discovery.
-6. Edit the ticket file to set `status: Todo` and append a `status_change` history entry. **CRITICAL: Stop execution after moving to Todo — do not begin implementation.**
+6. Use `change_status` with `newStatus: 'Todo'`. **CRITICAL: Stop execution after moving to Todo — do not begin implementation.**
 
-All changes above MUST be written to the `.flux/<id>.md` file — see the orchestrator skill's "Persisting Changes" section.
+All persistence uses MCP tools — see the orchestrator skill's "Persisting Changes" section.
 
 ## Metadata Conventions
 
@@ -40,9 +40,8 @@ All changes above MUST be written to the `.flux/<id>.md` file — see the orches
 
 ## Editing & Safety
 
-- Preserve YAML validity. Spaces only (no tabs) in frontmatter — tabs can make tickets disappear.
-- Keep `updatedBy` accurate. Do not delete history; append only.
-- After editing a ticket file, verify it still parses through the system.
+- All writes go through MCP tools (or the REST API as fallback). Do not edit `.flux/<id>.md` directly.
+- MCP tools handle `updatedBy` attribution and history normalization automatically.
 
 ## Comment Conventions
 

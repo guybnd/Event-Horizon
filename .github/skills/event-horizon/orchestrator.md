@@ -30,7 +30,9 @@ Read-only tasks (explanation, search, discussion) need no phase skill.
 
 ## Ticket Model
 
-Frontmatter fields: `id`, `title`, `status`, `priority`, `assignee`, `tags` (string[]), `createdBy`, `updatedBy`, `history` (event list), `effort` (`None`|`XS`|`S`|`M`|`L`|`XL`), `implementationLink`. Markdown body below frontmatter for description.
+Frontmatter fields: `id`, `title`, `status`, `priority`, `assignee`, `tags` (string[]), `createdBy`, `updatedBy`, `history` (event list), `effort` (`None`|`XS`|`S`|`M`|`L`|`XL`), `implementationLink`, `subtasks` (string[] of child ticket IDs). Markdown body below frontmatter for description.
+
+**Subtasks**: The `subtasks` field is an array of ticket ID strings (e.g. `["FLUX-5", "FLUX-6"]`). Each subtask MUST be a separate `.flux/<id>.md` file. Never write inline objects. To create a subtask, use `POST /api/tasks/:parentId/subtasks` with `{ title, status?, priority?, body? }` — this atomically creates the child ticket and links it.
 
 History entry shapes:
 ```yaml
@@ -46,6 +48,42 @@ History entry shapes:
   date: '2026-05-06T22:31:00.000Z'
 ```
 
+**Schema landmines — get these wrong and the engine silently drops the entry:**
+
+```yaml
+# ✅ CORRECT status_change — uses from/to with a real ISO timestamp
+- type: status_change
+  from: Grooming
+  to: Todo
+  user: Agent
+  date: '2026-05-25T13:42:18.331Z'
+
+# ❌ WRONG — oldStatus/newStatus is not the canonical shape; gates that protect
+#    Require Input / Ready transitions will fail to recognize this entry
+- type: status_change
+  oldStatus: Grooming
+  newStatus: Todo
+  user: Agent
+  date: '2026-05-25T14:00:00.000Z'
+
+# ❌ WRONG — round-number timestamps like 13:42:00.000Z look fabricated.
+#    Use an actual current timestamp (millisecond precision).
+```
+
+**Subtask shape:** `subtasks` is an array of ticket ID strings. Inline objects are silently dropped if they lack an `id` field.
+
+```yaml
+# ✅ CORRECT
+subtasks:
+  - FLUX-282
+  - FLUX-283
+
+# ❌ WRONG — inline subtask objects without id are dropped on load
+subtasks:
+  - title: Research CLI capabilities
+    status: Todo
+```
+
 ## Working Surfaces
 
 - `.flux/*.md`: tickets — `.flux/config.json`: board config — `.docs/**/*.md`: project docs
@@ -55,6 +93,8 @@ History entry shapes:
 ## APIs
 
 - `GET/POST /api/tasks`, `PUT/DELETE /api/tasks/:id` — `GET/PUT /api/config` — `POST /api/bulk-rename`
+- `POST /api/tasks/:parentId/subtasks` — create a child ticket and link it to the parent
+- CLI: `npx tsx engine/src/patch-ticket.ts --add-subtask <parentId> --title <value> [--status] [--priority] [--effort] [--body]`
 - Portal: `localhost:5167` — Engine: `localhost:3067`
 
 ## User Input Routing
@@ -71,14 +111,42 @@ History entry shapes:
 
 ## Persisting Changes
 
-All ticket updates — status changes, metadata, body rewrites, history comments — **MUST** be persisted by directly editing the `.flux/<id>.md` file using your file-editing tool. Do not consider any ticket work complete until changes are written to disk.
+All ticket updates — status changes, metadata, body rewrites, history comments — **MUST** use the MCP tools listed below. Do not edit `.flux/<id>.md` files directly. The tools handle schema validation, timestamps, and portal sync automatically.
 
-To update a ticket:
-1. Open and edit the `.flux/<id>.md` file — update YAML frontmatter fields and/or the markdown body as needed.
-2. Append new entries to the `history` array for status changes and comments (never replace existing entries).
-3. Set `updatedBy` to reflect who made the change.
+### MCP Tools (use these — they appear in your tool list)
 
-Ticket changes that only exist in chat or agent memory are **lost**. The `.flux/` file is the single source of truth.
+| Tool | Use When |
+|------|----------|
+| `get_ticket` | Reading a ticket's full state (frontmatter + body + history) |
+| `list_tickets` | Finding tickets by status, assignee, tag, or priority |
+| `get_board_config` | Checking valid statuses, tags, project key |
+| `create_ticket` | Creating a new ticket |
+| `create_subtask` | Creating a child ticket linked to a parent |
+| `update_ticket` | Changing metadata (title, priority, effort, tags, assignee, body) |
+| `change_status` | Moving to a new status (comment required for Require Input/Ready) |
+| `add_comment` | Adding a comment to ticket history |
+| `log_progress` | Logging a progress update |
+| `finish_ticket` | Completing a ticket (sets implementationLink + Done atomically) |
+
+Notes:
+- `change_status` enforces comment requirements: you MUST provide a `comment` when transitioning to `Require Input` (the question) or `Ready` (the completion summary).
+- `finish_ticket` is atomic: it sets the implementation link, adds a completion comment, and moves status to Done in one operation.
+- `create_subtask` creates a child ticket file and links it to the parent's `subtasks` array atomically.
+- All tools handle timestamps, history normalization, and schema validation server-side.
+
+### REST API (fallback if MCP tools are unavailable)
+
+If MCP tools do not appear in your tool list, use the engine REST API at `http://localhost:3067`:
+
+```
+POST /api/tasks — create a ticket
+PUT  /api/tasks/:id — update a ticket (use appendHistory for comments)
+POST /api/tasks/:parentId/subtasks — create a linked subtask
+```
+
+If neither MCP tools nor the API are reachable, surface the problem to the user and wait. Do not edit files directly.
+
+Ticket changes that only exist in chat or agent memory are **lost**. The engine is the single source of truth.
 
 ## Critical Rules
 

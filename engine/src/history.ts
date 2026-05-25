@@ -204,6 +204,11 @@ export function normalizeHistoryEntries(history: any[] = []) {
       usedIds.add(nextEntry.id);
     }
 
+    if (!nextEntry.date) {
+      nextEntry.date = new Date().toISOString();
+      changed = true;
+    }
+
     if (nextEntry.type === 'comment') {
       if (!nextEntry.id) {
         const seed = nextEntry.date || `${Date.now()}-${index + 1}`;

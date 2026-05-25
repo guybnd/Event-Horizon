@@ -62,7 +62,7 @@ export function onSyncStatusChange(listener: (status: SyncStatus) => void): () =
 export function triggerSync(): void {
   if (!isOrphanMode()) return;
   const storeDir = getFluxStoreDir();
-  void runSync(storeDir);
+  void runSync(storeDir, () => scheduler?.scheduleRetry());
 }
 
 export function triggerTestError(): void {
@@ -185,7 +185,7 @@ export async function resolveConflicts(
   }
 }
 
-async function runSync(storeDir: string): Promise<void> {
+async function runSync(storeDir: string, onFail?: () => void): Promise<void> {
   const workspaceRoot = path.dirname(storeDir);
   updateStatus({ state: 'syncing' });
 
@@ -245,6 +245,7 @@ async function runSync(storeDir: string): Promise<void> {
         updateStatus({ state: 'synced', lastSyncTime: new Date().toISOString() });
       } catch {
         updateStatus({ state: 'error', error: errorMsg, errorType });
+        onFail?.();
       }
       return;
     }
@@ -297,11 +298,13 @@ async function runSync(storeDir: string): Promise<void> {
         'unknown';
       console.log(`[sync-watcher] push failed (${errorType}): ${errorMsg}`);
       updateStatus({ state: 'error', error: errorMsg, errorType });
+      onFail?.();
     }
   } catch (err: any) {
     const errorMsg = err.message || String(err);
     console.error(`[sync-watcher] sync failed: ${errorMsg}`);
     updateStatus({ state: 'error', error: errorMsg, errorType: 'unknown' });
+    onFail?.();
   }
 }
 
@@ -309,9 +312,10 @@ export function createScheduler(
   getDebounceMs: () => number,
   getMaxWaitMs: () => number,
   onSync: () => void
-): { schedule: () => void; reset: () => void } {
+): { schedule: () => void; reset: () => void; scheduleRetry: () => void } {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let deadline: number | null = null;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
   function schedule() {
     const now = Date.now();
@@ -328,10 +332,19 @@ export function createScheduler(
 
   function reset() {
     if (timer) { clearTimeout(timer); timer = null; }
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
     deadline = null;
   }
 
-  return { schedule, reset };
+  function scheduleRetry() {
+    if (retryTimer) return;
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      onSync();
+    }, 30000);
+  }
+
+  return { schedule, reset, scheduleRetry };
 }
 
 export function startSyncWatcher(): void {
@@ -343,7 +356,7 @@ export function startSyncWatcher(): void {
   scheduler = createScheduler(
     () => configCache.syncSettings?.debounceMs ?? 30000,
     () => configCache.syncSettings?.maxWaitMs ?? 300000,
-    () => { void runSync(storeDir); }
+    () => { void runSync(storeDir, () => scheduler?.scheduleRetry()); }
   );
 
   watcher = chokidar.watch(storeDir, {

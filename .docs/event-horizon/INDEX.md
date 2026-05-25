@@ -15,6 +15,7 @@ Use this index to find relevant docs by topic. Read only the files that match th
 | **Storage / decoupled storage** | `architecture/decoupled-storage.md` |
 | **Portal UI / components** | `architecture/overview.md` |
 | **Engine API / routes** | `architecture/overview.md`, `architecture/repository-map.md` |
+| **MCP server / agent tools** | `mcp-server.md` |
 | **Configuration / settings** | `configuration.md` |
 | **Development setup** | `development.md` |
 | **Installation** | `installation.md` |

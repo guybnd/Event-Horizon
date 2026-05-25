@@ -20,19 +20,18 @@ Refer to the orchestrator skill for the ticket model, APIs, and end-to-end check
 
 ## Implementation Workflow
 
-1. Read the full ticket, including all history, before touching any file.
+1. Use `get_ticket` to read the full ticket, including all history, before touching any file.
 2. For M+ effort tickets, check `.docs/INDEX.md` for relevant docs. Read nearby implementation files. Prefer the smallest owning surface.
-3. `PUT /api/tasks/:id` with `appendHistory: [{ type: 'comment', user: 'Agent', comment: '<plan>' }]` before substantial work.
-4. `PUT /api/tasks/:id` with `status: 'In Progress'` before the first substantive code change. The engine appends the status_change entry automatically.
+3. Use `add_comment` to post your implementation plan before substantial work.
+4. Use `change_status` with `newStatus: 'In Progress'` before the first substantive code change.
 5. Make small, local changes and validate immediately after the first edit.
-6. `PUT /api/tasks/:id` with `appendHistory` to add progress comments when scope changes, validation fails, or the user redirects.
-7. If clarification is needed, `PUT` with `status: 'Require Input'` and an `appendHistory` comment — do not ask only in chat.
-8. When moving to `Ready`: `PUT` with `status: 'Ready'` and an `appendHistory` summary comment (what was implemented, validated, any caveats). Keep code files uncommitted at this stage.
+6. Use `log_progress` to record progress when scope changes, validation fails, or the user redirects.
+7. If clarification is needed, use `change_status` with `newStatus: 'Require Input'` and a `comment` — do not ask only in chat.
+8. When moving to `Ready`: use `change_status` with `newStatus: 'Ready'` and a `comment` summarizing what was implemented, validated, and any caveats. Keep code files uncommitted at this stage.
 9. Before `Ready` or `Done`, update `.docs/` when behavior changed.
-10. On `finish <ticket>`: stage all relevant files, create the commit, then `PUT` with `implementationLink` and `status: 'Done'` — all as one atomic step.
-11. Include a completion comment in the same `appendHistory` (what changed, validated, caveats, commit hash).
+10. On `finish <ticket>`: stage all relevant files, create the commit, then use `finish_ticket` with `implementationLink` (commit hash or PR URL) and `completionComment` — this moves status to Done atomically.
 
-All persistence above goes through the engine API — see the orchestrator skill's "Persisting Changes" section.
+All persistence uses MCP tools — see the orchestrator skill's "Persisting Changes" section.
 
 ## Common Project Patterns
 

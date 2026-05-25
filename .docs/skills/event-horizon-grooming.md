@@ -20,16 +20,16 @@ Refer to the orchestrator skill for the ticket model, APIs, and end-to-end check
 
 ## Grooming Workflow
 
-1. Read the full ticket, including all history.
+1. Use `get_ticket` to read the full ticket, including all history.
 2. Read `.docs/INDEX.md` to identify relevant docs, then read only those files. Skip docs entirely for XS/S effort tickets.
-3. Treat `Grooming` as a planning phase — do not code. Use `PUT /api/tasks/:id` to tighten the ticket body into a concrete plan and fill inferable metadata (`priority`, `effort`, `tags`, hierarchy links).
-4. If implementation-critical choices are unresolved, send a `PUT` with `status: 'Require Input'` and an `appendHistory` entry containing one question + proposed defaults, then wait.
-5. Once resolved, send a `PUT` that rewrites `body` with:
+3. Treat `Grooming` as a planning phase — do not code. Use `update_ticket` to tighten the ticket body into a concrete plan and fill inferable metadata (`priority`, `effort`, `tags`, hierarchy links).
+4. If implementation-critical choices are unresolved, use `change_status` with `newStatus: 'Require Input'` and a `comment` containing one question + proposed defaults, then wait.
+5. Once resolved, use `update_ticket` to rewrite `body` with:
    - **Problem / Motivation** (1–3 sentences): what problem, who benefits, why prioritised.
    - **Implementation plan**: concrete steps so another agent could pick up without re-discovery.
-6. Send a `PUT` with `status: 'Todo'`. The engine appends the status_change entry automatically. **CRITICAL: Stop execution after moving to Todo — do not begin implementation.**
+6. Use `change_status` with `newStatus: 'Todo'`. **CRITICAL: Stop execution after moving to Todo — do not begin implementation.**
 
-All persistence above goes through the engine API — see the orchestrator skill's "Persisting Changes" section.
+All persistence uses MCP tools — see the orchestrator skill's "Persisting Changes" section.
 
 ## Metadata Conventions
 
@@ -40,9 +40,8 @@ All persistence above goes through the engine API — see the orchestrator skill
 
 ## Editing & Safety
 
-- All writes go through the API. Do not edit `.flux/<id>.md` directly — the engine validates the schema and the validator will reject malformed direct edits on next read.
-- Always set `updatedBy` in the `PUT` body so history attribution stays accurate.
-- Use `appendHistory` to add entries; do not send the full `history` array.
+- All writes go through MCP tools (or the REST API as fallback). Do not edit `.flux/<id>.md` directly.
+- MCP tools handle `updatedBy` attribution and history normalization automatically.
 
 ## Comment Conventions
 

@@ -1,20 +1,21 @@
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import os from 'os';
 
 // In CJS bundles (esbuild output / pkg executable), __dirname is provided by Node.
-// In ESM dev mode (tsx), __dirname may not exist — use import.meta.url as fallback.
-// The try/catch handles the case where import.meta.url is empty in CJS.
+// In ESM dev mode (tsx / Node 20+), use import.meta for the source directory.
 const __dirname_resolved: string = (() => {
   // @ts-ignore — __dirname exists at runtime in CJS but TS ESM doesn't declare it
-  if (typeof __dirname === 'string' && __dirname) return __dirname;
+  if (typeof __dirname === 'string' && __dirname && path.isAbsolute(__dirname)) return __dirname;
   try {
-    const { fileURLToPath } = require('url') as typeof import('url');
     const metaUrl = (import.meta as any).url;
-    if (metaUrl) return path.dirname(fileURLToPath(metaUrl));
+    if (metaUrl && metaUrl.startsWith('file:')) {
+      return path.dirname(fileURLToPath(metaUrl));
+    }
   } catch {}
-  return process.cwd();
+  return path.join(process.cwd(), 'src');
 })();
 
 export let workspaceRoot: string | null = null;
