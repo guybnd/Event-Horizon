@@ -591,6 +591,35 @@ history:
     date: '2026-05-25T08:32:26.433Z'
     outcome: Session abandoned (engine restarted).
     endedAt: '2026-05-25T08:32:39.261Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      **OVERALL VERDICT: You fixed one thing and broke two worse.**
+
+
+      1. **FATAL CRASH**: You added an 'info' notification type in
+      `update-check.ts` but forgot to add it to `TYPE_CONFIG` in
+      `NotificationPanel.tsx`. When an update notification fires, `config` is
+      undefined and `config.icon` throws a `TypeError`. The entire app crashes.
+      Do you even test the code you write?
+
+
+      2. **DEAD BUTTON**: You added an `open-url` action for the update
+      notification. But in `NotificationCard.tsx`, unrecognized actions get sent
+      to `POST /api/notifications/:id/action`. Your backend router doesn't
+      handle `open-url`—it returns a `400 Bad Request`. The frontend does not
+      open the browser tab. The button is completely broken.
+
+
+      3. The click-outside `setTimeout` hack is embarrassing but I'll let it
+      slide.
+
+
+      Fix the `info` type crash and fix the `open-url` action so it actually
+      opens a URL on the frontend (or remove the button entirely). This is
+      garbage. Ticket stays In Progress.
+    date: '2026-05-25T08:34:45.082Z'
+    id: c-2026-05-25t08-34-45-082z
 title: >-
   Agent health notification panel — surface MCP, skills, and instructions
   installation status
