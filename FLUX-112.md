@@ -1,6 +1,6 @@
 ---
 title: Ready prompt as standalone popup from notification ticker
-status: Todo
+status: Backlog
 assignee: unassigned
 tags:
   - ux
@@ -32,6 +32,11 @@ history:
     to: Todo
     user: Guy
     date: '2026-05-11T05:58:58.230Z'
+  - type: status_change
+    from: Todo
+    to: Backlog
+    user: Guy
+    date: '2026-05-25T06:16:21.160Z'
 createdBy: Guy
 updatedBy: Guy
 order: 160

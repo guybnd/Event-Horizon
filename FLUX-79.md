@@ -1,8 +1,8 @@
 ---
 title: Auto-open browser on launch and add CLI flags
-status: Todo
+status: Backlog
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: Agent
 tags:
   - feature
@@ -22,6 +22,11 @@ history:
       Split from FLUX-18. Covers the polish layer: auto-open browser, --port
       flag, --no-browser flag, and graceful git detection.
     id: c-2026-05-07t06-55-00-000z-flux-79
+  - type: status_change
+    from: Todo
+    to: Backlog
+    user: Guy
+    date: '2026-05-25T06:17:07.388Z'
 order: 79
 ---
 ## Summary

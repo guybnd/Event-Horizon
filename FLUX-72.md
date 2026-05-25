@@ -27,11 +27,15 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-08T00:00:00.000Z'
-id: FLUX-72
+  - type: status_change
+    from: Todo
+    to: Backlog
+    user: Guy
+    date: '2026-05-25T06:16:27.284Z'
 title: Dirty State improvements
-status: Todo
+status: Backlog
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 ---
 
 # Goal

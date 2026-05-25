@@ -1,8 +1,8 @@
 ---
 title: Settings Page Polish - Improve Project Keys UI
-status: Todo
+status: Backlog
 createdBy: Agent
-updatedBy: Agent
+updatedBy: Guy
 assignee: unassigned
 tags:
   - ui-polish
@@ -12,7 +12,16 @@ history:
   - type: activity
     user: Agent
     date: '2026-05-07T12:00:00.000Z'
+    comment: Created ticket.
+  - type: activity
+    user: Agent
+    date: '2026-05-07T12:00:00.000Z'
     comment: Created ticket based on user feedback to polish settings page.
+  - type: status_change
+    from: Todo
+    to: Backlog
+    user: Guy
+    date: '2026-05-25T06:16:39.745Z'
 ---
 
 "Project Keys" is currently just a raw `<input>` field sitting naked in its container.

@@ -7,8 +7,8 @@ tags:
 assignee: unassigned
 createdBy: Unknown
 title: Split Settings.tsx into per-section components
-status: Todo
-updatedBy: Agent
+status: Grooming
+updatedBy: Guy
 history:
   - type: activity
     user: Unknown
@@ -42,6 +42,12 @@ history:
     user: Agent
     date: '2026-05-11T03:29:41.494Z'
     comment: Claude Code session lost (engine restarted).
+  - type: status_change
+    from: Todo
+    to: Grooming
+    user: Guy
+    date: '2026-05-25T06:16:07.736Z'
+order: 11
 ---
 ## Goal
 

@@ -20,7 +20,7 @@ history:
     user: Gemini CLI
     date: '2026-05-18T13:46:50.505Z'
     outcome: Session abandoned (engine restarted).
-    endedAt: '2026-05-25T05:38:37.247Z'
+    endedAt: '2026-05-25T06:17:22.007Z'
   - type: status_change
     user: Agent
     date: '2026-05-18T13:48:00.000Z'

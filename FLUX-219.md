@@ -74,10 +74,15 @@ history:
     to: Todo
     user: Guy
     date: '2026-05-14T02:07:56.772Z'
+  - type: status_change
+    from: Todo
+    to: Grooming
+    user: Guy
+    date: '2026-05-25T06:15:48.628Z'
 title: >-
   unread button in board should note the amount of. tickets that are unread not
   the messages amount
-status: Todo
+status: Grooming
 createdBy: Guy
 updatedBy: Guy
 tokenMetadata:
@@ -87,6 +92,6 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 206981
   cacheCreationTokens: 27783
-order: 163
+order: 10
 ---
 ## Plan\n\nThe unread button in the board shows a count of total unread messages (comments), but it should show the count of tickets that have unread messages.\n\n### Root Cause\n\n`AppContext.tsx` (lines 745–758) computes `totalUnreadCount` by summing the number of unread comments per task. The fix is to instead count the number of tasks that have at least one unread comment.\n\n### Change\n\n**File:** `portal/src/AppContext.tsx`\n\nIn the `totalUnreadCount` memo, replace the per-task comment count accumulation with a boolean check — increment by 1 if the task has any unread comment, skip otherwise.\n\nBefore:\n```ts\nconst count = (task.history ?? []).filter(\n  e => e.type === 'comment' && e.id && e.user !== currentUser && !readIds.has(e.id)\n).length;\nreturn sum + count;\n```\n\nAfter:\n```ts\nconst hasUnread = (task.history ?? []).some(\n  e => e.type === 'comment' && e.id && e.user !== currentUser && !readIds.has(e.id)\n);\nreturn sum + (hasUnread ? 1 : 0);\n```\n\n### Validation\n\n- Confirm the Unread button label changes from message count to ticket count.\n- Confirm the filter still works (shows tickets with unread messages).\n- No other consumers of `totalUnreadCount` need updating — it is only used to display the badge label in `TaskViewControls.tsx`.

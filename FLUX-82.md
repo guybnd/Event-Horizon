@@ -1,6 +1,6 @@
 ---
 title: Tutorial & initial setup
-status: Todo
+status: Backlog
 createdBy: Guy
 updatedBy: Guy
 assignee: unassigned
@@ -60,6 +60,11 @@ history:
     to: Grooming
     user: Guy
     date: '2026-05-07T23:44:35.291Z'
+  - type: status_change
+    from: Todo
+    to: Backlog
+    user: Guy
+    date: '2026-05-25T06:16:35.134Z'
 order: 0
 ---
 
