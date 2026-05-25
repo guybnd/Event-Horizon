@@ -565,10 +565,15 @@ history:
     date: '2026-05-25T12:33:41.742Z'
     outcome: Session abandoned (engine restarted).
     endedAt: '2026-05-25T12:33:57.181Z'
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Guy
+    date: '2026-05-25T12:41:38.181Z'
 title: subtask picker improvements
-status: In Progress
+status: Done
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 tokenMetadata:
   inputTokens: 312672
   outputTokens: 3882
@@ -576,8 +581,7 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 286557
   cacheCreationTokens: 26093
-order: 0
-id: FLUX-313
+order: 4
 ---
 ## Problem / Motivation
 
