@@ -1,6 +1,6 @@
 ---
 title: 'API: subtask creation endpoint for agents and portal'
-status: In Progress
+status: Grooming
 priority: Medium
 effort: S
 assignee: unassigned
@@ -53,7 +53,29 @@ history:
     date: '2026-05-25T04:45:26.563Z'
     outcome: Session abandoned (engine restarted).
     endedAt: '2026-05-25T04:47:00.090Z'
+  - type: status_change
+    from: In Progress
+    to: Grooming
+    user: Guy
+    date: '2026-05-25T07:25:15.451Z'
+  - type: comment
+    user: Guy
+    date: '2026-05-25T07:25:26.768Z'
+    comment: regroom this after all out changes with mCP etc
+    id: c-2026-05-25t07-25-26-764z
+  - type: agent_session
+    sessionId: bd2016d6-9d43-4615-b485-6f064924aa7e
+    startedAt: '2026-05-25T07:25:28.250Z'
+    status: cancelled
+    progress: []
+    user: Claude Code
+    date: '2026-05-25T07:25:28.250Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-25T07:25:36.152Z'
 subtasks: []
+order: 13
+implementationLink: ''
+id: FLUX-276
 ---
 
 ## Problem

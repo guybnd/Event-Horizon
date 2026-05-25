@@ -329,6 +329,15 @@ history:
     date: '2026-05-25T07:13:11.603Z'
     outcome: Session abandoned (engine restarted).
     endedAt: '2026-05-25T07:13:20.189Z'
+  - type: agent_session
+    sessionId: 1ebcb5bd-40c4-4280-807c-2f7c4e321111
+    startedAt: '2026-05-25T07:25:06.272Z'
+    status: cancelled
+    progress: []
+    user: Claude Code
+    date: '2026-05-25T07:25:06.272Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-25T07:25:14.905Z'
 title: >-
   Agent health notification panel — surface MCP, skills, and instructions
   installation status
