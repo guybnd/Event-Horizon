@@ -1,4 +1,26 @@
-export interface HistoryEntry {
+export interface AgentSessionProgress {
+  timestamp: string;
+  message: string;
+  type?: 'text' | 'topic' | 'tool' | 'info';
+  data?: any;
+}
+
+export interface AgentSessionEntry {
+  type: 'agent_session';
+  sessionId: string;
+  startedAt: string;
+  endedAt?: string;
+  status: 'active' | 'completed' | 'failed' | 'cancelled';
+  outcome?: string;
+  progress: AgentSessionProgress[];
+  user: string;
+  date: string;
+  id?: string;
+  replyTo?: string;
+  comment?: string;
+}
+
+export interface BasicHistoryEntry {
   type: 'status_change' | 'comment' | 'activity' | 'agent_message';
   from?: string;
   to?: string;
@@ -7,6 +29,23 @@ export interface HistoryEntry {
   comment?: string;
   id?: string;
   replyTo?: string;
+}
+
+export type HistoryEntry = BasicHistoryEntry | AgentSessionEntry;
+
+// Type guard to check if a history entry is an agent session
+export function isAgentSession(entry: HistoryEntry): entry is AgentSessionEntry {
+  return entry.type === 'agent_session';
+}
+
+export interface InlineSubtask {
+  id: string;
+  title?: string;
+  status?: string;
+}
+
+export function normalizeSubtaskId(entry: string | InlineSubtask): string {
+  return typeof entry === 'string' ? entry : entry.id;
 }
 
 export interface Task {
@@ -22,16 +61,18 @@ export interface Task {
   order?: number;
   priority?: string;
   effort?: string;
+  effortLevel?: string;
   implementationLink?: string;
-  subtasks?: string[];
+  subtasks?: (string | InlineSubtask)[];
   version?: string;
   releasedAt?: string;
   releaseDocPath?: string;
   cliSession?: CliSessionSummary | null;
   tokenMetadata?: { inputTokens: number; outputTokens: number; costUSD: number; costIsEstimated?: boolean; cacheReadTokens?: number; cacheCreationTokens?: number };
+  sessionHistoryEntry?: AgentSessionEntry;
 }
 
-export type CliFramework = 'claude' | 'copilot';
+export type CliFramework = 'claude' | 'copilot' | 'gemini';
 export type CliSessionStatus = 'pending' | 'running' | 'waiting-input' | 'completed' | 'failed' | 'cancelled';
 
 export interface CliSessionSummary {
@@ -141,7 +182,12 @@ export interface Config {
       groomingModel?: string;
       implementationModel?: string;
     };
+    geminiCli?: {
+      groomingModel?: string;
+      implementationModel?: string;
+    };
   };
+  defaultAgent?: CliFramework | 'auto';
   enableFireworks?: boolean;
   tokenDisplayMode?: 'cost' | 'tokens';
   tokenCostThresholds?: { green: number; yellow: number };
@@ -149,6 +195,10 @@ export interface Config {
   syncSettings?: {
     debounceMs: number;
     maxWaitMs: number;
+  };
+  agentProgress?: {
+    enabled: boolean;
+    inlineDelay: number;
   };
 }
 

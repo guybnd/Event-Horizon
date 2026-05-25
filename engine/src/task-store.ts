@@ -6,8 +6,10 @@ import { getFluxDir, getFluxStoreDir, getActiveFluxDir, getTaskAssetsDir, setWor
 import { attachWorktreeIfPresent } from './storage-sync.js';
 import { startSyncWatcher } from './sync-watcher.js';
 import { configCache, loadConfig, autoRegisterUnknownTags } from './config.js';
-import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate } from './history.js';
-import { getCliSessionSummaryForTask } from './session-store.js';
+import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate, getHistoryTimestamp } from './history.js';
+import { generatePromptNotification, generateCompletionNotification } from './notifications.js';
+import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
+import { getCliSessionSummaryForTask, cliSessionsById, cliSessionIdByTaskId } from './session-store.js';
 import { isTopLevelTaskFile, getDocsDir, isDocFile, getDocPathFromFile, titleFromDocPath, slugifyDocValue, parseDocOrder } from './file-utils.js';
 import type { StoredDoc } from './file-utils.js';
 import { resolveEmbeddedDocsRoot, copyDir, buildStarterProjectOverview } from './docs-seeder.js';
@@ -24,10 +26,68 @@ export function serializeTaskForApi(task: any) {
   };
 }
 
+export async function readTaskFromDisk(task: any): Promise<{ frontmatter: any; body: string }> {
+  try {
+    const rawFile = await fs.readFile(task._path, 'utf-8');
+    const parsed = matter(rawFile);
+    return { frontmatter: { ...parsed.data }, body: parsed.content || '' };
+  } catch {
+    const { body: cachedBody, _path: _p, id: _id, ...cachedFm } = task;
+    return { frontmatter: { ...cachedFm }, body: cachedBody || '' };
+  }
+}
+
+function recoverSessionEntry(taskId: string, sessionId: string, task: any): any | null {
+  const liveSessionId = cliSessionIdByTaskId.get(taskId);
+  const liveSession = liveSessionId ? cliSessionsById.get(liveSessionId) : undefined;
+  if (liveSession?.sessionHistoryEntry?.sessionId === sessionId) {
+    console.log(`updateAgentSession: re-injected session ${sessionId} (agent dropped it from file)`);
+    return { ...liveSession.sessionHistoryEntry };
+  }
+
+  const cachedHistory: any[] = Array.isArray(task.history) ? task.history : [];
+  const cachedEntry = cachedHistory.find((e: any) => e?.type === 'agent_session' && e?.sessionId === sessionId);
+  if (cachedEntry) {
+    console.log(`updateAgentSession: re-injected session ${sessionId} from cache`);
+    return { ...cachedEntry };
+  }
+
+  return null;
+}
+
+export async function updateAgentSession(taskId: string, sessionId: string, updater: (session: any) => void) {
+  const task = tasksCache[taskId];
+  if (!task) return null;
+
+  const { frontmatter, body } = await readTaskFromDisk(task);
+  const history = frontmatter.history || [];
+  let sessionIndex = history.findIndex((entry: any) => entry?.type === 'agent_session' && entry?.sessionId === sessionId);
+
+  if (sessionIndex === -1) {
+    const recovered = recoverSessionEntry(taskId, sessionId, task);
+    if (!recovered) {
+      console.warn(`updateAgentSession: session ${sessionId} not found in task ${taskId} (not recoverable)`);
+      return null;
+    }
+    history.push(recovered);
+    sessionIndex = history.length - 1;
+  }
+
+  updater(history[sessionIndex]);
+  frontmatter.history = history;
+  frontmatter.updatedBy = 'Agent';
+
+  const fileContent = matter.stringify(body, frontmatter);
+  await fs.writeFile(task._path, fileContent, 'utf-8');
+  tasksCache[taskId] = { ...frontmatter, body, id: taskId, _path: task._path };
+  return tasksCache[taskId];
+}
+
 export async function updateTaskWithHistory(taskId: string, options: {
   entries?: any[];
   updatedBy?: string;
   nextStatus?: string;
+  extraFields?: Record<string, any>;
   tokenMetadata?: { inputTokens: number; outputTokens: number; costUSD: number; costIsEstimated: boolean; cacheReadTokens?: number; cacheCreationTokens?: number };
 }) {
   const task = tasksCache[taskId];
@@ -36,20 +96,9 @@ export async function updateTaskWithHistory(taskId: string, options: {
   const actor = options.updatedBy || task.updatedBy || 'Agent';
   const activityTimestamp = new Date().toISOString();
   const entries = Array.isArray(options.entries) ? [...options.entries] : [];
-  const { body, _path, id: _id, ...frontmatter } = task;
+  const { _path } = task;
 
-  try {
-    const rawFile = await fs.readFile(_path, 'utf-8');
-    const parsed = matter(rawFile);
-    if (Array.isArray((parsed.data as any).history)) {
-      frontmatter.history = (parsed.data as any).history;
-      if ((parsed.data as any).status !== undefined) {
-        frontmatter.status = (parsed.data as any).status;
-      }
-    }
-  } catch {
-    // fall back to cache if file read fails
-  }
+  const { frontmatter, body } = await readTaskFromDisk(task);
 
   const normalizedExistingHistory = normalizeHistoryEntries(frontmatter.history || []);
   let nextHistory = ensureCreationActivity(
@@ -73,14 +122,108 @@ export async function updateTaskWithHistory(taskId: string, options: {
   frontmatter.history = nextHistory;
   frontmatter.updatedBy = actor;
 
+  if (options.extraFields) {
+    const { id: _i, title: _t, history: _h, _path: _pp, ...safeFields } = options.extraFields;
+    Object.assign(frontmatter, safeFields);
+  }
+
   if (options.tokenMetadata) {
     frontmatter.tokenMetadata = options.tokenMetadata;
+  }
+
+  // Ensure id is present — some tickets derive it from filename rather than frontmatter
+  if (!frontmatter.id) frontmatter.id = taskId;
+
+  if (!frontmatter.title) {
+    console.error(`[FLUX] Refusing to write ${_path}: missing title in frontmatter. This indicates a bug or race condition.`);
+    return null;
   }
 
   const fileContent = matter.stringify(body || '', frontmatter);
   await fs.writeFile(_path, fileContent, 'utf-8');
   tasksCache[taskId] = { ...frontmatter, body, id: taskId, _path };
+
+  if (options.nextStatus) {
+    const requireInputStatus = configCache.requireInputStatus || 'Require Input';
+    const readyStatus = configCache.readyForMergeStatus || 'Ready';
+    if (options.nextStatus === requireInputStatus || options.nextStatus === readyStatus) {
+      generatePromptNotification(taskId, frontmatter.title || taskId, options.nextStatus);
+    } else if (options.nextStatus === 'Done') {
+      generateCompletionNotification(taskId, frontmatter.title || taskId);
+    }
+  }
+
   return tasksCache[taskId];
+}
+
+/**
+ * Detect inline subtask objects in a ticket's subtasks array and normalize them
+ * into separate ticket files. Returns the normalized string[] of IDs if changes
+ * were made, or null if no normalization needed.
+ */
+async function normalizeInlineSubtasks(frontmatter: any, parentPath: string): Promise<string[] | null> {
+  const subtasks = frontmatter.subtasks;
+  if (!Array.isArray(subtasks) || subtasks.length === 0) return null;
+
+  const hasInlineObjects = subtasks.some((entry: any) => typeof entry === 'object' && entry !== null && entry.id);
+  if (!hasInlineObjects) return null;
+
+  const fluxDir = path.dirname(parentPath);
+  const parentId = frontmatter.id || path.basename(parentPath, '.md');
+  const normalizedIds: string[] = [];
+  const createdAt = new Date().toISOString();
+
+  for (const entry of subtasks) {
+    if (typeof entry === 'string') {
+      normalizedIds.push(entry);
+      continue;
+    }
+
+    if (typeof entry !== 'object' || !entry || !entry.id) continue;
+
+    const childId = entry.id as string;
+    const childPath = path.join(fluxDir, `${childId}.md`);
+
+    // Don't overwrite existing ticket files
+    try {
+      await fs.access(childPath);
+      // File exists — just use the ID reference
+      normalizedIds.push(childId);
+      continue;
+    } catch {
+      // File doesn't exist — create it
+    }
+
+    const childFrontmatter: any = {
+      id: childId,
+      title: entry.title || childId,
+      status: entry.status || 'Todo',
+      priority: entry.priority || 'None',
+      effort: entry.effort || 'None',
+      assignee: entry.assignee || 'unassigned',
+      tags: entry.tags || [],
+      createdBy: 'Agent',
+      updatedBy: 'Agent',
+      history: [
+        { type: 'activity', user: 'Agent', date: createdAt, comment: `Auto-created from inline subtask of ${parentId}.` },
+      ],
+    };
+
+    const childBody = entry.body || `Subtask of ${parentId}.\n`;
+    const childContent = matter.stringify(childBody, childFrontmatter);
+
+    try {
+      await fs.writeFile(childPath, childContent, 'utf-8');
+      console.log(`[subtasks] Auto-created ${childId} from inline subtask of ${parentId}`);
+    } catch (err) {
+      console.error(`[subtasks] Failed to create ${childId}:`, err);
+    }
+
+    normalizedIds.push(childId);
+  }
+
+  console.log(`[subtasks] Normalized ${parentId}: ${subtasks.length} entries → ${normalizedIds.length} string IDs`);
+  return normalizedIds;
 }
 
 export async function loadTask(filePath: string) {
@@ -118,7 +261,51 @@ export async function loadTask(filePath: string) {
       parsed.data.createdBy || parsed.data.updatedBy || 'Unknown',
       fallbackCreatedAt,
     );
+    // Protect engine-owned history entries (agent_session, comments) from being
+    // dropped when a spawned agent rewrites the ticket file. The agent only knows
+    // about a subset of entry types and may silently discard the rest.
+    let historyReinjected = false;
+    const existingTask = tasksCache[id];
+    if (existingTask && Array.isArray(existingTask.history)) {
+      const fileSessionIds = new Set(
+        history.filter((e: any) => e?.type === 'agent_session').map((e: any) => e.sessionId)
+      );
+      const fileCommentIds = new Set(
+        history.filter((e: any) => e?.type === 'comment' && e?.id).map((e: any) => e.id)
+      );
+      const missingEntries: any[] = [];
+      for (const entry of existingTask.history) {
+        if (entry?.type === 'agent_session' && !fileSessionIds.has(entry.sessionId)) {
+          missingEntries.push(entry);
+        } else if (entry?.type === 'comment' && entry?.id && !fileCommentIds.has(entry.id)) {
+          missingEntries.push(entry);
+        }
+      }
+      if (missingEntries.length > 0) {
+        history.push(...missingEntries);
+        history.sort((a: any, b: any) => getHistoryTimestamp(a) - getHistoryTimestamp(b));
+        historyReinjected = true;
+        console.log(`[${id}] Re-injected ${missingEntries.length} history entries dropped by agent`);
+      }
+    }
+
     const normalizedFrontmatter = { ...parsed.data, history };
+
+    // Normalize inline subtask objects → create separate ticket files and convert to string IDs
+    const subtasksNormalized = await normalizeInlineSubtasks(normalizedFrontmatter, filePath);
+
+    if (subtasksNormalized) {
+      normalizedFrontmatter.subtasks = subtasksNormalized;
+    }
+
+    const validationErrors = validateTicketFrontmatter(normalizedFrontmatter);
+    if (validationErrors.length > 0) {
+      const summary = formatValidationErrors(validationErrors);
+      console.error(`\n[FLUX VALIDATION ERROR] ${filePath}\n  Schema validation failed:\n${summary}\n  The ticket has been removed from the board. Fix the frontmatter and save again.\n`);
+      delete tasksCache[id];
+      parseErrors[id] = { id, path: filePath, error: `Schema validation failed:\n${summary}` };
+      return;
+    }
 
     tasksCache[id] = {
       ...normalizedFrontmatter,
@@ -130,7 +317,7 @@ export async function loadTask(filePath: string) {
     // Clear any previous parse error for this ticket
     delete parseErrors[id];
 
-    if (normalizedHistory.changed) {
+    if (normalizedHistory.changed || subtasksNormalized || historyReinjected) {
       const normalizedContent = matter.stringify(parsed.content, normalizedFrontmatter);
       await fs.writeFile(filePath, normalizedContent, 'utf-8');
     }
@@ -199,23 +386,49 @@ export async function loadDocsDirectory(directoryPath: string) {
 
 export async function reconcileOrphanedSessions() {
   const now = new Date().toISOString();
+  let recoveredCount = 0;
+
   for (const task of Object.values(tasksCache)) {
     const history: any[] = Array.isArray(task.history) ? task.history : [];
+
+    // Find all active agent_session entries
+    const activeSessions = history.filter(
+      (e) => e.type === 'agent_session' && e.status === 'active'
+    );
+
+    for (const session of activeSessions) {
+      // Close the orphaned session
+      await updateAgentSession(task.id, session.sessionId, (sessionEntry) => {
+        sessionEntry.status = 'cancelled';
+        sessionEntry.outcome = 'Session abandoned (engine restarted).';
+        sessionEntry.endedAt = now;
+      });
+      recoveredCount++;
+      console.log(`Recovered orphaned session ${session.sessionId} in task ${task.id}`);
+    }
+
+    // Also check for old-style activity-based sessions (legacy compatibility)
     const lastLaunch = [...history].reverse().find(
       (e) => e.type === 'activity' && typeof e.comment === 'string' && /Launched .+ session \(/.test(e.comment)
     );
     if (!lastLaunch) continue;
     const launchIdx = history.lastIndexOf(lastLaunch);
     const hasEnd = history.slice(launchIdx + 1).some(
-      (e) => e.type === 'activity' && typeof e.comment === 'string' &&
-        /session ended|session stopped|session failed|session lost/i.test(e.comment)
+      (e) => (e.type === 'activity' && typeof e.comment === 'string' &&
+        /session ended|session stopped|session failed|session lost/i.test(e.comment)) ||
+        (e.type === 'agent_session')
     );
     if (!hasEnd) {
       await updateTaskWithHistory(task.id, {
         updatedBy: 'Agent',
         entries: [buildActivityEntry('Claude Code session lost (engine restarted).', 'Agent', now)],
       });
+      recoveredCount++;
     }
+  }
+
+  if (recoveredCount > 0) {
+    console.log(`Session recovery: closed ${recoveredCount} orphaned session(s)`);
   }
 }
 
@@ -395,7 +608,18 @@ export async function activateWorkspace(newRoot: string) {
     await initDir();
     await startWatchers();
     startSyncWatcher();
+    seedPromptNotifications();
   } finally {
     workspaceActivating = false;
+  }
+}
+
+function seedPromptNotifications() {
+  const requireInputStatus = configCache.requireInputStatus || 'Require Input';
+  const readyStatus = configCache.readyForMergeStatus || 'Ready';
+  for (const task of Object.values(tasksCache)) {
+    if (task.status === requireInputStatus || task.status === readyStatus) {
+      generatePromptNotification(task.id, task.title || task.id, task.status);
+    }
   }
 }

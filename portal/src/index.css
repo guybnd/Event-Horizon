@@ -112,10 +112,22 @@ body {
   70% {
     transform: scale(0.98);
   }
+}
 
-  100% {
-    transform: scale(1);
+@keyframes agent-session-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
   }
+  70% {
+    box-shadow: 0 0 0 10px rgba(16, 185, 129, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+  }
+}
+
+.agent-session-active {
+  animation: agent-session-pulse 2s infinite;
 }
 
 .task-live-created {

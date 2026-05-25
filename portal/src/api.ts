@@ -38,7 +38,17 @@ export async function updateTask(id: string, updates: Partial<Task>): Promise<Ta
     },
     body: JSON.stringify(updates)
   });
-  if (!res.ok) throw new Error('Failed to update task');
+  if (!res.ok) {
+    let message = 'Failed to update task';
+    try {
+      const errorPayload = await res.json();
+      if (errorPayload.message) message = errorPayload.message;
+      else if (errorPayload.error) message = errorPayload.error;
+    } catch {
+      // ignore
+    }
+    throw new Error(message);
+  }
   return res.json();
 }
 
@@ -381,5 +391,58 @@ export async function resolveConflicts(
     const payload = await res.json().catch(() => ({}));
     throw new Error(payload.error || 'Failed to resolve conflicts');
   }
+  return res.json();
+}
+
+// ─── Notifications ───────────────────────────────────────────────────────────
+
+export interface NotificationAction {
+  label: string;
+  actionId: string;
+}
+
+export interface Notification {
+  id: string;
+  type: 'error' | 'prompt' | 'completion' | 'info';
+  title: string;
+  message: string;
+  ticketId?: string;
+  framework?: string;
+  actions: NotificationAction[];
+  createdAt: string;
+  read: boolean;
+  dismissed: boolean;
+}
+
+export interface NotificationsResponse {
+  notifications: Notification[];
+  unreadCount: number;
+}
+
+export async function fetchNotifications(): Promise<NotificationsResponse> {
+  const res = await fetch(`${API_URL}/notifications`);
+  if (!res.ok) return { notifications: [], unreadCount: 0 };
+  return res.json();
+}
+
+export async function markNotificationRead(id: string): Promise<void> {
+  await fetch(`${API_URL}/notifications/${id}/read`, { method: 'POST' });
+}
+
+export async function markAllNotificationsRead(): Promise<void> {
+  await fetch(`${API_URL}/notifications/read-all`, { method: 'POST' });
+}
+
+export async function dismissNotification(id: string): Promise<void> {
+  await fetch(`${API_URL}/notifications/${id}/dismiss`, { method: 'POST' });
+}
+
+export async function executeNotificationAction(id: string, actionId: string): Promise<any> {
+  const res = await fetch(`${API_URL}/notifications/${id}/action`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ actionId }),
+  });
+  if (!res.ok) throw new Error('Action failed');
   return res.json();
 }

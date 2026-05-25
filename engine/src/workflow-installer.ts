@@ -119,6 +119,7 @@ function instructionsDestinationFor(targetDir: string, framework: ResolvedFramew
     case 'copilot':
       return path.join(targetDir, '.github', 'copilot-instructions.md');
     case 'antigravity':
+    case 'gemini':
       return path.join(targetDir, '.gemini', 'instructions.md');
     case 'cursor':
       return path.join(targetDir, '.cursorrules');
@@ -225,9 +226,13 @@ export async function getWorkflowInstallStatus({ sourceRoot, targetDir, framewor
 
 export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framework = 'auto' }: WorkflowInstallerOptions): Promise<WorkflowInstallResult> {
   const resolvedFramework = resolveFramework(targetDir, framework);
+  console.log(`[installer] Resolved framework: ${resolvedFramework}`);
   const { skillSourcePath, skillSourcePaths, instructionsSourcePath } = getSourcePaths(sourceRoot);
   const skillInstalledPath = skillDestinationFor(targetDir, resolvedFramework);
   const instructionsInstalledPath = instructionsDestinationFor(targetDir, resolvedFramework);
+
+  console.log(`[installer] Skill dest: ${skillInstalledPath}`);
+  console.log(`[installer] Instructions dest: ${instructionsInstalledPath}`);
 
   if (!await pathExists(skillSourcePath)) {
     throw new Error(`Skill source file not found: ${skillSourcePath}`);
@@ -235,6 +240,7 @@ export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framewor
 
   if (MODULAR_FRAMEWORKS.includes(resolvedFramework)) {
     // Option B: install one file per skill module
+    console.log(`[installer] Installing modular skill...`);
     for (const [index, module] of SKILL_MODULES.entries()) {
       const src = skillSourcePaths[index];
       const dest = skillModuleDestinationFor(targetDir, resolvedFramework, module);
@@ -243,12 +249,14 @@ export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framewor
     }
   } else {
     // Option A: concatenate all modules wrapped in XML tags
+    console.log(`[installer] Installing concatenated skill...`);
     await fs.mkdir(path.dirname(skillInstalledPath), { recursive: true });
     const concatenated = await buildConcatenatedSkill(skillSourcePaths);
     await fs.writeFile(skillInstalledPath, concatenated, 'utf-8');
   }
 
   if (instructionsInstalledPath) {
+    console.log(`[installer] Patching instructions...`);
     if (!await pathExists(instructionsSourcePath)) {
       throw new Error(`Copilot instructions source file not found: ${instructionsSourcePath}`);
     }
@@ -260,9 +268,82 @@ export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framewor
     await fs.writeFile(instructionsInstalledPath, nextInstructions, 'utf-8');
   }
 
+  // Install MCP config for agent tool discovery
+  await installMcpConfig(targetDir, sourceRoot, resolvedFramework);
+
+  console.log(`[installer] Done.`);
   return {
     framework: resolvedFramework,
     skillInstalledPath,
     instructionsInstalledPath,
   };
+}
+
+// ─── MCP Config Installation ─────────────────────────────────────────────────
+
+function mcpConfigPathFor(targetDir: string, framework: ResolvedFramework): string {
+  switch (framework) {
+    case 'antigravity':
+    case 'gemini':
+      return path.join(targetDir, '.gemini', 'settings.json');
+    case 'cursor':
+      return path.join(targetDir, '.cursor', 'mcp.json');
+    case 'cline':
+      return path.join(targetDir, '.cline', 'mcp.json');
+    case 'windsurf':
+      return path.join(targetDir, '.windsurf', 'mcp.json');
+    case 'copilot':
+    case 'claude':
+    case 'generic':
+    default:
+      return path.join(targetDir, '.mcp.json');
+  }
+}
+
+function buildMcpServerEntry(sourceRoot: string, targetDir: string) {
+  const isPkg = (process as any).pkg !== undefined;
+  if (isPkg) {
+    return {
+      type: 'stdio',
+      command: process.execPath,
+      args: ['--mcp', '--workspace', '.'],
+    };
+  }
+  const mcpEntryPoint = path.relative(targetDir, path.join(sourceRoot, 'engine', 'src', 'mcp-server.ts')).replace(/\\/g, '/');
+  return {
+    type: 'stdio',
+    command: 'npx',
+    args: ['tsx', mcpEntryPoint, '--workspace', '.'],
+  };
+}
+
+async function installMcpConfig(targetDir: string, sourceRoot: string, framework: ResolvedFramework): Promise<void> {
+  const configPath = mcpConfigPathFor(targetDir, framework);
+  const serverEntry = buildMcpServerEntry(sourceRoot, targetDir);
+
+  if (framework === 'gemini' || framework === 'antigravity') {
+    // Gemini uses settings.json with mcpServers key — merge, don't overwrite
+    let existing: any = {};
+    try {
+      const raw = await fs.readFile(configPath, 'utf-8');
+      existing = JSON.parse(raw);
+    } catch {}
+    existing.mcpServers = existing.mcpServers || {};
+    existing.mcpServers['event-horizon'] = serverEntry;
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    await fs.writeFile(configPath, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
+  } else {
+    // Standard MCP config format — merge mcpServers key
+    let existing: any = {};
+    try {
+      const raw = await fs.readFile(configPath, 'utf-8');
+      existing = JSON.parse(raw);
+    } catch {}
+    existing.mcpServers = existing.mcpServers || {};
+    existing.mcpServers['event-horizon'] = serverEntry;
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    await fs.writeFile(configPath, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
+  }
+
+  console.log(`[installer] MCP config installed: ${configPath}`);
 }

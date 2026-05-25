@@ -14,12 +14,17 @@ import {
   SendHorizontal,
   Trash2,
   X,
+  Bot,
+  Zap,
 } from 'lucide-react';
 import { useApp } from '../AppContext';
 import { createTask, deleteTask, fetchTask, sendTaskCliInput, startTaskCliSession, updateTask } from '../api';
 import { LaunchAgentSplitButton } from './LaunchAgentSplitButton';
 import type { ReviewPersona } from './CodeReviewButton';
-import type { Config, HistoryEntry, Task } from '../types';
+import { isAgentSession } from '../types';
+import type { Config, HistoryEntry, InlineSubtask, Task } from '../types';
+import { FRAMEWORK_ICONS } from '../constants';
+
 import { StatusBadge } from './StatusBadge';
 import { getStatusColorClass } from '../statusStyles';
 import { TaskDescriptionSurface } from './TaskDescriptionSurface';
@@ -37,12 +42,12 @@ import { TokenBadge } from './TokenBadge';
 import { HistoryList } from './task-modal/HistoryList';
 const ACTIVITY_FILTER_STORAGE_KEY = 'flux.activityFilter';
 
-type ActivityFilter = 'all' | 'activity' | 'comments' | 'agent';
+type ActivityFilter = 'all' | 'decisions' | 'sessions';
 
 function getInitialActivityFilter(): ActivityFilter {
   if (typeof window === 'undefined') return 'all';
   const stored = window.localStorage.getItem(ACTIVITY_FILTER_STORAGE_KEY);
-  if (stored === 'comments' || stored === 'activity' || stored === 'agent') return stored;
+  if (stored === 'decisions' || stored === 'sessions') return stored;
   return 'all';
 }
 
@@ -340,15 +345,17 @@ export function TaskModal() {
     );
     if (idx === -1) return null;
     const entry = [...history].reverse()[idx];
-    return (entry as any).from as string | undefined;
+    if (entry.type !== 'status_change') return null;
+    return entry.from;
   }, [modalTask?.history, requireInputStatus]);
 
   const preReadyStatus = useMemo(() => {
     const history = modalTask?.history || [];
     const entry = [...history].reverse().find(
-      (e) => e.type === 'status_change' && (e as any).to === readyForMergeStatus
+      (e) => e.type === 'status_change' && e.to === readyForMergeStatus
     );
-    const from = entry ? (entry as any).from as string : null;
+    if (entry?.type !== 'status_change') return requireInputDestinations[0] || 'In Progress';
+    const from = entry.from || null;
     if (!from || promptableStatuses.includes(from)) return requireInputDestinations[0] || 'In Progress';
     return from;
   }, [modalTask?.history, readyForMergeStatus, promptableStatuses, requireInputDestinations]);
@@ -364,12 +371,14 @@ export function TaskModal() {
 
   const { topLevelEntries, repliesByParent } = useMemo(() => {
     const activityHistory = modalTask?.history || [];
-    const filtered = activityFilter === 'comments'
-      ? activityHistory.filter((entry) => entry.type === 'comment')
-      : activityFilter === 'activity'
-      ? activityHistory.filter((entry) => entry.type === 'status_change' || entry.type === 'activity')
-      : activityFilter === 'agent'
-      ? activityHistory.filter((entry) => entry.type === 'agent_message')
+    const filtered = activityFilter === 'decisions'
+      ? activityHistory.filter((entry) =>
+          entry.type === 'comment' ||
+          entry.type === 'status_change' ||
+          (isAgentSession(entry) && entry.outcome)
+        )
+      : activityFilter === 'sessions'
+      ? activityHistory.filter((entry) => isAgentSession(entry))
       : activityHistory;
     const replies = new Map<string, HistoryEntry[]>();
     const topLevel: HistoryEntry[] = [];
@@ -384,6 +393,15 @@ export function TaskModal() {
     });
     return { filteredHistory: filtered, topLevelEntries: topLevel, repliesByParent: replies };
   }, [modalTask?.history, activityFilter]);
+
+  // Build lookup for inline subtask objects (which carry title/status metadata)
+  const inlineSubtaskMap = useMemo(() => {
+    const map = new Map<string, InlineSubtask>();
+    (modalTask?.subtasks || []).forEach((entry) => {
+      if (typeof entry !== 'string' && entry.id) map.set(entry.id, entry);
+    });
+    return map;
+  }, [modalTask?.subtasks]);
 
   const linkedSubtasks = subtasks
     .map((subtaskId) => allTasks.find((task) => task.id === subtaskId))
@@ -430,12 +448,12 @@ export function TaskModal() {
             comment: pendingComment ? 'Included with comment' : undefined,
           });
         }
-        const newHistory = [...(modalTask.history || []), ...historyUpdates];
+        const newHistory: HistoryEntry[] = [...(modalTask.history || []), ...historyUpdates];
         const updatedTask = await updateTask(modalTask.id, {
           ...payload,
           history: newHistory,
           updatedBy: currentUser,
-        } as any);
+        });
         setModalTask(updatedTask);
       } else {
         const createdTask = await createTask({ ...payload, history: historyUpdates, projectKey: currentProject, author: currentUser });
@@ -673,6 +691,21 @@ export function TaskModal() {
     }
   }, [modalTask?.id, cliSession, currentUser, selectedCliFramework, triggerRefresh]);
 
+  const handleGrooming = useCallback(async () => {
+    if (!modalTask?.id) return;
+    setCliSessionBusy(true);
+    setCliSessionError('');
+    try {
+      const session = await startTaskCliSession(modalTask.id, selectedCliFramework, `groom ${modalTask.id}`, skipPermissions);
+      setCliSession(session);
+      triggerRefresh();
+    } catch (error: any) {
+      setCliSessionError(error?.message || 'Failed to start grooming session.');
+    } finally {
+      setCliSessionBusy(false);
+    }
+  }, [modalTask?.id, selectedCliFramework, skipPermissions, setCliSession, triggerRefresh]);
+
   const handleToggleReply = useCallback((entryId: string | undefined) => {
     setReplyTargetId((current) => current === entryId ? null : entryId || null);
     setReplyDraft('');
@@ -696,7 +729,7 @@ export function TaskModal() {
 
   const activityFilterTabs = (
     <div className="flex items-center gap-2 flex-wrap">
-      {(['all', 'activity', 'comments', 'agent'] as ActivityFilter[]).map((filter) => (
+      {(['all', 'decisions', 'sessions'] as ActivityFilter[]).map((filter) => (
         <button
           key={filter}
           type="button"
@@ -707,7 +740,7 @@ export function TaskModal() {
               : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-white/10 dark:text-gray-300 dark:hover:bg-white/15'
           }`}
         >
-          {filter === 'all' ? 'All' : filter === 'activity' ? 'Activity' : filter === 'comments' ? 'Comments' : 'Agent'}
+          {filter === 'all' ? 'All' : filter === 'decisions' ? 'Decisions' : 'Sessions'}
         </button>
       ))}
       {unreadCommentCount > 0 && (
@@ -721,6 +754,43 @@ export function TaskModal() {
       )}
     </div>
   );
+
+  const groomingBanner = useMemo(() => status === 'Grooming' ? (
+    <div className="flex items-center justify-between gap-4 rounded-xl border border-primary/20 bg-primary/5 p-4 dark:border-primary/30 dark:bg-primary/10">
+      <div className="flex gap-3">
+        <div className="mt-0.5 rounded-lg bg-primary/10 p-1.5 text-primary dark:bg-primary/20">
+          <Zap className="h-5 w-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="mb-1 text-xs font-bold uppercase tracking-wider text-primary">Grooming phase</p>
+          <p className="text-sm text-gray-700 dark:text-gray-300">
+            This ticket needs a concrete implementation plan. Click <strong>Start Grooming</strong> to have the agent analyze requirements and update the body.
+          </p>
+        </div>
+      </div>
+      <button
+        disabled={cliSessionBusy || sessionIsActive}
+        onClick={handleGrooming}
+        className="shrink-0 flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-bold text-white shadow-md transition-all hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        <Bot className="h-4 w-4" />
+        {cliSessionBusy ? 'Starting...' : 'Start Grooming'}
+      </button>
+    </div>
+  ) : null, [status, cliSessionBusy, sessionIsActive, handleGrooming]);
+
+  const requireInputBanner = useMemo(() => (isRequireInput && lastComment) ? (
+    <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-900/20">
+      <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
+      <div className="min-w-0 flex-1">
+        <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-amber-800 dark:text-amber-300">Response Needed</p>
+        <p className="whitespace-pre-wrap text-sm text-amber-700 dark:text-amber-400">{lastComment.comment}</p>
+        <p className="mt-1.5 text-[10px] text-amber-500/70">
+          {lastComment.user} · {new Date(lastComment.date).toLocaleString()}
+        </p>
+      </div>
+    </div>
+  ) : null, [isRequireInput, lastComment]);
 
   const readyForMergeBanner = useMemo(() => isReadyForMerge ? (
     <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-900/20">
@@ -736,19 +806,6 @@ export function TaskModal() {
 
   if (!config || (!isModalOpen && !modalTask)) return null;
 
-  const requireInputBanner = isRequireInput && lastComment ? (
-    <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-900/20">
-      <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
-      <div className="min-w-0 flex-1">
-        <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-amber-800 dark:text-amber-300">Response Needed</p>
-        <p className="whitespace-pre-wrap text-sm text-amber-700 dark:text-amber-400">{lastComment.comment}</p>
-        <p className="mt-1.5 text-[10px] text-amber-500/70">
-          {lastComment.user} · {new Date(lastComment.date).toLocaleString()}
-        </p>
-      </div>
-    </div>
-  ) : null;
-
   const requireInputPrompt = isRequireInput && modalTask?.id ? (
     <div className="rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 to-white p-5 shadow-sm dark:border-amber-500/30 dark:from-amber-900/20 dark:to-[#1a1b23]">
       <div className="mb-4 flex items-start gap-3">
@@ -761,7 +818,10 @@ export function TaskModal() {
           <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">Answer the pending question, then choose where the ticket should go next.</p>
         </div>
       </div>
-      {requireInputBanner}
+      <div className="space-y-4">
+        {requireInputBanner}
+        {groomingBanner}
+      </div>
       <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_180px]">
         <div>
           <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Your response</label>
@@ -945,18 +1005,37 @@ export function TaskModal() {
               </button>
             </div>
           ))}
-          {danglingSubtaskIds.map((subtaskId) => (
-            <div key={subtaskId} className="flex items-center justify-between rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300">
-              <span>{subtaskId} is linked but not currently loaded.</span>
-              <button
-                type="button"
-                onClick={() => setSubtasks((current) => current.filter((id) => id !== subtaskId))}
-                className="rounded-md p-1.5 transition-colors hover:bg-amber-100 dark:hover:bg-amber-500/10"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-          ))}
+          {danglingSubtaskIds.map((subtaskId) => {
+            const inline = inlineSubtaskMap.get(subtaskId);
+            return (
+              <div key={subtaskId} className={`flex items-center justify-between rounded-lg border px-3 py-2 text-sm ${inline ? 'border-gray-100 bg-gray-50 text-gray-700 dark:border-white/5 dark:bg-black/20 dark:text-gray-300' : 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300'}`}>
+                <div className="min-w-0 flex-1">
+                  {inline ? (
+                    <>
+                      <p className="text-xs font-bold uppercase tracking-wider text-gray-400">{subtaskId}</p>
+                      <p className="truncate text-sm font-medium text-gray-800 dark:text-gray-200">{inline.title || subtaskId}</p>
+                      {inline.status && (
+                        <StatusBadge
+                          status={inline.status}
+                          colorClass={getStatusColorClass(config, inline.status)}
+                          className="mt-1 text-[10px] font-bold uppercase tracking-[0.16em]"
+                        />
+                      )}
+                    </>
+                  ) : (
+                    <span>{subtaskId} is linked but not currently loaded.</span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSubtasks((current) => current.filter((id) => id !== subtaskId))}
+                  className="rounded-md p-1.5 transition-colors hover:bg-amber-100 dark:hover:bg-amber-500/10"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -1101,15 +1180,15 @@ export function TaskModal() {
             </div>
           )}
           <div className="flex items-center justify-between border-b border-gray-100 bg-gray-50 px-5 py-4 dark:border-white/5 dark:bg-black/20">
-            <div className="flex min-w-0 items-center gap-4">
+            <div className="flex min-w-0 flex-1 items-center gap-4 mr-4">
               <button
                 onClick={handleCloseAttempt}
-                className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-200 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-white/5 dark:hover:text-white"
+                className="flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-200 hover:text-gray-900 dark:text-gray-300 dark:hover:bg-white/5 dark:hover:text-white"
               >
                 <ArrowLeft className="h-4 w-4" />
                 Back to Board
               </button>
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{modalTask?.id || 'New Task'}</p>
                   <StatusBadge
@@ -1118,10 +1197,21 @@ export function TaskModal() {
                     className="text-[10px] font-bold uppercase tracking-[0.16em]"
                   />
                 </div>
-                <h2 className="truncate text-lg font-semibold text-gray-900 dark:text-gray-100">{title || 'Untitled Task'}</h2>
+                <textarea
+                  ref={titleRef}
+                  rows={1}
+                  className="mt-1 w-full resize-none overflow-hidden bg-transparent text-lg font-semibold text-gray-900 outline-none placeholder:text-gray-400 dark:text-gray-100"
+                  value={title}
+                  onChange={(event) => {
+                    setTitle(event.target.value);
+                    event.target.style.height = 'auto';
+                    event.target.style.height = event.target.scrollHeight + 'px';
+                  }}
+                  placeholder="Task title..."
+                />
               </div>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex shrink-0 items-center gap-3">
               <button
                 disabled={saving || !isDirty}
                 onClick={() => handleSave(undefined, true)}
@@ -1169,6 +1259,7 @@ export function TaskModal() {
                     busy={cliSessionBusy}
                     disabled={!modalTask?.id}
                     onLaunch={launchSession}
+                    icon={FRAMEWORK_ICONS[selectedCliFramework]}
                   />
                 );
               })()}
@@ -1225,7 +1316,12 @@ export function TaskModal() {
 
             <div className="min-h-0 border-r border-gray-200 dark:border-white/10 overflow-y-auto relative">
               <div className="flex flex-col min-h-full">
-                {requireInputBanner && <div className="border-b border-gray-200 p-6 dark:border-white/10">{requireInputBanner}</div>}
+                {(requireInputBanner || groomingBanner) && (
+                  <div className="border-b border-gray-200 p-6 dark:border-white/10">
+                    {requireInputBanner}
+                    {groomingBanner}
+                  </div>
+                )}
                 <div className="flex-1 flex flex-col border-b border-gray-200 dark:border-white/10">
                   <div className="flex items-center justify-between px-6 py-4">
                     <div>
@@ -1283,21 +1379,6 @@ export function TaskModal() {
 
             <aside className="min-h-0 min-w-0 overflow-y-auto bg-gray-50/80 p-6 dark:bg-black/10" style={{ width: `${sidebarWidth}px`, overflowX: 'hidden' }}>
               <div className="space-y-6 w-full">
-                <div>
-                  <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Title</label>
-                  <textarea
-                    ref={titleRef}
-                    rows={1}
-                    className="w-full resize-none overflow-hidden rounded-lg border border-gray-200 bg-white px-3 py-2 text-base font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-black/40"
-                    value={title}
-                    onChange={(event) => {
-                      setTitle(event.target.value);
-                      event.target.style.height = 'auto';
-                      event.target.style.height = event.target.scrollHeight + 'px';
-                    }}
-                    placeholder="Task title..."
-                  />
-                </div>
                 <MetadataPanel {...metadataPanelProps} />
                 {subtasksPanel}
                 <div className="rounded-xl border border-gray-100 bg-gray-50 p-3 dark:border-white/5 dark:bg-black/10">
@@ -1336,7 +1417,7 @@ export function TaskModal() {
               </div>
             )}
             <div className="modal-handle flex shrink-0 items-center justify-between cursor-move border-b border-gray-100 bg-gray-50 px-4 py-3 dark:border-white/5 dark:bg-black/20">
-              <div className="flex flex-col">
+              <div className="flex flex-col flex-1 min-w-0 mr-4">
                 <div className="mb-0.5 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-gray-400">
                   <span>
                     {modalTask?.id ? modalTask.id : 'New Task'}{' '}
@@ -1348,7 +1429,18 @@ export function TaskModal() {
                     className="text-[10px] font-bold uppercase tracking-[0.16em]"
                   />
                 </div>
-                <h2 className="leading-none font-semibold text-gray-800 dark:text-gray-200">{title || 'Untitled Task'}</h2>
+                <textarea
+                  ref={titleRef}
+                  rows={1}
+                  className="mt-1 w-full resize-none overflow-hidden bg-transparent text-lg font-semibold text-gray-900 outline-none placeholder:text-gray-400 dark:text-gray-100"
+                  value={title}
+                  onChange={(event) => {
+                    setTitle(event.target.value);
+                    event.target.style.height = 'auto';
+                    event.target.style.height = event.target.scrollHeight + 'px';
+                  }}
+                  placeholder="Task title..."
+                />
               </div>
               <div className="flex items-center gap-2.5">
                 {modalTask?.id && (
@@ -1394,29 +1486,14 @@ export function TaskModal() {
             </div>
 
             <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 text-sm text-gray-800 dark:text-gray-200">
-              {isRequireInput ? requireInputPrompt : requireInputBanner}
+              {isRequireInput ? requireInputPrompt : (
+                <>
+                  {requireInputBanner}
+                  {groomingBanner}
+                </>
+              )}
 
-              <div className={isWideMode ? 'flex items-center gap-4 rounded-xl border border-gray-100 bg-gray-50 p-4 dark:border-white/5 dark:bg-black/10' : 'space-y-3 rounded-xl border border-gray-100 bg-gray-50 p-3 dark:border-white/5 dark:bg-black/10'}>
-                <div className={isWideMode ? 'mr-4 flex-1' : 'min-w-0'}>
-                  <div>
-                    <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Title</label>
-                    <textarea
-                      ref={titleRef}
-                      rows={1}
-                      className={`w-full resize-none overflow-hidden rounded-lg border border-gray-200 px-3 py-2 font-medium outline-none focus:border-primary dark:border-white/10 ${
-                        isWideMode ? 'bg-white text-sm dark:bg-black/40' : 'bg-gray-50 text-[15px] dark:bg-black/20'
-                      }`}
-                      value={title}
-                      onChange={(event) => {
-                        setTitle(event.target.value);
-                        event.target.style.height = 'auto';
-                        event.target.style.height = event.target.scrollHeight + 'px';
-                      }}
-                      placeholder="Task title..."
-                    />
-                  </div>
-                </div>
-
+              <div className="space-y-3 rounded-xl border border-gray-100 bg-gray-50 p-3 dark:border-white/5 dark:bg-black/10">
                 <MetadataPanel {...metadataPanelProps} variant="popup" isWideMode={isWideMode} />
               </div>
 

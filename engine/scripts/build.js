@@ -6,10 +6,13 @@
  * output is self-contained (no node_modules needed at runtime).
  */
 
-const esbuild = require('esbuild');
-const path = require('path');
-const fs = require('fs');
-const fsp = require('fs/promises');
+import esbuild from 'esbuild';
+import path from 'path';
+import fs from 'fs';
+import fsp from 'fs/promises';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const engineRoot = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(engineRoot, '..');
@@ -29,6 +32,8 @@ const bundledAssets = [
 ];
 
 fs.mkdirSync(outDir, { recursive: true });
+// Override parent "type": "module" so Node treats dist/*.js as CJS
+fs.writeFileSync(path.join(outDir, 'package.json'), '{"type":"commonjs"}\n');
 
 async function copyDir(src, dest) {
   await fsp.mkdir(dest, { recursive: true });
@@ -70,6 +75,13 @@ async function build() {
     ...sharedConfig,
     entryPoints: [path.join(engineRoot, 'src', 'init.ts')],
     outfile: path.join(outDir, 'init.js'),
+  });
+
+  console.log('Building engine/src/mcp-server.ts → engine/dist/mcp-server.js …');
+  await esbuild.build({
+    ...sharedConfig,
+    entryPoints: [path.join(engineRoot, 'src', 'mcp-server.ts')],
+    outfile: path.join(outDir, 'mcp-server.js'),
   });
 
   // Copy portal/dist into engine/dist/portal/dist so pkg can embed it as assets.

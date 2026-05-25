@@ -1,3 +1,10 @@
+// Strip NODE_OPTIONS early — pkg binaries crash when child processes inherit
+// V8 flags like --max-old-space-size that get misinterpreted as module paths.
+// Case-insensitive removal for Windows where env var casing may vary.
+for (const key of Object.keys(process.env)) {
+  if (key.toUpperCase() === 'NODE_OPTIONS') delete process.env[key];
+}
+
 import express from 'express';
 import cors from 'cors';
 import fs from 'fs/promises';
@@ -6,6 +13,7 @@ import { execFile, spawn } from 'child_process';
 import path from 'path';
 import os from 'os';
 
+import { fileURLToPath } from 'url';
 import { requireWorkspace } from './middleware.js';
 import { workspaceRoot, loadAppSettings, getCliWorkspace, resolvePortalDist } from './workspace.js';
 import { activateWorkspace } from './task-store.js';
@@ -23,6 +31,15 @@ import readStateRouter from './routes/read-state.js';
 import eventsRouter from './routes/events.js';
 import storageRouter from './routes/storage.js';
 import syncStatusRouter from './routes/sync-status.js';
+import notificationsRouter from './routes/notifications.js';
+import { checkForUpdate, getCachedUpdateInfo, getLocalVersion } from './update-check.js';
+
+const __dir = (() => {
+  // @ts-ignore
+  if (typeof __dirname === 'string' && path.isAbsolute(__dirname)) return __dirname;
+  try { return path.dirname(fileURLToPath(import.meta.url)); } catch {}
+  return path.join(process.cwd(), 'src');
+})();
 
 function isValidWorkspaceRoot(dir: string): boolean {
   return existsSync(path.join(dir, '.flux')) || existsSync(path.join(dir, '.flux-store'));
@@ -47,6 +64,7 @@ app.use('/api/read-state', requireWorkspace, readStateRouter);
 app.use('/api/events', eventsRouter);
 app.use('/api/storage', requireWorkspace, storageRouter);
 app.use('/api/sync-status', requireWorkspace, syncStatusRouter);
+app.use('/api/notifications', notificationsRouter);
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', workspace: workspaceRoot });
@@ -56,6 +74,15 @@ app.post('/api/shutdown', (_req, res) => {
   stopAllCliSessions('shutdown');
   res.json({ ok: true });
   setTimeout(() => process.exit(0), 150);
+});
+
+app.get('/api/update-check', (_req, res) => {
+  const info = getCachedUpdateInfo();
+  if (info) {
+    res.json(info);
+  } else {
+    res.json({ updateAvailable: false, currentVersion: getLocalVersion(), latestVersion: '', releaseUrl: '' });
+  }
 });
 
 // ─── Static portal serving ───────────────────────────────────────────────────
@@ -117,7 +144,7 @@ async function initTray(port: number): Promise<void> {
   let binaryPath: string;
 
   if (isPkg) {
-    const embeddedPath = path.join(__dirname, 'traybin', binaryName);
+    const embeddedPath = path.join(__dir, 'traybin', binaryName);
     const tmpPath = path.join(os.tmpdir(), `eh-tray-${binaryName}`);
     if (!existsSync(tmpPath)) {
       const data = await fs.readFile(embeddedPath);
@@ -126,8 +153,8 @@ async function initTray(port: number): Promise<void> {
     binaryPath = tmpPath;
   } else {
     const candidates = [
-      path.resolve(__dirname, '..', '..', 'node_modules', 'systray', 'traybin', binaryName),
-      path.resolve(__dirname, '..', 'node_modules', 'systray', 'traybin', binaryName),
+      path.resolve(__dir, '..', '..', 'node_modules', 'systray', 'traybin', binaryName),
+      path.resolve(__dir, '..', 'node_modules', 'systray', 'traybin', binaryName),
     ];
     const found = candidates.find(p => existsSync(p));
     if (!found) {
@@ -216,6 +243,8 @@ async function startServer() {
       setTimeout(() => openBrowser(`http://localhost:${PORT}`), 800);
       initTray(PORT).catch(e => console.warn('Tray init failed:', e.message));
     }
+
+    checkForUpdate().catch(() => {});
   });
 }
 
@@ -228,6 +257,16 @@ async function gracefulShutdown(signal: string) {
 }
 process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM'); });
 process.on('SIGINT',  () => { void gracefulShutdown('SIGINT'); });
+
+process.on('uncaughtException', (err) => {
+  console.error('CRITICAL: Uncaught Exception:', err);
+  stopAllCliSessions('uncaught-exception');
+  setTimeout(() => process.exit(1), 500);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('CRITICAL: Unhandled Rejection at:', promise, 'reason:', reason);
+});
 
 startServer().catch(err => {
   console.error('Failed to start Event Horizon:', err);

@@ -11,52 +11,39 @@ Scope: Interpret requirements, update frontmatter, and handle `.flux` metadata d
 
 # Event Horizon Agent — Grooming Skill
 
-Version: 2.0.0
+Version: 2.1.0
 
 ## When This Skill Applies
 
 Load this skill when a ticket's status is `Grooming` or `Require Input`.
+Refer to the orchestrator skill for the ticket model, APIs, and end-to-end checklist.
 
 ## Grooming Workflow
 
-1. Read the full ticket, including all history comments and status changes.
-2. Read the relevant docs to understand scope and touchpoints before editing. Start with `.docs/`, then `README.md`, then `.docs/skills/*.md` when the task touches workflow behaviour or installer output.
-3. Treat `Grooming` as a planning phase, not implied permission to code. Tighten the ticket body into a concrete plan, capture likely touchpoints and intended validation, review the applicable ticket metadata, and fill anything that is already inferable from the current context.
-4. Applicable metadata fields to review and fill: `priority`, `effort`, `tags`, hierarchy links, and related-ticket references when they matter for the work.
-5. If implementation-critical choices or applicable metadata values are unresolved, do not silently pick a direction. Move the ticket to the configured user-input status (`requireInputStatus` in `.flux/config.json`, default `Require Input`), leave one explicit question in ticket history, include the proposed fill values or defaults for the missing fields, and wait for the answer.
-6. Once all choices are resolved, rewrite the ticket body with two sections in order:
-   - **Problem / Motivation** (1–3 sentences): explain what user problem or pain point this ticket addresses, who benefits, and why it was prioritised. This gives any reader — human or agent — immediate context on why the work matters, not just what to do.
-   - **Implementation plan**: the concrete steps, files, and approach so another agent could pick up the work without re-discovery.
-7. Move the ticket to `Todo` when grooming is complete but coding is not starting yet.
+1. Use `get_ticket` to read the full ticket, including all history.
+2. Read `.docs/INDEX.md` to identify relevant docs, then read only those files. Skip docs entirely for XS/S effort tickets.
+3. Treat `Grooming` as a planning phase — do not code. Use `update_ticket` to tighten the ticket body into a concrete plan and fill inferable metadata (`priority`, `effort`, `tags`, hierarchy links).
+4. If implementation-critical choices are unresolved, use `change_status` with `newStatus: 'Require Input'` and a `comment` containing one question + proposed defaults, then wait.
+5. Once resolved, use `update_ticket` to rewrite `body` with:
+   - **Problem / Motivation** (1–3 sentences): what problem, who benefits, why prioritised.
+   - **Implementation plan**: concrete steps so another agent could pick up without re-discovery.
+6. Use `change_status` with `newStatus: 'Todo'`. **CRITICAL: Stop execution after moving to Todo — do not begin implementation.**
 
-## Ticket Metadata Conventions
+All persistence uses MCP tools — see the orchestrator skill's "Persisting Changes" section.
 
-- `priority`: fill based on user impact and urgency — `None`, `Low`, `Medium`, `High`, `Critical`
-- `effort`: T-shirt estimate — `None`, `XS`, `S`, `M`, `L`, `XL`
-- `tags`: use existing project tags from `.flux/config.json`; propose new ones only when clearly distinct
-- `assignee`: set if the user has indicated ownership; leave `unassigned` otherwise
-- `subtasks`: use for large tickets that break naturally into tracked sub-items
+## Metadata Conventions
 
-## Editing Conventions
+- `priority`: `None` | `Low` | `Medium` | `High` | `Critical`
+- `effort`: `None` | `XS` | `S` | `M` | `L` | `XL`
+- `tags`: use existing tags from `.flux/config.json`; propose new ones only when clearly distinct
+- `assignee`: set if user indicated ownership; leave `unassigned` otherwise
 
-- Preserve YAML validity in ticket frontmatter.
-- Use spaces, not tabs, in YAML frontmatter. Tab indentation in `history`, lists, or nested fields can make a ticket disappear from the board.
-- Keep `updatedBy` accurate for the last actor.
-- Do not delete history; append new entries instead.
-- Promote durable behaviour changes into the nearest project docs instead of leaving context only in ticket history.
+## Editing & Safety
 
-## Ticket File Safety
+- All writes go through MCP tools (or the REST API as fallback). Do not edit `.flux/<id>.md` directly.
+- MCP tools handle `updatedBy` attribution and history normalization automatically.
 
-- Treat `.flux/*.md` edits as schema-sensitive changes, not casual markdown edits.
-- Keep the frontmatter block at the top of the file between the opening and closing `---` markers.
-- When adding `history` entries, preserve YAML list indentation exactly with spaces.
-- Do not place non-ticket assets under paths that the engine indexes as tasks.
-- After editing a ticket file, verify that the ticket still parses through the system. Prefer checking the live task list or API payload over assuming the markdown file is valid.
-- If a ticket disappears after editing, suspect malformed frontmatter first.
+## Comment Conventions
 
-## Comment Conventions for Grooming
-
-- Keep comments factual and short.
-- When asking for input, end with a concrete question and proposed default if one exists.
-- Record decisions, open questions, and rationale for metadata choices.
+- Keep comments factual and short. End input requests with a concrete question and proposed default.
 - Prefer comments that help the next agent continue without re-discovery.

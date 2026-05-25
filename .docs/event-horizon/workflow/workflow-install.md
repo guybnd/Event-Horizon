@@ -4,20 +4,25 @@ order: 2
 ---
 # Workflow Install
 
-Event Horizon installs two Copilot-facing assets into a target repository so the workflow is both discoverable and always on.
+Event Horizon installs agent-facing workflow assets into a target repository so the workflow is both discoverable and always on. All supported frameworks receive the same workflow rules tailored to their configuration format.
 
 ## Source assets in this repo
 
 -   `.flux/skills/event-horizon-agent.md` is the reusable skill document.
     
--   `.flux/skills/event-horizon-copilot-instructions.md` is the always-on instructions template used to patch Copilot instructions.
+-   `.flux/skills/event-horizon-copilot-instructions.md` is the always-on instructions template used to patch instructions files.
     
 
-## Installed assets in a target repo
+## Installed assets by framework
 
--   `.github/skills/event-horizon/SKILL.md`
-    
--   `.github/copilot-instructions.md`
+| Framework | Skill Path | Instructions Patch |
+|-----------|-----------|-------------------|
+| GitHub Copilot | `.github/skills/event-horizon/SKILL.md` | `.github/copilot-instructions.md` |
+| Claude Code | `.claude/rules/event-horizon.md` | Embedded in skill file |
+| Gemini | `.gemini/skills/event-horizon.md` | Embedded in skill file |
+| Cursor | `.cursor/rules/event-horizon.mdc` | Embedded in skill file |
+| Windsurf | `.windsurf/rules/event-horizon.md` | Embedded in skill file |
+| Generic | `.ai/skills/event-horizon.md` | Embedded in skill file |
     
 
 ## Install paths

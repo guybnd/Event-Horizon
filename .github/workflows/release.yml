@@ -7,6 +7,10 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  VERSION: ${{ github.ref_name }}
+
+permissions:
+  contents: write
 
 jobs:
   release:

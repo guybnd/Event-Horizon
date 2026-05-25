@@ -1,7 +1,7 @@
 import { createContext, startTransition, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { ColumnLiveEvent, Config, Task, TaskLiveEvent } from './types';
-import { fetchConfig, fetchTasks, fetchHealth, saveConfig as apiSaveConfig, fetchReadState, saveReadState, fetchWorkspace, fetchParseErrors, type ParseError } from './api';
+import { fetchConfig, fetchTasks, fetchHealth, saveConfig as apiSaveConfig, fetchReadState, saveReadState, fetchWorkspace, fetchParseErrors, fetchNotifications, type ParseError, type Notification } from './api';
 import { getArchiveStatus } from './workflow';
 
 export type AppView = 'board' | 'backlog' | 'docs' | 'settings' | 'releases';
@@ -169,6 +169,9 @@ interface AppState {
   toggleTheme: () => void;
   parseErrors: ParseError[];
   parseErrorsLoading: boolean;
+  notifications: Notification[];
+  notificationUnreadCount: number;
+  refreshNotifications: () => void;
 }
 
 const AppContext = createContext<AppState | undefined>(undefined);
@@ -206,7 +209,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return initial;
   });
   const [parseErrors, setParseErrors] = useState<ParseError[]>([]);
-  const [parseErrorsLoading, setParseErrorsLoading] = useState(false);
+  const [parseErrorsLoading] = useState(false);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
   const readCommentsLoadedRef = useRef(false);
   const configRef = useRef<Config | null>(null);
   const tasksRef = useRef<Task[]>([]);
@@ -407,6 +412,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       console.error('Failed to fetch parse errors:', error);
     }
   }, [workspaceConfigured]);
+
+  const refreshNotifications = useCallback(() => {
+    fetchNotifications().then(data => {
+      setNotifications(data.notifications);
+      setNotificationUnreadCount(data.unreadCount);
+    }).catch(() => {});
+  }, []);
 
   const triggerRefresh = useCallback(() => {
     setRefreshTrigger((prev) => prev + 1);
@@ -670,8 +682,42 @@ export function AppProvider({ children }: { children: ReactNode }) {
         ));
       });
     });
+    es.addEventListener('progress', (e: MessageEvent) => {
+      const { taskId, sessionId, timestamp, message } = JSON.parse(e.data) as { taskId: string; sessionId: string; timestamp: string; message: string };
+      startTransition(() => {
+        setTasks(prev => prev.map(t => {
+          if (t.id !== taskId || !t.history) return t;
+          const updatedHistory = t.history.map(entry => {
+            if (entry.type === 'agent_session' && entry.sessionId === sessionId && entry.status === 'active') {
+              return {
+                ...entry,
+                progress: [...entry.progress, { timestamp, message }]
+              };
+            }
+            return entry;
+          });
+          return { ...t, history: updatedHistory };
+        }));
+      });
+    });
+    es.addEventListener('notification', (e: MessageEvent) => {
+      const { notification, unreadCount } = JSON.parse(e.data) as { notification: Notification; unreadCount: number };
+      startTransition(() => {
+        setNotifications(prev => {
+          const idx = prev.findIndex(n => n.id === notification.id);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = notification;
+            return next;
+          }
+          return [notification, ...prev].slice(0, 50);
+        });
+        setNotificationUnreadCount(unreadCount);
+      });
+    });
+    refreshNotifications();
     return () => es.close();
-  }, [isConnected]);
+  }, [isConnected, refreshNotifications]);
 
   useEffect(() => {
     updateViewUrl(getViewFromLocation(), 'replace');
@@ -790,6 +836,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       readComments, totalUnreadCount, ensureReadStateLoaded, markCommentRead, markAllCommentsRead,
       theme, toggleTheme,
       parseErrors, parseErrorsLoading,
+      notifications, notificationUnreadCount, refreshNotifications,
     }}>
       {children}
     </AppContext.Provider>

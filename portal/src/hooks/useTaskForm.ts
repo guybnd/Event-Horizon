@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Task } from '../types';
+import { normalizeSubtaskId } from '../types';
 import { normalizeTaskMarkdownBody } from '../components/TaskDescriptionSurface';
 
 export function useTaskForm(modalTask: Task | Partial<Task> | null | undefined) {
@@ -46,7 +47,7 @@ export function useTaskForm(modalTask: Task | Partial<Task> | null | undefined) 
       setEffort(nextEffort);
       setEffortLevel(nextThinkingBudget);
       setImplementationLink(nextLink);
-      setSubtasks(modalTask.subtasks || []);
+      setSubtasks((modalTask.subtasks || []).map(normalizeSubtaskId));
     } else {
       setTitle((prev) => (prev !== nextTitle ? nextTitle : prev));
       setBody((prev) => (prev !== nextBody ? nextBody : prev));
@@ -61,7 +62,7 @@ export function useTaskForm(modalTask: Task | Partial<Task> | null | undefined) 
       setEffortLevel((prev) => (prev !== nextThinkingBudget ? nextThinkingBudget : prev));
       setImplementationLink((prev) => (prev !== nextLink ? nextLink : prev));
       setSubtasks((prev) => {
-        const next = modalTask.subtasks || [];
+        const next = (modalTask.subtasks || []).map(normalizeSubtaskId);
         return prev.length !== next.length || prev.some((s, i) => s !== next[i]) ? next : prev;
       });
     }
@@ -82,7 +83,7 @@ export function useTaskForm(modalTask: Task | Partial<Task> | null | undefined) 
     effort: modalTask?.effort || 'None',
     effortLevel: (modalTask as any)?.effortLevel || '',
     implementationLink: modalTask?.implementationLink || '',
-    subtasks: modalTask?.subtasks || [],
+    subtasks: (modalTask?.subtasks || []).map(normalizeSubtaskId),
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [modalTask]);
 

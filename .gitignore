@@ -13,7 +13,6 @@ releases/
 .flux/*.md
 .flux/config.json
 .flux/assets/
-.flux/read-state.json
 
 # orphan worktree directory (managed by git worktree, not committed to master)
 .flux-store/

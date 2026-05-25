@@ -9,11 +9,13 @@
  *   or:  npm run dist:source  (from repo root)
  */
 
-const path = require('path');
-const fs = require('fs');
-const fsp = require('fs/promises');
-const { execSync } = require('child_process');
+import path from 'path';
+import fs from 'fs';
+import fsp from 'fs/promises';
+import { execSync } from 'child_process';
+import { fileURLToPath } from 'url';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..', '..');
 const stagingDir = path.join(repoRoot, '.dist-source-staging');
 const outputZip = path.join(repoRoot, 'event-horizon-source.zip');

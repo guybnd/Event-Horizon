@@ -37,12 +37,17 @@ export function Settings() {
   const [tokenDisplayMode, setTokenDisplayMode] = useState<'cost' | 'tokens'>('cost');
   const [tokenCostThresholds, setTokenCostThresholds] = useState<{ green: number; yellow: number }>({ green: 0.10, yellow: 0.50 });
   const [effortLevel, setEffortLevel] = useState<string>('high');
+  const [defaultAgent, setDefaultAgent] = useState<string>('auto');
   const [groomingModel, setGroomingModel] = useState<string>('');
   const [implementationModel, setImplementationModel] = useState<string>('');
+  const [geminiGroomingModel, setGeminiGroomingModel] = useState<string>('');
+  const [geminiImplementationModel, setGeminiImplementationModel] = useState<string>('');
   const [generateDistinctFiles, setGenerateDistinctFiles] = useState(true);
   const [releaseNotesPath, setReleaseNotesPath] = useState('release-notes');
   const [syncDebounceMs, setSyncDebounceMs] = useState(30000);
   const [syncMaxWaitMs, setSyncMaxWaitMs] = useState(300000);
+  const [agentProgressEnabled, setAgentProgressEnabled] = useState(true);
+  const [agentProgressDelay, setAgentProgressDelay] = useState(2);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -70,14 +75,19 @@ export function Settings() {
       setTokenDisplayMode(config.tokenDisplayMode ?? 'cost');
       setTokenCostThresholds(config.tokenCostThresholds ?? { green: 0.10, yellow: 0.50 });
       setEffortLevel((config as any).effortLevel || 'high');
+      setDefaultAgent(config.defaultAgent || 'auto');
       setGroomingModel((config as any).integrations?.claudeCode?.groomingModel || '');
       setImplementationModel((config as any).integrations?.claudeCode?.implementationModel || '');
+      setGeminiGroomingModel((config as any).integrations?.geminiCli?.groomingModel || '');
+      setGeminiImplementationModel((config as any).integrations?.geminiCli?.implementationModel || '');
       if (config.releaseSettings) {
         setGenerateDistinctFiles(config.releaseSettings.generateDistinctFiles);
         setReleaseNotesPath(config.releaseSettings.releaseNotesPath || 'release-notes');
       }
       setSyncDebounceMs(config.syncSettings?.debounceMs ?? 30000);
       setSyncMaxWaitMs(config.syncSettings?.maxWaitMs ?? 300000);
+      setAgentProgressEnabled(config.agentProgress?.enabled ?? true);
+      setAgentProgressDelay(config.agentProgress?.inlineDelay ?? 2);
     }
   }, [config]);
 
@@ -204,11 +214,20 @@ export function Settings() {
           claudeCode: {
             groomingModel: groomingModel.trim(),
             implementationModel: implementationModel.trim(),
+          },
+          geminiCli: {
+            groomingModel: geminiGroomingModel.trim(),
+            implementationModel: geminiImplementationModel.trim(),
           }
         },
+        defaultAgent: defaultAgent as any,
         syncSettings: {
           debounceMs: syncDebounceMs,
           maxWaitMs: syncMaxWaitMs,
+        },
+        agentProgress: {
+          enabled: agentProgressEnabled,
+          inlineDelay: agentProgressDelay,
         },
       });
 
@@ -244,14 +263,20 @@ export function Settings() {
     setDocsRoot(config.docsRoot || '.docs');
     setHoverPopupsEnabled(config.hoverPopupsEnabled ?? true);
     setHoverPopupDelay(config.hoverPopupDelay ?? 1500);
+    setTokenDisplayMode(config.tokenDisplayMode ?? 'cost');
     setTokenCostThresholds(config.tokenCostThresholds ?? { green: 0.10, yellow: 0.50 });
     setEffortLevel((config as any).effortLevel || 'high');
+    setDefaultAgent(config.defaultAgent || 'auto');
     setGroomingModel((config as any).integrations?.claudeCode?.groomingModel || '');
     setImplementationModel((config as any).integrations?.claudeCode?.implementationModel || '');
+    setGeminiGroomingModel((config as any).integrations?.geminiCli?.groomingModel || '');
+    setGeminiImplementationModel((config as any).integrations?.geminiCli?.implementationModel || '');
     setGenerateDistinctFiles(config.releaseSettings?.generateDistinctFiles ?? true);
     setReleaseNotesPath(config.releaseSettings?.releaseNotesPath || 'release-notes');
     setSyncDebounceMs(config.syncSettings?.debounceMs ?? 30000);
     setSyncMaxWaitMs(config.syncSettings?.maxWaitMs ?? 300000);
+    setAgentProgressEnabled(config.agentProgress?.enabled ?? true);
+    setAgentProgressDelay(config.agentProgress?.inlineDelay ?? 2);
   };
 
   if (!config) return null;
@@ -278,11 +303,19 @@ export function Settings() {
     hoverPopupsEnabled,
     hoverPopupDelay,
     tokenDisplayMode,
+    tokenCostThresholds,
     effortLevel,
+    defaultAgent,
     groomingModel,
     implementationModel,
+    geminiGroomingModel,
+    geminiImplementationModel,
+    generateDistinctFiles,
+    releaseNotesPath,
     syncDebounceMs,
     syncMaxWaitMs,
+    agentProgressEnabled,
+    agentProgressDelay,
   });
 
   const originalPayload = JSON.stringify({
@@ -307,11 +340,19 @@ export function Settings() {
     hoverPopupsEnabled: config.hoverPopupsEnabled ?? true,
     hoverPopupDelay: config.hoverPopupDelay ?? 1500,
     tokenDisplayMode: config.tokenDisplayMode ?? 'cost',
+    tokenCostThresholds: config.tokenCostThresholds ?? { green: 0.10, yellow: 0.50 },
     effortLevel: (config as any).effortLevel || 'high',
+    defaultAgent: config.defaultAgent || 'auto',
     groomingModel: (config as any).integrations?.claudeCode?.groomingModel || '',
     implementationModel: (config as any).integrations?.claudeCode?.implementationModel || '',
+    geminiGroomingModel: (config as any).integrations?.geminiCli?.groomingModel || '',
+    geminiImplementationModel: (config as any).integrations?.geminiCli?.implementationModel || '',
+    generateDistinctFiles: config.releaseSettings?.generateDistinctFiles ?? true,
+    releaseNotesPath: config.releaseSettings?.releaseNotesPath || 'release-notes',
     syncDebounceMs: config.syncSettings?.debounceMs ?? 30000,
     syncMaxWaitMs: config.syncSettings?.maxWaitMs ?? 300000,
+    agentProgressEnabled: config.agentProgress?.enabled ?? true,
+    agentProgressDelay: config.agentProgress?.inlineDelay ?? 2,
   });
 
   const isDirty = currentSavedPayload !== originalPayload;
@@ -405,6 +446,10 @@ export function Settings() {
                   setSyncDebounceMs={setSyncDebounceMs}
                   syncMaxWaitMs={syncMaxWaitMs}
                   setSyncMaxWaitMs={setSyncMaxWaitMs}
+                  agentProgressEnabled={agentProgressEnabled}
+                  setAgentProgressEnabled={setAgentProgressEnabled}
+                  agentProgressDelay={agentProgressDelay}
+                  setAgentProgressDelay={setAgentProgressDelay}
                 />
               )}
 
@@ -441,10 +486,16 @@ export function Settings() {
                 <AgentSection
                   effortLevel={effortLevel}
                   setEffortLevel={setEffortLevel}
+                  targetFramework={defaultAgent}
+                  setTargetFramework={setDefaultAgent}
                   groomingModel={groomingModel}
                   setGroomingModel={setGroomingModel}
                   implementationModel={implementationModel}
                   setImplementationModel={setImplementationModel}
+                  geminiGroomingModel={geminiGroomingModel}
+                  setGeminiGroomingModel={setGeminiGroomingModel}
+                  geminiImplementationModel={geminiImplementationModel}
+                  setGeminiImplementationModel={setGeminiImplementationModel}
                   workspacePath={workspacePath}
                   setView={setView}
                 />

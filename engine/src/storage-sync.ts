@@ -7,7 +7,7 @@ import { promisify } from 'util';
 const execFileAsync = promisify(execFile);
 
 function git(cwd: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
-  return execFileAsync('git', args, { cwd });
+  return execFileAsync('git', args, { cwd, windowsHide: true });
 }
 
 async function gitWithRetry(cwd: string, args: string[], maxRetries = 3): Promise<{ stdout: string; stderr: string }> {

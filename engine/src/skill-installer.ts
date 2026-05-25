@@ -1,7 +1,15 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { getWorkflowInstallStatus, installWorkspaceWorkflow } from './workflow-installer.js';
+
 type Framework = 'auto' | 'copilot' | 'antigravity' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'generic';
 
-const path = require('node:path') as typeof import('node:path');
-const { getWorkflowInstallStatus, installWorkspaceWorkflow } = require('./workflow-installer') as typeof import('./workflow-installer');
+const __dir = (() => {
+  // @ts-ignore — __dirname exists in CJS bundles
+  if (typeof __dirname === 'string' && path.isAbsolute(__dirname)) return __dirname;
+  try { return path.dirname(fileURLToPath(import.meta.url)); } catch {}
+  return path.join(process.cwd(), 'src');
+})();
 
 function parseArgs(argv: string[]) {
   const args = new Map<string, string>();
@@ -25,7 +33,7 @@ function parseArgs(argv: string[]) {
 
 async function main() {
   const { target, framework, dryRun } = parseArgs(process.argv.slice(2));
-  const repoRoot = path.resolve(__dirname, '..', '..');
+  const repoRoot = path.resolve(__dir, '..', '..');
   const targetDir = path.resolve(target);
 
   if (dryRun) {

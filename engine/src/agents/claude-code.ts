@@ -2,19 +2,29 @@ import { spawn, execSync, execFileSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { configCache } from '../config.js';
-import { buildActivityEntry, buildCommentEntry, buildAgentMessageEntry } from '../history.js';
-import { updateTaskWithHistory, tasksCache, estimateCostUSD } from '../task-store.js';
+import { buildActivityEntry, buildCommentEntry, buildAgentMessageEntry, buildAgentSessionEntry, appendSessionProgress, closeAgentSession, type AgentSessionEntry } from '../history.js';
+import { updateTaskWithHistory, updateAgentSession, tasksCache, estimateCostUSD } from '../task-store.js';
 import { cliSessionsById, cliSessionIdByTaskId } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
+import { checkFrameworkHealth } from '../notifications.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
 
 function checkBinaryInstalled(binaryName: string): void {
   const checker = process.platform === 'win32' ? 'where' : 'which';
   try {
-    execFileSync(checker, [binaryName], { stdio: 'ignore' });
+    execFileSync(checker, [binaryName], { stdio: 'ignore', env: cleanChildEnv(), timeout: 10_000, windowsHide: true });
   } catch {
     throw new Error(`"${binaryName}" is not installed or not on PATH. Please install it before starting an agent session.`);
   }
+}
+
+function cleanChildEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.toUpperCase() === 'NODE_OPTIONS') delete env[key];
+  }
+  env.NODE_OPTIONS = '';
+  return env;
 }
 
 // Effort levels accepted by the --effort CLI flag, in ascending order.
@@ -45,6 +55,15 @@ export function appendSessionOutput(session: CliSessionRecord, chunk: Buffer | s
   const text = String(chunk ?? '').replace(/\r\n/g, '\n');
   if (!text.trim()) return;
 
+  // Filter out noise from Windows ConPTY/AttachConsole failures
+  if (source === 'stderr' && (
+    text.includes('AttachConsole failed') || 
+    text.includes('conpty_console_list_agent.js') ||
+    text.includes('Shared memory agent failed')
+  )) {
+    return;
+  }
+
   const prefix = source === 'stderr' ? '[stderr] ' : '';
   session.liveOutputBuffer += `${prefix}${text}`;
   if (isAssistantText) {
@@ -70,17 +89,26 @@ export function flushSessionOutput(session: CliSessionRecord, force = false) {
     if (!bufferedText) return;
 
     const timestamp = new Date().toISOString();
-    const maxLength = 6000;
+    const maxLength = 2000;
     const clippedText = bufferedText.length > maxLength
-      ? `${bufferedText.slice(0, maxLength)}\n\n[output truncated]`
+      ? `${bufferedText.slice(0, maxLength)}...`
       : bufferedText;
 
-    await updateTaskWithHistory(session.taskId, {
-      updatedBy: 'Agent',
-      entries: [
-        buildAgentMessageEntry(clippedText, session.label, timestamp),
-      ],
+    // Broadcast progress immediately via SSE (UI gets live updates)
+    broadcastEvent('progress', {
+      taskId: session.taskId,
+      sessionId: session.sessionHistoryEntry?.sessionId,
+      timestamp,
+      message: clippedText,
     });
+
+    // Accumulate progress in memory only — do NOT write to the ticket file
+    // during an active session. Writing continuously causes the agent to see
+    // the file changing and back off from editing it. The full progress is
+    // flushed to the ticket file once when the session ends.
+    if (session.sessionHistoryEntry) {
+      session.sessionHistoryEntry.progress.push({ timestamp, message: clippedText });
+    }
   };
 
   if (session.flushTimer) {
@@ -102,12 +130,20 @@ export function flushSessionOutput(session: CliSessionRecord, force = false) {
 export function buildInitialPrompt(task: any, appendPrompt: string): string {
   const readyStatus = (configCache as any)?.readyForMergeStatus || 'Ready';
   const taskStatus = (task as any).status || 'Unknown';
+  const mcpNote = 'CRITICAL: Use the "event-horizon" MCP tools (change_status, update_ticket, add_comment, log_progress) for ALL ticket updates. Do NOT edit .flux/ files directly — direct edits corrupt session tracking.';
   const actionInstruction = (() => {
+    if (taskStatus === 'Grooming' || taskStatus === 'Require Input') {
+      return `The ticket is in ${taskStatus}. Your job is to GROOM this ticket:\n` +
+        `1. Use update_ticket to fill metadata (priority, effort, tags) and rewrite the body with a Problem/Motivation section and Implementation Plan.\n` +
+        `2. If questions are unresolved, use change_status to move to "Require Input" with a comment containing your question.\n` +
+        `3. When grooming is complete, use change_status to move to "Todo".\n` +
+        mcpNote;
+    }
     if (taskStatus === 'In Progress') {
-      return `The ticket is currently In Progress. If the implementation is already complete, move it to "${readyStatus}" status and post a completion summary comment. If work remains, complete it then move to "${readyStatus}". Do not exit without updating the ticket status.`;
+      return `The ticket is currently In Progress. If the implementation is already complete, use change_status to move it to "${readyStatus}" with a completion summary comment. If work remains, complete it then move to "${readyStatus}". Do not exit without updating the ticket status.\n${mcpNote}`;
     }
     if (taskStatus === 'Todo') {
-      return `The ticket is in Todo. Begin implementation: move it to In Progress, complete the work, then move it to "${readyStatus}" when done.`;
+      return `The ticket is in Todo. Begin implementation: use change_status to move to "In Progress", complete the work, then use change_status to move to "${readyStatus}" when done.\n${mcpNote}`;
     }
     if (taskStatus === readyStatus) {
       return `The ticket is in ${readyStatus} awaiting user review. Do not move it further — wait for the user to say "finish ${task.id}".`;
@@ -169,7 +205,44 @@ export function attachStdoutProcessing(
           const toolBlock = evt.message.content.find((b: any) => b.type === 'tool_use');
           if (toolBlock) {
             session.pendingAssistantText = '';
-            session.currentActivity = TOOL_ACTIVITY_MAP[toolBlock.name] ?? 'Working';
+            const newActivity = TOOL_ACTIVITY_MAP[toolBlock.name] ?? 'Working';
+            const activityChanged = session.currentActivity !== newActivity;
+            session.currentActivity = newActivity;
+
+            // Reset last progress log when activity changes
+            if (activityChanged) {
+              session.lastProgressLog = undefined;
+            }
+
+            // Log progress when activity changes or for significant tools
+            if (activityChanged && session.sessionHistoryEntry?.sessionId) {
+              const toolName = toolBlock.name;
+              let progressMsg = session.currentActivity;
+
+              // Add context for specific tools if available
+              if (toolBlock.input) {
+                if (toolName === 'Read' && toolBlock.input.file_path) {
+                  progressMsg = `Reading ${path.basename(toolBlock.input.file_path)}`;
+                } else if (toolName === 'Edit' && toolBlock.input.file_path) {
+                  progressMsg = `Editing ${path.basename(toolBlock.input.file_path)}`;
+                } else if (toolName === 'Write' && toolBlock.input.file_path) {
+                  progressMsg = `Writing ${path.basename(toolBlock.input.file_path)}`;
+                } else if (toolName === 'Bash' && toolBlock.input.command) {
+                  const cmd = String(toolBlock.input.command).slice(0, 50);
+                  progressMsg = `Running: ${cmd}${cmd.length >= 50 ? '...' : ''}`;
+                }
+              }
+
+              // Accumulate tool progress in memory only — written to file at session end
+              if (session.sessionHistoryEntry) {
+                session.sessionHistoryEntry.progress.push({
+                  timestamp: new Date().toISOString(),
+                  message: progressMsg,
+                  type: 'tool',
+                  data: { toolName, parameters: toolBlock.input }
+                });
+              }
+            }
           } else {
             commitPendingAssistantText();
             session.currentActivity = 'Thinking';
@@ -275,7 +348,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     // Direct spawn of .exe preserves stdio streams for JSON output
     let exePath: string | null = null;
     try {
-      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8' }).trim();
+      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', timeout: 10_000, windowsHide: true }).trim();
       const candidateExe = path.join(npmPrefix, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
       if (fs.existsSync(candidateExe)) {
         exePath = candidateExe;
@@ -295,13 +368,14 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     console.log(`[${id}] Prompt length: ${initialPrompt.length} chars`);
     proc = spawn(exePath, claudeArgs, {
       cwd: workspaceRoot,
-      env: process.env,
+      env: cleanChildEnv(),
       stdio: 'pipe',
+      windowsHide: true,
     });
   } else {
     proc = spawn(binaryName, claudeArgs, {
       cwd: workspaceRoot,
-      env: process.env,
+      env: cleanChildEnv(),
       stdio: 'pipe',
     });
   }
@@ -317,42 +391,90 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   });
 
   proc.on('error', async (error) => {
+    // Clear heartbeat timer
+    if (session.progressHeartbeat) {
+      clearInterval(session.progressHeartbeat);
+      session.progressHeartbeat = undefined;
+    }
+
     session.status = 'failed';
     session.endedAt = new Date().toISOString();
     commitPending();
     flushSessionOutput(session, true);
     await session.writeQueue;
-    await updateTaskWithHistory(id, {
-      updatedBy: 'Agent',
-      entries: [
-        buildActivityEntry(`${label} session failed to start: ${error.message}`, 'Agent', session.endedAt),
-      ],
-    });
+
+    const outcome = `${label} session failed to start: ${error.message}`;
+
+    if (session.sessionHistoryEntry && session.sessionHistoryEntry.sessionId) {
+      const accumulatedProgress = session.sessionHistoryEntry.progress || [];
+      await updateAgentSession(id, session.sessionHistoryEntry.sessionId, (sessionEntry) => {
+        sessionEntry.status = 'failed';
+        sessionEntry.outcome = outcome;
+        sessionEntry.endedAt = session.endedAt;
+        sessionEntry.progress = accumulatedProgress;
+      });
+    } else {
+      await updateTaskWithHistory(id, {
+        updatedBy: 'Agent',
+        entries: [buildActivityEntry(outcome, 'Agent', session.endedAt)],
+      });
+    }
+
     console.error(`[${id}] Failed to spawn ${binaryName}:`, error.message);
   });
 
+  // Create agent_session history entry
+  const sessionEntry = buildAgentSessionEntry(session.id, session.startedAt, label);
+  session.sessionHistoryEntry = sessionEntry;
+
   await updateTaskWithHistory(id, {
     updatedBy: 'Agent',
-    entries: [
-      buildActivityEntry(`Launched ${label} session (${session.id.slice(0, 8)}).`, 'Agent', session.startedAt),
-    ],
+    entries: [sessionEntry],
   });
 
+  // Start progress heartbeat - accumulate activity in memory every 15 seconds
+  session.progressHeartbeat = setInterval(() => {
+    if (session.currentActivity && session.sessionHistoryEntry) {
+      const now = new Date().toISOString();
+      // Only log if we haven't logged this same activity recently
+      if (session.lastProgressLog !== session.currentActivity) {
+        session.lastProgressLog = session.currentActivity;
+        // Accumulate in memory only — written to file when session ends
+        session.sessionHistoryEntry.progress.push({
+          timestamp: now,
+          message: session.currentActivity,
+          type: 'info',
+        });
+      }
+    }
+  }, 15000);
+
   proc.on('exit', async (code, signal) => {
+    // Clear heartbeat timer
+    if (session.progressHeartbeat) {
+      clearInterval(session.progressHeartbeat);
+      session.progressHeartbeat = undefined;
+    }
+
     commitPending();
     flushSessionOutput(session, true);
     await session.writeQueue;
     session.endedAt = new Date().toISOString();
+
+    let finalStatus: 'completed' | 'failed' | 'cancelled';
     if (session.requestedStop) {
       session.status = 'cancelled';
+      finalStatus = 'cancelled';
     } else if (code === 0) {
       session.status = 'completed';
+      finalStatus = 'completed';
     } else {
       session.status = 'failed';
+      finalStatus = 'failed';
     }
 
-    const summary = session.requestedStop
-      ? `${label} session stopped.`
+    const outcome = session.requestedStop
+      ? `${label} session stopped by user.`
       : `${label} session ended with ${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`}.`;
 
     const tokenUpdate = (session.inputTokens ?? 0) > 0 || (session.outputTokens ?? 0) > 0
@@ -369,11 +491,47 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
         })()
       : null;
 
-    await updateTaskWithHistory(id, {
-      updatedBy: 'Agent',
-      entries: [buildActivityEntry(summary, 'Agent', session.endedAt)],
-      tokenMetadata: tokenUpdate ?? undefined,
-    });
+    // Close the session entry with outcome and flush accumulated progress
+    if (session.sessionHistoryEntry && session.sessionHistoryEntry.sessionId) {
+      const accumulatedProgress = session.sessionHistoryEntry.progress || [];
+      await updateAgentSession(id, session.sessionHistoryEntry.sessionId, (sessionEntry) => {
+        sessionEntry.status = finalStatus;
+        sessionEntry.outcome = outcome;
+        sessionEntry.endedAt = session.endedAt;
+        // Merge in-memory progress accumulated during the session
+        sessionEntry.progress = accumulatedProgress;
+      });
+
+      // Save the agent's final message as a comment on the ticket
+      const textEntries = accumulatedProgress.filter((p: any) => p.type === 'text' && p.message?.trim());
+      const lastText = textEntries.length > 0 ? textEntries[textEntries.length - 1].message : '';
+      if (lastText && finalStatus === 'completed') {
+        const maxCommentLen = 3000;
+        const commentBody = lastText.length > maxCommentLen ? lastText.slice(0, maxCommentLen) + '...' : lastText;
+        await updateTaskWithHistory(id, {
+          updatedBy: 'Agent',
+          entries: [buildCommentEntry(label, commentBody, session.endedAt)],
+          tokenMetadata: tokenUpdate ?? undefined,
+        });
+      } else if (tokenUpdate) {
+        await updateTaskWithHistory(id, {
+          updatedBy: 'Agent',
+          entries: [],
+          tokenMetadata: tokenUpdate,
+        });
+      }
+    } else {
+      // Fallback to old behavior
+      await updateTaskWithHistory(id, {
+        updatedBy: 'Agent',
+        entries: [buildActivityEntry(outcome, 'Agent', session.endedAt)],
+        tokenMetadata: tokenUpdate ?? undefined,
+      });
+    }
+
+    if (finalStatus === 'completed') {
+      checkFrameworkHealth(session.framework).catch(() => {});
+    }
   });
 }
 
@@ -432,7 +590,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     // On Windows, find the actual .exe instead of using cmd.exe wrapper
     let exePath: string | null = null;
     try {
-      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8' }).trim();
+      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', timeout: 10_000, windowsHide: true }).trim();
       const candidateExe = path.join(npmPrefix, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
       if (fs.existsSync(candidateExe)) {
         exePath = candidateExe;
@@ -448,14 +606,16 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     console.log(`[${id}] Windows reply spawn: ${exePath} --resume ${session.claudeSessionId || '(new)'}`);
     replyProc = spawn(exePath, resumeArgs, {
       cwd: workspaceRoot,
-      env: process.env,
+      env: cleanChildEnv(),
       stdio: 'pipe',
+      windowsHide: true,
     });
   } else {
     replyProc = spawn(binaryName, resumeArgs, {
       cwd: workspaceRoot,
-      env: process.env,
+      env: cleanChildEnv(),
       stdio: 'pipe',
+      windowsHide: true,
     });
   }
   session.proc = replyProc;

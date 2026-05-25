@@ -53,14 +53,16 @@ Event Horizon uses three main configuration files for different scopes:
 
 ## Install the Agent Workflow Skill
 
-To enable your AI agents (like GitHub Copilot, Cline, or Antigravity) to manage the grooming, implementation, and commit flows, you must install the workflow skills. The Event Horizon binary embeds these files, so no internet access is required.
+To enable your AI agents (Claude Code, Gemini CLI, or Copilot CLI) to manage the grooming, implementation, and commit flows, you must install the workflow skills. The Event Horizon binary embeds these files, so no internet access is required.
 
 1. Open **Settings** in the portal header.
 2. Go to the **Agent Integration** tab.
-3. Select your AI framework (e.g., Copilot, Antigravity) from the dropdown.
+3. Select your AI framework (e.g., Copilot, Claude, Gemini, Cursor) from the dropdown.
 4. Click **Install Agent Workflow**.
 
-This step automatically copies the necessary `.md` skill files into your project's agent folder (e.g. `.gemini/` or `.github/`) and patches your project instructions.
+This step automatically copies the necessary `.md` skill files into your project's agent folder (e.g. `.github/`, `.claude/`, `.gemini/`) and patches your project instructions.
+
+*See the [Agent Integrations](agent-integrations) guide for full setup details including prerequisites and authentication.*
 
 ---
 
@@ -88,6 +90,7 @@ To stop the service completely:
 
 ## Related Docs
 
+- [Agent Integrations](agent-integrations)
 - [Configuration Reference](configuration)
 - [Project Overview](project-overview)
 - [Architecture Overview](architecture/overview)

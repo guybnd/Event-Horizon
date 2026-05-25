@@ -1,10 +1,18 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dir = (() => {
+  // @ts-ignore
+  if (typeof __dirname === 'string' && path.isAbsolute(__dirname)) return __dirname;
+  try { return path.dirname(fileURLToPath(import.meta.url)); } catch {}
+  return path.join(process.cwd(), 'src');
+})();
 
 export function resolveEmbeddedDocsRoot(): string {
   const isPkg = (process as any).pkg !== undefined;
-  if (isPkg) return __dirname;
-  return path.resolve(__dirname, '..', '..');
+  if (isPkg) return __dir;
+  return path.resolve(__dir, '..', '..');
 }
 
 export async function copyDir(src: string, dest: string): Promise<void> {

@@ -4,8 +4,19 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import os from 'os';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// In CJS bundles (esbuild output / pkg executable), __dirname is provided by Node.
+// In ESM dev mode (tsx / Node 20+), use import.meta for the source directory.
+const __dirname_resolved: string = (() => {
+  // @ts-ignore — __dirname exists at runtime in CJS but TS ESM doesn't declare it
+  if (typeof __dirname === 'string' && __dirname && path.isAbsolute(__dirname)) return __dirname;
+  try {
+    const metaUrl = (import.meta as any).url;
+    if (metaUrl && metaUrl.startsWith('file:')) {
+      return path.dirname(fileURLToPath(metaUrl));
+    }
+  } catch {}
+  return path.join(process.cwd(), 'src');
+})();
 
 export let workspaceRoot: string | null = null;
 
@@ -51,8 +62,8 @@ export function getCliWorkspace(): string | null {
 
 export function resolveSkillSourceRoot(): string {
   const isPkg = (process as any).pkg !== undefined;
-  if (isPkg) return __dirname;
-  return path.resolve(__dirname, '..', '..');
+  if (isPkg) return __dirname_resolved;
+  return path.resolve(__dirname_resolved, '..', '..');
 }
 
 export function resolvePortalDist(): string {
@@ -60,8 +71,8 @@ export function resolvePortalDist(): string {
   const idx = args.indexOf('--portal-dist');
   if (idx !== -1 && args[idx + 1]) return path.resolve(args[idx + 1]);
   const isPkg = (process as any).pkg !== undefined;
-  if (isPkg) return path.join(__dirname, 'portal', 'dist');
-  return path.resolve(__dirname, '..', '..', 'portal', 'dist');
+  if (isPkg) return path.join(__dirname_resolved, 'portal', 'dist');
+  return path.resolve(__dirname_resolved, '..', '..', 'portal', 'dist');
 }
 
 export function hasCwdFlux(): boolean {

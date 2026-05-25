@@ -17,6 +17,8 @@
  *   --body <text>        Replace the ticket body (markdown below frontmatter)
  *   --body-file <path>   Replace the ticket body from a file
  *   --workspace <path>   Workspace root (default: cwd)
+ *   --add-subtask <parentId>  Create a new subtask under parentId (requires --title)
+ *   --title <value>      Title for the new subtask (used with --add-subtask)
  */
 
 import fs from 'fs';
@@ -27,19 +29,24 @@ import matter from 'gray-matter';
 
 function parseArgs(argv: string[]) {
   const args = argv.slice(2);
-  const id = args.find(a => !a.startsWith('--'));
-  if (!id) {
-    console.error('Usage: patch-ticket <id> [--status <value>] [--comment <text>] [--assignee <value>] [--priority <value>] [--effort <value>] [--body <text>] [--body-file <path>] [--workspace <path>]');
-    process.exit(1);
-  }
 
   function flag(name: string): string | undefined {
     const idx = args.indexOf(`--${name}`);
     return idx !== -1 ? args[idx + 1] : undefined;
   }
 
+  const addSubtask = flag('add-subtask');
+  const id = args.find(a => !a.startsWith('--') && a !== addSubtask && a !== flag('status') && a !== flag('comment') && a !== flag('assignee') && a !== flag('priority') && a !== flag('effort') && a !== flag('body') && a !== flag('body-file') && a !== flag('workspace') && a !== flag('title'));
+
+  if (!addSubtask && !id) {
+    console.error('Usage: patch-ticket <id> [--status <value>] [--comment <text>] [--assignee <value>] [--priority <value>] [--effort <value>] [--body <text>] [--body-file <path>] [--workspace <path>] [--add-subtask <parentId> --title <value>]');
+    process.exit(1);
+  }
+
   return {
-    id,
+    id: id || '',
+    addSubtask,
+    title: flag('title'),
     status: flag('status'),
     comment: flag('comment'),
     assignee: flag('assignee'),
@@ -76,9 +83,113 @@ function appendComment(history: unknown[], text: string) {
   });
 }
 
+// ── Subtask creation ─────────────────────────────────────────────────────────
+
+function createSubtask(parentId: string, workspace: string, options: {
+  title: string;
+  status?: string | undefined;
+  priority?: string | undefined;
+  effort?: string | undefined;
+  body?: string | undefined;
+  bodyFile?: string | undefined;
+}) {
+  const fluxSub = fs.existsSync(path.join(workspace, '.flux-store')) ? '.flux-store' : '.flux';
+  const fluxDir = path.resolve(workspace, fluxSub);
+  const parentPath = path.resolve(fluxDir, `${parentId}.md`);
+
+  if (!fs.existsSync(parentPath)) {
+    console.error(`patch-ticket: parent ticket not found: ${parentPath}`);
+    process.exit(1);
+  }
+
+  // Determine project key from config or parent ID
+  let projectKey = 'FLUX';
+  try {
+    const configPath = path.resolve(fluxDir, 'config.json');
+    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    if (cfg.projects && cfg.projects[0]) projectKey = cfg.projects[0];
+  } catch { /* use default */ }
+
+  // Find max ID
+  let maxId = 0;
+  const files = fs.readdirSync(fluxDir);
+  for (const file of files) {
+    if (file.startsWith(`${projectKey}-`) && file.endsWith('.md')) {
+      const num = parseInt(file.replace(`${projectKey}-`, '').replace('.md', ''), 10);
+      if (!isNaN(num) && num > maxId) maxId = num;
+    }
+  }
+
+  const childId = `${projectKey}-${maxId + 1}`;
+  const childPath = path.resolve(fluxDir, `${childId}.md`);
+  const createdAt = nowIso();
+
+  let bodyContent = '';
+  if (options.body !== undefined) {
+    bodyContent = options.body;
+  } else if (options.bodyFile !== undefined) {
+    try {
+      bodyContent = fs.readFileSync(path.resolve(options.bodyFile), 'utf-8');
+    } catch (err) {
+      console.error(`patch-ticket: failed to read body file ${options.bodyFile}:`, err);
+      process.exit(1);
+    }
+  }
+
+  const childFrontmatter: Record<string, unknown> = {
+    id: childId,
+    title: options.title,
+    status: options.status || 'Todo',
+    priority: options.priority || 'None',
+    effort: options.effort || 'None',
+    assignee: 'unassigned',
+    tags: [],
+    createdBy: 'Agent',
+    updatedBy: 'Agent',
+    history: [
+      { type: 'activity', user: 'Agent', date: createdAt, comment: `Created as subtask of ${parentId}.` },
+    ],
+  };
+
+  const childContent = matter.stringify(bodyContent, childFrontmatter);
+  fs.writeFileSync(childPath, childContent, 'utf-8');
+
+  // Link child to parent's subtasks array
+  const parentRaw = fs.readFileSync(parentPath, 'utf-8');
+  const parentParsed = matter(parentRaw);
+  const subtasks: string[] = Array.isArray(parentParsed.data.subtasks)
+    ? parentParsed.data.subtasks.map((s: any) => typeof s === 'string' ? s : s.id).filter(Boolean)
+    : [];
+  subtasks.push(childId);
+  parentParsed.data.subtasks = subtasks;
+  parentParsed.data.updatedBy = 'Agent';
+  const parentContent = matter.stringify(parentParsed.content, parentParsed.data);
+  fs.writeFileSync(parentPath, parentContent, 'utf-8');
+
+  console.log(`Created subtask ${childId} under ${parentId}`);
+  process.exit(0);
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 const opts = parseArgs(process.argv);
+
+// Handle --add-subtask mode
+if (opts.addSubtask) {
+  if (!opts.title) {
+    console.error('patch-ticket: --title is required when using --add-subtask');
+    process.exit(1);
+  }
+  createSubtask(opts.addSubtask, opts.workspace, {
+    title: opts.title,
+    status: opts.status,
+    priority: opts.priority,
+    effort: opts.effort,
+    body: opts.body,
+    bodyFile: opts.bodyFile,
+  });
+}
+
 const fluxSubdir = fs.existsSync(path.join(opts.workspace, '.flux-store')) ? '.flux-store' : '.flux';
 const ticketPath = path.resolve(opts.workspace, fluxSubdir, `${opts.id}.md`);
 

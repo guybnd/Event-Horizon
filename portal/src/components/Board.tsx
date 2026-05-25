@@ -7,7 +7,8 @@ import { StatusBadge } from './StatusBadge';
 import { TaskCard } from './TaskCard';
 import { updateTask } from '../api';
 import { useApp } from '../AppContext';
-import type { Task } from '../types';
+import type { Task, HistoryEntry } from '../types';
+import { normalizeSubtaskId } from '../types';
 import { Loader2 } from 'lucide-react';
 import { TaskViewControls } from './TaskViewControls';
 import { filterAndSortTasks } from '../taskSearch';
@@ -41,11 +42,46 @@ export function Board() {
   const scrollerRef = useRef<HTMLDivElement>(null);
 
   const [pendingStatusChange, setPendingStatusChange] = useState<{taskId: string, newStatus: string, oldStatus: string} | null>(null);
+  const [movingTaskIds, setMovingTaskIds] = useState<Set<string>>(new Set());
+  const [optimisticTasks, setOptimisticTasks] = useState<Record<string, Task>>({});
   const [commentText, setCommentText] = useState('');
 
+  // Sync local tasks with liveTasks + optimistic overrides
   useEffect(() => {
-    setTasks(liveTasks);
-  }, [liveTasks]);
+    setTasks(liveTasks.map(task => {
+      if (movingTaskIds.has(task.id) && optimisticTasks[task.id]) {
+        return optimisticTasks[task.id];
+      }
+      return task;
+    }));
+  }, [liveTasks, movingTaskIds, optimisticTasks]);
+
+  // Clean up movingTaskIds once liveTasks catches up to the optimistic state
+  useEffect(() => {
+    if (movingTaskIds.size === 0) return;
+
+    const tasksToRemove: string[] = [];
+    for (const taskId of movingTaskIds) {
+      const liveTask = liveTasks.find(t => t.id === taskId);
+      const optimisticTask = optimisticTasks[taskId];
+      if (liveTask && optimisticTask && liveTask.status === optimisticTask.status && liveTask.order === optimisticTask.order) {
+        tasksToRemove.push(taskId);
+      }
+    }
+
+    if (tasksToRemove.length > 0) {
+      setMovingTaskIds(prev => {
+        const next = new Set(prev);
+        tasksToRemove.forEach(id => next.delete(id));
+        return next;
+      });
+      setOptimisticTasks(prev => {
+        const next = { ...prev };
+        tasksToRemove.forEach(id => delete next[id]);
+        return next;
+      });
+    }
+  }, [liveTasks, optimisticTasks, movingTaskIds]);
 
   useEffect(() => {
     const fn = (e: any) => {
@@ -64,8 +100,8 @@ export function Board() {
   }
 
   const archiveStatus = getArchiveStatus(config);
-  const boardTasks = tasks.filter((task) => 
-    task.status !== 'Released' && 
+  const boardTasks = tasks.filter((task) =>
+    task.status !== 'Released' &&
     task.status !== archiveStatus &&
     !config.hiddenStatuses?.some((hiddenStatus) => hiddenStatus.name === task.status)
   );
@@ -89,7 +125,8 @@ export function Board() {
   [...tasks]
     .sort((left, right) => left.id.localeCompare(right.id))
     .forEach((candidateParent) => {
-      candidateParent.subtasks?.forEach((childId) => {
+      candidateParent.subtasks?.forEach((entry) => {
+        const childId = normalizeSubtaskId(entry);
         if (!parentByChildId.has(childId)) {
           parentByChildId.set(childId, candidateParent);
         }
@@ -125,7 +162,7 @@ export function Board() {
 
     const activeTaskId = active.id as string;
     const overId = over.id as string;
-    
+
     const activeTaskObj = tasks.find(t => t.id === activeTaskId);
     if (!activeTaskObj) return;
 
@@ -135,6 +172,8 @@ export function Board() {
 
     // Case 1: Moving to a DIFFERENT column
     if (activeTaskObj.status !== targetStatus) {
+      // Respect the config setting for status change comments.
+      // If disabled, we try to move silently and only prompt if the backend requires it (e.g. for Ready/Require Input)
       if (config.requireCommentOnStatusChange) {
         setPendingStatusChange({ taskId: activeTaskId, newStatus: targetStatus, oldStatus: activeTaskObj.status });
         return;
@@ -146,34 +185,49 @@ export function Board() {
       const newOrder = maxOrder + 1;
 
       await applyStatusChange(activeTaskId, targetStatus, activeTaskObj.status, undefined, newOrder);
-    } 
+    }
     // Case 2: Reordering within SAME column
     else if (overTask && activeTaskId !== overId) {
       const columnTasks = tasks
         .filter(t => t.status === targetStatus)
         .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-      
+
       const oldIndex = columnTasks.findIndex(t => t.id === activeTaskId);
       const newIndex = columnTasks.findIndex(t => t.id === overId);
-      
+
       const newOrderedTasks = arrayMove(columnTasks, oldIndex, newIndex);
-      
+      const changedTasks = newOrderedTasks.map((t, index) => ({ ...t, order: index }));
+
       // Update local state optimistically
-      setTasks(prev => prev.map(t => {
-        const foundIdx = newOrderedTasks.findIndex(ot => ot.id === t.id);
-        if (foundIdx !== -1) {
-          return { ...t, order: foundIdx };
-        }
-        return t;
-      }));
+      setMovingTaskIds(prev => {
+        const next = new Set(prev);
+        changedTasks.forEach(t => next.add(t.id));
+        return next;
+      });
+      setOptimisticTasks(prev => {
+        const next = { ...prev };
+        changedTasks.forEach(t => next[t.id] = t);
+        return next;
+      });
 
       // Persist changes
       try {
-        await Promise.all(newOrderedTasks.map((t, index) => 
-          updateTask(t.id, { order: index, updatedBy: currentUser } as any)
+        await Promise.all(changedTasks.map((t) =>
+          updateTask(t.id, { order: t.order, updatedBy: currentUser } as any)
         ));
+        triggerRefresh();
       } catch (err) {
         console.error('Failed to persist reorder:', err);
+        setMovingTaskIds(prev => {
+          const next = new Set(prev);
+          changedTasks.forEach(t => next.delete(t.id));
+          return next;
+        });
+        setOptimisticTasks(prev => {
+          const next = { ...prev };
+          changedTasks.forEach(t => delete next[t.id]);
+          return next;
+        });
         triggerRefresh();
       }
     }
@@ -183,25 +237,67 @@ export function Board() {
     const task = tasks.find(t => t.id === taskId);
     if (!task) return;
 
-    const newHistory = [...(task.history || []), {
+    const timestamp = new Date().toISOString();
+    const newHistory: HistoryEntry[] = [...(task.history || [])];
+
+    // If a comment is provided, add it as a separate entry to satisfy engine validation for Ready/Require Input
+    if (comment?.trim()) {
+      newHistory.push({
+        type: 'comment',
+        user: currentUser,
+        date: timestamp,
+        comment: comment.trim()
+      });
+    }
+
+    newHistory.push({
       type: 'status_change',
       from: oldStatus,
       to: newStatus,
       user: currentUser,
-      date: new Date().toISOString(),
-      comment
-    }];
+      date: timestamp,
+      comment: comment?.trim() ? 'Included with comment' : undefined
+    });
 
     const finalOrder = newOrder ?? (task.order || 0);
+    const optimisticTask = { ...task, status: newStatus, order: finalOrder, history: newHistory as any };
 
-    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: newStatus, order: finalOrder, history: newHistory as any } : t));
+    setMovingTaskIds(prev => new Set(prev).add(taskId));
+    setOptimisticTasks(prev => ({ ...prev, [taskId]: optimisticTask }));
 
     try {
       await updateTask(taskId, { status: newStatus, order: finalOrder, history: newHistory, updatedBy: currentUser } as any);
       triggerRefresh();
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setTasks(prev => prev.map(t => t.id === taskId ? { ...t, status: oldStatus, order: task.order } : t));
+      
+      // Reactive prompting: If backend requires a comment, show the modal
+      if (err.message?.includes('comment is required') || err.message?.includes('_MISSING_COMMENT')) {
+        setMovingTaskIds(prev => {
+          const next = new Set(prev);
+          next.delete(taskId);
+          return next;
+        });
+        setOptimisticTasks(prev => {
+          const next = { ...prev };
+          delete next[taskId];
+          return next;
+        });
+        setPendingStatusChange({ taskId, newStatus, oldStatus });
+        return;
+      }
+
+      setMovingTaskIds(prev => {
+        const next = new Set(prev);
+        next.delete(taskId);
+        return next;
+      });
+      setOptimisticTasks(prev => {
+        const next = { ...prev };
+        delete next[taskId];
+        return next;
+      });
+      alert('Failed to update task: ' + err.message);
     }
     setPendingStatusChange(null);
     setCommentText('');
@@ -257,25 +353,25 @@ export function Board() {
               />
               <span>Add a quick note?</span>
             </p>
-            <textarea 
+            <textarea
               autoFocus
               className="w-full bg-gray-50 dark:bg-black/20 border border-gray-200 dark:border-white/10 rounded-lg px-3 py-2 outline-none focus:border-primary resize-none text-sm mb-4 h-24"
               placeholder="Optional comment..."
               value={commentText} onChange={e => setCommentText(e.target.value)}
             />
             <div className="flex justify-end gap-3">
-              <button 
+              <button
                 onClick={() => setPendingStatusChange(null)}
                 className="px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-100 dark:hover:bg-white/5 cursor-pointer transition-colors"
               >Cancel</button>
-              <button 
+              <button
                 onClick={() => applyStatusChange(pendingStatusChange.taskId, pendingStatusChange.newStatus, pendingStatusChange.oldStatus, commentText)}
                 className="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium cursor-pointer transition-colors"
               >Save Update</button>
             </div>
           </div>
         </div>
-      )}      
+      )}
       {releaseModalTasks && (
         <ReleaseModal tasks={releaseModalTasks} onClose={() => setReleaseModalTasks(null)} />
       )}    </>

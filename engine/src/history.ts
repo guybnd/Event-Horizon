@@ -26,6 +26,60 @@ export function buildAgentMessageEntry(comment: string, user: string, date: stri
   };
 }
 
+export interface AgentSessionProgress {
+  timestamp: string;
+  message: string;
+  type?: 'text' | 'topic' | 'tool' | 'info';
+  data?: any;
+}
+
+export interface AgentSessionEntry {
+  type: 'agent_session';
+  sessionId: string;
+  startedAt: string;
+  endedAt?: string;
+  status: 'active' | 'completed' | 'failed' | 'cancelled';
+  outcome?: string;
+  progress: AgentSessionProgress[];
+  user: string;
+  date: string;
+}
+
+export function buildAgentSessionEntry(
+  sessionId: string,
+  startedAt: string,
+  label: string,
+): AgentSessionEntry {
+  return {
+    type: 'agent_session',
+    sessionId,
+    startedAt,
+    status: 'active',
+    progress: [],
+    user: label,
+    date: startedAt,
+  };
+}
+
+export function appendSessionProgress(
+  session: AgentSessionEntry,
+  message: string,
+  timestamp: string,
+): void {
+  session.progress.push({ timestamp, message });
+}
+
+export function closeAgentSession(
+  session: AgentSessionEntry,
+  status: 'completed' | 'failed' | 'cancelled',
+  outcome: string,
+  endedAt: string,
+): void {
+  session.status = status;
+  session.outcome = outcome;
+  session.endedAt = endedAt;
+}
+
 function buildCommentId(seed: string, usedIds: Set<string>) {
   const normalizedSeed = seed.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'comment';
   let candidate = `c-${normalizedSeed}`;
@@ -40,7 +94,7 @@ function buildCommentId(seed: string, usedIds: Set<string>) {
   return candidate;
 }
 
-function getHistoryTimestamp(entry: any) {
+export function getHistoryTimestamp(entry: any) {
   if (!entry?.date) return 0;
   const timestamp = new Date(entry.date).getTime();
   return Number.isNaN(timestamp) ? 0 : timestamp;
@@ -150,6 +204,11 @@ export function normalizeHistoryEntries(history: any[] = []) {
       usedIds.add(nextEntry.id);
     }
 
+    if (!nextEntry.date) {
+      nextEntry.date = new Date().toISOString();
+      changed = true;
+    }
+
     if (nextEntry.type === 'comment') {
       if (!nextEntry.id) {
         const seed = nextEntry.date || `${Date.now()}-${index + 1}`;
@@ -159,6 +218,19 @@ export function normalizeHistoryEntries(history: any[] = []) {
 
       if (nextEntry.replyTo != null && typeof nextEntry.replyTo !== 'string') {
         delete nextEntry.replyTo;
+        changed = true;
+      }
+    }
+
+    if (nextEntry.type === 'status_change') {
+      if (nextEntry.from == null && typeof nextEntry.oldStatus === 'string') {
+        nextEntry.from = nextEntry.oldStatus;
+        delete nextEntry.oldStatus;
+        changed = true;
+      }
+      if (nextEntry.to == null && typeof nextEntry.newStatus === 'string') {
+        nextEntry.to = nextEntry.newStatus;
+        delete nextEntry.newStatus;
         changed = true;
       }
     }
