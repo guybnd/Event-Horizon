@@ -3,7 +3,7 @@ id: FLUX-310
 title: >-
   Copilot CLI MCP tools not loading when spawned by engine (node entrypoint
   bypass)
-status: In Progress
+status: Ready
 priority: High
 effort: M
 assignee: unassigned
@@ -43,6 +43,21 @@ history:
       node+entrypoint as fallback only.
     date: '2026-05-25T09:54:48.957Z'
     id: c-2026-05-25t09-54-48-957z
+  - type: comment
+    user: Agent
+    comment: >-
+      Fix committed (d5b741b). Reordered resolveCopilotBinary() to prefer
+      copilot.exe over node+entrypoint. The compiled binary handles MCP
+      initialization; the JS entry point skips it. Now .exe is tried first via
+      `where copilot`, then VS Code globalStorage, with node+JS as last-resort
+      fallback only.
+    date: '2026-05-25T11:23:43.736Z'
+    id: c-2026-05-25t11-23-43-736z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-25T11:23:43.738Z'
 ---
 ## Problem / Motivation
 
