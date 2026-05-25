@@ -511,8 +511,22 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-25T15:29:44.746Z'
+  - type: agent_session
+    sessionId: a69c2c82-9123-4b6c-ab5d-09c1ef443c96
+    startedAt: '2026-05-25T15:30:35.969Z'
+    status: cancelled
+    progress: []
+    user: Claude Code
+    date: '2026-05-25T15:30:35.969Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-25T15:30:43.455Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-25T15:30:54.450Z'
 title: alert indicators not really working
-status: Todo
+status: In Progress
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
