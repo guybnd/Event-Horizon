@@ -13,8 +13,13 @@ history:
     user: Guy
     date: '2026-05-07T05:36:19.177Z'
     comment: Created ticket.
+  - type: status_change
+    from: Todo
+    to: Grooming
+    user: Guy
+    date: '2026-05-25T07:34:09.828Z'
 title: improve grooming behaviour
-status: Todo
+status: Grooming
 createdBy: Guy
 updatedBy: Guy
 order: 13

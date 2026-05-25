@@ -1,6 +1,6 @@
 ---
 title: define dual-mode execution bridge and executor lifecycle
-status: Todo
+status: Backlog
 priority: High
 createdBy: Guy
 updatedBy: Guy
@@ -71,6 +71,11 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-07T03:53:39.4816199Z'
+  - type: status_change
+    from: Todo
+    to: Backlog
+    user: Guy
+    date: '2026-05-25T07:34:42.778Z'
 effort: Large
 implementationLink: ''
 order: 16

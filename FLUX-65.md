@@ -35,8 +35,13 @@ history:
     user: Guy
     date: '2026-05-07T05:57:49.673Z'
     comment: Response submitted
+  - type: status_change
+    from: Todo
+    to: Backlog
+    user: Guy
+    date: '2026-05-25T07:33:52.923Z'
 title: docs improvement
-status: Todo
+status: Backlog
 createdBy: Guy
 updatedBy: Guy
 order: 11
