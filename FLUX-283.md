@@ -1,7 +1,7 @@
 ---
 id: FLUX-283
 title: Extend session store to support multiple agent sessions
-status: In Progress
+status: Ready
 priority: High
 effort: M
 assignee: unassigned
@@ -54,6 +54,27 @@ history:
       for existing single-session consumers.
     date: '2026-05-25T14:45:33.298Z'
     id: c-2026-05-25t14-45-33-298z
+  - type: comment
+    user: Agent
+    comment: >-
+      Implementation complete. Refactored session store from
+      single-session-per-task to multi-session-per-task with
+      backwards-compatible shim for existing consumers. Added: (1) CLI
+      capabilities registry in types.ts (claude/gemini/copilot support matrix),
+      (2) Multi-session Map with register/unregister helpers, (3) File-lock
+      conflict detection via path prefix matching, (4) Pattern validation
+      (rejects e.g. Gemini as supervisor lead), (5) New GET
+      /api/tasks/:id/cli-sessions endpoint for listing all sessions, (6)
+      Input/stop endpoints now accept optional sessionId for targeting specific
+      sessions, (7) stopAllSessionsForTask helper used by routes/tasks.ts
+      auto-stop on Ready. All type-checks pass with zero new errors.
+    date: '2026-05-25T14:51:07.185Z'
+    id: c-2026-05-25t14-51-07-185z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-25T14:51:07.185Z'
 ---
 
 Subtask of FLUX-281.
