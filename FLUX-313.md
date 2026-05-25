@@ -491,8 +491,47 @@ history:
       with TicketPicker in single-select mode.
     date: '2026-05-25T11:52:49.830Z'
     id: c-2026-05-25t11-52-49-830z
+  - type: comment
+    user: Agent
+    comment: >-
+      Implemented subtask picker improvements:
+
+
+      1. **New `TicketPicker` component**
+      (`portal/src/components/TicketPicker.tsx`) — reusable search-based picker
+      using `searchTasks()` from `taskSearch.ts`. Shows ID + title + status
+      badge in dropdown, limits to 7 results, excludes current ticket and
+      already-linked items.
+
+
+      2. **Replaced `<select>` dropdown** in TaskModal subtask panel with
+      `TicketPicker` for attaching subtasks via search.
+
+
+      3. **Added Parent Ticket field** — single-select `TicketPicker` above the
+      subtasks section. Shows current parent with clickable link and detach
+      button.
+
+
+      4. **Form state** — `parentId` added to `useTaskForm` hook (syncs from
+      modalTask, tracked in dirty check, included in save payload).
+
+
+      5. **Engine bidirectional sync** — already in place in
+      `engine/src/routes/tasks.ts` (PUT handler syncs parentId ↔ subtasks array
+      both directions).
+
+
+      Validated: portal type-checks clean, Vite build succeeds.
+    date: '2026-05-25T11:59:39.814Z'
+    id: c-2026-05-25t11-59-39-814z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-25T11:59:39.814Z'
 title: subtask picker improvements
-status: In Progress
+status: Ready
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
