@@ -94,7 +94,7 @@ function buildCommentId(seed: string, usedIds: Set<string>) {
   return candidate;
 }
 
-function getHistoryTimestamp(entry: any) {
+export function getHistoryTimestamp(entry: any) {
   if (!entry?.date) return 0;
   const timestamp = new Date(entry.date).getTime();
   return Number.isNaN(timestamp) ? 0 : timestamp;

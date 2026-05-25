@@ -5,7 +5,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import matter from 'gray-matter';
 
-import { tasksCache, serializeTaskForApi, updateTaskWithHistory, activateWorkspace, workspaceActivating } from './task-store.js';
+import { tasksCache, serializeTaskForApi, updateTaskWithHistory, activateWorkspace, workspaceActivating, readTaskFromDisk } from './task-store.js';
 import { configCache, autoRegisterUnknownTags } from './config.js';
 import { broadcastEvent } from './events.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
@@ -170,18 +170,7 @@ export async function startMcpServer(): Promise<void> {
       if (!task) return errorResult(`Ticket ${ticketId} not found`);
 
       const { _path } = task;
-      let frontmatter: any;
-      let existingBody: string;
-      try {
-        const rawFile = await fs.readFile(_path, 'utf-8');
-        const parsed = matter(rawFile);
-        existingBody = parsed.content || '';
-        frontmatter = { ...parsed.data };
-      } catch {
-        const { body: cachedBody, _path: _p, id: _id, ...cachedFm } = task;
-        existingBody = cachedBody || '';
-        frontmatter = { ...cachedFm };
-      }
+      const { frontmatter, body: existingBody } = await readTaskFromDisk(task);
 
       if (title !== undefined) frontmatter.title = title;
       if (priority !== undefined) frontmatter.priority = priority;
