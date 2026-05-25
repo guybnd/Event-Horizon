@@ -4,6 +4,8 @@ title: 'copilot, check you can use hte mCP server!'
 assignee: unassigned
 tags:
   - feature
+  - mcp
+  - agent-integration
 priority: Low
 effort: XS
 implementationLink: ''
@@ -371,9 +373,19 @@ history:
       needed.
     date: '2026-05-25T06:04:05.383Z'
     id: c-2026-05-25t06-04-05-383z
+  - type: activity
+    user: Agent
+    date: '2026-05-25T06:04:14.710Z'
+    comment: >-
+      MCP write operations verified: add_comment and log_progress both working
+      via native MCP tools in Claude Code.
+  - type: activity
+    user: Agent
+    date: '2026-05-25T06:04:14.884Z'
+    comment: Updated tags.
 status: Ready
 createdBy: Guy
-updatedBy: Claude Code
+updatedBy: Agent
 ---
 ## Problem / Motivation
 
