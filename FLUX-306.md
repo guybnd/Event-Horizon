@@ -1,6 +1,6 @@
 ---
 title: Fix agent sessions being dropped from ticket history
-status: Ready
+status: Done
 priority: High
 effort: S
 assignee: Agent
@@ -8,7 +8,7 @@ tags:
   - bug
   - engine
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 history:
   - type: activity
     user: Guy
@@ -260,7 +260,12 @@ history:
     date: '2026-05-25T06:46:14.057Z'
     outcome: Claude Code session stopped by user.
     endedAt: '2026-05-25T06:47:56.792Z'
-order: 0
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Guy
+    date: '2026-05-25T06:55:24.694Z'
+order: 20
 ---
 ## Problem / Motivation
 
