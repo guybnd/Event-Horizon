@@ -32,6 +32,8 @@ const bundledAssets = [
 ];
 
 fs.mkdirSync(outDir, { recursive: true });
+// Override parent "type": "module" so Node treats dist/*.js as CJS
+fs.writeFileSync(path.join(outDir, 'package.json'), '{"type":"commonjs"}\n');
 
 async function copyDir(src, dest) {
   await fsp.mkdir(dest, { recursive: true });

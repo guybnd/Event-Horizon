@@ -7,6 +7,7 @@ import { attachWorktreeIfPresent } from './storage-sync.js';
 import { startSyncWatcher } from './sync-watcher.js';
 import { configCache, loadConfig, autoRegisterUnknownTags } from './config.js';
 import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate, getHistoryTimestamp } from './history.js';
+import { generatePromptNotification, generateCompletionNotification } from './notifications.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
 import { getCliSessionSummaryForTask, cliSessionsById, cliSessionIdByTaskId } from './session-store.js';
 import { isTopLevelTaskFile, getDocsDir, isDocFile, getDocPathFromFile, titleFromDocPath, slugifyDocValue, parseDocOrder } from './file-utils.js';
@@ -141,6 +142,17 @@ export async function updateTaskWithHistory(taskId: string, options: {
   const fileContent = matter.stringify(body || '', frontmatter);
   await fs.writeFile(_path, fileContent, 'utf-8');
   tasksCache[taskId] = { ...frontmatter, body, id: taskId, _path };
+
+  if (options.nextStatus) {
+    const requireInputStatus = configCache.requireInputStatus || 'Require Input';
+    const readyStatus = configCache.readyForMergeStatus || 'Ready';
+    if (options.nextStatus === requireInputStatus || options.nextStatus === readyStatus) {
+      generatePromptNotification(taskId, frontmatter.title || taskId, options.nextStatus);
+    } else if (options.nextStatus === 'Done') {
+      generateCompletionNotification(taskId, frontmatter.title || taskId);
+    }
+  }
+
   return tasksCache[taskId];
 }
 
@@ -596,7 +608,18 @@ export async function activateWorkspace(newRoot: string) {
     await initDir();
     await startWatchers();
     startSyncWatcher();
+    seedPromptNotifications();
   } finally {
     workspaceActivating = false;
+  }
+}
+
+function seedPromptNotifications() {
+  const requireInputStatus = configCache.requireInputStatus || 'Require Input';
+  const readyStatus = configCache.readyForMergeStatus || 'Ready';
+  for (const task of Object.values(tasksCache)) {
+    if (task.status === requireInputStatus || task.status === readyStatus) {
+      generatePromptNotification(task.id, task.title || task.id, task.status);
+    }
   }
 }

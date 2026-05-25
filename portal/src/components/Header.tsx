@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState, memo } from 'react';
-import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, FileText, Tag, Plus, Power, Bot, Sun, Moon } from 'lucide-react';
+import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, FileText, Tag, Plus, Power, Bot, Sun, Moon, ArrowUpCircle } from 'lucide-react';
 import { useApp, type AppView } from '../AppContext';
-import { getPromptableStatuses } from '../workflow';
 import { SyncStatusIndicator } from './SyncStatusIndicator';
 import { ActiveSessionsPopover } from './ActiveSessionsPopover';
+import { NotificationPanel } from './NotificationPanel';
 import { AnimatePresence } from 'framer-motion';
 import { GlobalSearch } from './GlobalSearch';
 import { LifetimeTokenStats } from './LifetimeTokenStats';
+import { fetchUpdateCheck, type UpdateInfo } from '../api';
 
 const NavItem = memo(function NavItem({ 
   view, 
@@ -60,39 +61,46 @@ export function Header() {
     currentProject,
     setCurrentProject,
     tasks,
-    config,
     isConnected,
     openTaskModal,
     openTaskFullView,
     theme,
     toggleTheme,
+    notifications,
+    notificationUnreadCount,
+    refreshNotifications,
   } = useApp();
 
   const [isPromptPulseActive, setIsPromptPulseActive] = useState(false);
   const [isStoppingService, setIsStoppingService] = useState(false);
   const [isSessionsPopoverOpen, setIsSessionsPopoverOpen] = useState(false);
-
-  const promptableStatuses = getPromptableStatuses(config);
-  const promptCount = tasks.filter((task) => promptableStatuses.includes(task.status)).length;
-  const activeSessionStatuses = new Set(['pending', 'running', 'waiting-input']);
-  const activeSessionCount = tasks.filter((task) => task.cliSession && activeSessionStatuses.has(task.cliSession.status)).length;
-  const previousPromptCountRef = useRef(promptCount);
+  const [isNotificationPanelOpen, setIsNotificationPanelOpen] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
 
   useEffect(() => {
-    if (promptCount === previousPromptCountRef.current) {
+    fetchUpdateCheck().then(info => {
+      if (info.updateAvailable) setUpdateInfo(info);
+    }).catch(() => {});
+  }, []);
+
+  const activeSessionStatuses = new Set(['pending', 'running', 'waiting-input']);
+  const activeSessionCount = tasks.filter((task) => task.cliSession && activeSessionStatuses.has(task.cliSession.status)).length;
+  const previousUnreadRef = useRef(notificationUnreadCount);
+
+  useEffect(() => {
+    if (notificationUnreadCount === previousUnreadRef.current) {
       return;
     }
 
-    previousPromptCountRef.current = promptCount;
-    setIsPromptPulseActive(true);
-    const timeoutId = window.setTimeout(() => {
-      setIsPromptPulseActive(false);
-    }, 1600);
-
-    return () => {
-      window.clearTimeout(timeoutId);
-    };
-  }, [promptCount]);
+    previousUnreadRef.current = notificationUnreadCount;
+    if (notificationUnreadCount > 0) {
+      setIsPromptPulseActive(true);
+      const timeoutId = window.setTimeout(() => {
+        setIsPromptPulseActive(false);
+      }, 1600);
+      return () => { window.clearTimeout(timeoutId); };
+    }
+  }, [notificationUnreadCount]);
 
   const handleStopService = useCallback(async () => {
     if (!window.confirm('Stop the Event Horizon service? The portal will disconnect.')) return;
@@ -105,10 +113,12 @@ export function Header() {
   }, []);
 
   const handleCloseSessionsPopover = useCallback(() => setIsSessionsPopoverOpen(false), []);
+  const handleCloseNotificationPanel = useCallback(() => setIsNotificationPanelOpen(false), []);
   const handleOpenTaskFromSessions = useCallback((t: any) => openTaskFullView(t), [openTaskFullView]);
   const handleSetView = useCallback((v: AppView) => setView(v), [setView]);
   const handleOpenNewTicket = useCallback(() => openTaskModal({ status: 'Grooming' }), [openTaskModal]);
   const toggleSessionsPopover = useCallback(() => setIsSessionsPopoverOpen(prev => !prev), []);
+  const toggleNotificationPanel = useCallback(() => setIsNotificationPanelOpen(prev => !prev), []);
 
   return (
     <header className="sticky top-0 z-10 border-b border-gray-200 bg-white/65 px-4 py-3 backdrop-blur-md dark:border-white/5 dark:bg-black/20">
@@ -117,6 +127,19 @@ export function Header() {
         {/* Left: branding + nav */}
         <div className="flex shrink-0 items-center gap-3">
           <Branding />
+
+          {updateInfo && (
+            <a
+              href={updateInfo.releaseUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={`Update available: v${updateInfo.latestVersion}`}
+              className="flex items-center gap-1 rounded-lg border border-primary/30 bg-primary/5 px-2 py-1 text-[11px] font-semibold text-primary transition-colors hover:bg-primary/10 dark:border-primary/40 dark:bg-primary/10 dark:hover:bg-primary/20"
+            >
+              <ArrowUpCircle className="h-3.5 w-3.5" />
+              <span>v{updateInfo.latestVersion}</span>
+            </a>
+          )}
 
           <div className="h-6 w-px bg-gray-200 dark:bg-white/10" />
 
@@ -144,21 +167,38 @@ export function Header() {
 
           <GlobalSearch />
 
-          {/* User Prompts — compact stat card */}
-          <button
-            onClick={() => handleSetView('board')}
-            className={`group flex shrink-0 cursor-pointer items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-left transition-all duration-200 overflow-hidden ${promptCount > 0 ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300' : 'border-gray-200 bg-white/60 text-gray-500 dark:border-white/10 dark:bg-white/5 dark:text-gray-400'} ${isPromptPulseActive ? 'header-live-prompts' : ''}`}
-            title="Open board to review tickets waiting for input or merge review"
-          >
-            <div className="relative shrink-0">
-              <Bell className="h-3.5 w-3.5" />
-              {promptCount > 0 && <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-amber-500" />}
-            </div>
-            <span className="text-sm font-semibold leading-none">{promptCount}</span>
-            <span className="max-w-0 overflow-hidden opacity-0 whitespace-nowrap text-[10px] font-bold uppercase tracking-wider transition-all duration-200 group-hover:max-w-[80px] group-hover:opacity-100 group-hover:ml-0.5">
-              Prompts
-            </span>
-          </button>
+          {/* Notifications dropdown */}
+          <div className="relative">
+            <button
+              onClick={toggleNotificationPanel}
+              className={`group flex shrink-0 cursor-pointer items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-left transition-all duration-200 overflow-hidden ${
+                notifications.some(n => n.type === 'error' && !n.read)
+                  ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300'
+                  : notificationUnreadCount > 0
+                    ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300'
+                    : 'border-gray-200 bg-white/60 text-gray-500 dark:border-white/10 dark:bg-white/5 dark:text-gray-400'
+              } ${isPromptPulseActive ? 'header-live-prompts' : ''} ${isNotificationPanelOpen ? 'ring-2 ring-primary/30' : ''}`}
+              title="Notifications"
+            >
+              <div className="relative shrink-0">
+                <Bell className="h-3.5 w-3.5" />
+                {notificationUnreadCount > 0 && <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-amber-500" />}
+              </div>
+              <span className="text-sm font-semibold leading-none">{notificationUnreadCount}</span>
+              <span className="max-w-0 overflow-hidden opacity-0 whitespace-nowrap text-[10px] font-bold uppercase tracking-wider transition-all duration-200 group-hover:max-w-[80px] group-hover:opacity-100 group-hover:ml-0.5">
+                Alerts
+              </span>
+            </button>
+            <AnimatePresence>
+              {isNotificationPanelOpen && (
+                <NotificationPanel
+                  notifications={notifications}
+                  onClose={handleCloseNotificationPanel}
+                  onUpdate={refreshNotifications}
+                />
+              )}
+            </AnimatePresence>
+          </div>
 
           {/* Agent Sessions — compact stat card */}
           <div className="relative">

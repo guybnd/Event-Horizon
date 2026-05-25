@@ -393,3 +393,69 @@ export async function resolveConflicts(
   }
   return res.json();
 }
+
+export interface UpdateInfo {
+  updateAvailable: boolean;
+  currentVersion: string;
+  latestVersion: string;
+  releaseUrl: string;
+}
+
+export async function fetchUpdateCheck(): Promise<UpdateInfo> {
+  const res = await fetch(`${API_URL}/update-check`);
+  if (!res.ok) return { updateAvailable: false, currentVersion: '', latestVersion: '', releaseUrl: '' };
+  return res.json();
+}
+
+// ─── Notifications ───────────────────────────────────────────────────────────
+
+export interface NotificationAction {
+  label: string;
+  actionId: string;
+}
+
+export interface Notification {
+  id: string;
+  type: 'error' | 'prompt' | 'completion';
+  title: string;
+  message: string;
+  ticketId?: string;
+  framework?: string;
+  actions: NotificationAction[];
+  createdAt: string;
+  read: boolean;
+  dismissed: boolean;
+}
+
+export interface NotificationsResponse {
+  notifications: Notification[];
+  unreadCount: number;
+}
+
+export async function fetchNotifications(): Promise<NotificationsResponse> {
+  const res = await fetch(`${API_URL}/notifications`);
+  if (!res.ok) return { notifications: [], unreadCount: 0 };
+  return res.json();
+}
+
+export async function markNotificationRead(id: string): Promise<void> {
+  await fetch(`${API_URL}/notifications/${id}/read`, { method: 'POST' });
+}
+
+export async function markAllNotificationsRead(): Promise<void> {
+  await fetch(`${API_URL}/notifications/read-all`, { method: 'POST' });
+}
+
+export async function dismissNotification(id: string): Promise<void> {
+  await fetch(`${API_URL}/notifications/${id}/dismiss`, { method: 'POST' });
+}
+
+export async function executeNotificationAction(id: string, actionId: string): Promise<any> {
+  const res = await fetch(`${API_URL}/notifications/${id}/action`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ actionId }),
+  });
+  if (!res.ok) throw new Error('Action failed');
+  return res.json();
+}

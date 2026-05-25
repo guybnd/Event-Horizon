@@ -31,6 +31,8 @@ import readStateRouter from './routes/read-state.js';
 import eventsRouter from './routes/events.js';
 import storageRouter from './routes/storage.js';
 import syncStatusRouter from './routes/sync-status.js';
+import notificationsRouter from './routes/notifications.js';
+import { checkForUpdate, getCachedUpdateInfo, getLocalVersion } from './update-check.js';
 
 const __dir = (() => {
   // @ts-ignore
@@ -62,6 +64,7 @@ app.use('/api/read-state', requireWorkspace, readStateRouter);
 app.use('/api/events', eventsRouter);
 app.use('/api/storage', requireWorkspace, storageRouter);
 app.use('/api/sync-status', requireWorkspace, syncStatusRouter);
+app.use('/api/notifications', notificationsRouter);
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', workspace: workspaceRoot });
@@ -71,6 +74,15 @@ app.post('/api/shutdown', (_req, res) => {
   stopAllCliSessions('shutdown');
   res.json({ ok: true });
   setTimeout(() => process.exit(0), 150);
+});
+
+app.get('/api/update-check', (_req, res) => {
+  const info = getCachedUpdateInfo();
+  if (info) {
+    res.json(info);
+  } else {
+    res.json({ updateAvailable: false, currentVersion: getLocalVersion(), latestVersion: '', releaseUrl: '' });
+  }
 });
 
 // ─── Static portal serving ───────────────────────────────────────────────────
@@ -231,6 +243,8 @@ async function startServer() {
       setTimeout(() => openBrowser(`http://localhost:${PORT}`), 800);
       initTray(PORT).catch(e => console.warn('Tray init failed:', e.message));
     }
+
+    checkForUpdate().catch(() => {});
   });
 }
 
