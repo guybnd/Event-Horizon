@@ -307,6 +307,25 @@ history:
     date: '2026-05-25T15:39:05.365Z'
     outcome: Session abandoned (engine restarted).
     endedAt: '2026-05-25T15:39:17.242Z'
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Guy
+    date: '2026-05-25T15:43:29.151Z'
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Guy
+    date: '2026-05-25T15:43:47.691Z'
+  - type: agent_session
+    sessionId: ddec6ac1-8f83-4f86-b6d3-0d58ec924650
+    startedAt: '2026-05-25T15:43:48.494Z'
+    status: cancelled
+    progress: []
+    user: Gemini CLI
+    date: '2026-05-25T15:43:48.494Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-25T15:44:07.440Z'
 title: add indicator on ticket with subtasks how many are done
 status: In Progress
 createdBy: Guy
@@ -318,7 +337,7 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 310758
   cacheCreationTokens: 47699
-order: 0
+order: 1
 id: FLUX-317
 ---
 ## Problem / Motivation
