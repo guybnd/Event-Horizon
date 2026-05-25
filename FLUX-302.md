@@ -238,13 +238,41 @@ history:
     to: Require Input
     user: Agent
     date: '2026-05-25T06:08:45.737Z'
-id: FLUX-302
+  - type: comment
+    user: Guy
+    date: '2026-05-25T06:13:25.320Z'
+    comment: >-
+      1. we have a pill box for the 'prompt' in yellow, we can convert it to a
+      notification box. it can be adrop down panel that shows cards. for example
+      each new ticket that needs input or is ready can spawn as a card there
+      that clicking it takes us to it. 
+
+
+      2. considering 1, lets rethink this?
+
+
+      3. high level errors for skills and MCP not integrated in a agent that
+      ran, yellow prompts for tickets requiring review or input, green
+      notifciation for stuff that went into done. anything else you can think
+      of?
+
+
+      4. yes lets support actions generically here so we can elaborate on this
+      further later
+    replyTo: c-2026-05-25t06-08-45-737z
+    id: c-2026-05-25t06-13-25-317z
+  - type: status_change
+    from: Require Input
+    to: Grooming
+    user: Guy
+    date: '2026-05-25T06:13:25.320Z'
+    comment: Response submitted
 title: >-
   Agent health notification panel — surface MCP, skills, and instructions
   installation status
-status: Require Input
+status: Grooming
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 tokenMetadata:
   inputTokens: 153201
   outputTokens: 2787
