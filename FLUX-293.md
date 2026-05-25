@@ -8,7 +8,7 @@ id: FLUX-293
 title: >-
   fix: portal static serving broken in dev mode on Node 26 (ESM require
   fallback)
-status: Done
+status: Released
 createdBy: Unknown
 updatedBy: Agent
 assignee: unassigned
@@ -41,7 +41,15 @@ history:
     to: Done
     user: Agent
     date: '2026-05-25T05:34:50.036Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-25T09:54:03.305Z'
 implementationLink: 356a843
+version: v0.8.0
+releasedAt: '2026-05-25T09:54:03.305Z'
+releaseDocPath: release-notes/v0.8.0
 ---
 ## Problem
 

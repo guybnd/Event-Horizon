@@ -1,7 +1,7 @@
 ---
 id: FLUX-289
 title: 'Engine: enforce ticket schema — reject malformed .flux/*.md writes'
-status: Done
+status: Released
 priority: High
 effort: M
 implementationLink: c31cb35
@@ -64,6 +64,14 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-25T11:30:30.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-25T09:54:03.295Z'
+version: v0.8.0
+releasedAt: '2026-05-25T09:54:03.295Z'
+releaseDocPath: release-notes/v0.8.0
 ---
 
 ## Problem / Motivation

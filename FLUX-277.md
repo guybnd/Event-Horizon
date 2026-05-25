@@ -1,7 +1,7 @@
 ---
 id: FLUX-277
-title: "Engine: auto-create ticket files from inline subtask objects"
-status: Done
+title: 'Engine: auto-create ticket files from inline subtask objects'
+status: Released
 priority: High
 effort: S
 assignee: unassigned
@@ -20,6 +20,14 @@ history:
     to: In Progress
     user: Agent
     date: '2026-05-19T07:39:00.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-25T09:54:03.252Z'
+version: v0.8.0
+releasedAt: '2026-05-25T09:54:03.252Z'
+releaseDocPath: release-notes/v0.8.0
 ---
 
 ## Problem

@@ -918,7 +918,12 @@ history:
     to: Done
     user: Guy
     date: '2026-05-25T06:39:25.086Z'
-status: Done
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-25T09:54:03.340Z'
+status: Released
 createdBy: Guy
 updatedBy: Guy
 tokenMetadata:
@@ -929,6 +934,9 @@ tokenMetadata:
   cacheReadTokens: 1433545
   cacheCreationTokens: 96312
 order: 18
+version: v0.8.0
+releasedAt: '2026-05-25T09:54:03.340Z'
+releaseDocPath: release-notes/v0.8.0
 ---
 ## Problem / Motivation
 

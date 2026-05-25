@@ -1,7 +1,7 @@
 ---
 id: FLUX-267
 title: 'First-run experience: fix default config and add user name prompt'
-status: Done
+status: Released
 priority: High
 assignee: unassigned
 tags:
@@ -58,6 +58,14 @@ history:
     to: Done
     user: Agent
     date: '2026-05-14T11:42:00.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-25T09:54:03.196Z'
+version: v0.8.0
+releasedAt: '2026-05-25T09:54:03.196Z'
+releaseDocPath: release-notes/v0.8.0
 ---
 
 New users who install Event Horizon get a default config with only 3 statuses and hardcoded dev-specific user names. The OnboardingWizard exists but doesn't ask for the user's name, so `createdBy`/`assignee` dropdowns are empty (or wrong) until manually configured in Settings.

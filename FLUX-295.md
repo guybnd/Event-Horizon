@@ -697,8 +697,13 @@ history:
     to: Done
     user: Guy
     date: '2026-05-25T06:39:28.541Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-25T09:54:03.330Z'
 title: 'gemini, check you can use hte mCP server!'
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
 tokenMetadata:
@@ -709,6 +714,9 @@ tokenMetadata:
   cacheReadTokens: 274336
   cacheCreationTokens: 0
 order: 19
+version: v0.8.0
+releasedAt: '2026-05-25T09:54:03.330Z'
+releaseDocPath: release-notes/v0.8.0
 ---
 ## Problem/Motivation
 The user wants to verify if the Gemini agent has successfully loaded and can utilize the Event Horizon MCP server. This involves running through the full gamut of MCP tool capabilities to ensure correct integration, schema validation, and functionality.

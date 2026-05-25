@@ -1,6 +1,6 @@
 ---
 title: Fix agent sessions being dropped from ticket history
-status: Done
+status: Released
 priority: High
 effort: S
 assignee: Agent
@@ -265,7 +265,15 @@ history:
     to: Done
     user: Guy
     date: '2026-05-25T06:55:24.694Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-25T09:54:03.354Z'
 order: 20
+version: v0.8.0
+releasedAt: '2026-05-25T09:54:03.354Z'
+releaseDocPath: release-notes/v0.8.0
 ---
 ## Problem / Motivation
 

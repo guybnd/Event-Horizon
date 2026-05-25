@@ -1,6 +1,6 @@
 ---
 title: Implement MCP server for ticket operations
-status: Done
+status: Released
 priority: High
 createdBy: Guy
 updatedBy: Agent
@@ -90,9 +90,17 @@ history:
       .docs/event-horizon/mcp-server.md.
     id: c-1779687289925-11
     date: '2026-05-25T05:34:49.966Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-25T09:54:03.364Z'
 order: 17
 effort: L
 implementationLink: FLUX-6 implementation (pending commit)
+version: v0.8.0
+releasedAt: '2026-05-25T09:54:03.364Z'
+releaseDocPath: release-notes/v0.8.0
 ---
 ## Summary
 

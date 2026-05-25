@@ -1,7 +1,7 @@
 ---
 id: FLUX-287
 title: 'Engine: normalize legacy status_change shapes (oldStatus/newStatus → from/to)'
-status: Done
+status: Released
 priority: High
 effort: S
 implementationLink: c31cb35
@@ -54,6 +54,14 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-25T10:25:30.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-25T09:54:03.285Z'
+version: v0.8.0
+releasedAt: '2026-05-25T09:54:03.285Z'
+releaseDocPath: release-notes/v0.8.0
 ---
 
 ## Problem / Motivation

@@ -1,7 +1,7 @@
 ---
 id: FLUX-288
 title: 'Skills: pin WRONG vs RIGHT history-entry examples in orchestrator skill'
-status: Done
+status: Released
 priority: Medium
 effort: XS
 implementationLink: c31cb35
@@ -45,6 +45,14 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-25T10:35:30.000Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-25T09:54:03.293Z'
+version: v0.8.0
+releasedAt: '2026-05-25T09:54:03.293Z'
+releaseDocPath: release-notes/v0.8.0
 ---
 
 ## Problem / Motivation

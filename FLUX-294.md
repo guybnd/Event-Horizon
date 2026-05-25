@@ -57,11 +57,19 @@ history:
     to: Done
     user: Agent
     date: '2026-05-25T05:34:50.036Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-25T09:54:03.318Z'
 id: FLUX-294
 title: check you are able to properly use the new MCP from the ticket here
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
+version: v0.8.0
+releasedAt: '2026-05-25T09:54:03.318Z'
+releaseDocPath: release-notes/v0.8.0
 ---
 ## Problem / Motivation
 

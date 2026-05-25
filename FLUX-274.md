@@ -1,7 +1,7 @@
 ---
 id: FLUX-274
 title: 'Fix: Agents not persisting ticket updates after session completion'
-status: Done
+status: Released
 priority: High
 effort: M
 assignee: unassigned
@@ -48,6 +48,14 @@ history:
     date: '2026-05-18T15:22:42.251Z'
     outcome: Gemini CLI session ended with code 1.
     endedAt: '2026-05-18T15:22:43.627Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-25T09:54:03.246Z'
+version: v0.8.0
+releasedAt: '2026-05-25T09:54:03.246Z'
+releaseDocPath: release-notes/v0.8.0
 ---
 
 ## Problem
