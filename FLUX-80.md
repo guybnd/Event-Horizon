@@ -714,25 +714,307 @@ history:
   - type: agent_session
     sessionId: 40adcc2c-2afa-4332-bbeb-8fe64d3ae32f
     startedAt: '2026-05-25T08:32:07.394Z'
-    status: cancelled
-    progress: []
+    status: completed
+    progress:
+      - timestamp: '2026-05-25T08:32:31.985Z'
+        message: Reviewing FLUX-80
+        type: topic
+        data:
+          title: Reviewing FLUX-80
+          summary: >-
+            I am going to check the ticket history for FLUX-80 and look at the
+            latest commits to review the code changes.
+          strategicIntent: Reviewing FLUX-80 implementation as Linus Torvalds
+      - timestamp: '2026-05-25T08:32:31.996Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp_event-horizon_get_ticket
+          parameters:
+            ticketId: FLUX-80
+      - timestamp: '2026-05-25T08:32:36.937Z'
+        message: 'Running: git log --oneline -10 && echo ''---'' && git show a8...'
+        type: tool
+        data:
+          toolName: run_shell_command
+          parameters:
+            is_background: false
+            description: Show recent commits and the implementation commit.
+            command: git log --oneline -10 && echo '---' && git show a8a8821
+      - timestamp: '2026-05-25T08:32:39.842Z'
+        message: Working
+        type: info
+      - timestamp: '2026-05-25T08:32:48.941Z'
+        message: 'Running: git log --oneline -10; git show a8a8821'
+        type: tool
+        data:
+          toolName: run_shell_command
+          parameters:
+            description: Show recent commits and the implementation commit.
+            command: git log --oneline -10; git show a8a8821
+            is_background: false
+      - timestamp: '2026-05-25T08:33:05.591Z'
+        message: Working
+        type: tool
+        data:
+          toolName: grep_search
+          parameters:
+            pattern: handleAction|onAction|actionId
+            dir_path: 'C:\GitHub\EventHorizon'
+            include_pattern: NotificationPanel.tsx
+      - timestamp: '2026-05-25T08:33:12.880Z'
+        message: Working
+        type: tool
+        data:
+          toolName: grep_search
+          parameters:
+            dir_path: 'C:\GitHub\EventHorizon'
+            pattern: NotificationAction
+      - timestamp: '2026-05-25T08:33:20.861Z'
+        message: Working
+        type: tool
+        data:
+          toolName: grep_search
+          parameters:
+            include_pattern: routes/notifications.ts
+            dir_path: 'C:\GitHub\EventHorizon'
+            pattern: actionId
+      - timestamp: '2026-05-25T08:33:27.106Z'
+        message: Working
+        type: tool
+        data:
+          toolName: list_directory
+          parameters:
+            dir_path: 'C:\GitHub\EventHorizon\engine\src\routes'
+      - timestamp: '2026-05-25T08:33:31.127Z'
+        message: Working
+        type: tool
+        data:
+          toolName: grep_search
+          parameters:
+            dir_path: 'C:\GitHub\EventHorizon\engine\src\routes'
+            include_pattern: notifications.ts
+            pattern: action
+      - timestamp: '2026-05-25T08:33:37.437Z'
+        message: Reading update-check.ts
+        type: tool
+        data:
+          toolName: read_file
+          parameters:
+            end_line: 80
+            start_line: 50
+            file_path: 'C:\GitHub\EventHorizon\engine\src\update-check.ts'
+      - timestamp: '2026-05-25T08:34:03.848Z'
+        message: Working
+        type: tool
+        data:
+          toolName: grep_search
+          parameters:
+            include_pattern: NotificationPanel.tsx
+            pattern: open-url
+            dir_path: 'C:\GitHub\EventHorizon'
+      - timestamp: '2026-05-25T08:34:44.453Z'
+        message: Working
+        type: tool
+        data:
+          toolName: grep_search
+          parameters:
+            pattern: executeNotificationAction
+            dir_path: 'C:\GitHub\EventHorizon'
+            include_pattern: NotificationPanel.tsx
+      - timestamp: '2026-05-25T08:34:51.564Z'
+        message: Reading NotificationPanel.tsx
+        type: tool
+        data:
+          toolName: read_file
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\portal\src\components\NotificationPanel.tsx'
+            start_line: 60
+            end_line: 80
+      - timestamp: '2026-05-25T08:35:10.821Z'
+        message: Reading NotificationPanel.tsx
+        type: tool
+        data:
+          toolName: read_file
+          parameters:
+            end_line: 110
+            file_path: 'C:\GitHub\EventHorizon\portal\src\components\NotificationPanel.tsx'
+            start_line: 80
+      - timestamp: '2026-05-25T08:35:45.907Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp_event-horizon_add_comment
+          parameters:
+            ticketId: FLUX-80
+            comment: >-
+              CODE REVIEW — REJECTED.
+
+
+              You changed it to use the notification panel. Great. Did you
+              actually test clicking the button? No, you didn't.
+
+
+              You passed `actions: [{ label: 'View Release', actionId:
+              'open-url' }]` in `update-check.ts`. Where exactly in the entire
+              codebase is `open-url` handled? Nowhere.
+
+
+              The frontend (`NotificationPanel.tsx`) sends unknown actionIds
+              straight to the backend via `executeNotificationAction()`. The
+              backend (`routes/notifications.ts`) only knows about `dismiss`,
+              `reinstall`, and `view`. It spits out a `400 Bad Request`.
+
+
+              Even if the backend handled it, what is it supposed to do? Tell
+              the user's browser to open a URL from the server? 
+
+
+              And where is the URL? You didn't even put the URL in the action
+              payload. The `NotificationAction` interface doesn't have a `url`
+              field. You just shoved the URL into the plain text `message`
+              string. 
+
+
+              If you want a clickable link, add an optional `url` field to the
+              `NotificationAction` interface. Then, in `NotificationPanel.tsx`,
+              intercept the action (e.g. `if (action.url) {
+              window.open(action.url, '_blank'); return; }`) so it opens in the
+              browser instead of sending a useless POST request to the backend.
+
+
+              Stop hallucinating actionIds and hoping magic happens. Test your
+              code.
+
+
+              Fix the action button so it actually opens the URL.
+      - timestamp: '2026-05-25T08:35:45.960Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp_event-horizon_change_status
+          parameters:
+            comment: Rejected code review due to broken notification action.
+            newStatus: In Progress
+            ticketId: FLUX-80
+      - timestamp: '2026-05-25T08:36:01.244Z'
+        message: Finished Review
+        type: topic
+        data:
+          title: Finished Review
+          summary: >-
+            I have completed the code review of the latest changes to FLUX-80.
+            The implementation had a major flaw where the 'open-url' action was
+            completely unhandled in both frontend and backend, resulting in a
+            broken button. I have posted a blunt review detailing the issue and
+            moved the ticket back to In Progress.
+          strategicIntent: Finish code review
+      - timestamp: '2026-05-25T08:36:06.260Z'
+        message: >-
+          I have reviewed the latest implementation for FLUX-80 and found that
+          while it utilizes the notification panel, the "View Release" button is
+          completely broken. It attempts to trigger an unhandled `open-url`
+          action on the backend and lacks the necessary payload (the URL itself)
+          to function properly. 
+
+
+          I've posted a blunt review to the ticket detailing the architectural
+          flaw and the required fix (adding a `url` field to
+          `NotificationAction` and handling it client-side). I've also moved the
+          ticket back to "In Progress".
+        type: text
     user: Gemini CLI
     date: '2026-05-25T08:32:07.394Z'
-    outcome: Session abandoned (engine restarted).
-    endedAt: '2026-05-25T08:32:23.678Z'
+    outcome: Gemini CLI session ended with code 0.
+    endedAt: '2026-05-25T08:36:09.601Z'
+  - type: comment
+    user: Agent
+    comment: Rejected code review due to broken notification action.
+    date: '2026-05-25T08:35:46.037Z'
+    id: c-2026-05-25t08-35-46-037z
+  - type: comment
+    user: Gemini CLI
+    date: '2026-05-25T08:36:09.601Z'
+    comment: >-
+      I have reviewed the latest implementation for FLUX-80 and found that while
+      it utilizes the notification panel, the "View Release" button is
+      completely broken. It attempts to trigger an unhandled `open-url` action
+      on the backend and lacks the necessary payload (the URL itself) to
+      function properly. 
+
+
+      I've posted a blunt review to the ticket detailing the architectural flaw
+      and the required fix (adding a `url` field to `NotificationAction` and
+      handling it client-side). I've also moved the ticket back to "In
+      Progress".
+    id: c-2026-05-25t08-36-09-601z
 order: 0
 tokenMetadata:
-  inputTokens: 870612
-  outputTokens: 9214
-  costUSD: 1.38549
-  costIsEstimated: false
-  cacheReadTokens: 745566
+  inputTokens: 1288455
+  outputTokens: 10340
+  costUSD: 2.655909
+  costIsEstimated: true
+  cacheReadTokens: 988867
   cacheCreationTokens: 120046
 id: FLUX-80
 ---
 ## Summary
 
 On startup, make a single GET request to the GitHub releases API to check if a newer version of Event Horizon is available. Show a one-line console message and optionally surface it in the portal header. Fail silently when offline.
+
+## Requirements
+
+### 1\. Version check on startup
+
+-   On engine startup, fetch `https://api.github.com/repos/{owner}/{repo}/releases/latest`
+    
+-   Compare the remote version tag against the local `package.json` version
+    
+-   Use a non-blocking async call — never delay startup for the network check
+    
+
+### 2\. Notification
+
+-   If a newer version exists, log a one-line message to the console, and show indicator
+    
+-   Optionally expose the update info via a new `GET /api/update-check` endpoint so the portal can show it in the header
+    
+-   If offline or the request fails, do nothing — no errors, no warnings
+    
+
+### 3\. Portal indicator
+
+-   If the engine reports an available update, show a subtle indicator in the portal header (e.g. a small badge or text) that is clickable
+    
+-   The indicator should link to the releases page
+    
+
+## Acceptance Criteria
+
+-   Engine checks GitHub releases on startup
+    
+-   A newer version is reported via console log
+    
+-   The check fails silently when offline
+    
+-   Startup is never blocked or delayed by the check
+    
+-   Optionally the portal shows an update indicator
+    
+
+## Likely Affected Areas
+
+-   `engine/src/index.ts` — startup update check
+    
+-   `portal/src/components/Header.tsx` (optional)
+    
+-   `portal/src/api.ts` (optional)
+    
+
+## Parent
+
+-   Subtask of FLUX-18
+ silently when offline.
 
 ## Requirements
 
