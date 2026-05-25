@@ -1,6 +1,6 @@
 ---
 title: Agent & Skill Builder UI — modular workflow templates per phase
-status: In Progress
+status: Ready
 priority: High
 effort: XL
 assignee: unassigned
@@ -10,7 +10,7 @@ tags:
   - agent-workflow
   - portal
 createdBy: Agent
-updatedBy: Agent
+updatedBy: Guy
 history:
   - type: activity
     user: Agent
@@ -513,9 +513,13 @@ history:
       Implementing file-backed skills: UI reads/writes actual .docs/skills/*.md
       files via engine API. Workflow config stores structure only (agent
       ordering, skill references by path), not duplicated prompt content.
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Guy
+    date: '2026-05-25T14:11:59.561Z'
 implementationLink: ''
 subtasks: []
-id: FLUX-312
 tokenMetadata:
   inputTokens: 195176
   outputTokens: 3505
@@ -523,6 +527,7 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 178397
   cacheCreationTokens: 16480
+order: 0
 ---
 
 ## Problem / Motivation
