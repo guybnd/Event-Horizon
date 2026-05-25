@@ -260,11 +260,38 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-25T15:22:09.658Z'
-id: FLUX-317
+  - type: comment
+    user: Guy
+    date: '2026-05-25T15:25:13.076Z'
+    comment: >-
+      looks nice but couple of issues:
+
+
+      1. no UI indicator that hovering on the bar of completion does anything,
+      it should highlight and show maybe click mouse so i know i can click it to
+      open the menu
+
+
+      2. while hovering towards it, i may open the description by accident. then
+      theres an overlap between the two items. clicking on opening the subtasks
+      panel should close the description
+
+
+      3. its too small and not detailed. we can make the panel 2x bigger, we can
+      have the ticket ID in it and some more info maybe, like a mini card. we
+      can show hover highlight of selected ticket to open.
+    replyTo: c-2026-05-25t15-22-09-658z
+    id: c-2026-05-25t15-25-13-066z
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Guy
+    date: '2026-05-25T15:25:13.076Z'
+    comment: Returned to work
 title: add indicator on ticket with subtasks how many are done
-status: Ready
+status: In Progress
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 tokenMetadata:
   inputTokens: 362573
   outputTokens: 2881
