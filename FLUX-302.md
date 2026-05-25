@@ -8,7 +8,7 @@ tags:
   - agent-integration
 priority: Medium
 effort: L
-implementationLink: ''
+implementationLink: 5f7d6d2
 subtasks: []
 history:
   - type: activity
@@ -395,11 +395,106 @@ history:
     sessionId: bafea95c-23dd-440c-8da8-3a578f57a1eb
     startedAt: '2026-05-25T07:52:26.208Z'
     status: cancelled
-    progress: []
+    progress:
+      - timestamp: '2026-05-25T07:52:40.492Z'
+        message: 'Running: git log --oneline -10'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: git log --oneline -10
+            description: Show recent commits
+      - timestamp: '2026-05-25T07:52:43.164Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-05-25T07:52:51.007Z'
+        message: Reading notifications.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\notifications.ts'
+      - timestamp: '2026-05-25T07:52:58.166Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-05-25T07:53:27.676Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: checkFrameworkHealth|check-health|health.*notification
+            path: 'C:\GitHub\EventHorizon\engine\src'
+            output_mode: content
+      - timestamp: '2026-05-25T07:53:28.167Z'
+        message: Working
+        type: info
+      - timestamp: '2026-05-25T07:53:42.187Z'
+        message: 'Running: cat C:/GitHub/EventHorizon/temp-mcp-test.js 2>/dev...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              cat C:/GitHub/EventHorizon/temp-mcp-test.js 2>/dev/null; cat
+              C:/GitHub/EventHorizon/temp-payload.json 2>/dev/null
+            description: Check temp files left behind
+      - timestamp: '2026-05-25T07:53:43.168Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-05-25T07:54:18.663Z'
+        message: Working
+        type: tool
+        data:
+          toolName: ToolSearch
+          parameters:
+            query: >-
+              select:mcp__event-horizon__add_comment,mcp__event-horizon__change_status
+            max_results: 2
+      - timestamp: '2026-05-25T07:54:28.189Z'
+        message: Working
+        type: info
     user: Claude Code
     date: '2026-05-25T07:52:26.208Z'
+    outcome: Claude Code session stopped by user.
+    endedAt: '2026-05-25T07:54:35.217Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Implemented full notification panel system. Engine: in-memory notification
+      store with SSE broadcast, REST API (CRUD + actions), health check for
+      agent frameworks, triggers on status changes in task-store, seeds existing
+      promptable tickets on workspace activation. Portal: NotificationPanel
+      dropdown component with typed cards (error/prompt/completion), integrated
+      into AppContext SSE (single connection), replaced the static Prompts pill
+      in Header. Also added update-check indicator. Validated: tsc clean, vite
+      build passes.
+    date: '2026-05-25T07:54:05.203Z'
+    id: c-2026-05-25t07-54-05-203z
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-05-25T07:54:05.203Z'
+  - type: status_change
+    from: Done
+    to: Ready
+    user: Guy
+    date: '2026-05-25T07:54:35.033Z'
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Agent
+    date: '2026-05-25T07:54:50.055Z'
+  - type: agent_session
+    sessionId: b0b64a14-6fd9-4cbc-8acf-fa28e5cdb75a
+    startedAt: '2026-05-25T07:54:51.325Z'
+    status: cancelled
+    progress: []
+    user: Claude Code
+    date: '2026-05-25T07:54:51.325Z'
     outcome: Session abandoned (engine restarted).
-    endedAt: '2026-05-25T07:52:34.694Z'
+    endedAt: '2026-05-25T07:54:59.542Z'
 title: >-
   Agent health notification panel — surface MCP, skills, and instructions
   installation status
@@ -413,6 +508,7 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 141333
   cacheCreationTokens: 11858
+order: 0
 id: FLUX-302
 ---
 ## Problem / Motivation
