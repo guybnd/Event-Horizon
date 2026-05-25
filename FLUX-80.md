@@ -370,6 +370,15 @@ history:
     date: '2026-05-25T07:11:43.318Z'
     outcome: Session abandoned (engine restarted).
     endedAt: '2026-05-25T07:11:54.101Z'
+  - type: agent_session
+    sessionId: e24b0136-cbdb-440f-a7cc-f260de85502a
+    startedAt: '2026-05-25T07:13:18.602Z'
+    status: cancelled
+    progress: []
+    user: Claude Code
+    date: '2026-05-25T07:13:18.602Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-25T07:13:27.077Z'
 order: 80
 tokenMetadata:
   inputTokens: 467663
