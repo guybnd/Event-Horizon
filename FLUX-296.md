@@ -440,7 +440,93 @@ history:
     to: In Progress
     user: Guy
     date: '2026-05-25T06:05:15.871Z'
-status: In Progress
+  - date: '2026-05-25T06:07:01.586Z'
+    comment: >-
+      Copilot CLI MCP integration test - add_comment via REST API (PUT
+      /api/tasks/:id with appendHistory).
+    user: Agent
+    type: comment
+    id: c-2026-05-25t06-07-01-586z
+  - date: '2026-05-25T06:07:25.866Z'
+    comment: >-
+      log_progress test: All 9 REST API operations verified working from Copilot
+      CLI.
+    user: Agent
+    type: activity
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Guy
+    date: '2026-05-25T06:07:47.205Z'
+  - date: '2026-05-25T06:07:47.205Z'
+    comment: >-
+      ## Copilot CLI MCP Integration Test Results (Pass 2)
+
+
+      ### Finding: MCP tools are NOT natively available to Copilot CLI
+
+      The .github/copilot/mcp.json configuration does NOT inject MCP tools into
+      the Copilot CLI agent's tool list. The Event Horizon MCP tools
+      (get_ticket, update_ticket, etc.) do not appear as callable tools.
+
+
+      ### REST API Fallback: ALL operations PASS
+
+
+      | # | Operation | Method | Result |
+
+      |---|-----------|--------|--------|
+
+      | 1 | get_ticket | GET /api/tasks/:id | PASS |
+
+      | 2 | list_tickets | GET /api/tasks?status=... | PASS |
+
+      | 3 | get_board_config | GET /api/config | PASS |
+
+      | 4 | add_comment | PUT /api/tasks/:id (appendHistory type=comment) | PASS
+      |
+
+      | 5 | log_progress | PUT /api/tasks/:id (appendHistory type=activity) |
+      PASS |
+
+      | 6 | update_ticket | PUT /api/tasks/:id (tags, priority) | PASS |
+
+      | 7 | change_status | PUT /api/tasks/:id (status + status_change history)
+      | PASS |
+
+      | 8 | create_ticket | POST /api/tasks | PASS - created FLUX-301 |
+
+      | 9 | create_subtask | POST /api/tasks/:parentId/subtasks | PASS - created
+      FLUX-303 |
+
+
+      ### Configuration Notes
+
+      - **Copilot CLI**: MCP tools do NOT load via .github/copilot/mcp.json
+      (that config is VS Code only)
+
+      - **Workaround**: REST API at localhost:3067 provides full read/write
+      access
+
+      - **Cleanup**: Test tickets FLUX-301 and FLUX-303 archived after testing
+
+
+      ### Comparison with Claude Code (from previous pass)
+
+      - **Claude Code**: MCP tools load natively via .claude/settings.json -
+      full native access
+
+      - **Copilot CLI**: Must use REST API fallback - all operations still
+      succeed
+    user: Agent
+    type: comment
+    id: c-2026-05-25t06-07-47-205z
+  - date: '2026-05-25T06:07:47.205Z'
+    from: In Progress
+    to: Ready
+    user: Agent
+    type: status_change
+status: Ready
 createdBy: Guy
 updatedBy: Guy
 tokenMetadata:

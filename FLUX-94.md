@@ -27,11 +27,15 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-08T00:00:00.000Z'
-id: FLUX-94
+  - type: status_change
+    from: Todo
+    to: Backlog
+    user: Guy
+    date: '2026-05-25T06:07:36.585Z'
 title: link to tickets from doc markdowns
-status: Todo
+status: Backlog
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 ---
 
 # Goal
