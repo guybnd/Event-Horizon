@@ -834,6 +834,14 @@ history:
     date: '2026-05-25T06:36:41.986Z'
     comment: i wanna test with copilot not claude
     id: c-2026-05-25t06-36-41-981z
+  - date: '2026-05-25T06:37:43.100Z'
+    comment: >-
+      Testing MCP integration: Copilot CLI does NOT have Event Horizon MCP tools
+      in its tool list. However, the REST API at localhost:3067 is reachable and
+      working. Read operations (GET /api/tasks/:id) succeed.
+    user: Copilot
+    type: comment
+    id: c-2026-05-25t06-37-43-100z
 status: In Progress
 createdBy: Guy
 updatedBy: Guy
