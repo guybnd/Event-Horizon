@@ -467,6 +467,13 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-25T11:50:16.009Z'
+  - type: agent_session
+    sessionId: 0cbd71e2-d58c-4d71-a270-bfb5256ba9cc
+    startedAt: '2026-05-25T11:51:27.845Z'
+    status: active
+    progress: []
+    user: Claude Code
+    date: '2026-05-25T11:51:27.845Z'
 title: subtask picker improvements
 status: Todo
 createdBy: Guy
