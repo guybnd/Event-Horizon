@@ -572,23 +572,245 @@ history:
   - type: agent_session
     sessionId: 70910ba2-3e5f-41cd-92c9-29b2135b7e76
     startedAt: '2026-05-25T15:53:01.270Z'
-    status: cancelled
-    progress: []
+    status: completed
+    progress:
+      - timestamp: '2026-05-25T15:53:16.731Z'
+        message: 'Running: git log --oneline -10'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: git log --oneline -10
+            description: Show recent commits
+      - timestamp: '2026-05-25T15:53:19.310Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-05-25T15:53:26.206Z'
+        message: Reading TaskCard.tsx
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\portal\src\components\TaskCard.tsx'
+            limit: 100
+            offset: 1
+      - timestamp: '2026-05-25T15:53:30.007Z'
+        message: 'Running: wc -l portal/src/components/TaskCard.tsx'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: wc -l portal/src/components/TaskCard.tsx
+            description: Count lines in TaskCard
+      - timestamp: '2026-05-25T15:53:34.312Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-05-25T15:53:34.630Z'
+        message: Reading TaskCard.tsx
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\portal\src\components\TaskCard.tsx'
+            limit: 120
+            offset: 1130
+      - timestamp: '2026-05-25T15:53:39.546Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: taskById|new Map.*Task
+            path: 'C:\GitHub\EventHorizon\portal\src'
+            output_mode: files_with_matches
+      - timestamp: '2026-05-25T15:53:40.409Z'
+        message: 'Running: git diff HEAD~1 -- portal/src/components/TaskCard....'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              git diff HEAD~1 -- portal/src/components/TaskCard.tsx | grep -c
+              "^+"
+            description: Count added lines
+      - timestamp: '2026-05-25T15:53:44.013Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: new Map.*Task|taskById
+            path: 'C:\GitHub\EventHorizon\portal\src\AppContext.tsx'
+            output_mode: content
+            '-C': 3
+      - timestamp: '2026-05-25T15:53:47.947Z'
+        message: Working
+        type: tool
+        data:
+          toolName: ToolSearch
+          parameters:
+            query: 'select:mcp__event-horizon__add_comment'
+            max_results: 1
+      - timestamp: '2026-05-25T15:53:49.315Z'
+        message: Working
+        type: info
+      - timestamp: '2026-05-25T15:54:19.321Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-05-25T15:54:22.595Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp__event-horizon__add_comment
+          parameters:
+            ticketId: FLUX-317
+            comment: >-
+              Code review — sending back.
+
+
+              The good: The popover UI is clean, the UX affordances (ring
+              highlight, tooltip, click icon) are sensible, and the overall
+              feature does what it says on the tin. Not bad.
+
+
+              Now the problems:
+
+
+              **1. The "O(N*M) fix" is a lie.** You moved `taskById = new
+              Map(allTasks)` into a `useMemo` inside TaskCard. Congratulations,
+              you now build an *identical* Map in every single card instance on
+              the board. 50 cards = 50 identical Maps. The `useMemo` only
+              prevents re-creation across re-renders of the *same component
+              instance*, not across instances. This belongs in AppContext or
+              Board.tsx, computed once, passed down. The whole point was to fix
+              a perf problem and you introduced a different one with the same
+              asymptotic complexity (N cards * M tasks to build M-entry maps).
+              Move it up.
+
+
+              **2. Magic number 88.** `resolvedSubtasks.length * 88 + 80` — this
+              assumes each subtask item is exactly 88px tall. They're not. You
+              have conditional `childSnippet`, conditional assignee line,
+              variable title length with `leading-snug`. The height varies per
+              item. This "dynamic" calculation is just a hardcoded guess dressed
+              up as math. Either measure the actual DOM element after render, or
+              just use a fixed max-height and let `overflow-y: auto` do its job
+              (which you already have! the `max-h-[700px]` handles it!). Delete
+              the fake math.
+
+
+              **3. `childSnippet` computed inside JSX map on every render.** You
+              memoized the subtask list and done count but then do
+              `child?.body?.split('\n').find(...)` inside the render loop for
+              every subtask on every render. Either memoize it or accept you
+              don't actually care about perf here — but don't memoize half the
+              things and leave the other half un-memoized while claiming you
+              fixed performance.
+
+
+              **4. Cross-concern coupling in mouse handlers.** `onMouseEnter` on
+              the progress bar calls `setCommentPopoverOpen(false)`. The subtask
+              progress indicator should not know the comment popover exists.
+              This is a symptom of hover state management that's gotten out of
+              control at the card level. It works, but it's the kind of band-aid
+              that makes the next person touching this file curse your name.
+
+
+              Fix #1 (move the Map up) and #2 (delete the fake positioning
+              math). #3 and #4 are style issues I can live with for now.
+      - timestamp: '2026-05-25T15:54:34.324Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-05-25T15:54:37.170Z'
+        message: >-
+          The ticket is already In Progress, so it stays there. Review posted.
+
+
+          **Summary**: Two real issues that need fixing before this ships:
+
+
+          1. **`taskById` Map built per card instance** — it's N identical Maps
+          for N cards on the board. Lift it to AppContext or Board and pass it
+          down.
+
+          2. **The `resolvedSubtasks.length * 88 + 80` positioning** — fake math
+          that doesn't account for variable-height subtask items. You already
+          have `max-h-[700px]` with overflow scroll. Delete the guesswork and
+          just use the fixed max-height for boundary clamping.
+
+
+          Two lesser issues noted (un-memoized `childSnippet` in render loop,
+          cross-concern coupling in mouse handlers) but those can wait.
     user: Claude Code
     date: '2026-05-25T15:53:01.270Z'
-    outcome: Session abandoned (engine restarted).
-    endedAt: '2026-05-25T15:53:13.918Z'
+    outcome: Claude Code session ended with code 0.
+    endedAt: '2026-05-25T15:54:38.335Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Code review — sending back.
+
+
+      The good: The popover UI is clean, the UX affordances (ring highlight,
+      tooltip, click icon) are sensible, and the overall feature does what it
+      says on the tin. Not bad.
+
+
+      Now the problems:
+
+
+      **1. The "O(N*M) fix" is a lie.** You moved `taskById = new Map(allTasks)`
+      into a `useMemo` inside TaskCard. Congratulations, you now build an
+      *identical* Map in every single card instance on the board. 50 cards = 50
+      identical Maps. The `useMemo` only prevents re-creation across re-renders
+      of the *same component instance*, not across instances. This belongs in
+      AppContext or Board.tsx, computed once, passed down. The whole point was
+      to fix a perf problem and you introduced a different one with the same
+      asymptotic complexity (N cards * M tasks to build M-entry maps). Move it
+      up.
+
+
+      **2. Magic number 88.** `resolvedSubtasks.length * 88 + 80` — this assumes
+      each subtask item is exactly 88px tall. They're not. You have conditional
+      `childSnippet`, conditional assignee line, variable title length with
+      `leading-snug`. The height varies per item. This "dynamic" calculation is
+      just a hardcoded guess dressed up as math. Either measure the actual DOM
+      element after render, or just use a fixed max-height and let `overflow-y:
+      auto` do its job (which you already have! the `max-h-[700px]` handles
+      it!). Delete the fake math.
+
+
+      **3. `childSnippet` computed inside JSX map on every render.** You
+      memoized the subtask list and done count but then do
+      `child?.body?.split('\n').find(...)` inside the render loop for every
+      subtask on every render. Either memoize it or accept you don't actually
+      care about perf here — but don't memoize half the things and leave the
+      other half un-memoized while claiming you fixed performance.
+
+
+      **4. Cross-concern coupling in mouse handlers.** `onMouseEnter` on the
+      progress bar calls `setCommentPopoverOpen(false)`. The subtask progress
+      indicator should not know the comment popover exists. This is a symptom of
+      hover state management that's gotten out of control at the card level. It
+      works, but it's the kind of band-aid that makes the next person touching
+      this file curse your name.
+
+
+      Fix #1 (move the Map up) and #2 (delete the fake positioning math). #3 and
+      #4 are style issues I can live with for now.
+    date: '2026-05-25T15:54:22.619Z'
+    id: c-2026-05-25t15-54-22-619z
 title: add indicator on ticket with subtasks how many are done
 status: In Progress
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
-  inputTokens: 555189
-  outputTokens: 3670
-  costUSD: 1.141278
+  inputTokens: 892019
+  outputTokens: 6538
+  costUSD: 1.494272
   costIsEstimated: true
-  cacheReadTokens: 390949
-  cacheCreationTokens: 47699
+  cacheReadTokens: 708965
+  cacheCreationTokens: 66496
 order: 1
 id: FLUX-317
 ---
