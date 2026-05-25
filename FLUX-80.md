@@ -2,7 +2,7 @@
 title: Add lightweight update awareness via GitHub releases
 status: Ready
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: Agent
 tags:
   - feature
@@ -464,6 +464,12 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-25T07:23:29.885Z'
+  - type: comment
+    user: Guy
+    date: '2026-05-25T07:43:52.252Z'
+    comment: 'his should utitlize the new notification panel to notify the user, too.'
+    replyTo: c-2026-05-25t07-23-29-885z
+    id: c-2026-05-25t07-43-52-247z
 order: 80
 tokenMetadata:
   inputTokens: 649813
@@ -472,7 +478,6 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 562030
   cacheCreationTokens: 82794
-id: FLUX-80
 ---
 ## Summary
 
