@@ -1,6 +1,6 @@
 ---
 title: Add lightweight update awareness via GitHub releases
-status: In Progress
+status: Ready
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent
@@ -382,20 +382,96 @@ history:
   - type: agent_session
     sessionId: 282c5a80-3cb8-4404-a150-c6eb7cdae67c
     startedAt: '2026-05-25T07:22:41.745Z'
-    status: cancelled
-    progress: []
+    status: completed
+    progress:
+      - timestamp: '2026-05-25T07:22:57.673Z'
+        message: Reading update-check.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\update-check.ts'
+      - timestamp: '2026-05-25T07:22:57.845Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-05-25T07:23:19.928Z'
+        message: Working
+        type: tool
+        data:
+          toolName: ToolSearch
+          parameters:
+            query: 'select:change_status'
+            max_results: 1
+      - timestamp: '2026-05-25T07:23:27.853Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-05-25T07:23:29.870Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp__event-horizon__change_status
+          parameters:
+            ticketId: FLUX-80
+            newStatus: Ready
+            comment: >-
+              Implementation complete. On engine startup, a non-blocking fetch
+              to GitHub releases API checks for newer versions (5s timeout,
+              silent failure). If an update exists, a colored console log is
+              printed. The cached result is exposed via GET /api/update-check.
+              The portal Header fetches this on mount and shows a clickable
+              badge (ArrowUpCircle icon + version) linking to the releases page
+              when an update is available. Key files:
+              engine/src/update-check.ts, engine/src/index.ts (endpoint +
+              startup call), portal/src/api.ts (fetchUpdateCheck),
+              portal/src/components/Header.tsx (indicator).
+      - timestamp: '2026-05-25T07:23:36.999Z'
+        message: >-
+          FLUX-80 is now **Ready** for review. The implementation covers all
+          acceptance criteria:
+
+
+          - Engine checks GitHub releases on startup (non-blocking, 5s timeout)
+
+          - Newer version logged to console with colored `[update]` prefix
+
+          - Fails silently when offline or on any error
+
+          - Startup is never blocked (fire-and-forget `checkForUpdate().catch(()
+          => {})`)
+
+          - Portal shows a clickable update badge in the header linking to the
+          releases page
     user: Claude Code
     date: '2026-05-25T07:22:41.745Z'
-    outcome: Session abandoned (engine restarted).
-    endedAt: '2026-05-25T07:22:51.743Z'
+    outcome: Claude Code session ended with code 0.
+    endedAt: '2026-05-25T07:23:38.167Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Implementation complete. On engine startup, a non-blocking fetch to GitHub
+      releases API checks for newer versions (5s timeout, silent failure). If an
+      update exists, a colored console log is printed. The cached result is
+      exposed via GET /api/update-check. The portal Header fetches this on mount
+      and shows a clickable badge (ArrowUpCircle icon + version) linking to the
+      releases page when an update is available. Key files:
+      engine/src/update-check.ts, engine/src/index.ts (endpoint + startup call),
+      portal/src/api.ts (fetchUpdateCheck), portal/src/components/Header.tsx
+      (indicator).
+    date: '2026-05-25T07:23:29.885Z'
+    id: c-2026-05-25t07-23-29-885z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-25T07:23:29.885Z'
 order: 80
 tokenMetadata:
-  inputTokens: 467663
-  outputTokens: 3761
-  costUSD: 0.572196
+  inputTokens: 649813
+  outputTokens: 5461
+  costUSD: 0.962808
   costIsEstimated: false
-  cacheReadTokens: 425333
-  cacheCreationTokens: 42280
+  cacheReadTokens: 562030
+  cacheCreationTokens: 82794
 id: FLUX-80
 ---
 ## Summary
