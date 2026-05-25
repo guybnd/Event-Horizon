@@ -496,6 +496,16 @@ history:
     to: In Progress
     user: Agent
     date: '2026-05-25T12:35:52.485Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Starting implementation. Plan: (1) Engine models + CRUD routes for
+      workflows/agents with .flux/workflows/ and .flux/agents/ file persistence,
+      (2) Portal types + API layer, (3) WorkflowBuilder view with
+      TemplateHeader, AgentLibrary, PhaseColumns with PatternSelector, DnD
+      integration, StepConfigPanel, AgentEditorModal, and PipelinePreview.
+    date: '2026-05-25T12:38:00.319Z'
+    id: c-2026-05-25t12-38-00-319z
 implementationLink: ''
 subtasks: []
 id: FLUX-312
