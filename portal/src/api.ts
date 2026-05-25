@@ -403,7 +403,7 @@ export interface NotificationAction {
 
 export interface Notification {
   id: string;
-  type: 'error' | 'prompt' | 'completion';
+  type: 'error' | 'prompt' | 'completion' | 'info';
   title: string;
   message: string;
   ticketId?: string;

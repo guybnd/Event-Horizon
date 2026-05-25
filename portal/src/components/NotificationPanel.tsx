@@ -1,5 +1,5 @@
 import { memo, useRef, useEffect, useCallback } from 'react';
-import { AlertTriangle, Bell, CheckCircle2, X, CheckCheck, ExternalLink } from 'lucide-react';
+import { AlertTriangle, Bell, CheckCircle2, Info, X, CheckCheck, ExternalLink } from 'lucide-react';
 import { motion } from 'framer-motion';
 import type { Notification } from '../api';
 import { markNotificationRead, markAllNotificationsRead, dismissNotification, executeNotificationAction } from '../api';
@@ -30,6 +30,12 @@ const TYPE_CONFIG = {
     borderColor: 'border-l-emerald-500',
     iconColor: 'text-emerald-500',
     bgColor: 'bg-emerald-50 dark:bg-emerald-500/5',
+  },
+  info: {
+    icon: Info,
+    borderColor: 'border-l-blue-500',
+    iconColor: 'text-blue-500',
+    bgColor: 'bg-blue-50 dark:bg-blue-500/5',
   },
 };
 
@@ -64,6 +70,10 @@ const NotificationCard = memo(function NotificationCard({
     } else if (actionId === 'view') {
       handleClick();
       return;
+    } else if (actionId === 'open-url') {
+      const urlMatch = notification.message.match(/https?:\/\/\S+/);
+      if (urlMatch) window.open(urlMatch[0], '_blank');
+      await markNotificationRead(notification.id);
     } else {
       await executeNotificationAction(notification.id, actionId);
     }
