@@ -1,7 +1,7 @@
 ---
 id: FLUX-283
 title: Extend session store to support multiple agent sessions
-status: Todo
+status: In Progress
 priority: High
 effort: M
 assignee: unassigned
@@ -37,6 +37,23 @@ history:
     user: Agent
     date: '2026-05-25T11:49:12.413Z'
     comment: Updated description.
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-25T14:45:19.756Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Implementation plan: (1) Add AgentSession interface and CLI capabilities
+      registry to types.ts, (2) Refactor session-store.ts from single-session
+      Map to multi-session Map with file-lock and orchestration tracking, (3)
+      Update routes/cli-session.ts to support multiple sessions per task with
+      new GET list endpoint, (4) Maintain backwards compat in
+      getCliSessionSummaryForTask by returning the most recent active session
+      for existing single-session consumers.
+    date: '2026-05-25T14:45:33.298Z'
+    id: c-2026-05-25t14-45-33-298z
 ---
 
 Subtask of FLUX-281.
