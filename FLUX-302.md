@@ -495,6 +495,83 @@ history:
     date: '2026-05-25T07:54:51.325Z'
     outcome: Session abandoned (engine restarted).
     endedAt: '2026-05-25T07:54:59.542Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Code review — Linus mode.
+
+
+      **OVERALL VERDICT: Mostly fine, but has problems that need fixing before
+      this ships.**
+
+
+      **The good:**
+
+      - Clean separation: engine notification store, routes, portal panel. Not
+      over-abstracted.
+
+      - SSE integration reuses the existing broadcastEvent infra instead of
+      inventing a new channel. Good.
+
+      - The deduplication logic in `generatePromptNotification` (find existing,
+      update it instead of spamming) is the kind of thinking that prevents a
+      garbage UX. Noted.
+
+      - NotificationCard is reasonably tight for a React component. The generic
+      action dispatch is fine.
+
+
+      **The bad:**
+
+
+      1. **SCOPE CREEP: `update-check.ts` has no business in this commit.** The
+      ticket says "notification panel with health checks." Version update
+      checking is a completely unrelated feature. You shoved it in here because
+      you thought "oh it goes in the header too." Wrong. One commit = one
+      concern. This makes the diff harder to review and harder to revert. Split
+      it out.
+
+
+      2. **Health check trigger is DEAD CODE.** The ticket explicitly says: "On
+      agent session completion (sync-watcher.ts): check if framework install is
+      healthy → generate error notification if not." I grepped sync-watcher.ts.
+      Zero references to `checkFrameworkHealth` or notifications. The ONLY
+      caller is the manual `/check-health` REST endpoint. So the primary use
+      case — automatic health alerts when an agent runs — **doesn't work**. The
+      user will never see these notifications unless they manually POST to an
+      API endpoint. That's a paper feature.
+
+
+      3. **In-memory store = lost on restart.** Notifications vanish when the
+      engine restarts. For a tool that restarts constantly during development (I
+      can see 3 cancelled sessions from engine restarts in this ticket alone),
+      that's a joke. At minimum, seed prompt notifications from task state on
+      startup — oh wait, you did that for prompts in
+      `seedPromptNotifications()`. But error notifications and completions are
+      still ephemeral. If the engine restarts after a health check error fires,
+      it's gone. Not a blocker but worth acknowledging.
+
+
+      4. **The `configCache` access in `seedPromptNotifications` is reading from
+      a module-level cache.** If `activateWorkspace` is called before the config
+      is loaded, you get the defaults. I looked at the flow and it seems fine
+      (initDir loads config first), but it's brittle coupling that's not
+      obvious.
+
+
+      5. **Minor: the click-outside handler in NotificationPanel will fire
+      immediately if the panel is opened via a mousedown on the toggle button.**
+      The toggle button is OUTSIDE the panel ref. So: click button → panel opens
+      → mousedown event propagates → click-outside fires → panel closes. This is
+      a classic dropdown bug. The fact that you're using `mousedown` instead of
+      `click` makes it worse — it'll race with the toggle's own click handler.
+      I'd bet money this has a flicker bug in practice.
+
+
+      **Verdict: Fix #1 (scope creep) and #2 (dead trigger) before this ships.
+      #5 is probably a visible bug too.** The rest is acceptable.
+    date: '2026-05-25T07:56:39.805Z'
+    id: c-2026-05-25t07-56-39-805z
 title: >-
   Agent health notification panel — surface MCP, skills, and instructions
   installation status
