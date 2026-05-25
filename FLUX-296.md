@@ -1,4 +1,6 @@
 ---
+id: FLUX-296
+title: 'copilot, check you can use hte mCP server!'
 assignee: unassigned
 tags:
   - feature
