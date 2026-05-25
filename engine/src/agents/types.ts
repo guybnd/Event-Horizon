@@ -2,6 +2,23 @@ import type { ChildProcessWithoutNullStreams } from 'child_process';
 
 export type CliSessionStatus = 'pending' | 'running' | 'waiting-input' | 'completed' | 'failed' | 'cancelled';
 export type CliFramework = 'claude' | 'copilot' | 'gemini';
+export type ExecutionPattern = 'relay' | 'scatter-gather' | 'supervisor';
+export type PatternPosition = 'lead' | 'assistant' | 'combiner' | 'step' | 'standalone';
+
+export interface CliCapabilities {
+  resume: boolean;
+  background: boolean;
+  supervisor: boolean;
+  scatter: boolean;
+  toolGating: boolean;
+  structuredOutput: boolean;
+}
+
+export const CLI_CAPABILITIES: Record<CliFramework, CliCapabilities> = {
+  claude: { resume: true, background: true, supervisor: true, scatter: true, toolGating: true, structuredOutput: true },
+  gemini: { resume: false, background: false, supervisor: false, scatter: true, toolGating: true, structuredOutput: false },
+  copilot: { resume: true, background: false, supervisor: false, scatter: true, toolGating: true, structuredOutput: false },
+};
 
 export interface AgentProcess {
   proc: ChildProcessWithoutNullStreams;
@@ -40,6 +57,11 @@ export interface CliSessionSummary {
   costIsEstimated?: boolean;
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
+  role?: string;
+  pattern?: ExecutionPattern;
+  patternPosition?: PatternPosition;
+  lockedPaths?: string[];
+  outputData?: string;
 }
 
 export interface CliSessionRecord extends CliSessionSummary {
@@ -56,6 +78,11 @@ export interface CliSessionRecord extends CliSessionSummary {
   sessionHistoryEntry?: any;
   progressHeartbeat?: NodeJS.Timeout;
   lastProgressLog?: string;
+  role?: string;
+  pattern?: ExecutionPattern;
+  patternPosition?: PatternPosition;
+  lockedPaths?: string[];
+  outputData?: string;
 }
 
 export interface AgentEvent {

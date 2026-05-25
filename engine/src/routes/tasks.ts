@@ -16,7 +16,7 @@ import {
   resolveSupportedImageExtension, sanitizeAssetBaseName, normalizeBase64Content,
   normalizeRelativePath, encodeAssetPath, createUniqueAssetFileName,
 } from '../file-utils.js';
-import { cliSessionIdByTaskId, cliSessionsById } from '../session-store.js';
+import { cliSessionIdByTaskId, cliSessionsById, stopAllSessionsForTask } from '../session-store.js';
 import { getAdapter } from '../agents/index.js';
 
 const execFileAsyncRaw = promisify(execFile);
@@ -277,23 +277,8 @@ router.put('/:id', async (req, res) => {
       });
     }
 
-    // Auto-stop the CLI session when ticket moves to Ready
-    const sessionId = cliSessionIdByTaskId.get(id);
-    if (sessionId) {
-      const session = cliSessionsById.get(sessionId);
-      if (session && (session.status === 'running' || session.status === 'waiting-input')) {
-        console.log(`[tasks] Auto-stopping session ${sessionId} for ticket ${id} (moved to ${readyStatus})`);
-        session.requestedStop = true;
-        session.status = 'completed';
-        session.endedAt = new Date().toISOString();
-        try {
-          const adapter = getAdapter(session.framework);
-          adapter.stop(session);
-        } catch (err: any) {
-          console.warn(`[tasks] Failed to stop session ${sessionId}:`, err.message);
-        }
-      }
-    }
+    // Auto-stop all CLI sessions when ticket moves to Ready
+    stopAllSessionsForTask(id, `ticket moved to ${readyStatus}`);
   }
 
   const normalizedExistingHistory = normalizeHistoryEntries(task.history || []);

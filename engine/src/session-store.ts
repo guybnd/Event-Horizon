@@ -1,15 +1,46 @@
-import type { CliSessionRecord, CliSessionSummary } from './agents/types.js';
+import type { CliSessionRecord, CliSessionSummary, CliFramework, ExecutionPattern, PatternPosition } from './agents/types.js';
+import { CLI_CAPABILITIES as capabilities } from './agents/types.js';
 
 export const cliSessionsById = new Map<string, CliSessionRecord>();
-export const cliSessionIdByTaskId = new Map<string, string>();
+export const cliSessionsByTaskId = new Map<string, string[]>();
 
-export function getCliSessionSummaryForTask(taskId: string): CliSessionSummary | undefined {
-  const sessionId = cliSessionIdByTaskId.get(taskId);
-  if (!sessionId) return undefined;
-  const session = cliSessionsById.get(sessionId);
-  if (!session) return undefined;
+// Backwards-compat alias: returns the most recent session ID for a task
+export const cliSessionIdByTaskId = {
+  get(taskId: string): string | undefined {
+    const ids = cliSessionsByTaskId.get(taskId);
+    if (!ids || ids.length === 0) return undefined;
+    return ids[ids.length - 1];
+  },
+  set(taskId: string, sessionId: string): void {
+    registerSession(taskId, sessionId);
+  },
+  delete(taskId: string): boolean {
+    return cliSessionsByTaskId.delete(taskId);
+  },
+  has(taskId: string): boolean {
+    const ids = cliSessionsByTaskId.get(taskId);
+    return !!ids && ids.length > 0;
+  },
+};
 
-  return {
+export function registerSession(taskId: string, sessionId: string): void {
+  const ids = cliSessionsByTaskId.get(taskId) || [];
+  if (!ids.includes(sessionId)) {
+    ids.push(sessionId);
+    cliSessionsByTaskId.set(taskId, ids);
+  }
+}
+
+export function unregisterSession(taskId: string, sessionId: string): void {
+  const ids = cliSessionsByTaskId.get(taskId);
+  if (!ids) return;
+  const idx = ids.indexOf(sessionId);
+  if (idx >= 0) ids.splice(idx, 1);
+  if (ids.length === 0) cliSessionsByTaskId.delete(taskId);
+}
+
+function toSummary(session: CliSessionRecord): CliSessionSummary {
+  const summary: CliSessionSummary = {
     id: session.id,
     taskId: session.taskId,
     framework: session.framework,
@@ -17,22 +48,97 @@ export function getCliSessionSummaryForTask(taskId: string): CliSessionSummary |
     command: session.command,
     args: [...session.args],
     startedAt: session.startedAt,
-    endedAt: session.endedAt,
-    pid: session.pid,
     label: session.label,
-    lastOutputAt: session.lastOutputAt,
-    lastInputAt: session.lastInputAt,
-    blockedReason: session.blockedReason,
-    liveOutput: session.liveOutputBuffer || undefined,
-    currentActivity: session.currentActivity,
-    skipPermissions: session.skipPermissions,
-    inputTokens: session.inputTokens,
-    outputTokens: session.outputTokens,
-    costUSD: session.costUSD,
-    costIsEstimated: session.costIsEstimated,
-    cacheReadTokens: session.cacheReadTokens,
-    cacheCreationTokens: session.cacheCreationTokens,
   };
+  if (session.skipPermissions != null) summary.skipPermissions = session.skipPermissions;
+  if (session.inputTokens != null) summary.inputTokens = session.inputTokens;
+  if (session.outputTokens != null) summary.outputTokens = session.outputTokens;
+  if (session.costUSD != null) summary.costUSD = session.costUSD;
+  if (session.endedAt) summary.endedAt = session.endedAt;
+  if (session.pid) summary.pid = session.pid;
+  if (session.lastOutputAt) summary.lastOutputAt = session.lastOutputAt;
+  if (session.lastInputAt) summary.lastInputAt = session.lastInputAt;
+  if (session.blockedReason) summary.blockedReason = session.blockedReason;
+  if (session.liveOutputBuffer) summary.liveOutput = session.liveOutputBuffer;
+  if (session.currentActivity) summary.currentActivity = session.currentActivity;
+  if (session.costIsEstimated) summary.costIsEstimated = session.costIsEstimated;
+  if (session.cacheReadTokens) summary.cacheReadTokens = session.cacheReadTokens;
+  if (session.cacheCreationTokens) summary.cacheCreationTokens = session.cacheCreationTokens;
+  if (session.role) summary.role = session.role;
+  if (session.pattern) summary.pattern = session.pattern;
+  if (session.patternPosition) summary.patternPosition = session.patternPosition;
+  if (session.lockedPaths) summary.lockedPaths = session.lockedPaths;
+  if (session.outputData) summary.outputData = session.outputData;
+  return summary;
+}
+
+export function getCliSessionSummaryForTask(taskId: string): CliSessionSummary | undefined {
+  const ids = cliSessionsByTaskId.get(taskId);
+  if (!ids || ids.length === 0) return undefined;
+
+  // Prefer the most recent active session; fall back to the last session
+  for (let i = ids.length - 1; i >= 0; i--) {
+    const session = cliSessionsById.get(ids[i]!);
+    if (session && ['pending', 'running', 'waiting-input'].includes(session.status)) {
+      return toSummary(session);
+    }
+  }
+
+  const lastSession = cliSessionsById.get(ids[ids.length - 1]!);
+  return lastSession ? toSummary(lastSession) : undefined;
+}
+
+export function getAllSessionSummariesForTask(taskId: string): CliSessionSummary[] {
+  const ids = cliSessionsByTaskId.get(taskId);
+  if (!ids || ids.length === 0) return [];
+  const summaries: CliSessionSummary[] = [];
+  for (const id of ids) {
+    const session = cliSessionsById.get(id);
+    if (session) summaries.push(toSummary(session));
+  }
+  return summaries;
+}
+
+export function getActiveSessionsForTask(taskId: string): CliSessionRecord[] {
+  const ids = cliSessionsByTaskId.get(taskId);
+  if (!ids) return [];
+  return ids
+    .map(id => cliSessionsById.get(id))
+    .filter((s): s is CliSessionRecord => !!s && ['pending', 'running', 'waiting-input'].includes(s.status));
+}
+
+// File-lock enforcement: check if any active session holds a conflicting path lock
+export function checkPathConflicts(taskId: string, requestedPaths: string[]): { conflict: boolean; holder?: string; paths?: string[] } {
+  if (!requestedPaths || requestedPaths.length === 0) return { conflict: false };
+
+  const activeSessions = getActiveSessionsForTask(taskId);
+  for (const session of activeSessions) {
+    if (!session.lockedPaths || session.lockedPaths.length === 0) continue;
+    const overlapping = requestedPaths.filter(p =>
+      session.lockedPaths!.some(locked => p.startsWith(locked) || locked.startsWith(p))
+    );
+    if (overlapping.length > 0) {
+      return { conflict: true, holder: session.id, paths: overlapping };
+    }
+  }
+  return { conflict: false };
+}
+
+// Validate that a CLI framework supports the requested orchestration pattern
+export function validatePatternSupport(framework: CliFramework, pattern: ExecutionPattern, position: PatternPosition): string | null {
+  const caps = capabilities[framework];
+  if (!caps) return `Unknown framework: ${framework}`;
+
+  if (pattern === 'supervisor' && position === 'lead' && !caps.supervisor) {
+    return `${framework} does not support the supervisor pattern as lead (no session resume/child spawning)`;
+  }
+  if (pattern === 'scatter-gather' && !caps.scatter) {
+    return `${framework} does not support scatter-gather`;
+  }
+  if (pattern === 'relay' && !caps.resume && position === 'step') {
+    return `${framework} does not support relay (no session resume) — use as fire-and-forget only`;
+  }
+  return null;
 }
 
 export function stopAllCliSessions(reason: string) {
@@ -44,6 +150,22 @@ export function stopAllCliSessions(reason: string) {
         session.proc.kill('SIGTERM');
       } catch (error) {
         console.warn(`Failed to stop CLI session ${session.id} during ${reason}:`, error);
+      }
+    }
+  }
+}
+
+export function stopAllSessionsForTask(taskId: string, reason: string) {
+  const activeSessions = getActiveSessionsForTask(taskId);
+  for (const session of activeSessions) {
+    session.requestedStop = true;
+    session.status = 'cancelled';
+    session.endedAt = new Date().toISOString();
+    if (session.proc) {
+      try {
+        session.proc.kill('SIGTERM');
+      } catch (error) {
+        console.warn(`Failed to stop session ${session.id} for task ${taskId} during ${reason}:`, error);
       }
     }
   }
