@@ -10,13 +10,20 @@ title: >-
   fallback)
 status: In Progress
 createdBy: Unknown
-updatedBy: Unknown
+updatedBy: Agent
 assignee: unassigned
 history:
   - type: activity
     user: Unknown
     date: '2026-05-25T05:20:45.941Z'
     comment: Created ticket.
+  - type: comment
+    user: Agent
+    comment: >-
+      MCP smoke test: all 10 tools registered and responding. Read ops
+      (get_ticket, list_tickets, get_board_config) confirmed working. Testing
+      write op now.
+    id: c-1779686666199-2
 ---
 ## Problem
 

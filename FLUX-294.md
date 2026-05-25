@@ -1,44 +1,30 @@
 ---
+id: FLUX-294
+title: Verify MCP tools work correctly from agent sessions
+status: Todo
+priority: Low
+effort: XS
 assignee: unassigned
 tags:
   - infra
   - mcp
-priority: Low
-effort: XS
-implementationLink: ''
-subtasks: []
+createdBy: Guy
+updatedBy: Agent
 history:
   - type: activity
     user: Guy
-    date: '2026-05-25T05:22:55.298Z'
+    date: '2026-05-25T05:24:17.926Z'
     comment: Created ticket.
-  - type: agent_session
-    sessionId: 53b7502c-e1f7-4ab0-8aa9-c1bcc43a4170
-    startedAt: '2026-05-25T05:23:01.803Z'
-    status: cancelled
-    progress: []
-    user: Claude Code
-    date: '2026-05-25T05:23:01.803Z'
-    outcome: Session abandoned (engine restarted).
-    endedAt: '2026-05-25T05:23:10.998Z'
-  - type: activity
-    user: Agent
-    date: '2026-05-25T05:23:39.882Z'
-    comment: >-
-      Updated description. Changed priority to Low. Changed effort to XS.
-      Updated tags.
   - type: comment
     user: Agent
     comment: >-
-      Groomed: XS effort validation task. The ticket itself serves as the test —
-      exercising MCP tools through its own lifecycle confirms they work. Moving
-      to Todo.
-    id: c-1779686625562-4
-id: FLUX-294
-title: check you are able to properly use the new MCP from the ticket here
-status: Grooming
-createdBy: Guy
-updatedBy: Agent
+      Groomed and moved to Todo. This is an XS validation ticket — the ticket's
+      own lifecycle serves as the test of MCP tool correctness. Tools verified
+      so far: create_ticket ✓, get_ticket ✓, list_tickets ✓, update_ticket ✓
+      (initial call succeeded before engine restart lost the file). Remaining
+      tools to verify during implementation: change_status, add_comment,
+      log_progress, finish_ticket.
+    id: c-1779686667380-2
 ---
 ## Problem / Motivation
 
