@@ -323,27 +323,161 @@ history:
   - type: agent_session
     sessionId: ca43d809-ffe1-4b83-87e5-008f249a7025
     startedAt: '2026-05-25T11:49:39.651Z'
-    status: cancelled
-    progress: []
+    status: completed
+    progress:
+      - timestamp: '2026-05-25T11:49:55.335Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-05-25T11:49:55.473Z'
+        message: Working
+        type: tool
+        data:
+          toolName: ToolSearch
+          parameters:
+            query: >-
+              select:mcp__event-horizon__get_ticket,mcp__event-horizon__update_ticket,mcp__event-horizon__change_status
+            max_results: 3
+      - timestamp: '2026-05-25T11:49:58.886Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp__event-horizon__get_ticket
+          parameters:
+            ticketId: FLUX-313
+      - timestamp: '2026-05-25T11:50:10.339Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-05-25T11:50:12.672Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp__event-horizon__update_ticket
+          parameters:
+            ticketId: FLUX-313
+            body: >-
+              ## Problem / Motivation
+
+
+              The subtask picker in the ticket modal is a plain `<select>`
+              dropdown listing all available tickets with no search capability —
+              unusable at scale. Additionally, there's no way to set a parent
+              ticket from a child ticket; the relationship is one-directional
+              (parent → child only). Users working on a ticket they want to nest
+              under a parent must navigate away, open the parent, and attach
+              from there.
+
+
+              ## Implementation Plan
+
+
+              ### 1. Add "Parent Ticket" field to the data model
+
+
+              - Add optional `parentId: string` field to the `Task` type in
+              `portal/src/types.ts`
+
+              - Engine must persist `parentId` in ticket frontmatter and expose
+              it via the API
+
+              - Bidirectional sync: setting `parentId` on a child automatically
+              adds the child to the parent's `subtasks` array; detaching from
+              either side clears both
+
+
+              ### 2. Engine API changes
+
+
+              - `PUT /api/tasks/:id` accepts `parentId` and handles
+              bidirectional linking
+
+              - When `parentId` changes: remove child from old parent's
+              `subtasks`, add to new parent's `subtasks`
+
+              - When a subtask is detached from a parent ticket, clear the
+              child's `parentId`
+
+              - When `parentId` is cleared on a child, remove from old parent's
+              `subtasks`
+
+
+              ### 3. Build a reusable `TicketPicker` component
+
+
+              - Single component used for both parent picker (single-select) and
+              subtask picker (multi-select/attach mode) — same code, no
+              duplication
+
+              - Pattern after `TagSelector.tsx`: text input that filters tickets
+              using existing `searchTasks()` from `taskSearch.ts`
+
+              - Dropdown shows scored/filtered results: ID + title + status
+              badge (same as `GlobalSearch`)
+
+              - Limit to ~7 results
+
+              - Exclude the current ticket and already-linked tickets from
+              results
+
+
+              ### 4. Replace the subtask `<select>` with `TicketPicker`
+
+
+              - In `TaskModal.tsx` (subtask section, lines ~924-1042), swap the
+              `<select>` + "Attach" button for `TicketPicker` in attach mode
+
+              - Keep existing display of linked subtasks (clickable list with
+              detach buttons)
+
+
+              ### 5. Add "Parent Ticket" field to the subtask panel
+
+
+              - Add `TicketPicker` in single-select mode above/below the subtask
+              list
+
+              - Shows current parent (if any) with a link to open it and a
+              detach button
+
+              - Selecting a parent calls `PUT /api/tasks/:id` with `parentId` —
+              engine handles bidirectional sync
+      - timestamp: '2026-05-25T11:50:21.606Z'
+        message: >-
+          Grooming complete. FLUX-313 is now **Todo** with a finalized plan:
+
+
+          - Bidirectional sync confirmed (parent ↔ child auto-linked)
+
+          - Single reusable `TicketPicker` component for both parent and subtask
+          selection (no duplication)
+
+          - Dropdown shows ID + title + status badge, matching `GlobalSearch`
+          pattern
+
+          - Engine API handles all bidirectional linking logic server-side
     user: Claude Code
     date: '2026-05-25T11:49:39.651Z'
-    outcome: Session abandoned (engine restarted).
-    endedAt: '2026-05-25T11:49:47.501Z'
+    outcome: Claude Code session ended with code 0.
+    endedAt: '2026-05-25T11:50:22.764Z'
   - type: activity
     user: Agent
     date: '2026-05-25T11:50:12.688Z'
     comment: Updated description.
+  - type: status_change
+    from: Grooming
+    to: Todo
+    user: Agent
+    date: '2026-05-25T11:50:16.009Z'
 title: subtask picker improvements
-status: Grooming
+status: Todo
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
-  inputTokens: 183220
-  outputTokens: 2321
-  costUSD: 0.363206
+  inputTokens: 312672
+  outputTokens: 3882
+  costUSD: 0.539892
   costIsEstimated: false
-  cacheReadTokens: 169296
-  cacheCreationTokens: 13911
+  cacheReadTokens: 286557
+  cacheCreationTokens: 26093
 id: FLUX-313
 ---
 ## Problem / Motivation
