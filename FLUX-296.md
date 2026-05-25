@@ -169,6 +169,11 @@ history:
       Starting implementation. Will verify MCP tool availability and test all
       operations via REST API.
     id: c-2026-05-25t05-43-37-334z
+  - type: comment
+    user: Copilot CLI
+    date: '2026-05-25T05:44:44.643Z'
+    comment: 'MCP integration test: add_comment verified.'
+    id: c-2026-05-25t05-44-44-643z
 title: 'copilot, check you can use hte mCP server!'
 status: In Progress
 createdBy: Guy
