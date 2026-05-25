@@ -383,9 +383,57 @@ history:
     user: Agent
     date: '2026-05-25T06:04:14.884Z'
     comment: Updated tags.
+  - type: comment
+    user: Claude Code
+    comment: >-
+      ## Final MCP Integration Test Results — Claude Code (Opus 4.6)
+
+
+      ### ALL 9 MCP tools confirmed working:
+
+
+      | # | Tool | Result |
+
+      |---|------|--------|
+
+      | 1 | get_ticket | PASS — read full ticket with history |
+
+      | 2 | list_tickets | PASS — filtered by status, returned 2 results |
+
+      | 3 | get_board_config | PASS — all statuses, tags, priorities returned |
+
+      | 4 | add_comment | PASS — comments persisted to ticket history |
+
+      | 5 | log_progress | PASS — activity entry added |
+
+      | 6 | update_ticket | PASS — tags updated |
+
+      | 7 | change_status | PASS — moved test ticket to Archived |
+
+      | 8 | create_ticket | PASS — created FLUX-299 |
+
+      | 9 | create_subtask | PASS — created FLUX-300 linked to FLUX-299 |
+
+
+      ### Issue found during testing
+
+      The ticket file was missing `id` and `title` in YAML frontmatter. The MCP
+      write path correctly rejected updates via a safety check. Once the
+      frontmatter was fixed, all writes succeeded.
+
+
+      ### Comparison: Claude Code vs Copilot CLI
+
+      - **Claude Code**: MCP tools load natively via `.claude/settings.json` —
+      full native access, no fallback needed.
+
+      - **Copilot CLI**: MCP tools do NOT load (`.github/copilot/mcp.json` only
+      works in VS Code). Must use REST API fallback at localhost:3067.
+    date: '2026-05-25T06:04:48.276Z'
+    id: c-2026-05-25t06-04-48-276z
 status: Ready
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Claude Code
 ---
 ## Problem / Motivation
 
