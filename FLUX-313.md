@@ -541,10 +541,34 @@ history:
     to: Ready
     user: Guy
     date: '2026-05-25T12:30:25.988Z'
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Guy
+    date: '2026-05-25T12:33:22.874Z'
+  - type: status_change
+    from: Done
+    to: Ready
+    user: Guy
+    date: '2026-05-25T12:33:27.804Z'
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Guy
+    date: '2026-05-25T12:33:40.738Z'
+  - type: agent_session
+    sessionId: 4366f41f-6bd1-4597-b54f-3600bd07fb46
+    startedAt: '2026-05-25T12:33:41.742Z'
+    status: cancelled
+    progress: []
+    user: Gemini CLI
+    date: '2026-05-25T12:33:41.742Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-25T12:33:57.181Z'
 title: subtask picker improvements
-status: Ready
+status: In Progress
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 tokenMetadata:
   inputTokens: 312672
   outputTokens: 3882
@@ -552,6 +576,8 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 286557
   cacheCreationTokens: 26093
+order: 0
+id: FLUX-313
 ---
 ## Problem / Motivation
 
