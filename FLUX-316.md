@@ -1,5 +1,4 @@
 ---
-id: FLUX-316
 title: 'Test: multi-session store API validation'
 status: Ready
 priority: High
@@ -1015,24 +1014,50 @@ history:
   - type: agent_session
     sessionId: 52687c20-55ac-4b86-95b1-eddc954e6b80
     startedAt: '2026-05-25T15:07:47.767Z'
-    status: active
-    progress: []
+    status: completed
+    progress:
+      - timestamp: '2026-05-25T15:08:04.426Z'
+        message: >-
+          FLUX-316 is in **Ready** status — awaiting your review. The test file
+          is at `engine/src/session-store.test.ts` (visible as untracked in git
+          status).
+
+
+          When you're satisfied with the tests, say `finish FLUX-316` and I'll
+          commit and close it.
     user: Claude Code
     date: '2026-05-25T15:07:47.767Z'
+    outcome: Claude Code session ended with code 0.
+    endedAt: '2026-05-25T15:08:05.566Z'
   - type: agent_session
     sessionId: 4164d326-71a8-42fb-87ed-9bcc11becec9
     startedAt: '2026-05-25T15:07:49.320Z'
-    status: active
-    progress: []
+    status: completed
+    progress:
+      - timestamp: '2026-05-25T15:08:04.878Z'
+        message: >-
+          FLUX-316 is in Ready status — I'll wait for your review. The test file
+          is at `engine/src/session-store.test.ts` (visible in git status as
+          untracked). Let me know if you'd like me to walk through any of the
+          test scenarios, or say "finish FLUX-316" when you're ready to close it
+          out.
     user: Claude Code
     date: '2026-05-25T15:07:49.320Z'
+    outcome: Claude Code session ended with code 0.
+    endedAt: '2026-05-25T15:08:06.426Z'
+  - type: comment
+    user: Agent
+    comment: 'Test: moving to Ready to validate auto-stop of all sessions.'
+    date: '2026-05-25T15:07:59.001Z'
+    id: c-2026-05-25t15-07-59-001z
 tokenMetadata:
-  inputTokens: 337822
-  outputTokens: 2671
-  costUSD: 0.561204
+  inputTokens: 359839
+  outputTokens: 2858
+  costUSD: 0.610878
   costIsEstimated: false
-  cacheReadTokens: 282026
-  cacheCreationTokens: 55776
+  cacheReadTokens: 298330
+  cacheCreationTokens: 61486
+id: FLUX-316
 ---
 
 ## Problem / Motivation
