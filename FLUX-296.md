@@ -2,9 +2,9 @@
 title: 'copilot, check you can use hte mCP server!'
 assignee: unassigned
 tags:
-  - feature
   - mcp
-  - agent-integration
+  - integration-test
+  - copilot-cli
 priority: Low
 effort: XS
 implementationLink: ''
@@ -532,6 +532,10 @@ history:
     comment: 'try one last time, should work now'
     replyTo: c-2026-05-25t06-07-47-205z
     id: c-2026-05-25t06-22-05-025z
+  - type: activity
+    user: Guy
+    date: '2026-05-25T06:24:18.825Z'
+    comment: 'Updated tags to mcp, integration-test, copilot-cli.'
 status: Ready
 createdBy: Guy
 updatedBy: Guy
