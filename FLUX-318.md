@@ -6,7 +6,7 @@ tags:
   - engine
 priority: Medium
 effort: S
-implementationLink: ''
+implementationLink: a36542a
 subtasks: []
 history:
   - type: activity
@@ -525,10 +525,32 @@ history:
     to: In Progress
     user: Agent
     date: '2026-05-25T15:30:54.450Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Fixed: the PUT /api/tasks/:id route now fires generatePromptNotification
+      for Require Input and Ready transitions, and
+      generateCompletionNotification for Done transitions. The import was
+      already present (from the interrupted session); added the actual call site
+      after the file write succeeds (line 355-361 in tasks.ts). Portal
+      NotificationPanel already renders all notification types correctly — the
+      bug was engine-only.
+    date: '2026-05-25T15:40:42.417Z'
+    id: c-2026-05-25t15-40-42-417z
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-05-25T15:40:42.418Z'
+  - type: status_change
+    from: Done
+    to: Ready
+    user: Guy
+    date: '2026-05-25T15:41:02.598Z'
 title: alert indicators not really working
-status: In Progress
+status: Ready
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 tokenMetadata:
   inputTokens: 1569335
   outputTokens: 10367
@@ -536,7 +558,7 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 1481338
   cacheCreationTokens: 86007
-id: FLUX-318
+order: 0
 ---
 ## Problem / Motivation
 
