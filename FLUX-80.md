@@ -1,6 +1,6 @@
 ---
 title: Add lightweight update awareness via GitHub releases
-status: Todo
+status: In Progress
 createdBy: Guy
 updatedBy: Guy
 assignee: Agent
@@ -26,6 +26,20 @@ history:
     user: Guy
     date: '2026-05-25T06:18:24.952Z'
     comment: Updated description.
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Guy
+    date: '2026-05-25T06:19:47.241Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-25T06:19:47.241Z'
+    comment: >-
+      Implementation plan: 1) Create engine/src/update-check.ts with
+      non-blocking GitHub releases fetch + semver comparison. 2) Add GET
+      /api/update-check route. 3) Fire the check on startup in index.ts. 4) Add
+      fetchUpdateCheck to portal api.ts. 5) Add update indicator in Header.tsx.
+    id: c-2026-05-25t06-19-47-241z
 order: 80
 ---
 ## Summary
