@@ -78,6 +78,18 @@ history:
       pass.
     date: '2026-05-25T04:58:35.172Z'
     id: c-2026-05-25t04-58-35-172z
+  - type: comment
+    user: Agent
+    comment: >-
+      MCP server implemented with 10 tools (get_ticket, list_tickets,
+      get_board_config, create_ticket, create_subtask, update_ticket,
+      change_status, add_comment, log_progress, finish_ticket). Stdio transport
+      via @modelcontextprotocol/sdk. Workflow installer generates MCP config for
+      all CLIs (Claude, Gemini, Copilot, Cursor, Cline, Windsurf). Skills
+      updated to reference MCP tools as primary interface. Docs at
+      .docs/event-horizon/mcp-server.md.
+    id: c-1779687289925-11
+    date: '2026-05-25T05:34:49.966Z'
 order: 17
 effort: L
 implementationLink: FLUX-6 implementation (pending commit)

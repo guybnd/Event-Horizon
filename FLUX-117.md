@@ -1,6 +1,6 @@
 ---
 title: Persist comment read state across devices per user
-status: Todo
+status: Backlog
 assignee: unassigned
 tags:
   - feature
@@ -132,8 +132,13 @@ history:
       No engine code changes were needed — the existing Set-union merge strategy
       handles concurrent updates cleanly.
     id: c-2026-05-19t04-02-57-121z
+  - type: status_change
+    from: Todo
+    to: Backlog
+    user: Guy
+    date: '2026-05-25T05:36:26.598Z'
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 order: 84
 ---
 

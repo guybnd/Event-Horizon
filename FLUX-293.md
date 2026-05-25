@@ -8,7 +8,7 @@ id: FLUX-293
 title: >-
   fix: portal static serving broken in dev mode on Node 26 (ESM require
   fallback)
-status: In Progress
+status: Done
 createdBy: Unknown
 updatedBy: Agent
 assignee: unassigned
@@ -25,6 +25,23 @@ history:
       (get_ticket, list_tickets, get_board_config) confirmed working. Testing
       write op now.
     id: c-1779686666199-2
+  - type: comment
+    user: Agent
+    comment: >-
+      Fixed __dirname resolution across all entry points (workspace.ts,
+      index.ts, skill-installer.ts, release.ts, docs-seeder.ts). Root cause:
+      require('url') fails silently in ESM mode on Node 26. Replaced with static
+      import of fileURLToPath. Also added safety net in normalizeHistoryEntries
+      to inject missing date fields, and fixed MCP server comment handlers to
+      always include timestamps.
+    id: c-1779687290039-3
+    date: '2026-05-25T05:34:50.070Z'
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-05-25T05:34:50.036Z'
+implementationLink: 356a843
 ---
 ## Problem
 

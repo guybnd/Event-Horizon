@@ -1,7 +1,6 @@
 ---
-id: FLUX-286
 title: 'Engine: normalizeInlineSubtasks skips objects without id field'
-status: Todo
+status: Grooming
 priority: High
 effort: S
 assignee: unassigned
@@ -9,7 +8,7 @@ tags:
   - bug
   - engine
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 history:
   - type: activity
     user: Guy
@@ -33,6 +32,18 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-25T13:42:18.331Z'
+  - type: comment
+    user: Guy
+    date: '2026-05-25T05:36:14.831Z'
+    comment: consider MCP workflow too
+    replyTo: c-2026-05-25t13-42-18-331z
+    id: c-2026-05-25t05-36-14-830z
+  - type: status_change
+    from: Todo
+    to: Grooming
+    user: Guy
+    date: '2026-05-25T05:36:16.072Z'
+order: 9
 ---
 
 ## Problem / Motivation

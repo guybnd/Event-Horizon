@@ -1128,10 +1128,21 @@ history:
       points. Moving to Todo.
     date: '2026-05-25T04:42:15.075Z'
     id: c-2026-05-25t04-42-15-075z
+  - type: comment
+    user: Guy
+    date: '2026-05-25T05:35:55.312Z'
+    comment: consider MCP workflow too
+    replyTo: c-2026-05-25t04-42-15-075z
+    id: c-2026-05-25t05-35-55-310z
+  - type: status_change
+    from: Todo
+    to: Grooming
+    user: Guy
+    date: '2026-05-25T05:35:57.012Z'
 title: make it more obvious how to start tasks for each relevant status and action
-status: Todo
+status: Grooming
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 tokenMetadata:
   inputTokens: 442643
   outputTokens: 12979
@@ -1139,6 +1150,7 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 395791
   cacheCreationTokens: 46066
+order: 8
 ---
 ## Problem / Motivation
 

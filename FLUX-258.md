@@ -1,6 +1,6 @@
 ---
 title: 'Gemini quota exhaustion — model override, error surfacing, and session cleanup'
-status: Todo
+status: Backlog
 priority: High
 effort: Medium
 tags:
@@ -32,8 +32,13 @@ history:
       touchpoints. No unresolved choices. Implementation plan updated with
       specific files and line references. Moving to Todo.
     id: c-groom-2026-05-14
+  - type: status_change
+    from: Todo
+    to: Backlog
+    user: Guy
+    date: '2026-05-25T05:36:37.979Z'
 order: 7
-updatedBy: Copilot
+updatedBy: Guy
 ---
 
 ## Problem / Motivation

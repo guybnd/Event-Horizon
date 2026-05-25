@@ -1,6 +1,6 @@
 ---
 title: Fix Gemini CLI session abandonment bugs
-status: Todo
+status: Backlog
 priority: High
 effort: Medium
 tags:
@@ -19,6 +19,11 @@ history:
     to: Todo
     user: Guy
     date: '2026-05-14T08:46:19.105Z'
+  - type: status_change
+    from: Todo
+    to: Backlog
+    user: Guy
+    date: '2026-05-25T05:36:48.785Z'
 order: 164
 ---
 

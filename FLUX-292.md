@@ -256,10 +256,21 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-25T04:40:30.791Z'
+  - type: status_change
+    from: Todo
+    to: Grooming
+    user: Guy
+    date: '2026-05-25T05:35:35.920Z'
+  - type: comment
+    user: Guy
+    date: '2026-05-25T05:35:43.496Z'
+    comment: consider MCP workfglow
+    replyTo: c-2026-05-25t04-40-26-378z
+    id: c-2026-05-25t05-35-43-493z
 title: Agent should be able to create branch for each feature working on
-status: Todo
+status: Grooming
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 tokenMetadata:
   inputTokens: 696382
   outputTokens: 4055
@@ -267,6 +278,7 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 636480
   cacheCreationTokens: 55323
+order: 7
 ---
 ## Problem / Motivation
 
