@@ -2,7 +2,7 @@
 title: >-
   Copilot CLI MCP tools not loading when spawned by engine (node entrypoint
   bypass)
-status: Done
+status: Released
 priority: High
 effort: M
 assignee: unassigned
@@ -62,7 +62,15 @@ history:
     to: Done
     user: Guy
     date: '2026-05-25T11:24:31.480Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-25T16:02:47.643Z'
 order: 1
+version: 0.8.1
+releasedAt: '2026-05-25T16:02:47.643Z'
+releaseDocPath: release-notes/0.8.1
 ---
 ## Problem / Motivation
 

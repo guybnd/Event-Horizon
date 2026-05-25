@@ -931,8 +931,13 @@ history:
     to: Done
     user: Guy
     date: '2026-05-25T15:59:39.655Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-25T16:02:47.761Z'
 title: add indicator on ticket with subtasks how many are done
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
 tokenMetadata:
@@ -943,6 +948,9 @@ tokenMetadata:
   cacheReadTokens: 708965
   cacheCreationTokens: 66496
 order: 7
+version: 0.8.1
+releasedAt: '2026-05-25T16:02:47.761Z'
+releaseDocPath: release-notes/0.8.1
 ---
 ## Problem / Motivation
 

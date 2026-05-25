@@ -836,10 +836,15 @@ history:
     to: Done
     user: Guy
     date: '2026-05-25T11:43:34.496Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-25T16:02:47.632Z'
 title: >-
   Agent health notification panel — surface MCP, skills, and instructions
   installation status
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
 tokenMetadata:
@@ -850,6 +855,9 @@ tokenMetadata:
   cacheReadTokens: 284381
   cacheCreationTokens: 11858
 order: 2
+version: 0.8.1
+releasedAt: '2026-05-25T16:02:47.632Z'
+releaseDocPath: release-notes/0.8.1
 ---
 ## Problem / Motivation
 

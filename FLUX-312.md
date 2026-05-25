@@ -1,6 +1,6 @@
 ---
 title: Agent & Skill Builder UI — modular workflow templates per phase
-status: Done
+status: Released
 priority: High
 effort: XL
 assignee: unassigned
@@ -523,6 +523,11 @@ history:
     to: Done
     user: Guy
     date: '2026-05-25T15:29:18.784Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-25T16:02:47.651Z'
 implementationLink: ''
 subtasks: []
 tokenMetadata:
@@ -533,6 +538,9 @@ tokenMetadata:
   cacheReadTokens: 178397
   cacheCreationTokens: 16480
 order: 5
+version: 0.8.1
+releasedAt: '2026-05-25T16:02:47.651Z'
+releaseDocPath: release-notes/0.8.1
 ---
 
 ## Problem / Motivation

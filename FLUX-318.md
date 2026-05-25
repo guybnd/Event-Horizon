@@ -552,8 +552,13 @@ history:
     to: Done
     user: Guy
     date: '2026-05-25T15:53:11.739Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-25T16:02:47.797Z'
 title: alert indicators not really working
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
 tokenMetadata:
@@ -564,6 +569,9 @@ tokenMetadata:
   cacheReadTokens: 1481338
   cacheCreationTokens: 86007
 order: 6
+version: 0.8.1
+releasedAt: '2026-05-25T16:02:47.797Z'
+releaseDocPath: release-notes/0.8.1
 ---
 ## Problem / Motivation
 

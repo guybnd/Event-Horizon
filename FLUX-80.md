@@ -1,6 +1,6 @@
 ---
 title: Add lightweight update awareness via GitHub releases
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
 assignee: Agent
@@ -1144,6 +1144,11 @@ history:
     to: Done
     user: Guy
     date: '2026-05-25T09:55:40.873Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-25T16:02:47.847Z'
 order: 0
 tokenMetadata:
   inputTokens: 1780862
@@ -1152,6 +1157,9 @@ tokenMetadata:
   costIsEstimated: true
   cacheReadTokens: 1434382
   cacheCreationTokens: 161858
+version: 0.8.1
+releasedAt: '2026-05-25T16:02:47.847Z'
+releaseDocPath: release-notes/0.8.1
 ---
 ## Summary
 

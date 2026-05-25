@@ -1,7 +1,7 @@
 ---
 id: FLUX-283
 title: Extend session store to support multiple agent sessions
-status: Done
+status: Released
 priority: High
 effort: M
 assignee: unassigned
@@ -97,7 +97,15 @@ history:
     to: Done
     user: Agent
     date: '2026-05-25T15:13:06.547Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-25T16:02:47.627Z'
 implementationLink: 0e677b8
+version: 0.8.1
+releasedAt: '2026-05-25T16:02:47.627Z'
+releaseDocPath: release-notes/0.8.1
 ---
 
 Subtask of FLUX-281.

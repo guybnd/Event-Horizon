@@ -1,6 +1,6 @@
 ---
 title: 'Research CLI capabilities and arguments for Claude, Gemini, and Copilot'
-status: Done
+status: Released
 priority: High
 effort: M
 assignee: unassigned
@@ -1661,6 +1661,11 @@ history:
     to: Done
     user: Guy
     date: '2026-05-25T11:51:33.598Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-25T16:02:47.565Z'
 implementationLink: ''
 subtasks: []
 tokenMetadata:
@@ -1671,6 +1676,9 @@ tokenMetadata:
   cacheReadTokens: 613673
   cacheCreationTokens: 85531
 order: 3
+version: 0.8.1
+releasedAt: '2026-05-25T16:02:47.565Z'
+releaseDocPath: release-notes/0.8.1
 ---
 Subtask of FLUX-281.
 

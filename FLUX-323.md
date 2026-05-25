@@ -375,8 +375,13 @@ history:
     to: Done
     user: Agent
     date: '2026-05-25T16:01:25.590Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-25T16:02:47.825Z'
 title: Release v0.8.1 with changelog and GitHub Actions release
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 comment: >-
@@ -390,6 +395,9 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 309301
   cacheCreationTokens: 32519
+version: 0.8.1
+releasedAt: '2026-05-25T16:02:47.825Z'
+releaseDocPath: release-notes/0.8.1
 ---
 ## Problem / Motivation
 

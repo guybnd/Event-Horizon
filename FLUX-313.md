@@ -570,8 +570,13 @@ history:
     to: Done
     user: Guy
     date: '2026-05-25T12:41:38.181Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-25T16:02:47.661Z'
 title: subtask picker improvements
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
 tokenMetadata:
@@ -582,6 +587,9 @@ tokenMetadata:
   cacheReadTokens: 286557
   cacheCreationTokens: 26093
 order: 4
+version: 0.8.1
+releasedAt: '2026-05-25T16:02:47.661Z'
+releaseDocPath: release-notes/0.8.1
 ---
 ## Problem / Motivation
 

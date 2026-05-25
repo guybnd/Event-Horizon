@@ -1,6 +1,6 @@
 ---
 title: 'Test: multi-session store API validation'
-status: Done
+status: Released
 priority: High
 effort: S
 assignee: unassigned
@@ -1092,6 +1092,11 @@ history:
     to: Done
     user: Agent
     date: '2026-05-25T15:13:16.337Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-25T16:02:47.715Z'
 tokenMetadata:
   inputTokens: 359839
   outputTokens: 2858
@@ -1101,6 +1106,9 @@ tokenMetadata:
   cacheCreationTokens: 61486
 id: FLUX-316
 implementationLink: 0e677b8
+version: 0.8.1
+releasedAt: '2026-05-25T16:02:47.715Z'
+releaseDocPath: release-notes/0.8.1
 ---
 
 ## Problem / Motivation
