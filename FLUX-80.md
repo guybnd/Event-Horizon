@@ -1,6 +1,6 @@
 ---
 title: Add lightweight update awareness via GitHub releases
-status: In Progress
+status: Ready
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent
@@ -961,20 +961,192 @@ history:
   - type: agent_session
     sessionId: c70e395e-7449-4ee6-a008-e4b07d6940ec
     startedAt: '2026-05-25T09:53:18.797Z'
-    status: cancelled
-    progress: []
+    status: completed
+    progress:
+      - timestamp: '2026-05-25T09:53:35.240Z'
+        message: 'Running: git log --oneline -15'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: git log --oneline -15
+            description: Show recent commits
+      - timestamp: '2026-05-25T09:53:35.985Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-05-25T09:53:42.406Z'
+        message: 'Running: git diff 9781200..b47aa35 --stat'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: git diff 9781200..b47aa35 --stat
+            description: Show files changed across the relevant commits
+      - timestamp: '2026-05-25T09:53:46.013Z'
+        message: Reading update-check.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\update-check.ts'
+      - timestamp: '2026-05-25T09:53:50.987Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-05-25T09:53:55.366Z'
+        message: Reading index.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\index.ts'
+            limit: 50
+      - timestamp: '2026-05-25T09:53:56.574Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: checkForUpdate|update-check|updateCheck
+            path: 'C:\GitHub\EventHorizon\engine\src\index.ts'
+            output_mode: content
+      - timestamp: '2026-05-25T09:54:01.290Z'
+        message: Reading index.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\index.ts'
+            offset: 75
+            limit: 15
+      - timestamp: '2026-05-25T09:54:03.046Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: open-url|openUrl|open.url
+            path: 'C:\GitHub\EventHorizon'
+            output_mode: content
+            '-n': true
+      - timestamp: '2026-05-25T09:54:05.990Z'
+        message: Working
+        type: info
+      - timestamp: '2026-05-25T09:54:08.197Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: Notification|notification
+            path: 'C:\GitHub\EventHorizon\portal\src\api.ts'
+            output_mode: content
+            '-n': true
+      - timestamp: '2026-05-25T09:54:10.875Z'
+        message: Reading api.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\portal\src\api.ts'
+            offset: 397
+            limit: 50
+      - timestamp: '2026-05-25T09:54:14.749Z'
+        message: 'Running: git show b47aa35 --stat'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: git show b47aa35 --stat
+            description: Show what b47aa35 changed
+      - timestamp: '2026-05-25T09:54:20.998Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-05-25T09:55:01.364Z'
+        message: Working
+        type: tool
+        data:
+          toolName: ToolSearch
+          parameters:
+            query: >-
+              select:mcp__event-horizon__change_status,mcp__event-horizon__add_comment
+            max_results: 2
+      - timestamp: '2026-05-25T09:55:06.013Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-05-25T09:55:09.049Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp__event-horizon__change_status
+          parameters:
+            ticketId: FLUX-80
+            newStatus: Ready
+            comment: >-
+              Code review passed. The update check is simple, non-blocking,
+              fails silently, caches the result — exactly right. The
+              /api/update-check endpoint is minimal. The startup call is
+              fire-and-forget. Good.
+
+
+              One wart: the frontend extracts the release URL from message text
+              via regex (`notification.message.match(/https?:\/\/\S+/)`) instead
+              of carrying a `url` field on NotificationAction. That's parsing
+              structured data out of prose — gross, but not broken since the
+              message format is controlled 20 lines away in the same codebase.
+              If NotificationAction ever grows a `url` field for other use
+              cases, refactor this. Until then, it ships.
+
+
+              The b47aa35 fix properly addresses the missing info notification
+              type and the dead open-url action that Gemini flagged. Button
+              works now.
+      - timestamp: '2026-05-25T09:55:15.983Z'
+        message: >-
+          Moved FLUX-80 to **Ready**.
+
+
+          Summary: Implementation passes review. The core update-check logic is
+          clean and correct. The one weakness — regex-extracting a URL from
+          notification message text instead of putting it on the action payload
+          — is ugly but not broken given the tight coupling. The Gemini-flagged
+          issue (dead `open-url` button) was fixed in `b47aa35`. Ships as-is.
     user: Claude Code
     date: '2026-05-25T09:53:18.797Z'
-    outcome: Session abandoned (engine restarted).
-    endedAt: '2026-05-25T09:53:31.899Z'
+    outcome: Claude Code session ended with code 0.
+    endedAt: '2026-05-25T09:55:17.137Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Code review passed. The update check is simple, non-blocking, fails
+      silently, caches the result — exactly right. The /api/update-check
+      endpoint is minimal. The startup call is fire-and-forget. Good.
+
+
+      One wart: the frontend extracts the release URL from message text via
+      regex (`notification.message.match(/https?:\/\/\S+/)`) instead of carrying
+      a `url` field on NotificationAction. That's parsing structured data out of
+      prose — gross, but not broken since the message format is controlled 20
+      lines away in the same codebase. If NotificationAction ever grows a `url`
+      field for other use cases, refactor this. Until then, it ships.
+
+
+      The b47aa35 fix properly addresses the missing info notification type and
+      the dead open-url action that Gemini flagged. Button works now.
+    date: '2026-05-25T09:55:09.059Z'
+    id: c-2026-05-25t09-55-09-059z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-25T09:55:09.059Z'
 order: 0
 tokenMetadata:
-  inputTokens: 1288455
-  outputTokens: 10340
-  costUSD: 2.655909
+  inputTokens: 1780862
+  outputTokens: 14556
+  costUSD: 3.272541
   costIsEstimated: true
-  cacheReadTokens: 988867
-  cacheCreationTokens: 120046
+  cacheReadTokens: 1434382
+  cacheCreationTokens: 161858
 id: FLUX-80
 ---
 ## Summary
