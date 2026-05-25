@@ -1,7 +1,6 @@
 ---
-id: FLUX-276
 title: 'API: subtask creation endpoint for agents and portal'
-status: Todo
+status: In Progress
 priority: Medium
 effort: S
 assignee: unassigned
@@ -22,6 +21,19 @@ history:
     progress: []
     user: Claude Code
     date: '2026-05-25T04:39:51.938Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-25T04:40:50.292Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Starting implementation. The POST /api/tasks/:parentId/subtasks endpoint
+      already exists. Will add --add-subtask CLI flag to patch-ticket.ts and
+      update skill documentation.
+    date: '2026-05-25T04:40:50.292Z'
+    id: c-2026-05-25t04-40-50-292z
 ---
 
 ## Problem
