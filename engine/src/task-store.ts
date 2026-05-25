@@ -70,6 +70,7 @@ export async function updateTaskWithHistory(taskId: string, options: {
   entries?: any[];
   updatedBy?: string;
   nextStatus?: string;
+  extraFields?: Record<string, any>;
   tokenMetadata?: { inputTokens: number; outputTokens: number; costUSD: number; costIsEstimated: boolean; cacheReadTokens?: number; cacheCreationTokens?: number };
 }) {
   const task = tasksCache[taskId];
@@ -117,8 +118,18 @@ export async function updateTaskWithHistory(taskId: string, options: {
   frontmatter.history = nextHistory;
   frontmatter.updatedBy = actor;
 
+  if (options.extraFields) {
+    Object.assign(frontmatter, options.extraFields);
+  }
+
   if (options.tokenMetadata) {
     frontmatter.tokenMetadata = options.tokenMetadata;
+  }
+
+  // Safety: refuse to write if required fields are missing (prevents corruption)
+  if (!frontmatter.id || !frontmatter.title) {
+    console.error(`[FLUX] Refusing to write ${_path}: missing id or title in frontmatter. This indicates a bug or race condition.`);
+    return null;
   }
 
   const fileContent = matter.stringify(body || '', frontmatter);

@@ -283,8 +283,6 @@ export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framewor
 
 function mcpConfigPathFor(targetDir: string, framework: ResolvedFramework): string {
   switch (framework) {
-    case 'copilot':
-      return path.join(targetDir, '.github', 'copilot', 'mcp.json');
     case 'antigravity':
     case 'gemini':
       return path.join(targetDir, '.gemini', 'settings.json');
@@ -294,6 +292,7 @@ function mcpConfigPathFor(targetDir: string, framework: ResolvedFramework): stri
       return path.join(targetDir, '.cline', 'mcp.json');
     case 'windsurf':
       return path.join(targetDir, '.windsurf', 'mcp.json');
+    case 'copilot':
     case 'claude':
     case 'generic':
     default:
@@ -305,12 +304,14 @@ function buildMcpServerEntry(sourceRoot: string, targetDir: string) {
   const isPkg = (process as any).pkg !== undefined;
   if (isPkg) {
     return {
+      type: 'stdio',
       command: process.execPath,
       args: ['--mcp', '--workspace', '.'],
     };
   }
   const mcpEntryPoint = path.relative(targetDir, path.join(sourceRoot, 'engine', 'src', 'mcp-server.ts')).replace(/\\/g, '/');
   return {
+    type: 'stdio',
     command: 'npx',
     args: ['tsx', mcpEntryPoint, '--workspace', '.'],
   };

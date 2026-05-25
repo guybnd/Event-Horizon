@@ -320,40 +320,15 @@ export async function startMcpServer(): Promise<void> {
       const task = tasksCache[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`);
 
-      const { _path } = task;
-      let frontmatter: any;
-      let body: string;
-      try {
-        const rawFile = await fs.readFile(_path, 'utf-8');
-        const parsed = matter(rawFile);
-        body = parsed.content || '';
-        frontmatter = { ...parsed.data };
-      } catch {
-        const { body: cachedBody, _path: _p, id: _id, ...cachedFm } = task;
-        body = cachedBody || '';
-        frontmatter = { ...cachedFm };
-      }
-
-      frontmatter.implementationLink = implementationLink;
-      frontmatter.updatedBy = 'Agent';
-
       const entries = [{ type: 'comment', user: 'Agent', comment: completionComment, date: new Date().toISOString() }];
       const result = await updateTaskWithHistory(ticketId, {
         entries,
         updatedBy: 'Agent',
         nextStatus: 'Done',
+        extraFields: { implementationLink },
       });
 
       if (!result) return errorResult(`Failed to finish ${ticketId}`);
-
-      // Update implementationLink on the already-written file
-      const updatedRaw = await fs.readFile(_path, 'utf-8');
-      const updatedParsed = matter(updatedRaw);
-      updatedParsed.data.implementationLink = implementationLink;
-      const finalContent = matter.stringify(updatedParsed.content, updatedParsed.data);
-      await fs.writeFile(_path, finalContent, 'utf-8');
-      tasksCache[ticketId] = { ...updatedParsed.data, body: updatedParsed.content, id: ticketId, _path };
-
       broadcastEvent('taskUpdated', { id: ticketId });
       return textResult(`${ticketId} finished → Done (link: ${implementationLink})`);
     },
