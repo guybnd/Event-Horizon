@@ -8,7 +8,7 @@ assignee: Agent
 createdBy: Unknown
 title: Auto-migrate stranded .flux tickets to .flux-store on startup in orphan mode
 status: Todo
-updatedBy: Guy
+updatedBy: Agent
 history:
   - type: activity
     user: Unknown
@@ -55,6 +55,15 @@ history:
     to: Todo
     user: Guy
     date: '2026-05-12T11:47:21.070Z'
+  - type: agent_session
+    sessionId: b58e7e7a-9e62-4aa3-998b-86c4b5fec23f
+    startedAt: '2026-05-25T16:01:21.913Z'
+    status: cancelled
+    progress: []
+    user: Claude Code
+    date: '2026-05-25T16:01:21.913Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-25T16:01:30.556Z'
 tokenMetadata:
   inputTokens: 208737
   outputTokens: 3797
@@ -63,6 +72,7 @@ tokenMetadata:
   cacheReadTokens: 166381
   cacheCreationTokens: 41237
 order: 4
+id: FLUX-220
 ---
 ## Implementation Plan
 

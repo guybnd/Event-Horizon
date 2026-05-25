@@ -800,10 +800,141 @@ history:
       #4 are style issues I can live with for now.
     date: '2026-05-25T15:54:22.619Z'
     id: c-2026-05-25t15-54-22-619z
+  - type: comment
+    user: Agent
+    comment: >-
+      Addressed second review (issues #1 and #2):
+
+
+      1. **Lifted `taskById` Map to AppContext** — computed once via `useMemo`
+      keyed on `tasks`, shared across all card instances. TaskCard now
+      destructures `taskById` from `useApp()` instead of building its own
+      per-instance Map. Zero per-card allocation overhead.
+
+
+      2. **Deleted fake positioning math** — removed `resolvedSubtasks.length *
+      88 + 80`. Now uses the fixed `700` (matching `max-h-[700px]`) for boundary
+      clamping. The `overflow-y: auto` handles variable-height content
+      naturally.
+
+
+      TypeScript passes, build succeeds.
+    date: '2026-05-25T15:57:20.626Z'
+    id: c-2026-05-25t15-57-20-626z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-25T15:57:20.626Z'
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Agent
+    date: '2026-05-25T15:57:40.656Z'
+  - type: agent_session
+    sessionId: 16747c8d-7759-4c23-82f5-2f0fa2ceeb13
+    startedAt: '2026-05-25T15:57:44.009Z'
+    status: completed
+    progress:
+      - timestamp: '2026-05-25T15:58:03.505Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-05-25T15:58:16.908Z'
+        message: >-
+          Now let me check the current state of TaskCard.tsx and AppContext to
+          verify the `taskById` lift claim:
+        type: text
+      - timestamp: '2026-05-25T15:58:50.370Z'
+        message: >-
+          The implementation is solid. Let me verify one more thing about how
+          `config` stability affects `doneStatuses`:
+        type: text
+      - timestamp: '2026-05-25T15:59:03.638Z'
+        message: Responding
+        type: info
+      - timestamp: '2026-05-25T15:59:07.118Z'
+        message: >-
+          Good — `config` is React state, stable unless actually changed. The
+          implementation passes performance review. Let me post the approval.
+        type: text
+      - timestamp: '2026-05-25T15:59:15.838Z'
+        message: >-
+          The ticket is currently "In Progress" and the activity log says it was
+          moved Ready → In Progress for the latest round of changes (which are
+          now committed). Since performance is acceptable, I'll move it back to
+          Ready:
+        type: text
+      - timestamp: '2026-05-25T15:59:19.183Z'
+        message: >-
+          **Performance review complete for FLUX-317.** ✅
+
+
+          The epic card subtask indicator passes performance scrutiny:
+
+          - `taskById` Map shared via AppContext (O(1) lookups, zero per-card
+          allocation)
+
+          - Proper `useMemo` chains with correct deps
+
+          - Popover content lazy-rendered only when open
+
+          - Non-epic cards short-circuit immediately
+
+
+          No blocking issues. Ticket moved back to **Ready**.
+        type: text
+    user: Copilot CLI
+    date: '2026-05-25T15:57:44.009Z'
+    outcome: Copilot CLI session ended with code 0.
+    endedAt: '2026-05-25T15:59:19.183Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-25T15:59:04.813Z'
+    comment: '**Performance Review: APPROVED** ✓'
+    id: c-2026-05-25t15-59-04-813z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-25T15:59:13.823Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-25T15:59:13.824Z'
+    comment: >-
+      Performance review passed. No blocking issues found — memoization, shared
+      lookups, and lazy rendering are all correctly applied. Moving back to
+      Ready.
+    id: c-2026-05-25t15-59-13-824z
+  - type: comment
+    user: Copilot CLI
+    date: '2026-05-25T15:59:19.183Z'
+    comment: >-
+      **Performance review complete for FLUX-317.** ✅
+
+
+      The epic card subtask indicator passes performance scrutiny:
+
+      - `taskById` Map shared via AppContext (O(1) lookups, zero per-card
+      allocation)
+
+      - Proper `useMemo` chains with correct deps
+
+      - Popover content lazy-rendered only when open
+
+      - Non-epic cards short-circuit immediately
+
+
+      No blocking issues. Ticket moved back to **Ready**.
+    id: c-2026-05-25t15-59-19-183z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Guy
+    date: '2026-05-25T15:59:39.655Z'
 title: add indicator on ticket with subtasks how many are done
-status: In Progress
+status: Done
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 tokenMetadata:
   inputTokens: 892019
   outputTokens: 6538
@@ -811,8 +942,7 @@ tokenMetadata:
   costIsEstimated: true
   cacheReadTokens: 708965
   cacheCreationTokens: 66496
-order: 1
-id: FLUX-317
+order: 7
 ---
 ## Problem / Motivation
 
