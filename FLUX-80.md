@@ -1,6 +1,6 @@
 ---
 title: Add lightweight update awareness via GitHub releases
-status: Ready
+status: In Progress
 createdBy: Guy
 updatedBy: Agent
 assignee: Agent
@@ -346,8 +346,31 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-25T07:10:01.163Z'
+  - type: comment
+    user: Guy
+    date: '2026-05-25T07:11:42.608Z'
+    comment: >-
+      do we need ot add somewhere in the view the current version? so user knows
+      what it is currently, then we can mark it in some indicator if its out of
+      date!
+    replyTo: c-2026-05-25t07-10-01-163z
+    id: c-2026-05-25t07-11-42-585z
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Guy
+    date: '2026-05-25T07:11:42.608Z'
+    comment: Returned to work
+  - type: agent_session
+    sessionId: 327dda5a-e337-495c-aa8d-664dc29e5c00
+    startedAt: '2026-05-25T07:11:43.318Z'
+    status: cancelled
+    progress: []
+    user: Claude Code
+    date: '2026-05-25T07:11:43.318Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-25T07:11:54.101Z'
 order: 80
-id: FLUX-80
 tokenMetadata:
   inputTokens: 467663
   outputTokens: 3761
@@ -355,6 +378,7 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 425333
   cacheCreationTokens: 42280
+id: FLUX-80
 ---
 ## Summary
 
