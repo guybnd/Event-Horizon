@@ -1,6 +1,7 @@
 import { readFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { addNotification } from './notifications.js';
 
 const __dir = (() => {
   // @ts-ignore
@@ -67,6 +68,12 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
 
     if (updateAvailable) {
       console.log(`\x1b[36m[update]\x1b[0m A newer version is available: v${latestVersion} (current: v${currentVersion}) — ${releaseUrl}`);
+      addNotification({
+        type: 'info',
+        title: `Update available: v${latestVersion}`,
+        message: `A newer version is available (current: v${currentVersion}). View the release at ${releaseUrl}`,
+        actions: [{ label: 'View Release', actionId: 'open-url' }],
+      });
     }
 
     return cachedResult;

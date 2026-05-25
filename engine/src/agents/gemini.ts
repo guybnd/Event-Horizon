@@ -6,6 +6,7 @@ import { buildActivityEntry, buildCommentEntry, buildAgentMessageEntry, buildAge
 import { updateTaskWithHistory, updateAgentSession, tasksCache, estimateCostUSD } from '../task-store.js';
 import { cliSessionsById, cliSessionIdByTaskId } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
+import { checkFrameworkHealth } from '../notifications.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
 
 function checkBinaryInstalled(binaryName: string): void {
@@ -720,6 +721,10 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
         entries: [buildActivityEntry(outcome, 'Agent', session.endedAt)],
         tokenMetadata: tokenUpdate ?? undefined,
       });
+    }
+
+    if (finalStatus === 'completed') {
+      checkFrameworkHealth(session.framework).catch(() => {});
     }
   });
 }

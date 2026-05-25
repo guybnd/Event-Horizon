@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, memo } from 'react';
-import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, FileText, Tag, Plus, Power, Bot, Sun, Moon, ArrowUpCircle } from 'lucide-react';
+import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, FileText, Tag, Plus, Power, Bot, Sun, Moon } from 'lucide-react';
 import { useApp, type AppView } from '../AppContext';
 import { SyncStatusIndicator } from './SyncStatusIndicator';
 import { ActiveSessionsPopover } from './ActiveSessionsPopover';
@@ -7,7 +7,6 @@ import { NotificationPanel } from './NotificationPanel';
 import { AnimatePresence } from 'framer-motion';
 import { GlobalSearch } from './GlobalSearch';
 import { LifetimeTokenStats } from './LifetimeTokenStats';
-import { fetchUpdateCheck, type UpdateInfo } from '../api';
 
 const NavItem = memo(function NavItem({ 
   view, 
@@ -75,13 +74,6 @@ export function Header() {
   const [isStoppingService, setIsStoppingService] = useState(false);
   const [isSessionsPopoverOpen, setIsSessionsPopoverOpen] = useState(false);
   const [isNotificationPanelOpen, setIsNotificationPanelOpen] = useState(false);
-  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
-
-  useEffect(() => {
-    fetchUpdateCheck().then(info => {
-      if (info.updateAvailable) setUpdateInfo(info);
-    }).catch(() => {});
-  }, []);
 
   const activeSessionStatuses = new Set(['pending', 'running', 'waiting-input']);
   const activeSessionCount = tasks.filter((task) => task.cliSession && activeSessionStatuses.has(task.cliSession.status)).length;
@@ -127,19 +119,6 @@ export function Header() {
         {/* Left: branding + nav */}
         <div className="flex shrink-0 items-center gap-3">
           <Branding />
-
-          {updateInfo && (
-            <a
-              href={updateInfo.releaseUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={`Update available: v${updateInfo.latestVersion}`}
-              className="flex items-center gap-1 rounded-lg border border-primary/30 bg-primary/5 px-2 py-1 text-[11px] font-semibold text-primary transition-colors hover:bg-primary/10 dark:border-primary/40 dark:bg-primary/10 dark:hover:bg-primary/20"
-            >
-              <ArrowUpCircle className="h-3.5 w-3.5" />
-              <span>v{updateInfo.latestVersion}</span>
-            </a>
-          )}
 
           <div className="h-6 w-px bg-gray-200 dark:bg-white/10" />
 

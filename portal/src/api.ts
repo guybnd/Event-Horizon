@@ -394,19 +394,6 @@ export async function resolveConflicts(
   return res.json();
 }
 
-export interface UpdateInfo {
-  updateAvailable: boolean;
-  currentVersion: string;
-  latestVersion: string;
-  releaseUrl: string;
-}
-
-export async function fetchUpdateCheck(): Promise<UpdateInfo> {
-  const res = await fetch(`${API_URL}/update-check`);
-  if (!res.ok) return { updateAvailable: false, currentVersion: '', latestVersion: '', releaseUrl: '' };
-  return res.json();
-}
-
 // ─── Notifications ───────────────────────────────────────────────────────────
 
 export interface NotificationAction {

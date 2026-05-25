@@ -3,7 +3,7 @@ import { getWorkflowInstallStatus, type Framework } from './workflow-installer.j
 import { workspaceRoot } from './workspace.js';
 import { broadcastEvent } from './events.js';
 
-export type NotificationType = 'error' | 'prompt' | 'completion';
+export type NotificationType = 'error' | 'prompt' | 'completion' | 'info';
 
 export interface NotificationAction {
   label: string;

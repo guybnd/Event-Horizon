@@ -134,8 +134,8 @@ export const NotificationPanel = memo(function NotificationPanel({ notifications
         onClose();
       }
     }
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    const timer = setTimeout(() => document.addEventListener('mousedown', handleClickOutside), 0);
+    return () => { clearTimeout(timer); document.removeEventListener('mousedown', handleClickOutside); };
   }, [onClose]);
 
   const handleMarkAllRead = useCallback(async () => {
