@@ -13,6 +13,7 @@ import { execFile, spawn } from 'child_process';
 import path from 'path';
 import os from 'os';
 
+import { fileURLToPath } from 'url';
 import { requireWorkspace } from './middleware.js';
 import { workspaceRoot, loadAppSettings, getCliWorkspace, resolvePortalDist } from './workspace.js';
 import { activateWorkspace } from './task-store.js';
@@ -30,6 +31,13 @@ import readStateRouter from './routes/read-state.js';
 import eventsRouter from './routes/events.js';
 import storageRouter from './routes/storage.js';
 import syncStatusRouter from './routes/sync-status.js';
+
+const __dir = (() => {
+  // @ts-ignore
+  if (typeof __dirname === 'string' && path.isAbsolute(__dirname)) return __dirname;
+  try { return path.dirname(fileURLToPath(import.meta.url)); } catch {}
+  return path.join(process.cwd(), 'src');
+})();
 
 function isValidWorkspaceRoot(dir: string): boolean {
   return existsSync(path.join(dir, '.flux')) || existsSync(path.join(dir, '.flux-store'));
@@ -124,7 +132,7 @@ async function initTray(port: number): Promise<void> {
   let binaryPath: string;
 
   if (isPkg) {
-    const embeddedPath = path.join(__dirname, 'traybin', binaryName);
+    const embeddedPath = path.join(__dir, 'traybin', binaryName);
     const tmpPath = path.join(os.tmpdir(), `eh-tray-${binaryName}`);
     if (!existsSync(tmpPath)) {
       const data = await fs.readFile(embeddedPath);
@@ -133,8 +141,8 @@ async function initTray(port: number): Promise<void> {
     binaryPath = tmpPath;
   } else {
     const candidates = [
-      path.resolve(__dirname, '..', '..', 'node_modules', 'systray', 'traybin', binaryName),
-      path.resolve(__dirname, '..', 'node_modules', 'systray', 'traybin', binaryName),
+      path.resolve(__dir, '..', '..', 'node_modules', 'systray', 'traybin', binaryName),
+      path.resolve(__dir, '..', 'node_modules', 'systray', 'traybin', binaryName),
     ];
     const found = candidates.find(p => existsSync(p));
     if (!found) {

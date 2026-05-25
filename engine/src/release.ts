@@ -1,15 +1,20 @@
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import matter from 'gray-matter';
 
-// __dirname is available natively in CJS (esbuild bundle / pkg).
-// tsx also provides it in ESM dev mode.
+const __dir = (() => {
+  // @ts-ignore
+  if (typeof __dirname === 'string' && path.isAbsolute(__dirname)) return __dirname;
+  try { return path.dirname(fileURLToPath(import.meta.url)); } catch {}
+  return path.join(process.cwd(), 'src');
+})();
 
 async function run() {
   const args = process.argv.slice(2);
   const workspaceIdx = args.indexOf('--workspace');
-  const workspaceRoot = workspaceIdx !== -1 ? (args[workspaceIdx + 1] ?? process.cwd()) : path.join(__dirname, '../..');
+  const workspaceRoot = workspaceIdx !== -1 ? (args[workspaceIdx + 1] ?? process.cwd()) : path.join(__dir, '../..');
   const skipIndices = new Set(workspaceIdx !== -1 ? [workspaceIdx, workspaceIdx + 1] : []);
   const version = args.find((a, i) => !a.startsWith('--') && !skipIndices.has(i));
   if (!version) {
