@@ -386,10 +386,22 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-25T07:35:44.116Z'
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Agent
+    date: '2026-05-25T07:52:24.955Z'
+  - type: agent_session
+    sessionId: bafea95c-23dd-440c-8da8-3a578f57a1eb
+    startedAt: '2026-05-25T07:52:26.208Z'
+    status: active
+    progress: []
+    user: Claude Code
+    date: '2026-05-25T07:52:26.208Z'
 title: >-
   Agent health notification panel — surface MCP, skills, and instructions
   installation status
-status: Ready
+status: In Progress
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
