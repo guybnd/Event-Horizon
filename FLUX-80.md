@@ -1,8 +1,8 @@
 ---
 title: Add lightweight update awareness via GitHub releases
-status: Ready
+status: Done
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 assignee: Agent
 tags:
   - feature
@@ -1139,6 +1139,11 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-25T09:55:09.059Z'
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Guy
+    date: '2026-05-25T09:55:40.873Z'
 order: 0
 tokenMetadata:
   inputTokens: 1780862
@@ -1147,7 +1152,6 @@ tokenMetadata:
   costIsEstimated: true
   cacheReadTokens: 1434382
   cacheCreationTokens: 161858
-id: FLUX-80
 ---
 ## Summary
 

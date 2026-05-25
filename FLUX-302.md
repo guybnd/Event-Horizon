@@ -620,6 +620,25 @@ history:
       garbage. Ticket stays In Progress.
     date: '2026-05-25T08:34:45.082Z'
     id: c-2026-05-25t08-34-45-082z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Guy
+    date: '2026-05-25T09:56:16.067Z'
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Guy
+    date: '2026-05-25T09:56:21.053Z'
+  - type: agent_session
+    sessionId: a5e1b29a-fbb2-49b6-a839-203776cf1bf1
+    startedAt: '2026-05-25T09:56:21.981Z'
+    status: cancelled
+    progress: []
+    user: Gemini CLI
+    date: '2026-05-25T09:56:21.981Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-25T09:56:35.937Z'
 title: >-
   Agent health notification panel — surface MCP, skills, and instructions
   installation status
