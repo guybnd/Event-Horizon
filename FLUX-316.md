@@ -922,19 +922,103 @@ history:
   - type: agent_session
     sessionId: 412c48df-0d12-47b0-bda7-6a814b2c9392
     startedAt: '2026-05-25T15:06:08.637Z'
-    status: cancelled
-    progress: []
+    status: completed
+    progress:
+      - timestamp: '2026-05-25T15:06:23.821Z'
+        message: Reading session-store.test.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\session-store.test.ts'
+      - timestamp: '2026-05-25T15:06:25.328Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-05-25T15:06:31.708Z'
+        message: Reading cli-session.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\routes\cli-session.ts'
+      - timestamp: '2026-05-25T15:06:40.337Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-05-25T15:06:44.508Z'
+        message: 'Running: cd /c/GitHub/EventHorizon/engine && npx vitest run...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              cd /c/GitHub/EventHorizon/engine && npx vitest run
+              src/session-store.test.ts 2>&1
+            timeout: 30000
+      - timestamp: '2026-05-25T15:06:55.340Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-05-25T15:07:04.062Z'
+        message: >-
+          All 30 tests pass. Here's a summary of what's in this ticket:
+
+
+          **FLUX-316 — Test: multi-session store API validation**
+
+
+          The implementation covers all 6 scenarios from the test plan as unit
+          tests in `engine/src/session-store.test.ts`:
+
+
+          1. **Backwards compat** — single session without role works with both
+          `getCliSessionSummaryForTask` (single endpoint) and
+          `getAllSessionSummariesForTask` (multi endpoint)
+
+          2. **Multi-session** — two concurrent sessions with distinct roles are
+          tracked independently; `getCliSessionSummaryForTask` returns most
+          recent active
+
+          3. **File-lock conflict detection** — `checkPathConflicts` detects
+          prefix overlaps in both directions, allows non-overlapping paths, and
+          ignores cancelled sessions
+
+          4. **Pattern validation** — `validatePatternSupport` rejects
+          gemini/copilot as supervisor lead but allows claude
+
+          5. **Targeted stop** — stopping one session by ID leaves others active
+
+          6. **Auto-stop on Ready** — `stopAllSessionsForTask` cancels all
+          active sessions, leaves already-finished ones unchanged
+
+
+          The supporting code changes:
+
+          - `engine/src/session-store.ts` — new exports: `registerSession`,
+          `unregisterSession`, `getActiveSessionsForTask`, `checkPathConflicts`,
+          `validatePatternSupport`, `stopAllSessionsForTask`
+
+          - `engine/src/agents/types.ts` — added `CliCapabilities`,
+          `CLI_CAPABILITIES`, `ExecutionPattern`, `PatternPosition`,
+          multi-session fields on `CliSessionRecord`/`CliSessionSummary`
+
+          - `engine/src/routes/cli-session.ts` — route handlers use new
+          validation and conflict detection
+
+          - `engine/src/routes/tasks.ts` — imports `stopAllSessionsForTask` for
+          auto-stop on status change
+
+
+          Ready for your review. Say `finish FLUX-316` when you're satisfied.
     user: Claude Code
     date: '2026-05-25T15:06:08.637Z'
-    outcome: Session abandoned (engine restarted).
-    endedAt: '2026-05-25T15:06:17.096Z'
+    outcome: Claude Code session ended with code 0.
+    endedAt: '2026-05-25T15:07:05.212Z'
 tokenMetadata:
-  inputTokens: 178636
-  outputTokens: 1484
-  costUSD: 0.337393
+  inputTokens: 337822
+  outputTokens: 2671
+  costUSD: 0.561204
   costIsEstimated: false
-  cacheReadTokens: 142563
-  cacheCreationTokens: 36060
+  cacheReadTokens: 282026
+  cacheCreationTokens: 55776
 ---
 
 ## Problem / Motivation
