@@ -19,6 +19,7 @@ history:
     comment: Created ticket.
   - type: comment
     user: Agent
+    date: '2026-05-25T05:24:26.199Z'
     comment: >-
       MCP smoke test: all 10 tools registered and responding. Read ops
       (get_ticket, list_tickets, get_board_config) confirmed working. Testing

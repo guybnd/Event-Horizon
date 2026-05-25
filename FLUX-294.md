@@ -17,6 +17,7 @@ history:
     comment: Created ticket.
   - type: comment
     user: Agent
+    date: '2026-05-25T05:24:27.380Z'
     comment: >-
       Groomed and moved to Todo. This is an XS validation ticket — the ticket's
       own lifecycle serves as the test of MCP tool correctness. Tools verified
