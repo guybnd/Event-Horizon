@@ -1,6 +1,6 @@
 ---
 title: 'Research CLI capabilities and arguments for Claude, Gemini, and Copilot'
-status: Ready
+status: Done
 priority: High
 effort: M
 assignee: unassigned
@@ -8,7 +8,7 @@ tags:
   - feature
   - multi-agent
 createdBy: Agent
-updatedBy: Agent
+updatedBy: Guy
 history:
   - type: activity
     user: Agent
@@ -1656,6 +1656,11 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-25T11:45:25.188Z'
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Guy
+    date: '2026-05-25T11:51:33.598Z'
 implementationLink: ''
 subtasks: []
 tokenMetadata:
@@ -1665,7 +1670,7 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 613673
   cacheCreationTokens: 85531
-id: FLUX-282
+order: 3
 ---
 Subtask of FLUX-281.
 
