@@ -240,9 +240,29 @@ history:
       or AppContext since tasks are already available via useApp().
     date: '2026-05-25T15:17:38.688Z'
     id: c-2026-05-25t15-17-38-688z
+  - type: comment
+    user: Agent
+    comment: >-
+      Implementation complete. Added to TaskCard.tsx: (1) Epic detection via
+      task.subtasks — cards with subtasks get a 3px indigo left border and an
+      "Epic" badge with Layers icon next to the ticket ID. (2) Progress bar
+      below the description snippet showing done/total count with a green fill
+      proportional to completion. (3) Clickable subtask popover — clicking the
+      progress bar opens a portal-based dropdown listing each subtask with
+      status dot (green=done, gray=pending), title, and status text. Each row
+      navigates to that subtask. Uses existing openBoardTask pattern. Resolved
+      subtask statuses include Done, Released, and the configured archive
+      status. TypeScript passes, build succeeds.
+    date: '2026-05-25T15:22:09.658Z'
+    id: c-2026-05-25t15-22-09-658z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-25T15:22:09.658Z'
 id: FLUX-317
 title: add indicator on ticket with subtasks how many are done
-status: In Progress
+status: Ready
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
