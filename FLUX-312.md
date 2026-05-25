@@ -506,6 +506,13 @@ history:
       integration, StepConfigPanel, AgentEditorModal, and PipelinePreview.
     date: '2026-05-25T12:38:00.319Z'
     id: c-2026-05-25t12-38-00-319z
+  - type: activity
+    user: Agent
+    date: '2026-05-25T13:54:31.471Z'
+    comment: >-
+      Implementing file-backed skills: UI reads/writes actual .docs/skills/*.md
+      files via engine API. Workflow config stores structure only (agent
+      ordering, skill references by path), not duplicated prompt content.
 implementationLink: ''
 subtasks: []
 id: FLUX-312
