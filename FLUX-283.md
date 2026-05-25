@@ -1,7 +1,7 @@
 ---
 id: FLUX-283
 title: Extend session store to support multiple agent sessions
-status: Ready
+status: Done
 priority: High
 effort: M
 assignee: unassigned
@@ -75,6 +75,29 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-25T14:51:07.185Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Implemented multi-session store. Key changes: (1) types.ts — added
+      ExecutionPattern, PatternPosition, CliCapabilities registry with per-CLI
+      support matrix. (2) session-store.ts — replaced single-session Map with
+      multi-session Map, added registerSession/unregisterSession, file-lock
+      conflict detection (path prefix matching), pattern validation,
+      stopAllSessionsForTask, backwards-compat shim for cliSessionIdByTaskId.
+      (3) routes/cli-session.ts — new GET /:id/cli-sessions list endpoint,
+      role/pattern/lockedPaths params on start, sessionId targeting on
+      input/stop. (4) routes/tasks.ts — auto-stop on Ready now uses
+      stopAllSessionsForTask. (5) session-store.test.ts — unit tests (397 lines)
+      covering all new functions. Validated via 6-scenario integration test
+      (FLUX-316).
+    date: '2026-05-25T15:13:06.547Z'
+    id: c-2026-05-25t15-13-06-547z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-25T15:13:06.547Z'
+implementationLink: 0e677b8
 ---
 
 Subtask of FLUX-281.

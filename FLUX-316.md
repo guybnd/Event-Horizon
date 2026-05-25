@@ -1,6 +1,6 @@
 ---
 title: 'Test: multi-session store API validation'
-status: Ready
+status: Done
 priority: High
 effort: S
 assignee: unassigned
@@ -1050,6 +1050,48 @@ history:
     comment: 'Test: moving to Ready to validate auto-stop of all sessions.'
     date: '2026-05-25T15:07:59.001Z'
     id: c-2026-05-25t15-07-59-001z
+  - type: comment
+    user: Agent
+    comment: >-
+      Test execution results — all 6 scenarios PASSED:
+
+
+      1. **Backwards compat** — PASS: Single session starts, GET /cli-session
+      returns it, GET /cli-sessions returns array of 1, stop returns cancelled.
+
+      2. **Multi-session with roles** — PASS: Two concurrent sessions with
+      role=reviewer and role=implementer both active simultaneously. GET
+      /cli-sessions returns both with correct roles.
+
+      3. **File-lock conflict detection** — PASS: Session with
+      lockedPaths=["src/models/"] blocks a second session requesting
+      ["src/models/user.ts"] (409 with conflict details). Non-overlapping path
+      ["src/routes/"] succeeds.
+
+      4. **Pattern validation** — PASS: Gemini as supervisor lead rejected with
+      descriptive error. Claude as supervisor lead accepted.
+
+      5. **Targeted stop** — PASS: sessionId param on stop endpoint routes to
+      specific session.
+
+      6. **Auto-stop on Ready** — PASS: Moving ticket to Ready fires
+      stopAllSessionsForTask, all active sessions terminated.
+
+
+      No regressions observed in single-session portal UX. Implementation
+      commit: 0e677b8.
+    date: '2026-05-25T15:13:07.019Z'
+    id: c-2026-05-25t15-13-07-019z
+  - type: comment
+    user: Agent
+    comment: All 6 test scenarios passed. Test findings documented in ticket comments.
+    date: '2026-05-25T15:13:16.337Z'
+    id: c-2026-05-25t15-13-16-337z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-25T15:13:16.337Z'
 tokenMetadata:
   inputTokens: 359839
   outputTokens: 2858
@@ -1058,6 +1100,7 @@ tokenMetadata:
   cacheReadTokens: 298330
   cacheCreationTokens: 61486
 id: FLUX-316
+implementationLink: 0e677b8
 ---
 
 ## Problem / Motivation
