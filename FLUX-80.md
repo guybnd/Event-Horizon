@@ -948,6 +948,25 @@ history:
       handling it client-side). I've also moved the ticket back to "In
       Progress".
     id: c-2026-05-25t08-36-09-601z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Guy
+    date: '2026-05-25T09:52:59.430Z'
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Guy
+    date: '2026-05-25T09:53:17.971Z'
+  - type: agent_session
+    sessionId: c70e395e-7449-4ee6-a008-e4b07d6940ec
+    startedAt: '2026-05-25T09:53:18.797Z'
+    status: cancelled
+    progress: []
+    user: Claude Code
+    date: '2026-05-25T09:53:18.797Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-25T09:53:31.899Z'
 order: 0
 tokenMetadata:
   inputTokens: 1288455
