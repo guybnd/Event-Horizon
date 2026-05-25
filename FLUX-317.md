@@ -218,10 +218,12 @@ history:
   - type: agent_session
     sessionId: f079515d-219a-437b-be4b-218d8c8f6aa3
     startedAt: '2026-05-25T15:16:25.281Z'
-    status: active
+    status: cancelled
     progress: []
     user: Claude Code
     date: '2026-05-25T15:16:25.281Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-25T15:16:33.360Z'
 id: FLUX-317
 title: add indicator on ticket with subtasks how many are done
 status: Todo
