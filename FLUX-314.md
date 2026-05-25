@@ -24,7 +24,11 @@ history:
     user: Guy
     date: '2026-05-25T12:08:56.354Z'
     comment: Updated title.
-title: test
+  - type: activity
+    user: Guy
+    date: '2026-05-25T12:24:36.299Z'
+    comment: Updated title.
+title: TicketPicker search component
 status: Archived
 createdBy: Guy
 updatedBy: Guy
