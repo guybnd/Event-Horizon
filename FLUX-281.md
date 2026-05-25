@@ -61,7 +61,8 @@ history:
 title: multi agent code review
 status: Todo
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
+order: 1
 ---
 
 ## Problem / Motivation

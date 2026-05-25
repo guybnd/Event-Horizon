@@ -1,5 +1,4 @@
 ---
-id: FLUX-284
 title: Live agent session panel — runtime status & controls
 status: Todo
 priority: High
@@ -9,7 +8,7 @@ tags:
   - feature
   - multi-agent
 createdBy: Agent
-updatedBy: Agent
+updatedBy: Guy
 history:
   - type: activity
     user: Agent
@@ -51,6 +50,7 @@ history:
       reduced from M to S accordingly.
     date: '2026-05-25T11:53:59.356Z'
     id: c-2026-05-25t11-53-59-356z
+order: 0
 ---
 
 Subtask of FLUX-281.

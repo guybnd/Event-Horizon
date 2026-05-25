@@ -1,5 +1,4 @@
 ---
-id: FLUX-285
 title: Define agent system prompts for all 13 mapped roles
 status: Todo
 priority: High
@@ -9,7 +8,7 @@ tags:
   - feature
   - multi-agent
 createdBy: Agent
-updatedBy: Agent
+updatedBy: Guy
 history:
   - type: activity
     user: Agent
@@ -38,6 +37,7 @@ history:
     user: Agent
     date: '2026-05-25T11:49:14.320Z'
     comment: Updated description.
+order: 2
 ---
 
 Subtask of FLUX-281.

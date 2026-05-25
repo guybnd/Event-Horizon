@@ -1075,7 +1075,7 @@ history:
 title: 'Skill Store: install, edit, and manage custom skills for agents'
 status: Todo
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 tokenMetadata:
   inputTokens: 517473
   outputTokens: 6053
@@ -1083,7 +1083,7 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 432240
   cacheCreationTokens: 85205
-id: FLUX-311
+order: 3
 ---
 ## Problem / Motivation
 
