@@ -454,6 +454,19 @@ history:
     user: Agent
     date: '2026-05-25T11:53:50.137Z'
     comment: Updated description.
+  - type: comment
+    user: Agent
+    comment: >-
+      Updated with FLUX-282 research findings: (1) Claude-first default — CLI
+      picker hidden unless user wants it. (2) Absorbed FLUX-284's pipeline
+      builder scope — 284 is now runtime-only. (3) Added pattern selector per
+      phase with user-friendly labels: "One after another" (relay), "All at
+      once, then combine" (scatter-gather), "One leads, others assist"
+      (supervisor). (4) Added capability constraints — Gemini can't be placed in
+      supervisor lead slot, validated at drop time. (5) Phase column layout
+      changes dynamically based on selected pattern.
+    date: '2026-05-25T11:53:59.539Z'
+    id: c-2026-05-25t11-53-59-539z
 implementationLink: ''
 subtasks: []
 id: FLUX-312

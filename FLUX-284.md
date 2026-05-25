@@ -42,6 +42,15 @@ history:
     user: Agent
     date: '2026-05-25T11:53:49.654Z'
     comment: Updated title. Updated description. Changed effort to S.
+  - type: comment
+    user: Agent
+    comment: >-
+      Reduced scope: FLUX-284 is now strictly the runtime session panel (live
+      status, controls, token usage). All workflow configuration / template
+      building moved to FLUX-312 which is the more complete design. Effort
+      reduced from M to S accordingly.
+    date: '2026-05-25T11:53:59.356Z'
+    id: c-2026-05-25t11-53-59-356z
 ---
 
 Subtask of FLUX-281.
