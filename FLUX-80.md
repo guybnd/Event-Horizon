@@ -8,7 +8,7 @@ tags:
   - feature
 priority: Low
 effort: S
-implementationLink: ''
+implementationLink: a8a8821
 subtasks: []
 history:
   - type: activity
@@ -682,7 +682,45 @@ history:
     date: '2026-05-25T07:54:38.900Z'
     outcome: Session abandoned (engine restarted).
     endedAt: '2026-05-25T07:54:46.790Z'
-order: 80
+  - type: comment
+    user: Agent
+    comment: >-
+      Update check now routes through the notification panel as requested. When
+      checkForUpdate() finds a newer version, it calls addNotification() with
+      type 'info', title, message (including release URL), and a "View Release"
+      action. The separate fetchUpdateCheck + updateInfo state + ArrowUpCircle
+      badge in Header.tsx has been removed. One path, not two. Key files:
+      engine/src/update-check.ts (addNotification call),
+      engine/src/notifications.ts ('info' type added), portal/src/api.ts
+      (removed UpdateInfo/fetchUpdateCheck), portal/src/components/Header.tsx
+      (removed badge). Commit: a8a8821.
+    date: '2026-05-25T08:31:43.211Z'
+    id: c-2026-05-25t08-31-43-211z
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-05-25T08:31:43.213Z'
+  - type: status_change
+    from: Done
+    to: Ready
+    user: Guy
+    date: '2026-05-25T08:31:53.194Z'
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Guy
+    date: '2026-05-25T08:32:06.557Z'
+  - type: agent_session
+    sessionId: 40adcc2c-2afa-4332-bbeb-8fe64d3ae32f
+    startedAt: '2026-05-25T08:32:07.394Z'
+    status: cancelled
+    progress: []
+    user: Gemini CLI
+    date: '2026-05-25T08:32:07.394Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-25T08:32:23.678Z'
+order: 0
 tokenMetadata:
   inputTokens: 870612
   outputTokens: 9214

@@ -572,6 +572,25 @@ history:
       #5 is probably a visible bug too.** The rest is acceptable.
     date: '2026-05-25T07:56:39.805Z'
     id: c-2026-05-25t07-56-39-805z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Guy
+    date: '2026-05-25T08:32:19.144Z'
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Guy
+    date: '2026-05-25T08:32:25.034Z'
+  - type: agent_session
+    sessionId: 969be2c0-49ed-48f9-803e-a86f3457f98f
+    startedAt: '2026-05-25T08:32:26.433Z'
+    status: cancelled
+    progress: []
+    user: Gemini CLI
+    date: '2026-05-25T08:32:26.433Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-25T08:32:39.261Z'
 title: >-
   Agent health notification panel — surface MCP, skills, and instructions
   installation status
