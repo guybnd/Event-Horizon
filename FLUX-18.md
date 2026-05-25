@@ -1,6 +1,6 @@
 ---
 title: Local executable / packaged app
-status: Todo
+status: Grooming
 createdBy: Guy
 updatedBy: Guy
 assignee: Agent
@@ -54,7 +54,12 @@ history:
       prerequisite, and update prompts rather than full auto-update. This is
       concrete enough to stay in `Todo`.
     id: c-2026-05-07t03-53-39-4816199z-flux-18
-order: 18
+  - type: status_change
+    from: Todo
+    to: Grooming
+    user: Guy
+    date: '2026-05-25T06:41:22.353Z'
+order: 12
 priority: Medium
 effort: L
 implementationLink: ''
