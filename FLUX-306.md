@@ -24,7 +24,36 @@ history:
     to: In Progress
     user: Guy
     date: '2026-05-25T06:35:08.891Z'
-order: 1
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Guy
+    date: '2026-05-25T06:45:50.906Z'
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Guy
+    date: '2026-05-25T06:45:54.447Z'
+  - type: agent_session
+    sessionId: eb103e42-67bc-4284-8bd5-0beb8209849b
+    startedAt: '2026-05-25T06:45:54.608Z'
+    status: cancelled
+    progress: []
+    user: Copilot CLI
+    date: '2026-05-25T06:45:54.608Z'
+    outcome: Copilot CLI session stopped by user.
+    endedAt: '2026-05-25T06:46:05.186Z'
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Guy
+    date: '2026-05-25T06:46:07.814Z'
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Guy
+    date: '2026-05-25T06:46:13.859Z'
+order: 0
 ---
 ## Problem / Motivation
 
