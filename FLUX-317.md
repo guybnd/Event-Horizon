@@ -229,6 +229,17 @@ history:
     to: In Progress
     user: Agent
     date: '2026-05-25T15:17:28.212Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Implementation plan: 1) Add subtask progress bar and epic badge to
+      TaskCard.tsx using the tasks array from AppContext to resolve subtask IDs.
+      2) Add a clickable subtask popover (matching existing comment popover
+      pattern) showing each subtask with status, title, and navigation. 3) Add
+      subtle left-border accent for epic cards. No changes needed to Board.tsx
+      or AppContext since tasks are already available via useApp().
+    date: '2026-05-25T15:17:38.688Z'
+    id: c-2026-05-25t15-17-38-688z
 id: FLUX-317
 title: add indicator on ticket with subtasks how many are done
 status: In Progress
