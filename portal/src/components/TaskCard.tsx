@@ -1,11 +1,11 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import type { CSSProperties } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { Task, TaskLiveEvent } from '../types';
 import { normalizeSubtaskId } from '../types';
-import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, MessageCircle, Bot, SendHorizontal, Maximize2, Zap, Layers } from 'lucide-react';
+import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, MessageCircle, Bot, SendHorizontal, Maximize2, Zap, Layers, MousePointerClick } from 'lucide-react';
 import { TokenBadge } from './TokenBadge';
 import { useApp } from '../AppContext';
 import { sendTaskCliInput, startTaskCliSession, updateTask } from '../api';
@@ -64,13 +64,28 @@ export function TaskCard({
   const subtaskBadgeRef = useRef<HTMLButtonElement | null>(null);
   const subtaskPopupRef = useRef<HTMLDivElement | null>(null);
 
-  const subtaskIds = task.subtasks?.map(normalizeSubtaskId) ?? [];
+  const subtaskIds = useMemo(() => task.subtasks?.map(normalizeSubtaskId) ?? [], [task.subtasks]);
   const isEpic = subtaskIds.length > 0;
-  const resolvedSubtasks = isEpic
-    ? subtaskIds.map(id => allTasks.find(t => t.id === id)).filter((t): t is Task => !!t)
-    : [];
-  const doneStatuses = new Set(['Done', 'Released', getArchiveStatus(config)].filter(Boolean));
-  const subtaskDoneCount = resolvedSubtasks.filter(t => doneStatuses.has(t.status)).length;
+
+  const taskById = useMemo(() => {
+    const map = new Map<string, Task>();
+    for (const t of allTasks) map.set(t.id, t);
+    return map;
+  }, [allTasks]);
+
+  const doneStatuses = useMemo(
+    () => new Set(['Done', 'Released', getArchiveStatus(config)].filter(Boolean)),
+    [config]
+  );
+
+  const resolvedSubtasks = useMemo(
+    () => isEpic ? subtaskIds.map(id => taskById.get(id)).filter((t): t is Task => !!t) : [],
+    [isEpic, subtaskIds, taskById]
+  );
+  const subtaskDoneCount = useMemo(
+    () => resolvedSubtasks.filter(t => doneStatuses.has(t.status)).length,
+    [resolvedSubtasks, doneStatuses]
+  );
   const subtaskTotal = subtaskIds.length;
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
@@ -808,11 +823,13 @@ export function TaskCard({
                     hoverTimeout.current = null;
                   }
                   setIsHovering(false);
+                  setCommentPopoverOpen(false);
                 }}
                 onMouseLeave={() => {
                   if (isMouseOverCard.current && !subtaskPopoverOpen) startDescriptionTimer();
                 }}
-                className="flex items-center gap-2 mb-3 w-full group/progress cursor-pointer rounded-md px-1 py-0.5 -mx-1 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 transition-colors"
+                title="Click to view subtasks"
+                className="flex items-center gap-2 mb-3 w-full group/progress cursor-pointer rounded-md px-1.5 py-1 -mx-1.5 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 transition-colors ring-1 ring-transparent hover:ring-indigo-200 dark:hover:ring-indigo-500/30"
               >
                 <div className="flex-1 h-2 rounded-full bg-gray-200 dark:bg-white/10 overflow-hidden group-hover/progress:bg-gray-300 dark:group-hover/progress:bg-white/15 transition-colors">
                   <div
@@ -822,7 +839,7 @@ export function TaskCard({
                 </div>
                 <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 whitespace-nowrap group-hover/progress:text-indigo-600 dark:group-hover/progress:text-indigo-300 transition-colors flex items-center gap-1">
                   {subtaskDoneCount}/{subtaskTotal} done
-                  <Layers className="w-3 h-3 opacity-0 group-hover/progress:opacity-100 transition-opacity" />
+                  <MousePointerClick className="w-3 h-3 opacity-0 group-hover/progress:opacity-100 transition-opacity" />
                 </span>
               </button>
             )}
@@ -1126,33 +1143,37 @@ export function TaskCard({
               transition={{ duration: 0.12 }}
               style={{
                 position: 'fixed',
-                top: Math.min(subtaskPopoverPos.top, window.innerHeight - 560),
-                left: Math.min(subtaskPopoverPos.left, window.innerWidth - 420),
+                top: Math.min(subtaskPopoverPos.top, window.innerHeight - Math.min(resolvedSubtasks.length * 88 + 80, 700)),
+                left: Math.min(subtaskPopoverPos.left, window.innerWidth - 520),
                 zIndex: 999999,
               }}
-              className="w-[400px] max-h-[560px] overflow-y-auto rounded-xl border border-gray-200/80 bg-white/95 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:bg-[#1a1b23]/95 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 dark:[&::-webkit-scrollbar-thumb]:bg-gray-600 [&::-webkit-scrollbar-track]:bg-transparent"
+              className="w-[500px] max-h-[700px] overflow-y-auto rounded-xl border border-gray-200/80 bg-white/95 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:bg-[#1a1b23]/95 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-gray-300 dark:[&::-webkit-scrollbar-thumb]:bg-gray-600 [&::-webkit-scrollbar-track]:bg-transparent"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="sticky top-0 bg-white/95 dark:bg-[#1a1b23]/95 px-4 py-3 border-b border-gray-100 dark:border-white/5 backdrop-blur-xl">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-gray-600 dark:text-gray-300">
-                    Subtasks
-                  </span>
-                  <span className="text-[10px] font-semibold text-gray-400 dark:text-gray-500">
+              <div className="sticky top-0 bg-white/95 dark:bg-[#1a1b23]/95 px-5 py-3.5 border-b border-gray-100 dark:border-white/5 backdrop-blur-xl">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <Layers className="w-4 h-4 text-indigo-500" />
+                    <span className="text-sm font-bold text-gray-700 dark:text-gray-200">
+                      Subtasks
+                    </span>
+                  </div>
+                  <span className="text-xs font-semibold text-gray-500 dark:text-gray-400">
                     {subtaskDoneCount}/{subtaskTotal} done
                   </span>
                 </div>
-                <div className="mt-1.5 h-1.5 rounded-full bg-gray-200 dark:bg-white/10 overflow-hidden">
+                <div className="h-2 rounded-full bg-gray-200 dark:bg-white/10 overflow-hidden">
                   <div
                     className="h-full rounded-full bg-emerald-500 dark:bg-emerald-400 transition-all"
                     style={{ width: `${subtaskTotal > 0 ? (subtaskDoneCount / subtaskTotal) * 100 : 0}%` }}
                   />
                 </div>
               </div>
-              <div className="p-2 space-y-1.5">
+              <div className="p-3 space-y-2">
                 {subtaskIds.map(childId => {
-                  const child = allTasks.find(t => t.id === childId);
+                  const child = taskById.get(childId);
                   const isDone = child && doneStatuses.has(child.status);
+                  const childSnippet = child?.body?.split('\n').find(line => line.trim() && !line.startsWith('#')) || '';
                   return (
                     <button
                       key={childId}
@@ -1161,23 +1182,31 @@ export function TaskCard({
                         setSubtaskPopoverOpen(false);
                         if (child) openBoardTask(child);
                       }}
-                      className="flex items-start gap-3 w-full px-3 py-2.5 text-left rounded-lg border border-transparent hover:border-indigo-200 hover:bg-indigo-50/60 dark:hover:border-indigo-500/20 dark:hover:bg-indigo-500/5 transition-all group/subtask"
+                      className="flex items-start gap-3 w-full p-3 text-left rounded-lg border border-gray-100 dark:border-white/5 hover:border-indigo-300 hover:bg-indigo-50/80 hover:shadow-sm dark:hover:border-indigo-500/30 dark:hover:bg-indigo-500/10 transition-all group/subtask"
                     >
-                      <span className={`flex-shrink-0 w-3 h-3 mt-0.5 rounded-full border-2 ${isDone ? 'bg-emerald-500 border-emerald-500' : child ? 'border-gray-300 dark:border-gray-600 bg-transparent' : 'border-red-300 bg-transparent'}`} />
+                      <span className={`flex-shrink-0 w-4 h-4 mt-0.5 rounded-full border-2 ${isDone ? 'bg-emerald-500 border-emerald-500' : child ? 'border-gray-300 dark:border-gray-600 bg-transparent' : 'border-red-300 bg-transparent'}`} />
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-0.5">
-                          <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500">{childId}</span>
-                          <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full ${isDone ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300' : 'bg-gray-100 text-gray-600 dark:bg-white/10 dark:text-gray-400'}`}>
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-[11px] font-bold text-indigo-500 dark:text-indigo-400">{childId}</span>
+                          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${isDone ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300' : 'bg-gray-100 text-gray-600 dark:bg-white/10 dark:text-gray-400'}`}>
                             {child?.status || 'Not found'}
                           </span>
+                          {child?.priority && child.priority !== 'None' && (
+                            <span className="text-[10px] text-gray-400 dark:text-gray-500">{child.priority}</span>
+                          )}
                         </div>
-                        <span className={`text-sm font-medium group-hover/subtask:text-indigo-700 dark:group-hover/subtask:text-indigo-300 transition-colors ${isDone ? 'text-gray-400 dark:text-gray-500 line-through' : 'text-gray-700 dark:text-gray-300'}`}>
+                        <span className={`text-sm font-medium leading-snug group-hover/subtask:text-indigo-700 dark:group-hover/subtask:text-indigo-300 transition-colors ${isDone ? 'text-gray-400 dark:text-gray-500 line-through' : 'text-gray-800 dark:text-gray-200'}`}>
                           {child?.title || childId}
                         </span>
+                        {childSnippet && (
+                          <p className={`text-xs mt-0.5 line-clamp-1 ${isDone ? 'text-gray-300 dark:text-gray-600' : 'text-gray-500 dark:text-gray-400'}`}>
+                            {childSnippet}
+                          </p>
+                        )}
                         {child?.assignee && child.assignee !== 'unassigned' && (
-                          <div className="flex items-center gap-1 mt-1">
-                            <User className="w-2.5 h-2.5 text-gray-400" />
-                            <span className="text-[10px] text-gray-400 dark:text-gray-500">{child.assignee}</span>
+                          <div className="flex items-center gap-1 mt-1.5">
+                            <User className="w-3 h-3 text-gray-400" />
+                            <span className="text-[11px] text-gray-500 dark:text-gray-400">{child.assignee}</span>
                           </div>
                         )}
                       </div>
