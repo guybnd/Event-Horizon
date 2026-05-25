@@ -1,7 +1,7 @@
 ---
 id: FLUX-316
 title: 'Test: multi-session store API validation'
-status: Todo
+status: In Progress
 priority: High
 effort: S
 assignee: unassigned
@@ -15,6 +15,20 @@ history:
     user: Agent
     date: '2026-05-25T14:53:29.779Z'
     comment: Created ticket.
+  - type: agent_session
+    sessionId: e2a3bec6-57b6-4fde-923a-023bf2bc5b76
+    startedAt: '2026-05-25T14:59:29.708Z'
+    status: cancelled
+    progress: []
+    user: Claude Code
+    date: '2026-05-25T14:59:29.708Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-25T14:59:41.169Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-25T15:00:11.143Z'
 ---
 
 ## Problem / Motivation
