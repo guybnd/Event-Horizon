@@ -384,11 +384,78 @@ history:
   - type: agent_session
     sessionId: fffc986c-7952-4f5a-bf81-a4f97031b918
     startedAt: '2026-05-25T04:37:15.509Z'
-    status: active
-    progress: []
+    status: completed
+    progress:
+      - timestamp: '2026-05-25T04:37:46.089Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-05-25T04:38:01.088Z'
+        message: Responding
+        type: info
+      - timestamp: '2026-05-25T04:38:02.518Z'
+        message: >-
+          The ticket FLUX-291 has already been fully groomed by a previous agent
+          session. The file shows:
+
+
+          - **Status**: `Todo` (already transitioned from Grooming)
+
+          - **Priority**: High | **Effort**: M | **Tags**: feature, portal,
+          engine
+
+          - **Problem/Motivation**: Clear two-part description (brittle statuses
+          + hidden actions)
+
+          - **Implementation Plan**: Three detailed parts covering engine status
+          bootstrapping, portal action button registry, and additional
+          considerations
+
+          - **History**: Includes grooming comment and status_change entry
+
+
+          No further edits needed — the ticket is ready for implementation.
+        type: text
     user: Copilot CLI
     date: '2026-05-25T04:37:15.509Z'
-id: FLUX-291
+    outcome: Copilot CLI session ended with code 0.
+    endedAt: '2026-05-25T04:38:11.628Z'
+  - type: comment
+    user: Copilot CLI
+    date: '2026-05-25T04:38:11.628Z'
+    comment: >-
+      The ticket FLUX-291 has already been fully groomed by a previous agent
+      session. The file shows:
+
+
+      - **Status**: `Todo` (already transitioned from Grooming)
+
+      - **Priority**: High | **Effort**: M | **Tags**: feature, portal, engine
+
+      - **Problem/Motivation**: Clear two-part description (brittle statuses +
+      hidden actions)
+
+      - **Implementation Plan**: Three detailed parts covering engine status
+      bootstrapping, portal action button registry, and additional
+      considerations
+
+      - **History**: Includes grooming comment and status_change entry
+
+
+      No further edits needed — the ticket is ready for implementation.
+    id: c-2026-05-25t04-38-11-628z
+  - type: comment
+    user: Guy
+    date: '2026-05-25T04:39:02.384Z'
+    comment: please update the description accordingly
+    replyTo: c-2026-05-25t04-38-11-628z
+    id: c-2026-05-25t04-39-02-377z
+  - type: agent_session
+    sessionId: 8a5d4662-13db-4d8e-98a6-f5a12a45355f
+    startedAt: '2026-05-25T04:39:04.355Z'
+    status: active
+    progress: []
+    user: Claude Code
+    date: '2026-05-25T04:39:04.355Z'
 title: make it more obvious how to start tasks for each relevant status and action
 status: Grooming
 createdBy: Guy
