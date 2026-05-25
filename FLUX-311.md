@@ -609,9 +609,43 @@ history:
     to: Require Input
     user: Agent
     date: '2026-05-25T10:58:42.879Z'
-id: FLUX-311
+  - type: comment
+    user: Guy
+    date: '2026-05-25T11:22:48.737Z'
+    comment: >-
+      1. lets start with A
+
+
+      2. we should have sort of a router when we pass each agent a command,
+      telling it what available skills and isntructions are available so he can
+      decide what to use
+
+
+      3. lets do as you wish
+
+
+      4. probably needss its own window, where we can manage the agent types and
+      their prompts, and defaults per statuses and whats available per status,
+      and the available skills.
+    replyTo: c-2026-05-25t10-58-42-879z
+    id: c-2026-05-25t11-22-48-711z
+  - type: status_change
+    from: Require Input
+    to: Grooming
+    user: Guy
+    date: '2026-05-25T11:22:48.737Z'
+    comment: Response submitted
+  - type: agent_session
+    sessionId: e2bc2e88-8444-410e-ad9b-cd69718ced98
+    startedAt: '2026-05-25T11:22:54.129Z'
+    status: cancelled
+    progress: []
+    user: Claude Code
+    date: '2026-05-25T11:22:54.129Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-25T11:23:05.430Z'
 title: 'Skill Store: install, edit, and manage custom skills for agents'
-status: Require Input
+status: Grooming
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -621,6 +655,7 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 165699
   cacheCreationTokens: 33346
+id: FLUX-311
 ---
 ## Problem / Motivation
 
