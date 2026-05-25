@@ -2,6 +2,21 @@
 
 All notable changes to Event Horizon are documented here.
 
+## [v0.8.1] - 2026-05-26
+
+### Features
+
+- **Workflow Builder UI** (FLUX-312) — Visual workflow editor with file-backed skills, plus agent and workflow engine REST routes
+- **Multi-agent session store** (FLUX-283) — Extended session store to support multiple concurrent agent sessions
+- **Epic cards** — New epic card display in the portal task board
+- **Curated release notes CI** — GitHub Actions now extracts release body from `.docs/release-notes/`
+
+### Bug Fixes
+
+- **Notification bell for Ready/Done transitions** — Fixed notification bell not firing when tickets moved to Ready or Done status
+- **Copilot.exe MCP tool loading** (FLUX-310) — Prefer `copilot.exe` over `node + entrypoint` to ensure MCP tools load correctly
+- **Unread count badge and modal overlay** — Fixed unread count badge rendering and full-view modal overlay
+
 ## [v0.8.0] - 2026-05-25
 
 ### Features
