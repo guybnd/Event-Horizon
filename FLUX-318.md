@@ -547,8 +547,13 @@ history:
     to: Ready
     user: Guy
     date: '2026-05-25T15:41:02.598Z'
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Guy
+    date: '2026-05-25T15:53:11.739Z'
 title: alert indicators not really working
-status: Ready
+status: Done
 createdBy: Guy
 updatedBy: Guy
 tokenMetadata:
@@ -558,7 +563,7 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 1481338
   cacheCreationTokens: 86007
-order: 0
+order: 6
 ---
 ## Problem / Motivation
 

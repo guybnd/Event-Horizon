@@ -564,8 +564,22 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-25T15:52:23.415Z'
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Agent
+    date: '2026-05-25T15:52:58.136Z'
+  - type: agent_session
+    sessionId: 70910ba2-3e5f-41cd-92c9-29b2135b7e76
+    startedAt: '2026-05-25T15:53:01.270Z'
+    status: cancelled
+    progress: []
+    user: Claude Code
+    date: '2026-05-25T15:53:01.270Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-25T15:53:13.918Z'
 title: add indicator on ticket with subtasks how many are done
-status: Ready
+status: In Progress
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
