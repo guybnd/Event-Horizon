@@ -297,9 +297,33 @@ history:
     to: Require Input
     user: Agent
     date: '2026-05-25T15:25:51.201Z'
-id: FLUX-318
+  - type: comment
+    user: Guy
+    date: '2026-05-25T15:27:51.355Z'
+    comment: >-
+      i meant 2.
+
+      it seems to work only on require input, but tickets moving to ready dont
+      trigger a notification event. neither do tickets moved into done
+    replyTo: c-2026-05-25t15-25-51-201z
+    id: c-2026-05-25t15-27-51-347z
+  - type: status_change
+    from: Require Input
+    to: Grooming
+    user: Guy
+    date: '2026-05-25T15:27:51.355Z'
+    comment: Response submitted
+  - type: agent_session
+    sessionId: a72cea71-5ae8-41c5-b9d1-80f9b9049301
+    startedAt: '2026-05-25T15:27:59.000Z'
+    status: cancelled
+    progress: []
+    user: Claude Code
+    date: '2026-05-25T15:27:59.000Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-25T15:28:07.737Z'
 title: alert indicators not really working
-status: Require Input
+status: Grooming
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -309,5 +333,6 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 1039476
   cacheCreationTokens: 55617
+id: FLUX-318
 ---
 cant get any prompts to pop up...
