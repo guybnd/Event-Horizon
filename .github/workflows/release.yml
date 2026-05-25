@@ -39,13 +39,27 @@ jobs:
         # Cross-compile Windows exe on the macOS runner via pkg
         run: npm run dist:win
 
+      - name: Extract release notes
+        id: release_notes
+        run: |
+          VERSION="${{ github.ref_name }}"
+          NOTES_FILE=".docs/release-notes/${VERSION}.md"
+          if [ -f "$NOTES_FILE" ]; then
+            # Strip YAML frontmatter and write body to file
+            sed '1{/^---$/!q0};1,/^---$/d' "$NOTES_FILE" > release-body.md
+          else
+            echo "## ${VERSION}" > release-body.md
+            echo "" >> release-body.md
+            echo "Release ${VERSION}" >> release-body.md
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ github.ref_name }}
+          body_path: release-body.md
           draft: false
           prerelease: false
-          generate_release_notes: true
           files: |
             event-horizon-source.zip
             releases/event-horizon-macos-*.zip
