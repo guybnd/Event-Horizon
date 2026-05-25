@@ -346,10 +346,12 @@ history:
   - type: agent_session
     sessionId: eca180a8-a687-4087-8da7-00972ffb2a1e
     startedAt: '2026-05-25T05:37:36.984Z'
-    status: active
+    status: cancelled
     progress: []
     user: Gemini CLI
     date: '2026-05-25T05:37:36.984Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-25T05:38:37.247Z'
 id: FLUX-295
 title: 'gemini, check you can use hte mCP server!'
 status: Todo
