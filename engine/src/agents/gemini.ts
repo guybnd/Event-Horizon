@@ -138,20 +138,20 @@ export function flushSessionOutput(session: CliSessionRecord, force = false) {
 export function buildInitialPrompt(task: any, appendPrompt: string): string {
   const readyStatus = (configCache as any)?.readyForMergeStatus || 'Ready';
   const taskStatus = (task as any).status || 'Unknown';
+  const mcpNote = 'CRITICAL: Use the "event-horizon" MCP tools (change_status, update_ticket, add_comment, log_progress) for ALL ticket updates. Do NOT edit .flux/ files directly — direct edits corrupt session tracking.';
   const actionInstruction = (() => {
     if (taskStatus === 'Grooming' || taskStatus === 'Require Input') {
-      return `The ticket is in ${taskStatus}. Your job is to GROOM this ticket by editing the ticket file (.flux/${task.id}.md) directly:\n` +
-        `1. Fill inferable metadata in the YAML frontmatter (priority, effort, tags).\n` +
-        `2. Rewrite the markdown body with a clear Problem/Motivation section and an Implementation Plan.\n` +
-        `3. If questions are unresolved, set status to "Require Input" and add a history comment with your question.\n` +
-        `4. When grooming is complete, set status to "Todo" and add a status_change history entry.\n` +
-        `CRITICAL: You MUST edit the .flux/${task.id}.md file to persist all changes. Do not just report findings in chat.`;
+      return `The ticket is in ${taskStatus}. Your job is to GROOM this ticket:\n` +
+        `1. Use update_ticket to fill metadata (priority, effort, tags) and rewrite the body with a Problem/Motivation section and Implementation Plan.\n` +
+        `2. If questions are unresolved, use change_status to move to "Require Input" with a comment containing your question.\n` +
+        `3. When grooming is complete, use change_status to move to "Todo".\n` +
+        mcpNote;
     }
     if (taskStatus === 'In Progress') {
-      return `The ticket is currently In Progress. If the implementation is already complete, move it to "${readyStatus}" status and post a completion summary comment. If work remains, complete it then move to "${readyStatus}". Do not exit without updating the ticket status.\nCRITICAL: You MUST edit .flux/${task.id}.md to persist status changes and add history entries.`;
+      return `The ticket is currently In Progress. If the implementation is already complete, use change_status to move it to "${readyStatus}" with a completion summary comment. If work remains, complete it then move to "${readyStatus}". Do not exit without updating the ticket status.\n${mcpNote}`;
     }
     if (taskStatus === 'Todo') {
-      return `The ticket is in Todo. Begin implementation: move it to In Progress, complete the work, then move it to "${readyStatus}" when done.\nCRITICAL: You MUST edit .flux/${task.id}.md to persist status changes and add history entries.`;
+      return `The ticket is in Todo. Begin implementation: use change_status to move to "In Progress", complete the work, then use change_status to move to "${readyStatus}" when done.\n${mcpNote}`;
     }
     if (taskStatus === readyStatus) {
       return `The ticket is in ${readyStatus} awaiting user review. Do not move it further — wait for the user to say "finish ${task.id}".`;
