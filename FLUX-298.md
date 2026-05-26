@@ -338,62 +338,453 @@ history:
   - type: agent_session
     sessionId: c806409e-b75d-4216-b601-b5aeb5204282
     startedAt: '2026-05-26T00:04:55.065Z'
-    status: cancelled
-    progress: []
+    status: completed
+    progress:
+      - timestamp: '2026-05-26T00:05:09.755Z'
+        message: Working
+        type: tool
+        data:
+          toolName: ToolSearch
+          parameters:
+            query: >-
+              select:get_ticket,list_tickets,update_ticket,change_status,add_comment
+            max_results: 5
+      - timestamp: '2026-05-26T00:05:11.010Z'
+        message: Working
+        type: info
+      - timestamp: '2026-05-26T00:05:16.360Z'
+        message: Delegating
+        type: tool
+        data:
+          toolName: Agent
+          parameters:
+            description: Explore workspace implementation
+            subagent_type: Explore
+            prompt: >-
+              I need to understand the current workspace implementation in this
+              Event Horizon project. Find:
+
+
+              1. The current settings.json structure for workspaces (check
+              engine/src/ for how ~/.event-horizon/settings.json is
+              read/written)
+
+              2. The existing workspace activation flow (activateWorkspace
+              function)
+
+              3. The existing /api/workspace endpoints
+
+              4. The Header.tsx component in portal/src/
+
+              5. WorkspaceSection.tsx in portal/src/
+
+              6. AppContext.tsx in portal/src/
+
+              7. The .flux/config.json structure
+
+
+              Search broadly - look in engine/src/ and portal/src/ directories.
+              I need to understand what already exists so I can groom a ticket
+              for adding multi-workspace support.
+      - timestamp: '2026-05-26T00:05:17.757Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Glob
+          parameters:
+            pattern: engine/src/**/*.ts
+      - timestamp: '2026-05-26T00:05:18.416Z'
+        message: 'Running: find /c/GitHub/EventHorizon -name ".flux" -type d ...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              find /c/GitHub/EventHorizon -name ".flux" -type d 2>/dev/null |
+              head -20
+      - timestamp: '2026-05-26T00:05:22.012Z'
+        message: Reading workspace.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /c/GitHub/EventHorizon/engine/src/workspace.ts
+      - timestamp: '2026-05-26T00:05:26.011Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-05-26T00:05:29.776Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: activateWorkspace
+            path: /c/GitHub/EventHorizon/engine/src
+            output_mode: content
+            context: 5
+      - timestamp: '2026-05-26T00:05:29.976Z'
+        message: Reading config.json
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /c/GitHub/EventHorizon/.flux/config.json
+      - timestamp: '2026-05-26T00:05:30.267Z'
+        message: 'Running: grep -n "activateWorkspace" /c/GitHub/EventHorizon...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              grep -n "activateWorkspace"
+              /c/GitHub/EventHorizon/engine/src/task-store.ts | head -20
+      - timestamp: '2026-05-26T00:05:32.665Z'
+        message: Reading task-store.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /c/GitHub/EventHorizon/engine/src/task-store.ts
+            offset: 598
+            limit: 60
+      - timestamp: '2026-05-26T00:05:35.887Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: setWorkspace|fetchWorkspace|pickWorkspace
+            path: /c/GitHub/EventHorizon/portal/src/api.ts
+            output_mode: content
+            context: 3
+      - timestamp: '2026-05-26T00:05:38.835Z'
+        message: Reading api.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /c/GitHub/EventHorizon/portal/src/api.ts
+            offset: 1
+            limit: 140
+      - timestamp: '2026-05-26T00:05:41.011Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-05-26T00:06:09.523Z'
+        message: Working
+        type: tool
+        data:
+          toolName: ToolSearch
+          parameters:
+            query: >-
+              select:mcp__event-horizon__get_ticket,mcp__event-horizon__update_ticket,mcp__event-horizon__change_status
+            max_results: 3
+      - timestamp: '2026-05-26T00:06:11.022Z'
+        message: Working
+        type: info
+      - timestamp: '2026-05-26T00:06:13.662Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp__event-horizon__get_ticket
+          parameters:
+            ticketId: FLUX-298
+      - timestamp: '2026-05-26T00:06:26.025Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-05-26T00:06:38.911Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp__event-horizon__update_ticket
+          parameters:
+            ticketId: FLUX-298
+            body: >-
+              ## Problem / Motivation
+
+
+              Switching between workspaces (project folders with their own
+              `.flux/` directory) requires navigating to the Settings page and
+              manually entering a path. Users working across multiple
+              repos/projects need fast context switching — selecting a workspace
+              should reload its settings, tickets, and config instantly. This is
+              a core usability feature for multi-project users.
+
+
+              ## Implementation Plan
+
+
+              ### 1. App-level workspace list (Engine)
+
+
+              **File:** `engine/src/workspace.ts`
+
+
+              - Extend `~/.event-horizon/settings.json` schema: add a
+              `workspaces` array of `{ path: string, label?: string }` objects
+              alongside the existing `workspace` field (which tracks the active
+              workspace).
+
+              - Auto-register: when a workspace is activated, auto-add it to the
+              `workspaces` array if not already present.
+
+
+              **File:** new `engine/src/routes/workspaces.ts`
+
+
+              - `GET /api/workspaces` — return the stored workspaces list, each
+              enriched with:
+                - `displayName`: the user-provided `label`, or the folder basename if no label
+                - `active`: boolean (matches current workspace path)
+                - `available`: boolean (path exists on disk)
+              - `POST /api/workspaces` — add a workspace entry `{ path, label?
+              }`. Validate path contains `.flux/` or `.flux-store/`.
+
+              - `DELETE /api/workspaces/:index` — remove a workspace entry by
+              index.
+
+              - `PUT /api/workspaces/:index` — update label for an entry.
+
+              - `POST /api/workspaces/switch` — body `{ path }`. Calls existing
+              `activateWorkspace()` flow, updates `workspace` field in settings.
+
+
+              ### 2. Settings UI — Manage workspaces
+
+
+              **File:** `portal/src/components/settings/WorkspaceSection.tsx`
+
+
+              - Add a "Configured Workspaces" list above the existing folder
+              switch section.
+
+              - Each entry shows: display name, path (smaller/muted), remove
+              button, optional edit-label icon.
+
+              - "Add Workspace" button: reuses existing `/api/workspace/pick`
+              endpoint or manual path input.
+
+              - Keep the existing "Switch workspace" path input as a
+              secondary/advanced option below.
+
+
+              ### 3. Top bar workspace switcher (Portal)
+
+
+              **File:** `portal/src/components/Header.tsx`
+
+
+              - **Replace** the project KEY text input (currently bottom-right
+              of header) with a workspace switcher dropdown/popover.
+
+              - Display the active workspace's display name (label or folder
+              basename).
+
+              - Dropdown shows all configured workspaces; unavailable ones shown
+              greyed with "(unavailable)" suffix.
+
+              - Selecting a different workspace calls `POST
+              /api/workspaces/switch`, then triggers full app reload (config,
+              tasks, board state via `notifyWorkspaceSet()`).
+
+              - Show a brief loading spinner on the switcher button during
+              switch.
+
+              - Include a "Manage workspaces..." link at the bottom of the
+              dropdown that navigates to Settings.
+
+
+              ### 4. State management
+
+
+              **File:** `portal/src/AppContext.tsx`
+
+
+              - Add `workspaces` state (fetched on mount from `GET
+              /api/workspaces`).
+
+              - Expose `switchWorkspace(path)` helper that calls the API and
+              then runs the existing `notifyWorkspaceSet()` flow (which
+              re-fetches config + tasks).
+
+              - Re-fetch workspaces list after switch completes (to update
+              `active` flags).
+
+
+              ### 5. Edge cases
+
+
+              - If a configured workspace path no longer exists on disk, show it
+              as "unavailable" in the switcher (greyed out, not selectable).
+
+              - First-time users with only one workspace: show the switcher with
+              just their current workspace + an "Add workspace" option.
+
+              - Remove the old project KEY input field from the header entirely
+              — project keys remain configurable in Settings.
+
+              - Auto-register the current workspace on engine startup if not
+              already in the list.
+
+
+              ### Key files to touch
+
+
+              | Area | Files |
+
+              |------|-------|
+
+              | Engine settings | `engine/src/workspace.ts` |
+
+              | New routes | `engine/src/routes/workspaces.ts` (new) |
+
+              | Route registration | `engine/src/index.ts` |
+
+              | Portal header | `portal/src/components/Header.tsx` |
+
+              | Portal settings |
+              `portal/src/components/settings/WorkspaceSection.tsx` |
+
+              | Portal state | `portal/src/AppContext.tsx` |
+      - timestamp: '2026-05-26T00:06:41.027Z'
+        message: Working
+        type: info
+      - timestamp: '2026-05-26T00:06:46.416Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp__event-horizon__change_status
+          parameters:
+            ticketId: FLUX-298
+            newStatus: Todo
+            comment: >-
+              Grooming complete. Both questions resolved: (1) workspace display
+              names auto-derived from folder basename with optional label
+              override, (2) workspace switcher replaces the project KEY input in
+              the header. Plan is detailed with file targets and endpoint specs
+              — ready for implementation.
+      - timestamp: '2026-05-26T00:06:54.702Z'
+        message: >-
+          FLUX-298 is groomed and moved to **Todo**. Summary of what was
+          finalized:
+
+
+          - **Labels**: Auto-derived from folder basename, with optional user
+          override
+
+          - **Switcher placement**: Replaces the project KEY input in the header
+          (per your feedback)
+
+          - **Effort**: L (unchanged) — touches engine routes, workspace
+          settings, header component, app context, and settings UI
+
+          - **Plan**: 5 sections covering engine endpoints, settings UI, header
+          switcher, state management, and edge cases — with specific file
+          targets listed
+
+
+          Ready for implementation whenever you want to pick it up.
     user: Claude Code
     date: '2026-05-26T00:04:55.065Z'
-    outcome: Session abandoned (engine restarted).
-    endedAt: '2026-05-26T00:05:04.123Z'
+    outcome: Claude Code session ended with code 0.
+    endedAt: '2026-05-26T00:06:55.848Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-26T00:06:38.920Z'
+    comment: Updated description.
+  - type: comment
+    user: Agent
+    comment: >-
+      Grooming complete. Both questions resolved: (1) workspace display names
+      auto-derived from folder basename with optional label override, (2)
+      workspace switcher replaces the project KEY input in the header. Plan is
+      detailed with file targets and endpoint specs — ready for implementation.
+    date: '2026-05-26T00:06:46.434Z'
+    id: c-2026-05-26t00-06-46-434z
+  - type: status_change
+    from: Grooming
+    to: Todo
+    user: Agent
+    date: '2026-05-26T00:06:46.434Z'
 title: multi project workflow
-status: Grooming
+status: Todo
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
-  inputTokens: 184484
-  outputTokens: 2680
-  costUSD: 0.494443
+  inputTokens: 373041
+  outputTokens: 5054
+  costUSD: 0.846087
   costIsEstimated: false
-  cacheReadTokens: 153705
-  cacheCreationTokens: 30766
+  cacheReadTokens: 326576
+  cacheCreationTokens: 46437
 order: 14
 id: FLUX-298
 ---
 ## Problem / Motivation
 
-Currently, switching between workspaces (project folders with their own `.flux/` directory) requires navigating to the Settings page and manually entering a path. Users working across multiple repos/projects need fast context switching — selecting a workspace should reload its settings, tickets, and config instantly. This is a core usability feature for multi-project users.
+Switching between workspaces (project folders with their own `.flux/` directory) requires navigating to the Settings page and manually entering a path. Users working across multiple repos/projects need fast context switching — selecting a workspace should reload its settings, tickets, and config instantly. This is a core usability feature for multi-project users.
 
 ## Implementation Plan
 
 ### 1. App-level workspace list (Engine)
 
-- Extend `~/.event-horizon/settings.json` to store a `workspaces` array of `{ path, label? }` objects alongside the existing `lastWorkspace` field.
-- Add engine endpoints:
-  - `GET /api/workspaces` — return the stored workspaces list
-  - `POST /api/workspaces` — add a workspace entry (with optional label)
-  - `DELETE /api/workspaces/:index` — remove a workspace entry
-  - `POST /api/workspaces/switch` — activate a workspace (calls existing `activateWorkspace` flow, updates `lastWorkspace`)
+**File:** `engine/src/workspace.ts`
+
+- Extend `~/.event-horizon/settings.json` schema: add a `workspaces` array of `{ path: string, label?: string }` objects alongside the existing `workspace` field (which tracks the active workspace).
+- Auto-register: when a workspace is activated, auto-add it to the `workspaces` array if not already present.
+
+**File:** new `engine/src/routes/workspaces.ts`
+
+- `GET /api/workspaces` — return the stored workspaces list, each enriched with:
+  - `displayName`: the user-provided `label`, or the folder basename if no label
+  - `active`: boolean (matches current workspace path)
+  - `available`: boolean (path exists on disk)
+- `POST /api/workspaces` — add a workspace entry `{ path, label? }`. Validate path contains `.flux/` or `.flux-store/`.
+- `DELETE /api/workspaces/:index` — remove a workspace entry by index.
+- `PUT /api/workspaces/:index` — update label for an entry.
+- `POST /api/workspaces/switch` — body `{ path }`. Calls existing `activateWorkspace()` flow, updates `workspace` field in settings.
 
 ### 2. Settings UI — Manage workspaces
 
-- In `WorkspaceSection.tsx`, add a list of configured workspaces with add/remove controls.
-- "Add" button opens folder picker (reuse existing `/api/workspace/pick` endpoint) or accepts manual path entry.
-- Optional label field per workspace for display in the switcher.
+**File:** `portal/src/components/settings/WorkspaceSection.tsx`
+
+- Add a "Configured Workspaces" list above the existing folder switch section.
+- Each entry shows: display name, path (smaller/muted), remove button, optional edit-label icon.
+- "Add Workspace" button: reuses existing `/api/workspace/pick` endpoint or manual path input.
+- Keep the existing "Switch workspace" path input as a secondary/advanced option below.
 
 ### 3. Top bar workspace switcher (Portal)
 
-- In `Header.tsx` top-right area, replace or augment the current project key input with a dropdown/popover showing configured workspaces.
-- Display the active workspace label (or folder basename if no label).
-- Selecting a different workspace calls `POST /api/workspaces/switch`, then triggers a full app reload (config, tasks, board state).
-- Show a brief loading indicator during switch.
+**File:** `portal/src/components/Header.tsx`
+
+- **Replace** the project KEY text input (currently bottom-right of header) with a workspace switcher dropdown/popover.
+- Display the active workspace's display name (label or folder basename).
+- Dropdown shows all configured workspaces; unavailable ones shown greyed with "(unavailable)" suffix.
+- Selecting a different workspace calls `POST /api/workspaces/switch`, then triggers full app reload (config, tasks, board state via `notifyWorkspaceSet()`).
+- Show a brief loading spinner on the switcher button during switch.
+- Include a "Manage workspaces..." link at the bottom of the dropdown that navigates to Settings.
 
 ### 4. State management
 
-- Add workspace list to `AppContext` (fetched on mount from `GET /api/workspaces`).
-- Active workspace tracked via existing `config` fetch (already refreshes on workspace activation via SSE/polling).
-- After switch, invalidate task cache and re-fetch config + tasks.
+**File:** `portal/src/AppContext.tsx`
+
+- Add `workspaces` state (fetched on mount from `GET /api/workspaces`).
+- Expose `switchWorkspace(path)` helper that calls the API and then runs the existing `notifyWorkspaceSet()` flow (which re-fetches config + tasks).
+- Re-fetch workspaces list after switch completes (to update `active` flags).
 
 ### 5. Edge cases
 
-- If a configured workspace path no longer exists on disk, show it as "unavailable" in the switcher (don't crash).
-- First-time users with no extra workspaces see no switcher (or a minimal add-project prompt).
-- Workspace switch while unsaved changes in settings — confirm or auto-save.
+- If a configured workspace path no longer exists on disk, show it as "unavailable" in the switcher (greyed out, not selectable).
+- First-time users with only one workspace: show the switcher with just their current workspace + an "Add workspace" option.
+- Remove the old project KEY input field from the header entirely — project keys remain configurable in Settings.
+- Auto-register the current workspace on engine startup if not already in the list.
+
+### Key files to touch
+
+| Area | Files |
+|------|-------|
+| Engine settings | `engine/src/workspace.ts` |
+| New routes | `engine/src/routes/workspaces.ts` (new) |
+| Route registration | `engine/src/index.ts` |
+| Portal header | `portal/src/components/Header.tsx` |
+| Portal settings | `portal/src/components/settings/WorkspaceSection.tsx` |
+| Portal state | `portal/src/AppContext.tsx` |
