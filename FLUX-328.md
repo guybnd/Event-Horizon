@@ -331,6 +331,13 @@ history:
       using the same pattern as the existing EH docs copy. No unresolved
       questions.
     id: c-2026-05-26t10-42-12-030z
+  - type: agent_session
+    sessionId: ce1f2ab9-f96f-4258-995d-b85b7658d92d
+    startedAt: '2026-05-26T10:44:01.270Z'
+    status: active
+    progress: []
+    user: Claude Code
+    date: '2026-05-26T10:44:01.270Z'
 tokenMetadata:
   inputTokens: 494419
   outputTokens: 3388

@@ -346,6 +346,13 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-26T10:40:43.144Z'
+  - type: agent_session
+    sessionId: 85723e74-ebf3-458c-9f2e-14dc471ad673
+    startedAt: '2026-05-26T10:43:37.834Z'
+    status: active
+    progress: []
+    user: Claude Code
+    date: '2026-05-26T10:43:37.834Z'
 title: 'Parse error prevention: auto-fix and agent-friendly repair instructions'
 status: Todo
 createdBy: Guy
