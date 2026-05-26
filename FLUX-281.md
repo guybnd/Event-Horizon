@@ -12,6 +12,7 @@ subtasks:
   - FLUX-283
   - FLUX-284
   - FLUX-285
+  - FLUX-311
 history:
   - type: activity
     user: Guy
