@@ -234,8 +234,18 @@ history:
     progress: []
     user: Claude Code
     date: '2026-05-26T12:37:33.322Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-26T12:43:03.387Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-26T12:43:03.387Z'
 title: help verify this bug of why MCP not working for some customers
-status: Todo
+status: In Progress
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -245,7 +255,6 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 635150
   cacheCreationTokens: 48442
-id: FLUX-331
 ---
 ## Problem / Motivation
 
