@@ -1,6 +1,6 @@
 ---
 title: Project initialization should provide basic SKILLS setup
-status: Todo
+status: In Progress
 priority: Medium
 assignee: unassigned
 tags:
@@ -338,6 +338,23 @@ history:
     progress: []
     user: Claude Code
     date: '2026-05-26T10:44:01.270Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-26T10:44:42.550Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-26T10:44:42.550Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-26T10:44:42.550Z'
+    comment: >-
+      Starting implementation: will add skills scaffolding to init.ts after the
+      EH docs copy step.
+    id: c-2026-05-26t10-44-42-550z
 tokenMetadata:
   inputTokens: 494419
   outputTokens: 3388
@@ -345,7 +362,6 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 470553
   cacheCreationTokens: 23189
-id: FLUX-328
 ---
 ## Problem / Motivation
 

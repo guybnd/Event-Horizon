@@ -353,8 +353,26 @@ history:
     progress: []
     user: Claude Code
     date: '2026-05-26T10:43:37.834Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-26T10:44:32.152Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-26T10:44:32.152Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-26T10:44:32.152Z'
+    comment: >-
+      Starting implementation. Plan: (1) Add repairTicket() in task-store.ts
+      that auto-fixes common schema violations before validation, (2) Enhance
+      ParseErrorButton with Copy Fix Instructions button.
+    id: c-2026-05-26t10-44-32-152z
 title: 'Parse error prevention: auto-fix and agent-friendly repair instructions'
-status: Todo
+status: In Progress
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -364,7 +382,6 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 187673
   cacheCreationTokens: 33359
-id: FLUX-329
 ---
 ## Problem / Motivation
 
