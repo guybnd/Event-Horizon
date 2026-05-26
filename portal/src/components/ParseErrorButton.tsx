@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { AlertTriangle, X } from 'lucide-react';
+import { AlertTriangle, X, Copy, Check } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import type { ParseError } from '../api';
 
@@ -41,8 +41,77 @@ interface ParseErrorModalProps {
   onClose: () => void;
 }
 
+function buildFixInstructions(error: ParseError): string {
+  return `# Fix Corrupted Ticket: ${error.id}
+
+## File Path
+${error.path}
+
+## Error
+${error.error}
+
+## Expected YAML Frontmatter Schema
+
+\`\`\`yaml
+---
+id: ${error.id}
+title: "Ticket title here"          # REQUIRED - non-empty string
+status: Todo                         # Valid: Grooming, Todo, In Progress, Require Input, Ready, Done, Released
+priority: None                       # Valid: None, Low, Medium, High, Critical
+effort: None                         # Valid: None, XS, S, M, L, XL
+assignee: unassigned                 # string
+tags: []                             # string array
+createdBy: Agent                     # string
+updatedBy: Agent                     # string
+subtasks: []                         # array of ticket ID strings (e.g. ["FLUX-5", "FLUX-6"])
+history:                             # array of history entry objects
+  - type: status_change              # MUST use "from"/"to", NOT "oldStatus"/"newStatus"
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-26T12:00:00.000Z' # valid ISO 8601 timestamp
+  - type: comment
+    user: Agent
+    date: '2026-05-26T12:00:00.000Z'
+    comment: "Comment text here"     # REQUIRED for comment/activity/agent_message types
+  - type: activity
+    user: Agent
+    date: '2026-05-26T12:00:00.000Z'
+    comment: "Activity description"
+---
+\`\`\`
+
+## Common Fixes
+
+- **"status_change requires 'from' (not 'oldStatus')"** → Rename \`oldStatus\` to \`from\` and \`newStatus\` to \`to\`
+- **"missing or empty title"** → Add a \`title\` field with a non-empty string value
+- **"missing or invalid ISO date"** → Ensure \`date\` is a valid ISO 8601 string like \`'2026-05-26T12:00:00.000Z'\`
+- **"missing or empty type"** → Add a \`type\` field (valid: activity, comment, agent_message, status_change, agent_session)
+- **"inline subtask object missing id"** → Replace inline objects with string IDs (e.g. \`- FLUX-5\`)
+
+## Instructions
+
+**Note:** Auto-repair was already attempted on this ticket and could not resolve the issue.
+Manual intervention is required.
+
+1. Read the file at the path above
+2. Identify the YAML frontmatter section (between the \`---\` delimiters)
+3. Fix the specific error described above using the schema reference
+4. Use the engine API to update: \`PUT /api/tasks/${error.id}\` with corrected fields
+5. Or edit the file directly ensuring valid YAML with spaces (not tabs) for indentation
+`;
+}
+
 function ParseErrorModal({ errors, onClose }: ParseErrorModalProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const handleCopyInstructions = async (error: ParseError) => {
+    const instructions = buildFixInstructions(error);
+    await navigator.clipboard.writeText(instructions);
+    setCopiedId(error.id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
@@ -113,6 +182,22 @@ function ParseErrorModal({ errors, onClose }: ParseErrorModalProps) {
                         {error.path}
                       </code>
                     </div>
+                    <button
+                      onClick={() => handleCopyInstructions(error)}
+                      className="mt-3 flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-md bg-red-600 dark:bg-red-700 text-white hover:bg-red-700 dark:hover:bg-red-600 transition-colors"
+                    >
+                      {copiedId === error.id ? (
+                        <>
+                          <Check className="h-3.5 w-3.5" />
+                          Copied!
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="h-3.5 w-3.5" />
+                          Copy Fix Instructions
+                        </>
+                      )}
+                    </button>
                   </div>
                 )}
               </div>

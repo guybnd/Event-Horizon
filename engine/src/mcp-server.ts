@@ -4,6 +4,7 @@ import { z } from 'zod';
 import fs from 'fs/promises';
 import path from 'path';
 import matter from 'gray-matter';
+import { fileURLToPath } from 'url';
 
 import { tasksCache, serializeTaskForApi, updateTaskWithHistory, activateWorkspace, workspaceActivating, readTaskFromDisk } from './task-store.js';
 import { configCache, autoRegisterUnknownTags } from './config.js';
@@ -406,8 +407,14 @@ export async function startMcpServer(): Promise<void> {
   await server.connect(transport);
 }
 
-// Auto-start when run as entry point
-startMcpServer().catch((err) => {
-  console.error('MCP server failed:', err);
-  process.exit(1);
-});
+// Auto-start only when this file is the direct entry point, not when imported as a module
+try {
+  if (process.argv[1] === fileURLToPath(import.meta.url)) {
+    startMcpServer().catch((err) => {
+      console.error('MCP server failed:', err);
+      process.exit(1);
+    });
+  }
+} catch {
+  // import.meta.url unavailable (e.g. inside pkg) — skip auto-start
+}

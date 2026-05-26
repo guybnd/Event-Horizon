@@ -2,10 +2,9 @@
   "mcpServers": {
     "event-horizon": {
       "type": "stdio",
-      "command": "npx",
+      "command": "C:\\GitHub\\event-horizon-win-v0.10.0.exe",
       "args": [
-        "tsx",
-        "engine/src/mcp-server.ts",
+        "--mcp",
         "--workspace",
         "."
       ]

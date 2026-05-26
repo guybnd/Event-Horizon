@@ -5,6 +5,14 @@ for (const key of Object.keys(process.env)) {
   if (key.toUpperCase() === 'NODE_OPTIONS') delete process.env[key];
 }
 
+// MCP mode guard — redirect stdout before any module-level code can corrupt JSON-RPC framing.
+// ESM static imports are hoisted so we can't prevent those from running first, but this ensures
+// no downstream execution (workspace activation, doc loading, etc.) reaches stdout in MCP mode.
+const MCP_MODE = process.argv.includes('--mcp');
+if (MCP_MODE) {
+  console.log = (...args: any[]) => console.error(...args);
+}
+
 import express from 'express';
 import cors from 'cors';
 import fs from 'fs/promises';
@@ -276,8 +284,15 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('CRITICAL: Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
-startServer().catch(err => {
-  console.error('Failed to start Event Horizon:', err);
-  stopAllCliSessions('startup-failure');
-  process.exit(1);
-});
+if (MCP_MODE) {
+  import('./mcp-server.js').then(({ startMcpServer }) => startMcpServer()).catch(err => {
+    console.error('MCP server failed:', err);
+    process.exit(1);
+  });
+} else {
+  startServer().catch(err => {
+    console.error('Failed to start Event Horizon:', err);
+    stopAllCliSessions('startup-failure');
+    process.exit(1);
+  });
+}

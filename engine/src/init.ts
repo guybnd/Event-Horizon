@@ -172,7 +172,8 @@ async function main() {
 
   // Copy embedded EH docs (how-to guides, workflow, architecture) into .docs/event-horizon/
   // so they appear in the Docs screen of the portal.
-  const ehDocsSrc = path.join(resolveEmbeddedDocsRoot(), '.docs', 'event-horizon');
+  const ehRoot = resolveEmbeddedDocsRoot();
+  const ehDocsSrc = path.join(ehRoot, '.docs', 'event-horizon');
   const ehDocsDest = path.join(docsDir, 'event-horizon');
   if (existsSync(ehDocsSrc) && !existsSync(ehDocsDest)) {
     try {
@@ -180,6 +181,31 @@ async function main() {
       console.log('Created .docs/event-horizon/ (Event Horizon usage guides)');
     } catch {
       // Non-fatal — docs are helpful but not required to run.
+    }
+  }
+
+  // Copy skill source files into .docs/skills/ so the project is self-contained
+  // for the agent workflow without needing the EH source root.
+  const skillsSrc = path.join(ehRoot, '.docs', 'skills');
+  const skillsDest = path.join(docsDir, 'skills');
+  if (existsSync(skillsSrc) && !existsSync(skillsDest)) {
+    try {
+      await copyDir(skillsSrc, skillsDest);
+      console.log('Created .docs/skills/ (agent workflow skill modules)');
+    } catch {
+      // Non-fatal — skills can be installed manually later.
+    }
+  }
+
+  // Copy bootstrap instruction template into .flux/skills/
+  const fluxSkillsSrc = path.join(ehRoot, '.flux', 'skills');
+  const fluxSkillsDest = path.join(fluxDir, 'skills');
+  if (existsSync(fluxSkillsSrc) && !existsSync(fluxSkillsDest)) {
+    try {
+      await copyDir(fluxSkillsSrc, fluxSkillsDest);
+      console.log('Created .flux/skills/ (copilot instructions template)');
+    } catch {
+      // Non-fatal — template can be installed manually later.
     }
   }
 
@@ -197,7 +223,8 @@ Next steps:
 
   3. Create your first ticket using the "+ New ticket" button on the board.
 
-  4. To use the AI agent workflow, go to Settings → Agent Workflow → Install.
+  4. Agent workflow skills are installed in .docs/skills/ and .flux/skills/.
+     To install for your framework, go to Settings → Agent Workflow → Install.
 
 Workspace location: ${target}
 `);

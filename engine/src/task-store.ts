@@ -20,6 +20,8 @@ export let docsCache: Record<string, StoredDoc> = {};
 export let parseErrors: Record<string, { id: string; path: string; error: string }> = {};
 export let workspaceActivating = false;
 
+const repairingPaths = new Set<string>();
+
 export function serializeTaskForApi(task: any) {
   return {
     ...task,
@@ -227,8 +229,112 @@ async function normalizeInlineSubtasks(frontmatter: any, parentPath: string): Pr
   return normalizedIds;
 }
 
+/**
+ * Attempt to repair common schema violations in-place before validation.
+ * Returns a list of repairs made, or empty array if nothing was fixed.
+ */
+function repairTicket(frontmatter: any, filePath: string): string[] {
+  const repairs: string[] = [];
+
+  // Missing title → derive from filename
+  if (!frontmatter.title || (typeof frontmatter.title === 'string' && !frontmatter.title.trim())) {
+    const derived = path.basename(filePath, '.md');
+    frontmatter.title = `${derived} (recovered)`;
+    repairs.push(`Recovered missing title from filename → "${frontmatter.title}"`);
+  }
+
+  // Repair history entries
+  if (Array.isArray(frontmatter.history)) {
+    for (let i = 0; i < frontmatter.history.length; i++) {
+      const entry = frontmatter.history[i];
+      if (!entry || typeof entry !== 'object') continue;
+
+      // oldStatus/newStatus → from/to
+      if (entry.type === 'status_change') {
+        if (entry.from == null && typeof entry.oldStatus === 'string') {
+          entry.from = entry.oldStatus;
+          delete entry.oldStatus;
+          repairs.push(`history[${i}]: renamed oldStatus → from`);
+        }
+        if (entry.to == null && typeof entry.newStatus === 'string') {
+          entry.to = entry.newStatus;
+          delete entry.newStatus;
+          repairs.push(`history[${i}]: renamed newStatus → to`);
+        }
+      }
+
+      // Infer missing type from entry shape
+      if (!entry.type || typeof entry.type !== 'string') {
+        if (typeof entry.from === 'string' && typeof entry.to === 'string') {
+          entry.type = 'status_change';
+          repairs.push(`history[${i}]: inferred type "status_change" from from/to fields`);
+        } else if (typeof entry.oldStatus === 'string' && typeof entry.newStatus === 'string') {
+          entry.type = 'status_change';
+          entry.from = entry.oldStatus;
+          entry.to = entry.newStatus;
+          delete entry.oldStatus;
+          delete entry.newStatus;
+          repairs.push(`history[${i}]: inferred type "status_change", renamed oldStatus/newStatus → from/to`);
+        } else if (typeof entry.comment === 'string' && entry.comment.trim()) {
+          entry.type = 'comment';
+          repairs.push(`history[${i}]: inferred type "comment" from comment field`);
+        } else if (typeof entry.sessionId === 'string') {
+          entry.type = 'agent_session';
+          repairs.push(`history[${i}]: inferred type "agent_session" from sessionId field`);
+        }
+      }
+
+      // Fix malformed dates
+      if (entry.date && typeof entry.date === 'string') {
+        const parsed = new Date(entry.date);
+        if (Number.isNaN(parsed.getTime())) {
+          const relaxed = new Date(entry.date.replace(/[^\d\-T:.Z+]/g, ''));
+          const relaxedYear = relaxed.getFullYear();
+          if (!Number.isNaN(relaxed.getTime()) && relaxedYear >= 2020 && relaxedYear <= 2030) {
+            entry.date = relaxed.toISOString();
+            repairs.push(`history[${i}]: repaired malformed date`);
+          } else {
+            entry.date = new Date().toISOString();
+            repairs.push(`history[${i}]: replaced unparseable date with current timestamp`);
+          }
+        }
+      } else if (!entry.date) {
+        entry.date = new Date().toISOString();
+        repairs.push(`history[${i}]: added missing date`);
+      }
+
+      // Ensure user field
+      if (!entry.user || typeof entry.user !== 'string') {
+        entry.user = 'Unknown';
+        repairs.push(`history[${i}]: set missing user to "Unknown"`);
+      }
+    }
+  }
+
+  // subtasks containing inline objects with id → extract to string array
+  if (Array.isArray(frontmatter.subtasks)) {
+    let subtasksRepaired = false;
+    frontmatter.subtasks = frontmatter.subtasks
+      .map((entry: any) => {
+        if (typeof entry === 'string') return entry;
+        if (entry && typeof entry === 'object' && typeof entry.id === 'string') {
+          subtasksRepaired = true;
+          return entry.id;
+        }
+        return null;
+      })
+      .filter((entry: any) => entry != null);
+    if (subtasksRepaired) {
+      repairs.push('Normalized inline subtask objects to string IDs');
+    }
+  }
+
+  return repairs;
+}
+
 export async function loadTask(filePath: string) {
   if (!isTopLevelTaskFile(filePath)) return;
+  if (repairingPaths.has(filePath)) return;
 
   try {
     const fileStats = await fs.stat(filePath);
@@ -246,12 +352,38 @@ export async function loadTask(filePath: string) {
       return;
     }
 
-    if (!parsed.data || !parsed.data['title']) {
-      console.error(`\n[FLUX VALIDATION ERROR] ${filePath}\n  Frontmatter is missing required field: title\n  The ticket has been removed from the board. Fix the frontmatter and save again.\n`);
-      const id = path.basename(filePath, '.md');
-      delete tasksCache[id];
-      parseErrors[id] = { id, path: filePath, error: 'Frontmatter is missing required field: title' };
-      return;
+    // Validate first; only attempt repair if validation fails
+    const initialErrors = validateTicketFrontmatter(parsed.data);
+    if (initialErrors.length > 0) {
+      const repairs = repairTicket(parsed.data, filePath);
+      if (repairs.length > 0) {
+        console.log(`[FLUX AUTO-REPAIR] ${filePath}\n  ${repairs.join('\n  ')}`);
+        if (!Array.isArray(parsed.data.history)) parsed.data.history = [];
+        parsed.data.history.push({
+          type: 'activity',
+          user: 'System',
+          date: new Date().toISOString(),
+          comment: `Auto-repaired ticket: ${repairs.join('; ')}`,
+        });
+        repairingPaths.add(filePath);
+        try {
+          const repairedContent = matter.stringify(parsed.content, parsed.data);
+          await fs.writeFile(filePath, repairedContent, 'utf-8');
+        } finally {
+          repairingPaths.delete(filePath);
+        }
+      }
+
+      // Re-validate after repair
+      const postRepairErrors = validateTicketFrontmatter(parsed.data);
+      if (postRepairErrors.length > 0) {
+        const summary = formatValidationErrors(postRepairErrors);
+        console.error(`\n[FLUX VALIDATION ERROR] ${filePath}\n  Schema validation failed (auto-repair insufficient):\n${summary}\n  The ticket has been removed from the board. Fix the frontmatter and save again.\n`);
+        const id = path.basename(filePath, '.md');
+        delete tasksCache[id];
+        parseErrors[id] = { id, path: filePath, error: `Schema validation failed (auto-repair attempted but insufficient):\n${summary}` };
+        return;
+      }
     }
 
     const id = parsed.data['id'] || path.basename(filePath, '.md');
@@ -290,7 +422,7 @@ export async function loadTask(filePath: string) {
       }
     }
 
-    const normalizedFrontmatter = { ...parsed.data, history };
+    const normalizedFrontmatter: any = { ...parsed.data, history };
 
     // Normalize inline subtask objects → create separate ticket files and convert to string IDs
     const subtasksNormalized = await normalizeInlineSubtasks(normalizedFrontmatter, filePath);
