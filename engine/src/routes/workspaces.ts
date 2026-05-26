@@ -12,6 +12,7 @@ import {
   autoRegisterWorkspace,
 } from '../workspace.js';
 import { activateWorkspace } from '../task-store.js';
+import { getActiveSessionCount, stopAllCliSessions } from '../session-store.js';
 
 const router = express.Router();
 
@@ -84,13 +85,26 @@ router.put('/:index', async (req, res) => {
 });
 
 router.post('/switch', async (req, res) => {
-  const { path: wsPath } = req.body ?? {};
+  const { path: wsPath, force } = req.body ?? {};
   if (typeof wsPath !== 'string' || !wsPath.trim()) {
     return res.status(400).json({ error: 'path is required' });
   }
   const resolved = path.resolve(wsPath.trim());
   if (!existsSync(resolved)) {
     return res.status(400).json({ error: `Folder not found: ${resolved}` });
+  }
+
+  const activeSessions = getActiveSessionCount();
+  if (activeSessions > 0 && !force) {
+    return res.status(409).json({
+      error: 'active_sessions',
+      activeSessions,
+      message: `${activeSessions} agent session${activeSessions > 1 ? 's are' : ' is'} still running. Force switch to stop them?`,
+    });
+  }
+
+  if (activeSessions > 0 && force) {
+    stopAllCliSessions('workspace-switch');
   }
 
   try {

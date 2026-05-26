@@ -166,12 +166,27 @@ export async function updateWorkspaceLabel(index: number, label: string): Promis
   return res.json();
 }
 
-export async function switchWorkspace(wsPath: string): Promise<{ ok: boolean; path: string }> {
+export interface SwitchResult {
+  ok: boolean;
+  path: string;
+}
+
+export interface SwitchBlockedResult {
+  blocked: true;
+  activeSessions: number;
+  message: string;
+}
+
+export async function switchWorkspace(wsPath: string, force?: boolean): Promise<SwitchResult | SwitchBlockedResult> {
   const res = await fetch(`${API_URL}/workspaces/switch`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path: wsPath }),
+    body: JSON.stringify({ path: wsPath, force }),
   });
+  if (res.status === 409) {
+    const payload = await res.json();
+    return { blocked: true, activeSessions: payload.activeSessions, message: payload.message };
+  }
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
     throw new Error(payload.error || 'Failed to switch workspace');

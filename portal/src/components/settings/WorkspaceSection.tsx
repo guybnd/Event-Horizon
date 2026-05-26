@@ -114,11 +114,18 @@ export function WorkspaceSection({
 
   const [switchingPath, setSwitchingPath] = useState<string | null>(null);
 
-  const handleSwitchWorkspace = async (ws: WorkspaceInfo) => {
-    if (!window.confirm(`Switch to "${ws.displayName}"?\n\nThis will reload the board with the new project's data.`)) return;
+  const handleSwitchWorkspace = async (ws: WorkspaceInfo, force?: boolean) => {
+    if (!force && !window.confirm(`Switch to "${ws.displayName}"?\n\nThis will reload the board with the new project's data.`)) return;
     setSwitchingPath(ws.path);
     try {
-      await apiSwitchWorkspace(ws.path);
+      const result = await apiSwitchWorkspace(ws.path, force);
+      if ('blocked' in result && result.blocked) {
+        const proceed = window.confirm(`${result.message}\n\nStop them and switch anyway?`);
+        if (proceed) {
+          await handleSwitchWorkspace(ws, true);
+        }
+        return;
+      }
       notifyWorkspaceSet();
       loadWorkspaces();
     } catch (err: any) {

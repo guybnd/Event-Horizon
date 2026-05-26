@@ -605,8 +605,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       .catch(() => {});
   }, [loadTasks, refreshWorkspaces, refreshNotifications]);
 
-  const switchWorkspace = useCallback(async (wsPath: string) => {
-    await apiSwitchWorkspace(wsPath);
+  const switchWorkspace = useCallback(async (wsPath: string, force?: boolean) => {
+    const result = await apiSwitchWorkspace(wsPath, force);
+    if ('blocked' in result && result.blocked) {
+      const proceed = window.confirm(`${result.message}\n\nStop them and switch anyway?`);
+      if (proceed) {
+        await switchWorkspace(wsPath, true);
+      }
+      return;
+    }
     notifyWorkspaceSet();
   }, [notifyWorkspaceSet]);
 

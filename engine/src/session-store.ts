@@ -141,6 +141,16 @@ export function validatePatternSupport(framework: CliFramework, pattern: Executi
   return null;
 }
 
+export function getActiveSessionCount(): number {
+  let count = 0;
+  for (const session of cliSessionsById.values()) {
+    if (session.status === 'running' || session.status === 'waiting-input' || session.status === 'pending') {
+      count++;
+    }
+  }
+  return count;
+}
+
 export function stopAllCliSessions(reason: string) {
   for (const session of cliSessionsById.values()) {
     if (!session.proc) continue;
