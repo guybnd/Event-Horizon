@@ -1105,21 +1105,277 @@ history:
   - type: agent_session
     sessionId: ae468f31-1d06-4d41-8716-d795d2533a1b
     startedAt: '2026-05-26T11:37:45.642Z'
+    status: completed
+    progress:
+      - timestamp: '2026-05-26T11:37:59.796Z'
+        message: 'Running: git log --oneline -10'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: git log --oneline -10
+            description: Show recent commits
+      - timestamp: '2026-05-26T11:38:01.629Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-05-26T11:38:09.098Z'
+        message: Reading task-store.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\task-store.ts'
+            offset: 227
+            limit: 140
+      - timestamp: '2026-05-26T11:38:14.471Z'
+        message: 'Running: git diff -- engine/src/task-store.ts portal/src/co...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              git diff -- engine/src/task-store.ts
+              portal/src/components/ParseErrorButton.tsx
+            description: Show uncommitted changes to implementation files
+      - timestamp: '2026-05-26T11:38:16.635Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-05-26T11:38:55.961Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: chokidar|watch\(|fs\.watch
+            path: 'C:\GitHub\EventHorizon\engine\src'
+            output_mode: content
+            '-n': true
+      - timestamp: '2026-05-26T11:38:59.082Z'
+        message: Reading task-store.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\task-store.ts'
+            offset: 645
+            limit: 50
+      - timestamp: '2026-05-26T11:39:01.649Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-05-26T11:39:21.674Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: debounce|ignoreNextChange|awaitWriteFinish|writeInProgress
+            path: 'C:\GitHub\EventHorizon\engine\src\task-store.ts'
+            output_mode: content
+      - timestamp: '2026-05-26T11:39:31.669Z'
+        message: Working
+        type: info
+      - timestamp: '2026-05-26T11:40:15.722Z'
+        message: Working
+        type: tool
+        data:
+          toolName: ToolSearch
+          parameters:
+            query: 'select:add_comment,change_status'
+            max_results: 2
+      - timestamp: '2026-05-26T11:40:16.706Z'
+        message: Working
+        type: info
+      - timestamp: '2026-05-26T11:40:23.038Z'
+        message: 'Running: curl -s http://localhost:3067/api/tasks/FLUX-329 2...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              curl -s http://localhost:3067/api/tasks/FLUX-329 2>/dev/null |
+              head -c 500
+            description: Check if engine API is accessible
+      - timestamp: '2026-05-26T11:40:31.710Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-05-26T11:40:46.714Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-05-26T11:40:52.937Z'
+        message: 'Running: curl -s -X PUT http://localhost:3067/api/tasks/FLU...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: |-
+              curl -s -X PUT http://localhost:3067/api/tasks/FLUX-329 \
+                -H "Content-Type: application/json" \
+                -d '{
+                  "status": "In Progress",
+                  "appendHistory": [
+                    {
+                      "type": "comment",
+                      "user": "Agent",
+                      "date": "2026-05-26T11:52:18.331Z",
+                      "comment": "CODE REVIEW — CHANGES NEEDED.\n\n1. CRITICAL: Reentrancy bug. repairTicket() calls fs.writeFile() inside loadTask(). The chokidar watcher fires on file change, which calls loadTask() again. No debounce, no write guard, no \"I am currently writing\" flag. Every repair triggers a redundant second load. Worse: if the second load triggers another repair (e.g. the repair log entry itself needs a date filled in some edge case), you get infinite recursion growing the history array until OOM. Fix: add a Set<string> of paths currently being written by repair, and skip loadTask() for those paths. Or use chokidar awaitWriteFinish, or unwatch/rewatch around the write.\n\n2. The date repair regex (line 290) — replace(/[^\\d\\-T:.Z+]/g, '') — is cargo-cult parsing. JavaScript Date constructor will happily parse garbage like \"20260526\" into a date without throwing. You are silently replacing malformed dates with WRONG dates instead of flagging them. At minimum, validate that the \"relaxed\" result is within a sane range (e.g. year 2020-2030) before accepting it.\n\n3. Dead code: the title validation at line 370 (if (!parsed.data[title])) can now never trigger for the missing-title case since repairTicket fills it in. Either remove the dead path or restructure so repair only runs AFTER validation fails (try-validate, repair, re-validate pattern). The current structure means validation and repair have overlapping responsibility with no clear contract.\n\n4. Minor: ParseErrorButton instructions say \"Or edit the file directly\" — but if the user is seeing parse errors AFTER auto-repair ran, the situation is non-trivial. The instructions should say auto-repair was attempted and failed, and the issue requires manual intervention. Otherwise agents will try the same fix that already failed.\n\nFix #1 (the reentrancy) before this goes anywhere. The rest are important but won't cause data corruption."
+                    }
+                  ]
+                }'
+            description: Post review comment and keep ticket In Progress
+      - timestamp: '2026-05-26T11:41:00.163Z'
+        message: 'Running: curl -s -X PUT http://localhost:3067/api/tasks/FLU...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: |-
+              curl -s -X PUT http://localhost:3067/api/tasks/FLUX-329 \
+                -H "Content-Type: application/json" \
+                -d "$(cat <<'ENDJSON'
+              {
+                "status": "In Progress",
+                "appendHistory": [
+                  {
+                    "type": "comment",
+                    "user": "Agent",
+                    "date": "2026-05-26T11:52:18.331Z",
+                    "comment": "CODE REVIEW — CHANGES NEEDED.\n\n1. CRITICAL: Reentrancy bug. repairTicket() calls fs.writeFile() inside loadTask(). The chokidar watcher fires on file change, which calls loadTask() again. No debounce, no write guard, no 'I am currently writing' flag. Every repair triggers a redundant second load. Worse: if the second load triggers another repair (e.g. the repair log entry itself needs a date filled in some edge case), you get infinite recursion growing the history array until OOM. Fix: add a Set<string> of paths currently being written by repair, and skip loadTask() for those paths. Or use chokidar awaitWriteFinish, or unwatch/rewatch around the write.\n\n2. The date repair regex (line 290) — replace(/[^\\d\\-T:.Z+]/g, '') — is cargo-cult parsing. JavaScript Date constructor will happily parse garbage like '20260526' into a date without throwing. You are silently replacing malformed dates with WRONG dates instead of flagging them. At minimum, validate that the relaxed result is within a sane range (e.g. year 2020-2030) before accepting it.\n\n3. Dead code: the title validation check after repairTicket can now never trigger for the missing-title case since repairTicket fills it in. Either remove the dead path or restructure so repair only runs AFTER validation fails (try-validate, repair, re-validate pattern). The current structure means validation and repair have overlapping responsibility with no clear contract.\n\n4. Minor: ParseErrorButton instructions say 'Or edit the file directly' — but if the user is seeing parse errors AFTER auto-repair ran, the situation is non-trivial. The instructions should say auto-repair was attempted and failed, and the issue requires manual intervention."
+                  }
+                ]
+              }
+              ENDJSON
+              )"
+            description: Post review comment via REST API
+      - timestamp: '2026-05-26T11:41:01.726Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-05-26T11:41:07.687Z'
+        message: Writing tmp-review.json
+        type: tool
+        data:
+          toolName: Write
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\tmp-review.json'
+            content: |
+              {
+                "status": "In Progress",
+                "appendHistory": [
+                  {
+                    "type": "comment",
+                    "user": "Agent",
+                    "date": "2026-05-26T11:52:18.331Z",
+                    "comment": "CODE REVIEW - CHANGES NEEDED.\n\n1. CRITICAL: Reentrancy bug. repairTicket() calls fs.writeFile() inside loadTask(). The chokidar watcher fires on file change, which calls loadTask() again. No debounce, no write guard, no flag. Every repair triggers a redundant second load. Worse: if the second load triggers another repair (e.g. the repair log entry itself needs a date filled), you get infinite recursion growing the history array until OOM. Fix: add a Set of paths currently being written by repair, and skip loadTask() for those paths.\n\n2. The date repair regex is cargo-cult parsing. JS Date constructor will happily parse garbage into a date without throwing. You are silently replacing malformed dates with WRONG dates. At minimum, validate that the relaxed result is within a sane range (year 2020-2030) before accepting it.\n\n3. Dead code: the title validation check after repairTicket can now never trigger for the missing-title case since repairTicket fills it in. Either remove the dead path or restructure so repair only runs AFTER validation fails (try-validate, repair, re-validate). The current structure means validation and repair overlap with no clear contract.\n\n4. Minor: ParseErrorButton instructions say 'Or edit the file directly' - but if the user sees parse errors AFTER auto-repair ran, the situation is non-trivial. Instructions should say auto-repair was attempted and failed, requiring manual intervention."
+                  }
+                ]
+              }
+      - timestamp: '2026-05-26T11:41:10.649Z'
+        message: 'Running: curl -s -X PUT http://localhost:3067/api/tasks/FLU...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              curl -s -X PUT http://localhost:3067/api/tasks/FLUX-329 -H
+              "Content-Type: application/json" -d @tmp-review.json
+            description: Post review comment via REST API using file
+      - timestamp: '2026-05-26T11:41:14.419Z'
+        message: 'Running: rm C:/GitHub/EventHorizon/tmp-review.json'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: 'rm C:/GitHub/EventHorizon/tmp-review.json'
+            description: Remove temporary JSON file
+      - timestamp: '2026-05-26T11:41:16.736Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-05-26T11:41:20.491Z'
+        message: >-
+          Review posted. Here's the summary:
+
+
+          **Verdict: Changes needed.**
+
+
+          The implementation has a **critical reentrancy bug** —
+          `repairTicket()` writes the file back to disk inside `loadTask()`,
+          which triggers the chokidar watcher, which calls `loadTask()` again.
+          No debounce, no guard. Every repair causes a redundant double-load,
+          and in edge cases could infinite-loop until OOM.
+
+
+          Secondary issues:
+
+          - Date repair regex does wishful-thinking parsing — JS `new Date()`
+          will silently accept garbage, producing *wrong* dates rather than
+          flagging them
+
+          - Dead code path: title validation after repair can never fire since
+          repair already fills it in
+
+          - ParseErrorButton instructions don't acknowledge that auto-repair
+          already tried and failed
+
+
+          The ticket stays In Progress until at minimum the reentrancy is fixed.
+    user: Claude Code
+    date: '2026-05-26T11:37:45.642Z'
+    outcome: Claude Code session ended with code 0.
+    endedAt: '2026-05-26T11:41:20.491Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-26T11:41:10.861Z'
+    comment: >-
+      CODE REVIEW - CHANGES NEEDED.
+
+
+      1. CRITICAL: Reentrancy bug. repairTicket() calls fs.writeFile() inside
+      loadTask(). The chokidar watcher fires on file change, which calls
+      loadTask() again. No debounce, no write guard, no flag. Every repair
+      triggers a redundant second load. Worse: if the second load triggers
+      another repair (e.g. the repair log entry itself needs a date filled), you
+      get infinite recursion growing the history array until OOM. Fix: add a Set
+      of paths currently being written by repair, and skip loadTask() for those
+      paths.
+
+
+      2. The date repair regex is cargo-cult parsing. JS Date constructor will
+      happily parse garbage into a date without throwing. You are silently
+      replacing malformed dates with WRONG dates. At minimum, validate that the
+      relaxed result is within a sane range (year 2020-2030) before accepting
+      it.
+
+
+      3. Dead code: the title validation check after repairTicket can now never
+      trigger for the missing-title case since repairTicket fills it in. Either
+      remove the dead path or restructure so repair only runs AFTER validation
+      fails (try-validate, repair, re-validate). The current structure means
+      validation and repair overlap with no clear contract.
+
+
+      4. Minor: ParseErrorButton instructions say 'Or edit the file directly' -
+      but if the user sees parse errors AFTER auto-repair ran, the situation is
+      non-trivial. Instructions should say auto-repair was attempted and failed,
+      requiring manual intervention.
+    id: c-2026-05-26t11-41-10-861z
+  - type: agent_session
+    sessionId: 110a3c73-ea76-436f-88f2-bc56bcfad273
+    startedAt: '2026-05-26T11:41:45.275Z'
     status: active
     progress: []
     user: Claude Code
-    date: '2026-05-26T11:37:45.642Z'
+    date: '2026-05-26T11:41:45.275Z'
 title: 'Parse error prevention: auto-fix and agent-friendly repair instructions'
 status: In Progress
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
-  inputTokens: 221044
-  outputTokens: 2736
-  costUSD: 0.58786
+  inputTokens: 804338
+  outputTokens: 11630
+  costUSD: 1.538565
   costIsEstimated: false
-  cacheReadTokens: 187673
-  cacheCreationTokens: 33359
+  cacheReadTokens: 728073
+  cacheCreationTokens: 76235
 id: FLUX-329
 ---
 ## Problem / Motivation
