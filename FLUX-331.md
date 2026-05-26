@@ -547,12 +547,114 @@ history:
   - type: agent_session
     sessionId: df01192e-4585-4ad8-b76a-14f53ad8ee47
     startedAt: '2026-05-26T12:54:37.244Z'
-    status: active
-    progress: []
+    status: cancelled
+    progress:
+      - timestamp: '2026-05-26T12:54:49.409Z'
+        message: Reading index.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\index.ts'
+      - timestamp: '2026-05-26T12:54:50.609Z'
+        message: 'Running: git log --oneline -10'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: git log --oneline -10
+            description: Recent git log
+      - timestamp: '2026-05-26T12:54:53.106Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-05-26T12:54:56.345Z'
+        message: 'Running: git diff HEAD -- engine/src/index.ts engine/src/mc...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: git diff HEAD -- engine/src/index.ts engine/src/mcp-server.ts
+            description: Diff of modified files against HEAD
+      - timestamp: '2026-05-26T12:55:08.123Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-05-26T12:56:23.163Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-05-26T12:56:28.419Z'
+        message: 'Running: curl -s -X PUT http://localhost:3067/api/tasks/FLU...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: |-
+              curl -s -X PUT http://localhost:3067/api/tasks/FLUX-331 \
+                -H "Content-Type: application/json" \
+                -d '{
+                  "appendHistory": [{
+                    "type": "comment",
+                    "user": "Agent",
+                    "comment": "Code review (Linus-style):\n\nThe core fix is correct. --mcp flag is checked, startServer() is skipped, stdout stays clean for JSON-RPC. The isEntryPoint guard in mcp-server.ts correctly prevents double-start when imported as a module. That part works.\n\nBut I have complaints:\n\n1. THE CHECK IS AT THE BOTTOM. You loaded express, cors, 15 route handlers, static portal serving, tray binary code, update-check — ALL of it — before checking the --mcp flag. Right now this works because none of those modules happen to console.log during initialization. That is luck, not design. The day someone adds a startup log in task-store.ts or workspace.js at module scope, MCP silently breaks again and nobody knows why. The flag check belongs at the TOP, before any of that crap is imported. ESM makes this annoying but not impossible — use a conditional dynamic import or split entry points. You chose 'at the bottom' because it was easy. That is the wrong criterion.\n\n2. The isEntryPoint IIFE is pointless ceremony. An IIFE assigned to a const used exactly once in the if block below it. Just write a try/catch inline or don't bother with the intermediate variable. This is not clever, it is noise.\n\n3. Error handling inconsistency: the --mcp error path does `process.stderr.write(\\`MCP server failed: ${err}\\n\\`)` while the HTTP path does `console.error('Failed to start Event Horizon:', err)`. The latter gets a stack trace. The former gets the Error.toString(). When MCP fails to start and the user is debugging, they get less information than when HTTP fails. That is backwards.\n\nThe fix ships the right behavior. Issue #1 is a latent fragility problem not a current bug, so I am not blocking on it. But it should be documented or fixed in a follow-up. Approving."
+                  }],
+                  "status": "Ready"
+                }'
+            description: Post review comment and move to Ready
     user: Claude Code
     date: '2026-05-26T12:54:37.244Z'
+    outcome: Claude Code session stopped by user.
+    endedAt: '2026-05-26T12:56:36.253Z'
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-26T12:56:36.099Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Code review (Linus-style):
+
+
+      The core fix is correct. --mcp flag is checked, startServer() is skipped,
+      stdout stays clean for JSON-RPC. The isEntryPoint guard in mcp-server.ts
+      correctly prevents double-start when imported as a module. That part
+      works.
+
+
+      But I have three complaints:
+
+
+      1. THE CHECK IS AT THE BOTTOM. You loaded express, cors, 15 route
+      handlers, static portal serving, tray binary code, update-check -- ALL of
+      it -- before checking the --mcp flag. Right now this works because none of
+      those modules happen to console.log during initialization. That is luck,
+      not design. The day someone adds a startup log in task-store.ts or
+      workspace.js at module scope, MCP silently breaks again and nobody knows
+      why. The flag check belongs at the TOP, before any of that crap is
+      imported. ESM makes this annoying but not impossible -- use a conditional
+      dynamic import or split entry points. You chose 'at the bottom' because it
+      was easy. That is the wrong criterion.
+
+
+      2. The isEntryPoint IIFE is pointless ceremony. An IIFE assigned to a
+      const used exactly once in the if block below it. Just write try/catch
+      inline or don't bother with the intermediate variable. This is not clever,
+      it is noise.
+
+
+      3. Error handling inconsistency: the --mcp error path does
+      process.stderr.write() which gives you Error.toString(). The HTTP error
+      path does console.error() which gives you a full stack trace. When MCP
+      fails to start and the user is debugging, they get less information. That
+      is backwards.
+
+
+      The fix ships the right behavior. Issue #1 is a latent fragility problem,
+      not a current bug, so I'm not blocking on it. But it should be tracked.
+      Approving.
+    date: '2026-05-26T12:56:36.099Z'
+    id: c-2026-05-26t12-56-36-099z
 title: help verify this bug of why MCP not working for some customers
-status: In Progress
+status: Ready
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -562,7 +664,6 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 635150
   cacheCreationTokens: 48442
-id: FLUX-331
 ---
 ## Problem / Motivation
 
