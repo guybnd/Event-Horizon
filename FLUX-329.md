@@ -1361,12 +1361,455 @@ history:
   - type: agent_session
     sessionId: 110a3c73-ea76-436f-88f2-bc56bcfad273
     startedAt: '2026-05-26T11:41:45.275Z'
-    status: active
-    progress: []
+    status: cancelled
+    progress:
+      - timestamp: '2026-05-26T11:41:57.587Z'
+        message: Reading task-store.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\task-store.ts'
+      - timestamp: '2026-05-26T11:42:00.839Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-05-26T11:42:13.912Z'
+        message: Reading init.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\init.ts'
+      - timestamp: '2026-05-26T11:42:15.841Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-05-26T11:42:36.751Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: export function validateTicketFrontmatter
+            output_mode: files_with_matches
+      - timestamp: '2026-05-26T11:42:39.809Z'
+        message: Reading schema.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\schema.ts'
+      - timestamp: '2026-05-26T11:42:45.864Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-05-26T11:42:55.995Z'
+        message: Editing task-store.ts
+        type: tool
+        data:
+          toolName: Edit
+          parameters:
+            replace_all: false
+            file_path: 'C:\GitHub\EventHorizon\engine\src\task-store.ts'
+            old_string: >-
+              export let tasksCache: Record<string, any> = {};
+
+              export let docsCache: Record<string, StoredDoc> = {};
+
+              export let parseErrors: Record<string, { id: string; path: string;
+              error: string }> = {};
+
+              export let workspaceActivating = false;
+            new_string: >-
+              export let tasksCache: Record<string, any> = {};
+
+              export let docsCache: Record<string, StoredDoc> = {};
+
+              export let parseErrors: Record<string, { id: string; path: string;
+              error: string }> = {};
+
+              export let workspaceActivating = false;
+
+
+              const repairingPaths = new Set<string>();
+      - timestamp: '2026-05-26T11:43:00.873Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-05-26T11:43:04.861Z'
+        message: Editing task-store.ts
+        type: tool
+        data:
+          toolName: Edit
+          parameters:
+            replace_all: false
+            file_path: 'C:\GitHub\EventHorizon\engine\src\task-store.ts'
+            old_string: |2-
+                    // Fix malformed dates
+                    if (entry.date && typeof entry.date === 'string') {
+                      const parsed = new Date(entry.date);
+                      if (Number.isNaN(parsed.getTime())) {
+                        // Try common malformations
+                        const relaxed = new Date(entry.date.replace(/[^\d\-T:.Z+]/g, ''));
+                        if (!Number.isNaN(relaxed.getTime())) {
+                          entry.date = relaxed.toISOString();
+                          repairs.push(`history[${i}]: repaired malformed date`);
+                        } else {
+                          entry.date = new Date().toISOString();
+                          repairs.push(`history[${i}]: replaced unparseable date with current timestamp`);
+                        }
+                      }
+                    } else if (!entry.date) {
+            new_string: |2-
+                    // Fix malformed dates
+                    if (entry.date && typeof entry.date === 'string') {
+                      const parsed = new Date(entry.date);
+                      if (Number.isNaN(parsed.getTime())) {
+                        const relaxed = new Date(entry.date.replace(/[^\d\-T:.Z+]/g, ''));
+                        const relaxedYear = relaxed.getFullYear();
+                        if (!Number.isNaN(relaxed.getTime()) && relaxedYear >= 2020 && relaxedYear <= 2030) {
+                          entry.date = relaxed.toISOString();
+                          repairs.push(`history[${i}]: repaired malformed date`);
+                        } else {
+                          entry.date = new Date().toISOString();
+                          repairs.push(`history[${i}]: replaced unparseable date with current timestamp`);
+                        }
+                      }
+                    } else if (!entry.date) {
+      - timestamp: '2026-05-26T11:43:15.875Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-05-26T11:43:23.811Z'
+        message: Editing task-store.ts
+        type: tool
+        data:
+          toolName: Edit
+          parameters:
+            replace_all: false
+            file_path: 'C:\GitHub\EventHorizon\engine\src\task-store.ts'
+            old_string: |-
+              export async function loadTask(filePath: string) {
+                if (!isTopLevelTaskFile(filePath)) return;
+
+                try {
+                  const fileStats = await fs.stat(filePath);
+                  const content = await fs.readFile(filePath, 'utf-8');
+
+                  let parsed: matter.GrayMatterFile<string>;
+                  try {
+                    parsed = matter(content);
+                  } catch (yamlErr) {
+                    const msg = yamlErr instanceof Error ? yamlErr.message : String(yamlErr);
+                    console.error(`\n[FLUX VALIDATION ERROR] ${filePath}\n  YAML frontmatter is invalid: ${msg}\n  The ticket has been removed from the board. Fix the frontmatter and save again.\n`);
+                    const id = path.basename(filePath, '.md');
+                    delete tasksCache[id];
+                    parseErrors[id] = { id, path: filePath, error: `YAML frontmatter is invalid: ${msg}` };
+                    return;
+                  }
+
+                  // Run auto-repair before validation checks
+                  const repairs = repairTicket(parsed.data, filePath);
+                  if (repairs.length > 0) {
+                    console.log(`[FLUX AUTO-REPAIR] ${filePath}\n  ${repairs.join('\n  ')}`);
+                    // Append a repair log to history
+                    if (!Array.isArray(parsed.data.history)) parsed.data.history = [];
+                    parsed.data.history.push({
+                      type: 'activity',
+                      user: 'System',
+                      date: new Date().toISOString(),
+                      comment: `Auto-repaired ticket: ${repairs.join('; ')}`,
+                    });
+                    // Persist the repaired file
+                    const repairedContent = matter.stringify(parsed.content, parsed.data);
+                    await fs.writeFile(filePath, repairedContent, 'utf-8');
+                  }
+
+                  if (!parsed.data || !parsed.data['title']) {
+                    console.error(`\n[FLUX VALIDATION ERROR] ${filePath}\n  Frontmatter is missing required field: title\n  The ticket has been removed from the board. Fix the frontmatter and save again.\n`);
+                    const id = path.basename(filePath, '.md');
+                    delete tasksCache[id];
+                    parseErrors[id] = { id, path: filePath, error: 'Frontmatter is missing required field: title' };
+                    return;
+                  }
+            new_string: |-
+              export async function loadTask(filePath: string) {
+                if (!isTopLevelTaskFile(filePath)) return;
+                if (repairingPaths.has(filePath)) return;
+
+                try {
+                  const fileStats = await fs.stat(filePath);
+                  const content = await fs.readFile(filePath, 'utf-8');
+
+                  let parsed: matter.GrayMatterFile<string>;
+                  try {
+                    parsed = matter(content);
+                  } catch (yamlErr) {
+                    const msg = yamlErr instanceof Error ? yamlErr.message : String(yamlErr);
+                    console.error(`\n[FLUX VALIDATION ERROR] ${filePath}\n  YAML frontmatter is invalid: ${msg}\n  The ticket has been removed from the board. Fix the frontmatter and save again.\n`);
+                    const id = path.basename(filePath, '.md');
+                    delete tasksCache[id];
+                    parseErrors[id] = { id, path: filePath, error: `YAML frontmatter is invalid: ${msg}` };
+                    return;
+                  }
+
+                  // Validate first; only attempt repair if validation fails
+                  const initialErrors = validateTicketFrontmatter(parsed.data);
+                  if (initialErrors.length > 0) {
+                    const repairs = repairTicket(parsed.data, filePath);
+                    if (repairs.length > 0) {
+                      console.log(`[FLUX AUTO-REPAIR] ${filePath}\n  ${repairs.join('\n  ')}`);
+                      if (!Array.isArray(parsed.data.history)) parsed.data.history = [];
+                      parsed.data.history.push({
+                        type: 'activity',
+                        user: 'System',
+                        date: new Date().toISOString(),
+                        comment: `Auto-repaired ticket: ${repairs.join('; ')}`,
+                      });
+                      repairingPaths.add(filePath);
+                      try {
+                        const repairedContent = matter.stringify(parsed.content, parsed.data);
+                        await fs.writeFile(filePath, repairedContent, 'utf-8');
+                      } finally {
+                        repairingPaths.delete(filePath);
+                      }
+                    }
+
+                    // Re-validate after repair
+                    const postRepairErrors = validateTicketFrontmatter(parsed.data);
+                    if (postRepairErrors.length > 0) {
+                      const summary = formatValidationErrors(postRepairErrors);
+                      console.error(`\n[FLUX VALIDATION ERROR] ${filePath}\n  Schema validation failed (auto-repair insufficient):\n${summary}\n  The ticket has been removed from the board. Fix the frontmatter and save again.\n`);
+                      const id = path.basename(filePath, '.md');
+                      delete tasksCache[id];
+                      parseErrors[id] = { id, path: filePath, error: `Schema validation failed (auto-repair attempted but insufficient):\n${summary}` };
+                      return;
+                    }
+                  }
+      - timestamp: '2026-05-26T11:43:27.714Z'
+        message: Reading task-store.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\task-store.ts'
+            offset: 378
+            limit: 80
+      - timestamp: '2026-05-26T11:43:30.884Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-05-26T11:43:41.915Z'
+        message: Editing ParseErrorButton.tsx
+        type: tool
+        data:
+          toolName: Edit
+          parameters:
+            replace_all: false
+            file_path: 'C:\GitHub\EventHorizon\portal\src\components\ParseErrorButton.tsx'
+            old_string: >-
+              ## Instructions
+
+
+              1. Read the file at the path above
+
+              2. Identify the YAML frontmatter section (between the \`---\`
+              delimiters)
+
+              3. Fix the specific error described above using the schema
+              reference
+
+              4. Use the engine API to update: \`PUT /api/tasks/${error.id}\`
+              with corrected fields
+
+              5. Or edit the file directly ensuring valid YAML with spaces (not
+              tabs) for indentation
+
+              `;
+            new_string: >-
+              ## Instructions
+
+
+              **Note:** Auto-repair was already attempted on this ticket and
+              could not resolve the issue.
+
+              Manual intervention is required.
+
+
+              1. Read the file at the path above
+
+              2. Identify the YAML frontmatter section (between the \`---\`
+              delimiters)
+
+              3. Fix the specific error described above using the schema
+              reference
+
+              4. Use the engine API to update: \`PUT /api/tasks/${error.id}\`
+              with corrected fields
+
+              5. Or edit the file directly ensuring valid YAML with spaces (not
+              tabs) for indentation
+
+              `;
+      - timestamp: '2026-05-26T11:43:45.500Z'
+        message: 'Running: cd /c/GitHub/EventHorizon/engine && npx tsc --noEm...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              cd /c/GitHub/EventHorizon/engine && npx tsc --noEmit 2>&1 | head
+              -40
+            description: Type-check engine TypeScript
+      - timestamp: '2026-05-26T11:43:45.889Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-05-26T11:43:58.575Z'
+        message: 'Running: npx tsc --noEmit 2>&1 | grep -i "task-store"'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: npx tsc --noEmit 2>&1 | grep -i "task-store"
+            description: Check for task-store.ts type errors
+      - timestamp: '2026-05-26T11:44:00.898Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-05-26T11:44:08.990Z'
+        message: Reading task-store.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\task-store.ts'
+            offset: 420
+            limit: 50
+      - timestamp: '2026-05-26T11:44:14.057Z'
+        message: Editing task-store.ts
+        type: tool
+        data:
+          toolName: Edit
+          parameters:
+            replace_all: false
+            file_path: 'C:\GitHub\EventHorizon\engine\src\task-store.ts'
+            old_string: '    const normalizedFrontmatter = { ...parsed.data, history };'
+            new_string: '    const normalizedFrontmatter: any = { ...parsed.data, history };'
+      - timestamp: '2026-05-26T11:44:15.914Z'
+        message: Editing
+        type: info
+      - timestamp: '2026-05-26T11:44:17.252Z'
+        message: 'Running: npx tsc --noEmit 2>&1 | grep -i "task-store"'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: npx tsc --noEmit 2>&1 | grep -i "task-store"
+            description: Check task-store.ts compiles clean
+      - timestamp: '2026-05-26T11:44:26.650Z'
+        message: 'Running: cd /c/GitHub/EventHorizon/portal && npx tsc --noEm...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              cd /c/GitHub/EventHorizon/portal && npx tsc --noEmit 2>&1 | grep
+              -i "ParseError"
+            description: Check ParseErrorButton compiles clean
+      - timestamp: '2026-05-26T11:44:30.915Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-05-26T11:44:32.404Z'
+        message: Working
+        type: tool
+        data:
+          toolName: ToolSearch
+          parameters:
+            query: +change_status
+            max_results: 2
+      - timestamp: '2026-05-26T11:44:41.227Z'
+        message: 'Running: curl -s http://localhost:3067/api/tasks/FLUX-329 |...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: 'curl -s http://localhost:3067/api/tasks/FLUX-329 | head -5'
+            description: Check if engine is running and get ticket state
+      - timestamp: '2026-05-26T11:44:45.917Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-05-26T11:44:55.824Z'
+        message: 'Running: curl -s -X PUT http://localhost:3067/api/tasks/FLU...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: |-
+              curl -s -X PUT http://localhost:3067/api/tasks/FLUX-329 \
+                -H "Content-Type: application/json" \
+                -d '{
+                  "status": "Ready",
+                  "updatedBy": "Agent",
+                  "appendHistory": [
+                    {
+                      "type": "status_change",
+                      "from": "In Progress",
+                      "to": "Ready",
+                      "user": "Agent",
+                      "date": "'"$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"'"
+                    },
+                    {
+                      "type": "comment",
+                      "user": "Agent",
+                      "date": "'"$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"'",
+                      "comment": "Code review fixes implemented. All 4 issues addressed:\n\n1. REENTRANCY BUG FIXED: Added repairingPaths Set guard. loadTask() now early-returns if the file is currently being written by repair, preventing chokidar-triggered infinite recursion.\n\n2. DATE VALIDATION FIXED: Relaxed date parsing now validates the result is within year range 2020-2030 before accepting. Out-of-range results fall through to replacement with current timestamp.\n\n3. DEAD CODE / FLOW RESTRUCTURED: Repair now only runs AFTER initial validation fails (validate → repair → re-validate). Clear contract: if validation passes on first attempt, no repair runs. If repair runs and re-validation still fails, the error message explicitly states auto-repair was attempted.\n\n4. PARSEBUTTON INSTRUCTIONS UPDATED: Copy-to-clipboard instructions now state that auto-repair was already attempted and failed, so users/agents know this is a non-trivial case requiring manual intervention.\n\nKey files: engine/src/task-store.ts (repairTicket flow + reentrancy guard), portal/src/components/ParseErrorButton.tsx (instructions text). Both compile clean."
+                    }
+                  ]
+                }' | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','ERROR'), d.get('id',''))"
+            description: Move FLUX-329 to Ready with completion comment
     user: Claude Code
     date: '2026-05-26T11:41:45.275Z'
+    outcome: Claude Code session stopped by user.
+    endedAt: '2026-05-26T11:44:56.246Z'
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-26T11:44:56.175Z'
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-26T11:44:56.175Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-26T11:44:56.175Z'
+    comment: >-
+      Code review fixes implemented. All 4 issues addressed:
+
+
+      1. REENTRANCY BUG FIXED: Added repairingPaths Set guard. loadTask() now
+      early-returns if the file is currently being written by repair, preventing
+      chokidar-triggered infinite recursion.
+
+
+      2. DATE VALIDATION FIXED: Relaxed date parsing now validates the result is
+      within year range 2020-2030 before accepting. Out-of-range results fall
+      through to replacement with current timestamp.
+
+
+      3. DEAD CODE / FLOW RESTRUCTURED: Repair now only runs AFTER initial
+      validation fails (validate ? repair ? re-validate). Clear contract: if
+      validation passes on first attempt, no repair runs. If repair runs and
+      re-validation still fails, the error message explicitly states auto-repair
+      was attempted.
+
+
+      4. PARSEBUTTON INSTRUCTIONS UPDATED: Copy-to-clipboard instructions now
+      state that auto-repair was already attempted and failed, so users/agents
+      know this is a non-trivial case requiring manual intervention.
+
+
+      Key files: engine/src/task-store.ts (repairTicket flow + reentrancy
+      guard), portal/src/components/ParseErrorButton.tsx (instructions text).
+      Both compile clean.
+    id: c-2026-05-26t11-44-56-175z
 title: 'Parse error prevention: auto-fix and agent-friendly repair instructions'
-status: In Progress
+status: Ready
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -1376,7 +1819,6 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 728073
   cacheCreationTokens: 76235
-id: FLUX-329
 ---
 ## Problem / Motivation
 
