@@ -722,8 +722,37 @@ history:
       settings
     date: '2026-05-26T00:12:06.600Z'
     id: c-2026-05-26t00-12-06-600z
+  - type: comment
+    user: Agent
+    comment: >-
+      Implementation complete. What was done:\n\n**Engine:**\n- Extended
+      `workspace.ts` with `WorkspaceEntry` type, `workspaces` array in settings,
+      CRUD helpers (`addWorkspaceEntry`, `removeWorkspaceEntry`,
+      `updateWorkspaceLabel`, `autoRegisterWorkspace`), and Windows-safe path
+      comparison.\n- Created `routes/workspaces.ts` with `GET /api/workspaces`,
+      `POST /api/workspaces`, `DELETE /api/workspaces/:index`, `PUT
+      /api/workspaces/:index`, `POST /api/workspaces/switch`.\n- Auto-registers
+      the current workspace on engine startup and on any workspace
+      switch.\n\n**Portal:**\n- Added API functions: `fetchWorkspaces`,
+      `addWorkspace`, `removeWorkspace`, `updateWorkspaceLabel`,
+      `switchWorkspace`.\n- Added `workspaces` state, `switchWorkspace` and
+      `refreshWorkspaces` to AppContext.\n- Created `WorkspaceSwitcher.tsx` —
+      dropdown in the header showing all configured workspaces with
+      active/unavailable states, and a link to settings.\n- Replaced the old KEY
+      input in the header with the workspace switcher.\n- Added \"Configured
+      Workspaces\" management panel to WorkspaceSection settings (add via folder
+      picker, rename, remove).\n\n**Validated:** TypeScript compiles clean (both
+      engine and portal), portal builds, engine starts, API returns correct
+      workspace list with active flag. Windows path casing handled correctly.
+    date: '2026-05-26T00:20:46.397Z'
+    id: c-2026-05-26t00-20-46-397z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-26T00:20:46.397Z'
 title: multi project workflow
-status: In Progress
+status: Ready
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
