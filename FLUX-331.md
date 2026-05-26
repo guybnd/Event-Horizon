@@ -227,6 +227,13 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-26T12:35:40.267Z'
+  - type: agent_session
+    sessionId: 12135593-df23-44dd-89d5-4010bc88f748
+    startedAt: '2026-05-26T12:37:33.322Z'
+    status: active
+    progress: []
+    user: Claude Code
+    date: '2026-05-26T12:37:33.322Z'
 title: help verify this bug of why MCP not working for some customers
 status: Todo
 createdBy: Guy
