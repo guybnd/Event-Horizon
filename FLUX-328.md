@@ -1,6 +1,6 @@
 ---
 title: Project initialization should provide basic SKILLS setup
-status: Ready
+status: In Progress
 priority: Medium
 assignee: unassigned
 tags:
@@ -661,6 +661,18 @@ history:
       existing EH docs copy. Updated post-init guidance to mention skills.
       TypeScript compiles cleanly.
     id: c-2026-05-26t10-45-42-984z
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Agent
+    date: '2026-05-26T11:37:52.937Z'
+  - type: agent_session
+    sessionId: 126a3384-8698-4cf4-9834-312baa2033fa
+    startedAt: '2026-05-26T11:37:52.979Z'
+    status: active
+    progress: []
+    user: Claude Code
+    date: '2026-05-26T11:37:52.979Z'
 tokenMetadata:
   inputTokens: 494419
   outputTokens: 3388
@@ -668,6 +680,7 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 470553
   cacheCreationTokens: 23189
+id: FLUX-328
 ---
 ## Problem / Motivation
 
