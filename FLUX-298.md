@@ -705,8 +705,25 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-26T00:06:46.434Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-26T00:11:59.848Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Starting implementation. Plan:\n1. Extend workspace.ts to manage a
+      `workspaces` array in settings.json\n2. Create new routes/workspaces.ts
+      with CRUD + switch endpoints\n3. Register the new router in index.ts\n4.
+      Add portal API functions for workspaces\n5. Add workspace list to
+      AppContext\n6. Replace the KEY input in Header.tsx with a workspace
+      switcher dropdown\n7. Add workspace management list to WorkspaceSection
+      settings
+    date: '2026-05-26T00:12:06.600Z'
+    id: c-2026-05-26t00-12-06-600z
 title: multi project workflow
-status: Todo
+status: In Progress
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
