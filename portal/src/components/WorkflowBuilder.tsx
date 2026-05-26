@@ -3,7 +3,7 @@ import { DndContext, DragOverlay, useDroppable, useDraggable, type DragEndEvent,
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { GripVertical, Plus, Check, X, ChevronDown, Copy, Play, Save, Workflow, Bot, Pencil, BookOpen, ArrowRight, GitBranch, Layers, Trash2, Loader2 } from 'lucide-react';
-import { fetchDocs, fetchDoc, updateDoc, createDoc, deleteDoc } from '../api';
+import { fetchDocs, updateDoc, createDoc, deleteDoc } from '../api';
 import type { Doc } from '../types';
 
 // --- Types ---
