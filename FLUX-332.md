@@ -26,11 +26,15 @@ history:
     progress: []
     user: Claude Code
     date: '2026-05-26T13:07:20.663Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-26T13:10:09.666Z'
 title: Do release v0.10.1
-status: Todo
+status: In Progress
 createdBy: Guy
 updatedBy: Agent
 order: 5
-id: FLUX-332
 ---
 with github actions release and proper changelog etc.

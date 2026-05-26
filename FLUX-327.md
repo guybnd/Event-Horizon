@@ -1,6 +1,6 @@
 ---
 title: Cannot clear or mark notifications as read
-status: Done
+status: Released
 priority: High
 assignee: unassigned
 tags:
@@ -19,6 +19,14 @@ history:
     to: Done
     user: Guy
     date: '2026-05-26T12:55:11.986Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-26T13:10:15.576Z'
+version: v0.10.1
+releasedAt: '2026-05-26T13:10:15.576Z'
+releaseDocPath: release-notes/v0.10.1
 ---
 
 ## Problem
