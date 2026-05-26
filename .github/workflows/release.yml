@@ -45,8 +45,8 @@ jobs:
           VERSION="${{ github.ref_name }}"
           NOTES_FILE=".docs/release-notes/${VERSION}.md"
           if [ -f "$NOTES_FILE" ]; then
-            # Strip YAML frontmatter and write body to file
-            sed '1{/^---$/!q0};1,/^---$/d' "$NOTES_FILE" > release-body.md
+            # Strip YAML frontmatter (BSD sed compatible)
+            awk 'BEGIN{s=0} /^---$/{s++;next} s>=2{print}' "$NOTES_FILE" > release-body.md
           else
             echo "## ${VERSION}" > release-body.md
             echo "" >> release-body.md
