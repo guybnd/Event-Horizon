@@ -1,6 +1,6 @@
 ---
 title: 'Global app settings: dedicated install location with first-boot config'
-status: Todo
+status: In Progress
 priority: High
 effort: L
 assignee: unassigned
@@ -347,6 +347,21 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-26T00:50:35.390Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Implementation plan: Starting with the core global-settings module (step
+      1-2), then refactoring workspace.ts to use it (step 4), adding boot-status
+      API endpoints (step 3 engine side), then the portal first-boot dialog and
+      settings UI (steps 3+5), and finally project bootstrapping (step 6). Will
+      tackle in that order to keep each change buildable.
+    date: '2026-05-26T00:53:13.945Z'
+    id: c-2026-05-26t00-53-13-945z
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-26T00:53:14.367Z'
 implementationLink: ''
 subtasks:
   - FLUX-325
