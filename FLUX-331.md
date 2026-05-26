@@ -661,10 +661,12 @@ history:
   - type: agent_session
     sessionId: ad718179-986c-4663-a98c-18acff89fb39
     startedAt: '2026-05-26T12:58:25.895Z'
-    status: active
+    status: cancelled
     progress: []
     user: Claude Code
     date: '2026-05-26T12:58:25.895Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-26T13:01:04.632Z'
 title: help verify this bug of why MCP not working for some customers
 status: In Progress
 createdBy: Guy
