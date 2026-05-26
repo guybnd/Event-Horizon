@@ -1,6 +1,6 @@
 ---
 title: Project initialization should provide basic SKILLS setup
-status: In Progress
+status: Ready
 priority: Medium
 assignee: unassigned
 tags:
@@ -334,10 +334,296 @@ history:
   - type: agent_session
     sessionId: ce1f2ab9-f96f-4258-995d-b85b7658d92d
     startedAt: '2026-05-26T10:44:01.270Z'
-    status: active
-    progress: []
+    status: cancelled
+    progress:
+      - timestamp: '2026-05-26T10:44:14.102Z'
+        message: Working
+        type: tool
+        data:
+          toolName: ToolSearch
+          parameters:
+            query: 'select:change_status,add_comment,log_progress,get_ticket'
+            max_results: 4
+      - timestamp: '2026-05-26T10:44:14.591Z'
+        message: Reading init.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\init.ts'
+      - timestamp: '2026-05-26T10:44:16.735Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-05-26T10:44:20.000Z'
+        message: Reading docs-seeder.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\docs-seeder.ts'
+      - timestamp: '2026-05-26T10:44:20.634Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Glob
+          parameters:
+            pattern: .docs/skills/*.md
+            path: 'C:\GitHub\EventHorizon'
+      - timestamp: '2026-05-26T10:44:31.739Z'
+        message: Working
+        type: info
+      - timestamp: '2026-05-26T10:44:35.649Z'
+        message: 'Running: curl -s http://localhost:3067/api/tasks/FLUX-328 2...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              curl -s http://localhost:3067/api/tasks/FLUX-328 2>/dev/null |
+              head -c 500
+            description: Check if engine is running and get ticket
+      - timestamp: '2026-05-26T10:44:42.265Z'
+        message: 'Running: curl -s -X PUT http://localhost:3067/api/tasks/FLU...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              curl -s -X PUT http://localhost:3067/api/tasks/FLUX-328 -H
+              "Content-Type: application/json" -d '{"status": "In Progress",
+              "appendHistory": [{"type": "status_change", "from": "Todo", "to":
+              "In Progress", "user": "Agent", "date": "'"$(date -u
+              +%Y-%m-%dT%H:%M:%S.%3NZ)"'"}, {"type": "comment", "user": "Agent",
+              "date": "'"$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"'", "comment":
+              "Starting implementation: will add skills scaffolding to init.ts
+              after the EH docs copy step."}]}' | head -c 200
+            description: Move ticket to In Progress
+      - timestamp: '2026-05-26T10:44:46.745Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-05-26T10:44:53.825Z'
+        message: Editing init.ts
+        type: tool
+        data:
+          toolName: Edit
+          parameters:
+            replace_all: false
+            file_path: 'C:\GitHub\EventHorizon\engine\src\init.ts'
+            old_string: |2-
+                // Copy embedded EH docs (how-to guides, workflow, architecture) into .docs/event-horizon/
+                // so they appear in the Docs screen of the portal.
+                const ehDocsSrc = path.join(resolveEmbeddedDocsRoot(), '.docs', 'event-horizon');
+                const ehDocsDest = path.join(docsDir, 'event-horizon');
+                if (existsSync(ehDocsSrc) && !existsSync(ehDocsDest)) {
+                  try {
+                    await copyDir(ehDocsSrc, ehDocsDest);
+                    console.log('Created .docs/event-horizon/ (Event Horizon usage guides)');
+                  } catch {
+                    // Non-fatal — docs are helpful but not required to run.
+                  }
+                }
+
+                // Post-init guidance
+            new_string: |2-
+                // Copy embedded EH docs (how-to guides, workflow, architecture) into .docs/event-horizon/
+                // so they appear in the Docs screen of the portal.
+                const ehDocsSrc = path.join(resolveEmbeddedDocsRoot(), '.docs', 'event-horizon');
+                const ehDocsDest = path.join(docsDir, 'event-horizon');
+                if (existsSync(ehDocsSrc) && !existsSync(ehDocsDest)) {
+                  try {
+                    await copyDir(ehDocsSrc, ehDocsDest);
+                    console.log('Created .docs/event-horizon/ (Event Horizon usage guides)');
+                  } catch {
+                    // Non-fatal — docs are helpful but not required to run.
+                  }
+                }
+
+                // Copy skill source files into .docs/skills/ so the project is self-contained
+                // for the agent workflow without needing the EH source root.
+                const ehRoot = resolveEmbeddedDocsRoot();
+                const skillsSrc = path.join(ehRoot, '.docs', 'skills');
+                const skillsDest = path.join(docsDir, 'skills');
+                if (existsSync(skillsSrc) && !existsSync(skillsDest)) {
+                  try {
+                    await copyDir(skillsSrc, skillsDest);
+                    console.log('Created .docs/skills/ (agent workflow skill modules)');
+                  } catch {
+                    // Non-fatal — skills can be installed manually later.
+                  }
+                }
+
+                // Copy bootstrap instruction template into .flux/skills/
+                const fluxSkillsSrc = path.join(ehRoot, '.flux', 'skills');
+                const fluxSkillsDest = path.join(fluxDir, 'skills');
+                if (existsSync(fluxSkillsSrc) && !existsSync(fluxSkillsDest)) {
+                  try {
+                    await copyDir(fluxSkillsSrc, fluxSkillsDest);
+                    console.log('Created .flux/skills/ (copilot instructions template)');
+                  } catch {
+                    // Non-fatal — template can be installed manually later.
+                  }
+                }
+
+                // Post-init guidance
+      - timestamp: '2026-05-26T10:44:59.278Z'
+        message: Editing init.ts
+        type: tool
+        data:
+          toolName: Edit
+          parameters:
+            replace_all: false
+            file_path: 'C:\GitHub\EventHorizon\engine\src\init.ts'
+            old_string: |2-
+                // Post-init guidance
+                console.log(`
+              ✓ Event Horizon workspace created!
+
+              Next steps:
+                1. Start the engine:
+                     cd path/to/event-horizon/engine
+                     npm run dev
+
+                2. Open the portal in your browser:
+                     http://localhost:3067
+
+                3. Create your first ticket using the "+ New ticket" button on the board.
+
+                4. To use the AI agent workflow, go to Settings → Agent Workflow → Install.
+
+              Workspace location: ${target}
+              `);
+            new_string: |2-
+                // Post-init guidance
+                console.log(`
+              ✓ Event Horizon workspace created!
+
+              Next steps:
+                1. Start the engine:
+                     cd path/to/event-horizon/engine
+                     npm run dev
+
+                2. Open the portal in your browser:
+                     http://localhost:3067
+
+                3. Create your first ticket using the "+ New ticket" button on the board.
+
+                4. Agent workflow skills are installed in .docs/skills/ and .flux/skills/.
+                   To install for your framework, go to Settings → Agent Workflow → Install.
+
+              Workspace location: ${target}
+              `);
+      - timestamp: '2026-05-26T10:45:01.748Z'
+        message: Editing
+        type: info
+      - timestamp: '2026-05-26T10:45:02.640Z'
+        message: Reading init.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\init.ts'
+            offset: 170
+            limit: 70
+      - timestamp: '2026-05-26T10:45:03.520Z'
+        message: 'Running: cd /c/GitHub/EventHorizon/engine && npx tsc --noEm...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              cd /c/GitHub/EventHorizon/engine && npx tsc --noEmit src/init.ts
+              2>&1 | head -30
+            description: Type-check init.ts
+      - timestamp: '2026-05-26T10:45:15.580Z'
+        message: 'Running: npx tsc --noEmit 2>&1 | grep "init.ts" | head -10'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: npx tsc --noEmit 2>&1 | grep "init.ts" | head -10
+            description: Check for init.ts type errors
+      - timestamp: '2026-05-26T10:45:16.760Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-05-26T10:45:27.836Z'
+        message: Editing init.ts
+        type: tool
+        data:
+          toolName: Edit
+          parameters:
+            replace_all: false
+            file_path: 'C:\GitHub\EventHorizon\engine\src\init.ts'
+            old_string: |2-
+                // Copy embedded EH docs (how-to guides, workflow, architecture) into .docs/event-horizon/
+                // so they appear in the Docs screen of the portal.
+                const ehDocsSrc = path.join(resolveEmbeddedDocsRoot(), '.docs', 'event-horizon');
+                const ehDocsDest = path.join(docsDir, 'event-horizon');
+                if (existsSync(ehDocsSrc) && !existsSync(ehDocsDest)) {
+                  try {
+                    await copyDir(ehDocsSrc, ehDocsDest);
+                    console.log('Created .docs/event-horizon/ (Event Horizon usage guides)');
+                  } catch {
+                    // Non-fatal — docs are helpful but not required to run.
+                  }
+                }
+
+                // Copy skill source files into .docs/skills/ so the project is self-contained
+                // for the agent workflow without needing the EH source root.
+                const ehRoot = resolveEmbeddedDocsRoot();
+                const skillsSrc = path.join(ehRoot, '.docs', 'skills');
+            new_string: |2-
+                // Copy embedded EH docs (how-to guides, workflow, architecture) into .docs/event-horizon/
+                // so they appear in the Docs screen of the portal.
+                const ehRoot = resolveEmbeddedDocsRoot();
+                const ehDocsSrc = path.join(ehRoot, '.docs', 'event-horizon');
+                const ehDocsDest = path.join(docsDir, 'event-horizon');
+                if (existsSync(ehDocsSrc) && !existsSync(ehDocsDest)) {
+                  try {
+                    await copyDir(ehDocsSrc, ehDocsDest);
+                    console.log('Created .docs/event-horizon/ (Event Horizon usage guides)');
+                  } catch {
+                    // Non-fatal — docs are helpful but not required to run.
+                  }
+                }
+
+                // Copy skill source files into .docs/skills/ so the project is self-contained
+                // for the agent workflow without needing the EH source root.
+                const skillsSrc = path.join(ehRoot, '.docs', 'skills');
+      - timestamp: '2026-05-26T10:45:31.644Z'
+        message: 'Running: npx tsc --noEmit 2>&1 | grep "init.ts"'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: npx tsc --noEmit 2>&1 | grep "init.ts"
+            description: Final type-check for init.ts
+      - timestamp: '2026-05-26T10:45:31.763Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-05-26T10:45:42.676Z'
+        message: 'Running: curl -s -X PUT http://localhost:3067/api/tasks/FLU...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              curl -s -X PUT http://localhost:3067/api/tasks/FLUX-328 -H
+              "Content-Type: application/json" -d '{"status": "Ready",
+              "appendHistory": [{"type": "status_change", "from": "In Progress",
+              "to": "Ready", "user": "Agent", "date": "'"$(date -u
+              +%Y-%m-%dT%H:%M:%S.%3NZ)"'"}, {"type": "comment", "user": "Agent",
+              "date": "'"$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"'", "comment":
+              "Implementation complete. Added skills scaffolding to init.ts:
+              copies .docs/skills/ (4 skill modules) and .flux/skills/ (copilot
+              instructions template) during project init. Uses same
+              skip-if-exists pattern as existing EH docs copy. Updated post-init
+              guidance to mention skills. TypeScript compiles cleanly."}]}' |
+              head -c 200
+            description: Move ticket to Ready
     user: Claude Code
     date: '2026-05-26T10:44:01.270Z'
+    outcome: Claude Code session stopped by user.
+    endedAt: '2026-05-26T10:45:43.024Z'
   - type: status_change
     from: Todo
     to: In Progress
@@ -355,6 +641,26 @@ history:
       Starting implementation: will add skills scaffolding to init.ts after the
       EH docs copy step.
     id: c-2026-05-26t10-44-42-550z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-26T10:45:42.984Z'
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-26T10:45:42.984Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-26T10:45:42.984Z'
+    comment: >-
+      Implementation complete. Added skills scaffolding to init.ts: copies
+      .docs/skills/ (4 skill modules) and .flux/skills/ (copilot instructions
+      template) during project init. Uses same skip-if-exists pattern as
+      existing EH docs copy. Updated post-init guidance to mention skills.
+      TypeScript compiles cleanly.
+    id: c-2026-05-26t10-45-42-984z
 tokenMetadata:
   inputTokens: 494419
   outputTokens: 3388
