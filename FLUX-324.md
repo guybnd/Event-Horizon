@@ -41,7 +41,8 @@ history:
       Updated description. Changed priority to High. Changed effort to L.
       Updated tags.
 implementationLink: ''
-subtasks: []
+subtasks:
+  - FLUX-325
 id: FLUX-324
 ---
 ## Problem / Motivation
