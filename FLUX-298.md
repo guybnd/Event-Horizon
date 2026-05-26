@@ -319,11 +319,21 @@ history:
     to: Require Input
     user: Agent
     date: '2026-05-26T00:03:41.573Z'
+  - type: comment
+    user: Guy
+    date: '2026-05-26T00:04:30.209Z'
+    comment: >-
+      1. sure as you suggest
+
+
+      2. yes as you suggest and it should replace the KEY field which kinda ugly
+      anyway
+    replyTo: c-2026-05-26t00-03-41-573z
+    id: c-2026-05-26t00-04-30-207z
 title: multi project workflow
 status: Require Input
 createdBy: Guy
-updatedBy: Agent
-id: FLUX-298
+updatedBy: Guy
 tokenMetadata:
   inputTokens: 184484
   outputTokens: 2680
