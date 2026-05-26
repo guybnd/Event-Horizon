@@ -330,10 +330,24 @@ history:
       anyway
     replyTo: c-2026-05-26t00-03-41-573z
     id: c-2026-05-26t00-04-30-207z
+  - type: status_change
+    from: Require Input
+    to: Grooming
+    user: Guy
+    date: '2026-05-26T00:04:43.961Z'
+  - type: agent_session
+    sessionId: c806409e-b75d-4216-b601-b5aeb5204282
+    startedAt: '2026-05-26T00:04:55.065Z'
+    status: cancelled
+    progress: []
+    user: Claude Code
+    date: '2026-05-26T00:04:55.065Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-26T00:05:04.123Z'
 title: multi project workflow
-status: Require Input
+status: Grooming
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 tokenMetadata:
   inputTokens: 184484
   outputTokens: 2680
@@ -341,6 +355,8 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 153705
   cacheCreationTokens: 30766
+order: 14
+id: FLUX-298
 ---
 ## Problem / Motivation
 
