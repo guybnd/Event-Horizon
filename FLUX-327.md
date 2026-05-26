@@ -1,7 +1,6 @@
 ---
-id: FLUX-327
-title: "Cannot clear or mark notifications as read"
-status: Grooming
+title: Cannot clear or mark notifications as read
+status: Done
 priority: High
 assignee: unassigned
 tags:
@@ -15,6 +14,11 @@ history:
     user: Guy
     date: '2026-05-26T02:24:16.967Z'
     comment: Created ticket.
+  - type: status_change
+    from: Grooming
+    to: Done
+    user: Guy
+    date: '2026-05-26T12:55:11.986Z'
 ---
 
 ## Problem
