@@ -1,6 +1,6 @@
 ---
 title: 'Global app settings: dedicated install location with first-boot config'
-status: Ready
+status: Released
 priority: High
 effort: L
 assignee: unassigned
@@ -424,7 +424,28 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-26T01:04:14.925Z'
-implementationLink: ''
+  - type: comment
+    user: Agent
+    comment: >-
+      Implemented global app settings with platform-conventional storage
+      (%APPDATA%/EventHorizon on Windows, ~/Library/Application
+      Support/EventHorizon on macOS, ~/.config/event-horizon on Linux). Includes
+      first-boot dialog with migration from legacy ~/.event-horizon, global
+      settings API + UI tab, and project bootstrapping (derives key from folder
+      name, installs agent skills).
+    date: '2026-05-26T01:24:24.486Z'
+    id: c-2026-05-26t01-24-24-486z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-26T01:24:24.487Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-26T01:24:53.265Z'
+implementationLink: b699db2
 subtasks:
   - FLUX-325
 id: FLUX-324
@@ -435,6 +456,9 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 269605
   cacheCreationTokens: 32503
+version: v0.10.0
+releasedAt: '2026-05-26T01:24:53.265Z'
+releaseDocPath: release-notes/v0.10.0
 ---
 ## Problem / Motivation
 

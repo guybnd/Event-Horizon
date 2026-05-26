@@ -7,7 +7,7 @@ tags:
   - settings
 priority: Medium
 effort: L
-implementationLink: ''
+implementationLink: b699db2
 subtasks: []
 history:
   - type: activity
@@ -751,8 +751,27 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-26T00:20:46.397Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Implemented multi-workspace switching: workspace list CRUD API, header
+      switcher dropdown, settings workspace management UI with
+      switch/rename/remove, folder picker fix for Windows, notifications cleared
+      on switch, auto-registration on startup.
+    date: '2026-05-26T01:24:23.834Z'
+    id: c-2026-05-26t01-24-23-834z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-26T01:24:23.834Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-26T01:24:53.238Z'
 title: multi project workflow
-status: Ready
+status: Released
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -764,6 +783,9 @@ tokenMetadata:
   cacheCreationTokens: 46437
 order: 14
 id: FLUX-298
+version: v0.10.0
+releasedAt: '2026-05-26T01:24:53.238Z'
+releaseDocPath: release-notes/v0.10.0
 ---
 ## Problem / Motivation
 
