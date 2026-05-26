@@ -907,10 +907,15 @@ history:
       `engine/src/mcp-server.ts` (lines 411-418). No build or test required �
       changes are purely in entry-point routing logic.
     id: c-2026-05-26t13-01-45-108z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Guy
+    date: '2026-05-26T13:12:48.753Z'
 title: help verify this bug of why MCP not working for some customers
-status: Ready
+status: Done
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 tokenMetadata:
   inputTokens: 684973
   outputTokens: 8624
@@ -918,7 +923,7 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 635150
   cacheCreationTokens: 48442
-order: 1
+order: 0
 ---
 ## Problem / Motivation
 

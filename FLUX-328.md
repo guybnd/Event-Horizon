@@ -1,13 +1,13 @@
 ---
 title: Project initialization should provide basic SKILLS setup
-status: Ready
+status: Done
 priority: Medium
 assignee: unassigned
 tags:
   - engine
   - installer
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 effort: S
 history:
   - type: activity
@@ -858,6 +858,11 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-26T11:40:01.829Z'
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Guy
+    date: '2026-05-26T13:13:00.243Z'
 tokenMetadata:
   inputTokens: 494419
   outputTokens: 3388
@@ -865,6 +870,7 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 470553
   cacheCreationTokens: 23189
+order: 2
 ---
 ## Problem / Motivation
 

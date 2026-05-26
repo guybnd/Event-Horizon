@@ -1808,10 +1808,15 @@ history:
       guard), portal/src/components/ParseErrorButton.tsx (instructions text).
       Both compile clean.
     id: c-2026-05-26t11-44-56-175z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Guy
+    date: '2026-05-26T13:12:58.399Z'
 title: 'Parse error prevention: auto-fix and agent-friendly repair instructions'
-status: Ready
+status: Done
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 tokenMetadata:
   inputTokens: 804338
   outputTokens: 11630
@@ -1819,6 +1824,7 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 728073
   cacheCreationTokens: 76235
+order: 1
 ---
 ## Problem / Motivation
 
