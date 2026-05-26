@@ -16,6 +16,7 @@ Event Horizon stores all state in your repository — tickets, documentation, wo
 - **🤖 Agent-First & Human-Friendly:** The file format is instantly parseable by LLMs while remaining readable and editable by humans. Agents and humans use the same surface.
 - **⚡ Zero Latency:** No cloud APIs. The UI reacts at the speed of your local disk.
 - **🔀 Flexible Storage:** Tickets live in-repo by default. Enable Git Sync to move them to an orphan branch — keeping ticket history off your main branch while retaining full git-native sync across machines.
+- **🔄 Multi-Workspace:** Manage multiple projects from a single running instance. Switch workspaces from the header dropdown or the Settings page — active agent sessions are guarded against accidental switches.
 
 ---
 
@@ -25,6 +26,7 @@ Event Horizon stores all state in your repository — tickets, documentation, wo
 Event Horizon Binary
 ├── engine/          Node.js/TypeScript REST API — reads, writes, and watches repo-backed state
 ├── portal/          React + Vite + Tailwind CSS v4 — board, backlog, docs, settings
+├── global settings  Platform-conventional path (see Config Reference)
 └── data layer
     ├── .flux/       Board config (config.json), workflow skills, and tickets (default mode)
     └── .flux-store/ Git worktree on orphan branch — tickets only (Git Sync mode)
@@ -52,13 +54,27 @@ Event Horizon ships as a standalone zero-dependency executable for Windows, macO
 
 1. **Download & Run:** Get the latest binary from the [releases page](../../releases) and launch it.
 2. **Connect:** Your browser opens automatically at `http://localhost:3067`.
-3. **Select Workspace:** Click **Browse** in the portal to select your project folder. If the folder has no `.flux/` directory yet, the onboarding wizard walks you through initial setup.
+3. **Select Workspace:** On first boot a welcome dialog appears showing your data directory and migrating any legacy `~/.event-horizon` settings. Then click **Browse** to select your project folder. If the folder has no `.flux/` directory yet, the onboarding wizard walks you through initial setup.
 
 The service runs as a system tray application. Closing your browser does not stop the engine — quit from the tray icon or the portal header.
 
 ---
 
-## ⚙️ Config Reference (`.flux/config.json`)
+## ⚙️ Config Reference
+
+### Global Settings
+
+App-wide preferences (theme, default user, preferred framework, port, card click behavior, and the workspace list) are stored in a platform-conventional location:
+
+| Platform | Path |
+|----------|------|
+| Windows | `%APPDATA%/EventHorizon/settings.json` |
+| macOS | `~/Library/Application Support/EventHorizon/settings.json` |
+| Linux | `~/.config/event-horizon/settings.json` |
+
+On first boot, any legacy `~/.event-horizon/settings.json` is auto-migrated to the new path.
+
+### Project Config (`.flux/config.json`)
 
 Board layout and behaviour are controlled by `.flux/config.json`:
 
@@ -107,6 +123,20 @@ From that point, a file watcher monitors `.flux-store/` and auto-commits and pus
 **Multi-machine restore:** On a fresh clone where `flux-data` exists on the remote, the engine automatically re-attaches the worktree at startup via `git worktree add`. Your tickets appear without any extra steps.
 
 **Restore to in-repo:** Settings → Git Sync → Restore to In-Repo reverses the migration cleanly — files move back to `.flux/`, the worktree is removed, and gitignore entries are cleaned up.
+
+---
+
+## 🔄 Multi-Workspace
+
+Event Horizon manages a list of workspaces so you can switch between projects without restarting.
+
+- **Header dropdown:** The portal header shows the active workspace name. Click to open a dropdown listing all configured workspaces — select one to switch instantly.
+- **Settings → Workspace tab:** Full workspace management — add new workspaces (folder picker), remove, rename, or switch. On Windows the folder picker uses a TopMost dialog for reliable focus.
+- **Auto-registration:** Opening a folder for the first time automatically adds it to the workspace list.
+- **Project bootstrapping:** New workspaces are auto-initialized with a project key derived from the folder name, the default user from global settings, and agent skills installed automatically.
+- **Session guard:** If AI agent sessions are running when you attempt to switch, a confirmation dialog warns you how many are active and offers to stop them before proceeding. This prevents accidental state confusion.
+
+Workspace list and global preferences are stored in the platform-conventional settings file (see Config Reference below).
 
 ---
 

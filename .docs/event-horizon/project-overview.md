@@ -51,6 +51,17 @@ Event Horizon is primarily distributed as a standalone binary application (Windo
   comments alone.
 - Configurable effort levels and per-framework model selection for grooming
   vs implementation tasks.
+- Multi-workspace switching via header dropdown and Settings management —
+  workspace list, folder picker, add/remove/rename, auto-registration on
+  startup.
+- Global app settings stored at the platform-conventional path (Windows
+  `%APPDATA%`, macOS `~/Library/Application Support`, Linux `~/.config`)
+  with first-boot migration from legacy `~/.event-horizon`.
+- Agent session guard on workspace switch — confirms and stops active
+  sessions before switching to prevent cross-project data confusion.
+- Project auto-bootstrapping for new workspaces: derives project key from
+  folder name, applies default user from global settings, and installs
+  agent skills automatically.
 
 ## Recommended reading order
 
