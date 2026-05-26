@@ -10,12 +10,16 @@ tags:
   - engine
   - settings
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 history:
   - type: activity
     user: Guy
     date: '2026-05-26T00:43:01.140Z'
     comment: Created ticket.
+  - type: activity
+    user: Agent
+    date: '2026-05-26T00:43:59.426Z'
+    comment: Updated description.
 ---
 ## Problem / Motivation
 
@@ -26,6 +30,7 @@ For a multi-project tool that lives permanently on a user's machine, we need:
 - User-level preferences that persist across projects
 - First-boot configuration that lets the user choose or confirm the storage location
 - Future version upgrades should be able to locate the existing data directory without re-setup
+- A clear project bootstrapping strategy — what gets scaffolded into every new project workspace (skills, agent configs, default doc structure, config templates)
 
 ## Open Questions
 
@@ -38,3 +43,10 @@ For a multi-project tool that lives permanently on a user's machine, we need:
 4. **What belongs in global settings** — proposed: `workspaces[]`, `lastWorkspace`, `theme`, `defaultUser`, `preferredFramework`, `port`, `dataDir` (self-referential for migration). Anything else?
 
 5. **Migration** — need to migrate existing `~/.event-horizon/settings.json` users seamlessly on first boot of the new version.
+
+6. **Project bootstrapping** — when a user points at a new folder (no `.flux/`), what gets scaffolded automatically?
+   - Default `config.json` (statuses, columns, project key derived from folder name)
+   - Default agent skill files (`.claude/rules/`, copilot instructions, etc.) — currently handled by skill installer but only on explicit install
+   - Starter docs structure (`.docs/` with project overview, INDEX)
+   - Should bootstrapping be a guided wizard (pick which agents, customize statuses) or opinionated defaults with post-setup editing?
+   - Should the global settings store a "project template" that users can customize once and have applied to all new projects?
