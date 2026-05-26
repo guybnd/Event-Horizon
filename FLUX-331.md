@@ -653,8 +653,20 @@ history:
       Approving.
     date: '2026-05-26T12:56:36.099Z'
     id: c-2026-05-26t12-56-36-099z
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Guy
+    date: '2026-05-26T12:58:22.963Z'
+  - type: agent_session
+    sessionId: ad718179-986c-4663-a98c-18acff89fb39
+    startedAt: '2026-05-26T12:58:25.895Z'
+    status: active
+    progress: []
+    user: Claude Code
+    date: '2026-05-26T12:58:25.895Z'
 title: help verify this bug of why MCP not working for some customers
-status: Ready
+status: In Progress
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -664,6 +676,8 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 635150
   cacheCreationTokens: 48442
+order: 1
+id: FLUX-331
 ---
 ## Problem / Motivation
 
