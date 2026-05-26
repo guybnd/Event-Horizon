@@ -1,7 +1,7 @@
 import { createContext, startTransition, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { ColumnLiveEvent, Config, Task, TaskLiveEvent } from './types';
-import { fetchConfig, fetchTasks, fetchHealth, saveConfig as apiSaveConfig, fetchReadState, saveReadState, fetchWorkspace, fetchParseErrors, fetchNotifications, type ParseError, type Notification } from './api';
+import { fetchConfig, fetchTasks, fetchHealth, saveConfig as apiSaveConfig, fetchReadState, saveReadState, fetchWorkspace, fetchParseErrors, fetchNotifications, fetchWorkspaces, switchWorkspace as apiSwitchWorkspace, type ParseError, type Notification, type WorkspaceInfo } from './api';
 import { getArchiveStatus } from './workflow';
 
 export type AppView = 'board' | 'backlog' | 'docs' | 'settings' | 'releases' | 'workflows';
@@ -161,6 +161,9 @@ interface AppState {
   workspaceConfigured: boolean;
   workspacePath: string | null;
   notifyWorkspaceSet: () => void;
+  workspaces: WorkspaceInfo[];
+  switchWorkspace: (path: string) => Promise<void>;
+  refreshWorkspaces: () => void;
   config: Config | null;
   saveConfig: (updates: Config) => Promise<void>;
   readComments: Record<string, string[]>;
@@ -220,6 +223,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [parseErrorsLoading] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
+  const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
   const readCommentsLoadedRef = useRef(false);
   const configRef = useRef<Config | null>(null);
   const tasksRef = useRef<Task[]>([]);
@@ -582,14 +586,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     void loadParseErrors();
   }, [loadTasks, loadParseErrors]);
 
-  // On mount, fetch workspace state. Then poll health alongside connection checks.
-  useEffect(() => {
-    fetchWorkspace()
-      .then(({ configured, path: wp }) => {
-        setWorkspaceConfigured(configured);
-        setWorkspacePath(wp);
-      })
-      .catch(() => {});
+  const refreshWorkspaces = useCallback(() => {
+    fetchWorkspaces().then(setWorkspaces).catch(() => {});
   }, []);
 
   const notifyWorkspaceSet = useCallback(() => {
@@ -599,11 +597,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setWorkspacePath(wp);
         if (configured) {
           void loadTasks();
-          fetchConfig().then(setConfig).catch(() => {});
+          fetchConfig().then((c) => { setConfig(c); configRef.current = c; }).catch(() => {});
+          refreshWorkspaces();
+          refreshNotifications();
         }
       })
       .catch(() => {});
-  }, [loadTasks]);
+  }, [loadTasks, refreshWorkspaces, refreshNotifications]);
+
+  const switchWorkspace = useCallback(async (wsPath: string) => {
+    await apiSwitchWorkspace(wsPath);
+    notifyWorkspaceSet();
+  }, [notifyWorkspaceSet]);
+
+  // On mount, fetch workspace state. Then poll health alongside connection checks.
+  useEffect(() => {
+    fetchWorkspace()
+      .then(({ configured, path: wp }) => {
+        setWorkspaceConfigured(configured);
+        setWorkspacePath(wp);
+      })
+      .catch(() => {});
+    refreshWorkspaces();
+  }, [refreshWorkspaces]);
 
   useEffect(() => {
     let checkTimeout: number;
@@ -840,7 +856,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       lastRefreshAt,
       isWindowVisible,
       isConnected,
-      workspaceConfigured, workspacePath, notifyWorkspaceSet,
+      workspaceConfigured, workspacePath, notifyWorkspaceSet, workspaces, switchWorkspace, refreshWorkspaces,
       config, saveConfig,
       readComments, totalUnreadCount, ensureReadStateLoaded, markCommentRead, markAllCommentsRead,
       theme, toggleTheme,

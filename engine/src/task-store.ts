@@ -7,12 +7,13 @@ import { attachWorktreeIfPresent } from './storage-sync.js';
 import { startSyncWatcher } from './sync-watcher.js';
 import { configCache, loadConfig, autoRegisterUnknownTags } from './config.js';
 import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate, getHistoryTimestamp } from './history.js';
-import { generatePromptNotification, generateCompletionNotification } from './notifications.js';
+import { generatePromptNotification, generateCompletionNotification, clearNotifications } from './notifications.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
 import { getCliSessionSummaryForTask, cliSessionsById, cliSessionIdByTaskId } from './session-store.js';
 import { isTopLevelTaskFile, getDocsDir, isDocFile, getDocPathFromFile, titleFromDocPath, slugifyDocValue, parseDocOrder } from './file-utils.js';
 import type { StoredDoc } from './file-utils.js';
 import { resolveEmbeddedDocsRoot, copyDir, buildStarterProjectOverview } from './docs-seeder.js';
+import { bootstrapNewWorkspace, installSkillsForWorkspace } from './bootstrap.js';
 
 export let tasksCache: Record<string, any> = {};
 export let docsCache: Record<string, StoredDoc> = {};
@@ -602,10 +603,13 @@ export async function activateWorkspace(newRoot: string) {
     tasksCache = {};
     docsCache = {};
     parseErrors = {};
+    clearNotifications();
     console.log(`Workspace: ${newRoot}`);
+    await bootstrapNewWorkspace();
     await attachWorktreeIfPresent(newRoot);
     if (isOrphanMode()) await recoverStrayFluxFiles(newRoot);
     await initDir();
+    await installSkillsForWorkspace();
     await startWatchers();
     startSyncWatcher();
     seedPromptNotifications();

@@ -26,6 +26,10 @@ export interface Notification {
 const notifications: Notification[] = [];
 const MAX_NOTIFICATIONS = 100;
 
+export function clearNotifications(): void {
+  notifications.length = 0;
+}
+
 export function getNotifications(): Notification[] {
   return notifications
     .filter(n => !n.dismissed)

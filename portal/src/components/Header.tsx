@@ -7,6 +7,7 @@ import { NotificationPanel } from './NotificationPanel';
 import { AnimatePresence } from 'framer-motion';
 import { GlobalSearch } from './GlobalSearch';
 import { LifetimeTokenStats } from './LifetimeTokenStats';
+import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 
 const NavItem = memo(function NavItem({ 
   view, 
@@ -57,8 +58,6 @@ export function Header() {
     setView,
     currentUser,
     setCurrentUser,
-    currentProject,
-    setCurrentProject,
     tasks,
     isConnected,
     openTaskModal,
@@ -250,24 +249,17 @@ export function Header() {
             </button>
           </div>
 
-          {/* User + Project stacked */}
-          <div className="flex shrink-0 flex-col items-end gap-0.5 min-w-0">
-            <div className="flex items-center gap-1">
-              <label className="text-[9px] text-gray-400 font-bold uppercase tracking-wider shrink-0">Key</label>
-              <input
-                value={currentProject}
-                onChange={e => setCurrentProject(e.target.value.toUpperCase())}
-                className="bg-transparent text-xs font-semibold outline-none text-right w-14 text-gray-700 dark:text-gray-200 border-b border-transparent focus:border-primary transition-colors"
-              />
-            </div>
-            <div className="flex items-center gap-1">
-              <label className="text-[9px] text-gray-400 font-bold uppercase tracking-wider shrink-0">User</label>
-              <input
-                value={currentUser}
-                onChange={e => setCurrentUser(e.target.value)}
-                className="bg-transparent text-xs font-semibold outline-none text-right w-20 text-gray-700 dark:text-gray-200 border-b border-transparent focus:border-primary transition-colors"
-              />
-            </div>
+          {/* Workspace switcher */}
+          <WorkspaceSwitcher />
+
+          {/* User */}
+          <div className="flex shrink-0 items-center gap-1 min-w-0">
+            <label className="text-[9px] text-gray-400 font-bold uppercase tracking-wider shrink-0">User</label>
+            <input
+              value={currentUser}
+              onChange={e => setCurrentUser(e.target.value)}
+              className="bg-transparent text-xs font-semibold outline-none text-right w-20 text-gray-700 dark:text-gray-200 border-b border-transparent focus:border-primary transition-colors"
+            />
           </div>
 
         </div>

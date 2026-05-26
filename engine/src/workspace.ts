@@ -1,8 +1,11 @@
-import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import os from 'os';
+import {
+  loadGlobalSettings,
+  saveGlobalSettings,
+  type WorkspaceEntry,
+} from './global-settings.js';
 
 // In CJS bundles (esbuild output / pkg executable), __dirname is provided by Node.
 // In ESM dev mode (tsx / Node 20+), use import.meta for the source directory.
@@ -36,27 +39,96 @@ export function getConfigFile() {
 export function getTaskAssetsDir() { return path.join(getActiveFluxDir(), 'assets'); }
 export function getReadStateFile() { return path.join(getActiveFluxDir(), 'read-state.json'); }
 
-const APP_SETTINGS_DIR = path.join(os.homedir(), '.event-horizon');
-const APP_SETTINGS_FILE = path.join(APP_SETTINGS_DIR, 'settings.json');
+export type { WorkspaceEntry } from './global-settings.js';
 
-export async function loadAppSettings(): Promise<{ workspace?: string }> {
-  try {
-    const raw = await fs.readFile(APP_SETTINGS_FILE, 'utf-8');
-    return JSON.parse(raw);
-  } catch {
-    return {};
-  }
+export interface AppSettings {
+  workspace?: string;
+  workspaces?: WorkspaceEntry[];
 }
 
-export async function saveAppSettings(settings: { workspace?: string }) {
-  await fs.mkdir(APP_SETTINGS_DIR, { recursive: true });
-  await fs.writeFile(APP_SETTINGS_FILE, JSON.stringify(settings, null, 2), 'utf-8');
+export async function loadAppSettings(): Promise<AppSettings> {
+  const global = await loadGlobalSettings();
+  const result: AppSettings = { workspaces: global.workspaces };
+  if (global.lastWorkspace) result.workspace = global.lastWorkspace;
+  return result;
+}
+
+export async function saveAppSettings(settings: AppSettings) {
+  const global = await loadGlobalSettings();
+  if (settings.workspace !== undefined) global.lastWorkspace = settings.workspace;
+  if (settings.workspaces !== undefined) global.workspaces = settings.workspaces;
+  await saveGlobalSettings(global);
+}
+
+export async function getWorkspacesList(): Promise<WorkspaceEntry[]> {
+  const global = await loadGlobalSettings();
+  return global.workspaces ?? [];
+}
+
+export function pathsEqual(a: string, b: string): boolean {
+  const na = path.resolve(a);
+  const nb = path.resolve(b);
+  if (process.platform === 'win32') return na.toLowerCase() === nb.toLowerCase();
+  return na === nb;
+}
+
+export async function addWorkspaceEntry(entry: WorkspaceEntry): Promise<WorkspaceEntry[]> {
+  const global = await loadGlobalSettings();
+  const list = global.workspaces ?? [];
+  const normalized = path.resolve(entry.path);
+  if (!list.some(w => pathsEqual(w.path, normalized))) {
+    const newEntry: WorkspaceEntry = { path: normalized };
+    if (entry.label) newEntry.label = entry.label;
+    list.push(newEntry);
+  }
+  global.workspaces = list;
+  await saveGlobalSettings(global);
+  return list;
+}
+
+export async function removeWorkspaceEntry(index: number): Promise<WorkspaceEntry[]> {
+  const global = await loadGlobalSettings();
+  const list = global.workspaces ?? [];
+  if (index >= 0 && index < list.length) {
+    list.splice(index, 1);
+  }
+  global.workspaces = list;
+  await saveGlobalSettings(global);
+  return list;
+}
+
+export async function updateWorkspaceLabel(index: number, label: string | undefined): Promise<WorkspaceEntry[]> {
+  const global = await loadGlobalSettings();
+  const list = global.workspaces ?? [];
+  const entry = list[index];
+  if (entry) {
+    if (label) {
+      entry.label = label;
+    } else {
+      delete entry.label;
+    }
+  }
+  global.workspaces = list;
+  await saveGlobalSettings(global);
+  return list;
+}
+
+export async function autoRegisterWorkspace(wsPath: string) {
+  const global = await loadGlobalSettings();
+  const list = global.workspaces ?? [];
+  const normalized = path.resolve(wsPath);
+  if (!list.some(w => pathsEqual(w.path, normalized))) {
+    list.push({ path: normalized });
+    global.workspaces = list;
+    await saveGlobalSettings(global);
+  }
 }
 
 export function getCliWorkspace(): string | null {
   const args = process.argv.slice(2);
   const idx = args.indexOf('--workspace');
-  if (idx !== -1 && args[idx + 1]) return path.resolve(args[idx + 1]);
+  const val = idx !== -1 ? args[idx + 1] : undefined;
+  if (val) return path.resolve(val);
   return null;
 }
 
@@ -69,7 +141,8 @@ export function resolveSkillSourceRoot(): string {
 export function resolvePortalDist(): string {
   const args = process.argv.slice(2);
   const idx = args.indexOf('--portal-dist');
-  if (idx !== -1 && args[idx + 1]) return path.resolve(args[idx + 1]);
+  const val = idx !== -1 ? args[idx + 1] : undefined;
+  if (val) return path.resolve(val);
   const isPkg = (process as any).pkg !== undefined;
   if (isPkg) return path.join(__dirname_resolved, 'portal', 'dist');
   return path.resolve(__dirname_resolved, '..', '..', 'portal', 'dist');

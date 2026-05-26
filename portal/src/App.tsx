@@ -1,3 +1,4 @@
+import { useState, useCallback } from 'react';
 import { AppProvider, useApp } from './AppContext';
 import { Header } from './components/Header';
 import { Board } from './components/Board';
@@ -9,15 +10,21 @@ import { ReleasesScreen } from './components/ReleasesScreen';
 import { WorkflowBuilder } from './components/WorkflowBuilder';
 import { WorkspaceSelector } from './components/WorkspaceSelector';
 import { OnboardingWizard } from './components/OnboardingWizard';
+import { FirstBootDialog } from './components/FirstBootDialog';
 
 function AppContent() {
   const { view, workspaceConfigured, isConnected } = useApp();
+  const [bootComplete, setBootComplete] = useState(false);
+
+  const handleBootComplete = useCallback(() => setBootComplete(true), []);
+
+  if (isConnected && !bootComplete) {
+    return <FirstBootDialog onComplete={handleBootComplete} />;
+  }
 
   const showOnboarding = isConnected && !localStorage.getItem('eh-onboarding-complete');
   if (showOnboarding) return <OnboardingWizard />;
 
-  // Show workspace picker until the engine has a project folder configured.
-  // If the engine is offline, skip the picker to show the normal UI with the disconnect banner.
   if (!workspaceConfigured && isConnected) {
     return <WorkspaceSelector />;
   }

@@ -121,6 +121,64 @@ export async function pickWorkspaceFolder(): Promise<string | null> {
   return data.path ?? null;
 }
 
+// ─── Workspaces (multi-project) ─────────────────────────────────────────────
+
+export interface WorkspaceInfo {
+  path: string;
+  label?: string;
+  displayName: string;
+  active: boolean;
+  available: boolean;
+}
+
+export async function fetchWorkspaces(): Promise<WorkspaceInfo[]> {
+  const res = await fetch(`${API_URL}/workspaces`);
+  if (!res.ok) return [];
+  return res.json();
+}
+
+export async function addWorkspace(wsPath: string, label?: string): Promise<WorkspaceInfo[]> {
+  const res = await fetch(`${API_URL}/workspaces`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: wsPath, label }),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to add workspace');
+  }
+  return res.json();
+}
+
+export async function removeWorkspace(index: number): Promise<WorkspaceInfo[]> {
+  const res = await fetch(`${API_URL}/workspaces/${index}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error('Failed to remove workspace');
+  return res.json();
+}
+
+export async function updateWorkspaceLabel(index: number, label: string): Promise<WorkspaceInfo[]> {
+  const res = await fetch(`${API_URL}/workspaces/${index}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label }),
+  });
+  if (!res.ok) throw new Error('Failed to update workspace label');
+  return res.json();
+}
+
+export async function switchWorkspace(wsPath: string): Promise<{ ok: boolean; path: string }> {
+  const res = await fetch(`${API_URL}/workspaces/switch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: wsPath }),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to switch workspace');
+  }
+  return res.json();
+}
+
 export async function fetchConfig(): Promise<Config> {
   const res = await fetch(`${API_URL}/config`);
   if (!res.ok) throw new Error('Failed to fetch config');
@@ -444,5 +502,65 @@ export async function executeNotificationAction(id: string, actionId: string): P
     body: JSON.stringify({ actionId }),
   });
   if (!res.ok) throw new Error('Action failed');
+  return res.json();
+}
+
+// ─── Global Settings / Boot ──────────────────────────────────────────────────
+
+export interface BootStatus {
+  firstBoot: boolean;
+  legacyFound: boolean;
+  dataDir: string;
+  migrated: boolean;
+}
+
+export interface GlobalSettings {
+  workspaces: { path: string; label?: string }[];
+  lastWorkspace?: string;
+  theme?: 'light' | 'dark' | 'system';
+  defaultUser?: string;
+  preferredFramework?: string;
+  defaultAgent?: string;
+  port?: number;
+  dataDir?: string;
+  boardClickBehavior?: 'modal' | 'expand';
+  animations?: boolean;
+  timeouts?: {
+    syncDebounceMs?: number;
+    syncMaxWaitMs?: number;
+  };
+  firstBootCompleted?: boolean;
+  migratedFrom?: string;
+}
+
+export async function fetchBootStatus(): Promise<BootStatus> {
+  const res = await fetch(`${API_URL}/settings/boot-status`);
+  if (!res.ok) throw new Error('Failed to fetch boot status');
+  return res.json();
+}
+
+export async function confirmBoot(migrate?: boolean): Promise<{ ok: boolean; settings: GlobalSettings }> {
+  const res = await fetch(`${API_URL}/settings/confirm-boot`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ migrate }),
+  });
+  if (!res.ok) throw new Error('Boot confirmation failed');
+  return res.json();
+}
+
+export async function fetchGlobalSettings(): Promise<GlobalSettings> {
+  const res = await fetch(`${API_URL}/settings/global`);
+  if (!res.ok) throw new Error('Failed to fetch global settings');
+  return res.json();
+}
+
+export async function updateGlobalSettings(updates: Partial<GlobalSettings>): Promise<GlobalSettings> {
+  const res = await fetch(`${API_URL}/settings/global`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) throw new Error('Failed to update global settings');
   return res.json();
 }

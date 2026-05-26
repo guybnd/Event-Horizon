@@ -3,7 +3,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import { execFile } from 'child_process';
-import { workspaceRoot, saveAppSettings } from '../workspace.js';
+import { workspaceRoot, saveAppSettings, autoRegisterWorkspace } from '../workspace.js';
 import { activateWorkspace } from '../task-store.js';
 
 const router = express.Router();
@@ -15,10 +15,15 @@ function spawnFolderPicker(): Promise<string | null> {
     if (platform === 'win32') {
       const script = [
         'Add-Type -AssemblyName System.Windows.Forms;',
+        '$f = New-Object System.Windows.Forms.Form;',
+        '$f.TopMost = $true;',
+        '$f.ShowInTaskbar = $false;',
+        '$f.WindowState = "Minimized";',
         '$d = New-Object System.Windows.Forms.FolderBrowserDialog;',
         '$d.Description = "Select your Event Horizon project folder";',
         '$d.ShowNewFolderButton = $true;',
-        'if ($d.ShowDialog() -eq "OK") { Write-Output $d.SelectedPath }',
+        'if ($d.ShowDialog($f) -eq "OK") { Write-Output $d.SelectedPath }',
+        '$f.Dispose();',
       ].join(' ');
       execFile('powershell.exe', ['-NoProfile', '-Command', script], { windowsHide: true }, (err, stdout) => {
         if (err) return reject(err);
@@ -69,6 +74,7 @@ router.post('/', async (req, res) => {
   try {
     await activateWorkspace(newRoot);
     await saveAppSettings({ workspace: newRoot });
+    await autoRegisterWorkspace(newRoot);
     res.json({ ok: true, path: newRoot });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

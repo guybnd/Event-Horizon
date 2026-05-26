@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { UserDef, DocsEditPermissions } from '../../types';
 import { SimpleEditor } from './shared';
-import { setWorkspace as apiSetWorkspace, pickWorkspaceFolder, fetchStorageMode, migrateStorage, restoreStorage } from '../../api';
+import { setWorkspace as apiSetWorkspace, pickWorkspaceFolder, fetchStorageMode, migrateStorage, restoreStorage, fetchWorkspaces, addWorkspace, removeWorkspace, updateWorkspaceLabel as apiUpdateLabel, switchWorkspace as apiSwitchWorkspace, type WorkspaceInfo } from '../../api';
 
 interface WorkspaceSectionProps {
   users: UserDef[];
@@ -57,13 +57,189 @@ export function WorkspaceSection({
   const [storageBusy, setStorageBusy] = useState(false);
   const [storageError, setStorageError] = useState<string | null>(null);
 
+  const [configuredWorkspaces, setConfiguredWorkspaces] = useState<WorkspaceInfo[]>([]);
+  const [addingWorkspace, setAddingWorkspace] = useState(false);
+  const [addWorkspacePath, setAddWorkspacePath] = useState('');
+  const [addWorkspaceError, setAddWorkspaceError] = useState<string | null>(null);
+  const [editingLabelIndex, setEditingLabelIndex] = useState<number | null>(null);
+  const [editLabelValue, setEditLabelValue] = useState('');
+
+  const loadWorkspaces = useCallback(() => {
+    fetchWorkspaces().then(setConfiguredWorkspaces).catch(() => {});
+  }, []);
+
+  useEffect(() => { loadWorkspaces(); }, [loadWorkspaces]);
+
   useEffect(() => {
     if (!workspacePath) return;
     fetchStorageMode().then((r) => setStorageMode(r.mode)).catch(() => setStorageMode('in-repo'));
   }, [workspacePath]);
 
+  const handleBrowseWorkspace = async () => {
+    setAddingWorkspace(true);
+    try {
+      const picked = await pickWorkspaceFolder();
+      if (picked) setAddWorkspacePath(picked);
+    } finally {
+      setAddingWorkspace(false);
+    }
+  };
+
+  const handleAddWorkspace = async () => {
+    if (!addWorkspacePath.trim()) return;
+    setAddWorkspaceError(null);
+    setAddingWorkspace(true);
+    try {
+      const wsPath = addWorkspacePath.trim();
+      const list = await addWorkspace(wsPath);
+      setConfiguredWorkspaces(list);
+      setAddWorkspacePath('');
+      const added = list.find(w => w.path.toLowerCase() === wsPath.toLowerCase() || w.path === wsPath);
+      if (added && !added.active && window.confirm(`"${added.displayName}" added. Switch to it now?`)) {
+        setSwitchingPath(added.path);
+        try {
+          await apiSwitchWorkspace(added.path);
+          notifyWorkspaceSet();
+          loadWorkspaces();
+        } finally {
+          setSwitchingPath(null);
+        }
+      }
+    } catch (err: any) {
+      setAddWorkspaceError(err.message);
+    } finally {
+      setAddingWorkspace(false);
+    }
+  };
+
+  const [switchingPath, setSwitchingPath] = useState<string | null>(null);
+
+  const handleSwitchWorkspace = async (ws: WorkspaceInfo) => {
+    if (!window.confirm(`Switch to "${ws.displayName}"?\n\nThis will reload the board with the new project's data.`)) return;
+    setSwitchingPath(ws.path);
+    try {
+      await apiSwitchWorkspace(ws.path);
+      notifyWorkspaceSet();
+      loadWorkspaces();
+    } catch (err: any) {
+      alert(`Failed to switch: ${err.message}`);
+    } finally {
+      setSwitchingPath(null);
+    }
+  };
+
+  const handleRemoveWorkspace = async (index: number) => {
+    const list = await removeWorkspace(index);
+    setConfiguredWorkspaces(list);
+  };
+
+  const handleSaveLabel = async (index: number) => {
+    const list = await apiUpdateLabel(index, editLabelValue);
+    setConfiguredWorkspaces(list);
+    setEditingLabelIndex(null);
+  };
+
   return (
     <div className="grid grid-cols-2 gap-10">
+      {/* Configured Workspaces */}
+      <div className="col-span-2 rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
+        <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Configured Workspaces</h3>
+        <p className="text-xs text-gray-500 mb-4">Manage your workspace list. These appear in the header switcher for quick project switching.</p>
+
+        {configuredWorkspaces.length === 0 ? (
+          <p className="text-xs text-gray-400 italic mb-3">No workspaces registered yet. Your current workspace will be auto-registered on next startup.</p>
+        ) : (
+          <div className="space-y-2 mb-4">
+            {configuredWorkspaces.map((ws, idx) => (
+              <div key={ws.path} className={`flex items-center gap-3 rounded-lg border px-3 py-2 ${ws.active ? 'border-primary/30 bg-primary/5' : 'border-gray-200 dark:border-white/10'}`}>
+                <div className="flex-1 min-w-0">
+                  {editingLabelIndex === idx ? (
+                    <div className="flex items-center gap-2">
+                      <input
+                        autoFocus
+                        value={editLabelValue}
+                        onChange={e => setEditLabelValue(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') handleSaveLabel(idx); if (e.key === 'Escape') setEditingLabelIndex(null); }}
+                        className="min-w-0 flex-1 rounded border border-gray-200 dark:border-white/10 bg-white dark:bg-black/20 px-2 py-1 text-xs outline-none focus:border-primary"
+                        placeholder="Display label (optional)"
+                      />
+                      <button onClick={() => handleSaveLabel(idx)} className="text-xs font-medium text-primary hover:underline">Save</button>
+                      <button onClick={() => setEditingLabelIndex(null)} className="text-xs text-gray-400 hover:underline">Cancel</button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate">{ws.displayName}</span>
+                        {ws.active && <span className="text-[10px] font-bold uppercase text-primary">Active</span>}
+                        {!ws.available && <span className="text-[10px] font-bold uppercase text-red-400">Unavailable</span>}
+                      </div>
+                      <p className="text-[10px] font-mono text-gray-400 truncate">{ws.path}</p>
+                    </>
+                  )}
+                </div>
+                {editingLabelIndex !== idx && (
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {!ws.active && ws.available && (
+                      <button
+                        onClick={() => handleSwitchWorkspace(ws)}
+                        disabled={switchingPath === ws.path}
+                        className="rounded-md bg-primary/10 px-2 py-1 text-[10px] font-semibold text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
+                        title="Switch to this workspace"
+                      >
+                        {switchingPath === ws.path ? 'Switching…' : 'Switch'}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => { setEditingLabelIndex(idx); setEditLabelValue(ws.label || ''); }}
+                      className="text-[10px] text-gray-400 hover:text-primary transition-colors"
+                      title="Edit label"
+                    >
+                      Rename
+                    </button>
+                    {!ws.active && (
+                      <button
+                        onClick={() => handleRemoveWorkspace(idx)}
+                        className="text-[10px] text-gray-400 hover:text-red-500 transition-colors"
+                        title="Remove from list"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={addWorkspacePath}
+            onChange={(e) => setAddWorkspacePath(e.target.value)}
+            placeholder="Path to project folder…"
+            className="min-w-0 flex-1 rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary"
+          />
+          <button
+            disabled={addingWorkspace}
+            onClick={handleBrowseWorkspace}
+            className="rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/5 px-3 py-2 text-sm font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/10 disabled:opacity-50"
+          >
+            {addingWorkspace ? '…' : 'Browse'}
+          </button>
+          <button
+            disabled={addingWorkspace || !addWorkspacePath.trim()}
+            onClick={handleAddWorkspace}
+            className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Add
+          </button>
+        </div>
+        {addWorkspaceError && (
+          <p className="mt-2 text-xs text-red-500">{addWorkspaceError}</p>
+        )}
+      </div>
+
       <div className="col-span-2 rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
         <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Project Folder</h3>
         <p className="text-xs text-gray-500 mb-4">Switch to a different project. The folder must contain a <code className="font-mono bg-gray-100 dark:bg-white/10 px-1 rounded">.flux/</code> or <code className="font-mono bg-gray-100 dark:bg-white/10 px-1 rounded">.flux-store/</code> directory.</p>

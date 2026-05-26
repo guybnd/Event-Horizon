@@ -15,7 +15,8 @@ import os from 'os';
 
 import { fileURLToPath } from 'url';
 import { requireWorkspace } from './middleware.js';
-import { workspaceRoot, loadAppSettings, getCliWorkspace, resolvePortalDist } from './workspace.js';
+import { workspaceRoot, loadAppSettings, getCliWorkspace, resolvePortalDist, autoRegisterWorkspace } from './workspace.js';
+import { migrateFromLegacy, getBootStatus } from './global-settings.js';
 import { activateWorkspace } from './task-store.js';
 import { stopAllCliSessions } from './session-store.js';
 
@@ -24,6 +25,7 @@ import cliSessionRouter from './routes/cli-session.js';
 import docsRouter from './routes/docs.js';
 import configRouter from './routes/config.js';
 import workspaceRouter from './routes/workspace.js';
+import workspacesRouter from './routes/workspaces.js';
 import assetsRouter from './routes/assets.js';
 import skillRouter from './routes/skill.js';
 import statsRouter from './routes/stats.js';
@@ -32,6 +34,7 @@ import eventsRouter from './routes/events.js';
 import storageRouter from './routes/storage.js';
 import syncStatusRouter from './routes/sync-status.js';
 import notificationsRouter from './routes/notifications.js';
+import settingsRouter from './routes/settings.js';
 import { checkForUpdate, getCachedUpdateInfo, getLocalVersion } from './update-check.js';
 
 const __dir = (() => {
@@ -57,6 +60,7 @@ app.post('/api/bulk-rename', requireWorkspace, bulkRenameHandler);
 app.use('/api/docs', requireWorkspace, docsRouter);
 app.use('/api/config', requireWorkspace, configRouter);
 app.use('/api/workspace', workspaceRouter);
+app.use('/api/workspaces', workspacesRouter);
 app.use('/api/assets', assetsRouter);
 app.use('/api/skill', requireWorkspace, skillRouter);
 app.use('/api/stats', requireWorkspace, statsRouter);
@@ -65,6 +69,7 @@ app.use('/api/events', eventsRouter);
 app.use('/api/storage', requireWorkspace, storageRouter);
 app.use('/api/sync-status', requireWorkspace, syncStatusRouter);
 app.use('/api/notifications', notificationsRouter);
+app.use('/api/settings', settingsRouter);
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', workspace: workspaceRoot });
@@ -226,6 +231,8 @@ async function startServer() {
       console.log(`Portal:   http://localhost:${PORT}`);
     }
 
+    await migrateFromLegacy();
+
     const cliWorkspace = getCliWorkspace();
     const settings = await loadAppSettings();
     const cwdFallback = isValidWorkspaceRoot(process.cwd()) ? process.cwd() : null;
@@ -233,6 +240,7 @@ async function startServer() {
 
     if (initial && isValidWorkspaceRoot(initial)) {
       await activateWorkspace(initial);
+      await autoRegisterWorkspace(initial);
     } else if (initial) {
       console.warn(`Saved workspace not found: ${initial} — open the portal to select a folder.`);
     } else {

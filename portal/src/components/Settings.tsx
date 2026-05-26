@@ -9,11 +9,12 @@ import { AttributesSection } from './settings/AttributesSection';
 import { WorkspaceSection } from './settings/WorkspaceSection';
 import { PreferencesSection } from './settings/PreferencesSection';
 import { AgentSection } from './settings/AgentSection';
+import { GlobalSection } from './settings/GlobalSection';
 
 export function Settings() {
   const { config, saveConfig, triggerRefresh, setView, workspacePath, notifyWorkspaceSet } = useApp();
 
-  const [activeTab, setActiveTab] = useState<'workflow' | 'attributes' | 'workspace' | 'preferences' | 'agent'>('workflow');
+  const [activeTab, setActiveTab] = useState<'workflow' | 'attributes' | 'workspace' | 'preferences' | 'agent' | 'global'>('workflow');
   const [columns, setColumns] = useState<StatusDef[]>([]);
   const [hiddenStatuses, setHiddenStatuses] = useState<StatusDef[]>([]);
   const [users, setUsers] = useState<UserDef[]>([]);
@@ -368,7 +369,7 @@ export function Settings() {
             </h2>
           </div>
           <div className="py-2 flex flex-col gap-1">
-            {(['workflow', 'attributes', 'workspace', 'preferences', 'agent'] as const).map((tab) => (
+            {(['workflow', 'attributes', 'workspace', 'preferences', 'agent', 'global'] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -379,6 +380,7 @@ export function Settings() {
                 {tab === 'workspace' && 'Workspace'}
                 {tab === 'preferences' && 'Preferences'}
                 {tab === 'agent' && 'Agent Integration'}
+                {tab === 'global' && 'Global Settings'}
               </button>
             ))}
           </div>
@@ -394,6 +396,7 @@ export function Settings() {
                   {activeTab === 'workspace' && 'Workspace'}
                   {activeTab === 'preferences' && 'Preferences'}
                   {activeTab === 'agent' && 'Agent Integration'}
+                  {activeTab === 'global' && 'Global Settings'}
                 </h2>
               </div>
             </div>
@@ -500,6 +503,8 @@ export function Settings() {
                   setView={setView}
                 />
               )}
+
+              {activeTab === 'global' && <GlobalSection />}
             </div>
           </div>
         </div>
