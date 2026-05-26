@@ -1,13 +1,15 @@
 ---
 title: 'Global app settings: dedicated install location with first-boot config'
 status: Grooming
-priority: Medium
-effort: M
+priority: High
+effort: L
 assignee: unassigned
 tags:
   - feature
   - engine
+  - portal
   - settings
+  - infrastructure
 createdBy: Guy
 updatedBy: Agent
 history:
@@ -32,56 +34,73 @@ history:
     date: '2026-05-26T00:48:43.319Z'
     outcome: Session abandoned (engine restarted).
     endedAt: '2026-05-26T00:48:56.408Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-26T00:50:16.653Z'
+    comment: >-
+      Updated description. Changed priority to High. Changed effort to L.
+      Updated tags.
 implementationLink: ''
 subtasks: []
 id: FLUX-324
 ---
 ## Problem / Motivation
 
-Currently `~/.event-horizon/settings.json` is a hardcoded path that stores the workspace list and last-active pointer. User preferences (theme, default username, preferred CLI framework) are scattered across localStorage, hardcoded defaults, and per-project config. There's no formal "install" concept — the directory just appears on first use with no user awareness or control.
+The app's global state lives at a hardcoded `~/.event-horizon/settings.json` with a minimal schema (`workspace`, `workspaces[]`). User preferences are scattered across localStorage, hardcoded defaults, and per-project config. There's no formal install concept — the directory silently appears on first use. For a multi-project tool that lives permanently on a user's machine, we need a proper global data directory, centralized user preferences, a first-boot experience, and a repeatable project bootstrapping strategy.
 
-For a multi-project tool that lives permanently on a user's machine, we need:
+## Decisions (from user input)
 
--   A well-defined, platform-appropriate global data directory
-    
--   User-level preferences that persist across projects
-    
--   First-boot configuration that lets the user choose or confirm the storage location
-    
--   Future version upgrades should be able to locate the existing data directory without re-setup
-    
--   A clear project bootstrapping strategy — what gets scaffolded into every new project workspace (skills, agent configs, default doc structure, config templates)
-    
+- **Storage location**: Use platform conventions — `%APPDATA%/EventHorizon` (Windows), `~/Library/Application Support/EventHorizon` (macOS), `~/.config/event-horizon` (Linux).
+- **First-boot flow**: Show a one-time dialog. If existing data is detected at the legacy `~/.event-horizon` path, notify the user before any migration so they don't accidentally lose data.
+- **Discovery on upgrade**: Always check the platform-conventional path. No sentinel pointer file needed — the canonical path *is* the discovery mechanism.
+- **Global settings scope**: `workspaces[]`, `lastWorkspace`, `theme`, `defaultUser`, `preferredFramework`, `defaultAgent`, `port`, `dataDir`, `boardClickBehavior`, `animations`, `timeouts`. Workspace-level settings (not global): `requireComments`, `enableBacklog`.
+- **Migration**: Seamless first-boot migration from `~/.event-horizon` → new platform path.
+- **Project bootstrapping**: Opinionated defaults (config.json, agent skills, .docs/ structure) scaffolded automatically on new project creation. Allow post-setup editing. Project templates as a future subtask.
 
-## Open Questions
+## Implementation Plan
 
-1.  **Storage location strategy** — use platform conventions (`%APPDATA%/EventHorizon` on Windows, `~/Library/Application Support/EventHorizon` on Mac, `~/.config/event-horizon` on Linux) vs current `~/.event-horizon`? Platform-native is more "proper" but `~/.event-horizon` is simpler and cross-platform consistent.  
-      
-    we should use platform conventions
-    
-2.  **First-boot flow** — should the app show a one-time dialog letting the user confirm/change the data directory? Or just default to the platform path and surface it in Settings?  
-      
-    yes and to notify if one has been found already in the default location so he doesnt move it on accident and delete his progress or settings  
-    
-3.  **Discovery on upgrade** — if the location is configurable, how do future versions find it? Options: always check a known sentinel path first (e.g. `~/.event-horizon-pointer`), or rely on the binary being co-located with a config file (current `event-horizon.config.json` next to the exe).  
-    check the known path according to platform convensions, im not sure what the implications of what you suggested if its better or not  
-    
-4.  **What belongs in global settings** — proposed: `workspaces[]`, `lastWorkspace`, `theme`, `defaultUser`, `preferredFramework`, `port`, `dataDir` (self-referential for migration). Anything else?  
-    probably agent settings like whats the default agent to use in the project, various settings from preferences menu like board click behaviour, animations, timeouts, but NOT require comments and enable backlog, those should be maybe in the workspace setting now idk  
-      
-    
-5.  **Migration** — need to migrate existing `~/.event-horizon/settings.json` users seamlessly on first boot of the new version.  
-      
-    yea  
-    
-6.  **Project bootstrapping** — when a user points at a new folder (no `.flux/`), what gets scaffolded automatically?
-    
-    -   Default `config.json` (statuses, columns, project key derived from folder name)
-        
-    -   Default agent skill files (`.claude/rules/`, copilot instructions, etc.) — currently handled by skill installer but only on explicit install
-        
-    -   Starter docs structure (`.docs/` with project overview, INDEX)
-        
-    -   Should bootstrapping be a guided wizard (pick which agents, customize statuses) or opinionated defaults with post-setup editing? should be highly opinionated but allow editing
-        
-    -   Should the global settings store a "project template" that users can customize once and have applied to all new projects? maybe add sub task for this to do later
+### 1. Platform data directory resolver (`engine/src/global-settings.ts`)
+- New module that resolves the global data directory per platform using `process.platform` and environment variables (`APPDATA`, `XDG_CONFIG_HOME`, etc.).
+- Export `getGlobalDataDir()` returning the platform path.
+- Export `getLegacyDataDir()` returning `~/.event-horizon` for migration detection.
+- Export typed `GlobalSettings` interface with all fields above.
+- Read/write functions: `loadGlobalSettings()`, `saveGlobalSettings()`.
+
+### 2. Migration logic (`engine/src/global-settings.ts` or separate `migrate.ts`)
+- On load: if platform path doesn't exist but legacy `~/.event-horizon` does, copy contents to the new location.
+- Set a `migratedFrom` field in the new settings to record provenance.
+- Do NOT delete the legacy directory automatically — leave that to user action.
+
+### 3. First-boot flow (engine + portal)
+- Engine: `GET /api/settings/boot-status` endpoint returning `{ firstBoot: boolean, legacyFound: boolean, dataDir: string }`.
+- Portal: A first-boot dialog component shown when `firstBoot` is true. Displays the chosen data directory. If legacy data is detected, shows a notice: "Existing data found at [path] — it will be migrated to [new path]." User confirms or picks an alternate path.
+- Engine: `POST /api/settings/confirm-boot` to finalize (trigger migration if needed, write `firstBootCompleted: true`).
+
+### 4. Refactor `workspace.ts` to use new global settings
+- Replace hardcoded `APP_SETTINGS_DIR` / `APP_SETTINGS_FILE` with calls to `getGlobalDataDir()`.
+- `AppSettings` interface merges into or delegates to `GlobalSettings`.
+- All existing workspace CRUD functions continue to work unchanged.
+
+### 5. Expose global settings in portal
+- Engine: `GET/PUT /api/settings/global` for reading/writing user preferences.
+- Portal: Settings page section for global preferences (theme, defaultUser, defaultAgent, port, etc.).
+- Separate from workspace-level config (requireComments, enableBacklog stay in `.flux/config.json`).
+
+### 6. Project bootstrapping on new workspace creation
+- When `POST /api/workspace` points to a folder without `.flux/`:
+  - Scaffold `config.json` with statuses, columns, project key derived from folder name.
+  - Run skill installer (agent config files for detected/default framework).
+  - Create `.docs/` with starter INDEX.md and project overview stub.
+- Opinionated defaults, editable after creation.
+
+### 7. Future subtask: project templates
+- Global settings stores a customizable project template applied to all new projects.
+- Defer to a separate ticket.
+
+## Key Files Affected
+- `engine/src/workspace.ts` — refactor away hardcoded paths
+- `engine/src/global-settings.ts` — new module (core of this ticket)
+- `engine/src/index.ts` — wire new routes
+- `engine/src/routes/workspace.ts` — update boot/init logic
+- `portal/src/components/` — first-boot dialog, settings UI additions
+- `engine/src/workflow-installer.ts` — bootstrap integration
