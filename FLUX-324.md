@@ -1,6 +1,6 @@
 ---
 title: 'Global app settings: dedicated install location with first-boot config'
-status: In Progress
+status: Ready
 priority: High
 effort: L
 assignee: unassigned
@@ -362,6 +362,68 @@ history:
     to: In Progress
     user: Agent
     date: '2026-05-26T00:53:14.367Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Implementation complete. Summary of changes:
+
+
+      **Engine:**
+
+      - `engine/src/global-settings.ts` (new): Platform-aware data directory
+      resolver (`%APPDATA%/EventHorizon` on Windows, `~/Library/Application
+      Support/EventHorizon` on macOS, `~/.config/event-horizon` on Linux).
+      Exports `GlobalSettings` interface, `loadGlobalSettings`,
+      `saveGlobalSettings`, `getBootStatus`, `confirmBoot`, and
+      `migrateFromLegacy`.
+
+      - `engine/src/workspace.ts`: Refactored to delegate all settings
+      persistence to global-settings module. Removed hardcoded
+      `~/.event-horizon` path. Exported `pathsEqual` for reuse.
+
+      - `engine/src/routes/settings.ts` (new): REST endpoints — `GET
+      /api/settings/boot-status`, `POST /api/settings/confirm-boot`, `GET
+      /api/settings/global`, `PUT /api/settings/global`.
+
+      - `engine/src/bootstrap.ts` (new): Derives project key from folder name,
+      adds default user from global settings, and installs agent skills on first
+      workspace activation.
+
+      - `engine/src/task-store.ts`: Calls `bootstrapNewWorkspace()` and
+      `installSkillsForWorkspace()` during activation.
+
+      - `engine/src/index.ts`: Wires settings router, calls
+      `migrateFromLegacy()` on startup.
+
+
+      **Portal:**
+
+      - `portal/src/api.ts`: Added `BootStatus`, `GlobalSettings` types and
+      `fetchBootStatus`, `confirmBoot`, `fetchGlobalSettings`,
+      `updateGlobalSettings` API functions.
+
+      - `portal/src/components/FirstBootDialog.tsx` (new): One-time dialog shown
+      on first app launch. Shows data directory path, offers migration from
+      legacy location, and confirms boot.
+
+      - `portal/src/components/settings/GlobalSection.tsx` (new): "Global
+      Settings" tab in Settings page for cross-workspace preferences (theme,
+      default user, preferred framework, port, card click behavior).
+
+      - `portal/src/App.tsx`: Shows FirstBootDialog before onboarding wizard.
+
+      - `portal/src/components/Settings.tsx`: Added "Global Settings" tab.
+
+
+      **Validation:** Engine tsc passes (only pre-existing agent type errors
+      remain), portal tsc clean, both build successfully.
+    date: '2026-05-26T01:04:14.924Z'
+    id: c-2026-05-26t01-04-14-924z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-26T01:04:14.925Z'
 implementationLink: ''
 subtasks:
   - FLUX-325
