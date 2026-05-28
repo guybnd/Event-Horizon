@@ -64,6 +64,13 @@ history:
     date: '2026-05-25T16:01:21.913Z'
     outcome: Session abandoned (engine restarted).
     endedAt: '2026-05-25T16:01:30.556Z'
+  - type: agent_session
+    sessionId: 2ed28e2b-8209-434f-8aad-080e7c1a219f
+    startedAt: '2026-05-28T04:57:23.930Z'
+    status: active
+    progress: []
+    user: Claude Code
+    date: '2026-05-28T04:57:23.930Z'
 tokenMetadata:
   inputTokens: 208737
   outputTokens: 3797
