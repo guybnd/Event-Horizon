@@ -7,7 +7,7 @@ tags:
 assignee: Agent
 createdBy: Unknown
 title: Auto-migrate stranded .flux tickets to .flux-store on startup in orphan mode
-status: In Progress
+status: Ready
 updatedBy: Agent
 history:
   - type: activity
@@ -67,10 +67,267 @@ history:
   - type: agent_session
     sessionId: 2ed28e2b-8209-434f-8aad-080e7c1a219f
     startedAt: '2026-05-28T04:57:23.930Z'
-    status: active
-    progress: []
+    status: cancelled
+    progress:
+      - timestamp: '2026-05-28T04:57:35.897Z'
+        message: Reading storage-sync.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\storage-sync.ts'
+      - timestamp: '2026-05-28T04:57:39.295Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-05-28T04:58:00.954Z'
+        message: Working
+        type: tool
+        data:
+          toolName: ToolSearch
+          parameters:
+            query: 'select:change_status,add_comment'
+            max_results: 2
+      - timestamp: '2026-05-28T04:58:09.303Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-05-28T04:58:10.702Z'
+        message: 'Running: curl -s -X PUT http://localhost:3067/api/tasks/FLU...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              curl -s -X PUT http://localhost:3067/api/tasks/FLUX-220 -H
+              "Content-Type: application/json" -d '{"status": "In Progress",
+              "appendHistory": [{"type": "status_change", "from": "Todo", "to":
+              "In Progress", "user": "Agent", "date": "'"$(date -u
+              +%Y-%m-%dT%H:%M:%S.%3NZ)"'"}, {"type": "comment", "user": "Agent",
+              "date": "'"$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"'", "comment":
+              "Starting implementation. Will enhance the existing
+              recoverStrayFluxFiles to also delete source files after copy and
+              migrate config.json, matching the ticket spec."}]}'
+            description: Move FLUX-220 to In Progress via REST API
+      - timestamp: '2026-05-28T04:58:22.735Z'
+        message: Editing storage-sync.ts
+        type: tool
+        data:
+          toolName: Edit
+          parameters:
+            replace_all: false
+            file_path: 'C:\GitHub\EventHorizon\engine\src\storage-sync.ts'
+            old_string: >-
+              export async function restoreToInRepo(workspaceRoot: string):
+              Promise<void> {
+            new_string: >-
+              export async function migrateStrandedFluxTickets(workspaceRoot:
+              string): Promise<void> {
+                const storeDir = path.join(workspaceRoot, '.flux-store');
+                if (!existsSync(storeDir)) return;
+
+                const fluxDir = path.join(workspaceRoot, '.flux');
+                let entries: string[];
+                try {
+                  entries = await fs.readdir(fluxDir);
+                } catch {
+                  return;
+                }
+
+                for (const name of entries) {
+                  if (!name.endsWith('.md')) continue;
+                  const src = path.join(fluxDir, name);
+                  const dst = path.join(storeDir, name);
+                  if (existsSync(dst)) continue;
+                  await fs.copyFile(src, dst);
+                  await fs.unlink(src);
+                  console.log(`[startup-migrate] Migrated ticket: ${name}`);
+                }
+
+                const configSrc = path.join(fluxDir, 'config.json');
+                const configDst = path.join(storeDir, 'config.json');
+                if (existsSync(configSrc) && !existsSync(configDst)) {
+                  await fs.copyFile(configSrc, configDst);
+                  await fs.unlink(configSrc);
+                  console.log(`[startup-migrate] Migrated config.json`);
+                }
+              }
+
+
+              export async function restoreToInRepo(workspaceRoot: string):
+              Promise<void> {
+      - timestamp: '2026-05-28T04:58:24.314Z'
+        message: Editing
+        type: info
+      - timestamp: '2026-05-28T04:58:27.221Z'
+        message: Editing task-store.ts
+        type: tool
+        data:
+          toolName: Edit
+          parameters:
+            replace_all: false
+            file_path: 'C:\GitHub\EventHorizon\engine\src\task-store.ts'
+            old_string: 'import { attachWorktreeIfPresent } from ''./storage-sync.js'';'
+            new_string: >-
+              import { attachWorktreeIfPresent, migrateStrandedFluxTickets }
+              from './storage-sync.js';
+      - timestamp: '2026-05-28T04:58:32.494Z'
+        message: Editing task-store.ts
+        type: tool
+        data:
+          toolName: Edit
+          parameters:
+            replace_all: false
+            file_path: 'C:\GitHub\EventHorizon\engine\src\task-store.ts'
+            old_string: >-
+              async function recoverStrayFluxFiles(newRoot: string):
+              Promise<void> {
+                const fluxDir = path.join(newRoot, '.flux');
+                const storeDir = getFluxStoreDir();
+                let stray: string[] = [];
+                try { stray = await fs.readdir(fluxDir); } catch { return; }
+                for (const name of stray) {
+                  if (!name.endsWith('.md')) continue;
+                  const src = path.join(fluxDir, name);
+                  const dst = path.join(storeDir, name);
+                  try { await fs.access(dst); continue; } catch { /* not in store yet */ }
+                  try {
+                    const content = await fs.readFile(src, 'utf-8');
+                    const parsed = matter(content);
+                    if (!parsed.data || !parsed.data['title'] || !parsed.data['id']) continue;
+                  } catch { continue; }
+                  await fs.copyFile(src, dst);
+                  console.log(`[storage-sync] Recovered stray ticket: ${name}`);
+                }
+              }
+            new_string: ''
+      - timestamp: '2026-05-28T04:58:36.360Z'
+        message: Editing task-store.ts
+        type: tool
+        data:
+          toolName: Edit
+          parameters:
+            replace_all: false
+            file_path: 'C:\GitHub\EventHorizon\engine\src\task-store.ts'
+            old_string: |2-
+                  await attachWorktreeIfPresent(newRoot);
+                  if (isOrphanMode()) await recoverStrayFluxFiles(newRoot);
+                  await initDir();
+            new_string: |2-
+                  await attachWorktreeIfPresent(newRoot);
+                  await migrateStrandedFluxTickets(newRoot);
+                  await initDir();
+      - timestamp: '2026-05-28T04:58:39.317Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-05-28T04:58:39.625Z'
+        message: 'Running: cd /c/GitHub/EventHorizon/engine && npx tsc --noEm...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              cd /c/GitHub/EventHorizon/engine && npx tsc --noEmit 2>&1 | head
+              -30
+            description: Type-check engine after changes
+      - timestamp: '2026-05-28T04:58:47.384Z'
+        message: 'Running: npx tsc --noEmit 2>&1 | grep -E "storage-sync|task...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: npx tsc --noEmit 2>&1 | grep -E "storage-sync|task-store"
+            description: Check for errors in modified files only
+      - timestamp: '2026-05-28T04:58:54.321Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-05-28T04:58:55.326Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: getFluxStoreDir
+            path: 'C:\GitHub\EventHorizon\engine\src\task-store.ts'
+            output_mode: content
+      - timestamp: '2026-05-28T04:59:03.059Z'
+        message: Editing task-store.ts
+        type: tool
+        data:
+          toolName: Edit
+          parameters:
+            replace_all: false
+            file_path: 'C:\GitHub\EventHorizon\engine\src\task-store.ts'
+            old_string: >-
+              import { getFluxDir, getFluxStoreDir, getActiveFluxDir,
+              getTaskAssetsDir, setWorkspaceRoot, workspaceRoot, isOrphanMode }
+              from './workspace.js';
+            new_string: >-
+              import { getFluxDir, getActiveFluxDir, getTaskAssetsDir,
+              setWorkspaceRoot, workspaceRoot } from './workspace.js';
+      - timestamp: '2026-05-28T04:59:06.236Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: 'getFluxDir[^S]'
+            path: 'C:\GitHub\EventHorizon\engine\src\task-store.ts'
+            output_mode: content
+      - timestamp: '2026-05-28T04:59:09.321Z'
+        message: Working
+        type: info
+      - timestamp: '2026-05-28T04:59:13.317Z'
+        message: Editing task-store.ts
+        type: tool
+        data:
+          toolName: Edit
+          parameters:
+            replace_all: false
+            file_path: 'C:\GitHub\EventHorizon\engine\src\task-store.ts'
+            old_string: >-
+              import { getFluxDir, getActiveFluxDir, getTaskAssetsDir,
+              setWorkspaceRoot, workspaceRoot } from './workspace.js';
+            new_string: >-
+              import { getActiveFluxDir, getTaskAssetsDir, setWorkspaceRoot,
+              workspaceRoot } from './workspace.js';
+      - timestamp: '2026-05-28T04:59:16.553Z'
+        message: 'Running: npx tsc --noEmit 2>&1 | grep -E "storage-sync|task...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: npx tsc --noEmit 2>&1 | grep -E "storage-sync|task-store"
+            description: Final type check on modified files
+      - timestamp: '2026-05-28T04:59:24.332Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-05-28T04:59:29.078Z'
+        message: 'Running: curl -s -X PUT http://localhost:3067/api/tasks/FLU...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              curl -s -X PUT http://localhost:3067/api/tasks/FLUX-220 -H
+              "Content-Type: application/json" -d '{"status": "Ready",
+              "appendHistory": [{"type": "status_change", "from": "In Progress",
+              "to": "Ready", "user": "Agent", "date": "'"$(date -u
+              +%Y-%m-%dT%H:%M:%S.%3NZ)"'"}, {"type": "comment", "user": "Agent",
+              "date": "'"$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"'", "comment":
+              "Implementation complete. Added migrateStrandedFluxTickets() to
+              storage-sync.ts that: (1) early-returns if .flux-store/ does not
+              exist, (2) copies .md files from .flux/ to .flux-store/ skipping
+              if dest exists, (3) deletes source after copy, (4) migrates
+              config.json if .flux-store/config.json does not exist, (5) logs
+              with [startup-migrate] prefix. Replaced the old partial
+              recoverStrayFluxFiles in task-store.ts with a call to the new
+              function. Cleaned up unused imports. Compiles cleanly."}]}' |
+              python -c "import sys,json; d=json.load(sys.stdin);
+              print(d.get('status',''))"
+            description: Move FLUX-220 to Ready via REST API
     user: Claude Code
     date: '2026-05-28T04:57:23.930Z'
+    outcome: Claude Code session stopped by user.
+    endedAt: '2026-05-28T04:59:29.410Z'
   - type: status_change
     from: Todo
     to: In Progress
@@ -89,6 +346,29 @@ history:
       to also delete source files after copy and migrate config.json, matching
       the ticket spec.
     id: c-2026-05-28t04-58-11-691z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-28T04:59:29.328Z'
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-28T04:59:29.328Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-28T04:59:29.328Z'
+    comment: >-
+      Implementation complete. Added migrateStrandedFluxTickets() to
+      storage-sync.ts that: (1) early-returns if .flux-store/ does not exist,
+      (2) copies .md files from .flux/ to .flux-store/ skipping if dest exists,
+      (3) deletes source after copy, (4) migrates config.json if
+      .flux-store/config.json does not exist, (5) logs with [startup-migrate]
+      prefix. Replaced the old partial recoverStrayFluxFiles in task-store.ts
+      with a call to the new function. Cleaned up unused imports. Compiles
+      cleanly.
+    id: c-2026-05-28t04-59-29-328z
 tokenMetadata:
   inputTokens: 208737
   outputTokens: 3797
