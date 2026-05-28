@@ -522,11 +522,16 @@ history:
     to: In Progress
     user: Agent
     date: '2026-05-26T13:10:09.666Z'
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Guy
+    date: '2026-05-28T04:16:59.419Z'
 title: Do release v0.10.1
-status: In Progress
+status: Done
 createdBy: Guy
-updatedBy: Agent
-order: 5
+updatedBy: Guy
+order: 0
 tokenMetadata:
   inputTokens: 2076093
   outputTokens: 13622
@@ -534,6 +539,5 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 2017378
   cacheCreationTokens: 55810
-id: FLUX-332
 ---
 with github actions release and proper changelog etc.

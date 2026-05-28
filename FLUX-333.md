@@ -565,8 +565,29 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-28T03:42:19.141Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-28T04:16:38.634Z'
+    comment: Claude Code session stopped.
+  - type: agent_session
+    sessionId: 220af4cc-8dfe-488f-999a-1b2cd9c4595e
+    startedAt: '2026-05-28T04:16:53.234Z'
+    status: active
+    progress: []
+    user: Claude Code
+    date: '2026-05-28T04:16:53.234Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-28T04:17:32.878Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-28T04:17:32.878Z'
 title: new user onboarding issue
-status: Todo
+status: In Progress
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:

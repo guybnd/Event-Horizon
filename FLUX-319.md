@@ -1,7 +1,6 @@
 ---
-id: FLUX-319
 title: Fix TypeScript strict-mode errors in claude-code.ts
-status: In Progress
+status: Grooming
 priority: Low
 effort: XS
 assignee: unassigned
@@ -9,7 +8,7 @@ tags:
   - bug
   - engine
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 history:
   - type: activity
     user: Guy
@@ -29,6 +28,19 @@ history:
     to: In Progress
     user: Agent
     date: '2026-05-25T16:01:40.913Z'
+  - type: status_change
+    from: In Progress
+    to: Grooming
+    user: Guy
+    date: '2026-05-28T04:17:08.628Z'
+  - type: comment
+    user: Guy
+    date: '2026-05-28T04:17:17.838Z'
+    comment: is this still rlevant
+    id: c-2026-05-28t04-17-17-836z
+order: 14
+implementationLink: ''
+subtasks: []
 ---
 ## Problem / Motivation
 
