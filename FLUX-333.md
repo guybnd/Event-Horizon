@@ -547,6 +547,24 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-28T03:41:18.621Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-28T03:42:13.666Z'
+    comment: Updated description.
+  - type: comment
+    user: Agent
+    comment: >-
+      Groomed: root cause is migrateToOrphan() doesn't check for existing remote
+      origin/flux-data branch before attempting orphan creation. Fix reuses the
+      attach pattern from attachWorktreeIfPresent(). Small scope � single
+      function change in storage-sync.ts.
+    date: '2026-05-28T03:42:13.666Z'
+    id: c-2026-05-28t03-42-13-666z
+  - type: status_change
+    from: Grooming
+    to: Todo
+    user: Agent
+    date: '2026-05-28T03:42:19.141Z'
 title: new user onboarding issue
 status: Todo
 createdBy: Guy
@@ -558,26 +576,19 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 195767
   cacheCreationTokens: 29034
-id: FLUX-333
 ---
 ## Problem / Motivation
 
-When a user opens the onboarding wizard on a project that already has git sync configured (remote `origin/flux-data` branch exists), the migration step in `migrateToOrphan()` throws an error instead of recognizing the existing setup. This blocks the entire welcome flow � the user's only option is to SKIP onboarding entirely, losing all other setup steps (skill install, framework selection, etc.).
-
-## Root Cause
-
-`engine/src/storage-sync.ts:migrateToOrphan()` (line 59-121) checks for:
-1. Local `.flux-store/` directory (line 63)
-2. Local `flux-data` branch (line 67)
-
-But does NOT check for a remote `origin/flux-data` branch. When git attempts `worktree add --orphan -b flux-data` (line 73), it fails because the branch conflicts with the remote tracking ref.
-
-Meanwhile, `attachWorktreeIfPresent()` (line 32-57) already handles this case correctly � it detects `origin/flux-data` and attaches the worktree from it.
+When a user onboards a project that already has a remote `origin/flux-data` branch (e.g. set up on another machine or from a prior install), the onboarding wizard's "Git Sync" step fails. The engine's `migrateToOrphan()` tries to create a new orphan branch instead of recognizing the existing one. This forces the user to skip the entire welcome setup � a broken first-run experience.
 
 ## Implementation Plan
 
-1. **In `migrateToOrphan()` (storage-sync.ts):** Before the orphan creation at line 72, add a check for `origin/flux-data` remote branch (same pattern as `attachWorktreeIfPresent` line 48-50). If the remote exists, attach the worktree from it instead of creating a new orphan � then skip the orphan-creation and initial-commit steps, proceeding directly to the .gitignore update.
+1. **In `engine/src/storage-sync.ts` ? `migrateToOrphan()`** (line ~67): After the existing local-branch check, add a remote-branch check using `git branch -r` (same pattern as `attachWorktreeIfPresent()` at line 48-49). If `origin/flux-data` exists remotely:
+   - Use `git worktree add -b flux-data <storeDir> origin/flux-data` to attach the existing remote branch as a worktree (no `--orphan`).
+   - Skip the file-migration and initial-commit steps (data already lives on the remote branch).
+   - Still run the `.gitignore` update.
+   - Return early.
 
-2. **In `OnboardingWizard.tsx` `handleModeConfirm()`:** After a successful migration (or attach), proceed to the next step normally. No UI changes needed � the error path already falls through correctly once the engine stops throwing.
+2. **In `engine/src/routes/storage.ts` ? `POST /migrate`** (line 15): The `isOrphanMode()` guard already returns early if `.flux-store/` exists. No change needed here � the fix is entirely in `migrateToOrphan()`.
 
-3. **Validate:** Test with a fresh clone of a repo that has `origin/flux-data` � onboarding should detect existing sync and proceed without error.
+3. **Validation**: Test by manually creating a remote `flux-data` branch, deleting `.flux-store/`, and running the onboarding wizard � it should attach cleanly without error.
