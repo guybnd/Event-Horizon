@@ -358,8 +358,44 @@ history:
       Also: should the diff viewer be a new tab in the modal, or inline below
       the description?
     id: c-2026-05-28t07-53-36-405z
+  - type: comment
+    user: Guy
+    date: '2026-05-28T09:07:35.980Z'
+    comment: >-
+      we should support i think both the total branch once we add branch per
+      ticket mode in the future, and the commit since ticket started, since we
+      doo not make a commit until ticket is finished, it doesnt make sense to
+      show it in the ticket as the ticket can be living still in review etc.
+
+
+      in the ticket modal itself we should show the total relevant files and
+      their added and removed lines, and we should be able to press on them to
+      see in a different tab maybe or a pop open thingy.
+
+
+      this diff view should ideally live on the right side  below the box that
+      has the ticket status assignee etc. maybe if pressing on there, it should
+      change the ticket description view to the file diff viewer..
+
+
+      thoughts?
+    replyTo: c-2026-05-28t07-53-36-405z
+    id: c-2026-05-28t09-07-35-978z
+  - type: status_change
+    from: Require Input
+    to: Grooming
+    user: Guy
+    date: '2026-05-28T09:07:35.980Z'
+    comment: Response submitted
+  - type: agent_session
+    sessionId: 58537b38-a7ae-44a2-8ddb-96319f6f2fae
+    startedAt: '2026-05-28T09:07:38.829Z'
+    status: active
+    progress: []
+    user: Claude Code
+    date: '2026-05-28T09:07:38.829Z'
 title: can we enrich tickets with the diffs that were performed?
-status: Require Input
+status: Grooming
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
