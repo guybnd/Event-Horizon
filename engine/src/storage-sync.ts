@@ -138,6 +138,37 @@ export async function migrateToOrphan(workspaceRoot: string): Promise<void> {
   }
 }
 
+export async function migrateStrandedFluxTickets(workspaceRoot: string): Promise<void> {
+  const storeDir = path.join(workspaceRoot, '.flux-store');
+  if (!existsSync(storeDir)) return;
+
+  const fluxDir = path.join(workspaceRoot, '.flux');
+  let entries: string[];
+  try {
+    entries = await fs.readdir(fluxDir);
+  } catch {
+    return;
+  }
+
+  for (const name of entries) {
+    if (!name.endsWith('.md')) continue;
+    const src = path.join(fluxDir, name);
+    const dst = path.join(storeDir, name);
+    if (existsSync(dst)) continue;
+    await fs.copyFile(src, dst);
+    await fs.unlink(src);
+    console.log(`[startup-migrate] Migrated ticket: ${name}`);
+  }
+
+  const configSrc = path.join(fluxDir, 'config.json');
+  const configDst = path.join(storeDir, 'config.json');
+  if (existsSync(configSrc) && !existsSync(configDst)) {
+    await fs.copyFile(configSrc, configDst);
+    await fs.unlink(configSrc);
+    console.log(`[startup-migrate] Migrated config.json`);
+  }
+}
+
 export async function restoreToInRepo(workspaceRoot: string): Promise<void> {
   const storeDir = path.join(workspaceRoot, '.flux-store');
   const fluxDir = path.join(workspaceRoot, '.flux');

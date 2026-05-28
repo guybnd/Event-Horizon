@@ -2,8 +2,8 @@ import fs from 'fs/promises';
 import path from 'path';
 import matter from 'gray-matter';
 import chokidar from 'chokidar';
-import { getFluxDir, getFluxStoreDir, getActiveFluxDir, getTaskAssetsDir, setWorkspaceRoot, workspaceRoot, isOrphanMode } from './workspace.js';
-import { attachWorktreeIfPresent } from './storage-sync.js';
+import { getActiveFluxDir, getTaskAssetsDir, setWorkspaceRoot, workspaceRoot } from './workspace.js';
+import { attachWorktreeIfPresent, migrateStrandedFluxTickets } from './storage-sync.js';
 import { startSyncWatcher } from './sync-watcher.js';
 import { configCache, loadConfig, autoRegisterUnknownTags } from './config.js';
 import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate, getHistoryTimestamp } from './history.js';
@@ -708,25 +708,6 @@ export async function startWatchers() {
     });
 }
 
-async function recoverStrayFluxFiles(newRoot: string): Promise<void> {
-  const fluxDir = path.join(newRoot, '.flux');
-  const storeDir = getFluxStoreDir();
-  let stray: string[] = [];
-  try { stray = await fs.readdir(fluxDir); } catch { return; }
-  for (const name of stray) {
-    if (!name.endsWith('.md')) continue;
-    const src = path.join(fluxDir, name);
-    const dst = path.join(storeDir, name);
-    try { await fs.access(dst); continue; } catch { /* not in store yet */ }
-    try {
-      const content = await fs.readFile(src, 'utf-8');
-      const parsed = matter(content);
-      if (!parsed.data || !parsed.data['title'] || !parsed.data['id']) continue;
-    } catch { continue; }
-    await fs.copyFile(src, dst);
-    console.log(`[storage-sync] Recovered stray ticket: ${name}`);
-  }
-}
 
 export async function activateWorkspace(newRoot: string) {
   workspaceActivating = true;
@@ -739,7 +720,7 @@ export async function activateWorkspace(newRoot: string) {
     console.log(`Workspace: ${newRoot}`);
     await bootstrapNewWorkspace();
     await attachWorktreeIfPresent(newRoot);
-    if (isOrphanMode()) await recoverStrayFluxFiles(newRoot);
+    await migrateStrandedFluxTickets(newRoot);
     await initDir();
     await installSkillsForWorkspace();
     await startWatchers();
