@@ -7,7 +7,7 @@ tags:
 assignee: Agent
 createdBy: Unknown
 title: Auto-migrate stranded .flux tickets to .flux-store on startup in orphan mode
-status: Todo
+status: In Progress
 updatedBy: Agent
 history:
   - type: activity
@@ -71,6 +71,24 @@ history:
     progress: []
     user: Claude Code
     date: '2026-05-28T04:57:23.930Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-28T04:58:11.691Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-28T04:58:11.691Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-28T04:58:11.691Z'
+    comment: >-
+      Starting implementation. Will enhance the existing recoverStrayFluxFiles
+      to also delete source files after copy and migrate config.json, matching
+      the ticket spec.
+    id: c-2026-05-28t04-58-11-691z
 tokenMetadata:
   inputTokens: 208737
   outputTokens: 3797
@@ -79,7 +97,6 @@ tokenMetadata:
   cacheReadTokens: 166381
   cacheCreationTokens: 41237
 order: 4
-id: FLUX-220
 ---
 ## Implementation Plan
 
