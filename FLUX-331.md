@@ -912,8 +912,13 @@ history:
     to: Done
     user: Guy
     date: '2026-05-26T13:12:48.753Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-26T13:29:04.561Z'
 title: help verify this bug of why MCP not working for some customers
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
 tokenMetadata:
@@ -924,6 +929,9 @@ tokenMetadata:
   cacheReadTokens: 635150
   cacheCreationTokens: 48442
 order: 0
+version: v0.10.1
+releasedAt: '2026-05-26T13:29:04.561Z'
+releaseDocPath: release-notes/v0.10.1
 ---
 ## Problem / Motivation
 

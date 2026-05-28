@@ -1813,8 +1813,13 @@ history:
     to: Done
     user: Guy
     date: '2026-05-26T13:12:58.399Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-26T13:29:04.556Z'
 title: 'Parse error prevention: auto-fix and agent-friendly repair instructions'
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
 tokenMetadata:
@@ -1825,6 +1830,9 @@ tokenMetadata:
   cacheReadTokens: 728073
   cacheCreationTokens: 76235
 order: 1
+version: v0.10.1
+releasedAt: '2026-05-26T13:29:04.556Z'
+releaseDocPath: release-notes/v0.10.1
 ---
 ## Problem / Motivation
 

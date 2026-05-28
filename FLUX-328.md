@@ -1,6 +1,6 @@
 ---
 title: Project initialization should provide basic SKILLS setup
-status: Done
+status: Released
 priority: Medium
 assignee: unassigned
 tags:
@@ -863,6 +863,11 @@ history:
     to: Done
     user: Guy
     date: '2026-05-26T13:13:00.243Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-26T13:29:04.552Z'
 tokenMetadata:
   inputTokens: 494419
   outputTokens: 3388
@@ -871,6 +876,9 @@ tokenMetadata:
   cacheReadTokens: 470553
   cacheCreationTokens: 23189
 order: 2
+version: v0.10.1
+releasedAt: '2026-05-26T13:29:04.552Z'
+releaseDocPath: release-notes/v0.10.1
 ---
 ## Problem / Motivation
 
