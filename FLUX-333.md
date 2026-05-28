@@ -572,10 +572,161 @@ history:
   - type: agent_session
     sessionId: 220af4cc-8dfe-488f-999a-1b2cd9c4595e
     startedAt: '2026-05-28T04:16:53.234Z'
-    status: active
-    progress: []
+    status: cancelled
+    progress:
+      - timestamp: '2026-05-28T04:17:07.056Z'
+        message: Working
+        type: tool
+        data:
+          toolName: ToolSearch
+          parameters:
+            query: >-
+              select:change_status,add_comment,log_progress,finish_ticket,get_ticket
+            max_results: 5
+      - timestamp: '2026-05-28T04:17:07.620Z'
+        message: Reading storage-sync.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\storage-sync.ts'
+      - timestamp: '2026-05-28T04:17:08.721Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-05-28T04:17:18.370Z'
+        message: Working
+        type: tool
+        data:
+          toolName: ToolSearch
+          parameters:
+            query: change_status ticket flux
+            max_results: 10
+      - timestamp: '2026-05-28T04:17:23.734Z'
+        message: Working
+        type: info
+      - timestamp: '2026-05-28T04:17:31.433Z'
+        message: 'Running: curl -s -X PUT http://localhost:3067/api/tasks/FLU...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              curl -s -X PUT http://localhost:3067/api/tasks/FLUX-333 -H
+              "Content-Type: application/json" -d '{"status": "In Progress",
+              "appendHistory": [{"type": "status_change", "from": "Todo", "to":
+              "In Progress", "user": "Agent", "date": "'"$(date -u
+              +%Y-%m-%dT%H:%M:%S.%3NZ)"'"}]}'
+            description: Move FLUX-333 to In Progress via REST API
+      - timestamp: '2026-05-28T04:17:32.075Z'
+        message: Reading storage.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\routes\storage.ts'
+      - timestamp: '2026-05-28T04:17:38.734Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-05-28T04:17:52.593Z'
+        message: Editing storage-sync.ts
+        type: tool
+        data:
+          toolName: Edit
+          parameters:
+            replace_all: false
+            file_path: 'C:\GitHub\EventHorizon\engine\src\storage-sync.ts'
+            old_string: |2-
+                const { stdout: branchList } = await git(workspaceRoot, ['branch', '--list', 'flux-data']);
+                if (branchList.trim()) {
+                  throw new Error('flux-data branch already exists — remove it with "git branch -D flux-data" before migrating');
+                }
+
+                // Create orphan branch as a new worktree — does NOT touch the current checkout
+                await git(workspaceRoot, ['worktree', 'add', '--orphan', '-b', 'flux-data', storeDir]);
+            new_string: |2-
+                const { stdout: branchList } = await git(workspaceRoot, ['branch', '--list', 'flux-data']);
+                if (branchList.trim()) {
+                  throw new Error('flux-data branch already exists — remove it with "git branch -D flux-data" before migrating');
+                }
+
+                // Check if remote already has flux-data (e.g. set up on another machine)
+                const { stdout: remoteBranches } = await git(workspaceRoot, ['branch', '-r']).catch(() => ({ stdout: '' }));
+                const hasRemote = remoteBranches.split('\n').some((l) => l.trim() === 'origin/flux-data');
+
+                if (hasRemote) {
+                  await git(workspaceRoot, ['worktree', 'add', '-b', 'flux-data', storeDir, 'origin/flux-data']);
+
+                  const gitignorePath = path.join(workspaceRoot, '.gitignore');
+                  const existing = await fs.readFile(gitignorePath, 'utf-8').catch(() => '');
+                  const marker = '# flux-data orphan mode';
+                  if (!existing.includes(marker)) {
+                    const addition = `\n${marker}\n.flux/*.md\n.flux/config.json\n.flux/assets/\n.flux/read-state.json\n.flux-store/\n`;
+                    await fs.writeFile(gitignorePath, existing + addition, 'utf-8');
+                  }
+
+                  return;
+                }
+
+                // Create orphan branch as a new worktree — does NOT touch the current checkout
+                await git(workspaceRoot, ['worktree', 'add', '--orphan', '-b', 'flux-data', storeDir]);
+      - timestamp: '2026-05-28T04:17:53.735Z'
+        message: Editing
+        type: info
+      - timestamp: '2026-05-28T04:17:55.956Z'
+        message: 'Running: cd /c/GitHub/EventHorizon/engine && npx tsc --noEm...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              cd /c/GitHub/EventHorizon/engine && npx tsc --noEmit --pretty 2>&1
+              | head -50
+            description: Type-check the engine after the fix
+      - timestamp: '2026-05-28T04:18:03.104Z'
+        message: 'Running: npx tsc --noEmit --pretty 2>&1 | grep -i "storage-...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: npx tsc --noEmit --pretty 2>&1 | grep -i "storage-sync"
+            description: Check if storage-sync.ts has any type errors
+      - timestamp: '2026-05-28T04:18:08.743Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-05-28T04:18:09.999Z'
+        message: Reading storage-sync.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\engine\src\storage-sync.ts'
+            offset: 59
+            limit: 55
+      - timestamp: '2026-05-28T04:18:23.317Z'
+        message: 'Running: curl -s -X PUT http://localhost:3067/api/tasks/FLU...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              curl -s -X PUT http://localhost:3067/api/tasks/FLUX-333 -H
+              "Content-Type: application/json" -d '{"status": "Ready",
+              "appendHistory": [{"type": "comment", "user": "Agent", "date":
+              "'"$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"'", "comment":
+              "Implementation complete. Added remote branch detection in
+              migrateToOrphan() — after the local branch check, it now runs `git
+              branch -r` to find origin/flux-data. If present, attaches the
+              existing remote as a worktree (same command as
+              attachWorktreeIfPresent), updates .gitignore, and returns early —
+              skipping orphan creation and file migration. Falls through
+              gracefully if no remote exists. Type-checks clean."}, {"type":
+              "status_change", "from": "In Progress", "to": "Ready", "user":
+              "Agent", "date": "'"$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"'"}]}'
+            description: Move FLUX-333 to Ready with completion summary
     user: Claude Code
     date: '2026-05-28T04:16:53.234Z'
+    outcome: Claude Code session stopped by user.
+    endedAt: '2026-05-28T04:18:23.656Z'
   - type: status_change
     from: Todo
     to: In Progress
@@ -586,8 +737,29 @@ history:
     to: In Progress
     user: Agent
     date: '2026-05-28T04:17:32.878Z'
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-28T04:18:23.582Z'
+  - type: comment
+    user: Agent
+    date: '2026-05-28T04:18:23.582Z'
+    comment: >-
+      Implementation complete. Added remote branch detection in
+      migrateToOrphan() � after the local branch check, it now runs `git branch
+      -r` to find origin/flux-data. If present, attaches the existing remote as
+      a worktree (same command as attachWorktreeIfPresent), updates .gitignore,
+      and returns early � skipping orphan creation and file migration. Falls
+      through gracefully if no remote exists. Type-checks clean.
+    id: c-2026-05-28t04-18-23-582z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-28T04:18:23.582Z'
 title: new user onboarding issue
-status: In Progress
+status: Ready
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
