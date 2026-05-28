@@ -502,6 +502,13 @@ history:
     to: In Progress
     user: Agent
     date: '2026-05-25T16:01:33.474Z'
+  - type: agent_session
+    sessionId: e1676a54-9bee-414a-ad3e-b15fab026770
+    startedAt: '2026-05-28T07:51:03.348Z'
+    status: active
+    progress: []
+    user: Claude Code
+    date: '2026-05-28T07:51:03.348Z'
 id: FLUX-322
 title: >-
   Fix "Mark all read" buttons losing state due to race condition and missing
