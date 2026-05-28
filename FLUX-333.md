@@ -758,8 +758,20 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-28T04:18:23.582Z'
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Agent
+    date: '2026-05-28T04:27:53.942Z'
+  - type: agent_session
+    sessionId: 994947ef-fc4e-4082-a661-cd7f4b051fc7
+    startedAt: '2026-05-28T04:27:53.979Z'
+    status: active
+    progress: []
+    user: Claude Code
+    date: '2026-05-28T04:27:53.979Z'
 title: new user onboarding issue
-status: Ready
+status: In Progress
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -769,6 +781,7 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 195767
   cacheCreationTokens: 29034
+id: FLUX-333
 ---
 ## Problem / Motivation
 
