@@ -7,7 +7,7 @@ tags:
 assignee: Agent
 createdBy: Unknown
 title: Auto-migrate stranded .flux tickets to .flux-store on startup in orphan mode
-status: In Progress
+status: Ready
 updatedBy: Agent
 history:
   - type: activity
@@ -875,6 +875,32 @@ history:
     date: '2026-05-29T02:43:26.260Z'
     outcome: Session abandoned (engine restarted).
     endedAt: '2026-05-29T02:43:40.542Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Fixed the actual bugs causing stray files to persist in .flux/:
+
+
+      1. config.json: old code skipped cleanup when dest already existed — now
+      it deletes the stale .flux/ copy regardless (same pattern as ticket .md
+      files).
+
+      2. Assets: migration never handled .flux/assets/ subdirectories at all —
+      added asset folder migration with copy-or-delete + per-entry try/catch.
+
+      3. Removed unused `matter` import leftover from previous session.
+
+
+      All three operations are wrapped in try/catch so a single unreadable file
+      won't kill activation. Compiles clean. On next engine restart, the stray
+      config.json and assets/FLUX-59 in .flux/ will be cleaned up.
+    date: '2026-05-29T02:48:24.679Z'
+    id: c-2026-05-29t02-48-24-679z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-29T02:48:24.679Z'
 tokenMetadata:
   inputTokens: 762091
   outputTokens: 10031
