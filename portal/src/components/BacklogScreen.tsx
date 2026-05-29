@@ -149,7 +149,7 @@ export function BacklogScreen() {
   const [descriptionNotice, setDescriptionNotice] = useState<{ tone: 'error' | 'success'; message: string } | null>(null);
   const [isSavingDescription, setIsSavingDescription] = useState(false);
 
-  const tasks = liveTasks.filter((task) => task.status === 'Backlog' || task.status.toLowerCase() === 'backlog');
+  const tasks = liveTasks.filter((task) => task.status && (task.status === 'Backlog' || task.status.toLowerCase() === 'backlog'));
 
   const selectedTask = tasks.find(t => t.id === selectedTaskId);
   const allStatuses = config ? [...config.columns.map(c => c.name), ...config.hiddenStatuses.map(c => c.name)] : [];

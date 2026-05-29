@@ -26,7 +26,8 @@ const NavItem = memo(function NavItem({
   return (
     <button
       onClick={() => onClick(target)}
-      className={`group flex items-center py-1.5 rounded-md text-sm font-medium transition-all duration-200 cursor-pointer overflow-hidden ${isActive ? 'bg-white dark:bg-[#2a2b36] shadow-sm text-primary px-3' : 'px-2 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+      className={`group flex items-center py-1.5 rounded-md text-sm font-medium transition-all duration-200 cursor-pointer overflow-hidden ${isActive ? 'shadow-sm px-3' : 'px-2 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
+      style={isActive ? { background: 'var(--eh-surface-raised)', color: 'var(--eh-accent)' } : undefined}
     >
       <span className="shrink-0">{icon}</span>
       <span
@@ -125,7 +126,7 @@ export function Header() {
   const toggleNotificationPanel = useCallback(() => setIsNotificationPanelOpen(prev => !prev), []);
 
   return (
-    <header className="sticky top-0 z-10 border-b border-gray-200 bg-white/65 px-4 py-3 backdrop-blur-md dark:border-white/5 dark:bg-black/20">
+    <header className="eh-header sticky top-0 z-10 border-b px-4 py-3">
       <div className="flex items-center justify-between gap-3">
 
         {/* Left: branding + nav */}
@@ -135,7 +136,7 @@ export function Header() {
           <div className="h-6 w-px bg-gray-200 dark:bg-white/10" />
 
           {/* Nav pills */}
-          <div className="flex items-center gap-1 bg-gray-100 dark:bg-black/40 p-1 rounded-lg">
+          <div className="flex items-center gap-1 p-1 rounded-lg" style={{ background: 'var(--eh-column-bg)' }}>
             <NavItem view={view} target="board" icon={<KanbanSquare className="w-4 h-4" />} label="Board" onClick={handleSetView} />
             <NavItem view={view} target="backlog" icon={<ListTodo className="w-4 h-4" />} label="Backlog" onClick={handleSetView} />
             <NavItem view={view} target="releases" icon={<Tag className="w-4 h-4" />} label="Releases" onClick={handleSetView} />
@@ -151,7 +152,7 @@ export function Header() {
           {/* New ticket */}
           <button
             onClick={handleOpenNewTicket}
-            className="flex h-[34px] items-center justify-center gap-1.5 rounded-2xl bg-primary px-3 text-sm font-semibold text-white shadow-sm transition-all hover:bg-primary-hover focus:outline-none cursor-pointer shrink-0"
+            className="eh-btn-accent flex h-[34px] items-center justify-center gap-1.5 rounded-2xl px-3 text-sm font-semibold shadow-sm transition-all focus:outline-none cursor-pointer shrink-0"
           >
             <Plus className="h-4 w-4" />
             <span className="hidden sm:inline">New ticket</span>
@@ -262,12 +263,13 @@ export function Header() {
                 {theme === 'light' ? <Sun className="h-3.5 w-3.5" /> : theme === 'dark' ? <Moon className="h-3.5 w-3.5" /> : <Palette className="h-3.5 w-3.5" />}
               </button>
               {isThemePickerOpen && (
-                <div className="absolute right-0 top-full mt-2 w-36 rounded-xl border border-gray-200 bg-white shadow-xl dark:border-white/10 dark:bg-[#1a1b23] overflow-hidden z-50">
+                <div className="eh-dropdown absolute right-0 top-full mt-2 w-36 rounded-xl border shadow-xl overflow-hidden z-50">
                   {THEMES.map((t) => (
                     <button
                       key={t.name}
                       onClick={() => { setAppTheme(t.name); setIsThemePickerOpen(false); }}
-                      className={`w-full flex items-center gap-2.5 px-3 py-2 text-sm font-medium transition-colors ${theme === t.name ? 'bg-primary/10 text-primary' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5'}`}
+                      className={`w-full flex items-center gap-2.5 px-3 py-2 text-sm font-medium transition-colors ${theme === t.name ? 'text-[var(--eh-accent)]' : 'hover:bg-[var(--eh-column-bg)]'}`}
+                      style={theme === t.name ? { background: 'var(--eh-accent-glow)' } : { color: 'var(--eh-text-secondary)' }}
                     >
                       <span className={`h-3 w-3 rounded-full shrink-0 ${t.name === 'light' ? 'bg-gray-200 border border-gray-300' : t.name === 'dark' ? 'bg-gray-700' : t.name === 'matrix' ? 'bg-emerald-600' : t.name === 'cyber' ? 'bg-violet-600' : 'bg-sky-800'}`} />
                       {t.label}

@@ -30,7 +30,7 @@ function AppContent() {
   }
 
   return (
-    <div className="min-h-[100vh] h-screen bg-gray-50 dark:bg-bg-dark text-gray-900 dark:text-gray-100 flex flex-col font-sans app-shell">
+    <div className="min-h-[100vh] h-screen flex flex-col font-sans app-shell" style={{ background: 'var(--eh-base)', color: 'var(--eh-text-primary)' }}>
       <Header />
       <div className="relative flex min-h-0 flex-1 flex-col">
         <main className="flex-1 overflow-y-auto p-8">

@@ -342,7 +342,7 @@ export function Board() {
 
       {pendingStatusChange && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm pointer-events-auto">
-          <div className="bg-white dark:bg-[#1a1b23] p-6 rounded-xl shadow-2xl w-[400px] border border-gray-200 dark:border-white/10">
+          <div className="eh-surface-overlay p-6 rounded-xl shadow-2xl w-[400px] border eh-border">
             <h3 className="text-lg font-bold mb-2">Update Status</h3>
             <p className="mb-4 flex flex-wrap items-center gap-2 text-sm text-gray-500">
               <span>Moving task to</span>

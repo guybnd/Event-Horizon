@@ -570,7 +570,7 @@ export function TaskCard({
         setIsHovering(false);
       }}
     >
-      <motion.div {...contentAnimation} className={`relative flex flex-col rounded-xl border bg-white/80 dark:bg-[#252630]/80 backdrop-blur-md p-0 shadow-sm hover:border-primary/50 hover:shadow-md transition-all ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''} ${isPromptStatus ? 'border-amber-300 dark:border-amber-500/40 ring-1 ring-amber-200/50 dark:ring-amber-500/20' : hasActiveCliSession ? 'border-emerald-400 dark:border-emerald-500/60' : 'border-gray-200/50 dark:border-white/5'} ${liveAnimationClass} ${liveAccentClass} ${hasUnread && !liveAccentClass ? 'ring-2 ring-amber-400/60 dark:ring-amber-500/40' : ''} ${isEpic ? 'border-l-[3px] border-l-indigo-400 dark:border-l-indigo-500' : ''}`}>
+      <motion.div {...contentAnimation} className={`eh-card relative flex flex-col rounded-xl border p-0 shadow-sm transition-all ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''} ${isPromptStatus ? 'border-amber-300 dark:border-amber-500/40 ring-1 ring-amber-200/50 dark:ring-amber-500/20' : hasActiveCliSession ? 'border-emerald-400 dark:border-emerald-500/60' : ''} ${liveAnimationClass} ${liveAccentClass} ${hasUnread && !liveAccentClass ? 'ring-2 ring-amber-400/60 dark:ring-amber-500/40' : ''} ${isEpic ? 'border-l-[3px] border-l-indigo-400 dark:border-l-indigo-500' : ''}`}>
         {hasActiveCliSession && !isOverlay && (
           <div className="pointer-events-none absolute inset-0 rounded-xl bot-border-breathe" />
         )}

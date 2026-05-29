@@ -361,7 +361,7 @@ export function Settings() {
   return (
     <>
       <div className="max-w-5xl mx-auto mb-12 flex gap-6 items-start">
-        <div className="w-64 shrink-0 bg-white/80 dark:bg-[#1a1b23]/80 backdrop-blur-xl border border-gray-200 dark:border-white/10 rounded-2xl shadow-xl overflow-hidden sticky top-4">
+        <div className="w-64 shrink-0 eh-surface-overlay border eh-border rounded-2xl shadow-xl overflow-hidden sticky top-4">
           <div className="p-5 border-b border-gray-200 dark:border-white/10">
             <h2 className="text-lg font-bold text-gray-900 dark:text-gray-100 flex items-center justify-between">
               Settings
@@ -386,7 +386,7 @@ export function Settings() {
           </div>
         </div>
 
-        <div className="flex-1 bg-white/80 dark:bg-[#1a1b23]/80 backdrop-blur-xl border border-gray-200 dark:border-white/10 rounded-2xl shadow-xl flex flex-col min-h-[600px]">
+        <div className="flex-1 eh-surface-overlay border eh-border rounded-2xl shadow-xl flex flex-col min-h-[600px]">
           <div className="p-8 flex-1">
             <div className="flex items-center justify-between mb-8 pb-6 border-b border-gray-200 dark:border-white/10">
               <div>

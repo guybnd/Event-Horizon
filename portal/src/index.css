@@ -2,54 +2,302 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme {
-  --color-primary: #aa3bff;
-  --color-primary-hover: #902bd9;
-  --color-bg-dark: #16171d;
-  --color-bg-panel: #1f2028;
+  --color-primary: var(--eh-accent);
+  --color-primary-hover: var(--eh-accent-hover);
+  --color-bg-dark: var(--eh-base);
+  --color-bg-panel: var(--eh-surface);
 }
 
+/* ─── Theme Token System ─────────────────────────────────────────────── */
+:root {
+  /* Light mode defaults */
+  --eh-accent: #aa3bff;
+  --eh-accent-hover: #902bd9;
+  --eh-accent-glow: rgba(170, 59, 255, 0.15);
+  --eh-base: #f9fafb;
+  --eh-surface: #ffffff;
+  --eh-surface-raised: #ffffff;
+  --eh-surface-overlay: rgba(255, 255, 255, 0.8);
+  --eh-border: rgba(229, 231, 235, 1);
+  --eh-border-subtle: rgba(229, 231, 235, 0.5);
+  --eh-border-accent: rgba(170, 59, 255, 0.3);
+  --eh-text-primary: #111827;
+  --eh-text-secondary: #4b5563;
+  --eh-text-muted: #9ca3af;
+  --eh-card-bg: rgba(255, 255, 255, 0.8);
+  --eh-card-border: rgba(229, 231, 235, 0.5);
+  --eh-card-hover-border: rgba(170, 59, 255, 0.5);
+  --eh-header-bg: rgba(255, 255, 255, 0.65);
+  --eh-column-bg: rgba(243, 244, 246, 0.5);
+  --eh-input-bg: #f9fafb;
+  --eh-input-border: rgba(229, 231, 235, 1);
+  --eh-dropdown-bg: #ffffff;
+  --eh-glow-color: rgba(170, 59, 255, 0.1);
+  --eh-texture: none;
+}
+
+/* ─── Light (explicit, same as :root defaults) ───────────────────── */
+:root[data-theme="light"] {
+  --eh-accent: #aa3bff;
+  --eh-accent-hover: #902bd9;
+  --eh-accent-glow: rgba(170, 59, 255, 0.15);
+  --eh-base: #f9fafb;
+  --eh-surface: #ffffff;
+  --eh-surface-raised: #ffffff;
+  --eh-surface-overlay: rgba(255, 255, 255, 0.8);
+  --eh-border: rgba(229, 231, 235, 1);
+  --eh-border-subtle: rgba(229, 231, 235, 0.5);
+  --eh-border-accent: rgba(170, 59, 255, 0.3);
+  --eh-text-primary: #111827;
+  --eh-text-secondary: #4b5563;
+  --eh-text-muted: #9ca3af;
+  --eh-card-bg: rgba(255, 255, 255, 0.8);
+  --eh-card-border: rgba(229, 231, 235, 0.5);
+  --eh-card-hover-border: rgba(170, 59, 255, 0.5);
+  --eh-header-bg: rgba(255, 255, 255, 0.65);
+  --eh-column-bg: rgba(243, 244, 246, 0.5);
+  --eh-input-bg: #f9fafb;
+  --eh-input-border: rgba(229, 231, 235, 1);
+  --eh-dropdown-bg: #ffffff;
+  --eh-glow-color: rgba(170, 59, 255, 0.1);
+  --eh-texture: none;
+}
+
+/* ─── Dark (default dark) ─────────────────────────────────────────── */
+:root[data-theme="dark"] {
+  --eh-accent: #aa3bff;
+  --eh-accent-hover: #902bd9;
+  --eh-accent-glow: rgba(170, 59, 255, 0.2);
+  --eh-base: #16171d;
+  --eh-surface: #1f2028;
+  --eh-surface-raised: #252630;
+  --eh-surface-overlay: rgba(26, 27, 35, 0.85);
+  --eh-border: rgba(255, 255, 255, 0.1);
+  --eh-border-subtle: rgba(255, 255, 255, 0.05);
+  --eh-border-accent: rgba(170, 59, 255, 0.3);
+  --eh-text-primary: #f3f4f6;
+  --eh-text-secondary: #d1d5db;
+  --eh-text-muted: #6b7280;
+  --eh-card-bg: rgba(37, 38, 48, 0.8);
+  --eh-card-border: rgba(255, 255, 255, 0.05);
+  --eh-card-hover-border: rgba(170, 59, 255, 0.5);
+  --eh-header-bg: rgba(0, 0, 0, 0.2);
+  --eh-column-bg: rgba(0, 0, 0, 0.2);
+  --eh-input-bg: rgba(0, 0, 0, 0.2);
+  --eh-input-border: rgba(255, 255, 255, 0.1);
+  --eh-dropdown-bg: #1a1b23;
+  --eh-glow-color: rgba(170, 59, 255, 0.08);
+  --eh-texture: none;
+}
+
+/* ─── Matrix ─────────────────────────────────────────────────────── */
+:root[data-theme="matrix"] {
+  --eh-accent: #00e639;
+  --eh-accent-hover: #00c030;
+  --eh-accent-glow: rgba(0, 230, 57, 0.2);
+  --eh-base: #0a0f0a;
+  --eh-surface: #0d1a0d;
+  --eh-surface-raised: #112211;
+  --eh-surface-overlay: rgba(10, 15, 10, 0.9);
+  --eh-border: rgba(0, 230, 57, 0.12);
+  --eh-border-subtle: rgba(0, 230, 57, 0.06);
+  --eh-border-accent: rgba(0, 230, 57, 0.4);
+  --eh-text-primary: #c8ffc8;
+  --eh-text-secondary: #7dcc7d;
+  --eh-text-muted: #3d7a3d;
+  --eh-card-bg: rgba(13, 26, 13, 0.8);
+  --eh-card-border: rgba(0, 230, 57, 0.08);
+  --eh-card-hover-border: rgba(0, 230, 57, 0.4);
+  --eh-header-bg: rgba(5, 10, 5, 0.7);
+  --eh-column-bg: rgba(0, 230, 57, 0.03);
+  --eh-input-bg: rgba(0, 20, 0, 0.4);
+  --eh-input-border: rgba(0, 230, 57, 0.15);
+  --eh-dropdown-bg: #0d1a0d;
+  --eh-glow-color: rgba(0, 230, 57, 0.06);
+  --eh-texture:
+    linear-gradient(rgba(0, 255, 65, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 255, 65, 0.04) 1px, transparent 1px);
+  --eh-texture-size: 24px 24px, 24px 24px;
+}
+
+/* ─── Cyber ──────────────────────────────────────────────────────── */
+:root[data-theme="cyber"] {
+  --eh-accent: #a78bfa;
+  --eh-accent-hover: #8b5cf6;
+  --eh-accent-glow: rgba(167, 139, 250, 0.25);
+  --eh-base: #0d0b1a;
+  --eh-surface: #15122a;
+  --eh-surface-raised: #1e1836;
+  --eh-surface-overlay: rgba(13, 11, 26, 0.9);
+  --eh-border: rgba(139, 92, 246, 0.15);
+  --eh-border-subtle: rgba(139, 92, 246, 0.07);
+  --eh-border-accent: rgba(167, 139, 250, 0.5);
+  --eh-text-primary: #e8e0ff;
+  --eh-text-secondary: #b8a8e8;
+  --eh-text-muted: #6b5a9e;
+  --eh-card-bg: rgba(30, 24, 54, 0.8);
+  --eh-card-border: rgba(139, 92, 246, 0.1);
+  --eh-card-hover-border: rgba(167, 139, 250, 0.5);
+  --eh-header-bg: rgba(10, 8, 20, 0.7);
+  --eh-column-bg: rgba(139, 92, 246, 0.04);
+  --eh-input-bg: rgba(20, 15, 40, 0.5);
+  --eh-input-border: rgba(139, 92, 246, 0.2);
+  --eh-dropdown-bg: #15122a;
+  --eh-glow-color: rgba(139, 92, 246, 0.08);
+  --eh-texture:
+    linear-gradient(135deg, rgba(139, 92, 246, 0.04) 25%, transparent 25%),
+    linear-gradient(225deg, rgba(139, 92, 246, 0.04) 25%, transparent 25%);
+  --eh-texture-size: 32px 32px, 32px 32px;
+}
+
+/* ─── Midnight ───────────────────────────────────────────────────── */
+:root[data-theme="midnight"] {
+  --eh-accent: #38bdf8;
+  --eh-accent-hover: #0ea5e9;
+  --eh-accent-glow: rgba(56, 189, 248, 0.2);
+  --eh-base: #0b1121;
+  --eh-surface: #101b2e;
+  --eh-surface-raised: #162238;
+  --eh-surface-overlay: rgba(11, 17, 33, 0.9);
+  --eh-border: rgba(56, 189, 248, 0.12);
+  --eh-border-subtle: rgba(56, 189, 248, 0.06);
+  --eh-border-accent: rgba(56, 189, 248, 0.4);
+  --eh-text-primary: #e0f2fe;
+  --eh-text-secondary: #7dd3fc;
+  --eh-text-muted: #3b6d8a;
+  --eh-card-bg: rgba(16, 27, 46, 0.8);
+  --eh-card-border: rgba(56, 189, 248, 0.08);
+  --eh-card-hover-border: rgba(56, 189, 248, 0.4);
+  --eh-header-bg: rgba(8, 12, 24, 0.7);
+  --eh-column-bg: rgba(56, 189, 248, 0.03);
+  --eh-input-bg: rgba(10, 20, 40, 0.5);
+  --eh-input-border: rgba(56, 189, 248, 0.15);
+  --eh-dropdown-bg: #101b2e;
+  --eh-glow-color: rgba(56, 189, 248, 0.06);
+  --eh-texture:
+    radial-gradient(circle, rgba(148, 163, 184, 0.06) 1px, transparent 1px);
+  --eh-texture-size: 20px 20px;
+}
+
+/* ─── Apply Theme ────────────────────────────────────────────────── */
 body {
-  @apply bg-gray-50 text-gray-900 dark:bg-bg-dark dark:text-gray-100;
+  background-color: var(--eh-base);
+  color: var(--eh-text-primary);
 }
 
-/* Textured themes: make the app shell transparent so body texture shows */
+/* Textured themes: body texture + transparent shell */
 :root[data-theme="matrix"] .app-shell,
 :root[data-theme="cyber"] .app-shell,
 :root[data-theme="midnight"] .app-shell {
   background: transparent !important;
 }
 
-/* Textured theme backgrounds — applied directly to body */
-:root[data-theme="matrix"] body {
-  background-color: #0a0f0a !important;
-  background-image:
-    linear-gradient(rgba(0, 255, 65, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0, 255, 65, 0.05) 1px, transparent 1px),
-    radial-gradient(ellipse at 50% 50%, rgba(0, 180, 50, 0.08) 0%, transparent 70%);
-  background-size: 24px 24px, 24px 24px, 100% 100%;
-  background-attachment: fixed;
-}
-
-:root[data-theme="cyber"] body {
-  background-color: #0d0b1a !important;
-  background-image:
-    linear-gradient(135deg, rgba(139, 92, 246, 0.06) 25%, transparent 25%),
-    linear-gradient(225deg, rgba(139, 92, 246, 0.06) 25%, transparent 25%),
-    linear-gradient(45deg, rgba(59, 130, 246, 0.04) 25%, transparent 25%),
-    linear-gradient(315deg, rgba(59, 130, 246, 0.04) 25%, transparent 25%),
-    radial-gradient(ellipse at 30% 70%, rgba(139, 92, 246, 0.1) 0%, transparent 50%),
-    radial-gradient(ellipse at 70% 30%, rgba(59, 130, 246, 0.08) 0%, transparent 50%);
-  background-size: 32px 32px, 32px 32px, 32px 32px, 32px 32px, 100% 100%, 100% 100%;
-  background-attachment: fixed;
-}
-
+:root[data-theme="matrix"] body,
+:root[data-theme="cyber"] body,
 :root[data-theme="midnight"] body {
-  background-color: #0b1121 !important;
-  background-image:
-    radial-gradient(circle, rgba(148, 163, 184, 0.08) 1px, transparent 1px),
-    radial-gradient(ellipse at 50% 0%, rgba(56, 189, 248, 0.05) 0%, transparent 60%);
-  background-size: 20px 20px, 100% 100%;
+  background-image: var(--eh-texture);
+  background-size: var(--eh-texture-size);
   background-attachment: fixed;
+}
+
+/* ─── Bulk Override for Textured Themes ───────────────────────────── */
+/* Remap dark-mode surfaces/borders/text to themed tokens for textured themes.
+   Attribute selectors target DOM class strings to override Tailwind dark: utilities. */
+:root:is([data-theme="matrix"], [data-theme="cyber"], [data-theme="midnight"]) {
+  & [class*="dark:bg-[#1a1b23]"] { background-color: var(--eh-surface) !important; }
+  & [class*="dark:bg-[#252630]"] { background-color: var(--eh-surface-raised) !important; }
+  & [class*="dark:bg-[#1f2028]"] { background-color: var(--eh-surface) !important; }
+  & [class*="dark:bg-[#15161d]"] { background-color: var(--eh-surface) !important; }
+  & [class*="dark:bg-[#161720]"] { background-color: var(--eh-surface) !important; }
+  & [class*="dark:bg-[#1e1f2a]"] { background-color: var(--eh-surface-raised) !important; }
+  & [class*="dark:bg-black/20"] { background-color: var(--eh-input-bg) !important; }
+  & [class*="dark:bg-black/40"] { background-color: var(--eh-input-bg) !important; }
+  & [class*="dark:bg-black/10"] { background-color: var(--eh-column-bg) !important; }
+  & [class*="dark:bg-black/60"] { background-color: var(--eh-surface) !important; }
+  & [class*="dark:bg-white/5"] { background-color: var(--eh-column-bg) !important; }
+  & [class*="dark:bg-white/10"] { background-color: var(--eh-input-bg) !important; }
+  & [class*="dark:border-white/10"] { border-color: var(--eh-border) !important; }
+  & [class*="dark:border-white/5"] { border-color: var(--eh-border-subtle) !important; }
+  & [class*="dark:text-gray-100"] { color: var(--eh-text-primary) !important; }
+  & [class*="dark:text-gray-200"] { color: var(--eh-text-primary) !important; }
+  & [class*="dark:text-gray-300"] { color: var(--eh-text-secondary) !important; }
+  & [class*="dark:text-gray-400"] { color: var(--eh-text-muted) !important; }
+  & [class*="dark:text-gray-500"] { color: var(--eh-text-muted) !important; }
+}
+
+/* ─── Themed Component Overrides ─────────────────────────────────── */
+
+/* Cards */
+.eh-card {
+  background: var(--eh-card-bg);
+  border-color: var(--eh-card-border);
+  backdrop-filter: blur(12px);
+}
+.eh-card:hover {
+  border-color: var(--eh-card-hover-border);
+  box-shadow: 0 0 20px var(--eh-glow-color);
+}
+
+/* Surfaces */
+.eh-surface {
+  background: var(--eh-surface);
+}
+.eh-surface-raised {
+  background: var(--eh-surface-raised);
+}
+.eh-surface-overlay {
+  background: var(--eh-surface-overlay);
+  backdrop-filter: blur(12px);
+}
+
+/* Header */
+.eh-header {
+  background: var(--eh-header-bg);
+  border-color: var(--eh-border-subtle);
+  backdrop-filter: blur(12px);
+}
+
+/* Columns */
+.eh-column {
+  background: var(--eh-column-bg);
+}
+
+/* Inputs */
+.eh-input {
+  background: var(--eh-input-bg);
+  border-color: var(--eh-input-border);
+}
+.eh-input:focus {
+  border-color: var(--eh-accent);
+  box-shadow: 0 0 0 2px var(--eh-accent-glow);
+}
+
+/* Dropdowns */
+.eh-dropdown {
+  background: var(--eh-dropdown-bg);
+  border-color: var(--eh-border);
+}
+
+/* Borders */
+.eh-border {
+  border-color: var(--eh-border);
+}
+.eh-border-subtle {
+  border-color: var(--eh-border-subtle);
+}
+
+/* Accent button */
+.eh-btn-accent {
+  background: var(--eh-accent);
+  color: white;
+}
+.eh-btn-accent:hover {
+  background: var(--eh-accent-hover);
+}
+
+/* Glow effects for themed accents */
+.eh-glow {
+  box-shadow: 0 0 20px var(--eh-accent-glow), 0 0 40px var(--eh-glow-color);
 }
 
 ::-webkit-scrollbar {

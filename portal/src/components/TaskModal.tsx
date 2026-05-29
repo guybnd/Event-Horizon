@@ -1188,7 +1188,7 @@ export function TaskModal() {
         <Container
           key="modal-content-full"
           {...layoutProps}
-          className="pointer-events-auto fixed inset-3 z-[60] flex flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-white/10 dark:bg-[#1a1b23]"
+          className="pointer-events-auto fixed inset-3 z-[60] flex flex-col overflow-hidden rounded-2xl border eh-border shadow-2xl eh-surface-overlay"
         >
           <motion.div {...contentAnimation} className="flex h-full w-full flex-col overflow-hidden">
           {saveError && (
@@ -1426,7 +1426,7 @@ export function TaskModal() {
         >
           <Container
             {...layoutProps}
-            className="flex h-full w-full flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-2xl dark:border-white/10 dark:bg-[#1a1b23]">
+            className="flex h-full w-full flex-col overflow-hidden rounded-xl border eh-border shadow-2xl eh-surface-overlay">
             <motion.div {...contentAnimation} className="flex h-full w-full flex-col overflow-hidden">
             {saveError && (
               <div className="bg-red-500/10 text-red-600 dark:text-red-400 px-4 py-2.5 text-sm font-medium border-b border-red-500/20 text-center flex items-center justify-center gap-2">

@@ -65,7 +65,7 @@ export function Column({ id, title, tasks, parentByChildId, liveEvent, taskLiveE
       <div
         ref={setNodeRef}
         className={`flex-1 flex flex-col rounded-2xl p-3 min-h-[500px] transition-all border border-transparent ${
-          isOver ? 'bg-primary/5 border-primary/30 ring-1 ring-primary/20' : 'bg-gray-100/50 dark:bg-black/20'
+          isOver ? 'bg-primary/5 border-primary/30 ring-1 ring-primary/20' : 'eh-column'
         } ${liveEvent ? 'column-live-receiving' : ''}`}
       >
         {id === 'Grooming' && (
