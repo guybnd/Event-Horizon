@@ -10,7 +10,7 @@ order: 4
 
 # Event Horizon Agent — Release Skill
 
-Version: 2.2.0
+Version: 2.3.0
 
 ## When This Skill Applies
 

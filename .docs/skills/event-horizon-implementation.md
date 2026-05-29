@@ -11,7 +11,7 @@ Scope: Write code, validate logic, format commits, and close tickets during the 
 
 # Event Horizon Agent — Implementation Skill
 
-Version: 2.2.0
+Version: 2.3.0
 
 ## When This Skill Applies
 

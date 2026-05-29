@@ -12,7 +12,7 @@ Scope: Route the agent to the correct phase-specific skill based on ticket statu
 
 # Event Horizon Agent — Orchestrator
 
-Version: 2.2.0
+Version: 2.3.0
 
 ## Overview
 
@@ -30,59 +30,22 @@ Read-only tasks (explanation, search, discussion) need no phase skill.
 
 ## Ticket Model
 
-Frontmatter fields: `id`, `title`, `status`, `priority`, `assignee`, `tags` (string[]), `createdBy`, `updatedBy`, `history` (event list), `effort` (`None`|`XS`|`S`|`M`|`L`|`XL`), `implementationLink`, `subtasks` (string[] of child ticket IDs). Markdown body below frontmatter for description.
+Tickets have these fields (relevant when calling `update_ticket` or reading `get_ticket` output):
 
-**Subtasks**: The `subtasks` field is an array of ticket ID strings (e.g. `["FLUX-5", "FLUX-6"]`). Each subtask MUST be a separate ticket file. Never write inline objects. To create a subtask, use the `create_subtask` MCP tool.
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | e.g. `FLUX-41` — set by engine, never change |
+| `title` | string | Short description |
+| `status` | string | Board column (e.g. `Grooming`, `Todo`, `In Progress`, `Ready`, `Done`) |
+| `priority` | string | `None`, `Low`, `Medium`, `High`, `Critical` |
+| `effort` | string | `None`, `XS`, `S`, `M`, `L`, `XL` |
+| `assignee` | string | User name or `unassigned` |
+| `tags` | string[] | From board config |
+| `body` | markdown | Description / plan in the ticket body |
+| `subtasks` | string[] | Child ticket IDs — use `create_subtask` to add |
+| `implementationLink` | string | Commit hash or PR URL — set by `finish_ticket` |
 
-History entry shapes:
-
-```yaml
-- type: comment
-  user: Agent
-  date: '2026-05-06T22:30:00.000Z'
-  comment: Planned the implementation in three steps.
-
-- type: status_change
-  from: Todo
-  to: In Progress
-  user: Agent
-  date: '2026-05-06T22:31:00.000Z'
-```
-
-**Schema landmines — get these wrong and the engine silently drops the entry:**
-
-```yaml
-# ✅ CORRECT status_change — uses from/to with a real ISO timestamp
-- type: status_change
-  from: Grooming
-  to: Todo
-  user: Agent
-  date: '2026-05-25T13:42:18.331Z'
-
-# ❌ WRONG — oldStatus/newStatus is not the canonical shape
-- type: status_change
-  oldStatus: Grooming
-  newStatus: Todo
-  user: Agent
-  date: '2026-05-25T14:00:00.000Z'
-
-# ❌ WRONG — round-number timestamps like 13:42:00.000Z look fabricated.
-#    Use an actual current timestamp (millisecond precision).
-```
-
-**Subtask shape:** `subtasks` is an array of ticket ID strings. Inline objects are silently dropped if they lack an `id` field.
-
-```yaml
-# ✅ CORRECT
-subtasks:
-  - FLUX-282
-  - FLUX-283
-
-# ❌ WRONG — inline subtask objects without id are dropped on load
-subtasks:
-  - title: Research CLI capabilities
-    status: Todo
-```
+History is an append-only event log (types: `comment`, `status_change`, `activity`, `agent_session`). You read it via `get_ticket` and append to it via `add_comment`, `change_status`, `log_progress`. Never construct history entries manually.
 
 ## Working Surfaces
 
