@@ -1,4 +1,5 @@
 import type { BoardCardOpenMode } from '../../types';
+import { useApp, THEMES, type AppTheme } from '../../AppContext';
 import { SettingToggleCard } from './shared';
 
 interface PreferencesSectionProps {
@@ -54,8 +55,45 @@ export function PreferencesSection({
   releaseNotesPath,
   setReleaseNotesPath,
 }: PreferencesSectionProps) {
+  const { theme, setAppTheme } = useApp();
+
+  const themeSwatches: Record<AppTheme, { bg: string; pattern: string; accent: string }> = {
+    light: { bg: 'bg-gray-100', pattern: '', accent: 'ring-gray-400' },
+    dark: { bg: 'bg-[#16171d]', pattern: '', accent: 'ring-gray-500' },
+    matrix: { bg: 'bg-[#0a0f0a]', pattern: 'bg-[repeating-linear-gradient(rgba(0,255,65,0.07)_0px,rgba(0,255,65,0.07)_1px,transparent_1px,transparent_24px),repeating-linear-gradient(90deg,rgba(0,255,65,0.07)_0px,rgba(0,255,65,0.07)_1px,transparent_1px,transparent_24px)]', accent: 'ring-emerald-500' },
+    cyber: { bg: 'bg-[#0d0b1a]', pattern: 'bg-[repeating-linear-gradient(135deg,rgba(139,92,246,0.08)_0px,rgba(139,92,246,0.08)_1px,transparent_1px,transparent_16px)]', accent: 'ring-violet-500' },
+    midnight: { bg: 'bg-[#0b1121]', pattern: 'bg-[radial-gradient(circle,rgba(148,163,184,0.12)_1px,transparent_1px)] bg-[size:12px_12px]', accent: 'ring-sky-500' },
+  };
+
   return (
     <div className="space-y-8">
+      {/* Theme Picker */}
+      <div className="space-y-4">
+        <div>
+          <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Theme</h3>
+          <p className="text-xs text-gray-500 mb-4 text-balance">Choose a visual theme. Textured themes add subtle background patterns for a more immersive look.</p>
+        </div>
+        <div className="flex flex-wrap gap-3">
+          {THEMES.map((t) => {
+            const swatch = themeSwatches[t.name];
+            const isActive = theme === t.name;
+            return (
+              <button
+                key={t.name}
+                type="button"
+                onClick={() => setAppTheme(t.name)}
+                className={`group relative flex flex-col items-center gap-2 rounded-xl p-3 transition-all border-2 ${isActive ? `border-primary shadow-lg shadow-primary/10` : 'border-gray-200 dark:border-white/10 hover:border-gray-300 dark:hover:border-white/20'}`}
+              >
+                <div className={`w-20 h-14 rounded-lg overflow-hidden ${swatch.bg} relative ${isActive ? `ring-2 ${swatch.accent} ring-offset-2 ring-offset-white dark:ring-offset-[#16171d]` : ''}`}>
+                  <div className={`absolute inset-0 ${swatch.pattern}`} />
+                </div>
+                <span className={`text-xs font-semibold ${isActive ? 'text-primary' : 'text-gray-600 dark:text-gray-400'}`}>{t.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       <div className="space-y-6">
         <div>
           <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Release Settings</h3>

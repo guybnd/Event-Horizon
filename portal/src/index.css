@@ -12,6 +12,46 @@ body {
   @apply bg-gray-50 text-gray-900 dark:bg-bg-dark dark:text-gray-100;
 }
 
+/* Textured themes: make the app shell transparent so body texture shows */
+:root[data-theme="matrix"] .app-shell,
+:root[data-theme="cyber"] .app-shell,
+:root[data-theme="midnight"] .app-shell {
+  background: transparent !important;
+}
+
+/* Textured theme backgrounds — applied directly to body */
+:root[data-theme="matrix"] body {
+  background-color: #0a0f0a !important;
+  background-image:
+    linear-gradient(rgba(0, 255, 65, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 255, 65, 0.05) 1px, transparent 1px),
+    radial-gradient(ellipse at 50% 50%, rgba(0, 180, 50, 0.08) 0%, transparent 70%);
+  background-size: 24px 24px, 24px 24px, 100% 100%;
+  background-attachment: fixed;
+}
+
+:root[data-theme="cyber"] body {
+  background-color: #0d0b1a !important;
+  background-image:
+    linear-gradient(135deg, rgba(139, 92, 246, 0.06) 25%, transparent 25%),
+    linear-gradient(225deg, rgba(139, 92, 246, 0.06) 25%, transparent 25%),
+    linear-gradient(45deg, rgba(59, 130, 246, 0.04) 25%, transparent 25%),
+    linear-gradient(315deg, rgba(59, 130, 246, 0.04) 25%, transparent 25%),
+    radial-gradient(ellipse at 30% 70%, rgba(139, 92, 246, 0.1) 0%, transparent 50%),
+    radial-gradient(ellipse at 70% 30%, rgba(59, 130, 246, 0.08) 0%, transparent 50%);
+  background-size: 32px 32px, 32px 32px, 32px 32px, 32px 32px, 100% 100%, 100% 100%;
+  background-attachment: fixed;
+}
+
+:root[data-theme="midnight"] body {
+  background-color: #0b1121 !important;
+  background-image:
+    radial-gradient(circle, rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+    radial-gradient(ellipse at 50% 0%, rgba(56, 189, 248, 0.05) 0%, transparent 60%);
+  background-size: 20px 20px, 100% 100%;
+  background-attachment: fixed;
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;

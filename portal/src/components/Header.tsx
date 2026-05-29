@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, memo } from 'react';
-import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, FileText, Tag, Plus, Power, Bot, Sun, Moon, Workflow } from 'lucide-react';
-import { useApp, type AppView } from '../AppContext';
+import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, FileText, Tag, Plus, Power, Bot, Sun, Moon, Workflow, Palette } from 'lucide-react';
+import { useApp, THEMES, type AppView } from '../AppContext';
 import { SyncStatusIndicator } from './SyncStatusIndicator';
 import { ActiveSessionsPopover } from './ActiveSessionsPopover';
 import { NotificationPanel } from './NotificationPanel';
@@ -63,7 +63,7 @@ export function Header() {
     openTaskModal,
     openTaskFullView,
     theme,
-    toggleTheme,
+    setAppTheme,
     notifications,
     notificationUnreadCount,
     refreshNotifications,
@@ -73,6 +73,8 @@ export function Header() {
   const [isStoppingService, setIsStoppingService] = useState(false);
   const [isSessionsPopoverOpen, setIsSessionsPopoverOpen] = useState(false);
   const [isNotificationPanelOpen, setIsNotificationPanelOpen] = useState(false);
+  const [isThemePickerOpen, setIsThemePickerOpen] = useState(false);
+  const themePickerRef = useRef<HTMLDivElement>(null);
 
   const activeSessionStatuses = new Set(['pending', 'running', 'waiting-input']);
   const activeSessionCount = tasks.filter((task) => task.cliSession && activeSessionStatuses.has(task.cliSession.status)).length;
@@ -92,6 +94,17 @@ export function Header() {
       return () => { window.clearTimeout(timeoutId); };
     }
   }, [notificationUnreadCount]);
+
+  useEffect(() => {
+    if (!isThemePickerOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (themePickerRef.current && !themePickerRef.current.contains(e.target as Node)) {
+        setIsThemePickerOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isThemePickerOpen]);
 
   const handleStopService = useCallback(async () => {
     if (!window.confirm('Stop the Event Horizon service? The portal will disconnect.')) return;
@@ -240,13 +253,29 @@ export function Header() {
               <Power className="h-3.5 w-3.5" />
             </button>
 
-            <button
-              onClick={toggleTheme}
-              title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-              className="flex items-center justify-center rounded-xl border border-gray-200 bg-white/60 p-1.5 text-gray-400 transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-primary dark:border-white/10 dark:bg-white/5 dark:text-gray-500 dark:hover:border-primary/30 dark:hover:bg-primary/10 dark:hover:text-primary cursor-pointer"
-            >
-              {theme === 'dark' ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
-            </button>
+            <div className="relative" ref={themePickerRef}>
+              <button
+                onClick={() => setIsThemePickerOpen(prev => !prev)}
+                title={`Theme: ${theme}`}
+                className={`flex items-center justify-center rounded-xl border border-gray-200 bg-white/60 p-1.5 text-gray-400 transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-primary dark:border-white/10 dark:bg-white/5 dark:text-gray-500 dark:hover:border-primary/30 dark:hover:bg-primary/10 dark:hover:text-primary cursor-pointer ${isThemePickerOpen ? 'ring-2 ring-primary/30' : ''}`}
+              >
+                {theme === 'light' ? <Sun className="h-3.5 w-3.5" /> : theme === 'dark' ? <Moon className="h-3.5 w-3.5" /> : <Palette className="h-3.5 w-3.5" />}
+              </button>
+              {isThemePickerOpen && (
+                <div className="absolute right-0 top-full mt-2 w-36 rounded-xl border border-gray-200 bg-white shadow-xl dark:border-white/10 dark:bg-[#1a1b23] overflow-hidden z-50">
+                  {THEMES.map((t) => (
+                    <button
+                      key={t.name}
+                      onClick={() => { setAppTheme(t.name); setIsThemePickerOpen(false); }}
+                      className={`w-full flex items-center gap-2.5 px-3 py-2 text-sm font-medium transition-colors ${theme === t.name ? 'bg-primary/10 text-primary' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/5'}`}
+                    >
+                      <span className={`h-3 w-3 rounded-full shrink-0 ${t.name === 'light' ? 'bg-gray-200 border border-gray-300' : t.name === 'dark' ? 'bg-gray-700' : t.name === 'matrix' ? 'bg-emerald-600' : t.name === 'cyber' ? 'bg-violet-600' : 'bg-sky-800'}`} />
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Workspace switcher */}

@@ -6,16 +6,34 @@ import { getArchiveStatus } from './workflow';
 
 export type AppView = 'board' | 'backlog' | 'docs' | 'settings' | 'releases' | 'workflows';
 export type TaskSortOption = 'default' | 'priority' | 'updated' | 'assignee';
-export type AppTheme = 'light' | 'dark';
+export type AppTheme = 'light' | 'dark' | 'matrix' | 'cyber' | 'midnight';
+
+export interface ThemeDef {
+  name: AppTheme;
+  label: string;
+  baseMode: 'light' | 'dark';
+}
+
+export const THEMES: ThemeDef[] = [
+  { name: 'light', label: 'Light', baseMode: 'light' },
+  { name: 'dark', label: 'Dark', baseMode: 'dark' },
+  { name: 'matrix', label: 'Matrix', baseMode: 'dark' },
+  { name: 'cyber', label: 'Cyber', baseMode: 'dark' },
+  { name: 'midnight', label: 'Midnight', baseMode: 'dark' },
+];
+
+const VALID_THEMES = new Set<string>(THEMES.map(t => t.name));
 
 function getInitialTheme(): AppTheme {
   const stored = localStorage.getItem('eh-theme');
-  if (stored === 'light' || stored === 'dark') return stored;
+  if (stored && VALID_THEMES.has(stored)) return stored as AppTheme;
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
 
 function applyTheme(theme: AppTheme) {
-  document.documentElement.classList.toggle('dark', theme === 'dark');
+  const def = THEMES.find(t => t.name === theme)!;
+  document.documentElement.classList.toggle('dark', def.baseMode === 'dark');
+  document.documentElement.setAttribute('data-theme', theme);
 }
 
 const VIEW_PATHS: Record<AppView, string> = {
@@ -172,6 +190,7 @@ interface AppState {
   markCommentRead: (ticketId: string, commentId: string) => void;
   markAllCommentsRead: (ticketId: string, commentIds: string[]) => void;
   theme: AppTheme;
+  setAppTheme: (theme: AppTheme) => void;
   toggleTheme: () => void;
   parseErrors: ParseError[];
   parseErrorsLoading: boolean;
@@ -489,9 +508,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setTimeout(() => setModalTask(null), 1000);
   };
 
+  const setAppTheme = (next: AppTheme) => {
+    setTheme(() => {
+      applyTheme(next);
+      localStorage.setItem('eh-theme', next);
+      return next;
+    });
+  };
+
   const toggleTheme = () => {
     setTheme((prev) => {
-      const next: AppTheme = prev === 'dark' ? 'light' : 'dark';
+      const idx = THEMES.findIndex(t => t.name === prev);
+      const next = THEMES[(idx + 1) % THEMES.length].name;
       applyTheme(next);
       localStorage.setItem('eh-theme', next);
       return next;
@@ -899,7 +927,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       workspaceConfigured, workspacePath, notifyWorkspaceSet, workspaces, switchWorkspace, refreshWorkspaces,
       config, saveConfig,
       readComments, totalUnreadCount, ensureReadStateLoaded, markCommentRead, markAllCommentsRead,
-      theme, toggleTheme,
+      theme, setAppTheme, toggleTheme,
       parseErrors, parseErrorsLoading,
       notifications, notificationUnreadCount, refreshNotifications,
     }}>
