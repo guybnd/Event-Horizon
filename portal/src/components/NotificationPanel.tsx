@@ -97,8 +97,11 @@ const NotificationCard = memo(function NotificationCard({
   if (successMessage) {
     return (
       <motion.div
+        layout
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.9, x: -20 }}
+        transition={{ duration: 0.2 }}
         className="flex items-center gap-2 rounded-lg border-l-4 border-l-emerald-500 bg-emerald-50 dark:bg-emerald-500/10 p-3"
       >
         <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
@@ -108,9 +111,14 @@ const NotificationCard = memo(function NotificationCard({
   }
 
   return (
-    <div
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: -8, scale: 0.96 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, x: -30, scale: 0.92, filter: 'blur(4px)' }}
+      transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
       onClick={handleClick}
-      className={`relative flex gap-3 rounded-lg border-l-4 p-3 transition-all cursor-pointer hover:shadow-sm ${config.borderColor} ${notification.read ? 'bg-white dark:bg-white/2' : config.bgColor}`}
+      className={`relative flex gap-3 rounded-lg border-l-4 p-3 transition-colors cursor-pointer hover:shadow-sm ${config.borderColor} ${notification.read ? 'bg-white dark:bg-white/2' : config.bgColor}`}
     >
       <div className={`shrink-0 mt-0.5 ${config.iconColor}`}>
         <Icon className="h-4 w-4" />
@@ -152,7 +160,7 @@ const NotificationCard = memo(function NotificationCard({
       {!notification.read && (
         <div className="absolute top-3 right-8 h-2 w-2 rounded-full bg-primary" />
       )}
-    </div>
+    </motion.div>
   );
 });
 
@@ -202,21 +210,28 @@ export const NotificationPanel = memo(function NotificationPanel({ notifications
       </div>
 
       <div className="overflow-y-auto max-h-[420px] p-2 space-y-1.5">
-        {notifications.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-10 text-gray-400">
-            <Bell className="h-8 w-8 mb-2 opacity-40" />
-            <p className="text-xs font-medium">No notifications</p>
-          </div>
-        ) : (
-          notifications.map(n => (
-            <NotificationCard
-              key={n.id}
-              notification={n}
-              onClose={onClose}
-              onUpdate={onUpdate}
-            />
-          ))
-        )}
+        <AnimatePresence mode="popLayout" initial={false}>
+          {notifications.length === 0 ? (
+            <motion.div
+              key="empty"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="flex flex-col items-center justify-center py-10 text-gray-400"
+            >
+              <Bell className="h-8 w-8 mb-2 opacity-40" />
+              <p className="text-xs font-medium">No notifications</p>
+            </motion.div>
+          ) : (
+            notifications.map(n => (
+              <NotificationCard
+                key={n.id}
+                notification={n}
+                onClose={onClose}
+                onUpdate={onUpdate}
+              />
+            ))
+          )}
+        </AnimatePresence>
       </div>
     </motion.div>
   );

@@ -694,7 +694,7 @@ export function TaskCard({
                       setTagMenuOpen(false);
                     }
                   }}
-                  className="mb-0.5 text-left font-semibold text-gray-900 transition-colors group-hover:text-primary dark:text-gray-100 text-sm leading-snug"
+                  className="mb-0.5 text-left font-semibold text-gray-900 transition-colors group-hover:text-primary dark:text-gray-100 text-sm leading-snug tracking-[-0.01em]"
                 >
                   {visibleTitle}
                 </button>

@@ -27,7 +27,7 @@ const VALID_THEMES = new Set<string>(THEMES.map(t => t.name));
 function getInitialTheme(): AppTheme {
   const stored = localStorage.getItem('eh-theme');
   if (stored && VALID_THEMES.has(stored)) return stored as AppTheme;
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  return 'matrix';
 }
 
 function applyTheme(theme: AppTheme) {

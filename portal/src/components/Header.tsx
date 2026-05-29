@@ -9,25 +9,25 @@ import { GlobalSearch } from './GlobalSearch';
 import { LifetimeTokenStats } from './LifetimeTokenStats';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 
-const NavItem = memo(function NavItem({ 
-  view, 
-  target, 
-  icon, 
-  label, 
-  onClick 
-}: { 
-  view: AppView, 
-  target: AppView, 
-  icon: React.ReactNode, 
-  label: string, 
-  onClick: (v: AppView) => void 
+const NavItem = memo(function NavItem({
+  view,
+  target,
+  icon,
+  label,
+  onClick
+}: {
+  view: AppView,
+  target: AppView,
+  icon: React.ReactNode,
+  label: string,
+  onClick: (v: AppView) => void
 }) {
   const isActive = view === target;
   return (
     <button
       onClick={() => onClick(target)}
-      className={`group flex items-center py-1.5 rounded-md text-sm font-medium transition-all duration-200 cursor-pointer overflow-hidden ${isActive ? 'shadow-sm px-3' : 'px-2 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}`}
-      style={isActive ? { background: 'var(--eh-surface-raised)', color: 'var(--eh-accent)' } : undefined}
+      className={`group flex items-center py-1.5 rounded-lg text-[13px] font-semibold transition-all duration-200 cursor-pointer overflow-hidden active:scale-95 ${isActive ? 'shadow-sm px-3' : 'px-2 hover:bg-black/[0.03] dark:hover:bg-white/[0.04]'}`}
+      style={isActive ? { background: 'var(--eh-surface-raised)', color: 'var(--eh-accent)', boxShadow: '0 1px 3px var(--eh-shadow-color)' } : { color: 'var(--eh-text-muted)' }}
     >
       <span className="shrink-0">{icon}</span>
       <span
@@ -41,13 +41,13 @@ const NavItem = memo(function NavItem({
 
 const Branding = memo(function Branding() {
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-2.5">
       <div className="bg-primary/10 p-1.5 rounded-lg">
         <Rocket className="w-4 h-4 text-primary" />
       </div>
       <div>
-        <h1 className="text-base font-bold tracking-tight leading-none">Event Horizon</h1>
-        <p className="text-[10px] text-gray-500 dark:text-gray-400 font-medium leading-none mt-0.5">Local-first</p>
+        <h1 className="text-[15px] font-extrabold tracking-[-0.03em] leading-none">Event Horizon</h1>
+        <p className="text-[9px] font-medium leading-none mt-1 tracking-[0.08em] uppercase" style={{ color: 'var(--eh-text-muted)' }}>Local-first tickets</p>
       </div>
     </div>
   );
@@ -152,7 +152,7 @@ export function Header() {
           {/* New ticket */}
           <button
             onClick={handleOpenNewTicket}
-            className="eh-btn-accent flex h-[34px] items-center justify-center gap-1.5 rounded-2xl px-3 text-sm font-semibold shadow-sm transition-all focus:outline-none cursor-pointer shrink-0"
+            className="eh-btn-accent flex h-[34px] items-center justify-center gap-1.5 rounded-xl px-3.5 text-[13px] font-semibold shadow-sm transition-all focus:outline-none cursor-pointer shrink-0"
           >
             <Plus className="h-4 w-4" />
             <span className="hidden sm:inline">New ticket</span>
