@@ -7,7 +7,7 @@ tags:
 assignee: Agent
 createdBy: Unknown
 title: Auto-migrate stranded .flux tickets to .flux-store on startup in orphan mode
-status: Ready
+status: In Progress
 updatedBy: Agent
 history:
   - type: activity
@@ -845,6 +845,27 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-29T02:15:11.580Z'
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Guy
+    date: '2026-05-29T02:23:00.952Z'
+  - type: comment
+    user: Guy
+    date: '2026-05-29T02:23:24.844Z'
+    comment: >-
+      its very realistic to have a failed file there so we need t oaccomodate
+      this!
+    id: c-2026-05-29t02-23-24-832z
+  - type: agent_session
+    sessionId: 4165d112-2101-450e-b5bb-d1d8a45ad3ba
+    startedAt: '2026-05-29T02:23:38.242Z'
+    status: cancelled
+    progress: []
+    user: Claude Code
+    date: '2026-05-29T02:23:38.242Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-29T02:23:50.928Z'
 tokenMetadata:
   inputTokens: 762091
   outputTokens: 10031
@@ -852,7 +873,9 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 652156
   cacheCreationTokens: 108488
-order: 1
+order: 0
+implementationLink: ''
+subtasks: []
 id: FLUX-220
 ---
 ## Implementation Plan
