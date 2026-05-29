@@ -296,8 +296,22 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-28T14:40:25.382Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-05-29T00:48:44.858Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Starting implementation. Plan: (1) Expand AppTheme to named themes with
+      metadata, (2) Add CSS texture definitions in index.css, (3) Update
+      AppContext theme logic for persistence and application, (4) Add theme
+      picker to PreferencesSection, (5) Update Header toggle to cycle themes.
+    date: '2026-05-29T00:48:46.454Z'
+    id: c-2026-05-29t00-48-46-454z
 title: cool textured theme
-status: Todo
+status: In Progress
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:

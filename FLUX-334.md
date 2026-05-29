@@ -861,10 +861,15 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-28T09:11:45.615Z'
+  - type: status_change
+    from: Todo
+    to: Grooming
+    user: Guy
+    date: '2026-05-29T00:49:09.401Z'
 title: can we enrich tickets with the diffs that were performed?
-status: Todo
+status: Grooming
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 tokenMetadata:
   inputTokens: 646783
   outputTokens: 8627
@@ -872,7 +877,8 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 568977
   cacheCreationTokens: 75145
-id: FLUX-334
+parentId: FLUX-292
+order: 15
 ---
 ## Problem / Motivation
 
