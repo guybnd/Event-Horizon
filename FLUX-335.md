@@ -310,8 +310,26 @@ history:
       picker to PreferencesSection, (5) Update Header toggle to cycle themes.
     date: '2026-05-29T00:48:46.454Z'
     id: c-2026-05-29t00-48-46-454z
+  - type: comment
+    user: Agent
+    comment: >-
+      Implemented textured theme system. Changes: (1) Expanded AppTheme type to
+      include 'matrix', 'cyber', 'midnight' alongside 'light'/'dark'. (2) Added
+      CSS texture backgrounds using fixed pseudo-elements with
+      grid/geometric/dot patterns. (3) Added theme picker with visual swatches
+      in Settings > Preferences. (4) Header toggle now cycles all 5 themes with
+      appropriate icons (Sun/Moon/Palette). (5) Persists to localStorage under
+      existing 'eh-theme' key. TypeScript and Vite build pass cleanly. Files
+      changed: AppContext.tsx, Header.tsx, PreferencesSection.tsx, index.css.
+    date: '2026-05-29T00:51:41.126Z'
+    id: c-2026-05-29t00-51-41-126z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-05-29T00:51:41.126Z'
 title: cool textured theme
-status: In Progress
+status: Ready
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
