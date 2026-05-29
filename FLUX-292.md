@@ -1,5 +1,18 @@
 ---
+id: FLUX-292
 title: Agent should be able to create branch for each feature working on
+status: Grooming
+priority: Medium
+effort: L
+assignee: unassigned
+tags:
+  - feature
+  - engine
+  - agent-workflow
+  - git
+  - mcp
+createdBy: Guy
+updatedBy: Agent
 history:
   - type: agent_session
     sessionId: 8d407d15-bffa-4860-a2eb-841295854a7e
