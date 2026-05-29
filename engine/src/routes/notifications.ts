@@ -7,6 +7,7 @@ import {
   dismissNotification,
   getNotificationById,
   checkFrameworkHealth,
+  checkSkillStaleness,
 } from '../notifications.js';
 import { installWorkspaceWorkflow, type Framework } from '../workflow-installer.js';
 import { workspaceRoot } from '../workspace.js';
@@ -30,6 +31,7 @@ router.post('/read-all', (_req, res) => {
 router.post('/check-health', async (req, res) => {
   const { framework = 'auto' } = req.body || {};
   await checkFrameworkHealth(framework as Framework);
+  await checkSkillStaleness(framework as Framework);
   res.json({ ok: true });
 });
 

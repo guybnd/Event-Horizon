@@ -167,6 +167,46 @@ async function pathExists(targetPath: string) {
   }
 }
 
+const VERSION_RE = /^Version:\s*(\d+\.\d+\.\d+)/m;
+
+/** Extract the "Version: x.y.z" line from skill content. */
+export function extractSkillVersion(content: string): string | null {
+  const match = content.match(VERSION_RE);
+  return match?.[1] ?? null;
+}
+
+/**
+ * Compare source skill version against the installed version.
+ * Returns { sourceVersion, installedVersion, isStale } or null if check fails.
+ */
+export async function checkSkillVersionStaleness(options: {
+  sourceRoot: string;
+  targetDir: string;
+  framework?: Framework;
+}): Promise<{ sourceVersion: string; installedVersion: string | null; isStale: boolean } | null> {
+  const resolvedFramework = resolveFramework(options.targetDir, options.framework || 'auto');
+  const { skillSourcePaths } = getSourcePaths(options.sourceRoot);
+
+  // Read version from source (use orchestrator as canonical)
+  const sourcePath = skillSourcePaths[0]!;
+  if (!await pathExists(sourcePath)) return null;
+  const sourceContent = await fs.readFile(sourcePath, 'utf-8');
+  const sourceVersion = extractSkillVersion(sourceContent);
+  if (!sourceVersion) return null;
+
+  // Read version from installed file
+  const installedPath = skillDestinationFor(options.targetDir, resolvedFramework);
+  if (!await pathExists(installedPath)) return { sourceVersion, installedVersion: null, isStale: true };
+  const installedContent = await fs.readFile(installedPath, 'utf-8');
+  const installedVersion = extractSkillVersion(installedContent);
+
+  return {
+    sourceVersion,
+    installedVersion,
+    isStale: installedVersion !== sourceVersion,
+  };
+}
+
 export function hasManagedInstructionsBlock(content: string) {
   const startIndex = content.indexOf(EVENT_HORIZON_INSTRUCTIONS_START);
   const endIndex = content.indexOf(EVENT_HORIZON_INSTRUCTIONS_END);

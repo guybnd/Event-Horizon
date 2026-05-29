@@ -11,7 +11,7 @@ Scope: Interpret requirements, update frontmatter, and handle `.flux` metadata d
 
 # Event Horizon Agent — Grooming Skill
 
-Version: 2.1.0
+Version: 2.2.0
 
 ## When This Skill Applies
 
@@ -33,15 +33,18 @@ All persistence uses MCP tools — see the orchestrator skill's "Persisting Chan
 
 ## Metadata Conventions
 
-- `priority`: `None` | `Low` | `Medium` | `High` | `Critical`
-- `effort`: `None` | `XS` | `S` | `M` | `L` | `XL`
-- `tags`: use existing tags from `.flux/config.json`; propose new ones only when clearly distinct
-- `assignee`: set if user indicated ownership; leave `unassigned` otherwise
+| Field | Values |
+|---|---|
+| `priority` | `None`, `Low`, `Medium`, `High`, `Critical` |
+| `effort` | `None`, `XS`, `S`, `M`, `L`, `XL` |
+| `tags` | Use existing tags from board config; propose new ones only when clearly distinct |
+| `assignee` | Set if user indicated ownership; leave `unassigned` otherwise |
 
 ## Editing & Safety
 
-- All writes go through MCP tools (or the REST API as fallback). Do not edit `.flux/<id>.md` directly.
+- All writes go through MCP tools (or the REST API as last-resort fallback). NEVER use Write, Edit, or Bash to modify ticket files.
 - MCP tools handle `updatedBy` attribution and history normalization automatically.
+- Do not read or write files in `.flux/` or `.flux-store/` — use `get_ticket` instead.
 
 ## Comment Conventions
 

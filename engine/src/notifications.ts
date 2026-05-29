@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
-import { getWorkflowInstallStatus, type Framework } from './workflow-installer.js';
-import { workspaceRoot } from './workspace.js';
+import { getWorkflowInstallStatus, checkSkillVersionStaleness, type Framework } from './workflow-installer.js';
+import { workspaceRoot, resolveSkillSourceRoot } from './workspace.js';
 import { broadcastEvent } from './events.js';
 
 export type NotificationType = 'error' | 'prompt' | 'completion' | 'info';
@@ -146,6 +146,44 @@ export async function checkFrameworkHealth(framework: Framework): Promise<void> 
     });
   } catch (err) {
     console.error(`[notifications] Health check failed for ${framework}:`, err);
+  }
+}
+
+export async function checkSkillStaleness(framework: Framework): Promise<void> {
+  if (!workspaceRoot) return;
+
+  try {
+    const sourceRoot = resolveSkillSourceRoot();
+    const result = await checkSkillVersionStaleness({
+      sourceRoot,
+      targetDir: workspaceRoot,
+      framework,
+    });
+
+    if (!result || !result.isStale) return;
+
+    // Don't duplicate existing staleness notifications
+    const existing = notifications.find(
+      n => n.type === 'error' && n.title.includes('outdated') && !n.dismissed
+    );
+    if (existing) return;
+
+    const installedLabel = result.installedVersion || 'unknown';
+    const resolvedFramework = framework === 'auto' ? 'claude' : framework;
+    addNotification({
+      type: 'error',
+      title: 'Agent skills outdated',
+      message: `Installed skills are v${installedLabel} but source is v${result.sourceVersion}. Agent may not follow current rules. Reinstall to update.`,
+      framework: resolvedFramework,
+      actions: [
+        { label: 'Reinstall', actionId: 'reinstall' },
+        { label: 'Dismiss', actionId: 'dismiss' },
+      ],
+    });
+
+    console.warn(`[skills] Installed skills (v${installedLabel}) are outdated — source is v${result.sourceVersion}. Reinstall recommended.`);
+  } catch (err) {
+    console.error('[notifications] Skill staleness check failed:', err);
   }
 }
 

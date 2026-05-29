@@ -1,6 +1,6 @@
-import { memo, useRef, useEffect, useCallback } from 'react';
+import { memo, useRef, useEffect, useCallback, useState } from 'react';
 import { AlertTriangle, Bell, CheckCircle2, Info, X, CheckCheck, ExternalLink } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import type { Notification } from '../api';
 import { markNotificationRead, markAllNotificationsRead, dismissNotification, executeNotificationAction } from '../api';
 import { useApp } from '../AppContext';
@@ -39,6 +39,10 @@ const TYPE_CONFIG = {
   },
 };
 
+const ACTION_SUCCESS_LABELS: Record<string, string> = {
+  reinstall: 'Skills reinstalled successfully',
+};
+
 const NotificationCard = memo(function NotificationCard({
   notification,
   onClose,
@@ -51,6 +55,7 @@ const NotificationCard = memo(function NotificationCard({
   const { openTaskFullView, tasks } = useApp();
   const config = TYPE_CONFIG[notification.type];
   const Icon = config.icon;
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   const handleClick = useCallback(() => {
     if (notification.ticketId) {
@@ -67,17 +72,20 @@ const NotificationCard = memo(function NotificationCard({
     e.stopPropagation();
     if (actionId === 'dismiss') {
       await dismissNotification(notification.id);
+      onUpdate();
     } else if (actionId === 'view') {
       handleClick();
-      return;
     } else if (actionId === 'open-url') {
       const urlMatch = notification.message.match(/https?:\/\/\S+/);
       if (urlMatch) window.open(urlMatch[0], '_blank');
       await markNotificationRead(notification.id);
+      onUpdate();
     } else {
       await executeNotificationAction(notification.id, actionId);
+      const label = ACTION_SUCCESS_LABELS[actionId] || 'Done';
+      setSuccessMessage(label);
+      setTimeout(() => onUpdate(), 2000);
     }
-    onUpdate();
   }, [notification, handleClick, onUpdate]);
 
   const handleDismiss = useCallback(async (e: React.MouseEvent) => {
@@ -85,6 +93,19 @@ const NotificationCard = memo(function NotificationCard({
     await dismissNotification(notification.id);
     onUpdate();
   }, [notification, onUpdate]);
+
+  if (successMessage) {
+    return (
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        className="flex items-center gap-2 rounded-lg border-l-4 border-l-emerald-500 bg-emerald-50 dark:bg-emerald-500/10 p-3"
+      >
+        <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
+        <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">{successMessage}</p>
+      </motion.div>
+    );
+  }
 
   return (
     <div

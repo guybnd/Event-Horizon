@@ -10,7 +10,7 @@ import {
   normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry,
   summarizeFieldChanges, hasAppendedStatusChange, findEarliestHistoryDate,
 } from '../history.js';
-import { tasksCache, serializeTaskForApi, updateTaskWithHistory, workspaceActivating, parseErrors } from '../task-store.js';
+import { tasksCache, serializeTaskForApi, updateTaskWithHistory, workspaceActivating, parseErrors, atomicWriteFile } from '../task-store.js';
 import { generatePromptNotification, generateCompletionNotification } from '../notifications.js';
 import { validateTicketFrontmatter, formatValidationErrors } from '../schema.js';
 import {
@@ -132,7 +132,7 @@ router.post('/', async (req, res) => {
       await autoRegisterUnknownTags(frontmatter.tags);
     }
     const fileContent = matter.stringify(body || '', frontmatter);
-    await fs.writeFile(filePath, fileContent, 'utf-8');
+    await atomicWriteFile(filePath, fileContent);
     tasksCache[nextId] = { ...frontmatter, body, id: nextId, _path: filePath };
     res.json(serializeTaskForApi(tasksCache[nextId]));
   } catch (err) {
@@ -203,7 +203,7 @@ router.post('/:parentId/subtasks', async (req, res) => {
     }
 
     const childContent = matter.stringify(body || '', childFrontmatter);
-    await fs.writeFile(childPath, childContent, 'utf-8');
+    await atomicWriteFile(childPath, childContent);
     tasksCache[childId] = { ...childFrontmatter, body: body || '', id: childId, _path: childPath };
 
     // Link child to parent's subtasks array
@@ -218,7 +218,7 @@ router.post('/:parentId/subtasks', async (req, res) => {
     parentParsed.data.subtasks = parentSubtasks;
     parentParsed.data.updatedBy = actor;
     const parentContent = matter.stringify(parentParsed.content, parentParsed.data);
-    await fs.writeFile(parent._path, parentContent, 'utf-8');
+    await atomicWriteFile(parent._path, parentContent);
 
     // Update cache
     tasksCache[parentId] = { ...tasksCache[parentId], subtasks: parentSubtasks, updatedBy: actor };
@@ -349,7 +349,7 @@ router.put('/:id', async (req, res) => {
       await autoRegisterUnknownTags(frontmatter.tags);
     }
     const fileContent = matter.stringify(body || '', frontmatter);
-    await fs.writeFile(_path, fileContent, 'utf-8');
+    await atomicWriteFile(_path, fileContent);
     tasksCache[id] = { ...frontmatter, body, id, _path };
 
     if (task.status !== frontmatter.status) {
@@ -373,7 +373,7 @@ router.put('/:id', async (req, res) => {
           const parentParsed = matter(parentRaw);
           parentParsed.data.subtasks = filtered;
           parentParsed.data.updatedBy = actor;
-          await fs.writeFile(oldParent._path, matter.stringify(parentParsed.content, parentParsed.data), 'utf-8');
+          await atomicWriteFile(oldParent._path, matter.stringify(parentParsed.content, parentParsed.data));
           tasksCache[oldParentId] = { ...tasksCache[oldParentId], subtasks: filtered, updatedBy: actor };
         }
       }
@@ -388,7 +388,7 @@ router.put('/:id', async (req, res) => {
           const parentParsed = matter(parentRaw);
           parentParsed.data.subtasks = newParentSubtasks;
           parentParsed.data.updatedBy = actor;
-          await fs.writeFile(newParent._path, matter.stringify(parentParsed.content, parentParsed.data), 'utf-8');
+          await atomicWriteFile(newParent._path, matter.stringify(parentParsed.content, parentParsed.data));
           tasksCache[newParentId] = { ...tasksCache[newParentId], subtasks: newParentSubtasks, updatedBy: actor };
         }
       }
@@ -409,7 +409,7 @@ router.put('/:id', async (req, res) => {
         const childParsed = matter(childRaw);
         delete childParsed.data.parentId;
         childParsed.data.updatedBy = actor;
-        await fs.writeFile(child._path, matter.stringify(childParsed.content, childParsed.data), 'utf-8');
+        await atomicWriteFile(child._path, matter.stringify(childParsed.content, childParsed.data));
         tasksCache[childId] = { ...tasksCache[childId], parentId: undefined, updatedBy: actor };
       }
     }
@@ -426,14 +426,14 @@ router.put('/:id', async (req, res) => {
           const prevParsed = matter(prevRaw);
           prevParsed.data.subtasks = prevSubs;
           prevParsed.data.updatedBy = actor;
-          await fs.writeFile(prevParent._path, matter.stringify(prevParsed.content, prevParsed.data), 'utf-8');
+          await atomicWriteFile(prevParent._path, matter.stringify(prevParsed.content, prevParsed.data));
           tasksCache[child.parentId] = { ...tasksCache[child.parentId], subtasks: prevSubs, updatedBy: actor };
         }
         const childRaw = await fs.readFile(child._path, 'utf-8');
         const childParsed = matter(childRaw);
         childParsed.data.parentId = id;
         childParsed.data.updatedBy = actor;
-        await fs.writeFile(child._path, matter.stringify(childParsed.content, childParsed.data), 'utf-8');
+        await atomicWriteFile(child._path, matter.stringify(childParsed.content, childParsed.data));
         tasksCache[childId] = { ...tasksCache[childId], parentId: id, updatedBy: actor };
       }
     }
@@ -505,7 +505,7 @@ export async function bulkRenameHandler(req: express.Request, res: express.Respo
 
       if (changed) {
         const fileContent = matter.stringify(body || '', frontmatter);
-        await fs.writeFile(_path, fileContent, 'utf-8');
+        await atomicWriteFile(_path, fileContent);
         tasksCache[id] = { ...frontmatter, body, id, _path };
         modifiedCount += 1;
       }

@@ -1,4 +1,5 @@
 import fs from 'fs/promises';
+import { renameSync } from 'fs';
 import path from 'path';
 import matter from 'gray-matter';
 import chokidar from 'chokidar';
@@ -7,7 +8,7 @@ import { attachWorktreeIfPresent, migrateStrandedFluxTickets } from './storage-s
 import { startSyncWatcher } from './sync-watcher.js';
 import { configCache, loadConfig, autoRegisterUnknownTags } from './config.js';
 import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate, getHistoryTimestamp } from './history.js';
-import { generatePromptNotification, generateCompletionNotification, clearNotifications } from './notifications.js';
+import { generatePromptNotification, generateCompletionNotification, clearNotifications, checkSkillStaleness } from './notifications.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
 import { getCliSessionSummaryForTask, cliSessionsById, cliSessionIdByTaskId } from './session-store.js';
 import { isTopLevelTaskFile, getDocsDir, isDocFile, getDocPathFromFile, titleFromDocPath, slugifyDocValue, parseDocOrder } from './file-utils.js';
@@ -22,6 +23,23 @@ export let workspaceActivating = false;
 
 const repairingPaths = new Set<string>();
 
+/**
+ * Write file atomically: write to a .tmp sibling then rename over the target.
+ * Prevents partial/empty reads when another async operation reads mid-write.
+ * Falls back to direct write if rename fails (e.g., cross-device).
+ */
+export async function atomicWriteFile(filePath: string, content: string): Promise<void> {
+  const tmpPath = filePath + '.tmp';
+  await fs.writeFile(tmpPath, content, 'utf-8');
+  try {
+    renameSync(tmpPath, filePath);
+  } catch {
+    // rename can fail on some FS setups; fall back to direct write
+    await fs.writeFile(filePath, content, 'utf-8');
+    await fs.unlink(tmpPath).catch(() => {});
+  }
+}
+
 export function serializeTaskForApi(task: any) {
   return {
     ...task,
@@ -30,13 +48,26 @@ export function serializeTaskForApi(task: any) {
 }
 
 export async function readTaskFromDisk(task: any): Promise<{ frontmatter: any; body: string }> {
-  try {
-    const rawFile = await fs.readFile(task._path, 'utf-8');
-    const parsed = matter(rawFile);
-    return { frontmatter: { ...parsed.data }, body: parsed.content || '' };
-  } catch {
+  const fallbackFromCache = () => {
     const { body: cachedBody, _path: _p, id: _id, ...cachedFm } = task;
     return { frontmatter: { ...cachedFm }, body: cachedBody || '' };
+  };
+
+  try {
+    const rawFile = await fs.readFile(task._path, 'utf-8');
+    if (!rawFile || !rawFile.trim()) {
+      console.warn(`[readTaskFromDisk] Empty file read for ${task.id}, using cache`);
+      return fallbackFromCache();
+    }
+    const parsed = matter(rawFile);
+    // Guard: if the file lost its title, it's a partial/corrupt read — use cache
+    if (!parsed.data.title && task.title) {
+      console.warn(`[readTaskFromDisk] Corrupt read for ${task.id} (missing title), using cache`);
+      return fallbackFromCache();
+    }
+    return { frontmatter: { ...parsed.data }, body: parsed.content || '' };
+  } catch {
+    return fallbackFromCache();
   }
 }
 
@@ -81,7 +112,7 @@ export async function updateAgentSession(taskId: string, sessionId: string, upda
   frontmatter.updatedBy = 'Agent';
 
   const fileContent = matter.stringify(body, frontmatter);
-  await fs.writeFile(task._path, fileContent, 'utf-8');
+  await atomicWriteFile(task._path, fileContent);
   tasksCache[taskId] = { ...frontmatter, body, id: taskId, _path: task._path };
   return tasksCache[taskId];
 }
@@ -143,7 +174,7 @@ export async function updateTaskWithHistory(taskId: string, options: {
   }
 
   const fileContent = matter.stringify(body || '', frontmatter);
-  await fs.writeFile(_path, fileContent, 'utf-8');
+  await atomicWriteFile(_path, fileContent);
   tasksCache[taskId] = { ...frontmatter, body, id: taskId, _path };
 
   if (options.nextStatus) {
@@ -216,7 +247,7 @@ async function normalizeInlineSubtasks(frontmatter: any, parentPath: string): Pr
     const childContent = matter.stringify(childBody, childFrontmatter);
 
     try {
-      await fs.writeFile(childPath, childContent, 'utf-8');
+      await atomicWriteFile(childPath, childContent);
       console.log(`[subtasks] Auto-created ${childId} from inline subtask of ${parentId}`);
     } catch (err) {
       console.error(`[subtasks] Failed to create ${childId}:`, err);
@@ -340,6 +371,12 @@ export async function loadTask(filePath: string) {
     const fileStats = await fs.stat(filePath);
     const content = await fs.readFile(filePath, 'utf-8');
 
+    // Guard: empty/truncated file is a sign of a partial write in progress — skip
+    if (!content || !content.trim()) {
+      console.warn(`[loadTask] Ignoring empty file: ${filePath}`);
+      return;
+    }
+
     let parsed: matter.GrayMatterFile<string>;
     try {
       parsed = matter(content);
@@ -349,6 +386,16 @@ export async function loadTask(filePath: string) {
       const id = path.basename(filePath, '.md');
       delete tasksCache[id];
       parseErrors[id] = { id, path: filePath, error: `YAML frontmatter is invalid: ${msg}` };
+      return;
+    }
+
+    // Guard: if we already have this ticket cached with a title but the incoming
+    // file lost it (and other critical fields), this is a corrupt/partial write —
+    // ignore it rather than repairing it into a "(recovered)" zombie.
+    const existingId = parsed.data.id || path.basename(filePath, '.md');
+    const existingCached = tasksCache[existingId];
+    if (existingCached && existingCached.title && !parsed.data.title && !parsed.data.status) {
+      console.warn(`[loadTask] Ignoring corrupt write for ${existingId}: file lost title+status while cache has "${existingCached.title}". Likely a partial write or unauthorized direct edit.`);
       return;
     }
 
@@ -368,7 +415,7 @@ export async function loadTask(filePath: string) {
         repairingPaths.add(filePath);
         try {
           const repairedContent = matter.stringify(parsed.content, parsed.data);
-          await fs.writeFile(filePath, repairedContent, 'utf-8');
+          await atomicWriteFile(filePath, repairedContent);
         } finally {
           repairingPaths.delete(filePath);
         }
@@ -452,7 +499,7 @@ export async function loadTask(filePath: string) {
 
     if (normalizedHistory.changed || subtasksNormalized || historyReinjected) {
       const normalizedContent = matter.stringify(parsed.content, normalizedFrontmatter);
-      await fs.writeFile(filePath, normalizedContent, 'utf-8');
+      await atomicWriteFile(filePath, normalizedContent);
     }
 
     if (normalizedFrontmatter.tags && Array.isArray(normalizedFrontmatter.tags)) {
@@ -667,6 +714,7 @@ export async function startWatchers() {
   activeFluxWatcher = chokidar.watch(fluxDir, {
     ignored: (filePath: string) => {
       const basename = path.basename(filePath);
+      if (basename.endsWith('.tmp')) return true;
       return basename.startsWith('.') && basename !== path.basename(getActiveFluxDir());
     },
     persistent: true,
@@ -739,4 +787,6 @@ function seedPromptNotifications() {
       generatePromptNotification(task.id, task.title || task.id, task.status);
     }
   }
+  // Check if installed agent skills match source version
+  checkSkillStaleness('auto').catch(() => {});
 }

@@ -5,26 +5,26 @@ order: 1
 > ⚠️ DO NOT DELETE — Required for Event Horizon agent workflow.
 
 ## Phase: Orchestrator
+
 Scope: Route the agent to the correct phase-specific skill based on ticket status.
 
 ---
 
 # Event Horizon Agent — Orchestrator
 
-Version: 2.1.0
+Version: 2.2.0
 
 ## Overview
 
-Event Horizon is a local-first ticket board backed by markdown files in `.flux/`.
-Each ticket is a markdown document with YAML frontmatter and a markdown body.
+Event Horizon is a local-first ticket board backed by markdown files. Tickets are stored either in `.flux/` (in-repo mode) or `.flux-store/` (orphan-branch mode using a git worktree on `flux-data`). The engine abstracts this — agents interact exclusively through MCP tools and never touch ticket files directly.
 
 ## Skill Routing
 
 | Ticket Status | Load Skill |
 |---|---|
-| `Grooming`, `Require Input` | `grooming.md` |
-| `Todo`, `In Progress` | `implementation.md` |
-| Release orchestration | `release.md` |
+| `Grooming`, `Require Input` | grooming skill |
+| `Todo`, `In Progress` | implementation skill |
+| Release orchestration | release skill |
 
 Read-only tasks (explanation, search, discussion) need no phase skill.
 
@@ -32,9 +32,10 @@ Read-only tasks (explanation, search, discussion) need no phase skill.
 
 Frontmatter fields: `id`, `title`, `status`, `priority`, `assignee`, `tags` (string[]), `createdBy`, `updatedBy`, `history` (event list), `effort` (`None`|`XS`|`S`|`M`|`L`|`XL`), `implementationLink`, `subtasks` (string[] of child ticket IDs). Markdown body below frontmatter for description.
 
-**Subtasks**: The `subtasks` field is an array of ticket ID strings (e.g. `["FLUX-5", "FLUX-6"]`). Each subtask MUST be a separate `.flux/<id>.md` file. Never write inline objects. To create a subtask, use `POST /api/tasks/:parentId/subtasks` with `{ title, status?, priority?, body? }` — this atomically creates the child ticket and links it.
+**Subtasks**: The `subtasks` field is an array of ticket ID strings (e.g. `["FLUX-5", "FLUX-6"]`). Each subtask MUST be a separate ticket file. Never write inline objects. To create a subtask, use the `create_subtask` MCP tool.
 
 History entry shapes:
+
 ```yaml
 - type: comment
   user: Agent
@@ -58,8 +59,7 @@ History entry shapes:
   user: Agent
   date: '2026-05-25T13:42:18.331Z'
 
-# ❌ WRONG — oldStatus/newStatus is not the canonical shape; gates that protect
-#    Require Input / Ready transitions will fail to recognize this entry
+# ❌ WRONG — oldStatus/newStatus is not the canonical shape
 - type: status_change
   oldStatus: Grooming
   newStatus: Todo
@@ -86,16 +86,28 @@ subtasks:
 
 ## Working Surfaces
 
-- `.flux/*.md`: tickets — `.flux/config.json`: board config — `.docs/**/*.md`: project docs
-- `engine/src/`: Express API — `portal/src/`: React UI
-- `.docs/skills/*.md`: editable skill sources — `.flux/skills/*.md`: bootstrap templates
+- Ticket storage: `.flux/` (in-repo) or `.flux-store/` (orphan mode) — agents NEVER access these directly
+- Board config: `config.json` in the active flux directory
+- Project docs: `.docs/**/*.md`
+- Engine source: `engine/src/`
+- Portal source: `portal/src/`
+- Skill sources: `.docs/skills/*.md`
+- Skill templates: `.flux/skills/*.md`
 
 ## APIs
 
-- `GET/POST /api/tasks`, `PUT/DELETE /api/tasks/:id` — `GET/PUT /api/config` — `POST /api/bulk-rename`
-- `POST /api/tasks/:parentId/subtasks` — create a child ticket and link it to the parent
-- CLI: `npx tsx engine/src/patch-ticket.ts --add-subtask <parentId> --title <value> [--status] [--priority] [--effort] [--body]`
-- Portal: `localhost:5167` — Engine: `localhost:3067`
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/tasks` | List all tickets |
+| `POST /api/tasks` | Create a ticket |
+| `PUT /api/tasks/:id` | Update a ticket |
+| `DELETE /api/tasks/:id` | Delete a ticket |
+| `POST /api/tasks/:parentId/subtasks` | Create a linked subtask |
+| `GET /api/config` | Get board config |
+| `PUT /api/config` | Update board config |
+| `POST /api/bulk-rename` | Bulk rename statuses/tags |
+
+Portal: `localhost:5167` — Engine: `localhost:3067`
 
 ## User Input Routing
 
@@ -109,14 +121,23 @@ subtasks:
 - Repo-changing work without a named ticket → find or create a ticket first.
 - Pure explanation, brainstorming, or read-only discussion does not require ticket state changes.
 
-## Persisting Changes
+## Persisting Changes — CRITICAL
 
-All ticket updates — status changes, metadata, body rewrites, history comments — **MUST** use the MCP tools listed below. Do not edit `.flux/<id>.md` files directly. The tools handle schema validation, timestamps, and portal sync automatically.
+All ticket updates — status changes, metadata, body rewrites, history comments — **MUST** use the MCP tools listed below.
+
+**NEVER do any of the following:**
+- Use the `Write` tool on any file in `.flux/` or `.flux-store/`
+- Use the `Edit` tool on any file in `.flux/` or `.flux-store/`
+- Use `Bash` with `echo`, `sed`, `cat >`, or any shell command that writes to ticket files
+- Use `curl` to hit the REST API when MCP tools are available
+- Construct YAML frontmatter manually and write it to disk
+
+The MCP tools handle schema validation, timestamps, history normalization, and portal sync. Direct file writes bypass all of this and can corrupt tickets.
 
 ### MCP Tools (use these — they appear in your tool list)
 
 | Tool | Use When |
-|------|----------|
+|---|---|
 | `get_ticket` | Reading a ticket's full state (frontmatter + body + history) |
 | `list_tickets` | Finding tickets by status, assignee, tag, or priority |
 | `get_board_config` | Checking valid statuses, tags, project key |
@@ -134,23 +155,27 @@ Notes:
 - `create_subtask` creates a child ticket file and links it to the parent's `subtasks` array atomically.
 - All tools handle timestamps, history normalization, and schema validation server-side.
 
-### REST API (fallback if MCP tools are unavailable)
+### REST API (last-resort fallback)
 
-If MCP tools do not appear in your tool list, use the engine REST API at `http://localhost:3067`:
+ONLY use the REST API if MCP tools genuinely fail to load (i.e., `ToolSearch` returns no `event-horizon` tools). If MCP tools appear in your tool list, use them — never fall back to curl/REST "for convenience."
 
-```
-POST /api/tasks — create a ticket
-PUT  /api/tasks/:id — update a ticket (use appendHistory for comments)
-POST /api/tasks/:parentId/subtasks — create a linked subtask
-```
+REST base: `http://localhost:3067`
 
-If neither MCP tools nor the API are reachable, surface the problem to the user and wait. Do not edit files directly.
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `POST` | `/api/tasks` | Create a ticket |
+| `PUT` | `/api/tasks/:id` | Update a ticket (use `appendHistory` for comments) |
+| `POST` | `/api/tasks/:parentId/subtasks` | Create a linked subtask |
+
+If neither MCP tools nor the API are reachable, surface the problem to the user and wait. Do not edit files directly under any circumstances.
 
 Ticket changes that only exist in chat or agent memory are **lost**. The engine is the single source of truth.
 
 ## Critical Rules
 
-- Treat `.flux/*.md` as schema-sensitive. Use spaces (not tabs) in YAML frontmatter. Do not delete ticket history; append only.
+- NEVER use Write, Edit, or Bash to modify files in `.flux/` or `.flux-store/`. These paths are engine-managed.
+- Treat ticket files as schema-sensitive. The engine validates and rejects malformed writes.
+- Do not delete ticket history; append only.
 - The `finish <ticket>` handoff is required before committing. Commit creation, `implementationLink` update, and status → `Done` happen as one atomic step.
 
 ## End-to-End Checklist
@@ -159,6 +184,6 @@ Ticket changes that only exist in chat or agent memory are **lost**. The engine 
 - Grooming produced a concrete plan with filled metadata
 - Implementation-critical choices clarified before coding
 - Status moved at the right time — Code changed in smallest surface — Validation passed
-- Docs refreshed before `Ready`/`Done` — YAML checked after ticket edits
+- Docs refreshed before `Ready`/`Done`
 - Questions went through `Require Input`, not only chat
 - `finish <ticket>` received before commit — Completion comment added — Status → `Done`

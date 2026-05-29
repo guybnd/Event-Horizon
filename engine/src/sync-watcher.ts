@@ -362,7 +362,7 @@ export function startSyncWatcher(): void {
   watcher = chokidar.watch(storeDir, {
     ignored: (filePath: string) => {
       const base = path.basename(filePath);
-      return base.startsWith('.git') || base === '.git';
+      return base.endsWith('.tmp') || base.startsWith('.git') || base === '.git';
     },
     ignoreInitial: true,
     persistent: true,

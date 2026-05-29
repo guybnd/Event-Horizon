@@ -11,7 +11,7 @@ Scope: Write code, validate logic, format commits, and close tickets during the 
 
 # Event Horizon Agent — Implementation Skill
 
-Version: 2.1.0
+Version: 2.2.0
 
 ## When This Skill Applies
 
@@ -33,10 +33,27 @@ Refer to the orchestrator skill for the ticket model, APIs, and end-to-end check
 
 All persistence uses MCP tools — see the orchestrator skill's "Persisting Changes" section.
 
+## File Boundaries
+
+You may freely read and write files in:
+- `engine/src/` — Express API and engine logic
+- `portal/src/` — React UI components
+- `.docs/` — project documentation
+- Any other source code directories
+
+You MUST NOT read or write files in:
+- `.flux/` — ticket storage (in-repo mode)
+- `.flux-store/` — ticket storage (orphan mode)
+- `.flux/config.json` — use `get_board_config` MCP tool instead
+
+Use MCP tools for all ticket interactions. Use Read for source code only.
+
 ## Common Project Patterns
 
 - Ticket persistence: engine, not portal. Docs: `.docs/`. Cards: `TaskCard.tsx`. Modal: `TaskModal.tsx`. State: `AppContext.tsx`.
 - Installer: `engine/src/workflow-installer.ts` and `engine/src/skill-installer.ts`.
+- MCP server: `engine/src/mcp-server.ts` — defines all agent-facing tools.
+- Ticket store: `engine/src/task-store.ts` — cache, file watchers, persistence.
 
 ## Commit Guidance
 
