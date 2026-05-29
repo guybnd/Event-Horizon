@@ -11,7 +11,7 @@ tags:
   - git
   - mcp
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 history:
   - type: activity
     user: Guy
@@ -1107,8 +1107,23 @@ history:
     user: Guy
     date: '2026-05-29T01:20:30.698Z'
     comment: Updated description.
+  - type: comment
+    user: Guy
+    date: '2026-05-29T01:23:42.983Z'
+    comment: 'regroom ticket, we failed last time'
+    id: c-2026-05-29t01-23-42-975z
+  - type: agent_session
+    sessionId: c2c876ef-d8be-4a2a-8db8-edfdb28b5364
+    startedAt: '2026-05-29T01:23:47.733Z'
+    status: cancelled
+    progress: []
+    user: Claude Code
+    date: '2026-05-29T01:23:47.733Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-29T01:23:57.864Z'
 implementationLink: ''
 subtasks: []
+id: FLUX-292
 ---
 ## Problem / Motivation
 
