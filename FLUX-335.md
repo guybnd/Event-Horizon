@@ -4,7 +4,7 @@ tags:
   - feature
 priority: Low
 effort: M
-implementationLink: ''
+implementationLink: 3e4f331
 subtasks: []
 history:
   - type: activity
@@ -328,8 +328,24 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-29T00:51:41.126Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Added 3 textured theme presets (Matrix, Cyber, Midnight) with a header
+      dropdown picker and Settings visual swatches. Themes apply CSS background
+      patterns to body with the app shell made transparent. Existing light/dark
+      modes preserved. Key files: AppContext.tsx (theme system), index.css
+      (textures), Header.tsx (dropdown), PreferencesSection.tsx (swatches),
+      App.tsx (transparent shell class).
+    date: '2026-05-29T01:02:41.946Z'
+    id: c-2026-05-29t01-02-41-946z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-29T01:02:41.946Z'
 title: cool textured theme
-status: Ready
+status: Done
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
