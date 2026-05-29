@@ -251,7 +251,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const taskEventTimeoutsRef = useRef<Record<string, number>>({});
   const columnEventTimeoutsRef = useRef<Record<string, number>>({});
   const liveEventSequenceRef = useRef(0);
-  const pendingReadStateRef = useRef<Record<string, Record<string, string[]>>>({});
+  const pendingReadStateRef = useRef<Record<string, string[]>>({});
   const readStateFlushTimerRef = useRef<number | null>(null);
 
   const scheduleTaskEventClear = useCallback((taskId: string, sequence: number) => {
