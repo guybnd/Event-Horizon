@@ -2,7 +2,7 @@
 title: Tray icon blank in system tray on Windows
 status: Grooming
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 assignee: unassigned
 tags:
   - bug
@@ -36,7 +36,17 @@ history:
     to: Grooming
     user: Guy
     date: '2026-05-10T14:39:22.564Z'
+  - type: agent_session
+    sessionId: 90d4e81b-fdb3-4ef2-ba14-52f233643cdc
+    startedAt: '2026-05-29T02:24:33.727Z'
+    status: cancelled
+    progress: []
+    user: Claude Code
+    date: '2026-05-29T02:24:33.727Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-29T02:24:44.955Z'
 order: 0
+id: FLUX-129
 ---
 
 ## Problem / Motivation
