@@ -344,8 +344,13 @@ history:
     to: Done
     user: Agent
     date: '2026-05-29T01:02:41.946Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-29T01:49:07.189Z'
 title: cool textured theme
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
@@ -356,6 +361,9 @@ tokenMetadata:
   cacheReadTokens: 355912
   cacheCreationTokens: 30143
 id: FLUX-335
+version: v0.11.0
+releasedAt: '2026-05-29T01:49:07.189Z'
+releaseDocPath: release-notes/v0.11.0
 ---
 ## Problem / Motivation
 

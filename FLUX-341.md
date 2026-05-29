@@ -1,7 +1,7 @@
 ---
 id: FLUX-341
 title: Harden ticket file integrity and add skill staleness detection
-status: Done
+status: Released
 priority: High
 effort: M
 assignee: unassigned
@@ -33,7 +33,15 @@ history:
     to: Done
     user: Agent
     date: '2026-05-29T01:41:57.111Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-29T01:49:07.193Z'
 implementationLink: c9cbd40
+version: v0.11.0
+releasedAt: '2026-05-29T01:49:07.193Z'
+releaseDocPath: release-notes/v0.11.0
 ---
 ## Problem / Motivation
 
