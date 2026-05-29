@@ -1,6 +1,6 @@
 ---
 title: Agent should be able to create branch for each feature working on
-status: Grooming
+status: Todo
 priority: Medium
 effort: L
 assignee: unassigned
@@ -10,6 +10,7 @@ tags:
   - agent-workflow
   - git
   - mcp
+  - portal
 createdBy: Guy
 updatedBy: Agent
 history:
@@ -1115,123 +1116,420 @@ history:
   - type: agent_session
     sessionId: c2c876ef-d8be-4a2a-8db8-edfdb28b5364
     startedAt: '2026-05-29T01:23:47.733Z'
-    status: cancelled
-    progress: []
+    status: completed
+    progress:
+      - timestamp: '2026-05-29T01:24:03.218Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-05-29T01:24:03.958Z'
+        message: Working
+        type: tool
+        data:
+          toolName: ToolSearch
+          parameters:
+            query: >-
+              select:mcp__event-horizon__get_ticket,mcp__event-horizon__update_ticket,mcp__event-horizon__change_status,mcp__event-horizon__add_comment,mcp__event-horizon__create_subtask
+            max_results: 5
+      - timestamp: '2026-05-29T01:24:07.436Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp__event-horizon__get_ticket
+          parameters:
+            ticketId: FLUX-292
+      - timestamp: '2026-05-29T01:24:12.414Z'
+        message: Delegating
+        type: tool
+        data:
+          toolName: Agent
+          parameters:
+            description: Explore branch management context
+            subagent_type: Explore
+            prompt: >-
+              I need to understand the current codebase structure for a feature
+              that adds per-ticket git branch management to the Event Horizon
+              system. Please find:
+
+
+              1. The ticket types definition in portal/src/types.ts — what
+              fields exist on the Task/Ticket type
+
+              2. The MCP server file at engine/src/mcp-server.ts — how tools are
+              registered (just show the pattern for one existing tool)
+
+              3. The engine route files — especially engine/src/routes/tasks.ts
+              to see how REST routes are structured
+
+              4. The task-store.ts file — how tickets are persisted
+
+              5. Portal components: TaskCard.tsx, TaskModal.tsx,
+              MetadataPanel.tsx — to understand the UI structure
+
+              6. The .flux/config.json — to see existing tags and statuses
+
+
+              Search breadth: medium
+      - timestamp: '2026-05-29T01:24:16.462Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Glob
+          parameters:
+            pattern: '**/portal/src/types.ts'
+      - timestamp: '2026-05-29T01:24:18.223Z'
+        message: Working
+        type: info
+      - timestamp: '2026-05-29T01:24:19.932Z'
+        message: Reading types.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: 'C:\GitHub\EventHorizon\portal\src\types.ts'
+      - timestamp: '2026-05-29T01:24:21.116Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Glob
+          parameters:
+            pattern: '**/portal/src/components/**/*.tsx'
+      - timestamp: '2026-05-29T01:24:28.120Z'
+        message: Reading MetadataPanel.tsx
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: >-
+              C:\GitHub\EventHorizon\portal\src\components\task-modal\MetadataPanel.tsx
+      - timestamp: '2026-05-29T01:24:33.238Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-05-29T01:25:03.251Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-05-29T01:25:17.706Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp__event-horizon__update_ticket
+          parameters:
+            ticketId: FLUX-292
+            priority: Medium
+            effort: L
+            tags:
+              - feature
+              - engine
+              - agent-workflow
+              - git
+              - mcp
+              - portal
+            body: >-
+              ## Problem / Motivation
+
+
+              Agents currently work directly on the active branch (usually
+              `master`). When multiple agents handle separate tickets
+              concurrently, their changes conflict or pollute commit history.
+              There is no mechanism to isolate work per ticket, track which
+              branch corresponds to which ticket, or display this association in
+              the UI.
+
+
+              Per-ticket feature branches let agents work in isolation, make
+              concurrent ticket execution safer, and give users visibility into
+              where each feature lives in git.
+
+
+              ## Implementation Plan
+
+
+              This is a parent ticket with subtasks for each part. The work
+              spans schema, engine, MCP server, agent skills, and portal UI.
+
+
+              ### Part 1: Schema — add `branch` field to ticket frontmatter
+
+              - Add optional `branch` field (string) to `Task` type in
+              `portal/src/types.ts`.
+
+              - Engine schema validator (`engine/src/task-store.ts`) should
+              accept but not require the field.
+
+              - Stores a branch name like
+              `flux/FLUX-292-agent-branch-per-ticket`.
+
+
+              ### Part 2: Engine — branch lifecycle management
+
+              New module `engine/src/branch-manager.ts`:
+
+              - `createTicketBranch(ticketId, baseBranch?)` — creates
+              `flux/<ID>-<slug>` from base (default: current branch). Stores
+              name on ticket. Uses `git checkout -b`.
+
+              - `switchToTicketBranch(ticketId)` — checks out the ticket's
+              branch.
+
+              - `getTicketBranch(ticketId)` — returns stored branch name from
+              frontmatter.
+
+              - `deleteTicketBranch(ticketId)` — cleans up after merge/close.
+              Only deletes if merged.
+
+
+              REST routes (fallback):
+
+              - `POST /api/tasks/:id/branch` — create and associate a branch.
+
+              - `DELETE /api/tasks/:id/branch` — remove association (optionally
+              delete git branch).
+
+              - `GET /api/tasks/:id/branch` — return branch info (name, exists,
+              ahead/behind).
+
+
+              ### Part 3: MCP tools for branch management
+
+              Add to `engine/src/mcp-server.ts` following existing
+              `server.tool()` pattern:
+
+              - `create_branch` — creates and associates a feature branch.
+              Params: `ticketId`, `baseBranch?`.
+
+              - `switch_branch` — checks out the ticket's branch. Params:
+              `ticketId`.
+
+              - `get_branch` — returns branch info. Params: `ticketId`.
+
+              - `delete_branch` — removes association, optionally deletes git
+              branch. Params: `ticketId`, `force?`.
+
+
+              ### Part 4: Agent workflow integration
+
+              Update `.claude/rules/event-horizon.md` implementation skill:
+
+              - On move to `In Progress`, agent uses `create_branch` if no
+              branch exists.
+
+              - Commits go to the ticket's branch.
+
+              - On `finish <ticket>`, branch info preserved (no auto-merge —
+              user handles PR/merge).
+
+              - Add `create_branch` and `switch_branch` to the MCP tool table.
+
+
+              ### Part 5: Portal UI — branch display
+
+              **TaskCard.tsx:** Small branch badge (git-branch icon + truncated
+              name) when `task.branch` is set. Click copies to clipboard.
+
+              **MetadataPanel.tsx:** "Branch" field row. "Create Branch" button
+              when no branch set and ticket is workable. Status indicators
+              (exists/deleted, ahead/behind).
+
+              **TaskModal.tsx:** Branch name in header next to implementation
+              link. Copy-to-clipboard action.
+
+
+              ### Part 6: Naming convention and safety
+
+              - Pattern: `flux/<TICKET-ID>-<slugified-title>` (slug max 60
+              chars).
+
+              - Never auto-delete branches with unmerged commits.
+
+              - If branch already exists (user-created), associate without
+              recreating.
+
+              - Operates on main repo git, not the flux-data worktree.
+
+
+              ## Out of Scope (future tickets)
+
+              - Auto-merging branches back to main
+
+              - Multi-worktree parallel agent execution
+
+              - Branch protection rules or PR creation
+      - timestamp: '2026-05-29T01:25:18.259Z'
+        message: Working
+        type: info
+      - timestamp: '2026-05-29T01:25:24.079Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp__event-horizon__create_subtask
+          parameters:
+            parentId: FLUX-292
+            title: Add `branch` field to ticket schema and types
+            priority: Medium
+            effort: XS
+            tags:
+              - feature
+              - engine
+              - portal
+            body: >-
+              ## Problem / Motivation
+
+
+              The ticket model has no field to store a git branch association.
+              This subtask adds the schema support that all other parts depend
+              on.
+
+
+              ## Implementation Plan
+
+
+              1. Add optional `branch?: string` field to the `Task` interface in
+              `portal/src/types.ts`.
+
+              2. Ensure `engine/src/task-store.ts` preserves the field during
+              read/write without requiring it.
+
+              3. No migration needed — existing tickets simply won't have the
+              field set.
+      - timestamp: '2026-05-29T01:25:33.262Z'
+        message: Working
+        type: info
+      - timestamp: '2026-05-29T01:25:48.263Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-05-29T01:25:51.327Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp__event-horizon__change_status
+          parameters:
+            ticketId: FLUX-292
+            newStatus: Todo
+            comment: >-
+              Re-groomed ticket with full implementation plan and created 5
+              subtasks for phased execution: FLUX-336 (schema, XS), FLUX-337
+              (engine branch-manager + REST routes, M), FLUX-338 (MCP tools, S),
+              FLUX-339 (agent skill integration, S), FLUX-340 (portal UI, M).
+              Dependencies flow linearly: 336 → 337 → 338 → 339/340 (339 and 340
+              can be parallel). No blocking questions — design extends existing
+              patterns.
+      - timestamp: '2026-05-29T01:25:57.485Z'
+        message: >-
+          FLUX-292 is groomed and moved to **Todo**. Here's the summary:
+
+
+          **Metadata:** Priority Medium, Effort L, tags:
+          feature/engine/agent-workflow/git/mcp/portal
+
+
+          **Subtasks created (execution order):**
+
+          1. **FLUX-336** — Schema: add `branch` field (XS)
+
+          2. **FLUX-337** — Engine branch-manager module + REST routes (M)
+
+          3. **FLUX-338** — MCP tools for branch management (S) — depends on 337
+
+          4. **FLUX-339** — Agent workflow skill integration (S) — depends on
+          338
+
+          5. **FLUX-340** — Portal UI branch display (M) — can parallel with 339
+
+
+          No blocking questions. The design follows existing patterns (MCP tool
+          registration, frontmatter fields, REST route structure).
     user: Claude Code
     date: '2026-05-29T01:23:47.733Z'
-    outcome: Session abandoned (engine restarted).
-    endedAt: '2026-05-29T01:23:57.864Z'
+    outcome: Claude Code session ended with code 0.
+    endedAt: '2026-05-29T01:25:58.626Z'
+  - type: activity
+    user: Agent
+    date: '2026-05-29T01:25:17.712Z'
+    comment: Updated description. Updated tags.
+  - type: comment
+    user: Agent
+    comment: >-
+      Re-groomed ticket with full implementation plan and created 5 subtasks for
+      phased execution: FLUX-336 (schema, XS), FLUX-337 (engine branch-manager +
+      REST routes, M), FLUX-338 (MCP tools, S), FLUX-339 (agent skill
+      integration, S), FLUX-340 (portal UI, M). Dependencies flow linearly: 336
+      → 337 → 338 → 339/340 (339 and 340 can be parallel). No blocking questions
+      — design extends existing patterns.
+    date: '2026-05-29T01:25:51.330Z'
+    id: c-2026-05-29t01-25-51-330z
+  - type: status_change
+    from: Grooming
+    to: Todo
+    user: Agent
+    date: '2026-05-29T01:25:51.330Z'
 implementationLink: ''
-subtasks: []
+subtasks:
+  - FLUX-336
+  - FLUX-337
+  - FLUX-338
+  - FLUX-339
+  - FLUX-340
 id: FLUX-292
+tokenMetadata:
+  inputTokens: 165877
+  outputTokens: 4455
+  costUSD: 0.531408
+  costIsEstimated: false
+  cacheReadTokens: 134700
+  cacheCreationTokens: 31163
 ---
 ## Problem / Motivation
 
-Agents currently work directly on the active branch (usually `master`). When multiple agents handle separate tickets concurrently, their changes can conflict or pollute commit history. There is no mechanism to isolate work per ticket, track which branch corresponds to which ticket, or display this association in the UI.
+Agents currently work directly on the active branch (usually `master`). When multiple agents handle separate tickets concurrently, their changes conflict or pollute commit history. There is no mechanism to isolate work per ticket, track which branch corresponds to which ticket, or display this association in the UI.
 
-Adding per-ticket feature branches lets agents work in isolation, makes concurrent ticket execution safer, and gives users visibility into where each feature lives in git.
+Per-ticket feature branches let agents work in isolation, make concurrent ticket execution safer, and give users visibility into where each feature lives in git.
 
-## Implementation Plan - create appropriate subtasks
+## Implementation Plan
+
+This is a parent ticket with subtasks for each part. The work spans schema, engine, MCP server, agent skills, and portal UI.
 
 ### Part 1: Schema — add `branch` field to ticket frontmatter
-
--   Add optional `branch` field (string) to the ticket model in `portal/src/types.ts`.
-    
--   The engine schema validator (`engine/src/schema.ts`) should accept but not require this field.
-    
--   The field stores a branch name like `flux/FLUX-292-agent-branch-per-ticket`.
-    
+- Add optional `branch` field (string) to `Task` type in `portal/src/types.ts`.
+- Engine schema validator (`engine/src/task-store.ts`) should accept but not require the field.
+- Stores a branch name like `flux/FLUX-292-agent-branch-per-ticket`.
 
 ### Part 2: Engine — branch lifecycle management
+New module `engine/src/branch-manager.ts`:
+- `createTicketBranch(ticketId, baseBranch?)` — creates `flux/<ID>-<slug>` from base (default: current branch). Stores name on ticket. Uses `git checkout -b`.
+- `switchToTicketBranch(ticketId)` — checks out the ticket's branch.
+- `getTicketBranch(ticketId)` — returns stored branch name from frontmatter.
+- `deleteTicketBranch(ticketId)` — cleans up after merge/close. Only deletes if merged.
 
-Add a new module `engine/src/branch-manager.ts` with:
-
-1.  `createTicketBranch(ticketId, baseBranch?)` — creates `flux/<TICKET-ID>-<slugified-title>` from the given base (default: current branch). Stores the branch name on the ticket via the task store. Uses `git checkout -b`.
-    
-2.  `switchToTicketBranch(ticketId)` — checks out the ticket's branch. Verifies it exists first.
-    
-3.  `getTicketBranch(ticketId)` — returns the stored branch name from the ticket frontmatter.
-    
-4.  `deleteTicketBranch(ticketId)` — cleans up after merge/close. Only deletes if the branch has been merged.
-    
-
-Expose via REST API routes (fallback):
-
--   `POST /api/tasks/:id/branch` — create and associate a branch.
-    
--   `DELETE /api/tasks/:id/branch` — remove branch association (and optionally delete the git branch).
-    
--   `GET /api/tasks/:id/branch` — return branch info (name, exists, ahead/behind counts).
-    
+REST routes (fallback):
+- `POST /api/tasks/:id/branch` — create and associate a branch.
+- `DELETE /api/tasks/:id/branch` — remove association (optionally delete git branch).
+- `GET /api/tasks/:id/branch` — return branch info (name, exists, ahead/behind).
 
 ### Part 3: MCP tools for branch management
-
-Add new MCP tools to `engine/src/mcp-server.ts` following the existing pattern:
-
--   `create_branch` — creates and associates a feature branch with a ticket. Params: `ticketId`, `baseBranch?`. Calls `createTicketBranch()` internally.
-    
--   `switch_branch` — checks out the ticket's branch. Params: `ticketId`.
-    
--   `get_branch` — returns branch info (name, exists, ahead/behind). Params: `ticketId`.
-    
--   `delete_branch` — removes branch association and optionally deletes the git branch. Params: `ticketId`, `force?`.
-    
-
-This lets agents manage branches natively through the MCP protocol, consistent with how they already manage ticket status and comments.
+Add to `engine/src/mcp-server.ts` following existing `server.tool()` pattern:
+- `create_branch` — creates and associates a feature branch. Params: `ticketId`, `baseBranch?`.
+- `switch_branch` — checks out the ticket's branch. Params: `ticketId`.
+- `get_branch` — returns branch info. Params: `ticketId`.
+- `delete_branch` — removes association, optionally deletes git branch. Params: `ticketId`, `force?`.
 
 ### Part 4: Agent workflow integration
+Update `.claude/rules/event-horizon.md` implementation skill:
+- On move to `In Progress`, agent uses `create_branch` if no branch exists.
+- Commits go to the ticket's branch.
+- On `finish <ticket>`, branch info preserved (no auto-merge — user handles PR/merge).
+- Add `create_branch` and `switch_branch` to the MCP tool table.
 
-Modify the implementation skill (`.claude/rules/event-horizon.md`):
-
--   When an agent moves a ticket to `In Progress`, it should use `create_branch` MCP tool to create a feature branch if one doesn't already exist.
-    
--   Agent commits go to the ticket's branch rather than the main branch.
-    
--   On `finish <ticket>`, the branch info is preserved in the ticket for reference (merge strategy is left to the user — no auto-merge to master).
-    
--   Add `create_branch` and `switch_branch` to the MCP tool table in the orchestrator skill.
-    
-
-### Part 5: Portal UI — display branch in card and full view
-
-**TaskCard.tsx:**
-
--   Show a small branch badge (git-branch icon + truncated branch name) below the ticket title when `task.branch` is set.
-    
--   Clicking the badge copies the branch name to clipboard.
-    
-
-**MetadataPanel.tsx (full view / popup):**
-
--   Add a "Branch" field row showing the branch name.
-    
--   Include a "Create Branch" button when no branch is set and ticket is in a workable status.
-    
--   Show branch status indicators (exists/deleted, ahead/behind main).
-    
-
-**TaskModal.tsx:**
-
--   Display the branch name in the header area next to implementation link.
-    
--   Add copy-to-clipboard action.
-    
+### Part 5: Portal UI — branch display
+**TaskCard.tsx:** Small branch badge (git-branch icon + truncated name) when `task.branch` is set. Click copies to clipboard.
+**MetadataPanel.tsx:** "Branch" field row. "Create Branch" button when no branch set and ticket is workable. Status indicators (exists/deleted, ahead/behind).
+**TaskModal.tsx:** Branch name in header next to implementation link. Copy-to-clipboard action.
 
 ### Part 6: Naming convention and safety
+- Pattern: `flux/<TICKET-ID>-<slugified-title>` (slug max 60 chars).
+- Never auto-delete branches with unmerged commits.
+- If branch already exists (user-created), associate without recreating.
+- Operates on main repo git, not the flux-data worktree.
 
--   Branch naming: `flux/<TICKET-ID>-<slugified-title>` (max 60 chars for the slug portion).
-    
--   Never auto-delete branches that have unmerged commits.
-    
--   If a branch already exists (e.g., user-created), associate it without recreating.
-    
--   The feature works in both in-repo and orphan storage modes — it operates on the main repo's git, not the flux-data worktree.
-    
-
-### Create subtasks for these too as expansions:
-
--   Auto-merging branches back to main (users handle PR/merge workflow).
-    
--   Multi-worktree parallel agent execution (future ticket).
-    
--   Branch protection rules or PR creation.
+## Out of Scope (future tickets)
+- Auto-merging branches back to main
+- Multi-worktree parallel agent execution
+- Branch protection rules or PR creation
