@@ -7,7 +7,7 @@ tags:
 assignee: Agent
 createdBy: Unknown
 title: Auto-migrate stranded .flux tickets to .flux-store on startup in orphan mode
-status: Ready
+status: Done
 updatedBy: Agent
 history:
   - type: activity
@@ -901,6 +901,20 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-29T02:48:24.679Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Fixed migrateStrandedFluxTickets to fully clean .flux/ in orphan mode:
+      config.json now deleted even when dest exists, asset folders
+      migrated/cleaned, all operations wrapped in per-item try/catch for
+      resilience.
+    date: '2026-05-29T02:49:21.030Z'
+    id: c-2026-05-29t02-49-21-030z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-05-29T02:49:21.030Z'
 tokenMetadata:
   inputTokens: 762091
   outputTokens: 10031
@@ -909,7 +923,7 @@ tokenMetadata:
   cacheReadTokens: 652156
   cacheCreationTokens: 108488
 order: 0
-implementationLink: ''
+implementationLink: 235a64c
 subtasks: []
 id: FLUX-220
 ---
