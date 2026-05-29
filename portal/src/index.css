@@ -216,9 +216,9 @@ body::before {
 :root[data-theme="cyber"] .app-shell,
 :root[data-theme="midnight"] .app-shell {
   background: transparent !important;
+  position: relative;
 }
 
-:root[data-theme="matrix"] body,
 :root[data-theme="cyber"] body,
 :root[data-theme="midnight"] body {
   background-image: var(--eh-texture);
@@ -236,20 +236,73 @@ body::before {
 
 /* ─── Matrix Theme Specifics ─────────────────────────────────────── */
 
-/* #8 CRT scanline overlay on header */
-:root[data-theme="matrix"] .eh-header::after {
+/* Full-screen CRT effect — scanlines + vignette + flicker */
+:root[data-theme="matrix"] body::after {
   content: '';
-  position: absolute;
+  position: fixed;
   inset: 0;
   pointer-events: none;
-  background: repeating-linear-gradient(
-    0deg,
-    transparent,
-    transparent 2px,
-    rgba(0, 0, 0, 0.03) 2px,
-    rgba(0, 0, 0, 0.03) 4px
+  z-index: 9998;
+  background:
+    /* Scanlines — 2px alternating bands */
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 0, 0, 0.06) 2px,
+      rgba(0, 0, 0, 0.06) 4px
+    ),
+    /* Vignette — dark edges, clear center */
+    radial-gradient(
+      ellipse at 50% 50%,
+      transparent 60%,
+      rgba(0, 0, 0, 0.3) 100%
+    );
+  animation: crt-flicker 8s ease-in-out infinite;
+}
+
+/* Phosphor glow — a faint green ambient light bleeding from the center */
+:root[data-theme="matrix"] body {
+  background-image:
+    var(--eh-texture),
+    radial-gradient(ellipse at 50% 30%, rgba(0, 212, 170, 0.04) 0%, transparent 60%);
+  background-size: var(--eh-texture-size), 100% 100%;
+  background-attachment: fixed, fixed;
+}
+
+@keyframes crt-flicker {
+  0%, 100% { opacity: 1; }
+  3% { opacity: 0.97; }
+  6% { opacity: 1; }
+  48% { opacity: 1; }
+  50% { opacity: 0.985; }
+  52% { opacity: 1; }
+  92% { opacity: 1; }
+  94% { opacity: 0.975; }
+  96% { opacity: 1; }
+}
+
+/* Scrolling highlight band — simulates CRT beam refresh */
+:root[data-theme="matrix"] .app-shell::before {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 120px;
+  pointer-events: none;
+  z-index: 9997;
+  background: linear-gradient(
+    180deg,
+    rgba(0, 212, 170, 0.015) 0%,
+    transparent 100%
   );
-  z-index: 1;
+  animation: crt-beam 6s linear infinite;
+}
+
+@keyframes crt-beam {
+  0% { transform: translateY(-120px); }
+  100% { transform: translateY(100vh); }
 }
 
 /* #3 Card inner top-edge highlight for elevation */
@@ -380,7 +433,6 @@ body::before {
   box-shadow: 0 8px 32px rgba(0, 12, 4, 0.6), 0 0 0 1px rgba(0, 212, 170, 0.1);
 }
 
-/* Matrix header position relative for scanline pseudo */
 :root[data-theme="matrix"] .eh-header {
   position: relative;
 }

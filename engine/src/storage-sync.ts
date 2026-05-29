@@ -154,10 +154,18 @@ export async function migrateStrandedFluxTickets(workspaceRoot: string): Promise
     if (!name.endsWith('.md')) continue;
     const src = path.join(fluxDir, name);
     const dst = path.join(storeDir, name);
-    if (existsSync(dst)) continue;
-    await fs.copyFile(src, dst);
-    await fs.unlink(src);
-    console.log(`[startup-migrate] Migrated ticket: ${name}`);
+    try {
+      if (existsSync(dst)) {
+        await fs.unlink(src);
+        console.log(`[startup-migrate] Removed stale duplicate: ${name}`);
+      } else {
+        await fs.copyFile(src, dst);
+        await fs.unlink(src);
+        console.log(`[startup-migrate] Migrated ticket: ${name}`);
+      }
+    } catch (err: any) {
+      console.warn(`[startup-migrate] Failed to migrate ${name}, skipping: ${err.message}`);
+    }
   }
 
   const configSrc = path.join(fluxDir, 'config.json');

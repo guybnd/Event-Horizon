@@ -38,7 +38,7 @@ export function LaunchAgentSplitButton({ onLaunch, disabled, busy, size = 'md', 
           type="button"
           disabled={isDisabled}
           onClick={() => onLaunch()}
-          className="flex items-center gap-1.5 rounded-l-md bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white transition-colors cursor-pointer hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-white/10 dark:hover:bg-white/20"
+          className="eh-btn-accent flex items-center gap-1.5 rounded-l-lg px-3 py-1.5 text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <Icon className="h-3.5 w-3.5" />
           {busy ? 'Starting…' : 'Launch Agent'}
@@ -47,7 +47,7 @@ export function LaunchAgentSplitButton({ onLaunch, disabled, busy, size = 'md', 
           type="button"
           disabled={isDisabled}
           onClick={() => setOpen((v) => !v)}
-          className="flex items-center justify-center rounded-r-md border-l border-white/20 bg-gray-900 px-1.5 py-1.5 text-xs text-white transition-colors cursor-pointer hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-white/10 dark:border-white/10 dark:hover:bg-white/20"
+          className="eh-btn-accent flex items-center justify-center rounded-r-lg border-l border-white/20 px-1.5 py-1.5 text-xs transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           aria-label="Choose effort level"
         >
           <ChevronDown className="h-3 w-3" />

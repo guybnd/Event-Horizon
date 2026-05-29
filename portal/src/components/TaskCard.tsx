@@ -5,7 +5,7 @@ import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { Task, TaskLiveEvent } from '../types';
 import { normalizeSubtaskId } from '../types';
-import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, MessageCircle, Bot, SendHorizontal, Maximize2, Zap, Layers, MousePointerClick } from 'lucide-react';
+import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, MessageCircle, Bot, SendHorizontal, Maximize2, Zap, Layers, MousePointerClick, Play, Search, Undo2 } from 'lucide-react';
 import { TokenBadge } from './TokenBadge';
 import { useApp } from '../AppContext';
 import { sendTaskCliInput, startTaskCliSession, updateTask } from '../api';
@@ -14,6 +14,7 @@ import { resolveEffectiveAgent } from '../utils';
 import { motion, AnimatePresence, useAnimationControls } from 'framer-motion';
 import { TaskMarkdown } from './TaskMarkdown';
 import { ContextMenu } from './ContextMenu';
+import { REVIEW_PERSONAS } from './CodeReviewButton';
 
 export function TaskCard({
   task,
@@ -145,6 +146,8 @@ export function TaskCard({
         setIsEditingTitle(false);
         setTitleValue(task.title || '');
         setContextMenuPos(null);
+        setReviewSelectorOpen(false);
+        setReturnPromptOpen(false);
       }
     };
 
@@ -190,6 +193,13 @@ export function TaskCard({
   const readyForMergeStatus = getReadyForMergeStatus(config);
   const isReadyForMerge = task.status === readyForMergeStatus;
   const [finishBusy, setFinishBusy] = useState(false);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [reviewSelectorOpen, setReviewSelectorOpen] = useState(false);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [returnPromptOpen, setReturnPromptOpen] = useState(false);
+  const [returnReason, setReturnReason] = useState('');
+  const [returnBusy, setReturnBusy] = useState(false);
+  const reviewSelectorRef = useRef<HTMLDivElement | null>(null);
   const comments = task.history?.filter(e => e.type === 'comment') ?? [];
   const topLevelComments = [...comments.filter(c => !c.replyTo)].reverse();
   const repliesByParentId = new Map<string, typeof comments>();
@@ -238,6 +248,57 @@ export function TaskCard({
       triggerRefresh();
     } finally {
       setFinishBusy(false);
+    }
+  };
+
+  const statusActionMap: Record<string, { label: string; command: string }> = {
+    'Grooming': { label: 'Start grooming', command: `groom ${task.id}` },
+    'Todo': { label: 'Implement', command: `do ${task.id}` },
+    'In Progress': { label: 'Continue', command: `do ${task.id}` },
+  };
+  const statusAction = !hasActiveCliSession && !isReadyForMerge ? statusActionMap[task.status] : null;
+
+  const sendStatusAction = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!statusAction) return;
+    setActionBusy(true);
+    try {
+      const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
+      await startTaskCliSession(task.id, framework, statusAction.command);
+      triggerRefresh();
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const sendReview = async (e: React.MouseEvent, personaId: string) => {
+    e.stopPropagation();
+    setReviewSelectorOpen(false);
+    setReviewBusy(true);
+    try {
+      const persona = REVIEW_PERSONAS.find(p => p.id === personaId);
+      if (!persona) return;
+      const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
+      await startTaskCliSession(task.id, framework, `review ${task.id} --persona ${persona.id}`);
+      triggerRefresh();
+    } finally {
+      setReviewBusy(false);
+    }
+  };
+
+  const sendReturn = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!returnReason.trim()) return;
+    setReturnBusy(true);
+    try {
+      const comment = returnReason.trim();
+      const newHistory = [...(task.history || []), { type: 'comment' as const, user: currentUser, date: new Date().toISOString(), comment }];
+      await updateTask(task.id, { status: 'In Progress', history: newHistory, updatedBy: currentUser } as any);
+      triggerRefresh();
+      setReturnPromptOpen(false);
+      setReturnReason('');
+    } finally {
+      setReturnBusy(false);
     }
   };
 
@@ -537,6 +598,18 @@ export function TaskCard({
     document.addEventListener('mousedown', handlePointerDown);
     return () => document.removeEventListener('mousedown', handlePointerDown);
   }, [subtaskPopoverOpen]);
+
+  useEffect(() => {
+    if (!reviewSelectorOpen && !returnPromptOpen) return undefined;
+    const handlePointerDown = (e: MouseEvent) => {
+      if (reviewSelectorRef.current && !reviewSelectorRef.current.contains(e.target as Node)) {
+        setReviewSelectorOpen(false);
+        setReturnPromptOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [reviewSelectorOpen, returnPromptOpen]);
 
   useEffect(() => {
     if (isThisTaskOpen) {
@@ -955,15 +1028,99 @@ export function TaskCard({
                 )}
               </div>
             </div>
+            {/* Ready column — 3-button row: Review | Return | Finish */}
             {isReadyForMerge && !isOverlay && (
-              <button
-                onClick={(e) => void sendFinishCommand(e)}
-                disabled={finishBusy}
-                className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-[11px] font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <SendHorizontal className="w-3 h-3" />
-                {finishBusy ? 'Sending…' : 'Tell agent to finish'}
-              </button>
+              <div className="mt-2 flex items-center gap-1.5 justify-end relative" ref={reviewSelectorRef}>
+                {/* Review */}
+                <button
+                  onClick={(e) => { e.stopPropagation(); setReviewSelectorOpen(prev => !prev); setReturnPromptOpen(false); }}
+                  disabled={reviewBusy}
+                  className="flex items-center gap-1 rounded-md border border-gray-200 bg-white/80 px-2 py-1 text-[10px] font-semibold text-gray-600 transition-colors hover:border-primary/40 hover:text-primary disabled:opacity-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:border-primary/40 dark:hover:text-primary"
+                >
+                  <Search className="w-3 h-3" />
+                  {reviewBusy ? '…' : 'Review'}
+                </button>
+                {/* Return */}
+                <button
+                  onClick={(e) => { e.stopPropagation(); setReturnPromptOpen(prev => !prev); setReviewSelectorOpen(false); }}
+                  disabled={returnBusy}
+                  className="flex items-center gap-1 rounded-md border border-gray-200 bg-white/80 px-2 py-1 text-[10px] font-semibold text-gray-600 transition-colors hover:border-amber-400 hover:text-amber-600 disabled:opacity-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:border-amber-400 dark:hover:text-amber-500"
+                >
+                  <Undo2 className="w-3 h-3" />
+                  {returnBusy ? '…' : 'Return'}
+                </button>
+                {/* Finish */}
+                <button
+                  onClick={(e) => void sendFinishCommand(e)}
+                  disabled={finishBusy}
+                  className="flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-[10px] font-semibold text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+                >
+                  <SendHorizontal className="w-3 h-3" />
+                  {finishBusy ? '…' : 'Finish'}
+                </button>
+                {/* Reviewer selector dropdown */}
+                {reviewSelectorOpen && (
+                  <div
+                    className="absolute bottom-full right-0 z-[90] mb-1.5 w-56 rounded-xl border border-gray-200 bg-white py-1 shadow-xl dark:border-white/10 dark:bg-[#1e1f2a]"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="px-3 py-1 text-[9px] font-bold uppercase tracking-wider text-gray-400">Choose reviewer</div>
+                    {REVIEW_PERSONAS.map((persona) => (
+                      <button
+                        key={persona.id}
+                        type="button"
+                        onClick={(e) => void sendReview(e, persona.id)}
+                        className="flex w-full flex-col items-start gap-0.5 px-3 py-1.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5"
+                      >
+                        <span className="text-[11px] font-semibold text-gray-800 dark:text-gray-100">{persona.label}</span>
+                        <span className="text-[10px] text-gray-500 dark:text-gray-400">{persona.description}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {/* Return reason prompt */}
+                {returnPromptOpen && (
+                  <div
+                    className="absolute bottom-full right-0 z-[90] mb-1.5 w-64 rounded-xl border border-gray-200 bg-white p-3 shadow-xl dark:border-white/10 dark:bg-[#1e1f2a]"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <p className="text-[10px] font-bold text-gray-500 dark:text-gray-400 mb-1.5 uppercase tracking-wider">Return reason</p>
+                    <textarea
+                      autoFocus
+                      value={returnReason}
+                      onChange={(e) => setReturnReason(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void sendReturn(e as any); }}
+                      placeholder="What needs fixing?"
+                      className="w-full resize-none rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-2 text-xs outline-none focus:border-primary dark:border-white/10 dark:bg-black/20 dark:text-gray-200"
+                      rows={3}
+                    />
+                    <div className="flex justify-end gap-1.5 mt-2">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setReturnPromptOpen(false); setReturnReason(''); }}
+                        className="rounded-md px-2 py-1 text-[10px] font-semibold text-gray-500 hover:bg-gray-100 dark:hover:bg-white/10"
+                      >Cancel</button>
+                      <button
+                        disabled={!returnReason.trim() || returnBusy}
+                        onClick={(e) => void sendReturn(e)}
+                        className="rounded-md bg-amber-500 px-2 py-1 text-[10px] font-semibold text-white disabled:opacity-50 hover:bg-amber-600"
+                      >{returnBusy ? 'Returning…' : 'Return to dev'}</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+            {/* Per-status action button — compact, right-aligned */}
+            {statusAction && !isOverlay && (
+              <div className="mt-2 flex justify-end opacity-0 group-hover:opacity-100 transition-opacity">
+                <button
+                  onClick={(e) => void sendStatusAction(e)}
+                  disabled={actionBusy}
+                  className="flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-[10px] font-semibold text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+                >
+                  <Play className="w-2.5 h-2.5" />
+                  {actionBusy ? '…' : statusAction.label}
+                </button>
+              </div>
             )}
           </div>
         </div>
