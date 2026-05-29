@@ -527,8 +527,13 @@ history:
     to: Done
     user: Guy
     date: '2026-05-28T04:16:59.419Z'
+  - type: status_change
+    from: Done
+    to: Released
+    user: Agent
+    date: '2026-05-29T00:47:20.948Z'
 title: Do release v0.10.1
-status: Done
+status: Released
 createdBy: Guy
 updatedBy: Guy
 order: 0
@@ -539,5 +544,8 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 2017378
   cacheCreationTokens: 55810
+version: v0.10.2
+releasedAt: '2026-05-29T00:47:20.948Z'
+releaseDocPath: release-notes/v0.10.2
 ---
 with github actions release and proper changelog etc.
