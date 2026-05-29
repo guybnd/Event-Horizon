@@ -2,6 +2,44 @@
 
 All notable changes to Event Horizon are documented here.
 
+## [v0.12.0] - 2026-05-29
+
+### Portal Redesign
+
+- **Geist font** with OpenType features for distinctive typography
+- **Warm orange/teal palette** replacing generic AI-purple accent
+- **Matrix theme promoted to default** — fully overhauled with CRT effects
+- Subtle noise overlay, tinted shadows, and card inner glow for depth
+- Notification dismiss animation (slide-out + blur via AnimatePresence)
+- Fixed viewport (`min-h-dvh`), added meta/OG tags, removed Vite boilerplate
+
+### Matrix CRT Effect
+
+- Full-screen scanlines and vignette overlay
+- Subtle flicker animation simulating CRT phosphor decay
+- Scrolling beam highlight (electron gun refresh simulation)
+- Phosphor glow radiating from screen center
+
+### Per-Card Action Buttons
+
+- **Grooming** → "Start grooming"
+- **Todo** → "Implement"
+- **In Progress** → "Continue"
+- Compact, right-aligned, shown on card hover
+
+### Ready Column — Split Actions
+
+- **Review** — opens reviewer persona selector (Senior Dev, Angry Linus, Architect, Perf Expert, UX Expert)
+- **Return** — prompts for reason, moves ticket back to In Progress
+- **Finish** — sends finish command to agent
+
+### Bug Fixes
+
+- Fix startup migration: properly clean up stray `.flux/` ticket files in orphan mode
+- Fix `ReadState` type mismatch causing CI build failure
+- Launch Agent button now uses accent gradient (visible in dark themes)
+- Board filter bar and comment badges styled for Matrix visibility
+
 ## [v0.8.1] - 2026-05-26
 
 ### Features
