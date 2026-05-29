@@ -10,6 +10,7 @@ import {
 } from '../notifications.js';
 import { installWorkspaceWorkflow, type Framework } from '../workflow-installer.js';
 import { workspaceRoot } from '../workspace.js';
+import { broadcastEvent } from '../events.js';
 
 const router = express.Router();
 
@@ -22,6 +23,7 @@ router.get('/', (_req, res) => {
 
 router.post('/read-all', (_req, res) => {
   markAllRead();
+  broadcastEvent('notification', { notification: null, unreadCount: 0 });
   res.json({ ok: true });
 });
 

@@ -232,6 +232,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const taskEventTimeoutsRef = useRef<Record<string, number>>({});
   const columnEventTimeoutsRef = useRef<Record<string, number>>({});
   const liveEventSequenceRef = useRef(0);
+  const pendingReadStateRef = useRef<Record<string, Record<string, string[]>>>({});
+  const readStateFlushTimerRef = useRef<number | null>(null);
 
   const scheduleTaskEventClear = useCallback((taskId: string, sequence: number) => {
     const existingTimeout = taskEventTimeoutsRef.current[taskId];
@@ -524,31 +526,58 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // no-op: full state is loaded on mount; kept for API compatibility
   }, []);
 
+  const flushReadState = useCallback(() => {
+    const patch = pendingReadStateRef.current;
+    if (Object.keys(patch).length === 0) return;
+    pendingReadStateRef.current = {};
+    saveReadState({ [currentUser]: patch }).catch((err) => {
+      console.warn('[read-state] persist failed, retrying once', err);
+      saveReadState({ [currentUser]: patch }).catch(() => {});
+    });
+  }, [currentUser]);
+
+  const scheduleReadStateFlush = useCallback(() => {
+    if (readStateFlushTimerRef.current !== null) return;
+    readStateFlushTimerRef.current = window.setTimeout(() => {
+      readStateFlushTimerRef.current = null;
+      flushReadState();
+    }, 50);
+  }, [flushReadState]);
+
   const markCommentRead = useCallback((ticketId: string, commentId: string) => {
     setReadComments(prev => {
       const existing = prev[ticketId] ?? [];
       if (existing.includes(commentId)) return prev;
       const next = [...existing, commentId];
-      void saveReadState({ [currentUser]: { [ticketId]: next } });
+      const pending = pendingReadStateRef.current;
+      pending[ticketId] = next;
+      scheduleReadStateFlush();
       return { ...prev, [ticketId]: next };
     });
-  }, [currentUser]);
+  }, [scheduleReadStateFlush]);
 
   const markAllCommentsRead = useCallback((ticketId: string, commentIds: string[]) => {
     setReadComments(prev => {
       const existing = new Set(prev[ticketId] ?? []);
       commentIds.forEach(id => existing.add(id));
       const next = [...existing];
-      void saveReadState({ [currentUser]: { [ticketId]: next } });
+      const pending = pendingReadStateRef.current;
+      pending[ticketId] = next;
+      scheduleReadStateFlush();
       return { ...prev, [ticketId]: next };
     });
-  }, [currentUser]);
+  }, [scheduleReadStateFlush]);
 
   useEffect(() => {
     return () => {
       Object.values(taskEventTimeoutsRef.current).forEach((timeoutId) => window.clearTimeout(timeoutId));
       Object.values(columnEventTimeoutsRef.current).forEach((timeoutId) => window.clearTimeout(timeoutId));
+      if (readStateFlushTimerRef.current !== null) {
+        window.clearTimeout(readStateFlushTimerRef.current);
+        flushReadState();
+      }
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -732,17 +761,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
       });
     });
     es.addEventListener('notification', (e: MessageEvent) => {
-      const { notification, unreadCount } = JSON.parse(e.data) as { notification: Notification; unreadCount: number };
+      const { notification, unreadCount } = JSON.parse(e.data) as { notification: Notification | null; unreadCount: number };
       startTransition(() => {
-        setNotifications(prev => {
-          const idx = prev.findIndex(n => n.id === notification.id);
-          if (idx >= 0) {
-            const next = [...prev];
-            next[idx] = notification;
-            return next;
-          }
-          return [notification, ...prev].slice(0, 50);
-        });
+        if (notification) {
+          setNotifications(prev => {
+            const idx = prev.findIndex(n => n.id === notification.id);
+            if (idx >= 0) {
+              const next = [...prev];
+              next[idx] = notification;
+              return next;
+            }
+            return [notification, ...prev].slice(0, 50);
+          });
+        } else {
+          setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+        }
         setNotificationUnreadCount(unreadCount);
       });
     });
