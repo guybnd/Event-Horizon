@@ -1,7 +1,7 @@
 ---
 id: FLUX-341
 title: Harden ticket file integrity and add skill staleness detection
-status: In Progress
+status: Done
 priority: High
 effort: M
 assignee: unassigned
@@ -10,12 +10,30 @@ tags:
   - engine
   - agent-workflow
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 history:
   - type: activity
     user: Guy
     date: '2026-05-29T01:33:32.603Z'
     comment: Created ticket.
+  - type: comment
+    user: Agent
+    comment: >-
+      Implemented three-layer defense: (1) atomic writes + read/load guards
+      prevent ticket corruption from partial file reads, (2) skill version
+      staleness detection with portal notification and Reinstall action, (3)
+      skills overhauled to v2.2.0 with proper markdown tables, explicit
+      file-write prohibitions, .flux-store references, and tightened REST
+      fallback rules. FLUX-292 restored from git history. NotificationPanel
+      shows green success confirmation on action completion.
+    date: '2026-05-29T01:41:57.110Z'
+    id: c-2026-05-29t01-41-57-110z
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-05-29T01:41:57.111Z'
+implementationLink: c9cbd40
 ---
 ## Problem / Motivation
 
