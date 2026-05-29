@@ -170,10 +170,47 @@ export async function migrateStrandedFluxTickets(workspaceRoot: string): Promise
 
   const configSrc = path.join(fluxDir, 'config.json');
   const configDst = path.join(storeDir, 'config.json');
-  if (existsSync(configSrc) && !existsSync(configDst)) {
-    await fs.copyFile(configSrc, configDst);
-    await fs.unlink(configSrc);
-    console.log(`[startup-migrate] Migrated config.json`);
+  if (existsSync(configSrc)) {
+    try {
+      if (!existsSync(configDst)) {
+        await fs.copyFile(configSrc, configDst);
+        console.log(`[startup-migrate] Migrated config.json`);
+      } else {
+        console.log(`[startup-migrate] Removed stale config.json from .flux/`);
+      }
+      await fs.unlink(configSrc);
+    } catch (err: any) {
+      console.warn(`[startup-migrate] Failed to migrate config.json, skipping: ${err.message}`);
+    }
+  }
+
+  // Migrate stray asset folders (e.g. .flux/assets/FLUX-59 → .flux-store/assets/FLUX-59)
+  const assetsSrc = path.join(fluxDir, 'assets');
+  const assetsDst = path.join(storeDir, 'assets');
+  if (existsSync(assetsSrc)) {
+    let assetEntries: string[];
+    try {
+      assetEntries = await fs.readdir(assetsSrc);
+    } catch {
+      assetEntries = [];
+    }
+    for (const name of assetEntries) {
+      const src = path.join(assetsSrc, name);
+      const dst = path.join(assetsDst, name);
+      try {
+        if (existsSync(dst)) {
+          await fs.rm(src, { recursive: true, force: true });
+          console.log(`[startup-migrate] Removed stale asset: ${name}`);
+        } else {
+          await fs.mkdir(assetsDst, { recursive: true });
+          await fs.cp(src, dst, { recursive: true });
+          await fs.rm(src, { recursive: true, force: true });
+          console.log(`[startup-migrate] Migrated asset: ${name}`);
+        }
+      } catch (err: any) {
+        console.warn(`[startup-migrate] Failed to migrate asset ${name}, skipping: ${err.message}`);
+      }
+    }
   }
 }
 
