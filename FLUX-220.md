@@ -7,7 +7,7 @@ tags:
 assignee: Agent
 createdBy: Unknown
 title: Auto-migrate stranded .flux tickets to .flux-store on startup in orphan mode
-status: Ready
+status: In Progress
 updatedBy: Agent
 history:
   - type: activity
@@ -672,6 +672,26 @@ history:
     to: Ready
     user: Agent
     date: '2026-05-29T01:59:53.804Z'
+  - type: comment
+    user: Guy
+    date: '2026-05-29T02:00:36.762Z'
+    comment: why does my project still have items in flux then?
+    replyTo: c-2026-05-29t01-59-53-803z
+    id: c-2026-05-29t02-00-36-758z
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Guy
+    date: '2026-05-29T02:00:43.697Z'
+  - type: agent_session
+    sessionId: 41a67fe2-c5e7-4823-93f4-d56c5356320d
+    startedAt: '2026-05-29T02:00:43.797Z'
+    status: cancelled
+    progress: []
+    user: Claude Code
+    date: '2026-05-29T02:00:43.797Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-05-29T02:00:55.058Z'
 tokenMetadata:
   inputTokens: 542895
   outputTokens: 6802
