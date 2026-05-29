@@ -1,4 +1,14 @@
 ---
+title: FLUX-292 (recovered)
+history:
+  - type: activity
+    user: System
+    date: '2026-05-29T00:53:44.653Z'
+    comment: >-
+      Auto-repaired ticket: Recovered missing title from filename → "FLUX-292
+      (recovered)"
+---
+---
 id: FLUX-292
 title: Agent should be able to create branch for each feature working on
 status: Grooming
