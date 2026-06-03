@@ -279,7 +279,8 @@ export function TaskCard({
       const persona = REVIEW_PERSONAS.find(p => p.id === personaId);
       if (!persona) return;
       const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
-      await startTaskCliSession(task.id, framework, `review ${task.id} --persona ${persona.id}`);
+      await updateTask(task.id, { status: 'In Progress' });
+      await startTaskCliSession(task.id, framework, persona.prompt, true);
       triggerRefresh();
     } finally {
       setReviewBusy(false);

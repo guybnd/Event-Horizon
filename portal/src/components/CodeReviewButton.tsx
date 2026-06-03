@@ -22,8 +22,8 @@ Steps to follow:
 2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present) to see the actual changes.
 3. Evaluate the implementation against the ticket intent. Consider: correctness, edge cases, naming, readability, test coverage, and anything that could confuse a future maintainer.
 4. Make a decision:
-   - **If changes needed**: Post a detailed review comment to the ticket via \`PUT /api/tasks/:id\` using \`appendHistory: [{ type: "comment", user: "Agent", comment: "..." }]\` (not the \`history\` field). List specific, actionable improvements. Then move the ticket to "In Progress" in the same call.
-   - **If approved**: Post a short approval comment explaining what looks good, and leave the ticket status as Ready.
+   - **If changes needed**: Use the \`add_comment\` MCP tool to post a detailed review comment listing specific, actionable improvements. Leave the ticket at In Progress so the implementer sees it.
+   - **If approved**: Use the \`add_comment\` MCP tool to post a short approval comment explaining what looks good. Then use \`change_status\` to move the ticket back to "Ready".
 
 Keep your tone warm but precise. Lead with the most important feedback.`,
   },
@@ -40,8 +40,8 @@ Steps to follow:
 2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present).
 3. Evaluate ruthlessly. Look for: bad naming, unnecessary complexity, missing error handling, confusing logic, wrong abstractions, obvious bugs, or anything that would make you question whether the author thought about what they were doing.
 4. Make a decision:
-   - **If changes needed**: Post a blunt, specific review comment via \`PUT /api/tasks/:id\` using \`appendHistory: [{ type: "comment", user: "Agent", comment: "..." }]\` (not the \`history\` field). List every problem clearly. Then move the ticket to "In Progress" in the same call.
-   - **If it's actually fine**: Post a short comment saying it passes. You don't need to be effusive about it.
+   - **If changes needed**: Use the \`add_comment\` MCP tool to post a blunt, specific review comment listing every problem clearly. Leave the ticket at In Progress.
+   - **If it's actually fine**: Use the \`add_comment\` MCP tool to post a short comment saying it passes. Then use \`change_status\` to move the ticket back to "Ready".
 
 Do not pad your response. Be direct.`,
   },
@@ -58,8 +58,8 @@ Steps to follow:
 2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present).
 3. Evaluate architectural quality: Are responsibilities well-separated? Is the abstraction at the right level? Does this introduce hidden coupling? Will this scale? Are there simpler designs that achieve the same goal?
 4. Make a decision:
-   - **If structural issues found**: Post a detailed architectural review comment via \`PUT /api/tasks/:id\` using \`appendHistory: [{ type: "comment", user: "Agent", comment: "..." }]\` (not the \`history\` field). Be specific about what to restructure and why, including proposed alternatives where helpful. Then move the ticket to "In Progress" in the same call.
-   - **If the architecture is sound**: Post a brief approval noting what holds up well from a design perspective. Leave the ticket as Ready.`,
+   - **If structural issues found**: Use the \`add_comment\` MCP tool to post a detailed architectural review comment. Be specific about what to restructure and why, including proposed alternatives where helpful. Leave the ticket at In Progress.
+   - **If the architecture is sound**: Use the \`add_comment\` MCP tool to post a brief approval noting what holds up well from a design perspective. Then use \`change_status\` to move the ticket back to "Ready".`,
   },
   {
     id: 'perf-expert',
@@ -74,8 +74,8 @@ Steps to follow:
 2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present).
 3. Evaluate performance characteristics: O(n) where O(1) is possible? Unnecessary useEffect dependencies causing cascading re-renders? Large imports where tree-shaking won't help? Synchronous work on the main thread? Missing memoization on expensive computations?
 4. Make a decision:
-   - **If performance issues found**: Post a specific, actionable review comment via \`PUT /api/tasks/:id\` using \`appendHistory: [{ type: "comment", user: "Agent", comment: "..." }]\` (not the \`history\` field). Quantify impact where possible and suggest concrete fixes. Then move the ticket to "In Progress" in the same call.
-   - **If performance is acceptable**: Post a brief approval noting it passes performance scrutiny. Leave the ticket as Ready.`,
+   - **If performance issues found**: Use the \`add_comment\` MCP tool to post a specific, actionable review comment. Quantify impact where possible and suggest concrete fixes. Leave the ticket at In Progress.
+   - **If performance is acceptable**: Use the \`add_comment\` MCP tool to post a brief approval noting it passes performance scrutiny. Then use \`change_status\` to move the ticket back to "Ready".`,
   },
   {
     id: 'ux-expert',
@@ -90,8 +90,8 @@ Steps to follow:
 2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present). Pay close attention to JSX, CSS classes, and event handlers.
 3. Evaluate UX/UI quality: Is the interaction model intuitive? Are loading, error, and empty states handled gracefully? Is the component accessible (keyboard nav, ARIA labels, focus management, color contrast)? Does it match the visual language of the rest of the portal? Are there confusing affordances or missing feedback?
 4. Make a decision:
-   - **If UX/UI issues found**: Post a detailed review comment via \`PUT /api/tasks/:id\` using \`appendHistory: [{ type: "comment", user: "Agent", comment: "..." }]\` (not the \`history\` field). Be specific — name the interaction, describe the problem, and suggest a concrete fix. Then move the ticket to "In Progress" in the same call.
-   - **If the UX is solid**: Post a brief approval noting what works well from a user experience perspective. Leave the ticket as Ready.`,
+   - **If UX/UI issues found**: Use the \`add_comment\` MCP tool to post a detailed review comment. Be specific — name the interaction, describe the problem, and suggest a concrete fix. Leave the ticket at In Progress.
+   - **If the UX is solid**: Use the \`add_comment\` MCP tool to post a brief approval noting what works well from a user experience perspective. Then use \`change_status\` to move the ticket back to "Ready".`,
   },
 ];
 
