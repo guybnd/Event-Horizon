@@ -61,6 +61,6 @@ Event Horizon installs agent-facing workflow assets into a target repository so 
 
 -   [[Project Overview]]
     
--   [[Repository Map]]
+-   [[Code Map]]
     
 -   [[Ticket Lifecycle]]

@@ -56,6 +56,6 @@ the portal mostly renders and edits that repo-backed state.
 ## Related docs
 
 - [[Project Overview]]
-- [[Repository Map]]
+- [[Code Map]]
 - [[Ticket Interactions]]
 - [[Ticket Lifecycle]]

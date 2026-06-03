@@ -77,5 +77,5 @@ rendering and editing files that live beside the rest of the project.
 
 - [[Project Overview]]
 - [[Architecture Overview]]
-- [[Repository Map]]
+- [[Code Map]]
 - [[Workflow Install]]

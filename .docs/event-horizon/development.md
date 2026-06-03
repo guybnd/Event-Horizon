@@ -63,6 +63,6 @@ Key rules:
 
 ## Related Docs
 
-- [[Repository Map]]
+- [[Code Map]]
 - [[Architecture Overview]]
 - [[Installation & Setup]]

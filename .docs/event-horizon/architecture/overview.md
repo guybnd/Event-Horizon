@@ -75,7 +75,7 @@ Event Horizon uses a dynamic workspace model similar to a code editor, allowing 
 
 -   [[Docs Workspace]]
     
--   [[Repository Map]]
+-   [[Code Map]]
     
 -   [[Ticket Model]]
     

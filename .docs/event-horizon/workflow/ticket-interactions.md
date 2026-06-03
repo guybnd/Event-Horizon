@@ -113,4 +113,4 @@ the board, backlog, header, and ticket views.
 - [[Project Overview]]
 - [[Ticket Model]]
 - [[Ticket Lifecycle]]
-- [[Repository Map]]
+- [[Code Map]]

@@ -1,10 +1,10 @@
 ---
-title: Repository Map
+title: Code Map
 order: 2
 ---
-# Repository Map
+# Code Map
 
-This page is the quick orientation guide for where behavior lives today.
+This page is the quick orientation guide for where behavior lives today — file by file. Pair it with [[Architecture Overview]] for the conceptual model and the subsystem table in the docs [[Documentation Index]].
 
 ## Product surfaces
 

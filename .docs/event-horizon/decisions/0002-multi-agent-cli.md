@@ -1,4 +1,11 @@
-# Multi-Agent CLI Research: Claude, Gemini, Copilot
+---
+title: "ADR 0002 — Multi-Agent CLI Research"
+order: 2
+---
+# ADR 0002 — Multi-Agent CLI Research: Claude, Gemini, Copilot
+
+> **Historical reasoning — skip this for ticket work.**
+> For the current adapter contract see [[Agent Integrations]] (and the planned `reference/agent-adapter-contract.md`). This page is the research spike that informed today's multi-framework support.
 
 Research for FLUX-282. Covers execution arguments, system prompt injection, context isolation, and inter-agent coordination patterns across Claude Code CLI, Gemini CLI, and GitHub Copilot CLI.
 

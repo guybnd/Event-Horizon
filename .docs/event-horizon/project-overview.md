@@ -68,7 +68,7 @@ Event Horizon is primarily distributed as a standalone binary application (Windo
 1. [[Architecture Overview]]
 2. [[Agent Integrations]]
 3. [[Docs Workspace]]
-4. [[Repository Map]]
+4. [[Code Map]]
 5. [[Ticket Model]]
 6. [[Ticket Interactions]]
 7. [[Ticket Lifecycle]]

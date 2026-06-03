@@ -1,8 +1,11 @@
 ---
-title: Decoupled Storage Options
-order: 5
+title: "ADR 0001 — Storage Modes"
+order: 1
 ---
-# Decoupled Storage — Architecture Spike
+# ADR 0001 — Storage Modes
+
+> **Historical reasoning — skip this for ticket work.**
+> For current storage behavior see [[Architecture Overview]]. This page captures the decision spike that produced today's in-repo / orphan-branch options.
 
 ## Problem Statement
 
