@@ -1,7 +1,7 @@
 ---
 id: FLUX-340
 title: 'Portal UI — branch display in card, modal, and metadata panel'
-status: In Progress
+status: Ready
 priority: Medium
 effort: L
 assignee: unassigned
@@ -29,6 +29,23 @@ history:
     to: In Progress
     user: Agent
     date: '2026-06-03T04:53:10.089Z'
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-06-03T05:01:41.086Z'
+  - type: comment
+    user: Agent
+    date: '2026-06-03T05:01:41.086Z'
+    comment: >-
+      Implemented all portal UI for branch management. StartTaskPrompt wired
+      into TaskCard's Implement button for Todo tickets (skipped if branch
+      already set), branch badge added below snippet in card (click to copy),
+      DiffSummaryPanel stub added to MetadataPanel, branch status row with
+      ahead/behind indicators and copy button in MetadataPanel sidebar,
+      implementationLink now shows 'View PR ↗' for GitHub URLs. Portal
+      TypeScript check passes clean.
+    id: c-2026-06-03t05-01-41-086z
 ---
 ## Problem / Motivation
 
