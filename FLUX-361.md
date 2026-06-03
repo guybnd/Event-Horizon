@@ -6,9 +6,9 @@ tags:
   - refactor
   - agent
 title: Unify agent-launch entry points across card and modal
-status: In Progress
+status: Done
 createdBy: Agent
-updatedBy: Agent
+updatedBy: copilot
 assignee: unassigned
 history:
   - type: activity
@@ -32,7 +32,72 @@ history:
     user: Agent
     date: '2026-06-03T04:38:45.498Z'
     id: c-2026-06-03t04-38-45-498z
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: copilot
+    date: '2026-06-03T04:43:06.136Z'
+  - type: activity
+    user: copilot
+    date: '2026-06-03T04:43:06.136Z'
+    comment: Updated implementation link.
+  - type: comment
+    user: copilot
+    comment: >-
+      Refactor landed in commit 17a6bcc.
+
+
+      New module `portal/src/agentActions.ts` exports the shared registries
+      (EFFORT_LEVELS, AGENT_COMMANDS, REVIEW_PERSONAS) and a single
+      `runAgentAction({taskId, framework, action, currentUser, skipPermissions?,
+      effortOverride?, preStatus?})` function that wraps `startTaskCliSession`
+      plus the optional pre-launch `updateTask({status})`.
+
+
+      Rewired callers:
+
+      - `portal/src/hooks/useCliSession.ts` launchSession ->
+      runAgentAction({kind:'launch'})
+
+      - `portal/src/components/TaskModal.tsx` handleGrooming / sendFinishCommand
+      / handleSendForCodeReview -> runAgentAction
+
+      - `portal/src/components/ContextMenu.tsx` handleLaunchAgent /
+      handleAgentCommand / handleSendForGrooming -> runAgentAction; new Code
+      Review submenu wired to REVIEW_PERSONAS
+
+      - `portal/src/components/TaskCard.tsx` sendFinishCommand /
+      sendStatusAction / sendReview -> runAgentAction
+
+      - `portal/src/components/LaunchAgentSplitButton.tsx` imports EFFORT_LEVELS
+      from agentActions (dedupe)
+
+
+      Fixes shipped:
+
+      1. TaskModal sendFinishCommand was dropping the user-toggled
+      skipPermissions flag; now forwarded.
+
+      2. Card Code Review now opens a persona picker matching the modal
+      (previously sent a bare 'review <id>' with no persona).
+
+      3. Card status-action verb unified to 'implement <id>' (was 'do <id>').
+
+      4. Card Send-for-Grooming no longer pre-moves status; the agent owns the
+      Grooming transition itself (matches modal behavior).
+
+
+      Verification:
+
+      - grep startTaskCliSession portal/src shows only api.ts (definition) and
+      agentActions.ts (single caller).
+
+      - cd portal && npm run build succeeds: 2518 modules transformed in 509ms,
+      zero TS errors.
+    date: '2026-06-03T04:43:06.136Z'
+    id: c-2026-06-03t04-43-06-136z
 author: Agent
+implementationLink: 17a6bcc3a6ec268d35ca4c11d5cf39cddc450216
 ---
 Audit of every launch-agent entry point found seven discrepancies caused by each call site composing `startTaskCliSession` itself instead of going through a shared helper. Same shape of problem as the original review-button gap.
 
