@@ -14,15 +14,42 @@ history:
   - type: activity
     user: Agent
     date: '2026-05-29T01:25:44.088Z'
+    comment: Created ticket.
+  - type: activity
+    user: Agent
+    date: '2026-05-29T01:25:44.088Z'
     comment: Created as subtask of FLUX-292.
   - type: activity
     user: Agent
     date: '2026-06-03T01:53:49.460Z'
     comment: Updated description.
+  - type: activity
+    user: Agent
+    date: '2026-06-03T02:52:57.826Z'
+    comment: Updated description.
+  - type: comment
+    user: Agent
+    comment: >-
+      Design decisions (2026-06-03):
+
+
+      **Reviewer agent is manually kicked off** — not an automatic hook on
+      `Ready`. The user selects the scope and reviewer personality
+      intentionally.
+
+
+      **Review conversation lives on the ticket, not the GitHub PR.** GitHub PR
+      = diff artifact. Ticket = review record. This keeps the full decision
+      trail in the portal without requiring a GitHub context switch. Reviewer
+      leaves a structured comment, moves ticket back to `In Progress` if changes
+      needed. Working agent picks up the same branch, pushes, PR auto-updates.
+      Reviewer approves → `Done`.
+    date: '2026-06-03T02:52:57.854Z'
+    id: c-2026-06-03t02-52-57-854z
 ---
 ## Problem / Motivation
 
-The agent implementation skill needs updated instructions so agents respect the user's branch decision and handle the full branch lifecycle: working on the branch, committing there, and creating a PR at finish time.
+The agent implementation skill needs updated instructions so agents respect the user's branch decision and handle the full branch lifecycle: working on the branch, committing there, creating a PR at finish time, and handing off cleanly to a reviewer agent when one is invoked.
 
 ## Implementation Plan
 
@@ -51,18 +78,32 @@ When the user says `finish FLUX-XX` for a ticket with a `branch` field:
 
 When no branch is set: existing finish behaviour unchanged (local commit + hash in `implementationLink`).
 
-### 5. If a PR is rejected / returned
+### 5. Reviewer agent handoff (ticket-first)
 
-If the ticket is moved back from `Ready` to `In Progress` (reviewer sends it back), the agent should:
-- Check out the existing branch (it's still in `branch` field).
-- Apply requested changes.
-- Push to the same branch — the open PR updates automatically.
-- Call `finish_ticket` again to move back to `Ready`.
+Reviewer agents are **not** triggered automatically. The user manually kicks off a review session and selects the scope and "personality" of the reviewer. This is intentional — review is a deliberate act, not an automatic hook.
 
-### 6. XS effort exemption
+The review conversation lives **on the ticket**, not on the GitHub PR. This keeps the full decision trail visible in the portal without requiring a GitHub context switch. The GitHub PR is the diff artifact; the ticket is the review record.
+
+Reviewer agent flow:
+- Reviewer leaves a structured comment on the ticket: what passed, what needs changing.
+- If changes needed: reviewer moves ticket back to `In Progress` with the comment as the stated reason.
+- Working agent picks up the ticket, checks out the existing branch (still in `branch` field), applies changes, pushes. The open PR updates automatically.
+- Working agent calls `finish_ticket` again → ticket back to `Ready`.
+- If approved: reviewer moves ticket to `Done`.
+
+Add a note in the implementation skill that when returning to `In Progress` from `Ready`, the agent should always re-read the most recent reviewer comment before making any changes.
+
+### 6. If a PR is rejected / returned without a reviewer agent
+
+If a human reviewer sends the ticket back to `In Progress` directly, the same flow applies:
+- Agent checks out the existing branch.
+- Applies requested changes and pushes.
+- Calls `finish_ticket` to return to `Ready`.
+
+### 7. XS effort exemption
 
 Branch creation is optional for XS effort tickets. The portal "Start Task" prompt should pre-select "start normally" for XS tickets to avoid overhead.
 
-### 7. Update orchestrator skill MCP tool table
+### 8. Update orchestrator skill MCP tool table
 
 Add `create_branch`, `get_branch`, `delete_branch` to the tool table in the orchestrator skill. Remove any reference to `switch_branch`.

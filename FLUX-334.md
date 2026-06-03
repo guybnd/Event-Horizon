@@ -870,6 +870,29 @@ history:
     user: Agent
     date: '2026-06-03T01:54:36.477Z'
     comment: Updated description. Updated tags.
+  - type: activity
+    user: Agent
+    date: '2026-06-03T02:52:57.808Z'
+    comment: Updated description.
+  - type: comment
+    user: Agent
+    comment: >-
+      Design decisions (2026-06-03):
+
+
+      **Diff sidecars stored in repo by default, configurable.** Typical agent
+      diff is 30–100KB — git compression makes the orphan branch cost
+      negligible. Sidecars are valuable for follow-up agent sessions that need
+      to understand what a previous implementation actually changed. In orphan
+      mode they are committed to the `flux-data` branch alongside ticket
+      markdown files.
+
+
+      Add a Settings → Storage toggle: "Store diff files with tickets" (default
+      on). When off, only `diffSummary` is stored in frontmatter; full diff is
+      not written to disk. Hard cap at 2MB per sidecar with truncation notice.
+    date: '2026-06-03T02:52:57.843Z'
+    id: c-2026-06-03t02-52-57-843z
 title: can we enrich tickets with the diffs that were performed?
 status: Grooming
 createdBy: Guy
@@ -883,10 +906,11 @@ tokenMetadata:
   cacheCreationTokens: 75145
 parentId: FLUX-292
 order: 15
+id: FLUX-334
 ---
 ## Problem / Motivation
 
-When a ticket is completed, there is no way to see what code changes were made without manually inspecting git history. Developers and reviewers want to see affected files and diffs directly within the ticket modal, providing immediate context on what was implemented.
+When a ticket is completed, there is no way to see what code changes were made without manually inspecting git history. Developers and reviewers want to see affected files and diffs directly within the ticket modal, providing immediate context on what was implemented. Agents working follow-up tickets can also read the sidecar diff to understand what a previous implementation actually changed — not just what the ticket said it would change.
 
 ## Implementation Plan
 
@@ -911,7 +935,8 @@ When `finish_ticket` runs:
 In both modes:
 - Run `git diff --stat` for the file summary.
 - Store `diffSummary: [{ file, additions, deletions }]` in ticket frontmatter.
-- Write full unified diff to sidecar file: `.flux-store/<TICKET-ID>.diff` (or `.flux/<TICKET-ID>.diff` in in-repo mode).
+- Write full unified diff to sidecar file: `.flux-store/<TICKET-ID>.diff` (or `.flux/<TICKET-ID>.diff` in in-repo mode) — **unless** the "Store diff files" setting is disabled (see §6).
+- Hard cap: if the diff exceeds 2MB, truncate and append a `# [diff truncated — exceeds 2MB]` marker.
 
 **Files:** `engine/src/mcp-server.ts`, `engine/src/task-store.ts`
 
@@ -945,8 +970,19 @@ When a file is clicked, replace the left-side description/activity view with a d
 
 **New component:** `portal/src/components/task-modal/DiffViewer.tsx`
 
+### 7. Sidecar storage setting
+
+Default: **on** — diff sidecars are stored alongside ticket files.
+
+Add a toggle in Settings → Storage section: **"Store diff files with tickets"**. When off, only `diffSummary` (the compact file list) is stored in frontmatter; the full diff is not written to disk.
+
+**Why default on:** Typical agent diffs are 30–100KB (10–20 files, 100–300 lines changed). Git compresses text aggressively so the orphan branch cost is minimal. The sidecar is valuable context for follow-up agent sessions that need to understand what was previously implemented. The 2MB cap handles edge cases.
+
+In orphan branch mode, sidecar files are committed to the `flux-data` branch by the sync-watcher alongside ticket markdown files. This is intentional — diff history is part of the ticket record.
+
 ### Edge Cases
 
-- Large diffs: sidecar file avoids bloating frontmatter. Add a size cap (e.g. 2MB) with a truncation notice.
+- Large diffs: 2MB hard cap with truncation notice as described above.
 - Binary files: show in file list as "binary" with no inline diff.
 - Missing baseline: fall back to single-commit diff as described above.
+- Setting disabled: skip sidecar write, `diffSummary` still captured in frontmatter.

@@ -15,11 +15,39 @@ history:
   - type: activity
     user: Agent
     date: '2026-05-29T01:25:43.697Z'
+    comment: Created ticket.
+  - type: activity
+    user: Agent
+    date: '2026-05-29T01:25:43.697Z'
     comment: Created as subtask of FLUX-292.
   - type: activity
     user: Agent
     date: '2026-06-03T01:53:49.437Z'
     comment: Updated description. Updated tags.
+  - type: activity
+    user: Agent
+    date: '2026-06-03T02:52:57.786Z'
+    comment: Updated description.
+  - type: comment
+    user: Agent
+    comment: >-
+      Design decisions (2026-06-03):
+
+
+      **Branch name stays on ticket after merge** — no automated cleanup. Branch
+      name is a useful historical artifact (common practice in Linear, Jira,
+      GitHub Issues). Portal shows it muted when `exists: false`. PR URL in
+      `implementationLink` is the canonical live record.
+
+
+      **`gh` auth check at startup** — engine runs `gh auth status` on launch.
+      If it fails, a portal warning banner is shown. Engine does NOT block. At
+      `finish_ticket` time, if `gh` is absent: degrade gracefully — commit
+      locally, store hash in `implementationLink`, append a warning comment to
+      the ticket ("PR creation skipped — gh not configured. Commit: `<hash>`.").
+      No hard failure.
+    date: '2026-06-03T02:52:57.831Z'
+    id: c-2026-06-03t02-52-57-831z
 ---
 ## Problem / Motivation
 
@@ -45,21 +73,39 @@ Add to `engine/src/routes/tasks.ts` (or new `branch.ts` route file):
 - `GET /api/tasks/:id/branch` — returns `{ name, exists, aheadCount, behindCount }`.
 - `DELETE /api/tasks/:id/branch` — removes association, optionally deletes git branch.
 
-### 3. PR creation as part of `finish`
+### 3. `gh` auth check at engine startup
+
+At engine startup, run `gh auth status`. If it fails:
+- Emit a portal warning event (use the existing event/broadcast system) so the portal can display a persistent banner: "GitHub CLI not configured — PR creation unavailable. Run `gh auth login` to enable."
+- Log a warning to the engine console.
+- Do NOT block startup. Engine continues normally; PR creation simply degrades.
+
+### 4. PR creation as part of `finish` — two-tier degradation
 
 When `finish_ticket` is called for a ticket that has a `branch` field set:
+
+**If `gh` is available and authenticated:**
 1. Push the branch to remote: `git push -u origin <branch>`.
 2. Create a PR via `gh pr create --title "<ticket title>" --body "<ticket body excerpt + ticket link>"`.
-3. Store the PR URL in `implementationLink` (overwrites any prior commit hash).
+3. Store the PR URL in `implementationLink`.
 4. Proceed with the normal `finish_ticket` → `Ready` transition.
 
-When `finish_ticket` is called for a ticket with **no** branch:
-- Existing behaviour unchanged: commit hash in `implementationLink`, transition to `Ready`.
+**If `gh` is absent or not authenticated (graceful degradation):**
+1. Commit locally as normal.
+2. Store the commit hash in `implementationLink` (existing behaviour).
+3. Append a warning comment to the ticket: "PR creation skipped — gh not configured. Commit: `<hash>`. Open a PR manually when ready."
+4. Proceed with `Ready` transition.
 
-### 4. Error handling
+When `finish_ticket` is called for a ticket with **no** branch: existing behaviour unchanged.
 
-Handle gracefully: dirty working tree on create, branch already exists, `gh` not authenticated, unmerged-branch delete attempt. Return structured errors via `errorResult()` so the agent can surface them clearly.
+### 5. Post-merge branch display (no cleanup needed)
 
-### 5. Use `simple-git` (not `execSync`)
+After a PR merges, the branch is typically deleted on GitHub but the `branch` field stays on the ticket. This is intentional — the branch name is a useful historical artifact. The portal detects `exists: false` from `GET /api/tasks/:id/branch` and shows the name muted. No automated cleanup on the engine side.
+
+### 6. Error handling
+
+Handle gracefully: dirty working tree on create, branch already exists, unmerged-branch delete attempt. Return structured errors via `errorResult()` so the agent can surface them clearly.
+
+### 7. Use `simple-git` (not `execSync`)
 
 Prefer `simple-git` for consistency with any existing engine git usage. Fall back to `execSync` only if `simple-git` is not already a dependency.

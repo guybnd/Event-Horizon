@@ -59,11 +59,42 @@ history:
     date: '2026-05-24T14:00:00.000Z'
     from: Grooming
     to: Todo
+  - type: comment
+    user: Agent
+    comment: >-
+      Design note from branch management slice design session (2026-06-03):
+
+
+      When this ticket is groomed, the review flow should be ticket-first (not
+      GitHub PR comment-first). The intended flow:
+
+
+      1. Reviewer agent is manually kicked off by the user — not an automatic
+      trigger on `Ready`. User selects the scope and reviewer personality.
+
+      2. Reviewer leaves a structured comment on the ticket (what passed, what
+      needs changing).
+
+      3. If changes needed: reviewer moves ticket back to `In Progress` with the
+      comment as the reason.
+
+      4. Working agent checks out the existing ticket branch (still in `branch`
+      field), applies changes, pushes. Open PR auto-updates.
+
+      5. If approved: reviewer moves ticket to `Done`.
+
+
+      The GitHub PR is the diff artifact; the ticket is the review record. This
+      keeps everything visible in the portal without requiring a GitHub context
+      switch.
+    date: '2026-06-03T02:52:57.864Z'
+    id: c-2026-06-03t02-52-57-864z
 title: multi agent code review
 status: Todo
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 order: 1
+id: FLUX-281
 ---
 
 ## Problem / Motivation
