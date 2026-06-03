@@ -13,6 +13,8 @@ This page is the quick orientation guide for where behavior lives today — file
 -   `engine/src/workflow-installer.ts` owns workflow asset installation into a target repository.
     
 -   `engine/src/skill-installer.ts` is the CLI entrypoint used by the workspace `install-skill` command.
+
+-   `engine/src/branch-manager.ts` owns all git plumbing for per-ticket branches: create, status, delete (local + remote), PR creation via `gh`, and the `finish_ticket` diff capture (numstat summary + unified-diff sidecar at `<flux-dir>/<ID>.diff`).
     
 -   `portal/src/App.tsx` wires the top-level screens.
     

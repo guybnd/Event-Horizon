@@ -91,7 +91,7 @@ export async function deleteTask(id: string): Promise<void> {
   if (!res.ok) throw new Error('Failed to delete task');
 }
 
-export async function fetchHealth(): Promise<{ status: string; workspace: string | null }> {
+export async function fetchHealth(): Promise<{ status: string; workspace: string | null; ghAuthAvailable: boolean | null }> {
   const res = await fetch(`${API_URL}/health`);
   if (!res.ok) throw new Error('Failed to fetch health');
   return res.json();
@@ -578,4 +578,40 @@ export async function updateGlobalSettings(updates: Partial<GlobalSettings>): Pr
   });
   if (!res.ok) throw new Error('Failed to update global settings');
   return res.json();
+}
+
+export interface BranchStatus {
+  name: string | null;
+  exists: boolean;
+  aheadCount: number;
+  behindCount: number;
+}
+
+export async function fetchBranchStatus(taskId: string): Promise<BranchStatus> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/branch`);
+  if (!res.ok) throw new Error('Failed to fetch branch status');
+  return res.json();
+}
+
+export async function createBranch(taskId: string, baseBranch?: string): Promise<{ branch: string }> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/branch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(baseBranch ? { baseBranch } : {}),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as any).error || 'Failed to create branch');
+  }
+  return res.json();
+}
+
+export async function fetchTaskDiff(taskId: string, file?: string): Promise<string | null> {
+  const url = file
+    ? `${API_URL}/tasks/${taskId}/diff?file=${encodeURIComponent(file)}`
+    : `${API_URL}/tasks/${taskId}/diff`;
+  const res = await fetch(url);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error('Failed to fetch diff');
+  return res.text();
 }

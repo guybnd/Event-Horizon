@@ -41,6 +41,7 @@ Sourced from [`engine/src/routes/tasks.ts`](../../../engine/src/routes/tasks.ts)
 | POST | `/api/tasks/:id/branch` | Create a git branch for the ticket. Body: `{ baseBranch? }`. |
 | GET | `/api/tasks/:id/branch` | Get branch status (`{ name, exists, aheadCount, behindCount }`). |
 | DELETE | `/api/tasks/:id/branch` | Delete the ticket's branch. Body: `{ force? }`. |
+| GET | `/api/tasks/:id/diff` | Fetch the unified diff sidecar captured at `finish_ticket`. Optional `?file=<path>` query returns only that file's hunk. 404 when no diff is stored. Response is `text/plain`. |
 | POST | `/api/bulk-rename` | Rename a status or tag across every ticket. Body: `{ kind: 'status' \| 'tag', from, to }`. Mounted at top level, not under `/api/tasks`, but lives in the same module. |
 
 ### CLI session sub-routes (mounted under `/api/tasks`)

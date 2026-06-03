@@ -243,7 +243,7 @@ export function ContextMenu({ task, position, onClose }: Props) {
         open={activeSubmenu === 'agent'}
         onOpen={() => setActiveSubmenu(activeSubmenu === 'agent' ? null : 'agent')}
       >
-        {AGENT_COMMANDS.filter((item) => item.verb !== 'review').map((item) => {
+        {AGENT_COMMANDS.map((item) => {
           const cmd = `${item.verb} ${task.id}`;
           return (
             <MenuItem

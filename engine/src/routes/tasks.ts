@@ -563,4 +563,85 @@ router.post('/:id/assets', async (req, res) => {
   }
 });
 
+// ─── Branch routes ────────────────────────────────────────────────────────────
+
+import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, extractFileFromDiff } from '../branch-manager.js';
+
+router.post('/:id/branch', async (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+  if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
+
+  const title: string = task.title || id;
+  const baseBranch: string | undefined = req.body?.baseBranch;
+
+  try {
+    const branch = await createTicketBranch(id, title, baseBranch);
+    await updateTaskWithHistory(id, { updatedBy: 'Agent', extraFields: { branch } });
+    res.json({ branch });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/:id/branch', async (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+  if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
+
+  const name: string | undefined = task.branch;
+  if (!name) return res.json({ name: null, exists: false, aheadCount: 0, behindCount: 0 });
+
+  try {
+    const status = await getTicketBranchStatus(name);
+    res.json({ name, ...status });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/:id/branch', async (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+  if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
+
+  const name: string | undefined = task.branch;
+  if (!name) return res.status(400).json({ error: 'No branch associated with this ticket' });
+
+  const force: boolean = req.body?.force === true;
+
+  try {
+    await deleteTicketBranch(name, force);
+    await updateTaskWithHistory(id, { updatedBy: 'Agent', extraFields: { branch: null } });
+    res.json({ deleted: name });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Diff sidecar route ────────────────────────────────────────────────────────
+
+router.get('/:id/diff', async (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+  if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
+
+  const diffPath = path.join(getActiveFluxDir(), `${id}.diff`);
+  let fullDiff: string;
+  try {
+    fullDiff = await fs.readFile(diffPath, 'utf-8');
+  } catch {
+    return res.status(404).json({ error: 'No diff stored for this ticket' });
+  }
+
+  const file = typeof req.query.file === 'string' ? req.query.file : null;
+  if (file) {
+    const hunk = extractFileFromDiff(fullDiff, file);
+    if (!hunk) return res.status(404).json({ error: `File ${file} not present in diff` });
+    res.type('text/plain').send(hunk);
+    return;
+  }
+  res.type('text/plain').send(fullDiff);
+});
+
 export default router;

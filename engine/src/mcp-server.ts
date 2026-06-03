@@ -12,6 +12,7 @@ import { broadcastEvent } from './events.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
 import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry } from './history.js';
 import { getCliWorkspace, getActiveFluxDir } from './workspace.js';
+import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, createPullRequest, checkGhAuth, captureDiff, getCurrentCommit } from './branch-manager.js';
 
 function textResult(text: string) {
   return { content: [{ type: 'text' as const, text }] };
@@ -243,10 +244,19 @@ export async function startMcpServer(): Promise<void> {
         entries.push({ type: 'comment', user: 'Agent', comment, date: new Date().toISOString() });
       }
 
+      // Capture baselineCommit on first move to In Progress. This is the diff anchor
+      // for finish_ticket when the ticket doesn't have a branch.
+      const extraFields: Record<string, any> = {};
+      if (newStatus === 'In Progress' && !task.baselineCommit) {
+        const head = await getCurrentCommit();
+        if (head) extraFields.baselineCommit = head;
+      }
+
       const result = await updateTaskWithHistory(ticketId, {
         entries,
         updatedBy: 'Agent',
         nextStatus: newStatus,
+        ...(Object.keys(extraFields).length > 0 ? { extraFields } : {}),
       });
 
       if (!result) return errorResult(`Failed to update ${ticketId}`);
@@ -310,17 +320,124 @@ export async function startMcpServer(): Promise<void> {
       const task = tasksCache[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`);
 
-      const entries = [{ type: 'comment', user: 'Agent', comment: completionComment, date: new Date().toISOString() }];
+      let finalLink = implementationLink;
+      let noteForComment = '';
+
+      // If ticket has a branch, attempt to create a PR
+      if (task.branch) {
+        const ghAvailable = await checkGhAuth();
+        if (ghAvailable) {
+          try {
+            const prBody = `${task.body ? task.body.slice(0, 800) : ''}\n\n---\nTicket: ${ticketId}`;
+            const prUrl = await createPullRequest(task.branch, task.title || ticketId, prBody);
+            finalLink = prUrl;
+          } catch (err: any) {
+            noteForComment = `\n\n⚠️ PR creation failed: ${err.message}. Commit: ${implementationLink}`;
+            finalLink = implementationLink;
+          }
+        } else {
+          noteForComment = `\n\n⚠️ PR creation skipped — gh not configured. Commit: ${implementationLink}. Open a PR manually when ready.`;
+          finalLink = implementationLink;
+        }
+      }
+
+      const entries = [{ type: 'comment', user: 'Agent', comment: completionComment + noteForComment, date: new Date().toISOString() }];
+      const finishExtraFields: Record<string, any> = { implementationLink: finalLink };
+
+      // Capture diff summary + sidecar file. Best-effort — failure here must not block finish.
+      try {
+        const diff = await captureDiff(task.branch ?? null, task.baselineCommit ?? null);
+        if (diff && diff.summary.length > 0) {
+          finishExtraFields.diffSummary = diff.summary;
+          const diffPath = path.join(getActiveFluxDir(), `${ticketId}.diff`);
+          await fs.writeFile(diffPath, diff.fullDiff, 'utf-8');
+        }
+      } catch (err: any) {
+        console.error(`Diff capture failed for ${ticketId}:`, err.message);
+      }
+
       const result = await updateTaskWithHistory(ticketId, {
         entries,
         updatedBy: 'Agent',
         nextStatus: 'Done',
-        extraFields: { implementationLink },
+        extraFields: finishExtraFields,
       });
 
       if (!result) return errorResult(`Failed to finish ${ticketId}`);
       broadcastEvent('taskUpdated', { id: ticketId });
-      return textResult(`${ticketId} finished → Done (link: ${implementationLink})`);
+      return textResult(`${ticketId} finished → Done (link: ${finalLink})`);
+    },
+  );
+
+  // ─── Branch Tools ──────────────────────────────────────────────────────────
+
+  server.tool(
+    'create_branch',
+    'Create a git feature branch for a ticket and store its name on the ticket',
+    {
+      ticketId: z.string().describe('Ticket ID'),
+      baseBranch: z.string().optional().describe('Base branch (default: master)'),
+    },
+    async ({ ticketId, baseBranch }) => {
+      const task = tasksCache[ticketId];
+      if (!task) return errorResult(`Ticket ${ticketId} not found`);
+      if (task.branch) return errorResult(`Ticket ${ticketId} already has branch: ${task.branch}`);
+
+      try {
+        const branch = await createTicketBranch(ticketId, task.title || ticketId, baseBranch);
+        await updateTaskWithHistory(ticketId, { updatedBy: 'Agent', extraFields: { branch } });
+        broadcastEvent('taskUpdated', { id: ticketId });
+        return jsonResult({ branch });
+      } catch (err: any) {
+        return errorResult(`Failed to create branch: ${err.message}`);
+      }
+    },
+  );
+
+  server.tool(
+    'get_branch',
+    'Get the branch status for a ticket — name, existence, and ahead/behind counts vs master',
+    {
+      ticketId: z.string().describe('Ticket ID'),
+    },
+    async ({ ticketId }) => {
+      const task = tasksCache[ticketId];
+      if (!task) return errorResult(`Ticket ${ticketId} not found`);
+
+      const name: string | undefined = task.branch;
+      if (!name) return jsonResult({ name: null, exists: false, aheadCount: 0, behindCount: 0 });
+
+      try {
+        const status = await getTicketBranchStatus(name);
+        return jsonResult({ name, ...status });
+      } catch (err: any) {
+        return errorResult(`Failed to get branch status: ${err.message}`);
+      }
+    },
+  );
+
+  server.tool(
+    'delete_branch',
+    'Delete the git branch associated with a ticket. Refuses unmerged branches unless force=true.',
+    {
+      ticketId: z.string().describe('Ticket ID'),
+      force: z.boolean().optional().describe('Force delete even if unmerged (default: false)'),
+    },
+    async ({ ticketId, force }) => {
+      const task = tasksCache[ticketId];
+      if (!task) return errorResult(`Ticket ${ticketId} not found`);
+
+      const name: string | undefined = task.branch;
+      if (!name) return errorResult(`Ticket ${ticketId} has no associated branch`);
+
+      try {
+        await deleteTicketBranch(name, force ?? false);
+        await updateTaskWithHistory(ticketId, { updatedBy: 'Agent', extraFields: { branch: null } });
+        broadcastEvent('taskUpdated', { id: ticketId });
+        return textResult(`Branch ${name} deleted`);
+      } catch (err: any) {
+        return errorResult(`Failed to delete branch: ${err.message}`);
+      }
     },
   );
 

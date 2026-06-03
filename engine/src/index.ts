@@ -44,6 +44,7 @@ import syncStatusRouter from './routes/sync-status.js';
 import notificationsRouter from './routes/notifications.js';
 import settingsRouter from './routes/settings.js';
 import { checkForUpdate, getCachedUpdateInfo, getLocalVersion } from './update-check.js';
+import { checkGhAuth } from './branch-manager.js';
 
 const __dir = (() => {
   // @ts-ignore
@@ -79,8 +80,10 @@ app.use('/api/sync-status', requireWorkspace, syncStatusRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/settings', settingsRouter);
 
+let ghAuthAvailable: boolean | null = null;
+
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', workspace: workspaceRoot });
+  res.json({ status: 'ok', workspace: workspaceRoot, ghAuthAvailable });
 });
 
 app.post('/api/shutdown', (_req, res) => {
@@ -261,6 +264,13 @@ async function startServer() {
     }
 
     checkForUpdate().catch(() => {});
+
+    checkGhAuth().then(ok => {
+      ghAuthAvailable = ok;
+      if (!ok) {
+        console.warn('[branch] GitHub CLI not configured — PR creation unavailable. Run `gh auth login` to enable.');
+      }
+    }).catch(() => { ghAuthAvailable = false; });
   });
 }
 

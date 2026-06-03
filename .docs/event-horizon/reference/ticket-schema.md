@@ -61,6 +61,8 @@ Markdown body. Free-form. May contain image links to `.flux/assets/FLUX-42/<name
 | `subtasks` | string[] \| `{id: string}[]` | Child ticket ids. Object form is tolerated but objects without `id` are silently dropped on load (validation surfaces a warning). |
 | `implementationLink` | string | Commit hash or PR URL. Set by `finish_ticket`. |
 | `branch` | string \| null | Git branch name when one has been created for the ticket. |
+| `baselineCommit` | string | HEAD sha captured the first time the ticket moves to `In Progress`. Used as the diff anchor at `finish_ticket` when the ticket has no branch. |
+| `diffSummary` | `{file, additions, deletions}[]` | Per-file change counts captured at `finish_ticket`. The matching full unified diff is written to `<flux-dir>/<ID>.diff` as a sidecar (2 MB hard cap). |
 | `order` | number | Per-status manual sort position (set by drag and drop). |
 | `cliSession` | object | **Not persisted** — serialized into API responses from the in-memory session store. Do not write this to the file. |
 | `tokenMetadata` | object | Aggregated token counters surfaced to the UI. |

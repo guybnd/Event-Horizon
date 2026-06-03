@@ -35,6 +35,7 @@ import { useTaskForm } from '../hooks/useTaskForm';
 import { useCliSession } from '../hooks/useCliSession';
 import { useImageAttachment } from '../hooks/useImageAttachment';
 import { MetadataPanel } from './task-modal/MetadataPanel';
+import { DiffViewer } from './task-modal/DiffViewer';
 import { TicketPicker } from './TicketPicker';
 import { CommentBox } from './task-modal/CommentBox';
 import type { CommentBoxHandle } from './task-modal/CommentBox';
@@ -924,6 +925,8 @@ export function TaskModal() {
     exit: { opacity: 0, transition: { duration: 0.05, delay: 0 } },
   } : {};
 
+  const [diffViewFile, setDiffViewFile] = useState<string | null>(null);
+
   const metadataPanelProps = {
     status, setStatus,
     assignee, setAssignee,
@@ -935,6 +938,8 @@ export function TaskModal() {
     allStatuses, allUsers, allTags,
     configTags: config?.tags ?? [],
     availablePriorities,
+    task: modalTask ?? undefined,
+    onDiffFileClick: (file: string) => setDiffViewFile(file),
   };
 
   const parentTask = parentId ? allTasks.find((t) => t.id === parentId) : null;
@@ -1107,14 +1112,25 @@ export function TaskModal() {
       <div>
         <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Implementation Link</p>
         {implementationLink.trim() ? (
-          <a
-            href={implementationLink.trim()}
-            target="_blank"
-            rel="noreferrer"
-            className="mt-1 block break-all text-sm text-primary underline underline-offset-2"
-          >
-            {implementationLink.trim()}
-          </a>
+          implementationLink.trim().startsWith('https://github.com') ? (
+            <a
+              href={implementationLink.trim()}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-1 inline-flex items-center gap-1.5 rounded-md bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary hover:bg-primary/20"
+            >
+              View PR ↗
+            </a>
+          ) : (
+            <a
+              href={implementationLink.trim()}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-1 block break-all font-mono text-xs text-primary underline underline-offset-2"
+            >
+              {implementationLink.trim()}
+            </a>
+          )
         ) : (
           <p className="mt-1 text-sm text-gray-700 dark:text-gray-300">Not set</p>
         )}
@@ -1360,6 +1376,10 @@ export function TaskModal() {
                   </div>
                 )}
                 <div className="flex-1 flex flex-col border-b border-gray-200 dark:border-white/10">
+                  {diffViewFile && modalTask?.id ? (
+                    <DiffViewer taskId={modalTask.id} file={diffViewFile} onBack={() => setDiffViewFile(null)} />
+                  ) : (
+                    <>
                   <div className="flex items-center justify-between px-6 py-4">
                     <div>
                       <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Description</p>
@@ -1376,6 +1396,8 @@ export function TaskModal() {
                       emptyMessage="No description yet."
                     />
                   </div>
+                    </>
+                  )}
                 </div>
 
                 <div ref={commentSectionRef} className="px-6 py-4 flex flex-col relative pb-8">
@@ -1535,6 +1557,10 @@ export function TaskModal() {
               </div>
 
               <div className="flex min-h-[280px] flex-1 flex-col gap-2">
+                {diffViewFile && modalTask?.id ? (
+                  <DiffViewer taskId={modalTask.id} file={diffViewFile} onBack={() => setDiffViewFile(null)} />
+                ) : (
+                  <>
                 <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Description</label>
                 <TaskDescriptionSurface
                   key={`${modalTask?.id || 'new-task'}-popup`}
@@ -1544,6 +1570,8 @@ export function TaskModal() {
                   mode="popup"
                   emptyMessage="No description yet."
                 />
+                  </>
+                )}
               </div>
 
               {subtasksPanel}

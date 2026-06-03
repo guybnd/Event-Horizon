@@ -63,6 +63,9 @@ export interface Task {
   effort?: string;
   effortLevel?: string;
   implementationLink?: string;
+  branch?: string;
+  baselineCommit?: string;
+  diffSummary?: { file: string; additions: number; deletions: number }[];
   parentId?: string;
   subtasks?: (string | InlineSubtask)[];
   version?: string;
