@@ -6,7 +6,7 @@ tags:
   - refactor
   - agent
 title: Unify agent-launch entry points across card and modal
-status: In Progress
+status: Ready
 createdBy: Agent
 updatedBy: Agent
 assignee: unassigned
@@ -391,12 +391,716 @@ history:
   - type: agent_session
     sessionId: 044adc73-7671-49af-a1e1-d5fc3e82bc94
     startedAt: '2026-06-03T04:51:21.285Z'
-    status: cancelled
-    progress: []
+    status: completed
+    progress:
+      - timestamp: '2026-06-03T04:51:31.623Z'
+        message: Working
+        type: tool
+        data:
+          toolName: ToolSearch
+          parameters:
+            query: >-
+              select:mcp__event-horizon__get_ticket,mcp__event-horizon__change_status,mcp__event-horizon__add_comment,mcp__event-horizon__log_progress
+            max_results: 5
+      - timestamp: '2026-06-03T04:51:35.476Z'
+        message: Reading agentActions.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/portal/src/agentActions.ts
+      - timestamp: '2026-06-03T04:51:36.061Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Glob
+          parameters:
+            pattern: 'portal/src/**/*.{ts,tsx}'
+            path: /Users/guy/Event-Horizon
+      - timestamp: '2026-06-03T04:51:36.330Z'
+        message: Working
+        type: info
+      - timestamp: '2026-06-03T04:51:40.193Z'
+        message: Reading ContextMenu.tsx
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/portal/src/components/ContextMenu.tsx
+      - timestamp: '2026-06-03T04:51:51.330Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-06-03T04:52:05.229Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: >-
+              import.*ReviewPersona|import.*REVIEW_PERSONAS|import.*CodeReviewButton
+            path: /Users/guy/Event-Horizon/portal/src
+            output_mode: content
+      - timestamp: '2026-06-03T04:52:06.331Z'
+        message: Working
+        type: info
+      - timestamp: '2026-06-03T04:52:41.057Z'
+        message: Reading ReadyForMergePrompt.tsx
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: >-
+              /Users/guy/Event-Horizon/portal/src/components/task-modal/ReadyForMergePrompt.tsx
+      - timestamp: '2026-06-03T04:52:51.333Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-06-03T04:53:14.040Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp__event-horizon__log_progress
+          parameters:
+            ticketId: FLUX-361
+            message: >-
+              Addressing three issues from Linus code review: (1) remove dead
+              preStatus from AgentCommandDef, (2) remove review from
+              AGENT_COMMANDS and its manual filter, (3) fix statusActionMap to
+              use kind:'command', (4) finish REVIEW_PERSONAS move from
+              CodeReviewButton to agentActions
+      - timestamp: '2026-06-03T04:53:21.336Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-06-03T04:53:51.655Z'
+        message: Editing agentActions.ts
+        type: tool
+        data:
+          toolName: Edit
+          parameters:
+            replace_all: false
+            file_path: /Users/guy/Event-Horizon/portal/src/agentActions.ts
+            old_string: >-
+              import { startTaskCliSession, updateTask } from './api';
+
+              import type { CliFramework, CliSessionSummary } from './types';
+
+              import { REVIEW_PERSONAS, type ReviewPersona } from
+              './components/CodeReviewButton';
+
+
+              export { REVIEW_PERSONAS };
+
+              export type { ReviewPersona };
+
+
+              export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh',
+              'max'] as const;
+
+              export type EffortLevel = typeof EFFORT_LEVELS[number];
+
+
+              export type AgentCommandVerb = 'implement' | 'groom' | 'finish' |
+              'review';
+
+
+              export interface AgentCommandDef {
+                label: string;
+                verb: AgentCommandVerb;
+                /** If set, ticket is moved to this status before launching. */
+                preStatus?: string;
+              }
+
+
+              export const AGENT_COMMANDS: AgentCommandDef[] = [
+                { label: 'Implement', verb: 'implement' },
+                { label: 'Groom', verb: 'groom' },
+                { label: 'Finish', verb: 'finish' },
+                { label: 'Review', verb: 'review' },
+              ];
+            new_string: >-
+              import { startTaskCliSession, updateTask } from './api';
+
+              import type { CliFramework, CliSessionSummary } from './types';
+
+
+              export interface ReviewPersona {
+                id: string;
+                label: string;
+                description: string;
+                prompt: string;
+              }
+
+
+              export const REVIEW_PERSONAS: ReviewPersona[] = [
+                {
+                  id: 'senior-dev',
+                  label: 'Senior Friendly Dev',
+                  description: 'Collegial, constructive — quality, readability & maintainability',
+                  prompt: `You are acting as a senior friendly developer performing a thorough code review of this ticket's implementation.
+
+              Your approach: collegial, constructive, and encouraging. You care
+              about code quality, readability, and maintainability. You
+              highlight strengths as well as weaknesses, and always explain the
+              "why" behind your suggestions.
+
+
+              Steps to follow:
+
+              1. Read the full ticket description and all history comments to
+              understand what was intended.
+
+              2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the
+              implementationLink commit if present) to see the actual changes.
+
+              3. Evaluate the implementation against the ticket intent.
+              Consider: correctness, edge cases, naming, readability, test
+              coverage, and anything that could confuse a future maintainer.
+
+              4. Make a decision:
+                 - **If changes needed**: Use the \`add_comment\` MCP tool to post a detailed review comment listing specific, actionable improvements. Leave the ticket at In Progress so the implementer sees it.
+                 - **If approved**: Use the \`add_comment\` MCP tool to post a short approval comment explaining what looks good. Then use \`change_status\` to move the ticket back to "Ready".
+
+              Keep your tone warm but precise. Lead with the most important
+              feedback.`,
+                },
+                {
+                  id: 'angry-linus',
+                  label: 'Angry Linus',
+                  description: 'Brutally honest — no softening, no hand-holding',
+                  prompt: `You are acting as an angry Linus Torvalds performing a code review of this ticket's implementation.
+
+              Your approach: terse, blunt, brutally honest. No softening. No
+              hand-holding. If the code is bad, say so and say exactly why. You
+              have zero patience for over-engineering, unnecessary abstraction,
+              unclear naming, or code that looks like it was written without
+              thinking. You do acknowledge good work when you see it — briefly.
+
+
+              Steps to follow:
+
+              1. Read the full ticket description and all history comments.
+
+              2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the
+              implementationLink commit if present).
+
+              3. Evaluate ruthlessly. Look for: bad naming, unnecessary
+              complexity, missing error handling, confusing logic, wrong
+              abstractions, obvious bugs, or anything that would make you
+              question whether the author thought about what they were doing.
+
+              4. Make a decision:
+                 - **If changes needed**: Use the \`add_comment\` MCP tool to post a blunt, specific review comment listing every problem clearly. Leave the ticket at In Progress.
+                 - **If it's actually fine**: Use the \`add_comment\` MCP tool to post a short comment saying it passes. Then use \`change_status\` to move the ticket back to "Ready".
+
+              Do not pad your response. Be direct.`,
+                },
+                {
+                  id: 'architect',
+                  label: 'Architect Genius',
+                  description: 'System design, patterns, separation of concerns, scalability',
+                  prompt: `You are acting as an elite software architect performing a code review of this ticket's implementation.
+
+              Your approach: you think in systems. You care about design
+              patterns, separation of concerns, coupling vs cohesion,
+              abstractions that will age well, and choices that will either
+              constrain or enable the system as it grows. You are not pedantic
+              about style — you care about structure and long-term
+              maintainability at scale.
+
+
+              Steps to follow:
+
+              1. Read the full ticket description and history to understand
+              scope and constraints.
+
+              2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the
+              implementationLink commit if present).
+
+              3. Evaluate architectural quality: Are responsibilities
+              well-separated? Is the abstraction at the right level? Does this
+              introduce hidden coupling? Will this scale? Are there simpler
+              designs that achieve the same goal?
+
+              4. Make a decision:
+                 - **If structural issues found**: Use the \`add_comment\` MCP tool to post a detailed architectural review comment. Be specific about what to restructure and why, including proposed alternatives where helpful. Leave the ticket at In Progress.
+                 - **If the architecture is sound**: Use the \`add_comment\` MCP tool to post a brief approval noting what holds up well from a design perspective. Then use \`change_status\` to move the ticket back to "Ready".`,
+                },
+                {
+                  id: 'perf-expert',
+                  label: 'Performance Expert',
+                  description: 'Complexity, hot paths, bundle size, memory, re-renders',
+                  prompt: `You are acting as a performance engineering expert performing a code review of this ticket's implementation.
+
+              Your approach: you think in cycles, bytes, and render trees. You
+              look for algorithmic complexity issues, unnecessary re-renders,
+              wasteful allocations, blocking operations, bundle size
+              contributions, and anything that hits a hot path more times than
+              necessary.
+
+
+              Steps to follow:
+
+              1. Read the full ticket description and history to understand what
+              was built.
+
+              2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the
+              implementationLink commit if present).
+
+              3. Evaluate performance characteristics: O(n) where O(1) is
+              possible? Unnecessary useEffect dependencies causing cascading
+              re-renders? Large imports where tree-shaking won't help?
+              Synchronous work on the main thread? Missing memoization on
+              expensive computations?
+
+              4. Make a decision:
+                 - **If performance issues found**: Use the \`add_comment\` MCP tool to post a specific, actionable review comment. Quantify impact where possible and suggest concrete fixes. Leave the ticket at In Progress.
+                 - **If performance is acceptable**: Use the \`add_comment\` MCP tool to post a brief approval noting it passes performance scrutiny. Then use \`change_status\` to move the ticket back to "Ready".`,
+                },
+                {
+                  id: 'ux-expert',
+                  label: 'UX/UI Expert',
+                  description: 'Usability, accessibility, interaction design, visual consistency',
+                  prompt: `You are acting as a senior UX/UI expert performing a code review of this ticket's implementation.
+
+              Your approach: you think from the user's perspective first. You
+              evaluate interaction design, visual hierarchy, accessibility,
+              feedback loops, edge case handling in the UI, and consistency with
+              established patterns in the codebase. You care about how things
+              feel to use, not just how they look.
+
+
+              Steps to follow:
+
+              1. Read the full ticket description and history to understand the
+              intended user experience and what was built.
+
+              2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the
+              implementationLink commit if present). Pay close attention to JSX,
+              CSS classes, and event handlers.
+
+              3. Evaluate UX/UI quality: Is the interaction model intuitive? Are
+              loading, error, and empty states handled gracefully? Is the
+              component accessible (keyboard nav, ARIA labels, focus management,
+              color contrast)? Does it match the visual language of the rest of
+              the portal? Are there confusing affordances or missing feedback?
+
+              4. Make a decision:
+                 - **If UX/UI issues found**: Use the \`add_comment\` MCP tool to post a detailed review comment. Be specific — name the interaction, describe the problem, and suggest a concrete fix. Leave the ticket at In Progress.
+                 - **If the UX is solid**: Use the \`add_comment\` MCP tool to post a brief approval noting what works well from a user experience perspective. Then use \`change_status\` to move the ticket back to "Ready".`,
+                },
+              ];
+
+
+              export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh',
+              'max'] as const;
+
+              export type EffortLevel = typeof EFFORT_LEVELS[number];
+
+
+              export type AgentCommandVerb = 'implement' | 'groom' | 'finish';
+
+
+              export interface AgentCommandDef {
+                label: string;
+                verb: AgentCommandVerb;
+              }
+
+
+              export const AGENT_COMMANDS: AgentCommandDef[] = [
+                { label: 'Implement', verb: 'implement' },
+                { label: 'Groom', verb: 'groom' },
+                { label: 'Finish', verb: 'finish' },
+              ];
+      - timestamp: '2026-06-03T04:54:06.338Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-06-03T04:54:08.278Z'
+        message: Editing CodeReviewButton.tsx
+        type: tool
+        data:
+          toolName: Edit
+          parameters:
+            replace_all: false
+            file_path: >-
+              /Users/guy/Event-Horizon/portal/src/components/CodeReviewButton.tsx
+            old_string: >-
+              import { useEffect, useRef, useState } from 'react';
+
+              import { ChevronDown, Search } from 'lucide-react';
+
+
+              export interface ReviewPersona {
+                id: string;
+                label: string;
+                description: string;
+                prompt: string;
+              }
+
+
+              export const REVIEW_PERSONAS: ReviewPersona[] = [
+                {
+                  id: 'senior-dev',
+                  label: 'Senior Friendly Dev',
+                  description: 'Collegial, constructive — quality, readability & maintainability',
+                  prompt: `You are acting as a senior friendly developer performing a thorough code review of this ticket's implementation.
+
+              Your approach: collegial, constructive, and encouraging. You care
+              about code quality, readability, and maintainability. You
+              highlight strengths as well as weaknesses, and always explain the
+              "why" behind your suggestions.
+
+
+              Steps to follow:
+
+              1. Read the full ticket description and all history comments to
+              understand what was intended.
+
+              2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the
+              implementationLink commit if present) to see the actual changes.
+
+              3. Evaluate the implementation against the ticket intent.
+              Consider: correctness, edge cases, naming, readability, test
+              coverage, and anything that could confuse a future maintainer.
+
+              4. Make a decision:
+                 - **If changes needed**: Use the \`add_comment\` MCP tool to post a detailed review comment listing specific, actionable improvements. Leave the ticket at In Progress so the implementer sees it.
+                 - **If approved**: Use the \`add_comment\` MCP tool to post a short approval comment explaining what looks good. Then use \`change_status\` to move the ticket back to "Ready".
+
+              Keep your tone warm but precise. Lead with the most important
+              feedback.`,
+                },
+                {
+                  id: 'angry-linus',
+                  label: 'Angry Linus',
+                  description: 'Brutally honest — no softening, no hand-holding',
+                  prompt: `You are acting as an angry Linus Torvalds performing a code review of this ticket's implementation.
+
+              Your approach: terse, blunt, brutally honest. No softening. No
+              hand-holding. If the code is bad, say so and say exactly why. You
+              have zero patience for over-engineering, unnecessary abstraction,
+              unclear naming, or code that looks like it was written without
+              thinking. You do acknowledge good work when you see it — briefly.
+
+
+              Steps to follow:
+
+              1. Read the full ticket description and all history comments.
+
+              2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the
+              implementationLink commit if present).
+
+              3. Evaluate ruthlessly. Look for: bad naming, unnecessary
+              complexity, missing error handling, confusing logic, wrong
+              abstractions, obvious bugs, or anything that would make you
+              question whether the author thought about what they were doing.
+
+              4. Make a decision:
+                 - **If changes needed**: Use the \`add_comment\` MCP tool to post a blunt, specific review comment listing every problem clearly. Leave the ticket at In Progress.
+                 - **If it's actually fine**: Use the \`add_comment\` MCP tool to post a short comment saying it passes. Then use \`change_status\` to move the ticket back to "Ready".
+
+              Do not pad your response. Be direct.`,
+                },
+                {
+                  id: 'architect',
+                  label: 'Architect Genius',
+                  description: 'System design, patterns, separation of concerns, scalability',
+                  prompt: `You are acting as an elite software architect performing a code review of this ticket's implementation.
+
+              Your approach: you think in systems. You care about design
+              patterns, separation of concerns, coupling vs cohesion,
+              abstractions that will age well, and choices that will either
+              constrain or enable the system as it grows. You are not pedantic
+              about style — you care about structure and long-term
+              maintainability at scale.
+
+
+              Steps to follow:
+
+              1. Read the full ticket description and history to understand
+              scope and constraints.
+
+              2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the
+              implementationLink commit if present).
+
+              3. Evaluate architectural quality: Are responsibilities
+              well-separated? Is the abstraction at the right level? Does this
+              introduce hidden coupling? Will this scale? Are there simpler
+              designs that achieve the same goal?
+
+              4. Make a decision:
+                 - **If structural issues found**: Use the \`add_comment\` MCP tool to post a detailed architectural review comment. Be specific about what to restructure and why, including proposed alternatives where helpful. Leave the ticket at In Progress.
+                 - **If the architecture is sound**: Use the \`add_comment\` MCP tool to post a brief approval noting what holds up well from a design perspective. Then use \`change_status\` to move the ticket back to "Ready".`,
+                },
+                {
+                  id: 'perf-expert',
+                  label: 'Performance Expert',
+                  description: 'Complexity, hot paths, bundle size, memory, re-renders',
+                  prompt: `You are acting as a performance engineering expert performing a code review of this ticket's implementation.
+
+              Your approach: you think in cycles, bytes, and render trees. You
+              look for algorithmic complexity issues, unnecessary re-renders,
+              wasteful allocations, blocking operations, bundle size
+              contributions, and anything that hits a hot path more times than
+              necessary.
+
+
+              Steps to follow:
+
+              1. Read the full ticket description and history to understand what
+              was built.
+
+              2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the
+              implementationLink commit if present).
+
+              3. Evaluate performance characteristics: O(n) where O(1) is
+              possible? Unnecessary useEffect dependencies causing cascading
+              re-renders? Large imports where tree-shaking won't help?
+              Synchronous work on the main thread? Missing memoization on
+              expensive computations?
+
+              4. Make a decision:
+                 - **If performance issues found**: Use the \`add_comment\` MCP tool to post a specific, actionable review comment. Quantify impact where possible and suggest concrete fixes. Leave the ticket at In Progress.
+                 - **If performance is acceptable**: Use the \`add_comment\` MCP tool to post a brief approval noting it passes performance scrutiny. Then use \`change_status\` to move the ticket back to "Ready".`,
+                },
+                {
+                  id: 'ux-expert',
+                  label: 'UX/UI Expert',
+                  description: 'Usability, accessibility, interaction design, visual consistency',
+                  prompt: `You are acting as a senior UX/UI expert performing a code review of this ticket's implementation.
+
+              Your approach: you think from the user's perspective first. You
+              evaluate interaction design, visual hierarchy, accessibility,
+              feedback loops, edge case handling in the UI, and consistency with
+              established patterns in the codebase. You care about how things
+              feel to use, not just how they look.
+
+
+              Steps to follow:
+
+              1. Read the full ticket description and history to understand the
+              intended user experience and what was built.
+
+              2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the
+              implementationLink commit if present). Pay close attention to JSX,
+              CSS classes, and event handlers.
+
+              3. Evaluate UX/UI quality: Is the interaction model intuitive? Are
+              loading, error, and empty states handled gracefully? Is the
+              component accessible (keyboard nav, ARIA labels, focus management,
+              color contrast)? Does it match the visual language of the rest of
+              the portal? Are there confusing affordances or missing feedback?
+
+              4. Make a decision:
+                 - **If UX/UI issues found**: Use the \`add_comment\` MCP tool to post a detailed review comment. Be specific — name the interaction, describe the problem, and suggest a concrete fix. Leave the ticket at In Progress.
+                 - **If the UX is solid**: Use the \`add_comment\` MCP tool to post a brief approval noting what works well from a user experience perspective. Then use \`change_status\` to move the ticket back to "Ready".`,
+                },
+              ];
+            new_string: >-
+              import { useEffect, useRef, useState } from 'react';
+
+              import { ChevronDown, Search } from 'lucide-react';
+
+              import { REVIEW_PERSONAS, type ReviewPersona } from
+              '../agentActions';
+
+
+              export type { ReviewPersona };
+
+              export { REVIEW_PERSONAS };
+      - timestamp: '2026-06-03T04:54:14.736Z'
+        message: Editing ContextMenu.tsx
+        type: tool
+        data:
+          toolName: Edit
+          parameters:
+            replace_all: false
+            file_path: /Users/guy/Event-Horizon/portal/src/components/ContextMenu.tsx
+            old_string: |2-
+                      {AGENT_COMMANDS.filter((item) => item.verb !== 'review').map((item) => {
+                        const cmd = `${item.verb} ${task.id}`;
+                        return (
+                          <MenuItem
+                            key={item.verb}
+                            onClick={() => void handleAgentCommand(item.verb)}
+                          >
+                            <span className="flex-1">{item.label}</span>
+                            <span className="ml-2 truncate text-[10px] text-gray-400 dark:text-gray-500">{cmd}</span>
+                          </MenuItem>
+                        );
+                      })}
+            new_string: |2-
+                      {AGENT_COMMANDS.map((item) => {
+                        const cmd = `${item.verb} ${task.id}`;
+                        return (
+                          <MenuItem
+                            key={item.verb}
+                            onClick={() => void handleAgentCommand(item.verb)}
+                          >
+                            <span className="flex-1">{item.label}</span>
+                            <span className="ml-2 truncate text-[10px] text-gray-400 dark:text-gray-500">{cmd}</span>
+                          </MenuItem>
+                        );
+                      })}
+      - timestamp: '2026-06-03T04:54:18.127Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: AgentCommandVerb
+            path: /Users/guy/Event-Horizon/portal/src/components/ContextMenu.tsx
+            output_mode: content
+      - timestamp: '2026-06-03T04:54:21.339Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-06-03T04:54:27.744Z'
+        message: Editing TaskCard.tsx
+        type: tool
+        data:
+          toolName: Edit
+          parameters:
+            replace_all: false
+            file_path: /Users/guy/Event-Horizon/portal/src/components/TaskCard.tsx
+            old_string: |2-
+                const statusActionMap: Record<string, { label: string; appendPrompt: string }> = {
+                  'Grooming': { label: 'Start grooming', appendPrompt: `groom ${task.id}` },
+                  'Todo': { label: 'Implement', appendPrompt: `implement ${task.id}` },
+                  'In Progress': { label: 'Continue', appendPrompt: `implement ${task.id}` },
+                };
+                const statusAction = !hasActiveCliSession && !isReadyForMerge ? statusActionMap[task.status] : null;
+
+                const sendStatusAction = async (e: React.MouseEvent) => {
+                  e.stopPropagation();
+                  if (!statusAction) return;
+                  setActionBusy(true);
+                  try {
+                    const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
+                    await runAgentAction({
+                      taskId: task.id,
+                      framework,
+                      action: { kind: 'prompt', appendPrompt: statusAction.appendPrompt },
+                      currentUser,
+                    });
+                    triggerRefresh();
+                  } finally {
+                    setActionBusy(false);
+                  }
+                };
+            new_string: |2-
+                const statusActionMap: Record<string, { label: string; verb: 'groom' | 'implement' | 'finish' }> = {
+                  'Grooming': { label: 'Start grooming', verb: 'groom' },
+                  'Todo': { label: 'Implement', verb: 'implement' },
+                  'In Progress': { label: 'Continue', verb: 'implement' },
+                };
+                const statusAction = !hasActiveCliSession && !isReadyForMerge ? statusActionMap[task.status] : null;
+
+                const sendStatusAction = async (e: React.MouseEvent) => {
+                  e.stopPropagation();
+                  if (!statusAction) return;
+                  setActionBusy(true);
+                  try {
+                    const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
+                    await runAgentAction({
+                      taskId: task.id,
+                      framework,
+                      action: { kind: 'command', verb: statusAction.verb },
+                      currentUser,
+                    });
+                    triggerRefresh();
+                  } finally {
+                    setActionBusy(false);
+                  }
+                };
+      - timestamp: '2026-06-03T04:54:30.879Z'
+        message: 'Running: cd /Users/guy/Event-Horizon/portal && npx tsc --no...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              cd /Users/guy/Event-Horizon/portal && npx tsc --noEmit 2>&1 | head
+              -50
+            timeout: 30000
+      - timestamp: '2026-06-03T04:54:35.071Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: startTaskCliSession
+            path: /Users/guy/Event-Horizon/portal/src
+            output_mode: content
+      - timestamp: '2026-06-03T04:54:36.339Z'
+        message: Working
+        type: info
+      - timestamp: '2026-06-03T04:54:46.338Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp__event-horizon__change_status
+          parameters:
+            ticketId: FLUX-361
+            newStatus: Ready
+            comment: >-
+              Fixed all three issues from the Linus code review:
+
+
+              1. **Removed dead `preStatus` from `AgentCommandDef`** — field was
+              never set on any entry; removed from interface and all registry
+              entries.
+
+
+              2. **Removed `review` from `AGENT_COMMANDS`/`AgentCommandVerb`** —
+              review is persona-based, not a bare verb. Removed from the
+              registry so no call site needs to filter it out manually.
+              `ContextMenu.tsx` filter removed.
+
+
+              3. **Fixed `statusActionMap` in `TaskCard`** — was using `kind:
+              'prompt'` with hand-rolled `groom ${id}`/`implement ${id}`
+              strings. Now uses `kind: 'command'` with a typed `verb` field,
+              matching what `runAgentAction` already does for the same
+              operations.
+
+
+              4. **Finished `REVIEW_PERSONAS` move** — definitions now live in
+              `agentActions.ts` (the canonical registry). `CodeReviewButton.tsx`
+              re-exports `ReviewPersona` and `REVIEW_PERSONAS` from there for
+              back-compat. `TaskModal.tsx` and `ReadyForMergePrompt.tsx` still
+              import type `ReviewPersona` from `CodeReviewButton` — those
+              re-export paths stay valid.
+
+
+              TypeScript compiles clean. `startTaskCliSession` call sites:
+              `api.ts` (definition) + `agentActions.ts` (sole caller).
+      - timestamp: '2026-06-03T04:54:51.341Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-06-03T04:54:53.316Z'
+        message: >-
+          FLUX-361 is now `Ready`. Here's what was fixed:
+
+
+          1. **Dead `preStatus` field** — removed from `AgentCommandDef`; it was
+          wired up but never used on any entry.
+
+          2. **`review` in `AGENT_COMMANDS`** — removed from the registry
+          entirely. It's persona-based, not a bare verb. The manual
+          `.filter((item) => item.verb !== 'review')` in `ContextMenu.tsx` is
+          gone with it.
+
+          3. **`statusActionMap` in `TaskCard`** — switched from `{ kind:
+          'prompt', appendPrompt: 'groom FLUX-X' }` to `{ kind: 'command', verb:
+          'groom' }`, so the card and context menu now encode the same
+          operations the same way.
+
+          4. **`REVIEW_PERSONAS` move completed** — definitions now live in
+          `agentActions.ts`. `CodeReviewButton.tsx` re-exports them for
+          back-compat, making it an honest proxy rather than the source of
+          truth.
     user: Claude Code
     date: '2026-06-03T04:51:21.285Z'
-    outcome: Session abandoned (engine restarted).
-    endedAt: '2026-06-03T04:51:27.106Z'
+    outcome: Claude Code session ended with code 0.
+    endedAt: '2026-06-03T04:54:53.316Z'
   - type: activity
     user: Agent
     date: '2026-06-03T04:53:14.055Z'
@@ -405,17 +1109,55 @@ history:
       from AgentCommandDef, (2) remove review from AGENT_COMMANDS and its manual
       filter, (3) fix statusActionMap to use kind:'command', (4) finish
       REVIEW_PERSONAS move from CodeReviewButton to agentActions
+  - type: comment
+    user: Agent
+    comment: >-
+      Fixed all three issues from the Linus code review:
+
+
+      1. **Removed dead `preStatus` from `AgentCommandDef`** — field was never
+      set on any entry; removed from interface and all registry entries.
+
+
+      2. **Removed `review` from `AGENT_COMMANDS`/`AgentCommandVerb`** — review
+      is persona-based, not a bare verb. Removed from the registry so no call
+      site needs to filter it out manually. `ContextMenu.tsx` filter removed.
+
+
+      3. **Fixed `statusActionMap` in `TaskCard`** — was using `kind: 'prompt'`
+      with hand-rolled `groom ${id}`/`implement ${id}` strings. Now uses `kind:
+      'command'` with a typed `verb` field, matching what `runAgentAction`
+      already does for the same operations.
+
+
+      4. **Finished `REVIEW_PERSONAS` move** — definitions now live in
+      `agentActions.ts` (the canonical registry). `CodeReviewButton.tsx`
+      re-exports `ReviewPersona` and `REVIEW_PERSONAS` from there for
+      back-compat. `TaskModal.tsx` and `ReadyForMergePrompt.tsx` still import
+      type `ReviewPersona` from `CodeReviewButton` — those re-export paths stay
+      valid.
+
+
+      TypeScript compiles clean. `startTaskCliSession` call sites: `api.ts`
+      (definition) + `agentActions.ts` (sole caller).
+    date: '2026-06-03T04:54:46.354Z'
+    id: c-2026-06-03t04-54-46-354z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-06-03T04:54:46.354Z'
 author: Agent
 implementationLink: 17a6bcc3a6ec268d35ca4c11d5cf39cddc450216
 order: 1
 id: FLUX-361
 tokenMetadata:
-  inputTokens: 329865
-  outputTokens: 3502
-  costUSD: 0.298632
+  inputTokens: 1289694
+  outputTokens: 17108
+  costUSD: 1.014057
   costIsEstimated: false
-  cacheReadTokens: 288952
-  cacheCreationTokens: 40900
+  cacheReadTokens: 1184196
+  cacheCreationTokens: 102332
 ---
 Audit of every launch-agent entry point found seven discrepancies caused by each call site composing `startTaskCliSession` itself instead of going through a shared helper. Same shape of problem as the original review-button gap.
 
