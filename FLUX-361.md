@@ -6,9 +6,9 @@ tags:
   - refactor
   - agent
 title: Unify agent-launch entry points across card and modal
-status: Done
+status: In Progress
 createdBy: Agent
-updatedBy: copilot
+updatedBy: Agent
 assignee: unassigned
 history:
   - type: activity
@@ -96,8 +96,309 @@ history:
       zero TS errors.
     date: '2026-06-03T04:43:06.136Z'
     id: c-2026-06-03t04-43-06-136z
+  - type: status_change
+    from: Done
+    to: Ready
+    user: Guy
+    date: '2026-06-03T04:49:05.672Z'
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Guy
+    date: '2026-06-03T04:49:10.431Z'
+  - type: agent_session
+    sessionId: c79ee7b9-7294-4587-9bc3-fd652c6c0965
+    startedAt: '2026-06-03T04:49:10.459Z'
+    status: completed
+    progress:
+      - timestamp: '2026-06-03T04:49:20.844Z'
+        message: 'Running: git log --oneline -10'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: git log --oneline -10
+            description: Show recent git log
+      - timestamp: '2026-06-03T04:49:25.519Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-06-03T04:49:28.025Z'
+        message: Reading agentActions.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/portal/src/agentActions.ts
+      - timestamp: '2026-06-03T04:49:28.744Z'
+        message: 'Running: git diff HEAD~1 HEAD -- portal/src/ 2>&1 | wc -l'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: git diff HEAD~1 HEAD -- portal/src/ 2>&1 | wc -l
+            description: Check total diff size
+      - timestamp: '2026-06-03T04:49:40.521Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-06-03T04:49:45.108Z'
+        message: Working
+        type: tool
+        data:
+          toolName: ToolSearch
+          parameters:
+            query: >-
+              select:mcp__event-horizon__add_comment,mcp__event-horizon__change_status
+            max_results: 2
+      - timestamp: '2026-06-03T04:49:55.520Z'
+        message: Working
+        type: info
+      - timestamp: '2026-06-03T04:50:10.521Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-06-03T04:50:23.441Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp__event-horizon__add_comment
+          parameters:
+            ticketId: FLUX-361
+            comment: >-
+              Code review — Linus mode.
+
+
+              The goal was met: `grep startTaskCliSession portal/src` shows only
+              `api.ts` and `agentActions.ts`. `skipPermissions` is now forwarded
+              in `sendFinishCommand`. Grooming no longer pre-moves status from
+              the card. Persona picker works from the card. Fine. Ship-blocking
+              problems? None. But there are three things in this code that will
+              bite the next person who touches it.
+
+
+              **1. `AgentCommandDef.preStatus` is dead code.**
+
+
+              ```ts
+
+              export interface AgentCommandDef {
+                label: string;
+                verb: AgentCommandVerb;
+                preStatus?: string;  // <- NEVER SET ON ANY ENTRY
+              }
+
+
+              export const AGENT_COMMANDS: AgentCommandDef[] = [
+                { label: 'Implement', verb: 'implement' },  // no preStatus
+                { label: 'Groom', verb: 'groom' },          // no preStatus
+                { label: 'Finish', verb: 'finish' },        // no preStatus
+                { label: 'Review', verb: 'review' },        // no preStatus
+              ];
+
+              ```
+
+
+              You put a field on the interface, wired up the function to handle
+              it, and then never passed it in the registry. Either use it or
+              remove it. Right now it's a broken promise.
+
+
+              **2. `review` is in `AgentCommandVerb` and `AGENT_COMMANDS` but
+              has to be filtered out at every call site.**
+
+
+              `ContextMenu.tsx` literally does `AGENT_COMMANDS.filter((item) =>
+              item.verb !== 'review')`. If 'review' belongs in the registry,
+              callers shouldn't have to exclude it manually. If it doesn't
+              belong there (because review is persona-based, not a bare verb),
+              remove it from the registry. Pick one. What you have now means the
+              next person adding a call site will forget the filter and ship a
+              broken "Review" menu item with no persona picker.
+
+
+              **3. `statusActionMap` in `TaskCard` bypasses `kind: 'command'`
+              for commands that are literally verb+id.**
+
+
+              ```ts
+
+              const statusActionMap = {
+                'Grooming': { label: 'Start grooming', appendPrompt: `groom ${task.id}` },
+                'Todo':     { label: 'Implement',      appendPrompt: `implement ${task.id}` },
+                'In Progress': { label: 'Continue',   appendPrompt: `implement ${task.id}` },
+              };
+
+              // ...
+
+              action: { kind: 'prompt', appendPrompt: statusAction.appendPrompt
+              },
+
+              ```
+
+
+              These are `groom <id>` and `implement <id>` — identical to what `{
+              kind: 'command', verb: 'groom' }` produces inside
+              `runAgentAction`. But this site hand-rolls the string and uses
+              `kind: 'prompt'` instead. Now the same logical operation is
+              encoded two different ways depending on which button the user
+              clicked. If the command format ever changes, you'll update one
+              path and miss the other.
+
+
+              **The circular re-export is sloppy but survivable.**
+              `agentActions.ts` imports `REVIEW_PERSONAS` from
+              `CodeReviewButton.tsx` and re-exports it. Half the codebase now
+              imports from the proxy; `ReadyForMergePrompt` and `TaskModal`
+              still import type `ReviewPersona` directly from
+              `CodeReviewButton`. The plan said "moved here from
+              CodeReviewButton (component re-exports for back-compat)" — it
+              wasn't moved, just proxied. Fine, but be honest about it: either
+              finish the move or drop the proxy and standardize on one import
+              path.
+
+
+              None of these are regressions from before. But this is supposed to
+              be the unification ticket. Don't leave new inconsistencies behind
+              when the whole point was to eliminate them.
+            user: Linus Torvalds (code review)
+      - timestamp: '2026-06-03T04:50:25.522Z'
+        message: Working
+        type: info
+      - timestamp: '2026-06-03T04:50:28.953Z'
+        message: >-
+          Review posted. Ticket stays **In Progress**.
+
+
+          Four specific issues flagged:
+
+
+          1. `AgentCommandDef.preStatus` field declared but never populated in
+          `AGENT_COMMANDS` — dead code
+
+          2. `review` verb is in the registry but every call site has to
+          `filter` it out manually — either use it or remove it
+
+          3. `statusActionMap` in `TaskCard` hand-rolls `groom <id>`/`implement
+          <id>` strings and routes them as `kind: 'prompt'` instead of `kind:
+          'command'` — same operation, two representations, guaranteed
+          divergence later
+
+          4. `REVIEW_PERSONAS` wasn't moved to `agentActions.ts`, just proxied
+          from it, while some files still import directly from
+          `CodeReviewButton` — pick one canonical import path
+
+
+          None are regressions from before, but this was the unification ticket
+          and it left new inconsistencies behind.
+    user: Claude Code
+    date: '2026-06-03T04:49:10.459Z'
+    outcome: Claude Code session ended with code 0.
+    endedAt: '2026-06-03T04:50:28.953Z'
+  - type: comment
+    user: Linus Torvalds (code review)
+    comment: >-
+      Code review — Linus mode.
+
+
+      The goal was met: `grep startTaskCliSession portal/src` shows only
+      `api.ts` and `agentActions.ts`. `skipPermissions` is now forwarded in
+      `sendFinishCommand`. Grooming no longer pre-moves status from the card.
+      Persona picker works from the card. Fine. Ship-blocking problems? None.
+      But there are three things in this code that will bite the next person who
+      touches it.
+
+
+      **1. `AgentCommandDef.preStatus` is dead code.**
+
+
+      ```ts
+
+      export interface AgentCommandDef {
+        label: string;
+        verb: AgentCommandVerb;
+        preStatus?: string;  // <- NEVER SET ON ANY ENTRY
+      }
+
+
+      export const AGENT_COMMANDS: AgentCommandDef[] = [
+        { label: 'Implement', verb: 'implement' },  // no preStatus
+        { label: 'Groom', verb: 'groom' },          // no preStatus
+        { label: 'Finish', verb: 'finish' },        // no preStatus
+        { label: 'Review', verb: 'review' },        // no preStatus
+      ];
+
+      ```
+
+
+      You put a field on the interface, wired up the function to handle it, and
+      then never passed it in the registry. Either use it or remove it. Right
+      now it's a broken promise.
+
+
+      **2. `review` is in `AgentCommandVerb` and `AGENT_COMMANDS` but has to be
+      filtered out at every call site.**
+
+
+      `ContextMenu.tsx` literally does `AGENT_COMMANDS.filter((item) =>
+      item.verb !== 'review')`. If 'review' belongs in the registry, callers
+      shouldn't have to exclude it manually. If it doesn't belong there (because
+      review is persona-based, not a bare verb), remove it from the registry.
+      Pick one. What you have now means the next person adding a call site will
+      forget the filter and ship a broken "Review" menu item with no persona
+      picker.
+
+
+      **3. `statusActionMap` in `TaskCard` bypasses `kind: 'command'` for
+      commands that are literally verb+id.**
+
+
+      ```ts
+
+      const statusActionMap = {
+        'Grooming': { label: 'Start grooming', appendPrompt: `groom ${task.id}` },
+        'Todo':     { label: 'Implement',      appendPrompt: `implement ${task.id}` },
+        'In Progress': { label: 'Continue',   appendPrompt: `implement ${task.id}` },
+      };
+
+      // ...
+
+      action: { kind: 'prompt', appendPrompt: statusAction.appendPrompt },
+
+      ```
+
+
+      These are `groom <id>` and `implement <id>` — identical to what `{ kind:
+      'command', verb: 'groom' }` produces inside `runAgentAction`. But this
+      site hand-rolls the string and uses `kind: 'prompt'` instead. Now the same
+      logical operation is encoded two different ways depending on which button
+      the user clicked. If the command format ever changes, you'll update one
+      path and miss the other.
+
+
+      **The circular re-export is sloppy but survivable.** `agentActions.ts`
+      imports `REVIEW_PERSONAS` from `CodeReviewButton.tsx` and re-exports it.
+      Half the codebase now imports from the proxy; `ReadyForMergePrompt` and
+      `TaskModal` still import type `ReviewPersona` directly from
+      `CodeReviewButton`. The plan said "moved here from CodeReviewButton
+      (component re-exports for back-compat)" — it wasn't moved, just proxied.
+      Fine, but be honest about it: either finish the move or drop the proxy and
+      standardize on one import path.
+
+
+      None of these are regressions from before. But this is supposed to be the
+      unification ticket. Don't leave new inconsistencies behind when the whole
+      point was to eliminate them.
+    date: '2026-06-03T04:50:23.461Z'
+    id: c-2026-06-03t04-50-23-461z
 author: Agent
 implementationLink: 17a6bcc3a6ec268d35ca4c11d5cf39cddc450216
+order: 1
+id: FLUX-361
+tokenMetadata:
+  inputTokens: 329865
+  outputTokens: 3502
+  costUSD: 0.298632
+  costIsEstimated: false
+  cacheReadTokens: 288952
+  cacheCreationTokens: 40900
 ---
 Audit of every launch-agent entry point found seven discrepancies caused by each call site composing `startTaskCliSession` itself instead of going through a shared helper. Same shape of problem as the original review-button gap.
 
