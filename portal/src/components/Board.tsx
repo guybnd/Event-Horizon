@@ -91,36 +91,19 @@ export function Board() {
     return () => window.removeEventListener('flux:open-release-modal', fn);
   }, []);
 
-  if ((tasksLoading && tasks.length === 0) || !config) {
-    return (
-      <div className="flex items-center justify-center h-full">
-        <Loader2 className="w-8 h-8 animate-spin text-primary" />
-      </div>
-    );
-  }
-
-  const archiveStatus = getArchiveStatus(config);
-  const boardTasks = tasks.filter((task) =>
+  const archiveStatus = config ? getArchiveStatus(config) : null;
+  const boardTasks = config ? tasks.filter((task) =>
     task.status !== 'Released' &&
     task.status !== archiveStatus &&
     !config.hiddenStatuses?.some((hiddenStatus) => hiddenStatus.name === task.status)
-  );
+  ) : [];
   const allColumns = useMemo(() => {
+    if (!config) return [];
     const extraStatuses = Array.from(new Set(boardTasks.map(t => t.status)))
       .filter(s => !config.columns?.find(c => c.name === s) && !config.hiddenStatuses?.find(h => h.name === s));
     return [...(config.columns?.map(c => c.name).filter(c => c !== archiveStatus) || []), ...extraStatuses];
-  }, [boardTasks, config.columns, config.hiddenStatuses, archiveStatus]);
+  }, [boardTasks, config, archiveStatus]);
   const columnOrder = useMemo(() => new Map(allColumns.map((columnId, index) => [columnId, index])), [allColumns]);
-  const visibleTasks = filterAndSortTasks(boardTasks, config, {
-    searchQuery,
-    sortOption,
-    filterAssignee,
-    filterPriority,
-    filterTag,
-    filterUnreadOnly,
-    readComments,
-    requireInputStatus: getRequireInputStatus(config),
-  });
   const parentByChildId = useMemo(() => {
     const map = new Map<string, Task>();
     [...tasks]
@@ -151,6 +134,25 @@ export function Board() {
 
     return Math.sign(toIndex - fromIndex) as -1 | 0 | 1;
   }, [taskLiveEvents, columnOrder]);
+
+  if ((tasksLoading && tasks.length === 0) || !config) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  const visibleTasks = filterAndSortTasks(boardTasks, config, {
+    searchQuery,
+    sortOption,
+    filterAssignee,
+    filterPriority,
+    filterTag,
+    filterUnreadOnly,
+    readComments,
+    requireInputStatus: getRequireInputStatus(config),
+  });
 
   const handleDragStart = (event: DragStartEvent) => {
     const { active } = event;
