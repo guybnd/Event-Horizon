@@ -1,7 +1,7 @@
 ---
 id: FLUX-339
 title: Agent workflow skill integration for branch management
-status: Todo
+status: In Progress
 priority: Medium
 effort: S
 assignee: unassigned
@@ -46,6 +46,11 @@ history:
       Reviewer approves → `Done`.
     date: '2026-06-03T02:52:57.854Z'
     id: c-2026-06-03t02-52-57-854z
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-06-03T03:01:22.776Z'
 ---
 ## Problem / Motivation
 

@@ -1,7 +1,7 @@
 ---
 id: FLUX-337
 title: Engine branch-manager module and REST routes
-status: In Progress
+status: Ready
 priority: Medium
 effort: M
 assignee: unassigned
@@ -53,6 +53,27 @@ history:
     to: In Progress
     user: Agent
     date: '2026-06-03T02:58:20.616Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Implemented `engine/src/branch-manager.ts` with `createTicketBranch`,
+      `getTicketBranchStatus`, `deleteTicketBranch`, `checkGhAuth`,
+      `createPullRequest`, and `slugify` helpers. Added three REST routes to
+      `routes/tasks.ts`: `POST /api/tasks/:id/branch`, `GET
+      /api/tasks/:id/branch`, `DELETE /api/tasks/:id/branch`. Updated
+      `finish_ticket` in `mcp-server.ts` to create a PR via `gh` when the ticket
+      has a branch, with graceful degradation to commit hash when `gh` is
+      absent. Added `gh auth status` startup check in `index.ts` that emits a
+      `ghAuthMissing` SSE event and console warning when not configured. No new
+      TypeScript errors introduced (existing errors are pre-existing, tracked in
+      FLUX-248). Engine starts and health endpoint responds cleanly.
+    date: '2026-06-03T03:00:58.648Z'
+    id: c-2026-06-03t03-00-58-648z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-06-03T03:00:58.648Z'
 ---
 ## Problem / Motivation
 

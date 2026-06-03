@@ -1,7 +1,7 @@
 ---
 id: FLUX-338
 title: MCP tools for branch management
-status: Todo
+status: Ready
 priority: Medium
 effort: S
 assignee: unassigned
@@ -15,11 +15,36 @@ history:
   - type: activity
     user: Agent
     date: '2026-05-29T01:25:43.898Z'
+    comment: Created ticket.
+  - type: activity
+    user: Agent
+    date: '2026-05-29T01:25:43.898Z'
     comment: Created as subtask of FLUX-292.
   - type: activity
     user: Agent
     date: '2026-06-03T01:53:49.449Z'
     comment: Updated description.
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-06-03T03:01:06.819Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      All three MCP tools implemented in `engine/src/mcp-server.ts` as part of
+      FLUX-337: `create_branch` (creates branch, stores name on ticket,
+      broadcasts update), `get_branch` (returns name + exists + aheadCount +
+      behindCount), `delete_branch` (refuses unmerged unless force=true). No
+      `switch_branch` tool per design decision. Depends on FLUX-337 which is
+      also at Ready.
+    date: '2026-06-03T03:01:12.211Z'
+    id: c-2026-06-03t03-01-12-211z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-06-03T03:01:12.211Z'
 ---
 ## Problem / Motivation
 
