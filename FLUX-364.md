@@ -1,7 +1,7 @@
 ---
 id: FLUX-364
 title: Improve board search readability and card scan/action hierarchy
-status: Ready
+status: In Progress
 priority: Medium
 effort: M
 assignee: unassigned
@@ -105,6 +105,11 @@ history:
       idle space (collapsed by default and expand on card hover), and tags now
       render as a single-line clipped row with gradient tail that expands on
       tag-area hover.
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Agent
+    date: '2026-06-03T05:14:56.842Z'
 ---
 Apply dashboard refinements:
 - Strengthen global search overlay depth separation and result readability
