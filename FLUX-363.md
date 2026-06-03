@@ -363,10 +363,15 @@ history:
     date: '2026-06-03T05:20:07.284Z'
     outcome: Claude Code session stopped by user.
     endedAt: '2026-06-03T05:20:12.217Z'
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Guy
+    date: '2026-06-03T05:20:42.780Z'
 title: separate columns into 'currently running' and not
-status: In Progress
+status: Ready
 createdBy: Guy
-updatedBy: Agent
+updatedBy: Guy
 tokenMetadata:
   inputTokens: 404453
   outputTokens: 4079
@@ -374,7 +379,7 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 360443
   cacheCreationTokens: 43987
-id: FLUX-363
+order: 2
 ---
 ## Problem / Motivation
 
