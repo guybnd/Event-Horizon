@@ -6,7 +6,7 @@ tags:
   - documentation
 assignee: unassigned
 title: 'Docs: restructure — decisions folder + INDEX by subsystem (Phase A)'
-status: In Progress
+status: Ready
 createdBy: Agent
 updatedBy: Agent
 history:
@@ -27,6 +27,69 @@ history:
     user: Agent
     date: '2026-06-03T03:50:50.165Z'
     id: c-2026-06-03t03-50-50-165z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-06-03T03:52:19.470Z'
+  - type: comment
+    comment: >-
+      Phase A complete (uncommitted, awaiting `finish FLUX-355`).
+
+
+      **Changes:**
+
+      - Created `.docs/event-horizon/decisions/` with `README.md` documenting
+      ADR conventions and index.
+
+      - Moved `architecture/decoupled-storage.md` →
+      `decisions/0001-storage-modes.md` and added skip-banner pointing to
+      current reference.
+
+      - Moved `multi-agent-cli-research.md` →
+      `decisions/0002-multi-agent-cli.md` and added skip-banner pointing to
+      current reference.
+
+      - Renamed `architecture/repository-map.md` → `architecture/code-map.md`.
+
+      - Rewrote `INDEX.md` as a subsystem table with code entry points,
+      reference doc, and decision links per subsystem. Planned references
+      (FLUX-356..360) are called out inline.
+
+      - Updated 7 wiki-link references across docs from `[[Repository Map]]` →
+      `[[Code Map]]`.
+
+
+      **Verification:** `grep -r repository-map .docs/` returns nothing. `grep
+      -r decoupled-storage .docs/` returns nothing. Decisions README links
+      resolve.
+
+
+      **Files touched:**
+
+      - `.docs/event-horizon/INDEX.md`
+
+      - `.docs/event-horizon/decisions/README.md` (new)
+
+      - `.docs/event-horizon/decisions/0001-storage-modes.md` (moved + banner)
+
+      - `.docs/event-horizon/decisions/0002-multi-agent-cli.md` (moved + banner
+      + frontmatter)
+
+      - `.docs/event-horizon/architecture/code-map.md` (renamed + title)
+
+      -
+      `.docs/event-horizon/architecture/{overview,docs-workspace,ticket-model}.md`
+
+      - `.docs/event-horizon/{development,project-overview}.md`
+
+      - `.docs/event-horizon/workflow/{workflow-install,ticket-interactions}.md`
+
+
+      No source code changed.
+    user: Agent
+    date: '2026-06-03T03:52:19.470Z'
+    id: c-2026-06-03t03-52-19-470z
 author: Agent
 ---
 ## Problem
