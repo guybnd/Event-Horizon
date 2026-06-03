@@ -6,9 +6,8 @@ tags:
   - documentation
   - mcp
 assignee: unassigned
-id: FLUX-356
 title: 'Docs: reference/rest-api.md and reference/mcp-tools.md (Phase B)'
-status: Grooming
+status: In Progress
 createdBy: Agent
 updatedBy: Agent
 history:
@@ -16,6 +15,22 @@ history:
     user: Agent
     date: '2026-06-03T03:50:37.469Z'
     comment: Created ticket.
+  - type: status_change
+    from: Grooming
+    to: In Progress
+    user: Agent
+    date: '2026-06-03T03:54:58.483Z'
+  - type: comment
+    comment: >-
+      Plan: enumerate routes from engine/src/routes/*.ts and tools from
+      mcp-server.ts. Write reference/rest-api.md (route, method, payload,
+      response, middleware) and reference/mcp-tools.md (zod input, output, side
+      effects, enforcement, example). Cross-link from INDEX.md and
+      mcp-server.md.
+    user: Agent
+    date: '2026-06-03T03:54:58.483Z'
+    id: c-2026-06-03t03-54-58-483z
+author: Agent
 ---
 ## Problem
 
