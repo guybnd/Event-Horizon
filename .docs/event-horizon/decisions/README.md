@@ -28,4 +28,5 @@ This folder holds **Architecture Decision Records** — historical reasoning tha
 | ADR | Title | Status |
 |-----|-------|--------|
 | 0001 | [Storage Modes](0001-storage-modes.md) | Accepted — both modes ship today; default mode under review (FLUX-353) |
-| 0002 | [Multi-Agent CLI Research](0002-multi-agent-cli.md) | Accepted — informs current adapter set; orchestration direction under review (FLUX-354) |
+| 0002 | [Multi-Agent CLI Research](0002-multi-agent-cli.md) | Accepted — informs current adapter set |
+| 0003 | [Orchestration Runtime Strategy](0003-orchestration-runtime.md) | Accepted — keep in-house; no external framework clears the CLI-subprocess + MCP bar |
