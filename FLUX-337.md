@@ -2006,17 +2006,2734 @@ history:
   - type: agent_session
     sessionId: 3b3c0dc6-746a-4b14-aac9-99bcee0b9d03
     startedAt: '2026-06-03T03:30:37.538Z'
-    status: active
-    progress: []
+    status: completed
+    progress:
+      - timestamp: '2026-06-03T03:30:47.996Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Skill
+          parameters:
+            skill: code-review
+            args: '--persona architect'
+      - timestamp: '2026-06-03T03:30:52.586Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-06-03T03:30:53.143Z'
+        message: 'Running: git diff HEAD~1...HEAD 2>/dev/null | head -2000; e...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              git diff HEAD~1...HEAD 2>/dev/null | head -2000; echo
+              "---WORKING-TREE---"; git diff HEAD | head -1000
+            description: Get diff from last commit and any uncommitted changes
+      - timestamp: '2026-06-03T03:30:56.861Z'
+        message: Reading bvf216pso.txt
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: >-
+              /Users/guy/.claude/projects/-Users-guy-Event-Horizon/51bf46a0-50d1-42f9-9f9d-e8f96bf6df93/tool-results/bvf216pso.txt
+      - timestamp: '2026-06-03T03:31:03.110Z'
+        message: Reading branch-manager.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/branch-manager.ts
+      - timestamp: '2026-06-03T03:31:07.588Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-06-03T03:31:10.151Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: workspaceRoot
+            path: engine/src/workspace.ts
+            output_mode: content
+      - timestamp: '2026-06-03T03:31:14.801Z'
+        message: Reading events.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/events.ts
+      - timestamp: '2026-06-03T03:31:15.526Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: ghAuthMissing
+            path: portal/src
+            output_mode: content
+      - timestamp: '2026-06-03T03:31:22.588Z'
+        message: Working
+        type: info
+      - timestamp: '2026-06-03T03:31:37.589Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-06-03T03:31:48.446Z'
+        message: Delegating
+        type: tool
+        data:
+          toolName: Agent
+          parameters:
+            description: Angle A — line-by-line diff scan for correctness bugs
+            prompt: >-
+              You are a code reviewer performing Angle A — line-by-line diff
+              scan. Read every hunk carefully and flag correctness bugs.
+
+
+              The diff under review adds a `branch-manager.ts` module to an
+              Express/TypeScript engine, wires it into MCP tools and REST
+              routes, and changes how PR creation works on `finish_ticket`. Here
+              are the key files:
+
+
+              **engine/src/branch-manager.ts** (new file):
+
+              ```ts
+
+              import { execFile } from 'child_process';
+
+              import { promisify } from 'util';
+
+              import { workspaceRoot } from './workspace.js';
+
+
+              const execFileAsync = promisify(execFile);
+
+
+              function git(args: string[]): Promise<{ stdout: string; stderr:
+              string }> {
+                return execFileAsync('git', ['-C', workspaceRoot!, ...args], { windowsHide: true });
+              }
+
+
+              export function slugify(title: string): string {
+                return title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
+              }
+
+
+              export function branchName(ticketId: string, title: string):
+              string {
+                return `flux/${ticketId}-${slugify(title)}`;
+              }
+
+
+              export async function createTicketBranch(ticketId: string, title:
+              string, baseBranch = 'master'): Promise<string> {
+                const name = branchName(ticketId, title);
+                await git(['branch', name, baseBranch]);
+                await git(['push', '-u', 'origin', name]);
+                return name;
+              }
+
+
+              export async function getTicketBranchStatus(name: string):
+              Promise<{ exists: boolean; aheadCount: number; behindCount: number
+              }> {
+                try {
+                  await git(['rev-parse', '--verify', name]);
+                } catch {
+                  return { exists: false, aheadCount: 0, behindCount: 0 };
+                }
+
+                try {
+                  const { stdout } = await git(['rev-list', '--left-right', '--count', `master...${name}`]);
+                  const parts = stdout.trim().split(/\s+/);
+                  const behindCount = parseInt(parts[0] ?? '0', 10) || 0;
+                  const aheadCount = parseInt(parts[1] ?? '0', 10) || 0;
+                  return { exists: true, aheadCount, behindCount };
+                } catch {
+                  return { exists: true, aheadCount: 0, behindCount: 0 };
+                }
+              }
+
+
+              export async function deleteTicketBranch(name: string, force =
+              false): Promise<void> {
+                const flag = force ? '-D' : '-d';
+                await git(['branch', flag, name]);
+              }
+
+
+              export async function checkGhAuth(): Promise<boolean> {
+                try {
+                  await execFileAsync('gh', ['auth', 'status'], { windowsHide: true });
+                  return true;
+                } catch {
+                  return false;
+                }
+              }
+
+
+              export async function createPullRequest(branch: string, title:
+              string, body: string): Promise<string> {
+                await execFileAsync('git', ['-C', workspaceRoot!, 'push', '-u', 'origin', branch], { windowsHide: true });
+
+                try {
+                  const { stdout: existing } = await execFileAsync('gh', ['pr', 'view', branch, '--json', 'url', '--jq', '.url'], { windowsHide: true });
+                  const url = existing.trim();
+                  if (url) return url;
+                } catch {
+                  // No existing PR — fall through to create one.
+                }
+
+                const { stdout } = await execFileAsync('gh', ['pr', 'create', '--title', title, '--body', body, '--head', branch], { windowsHide: true });
+                return stdout.trim();
+              }
+
+              ```
+
+
+              **Changes to mcp-server.ts `finish_ticket`**:
+
+              ```ts
+
+              let finalLink = implementationLink;
+
+              let noteForComment = '';
+
+
+              // If ticket has a branch, attempt to create a PR
+
+              if (task.branch) {
+                const ghAvailable = await checkGhAuth();
+                if (ghAvailable) {
+                  try {
+                    const prBody = `${task.body ? task.body.slice(0, 800) : ''}\n\n---\nTicket: ${ticketId}`;
+                    const prUrl = await createPullRequest(task.branch, task.title || ticketId, prBody);
+                    finalLink = prUrl;
+                  } catch (err: any) {
+                    noteForComment = `\n\n⚠️ PR creation failed: ${err.message}. Commit: ${implementationLink}`;
+                    finalLink = implementationLink;
+                  }
+                } else {
+                  noteForComment = `\n\n⚠️ PR creation skipped — gh not configured. Commit: ${implementationLink}. Open a PR manually when ready.`;
+                  finalLink = implementationLink;
+                }
+              }
+
+
+              const entries = [{ type: 'comment', user: 'Agent', comment:
+              completionComment + noteForComment, date: new Date().toISOString()
+              }];
+
+              const result = await updateTaskWithHistory(ticketId, {
+                entries,
+                updatedBy: 'Agent',
+                nextStatus: 'Done',
+                extraFields: { implementationLink: finalLink },
+              });
+
+              ```
+
+
+              **Changes to portal/src/components/TaskCard.tsx** - sendReview
+              function:
+
+              ```ts
+
+              const sendReview = async (e: React.MouseEvent, personaId: string)
+              => {
+                e.stopPropagation();
+                setReviewSelectorOpen(false);
+                setReviewBusy(true);
+                try {
+                  const persona = REVIEW_PERSONAS.find(p => p.id === personaId);
+                  if (!persona) return;
+                  const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
+                  await updateTask(task.id, { status: 'In Progress' });   // <-- status update
+                  await startTaskCliSession(task.id, framework, persona.prompt, true);
+                  triggerRefresh();
+                } finally {
+                  setReviewBusy(false);
+                }
+              };
+
+              ```
+
+
+              **engine/src/index.ts** startup:
+
+              ```ts
+
+              checkGhAuth().then(ok => {
+                if (!ok) {
+                  console.warn('[branch] GitHub CLI not configured — PR creation unavailable. Run `gh auth login` to enable.');
+                  broadcastEvent('ghAuthMissing', {});
+                }
+              }).catch(() => {});
+
+              ```
+
+
+              **New REST routes in engine/src/routes/tasks.ts**:
+
+              - `POST /:id/branch` — creates branch, updates ticket
+
+              - `GET /:id/branch` — returns branch status
+
+              - `DELETE /:id/branch` — deletes branch, clears field
+
+
+              For each code section, ask: what input, state, timing, or platform
+              makes this line wrong? Look for: inverted/wrong conditions,
+              off-by-one, null/undefined deref, missing `await`, falsy-zero
+              checks, wrong-variable copy-paste, error swallowed in catch, shell
+              injection vectors.
+
+
+              Return up to 8 candidate findings as JSON:
+
+              ```json
+
+              [{"file": "path", "line": N, "summary": "one sentence",
+              "failure_scenario": "concrete trigger → wrong output"}]
+
+              ```
+      - timestamp: '2026-06-03T03:31:51.965Z'
+        message: Reading branch-manager.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/branch-manager.ts
+      - timestamp: '2026-06-03T03:31:52.589Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-06-03T03:31:58.814Z'
+        message: Delegating
+        type: tool
+        data:
+          toolName: Agent
+          parameters:
+            description: Angle B — removed behavior auditor
+            prompt: >-
+              You are a code reviewer performing Angle B — removed-behavior
+              auditor. For every line the diff DELETES or replaces, name the
+              invariant it enforced, then search the new code for where that
+              invariant is re-established.
+
+
+              Context: This diff modifies an Express/TypeScript engine for a
+              ticket board system. Key changes:
+
+
+              1. **CodeReviewButton.tsx** — removed use of REST API (`PUT
+              /api/tasks/:id` with `appendHistory`) and replaced with MCP tool
+              instructions (`add_comment`, `change_status`). The old code told
+              reviewer agents to both post a comment AND move ticket to "In
+              Progress" in a single PUT call. The new code uses two separate MCP
+              calls.
+
+
+              2. **TaskCard.tsx sendReview** — the old code was:
+                 ```ts
+                 await startTaskCliSession(task.id, framework, `review ${task.id} --persona ${persona.id}`);
+                 ```
+                 The new code is:
+                 ```ts
+                 await updateTask(task.id, { status: 'In Progress' });
+                 await startTaskCliSession(task.id, framework, persona.prompt, true);
+                 ```
+
+              3. **Orchestrator skill docs** — removed the explicit YAML history
+              entry schema examples (showing correct `from`/`to` fields vs wrong
+              `oldStatus`/`newStatus`, and showing correct vs wrong subtask
+              shapes). These were warnings about schema landmines.
+
+
+              4. **finish_ticket MCP tool** — the old code used
+              `implementationLink` directly. The new code uses `finalLink` which
+              may be a PR URL.
+
+
+              For each removed behavior, determine:
+
+              - Was it a guard/validation that the new code drops?
+
+              - Is there a race condition introduced (e.g., status update before
+              session start)?
+
+              - Does the agent get a different initial context when passed
+              `persona.prompt` directly vs when the skill file tells it to check
+              `--persona ${persona.id}`?
+
+
+              Return up to 8 candidates:
+
+              ```json
+
+              [{"file": "path", "line": N, "summary": "one sentence",
+              "failure_scenario": "concrete trigger → wrong output/behavior"}]
+
+              ```
+      - timestamp: '2026-06-03T03:32:02.490Z'
+        message: Reading CodeReviewButton.tsx
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: >-
+              /Users/guy/Event-Horizon/portal/src/components/CodeReviewButton.tsx
+      - timestamp: '2026-06-03T03:32:03.362Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: workspaceRoot
+            path: /Users/guy/Event-Horizon/engine/src
+            output_mode: content
+      - timestamp: '2026-06-03T03:32:07.591Z'
+        message: Working
+        type: info
+      - timestamp: '2026-06-03T03:32:08.461Z'
+        message: 'Running: git rev-list --help 2>&1 | grep -A5 ''left-right'' |...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: git rev-list --help 2>&1 | grep -A5 'left-right' | head -20
+            description: Check git rev-list --left-right output convention
+      - timestamp: '2026-06-03T03:32:08.690Z'
+        message: Reading mcp-server.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/mcp-server.ts
+      - timestamp: '2026-06-03T03:32:12.797Z'
+        message: Delegating
+        type: tool
+        data:
+          toolName: Agent
+          parameters:
+            description: Angle C — cross-file tracer for callers and callees
+            prompt: >-
+              You are a code reviewer performing Angle C — cross-file tracer.
+              For each function the diff changes, find its callers and check
+              whether the change breaks any call site.
+
+
+              The diff under review is in a TypeScript Express engine with MCP
+              tools. Key changes:
+
+
+              1. **`createTicketBranch(ticketId, title, baseBranch)`** — new
+              function in `branch-manager.ts`. Called from:
+                 - `mcp-server.ts` `create_branch` tool: `await createTicketBranch(ticketId, task.title || ticketId, baseBranch || 'master')`
+                 - `routes/tasks.ts` POST `/:id/branch`: `await createTicketBranch(id, title, baseBranch)`
+                 
+                 The function runs `git branch <name> <baseBranch>` then `git push -u origin <name>`. Note that `git branch` requires `baseBranch` to be a valid local ref. If `baseBranch` comes from user input in the REST body, it is used unsanitized.
+
+              2. **`workspaceRoot`** — imported from `workspace.js`, can be
+              `null` until `setWorkspaceRoot()` is called. The `git()` helper
+              does `execFileAsync('git', ['-C', workspaceRoot!, ...args])` —
+              uses the non-null assertion `!`. If `workspaceRoot` is still
+              `null` at call time (e.g., early startup or test), this passes the
+              string `"null"` as the working directory argument to git, causing
+              it to use a directory named "null".
+
+
+              3. **`checkGhAuth()`** — called at startup in `index.ts` inside
+              the server's `listening` callback and
+              `broadcastEvent('ghAuthMissing', {})` is emitted. However,
+              `broadcastEvent` requires SSE clients to be connected. At startup
+              there are no clients yet, so the event fires into the void. Is
+              there a re-check mechanism?
+
+
+              4. **`startTaskCliSession(task.id, framework, persona.prompt,
+              true)`** — the 4th argument `true` means `skipPermissions`. The
+              old call was `startTaskCliSession(task.id, framework, \`review
+              ${task.id} --persona ${persona.id}\`)` which did NOT pass
+              `skipPermissions`. Check what `startTaskCliSession`'s signature is
+              and whether passing `true` here changes behavior meaningfully.
+
+
+              Relevant `startTaskCliSession` signature from `portal/src/api.ts`:
+
+              ```ts
+
+              export async function startTaskCliSession(taskId: string,
+              framework: CliFramework, appendPrompt?: string, skipPermissions =
+              true, effortOverride?: string): Promise<CliSessionSummary>
+
+              ```
+
+
+              Note that `skipPermissions` defaults to `true` already in the
+              signature. So the old call `startTaskCliSession(task.id,
+              framework, \`review...\`)` also used `skipPermissions = true` by
+              default.
+
+
+              For the `gh pr create` call in `createPullRequest`:
+
+              ```ts
+
+              const { stdout } = await execFileAsync('gh', ['pr', 'create',
+              '--title', title, '--body', body, '--head', branch], {
+              windowsHide: true });
+
+              return stdout.trim();
+
+              ```
+
+              Does `gh pr create` print only the PR URL to stdout? Or does it
+              print a multi-line message? If the PR URL is embedded in a
+              multi-line output, `stdout.trim()` returns the whole thing, and
+              storing that as `implementationLink` would be wrong.
+
+
+              Return up to 8 candidates:
+
+              ```json
+
+              [{"file": "path", "line": N, "summary": "one sentence",
+              "failure_scenario": "concrete trigger → wrong output"}]
+
+              ```
+      - timestamp: '2026-06-03T03:32:16.107Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Glob
+          parameters:
+            pattern: '**/api.ts'
+            path: /Users/guy/Event-Horizon/portal/src
+      - timestamp: '2026-06-03T03:32:16.515Z'
+        message: Reading tasks.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/routes/tasks.ts
+      - timestamp: '2026-06-03T03:32:22.592Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-06-03T03:32:25.126Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Glob
+          parameters:
+            pattern: '**/cli-session.ts'
+            path: /Users/guy/Event-Horizon/engine/src
+      - timestamp: '2026-06-03T03:32:27.801Z'
+        message: Reading cli-session.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/routes/cli-session.ts
+      - timestamp: '2026-06-03T03:32:28.124Z'
+        message: Delegating
+        type: tool
+        data:
+          toolName: Agent
+          parameters:
+            description: Angle D — language pitfall specialist
+            prompt: >-
+              You are a code reviewer performing Angle D — language-pitfall
+              specialist for TypeScript/Node.js.
+
+
+              Review this new code in `engine/src/branch-manager.ts`:
+
+
+              ```ts
+
+              import { execFile } from 'child_process';
+
+              import { promisify } from 'util';
+
+              import { workspaceRoot } from './workspace.js';
+
+
+              const execFileAsync = promisify(execFile);
+
+
+              function git(args: string[]): Promise<{ stdout: string; stderr:
+              string }> {
+                return execFileAsync('git', ['-C', workspaceRoot!, ...args], { windowsHide: true });
+              }
+
+
+              export function slugify(title: string): string {
+                return title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
+              }
+
+
+              export function branchName(ticketId: string, title: string):
+              string {
+                return `flux/${ticketId}-${slugify(title)}`;
+              }
+
+
+              export async function createTicketBranch(ticketId: string, title:
+              string, baseBranch = 'master'): Promise<string> {
+                const name = branchName(ticketId, title);
+                await git(['branch', name, baseBranch]);
+                await git(['push', '-u', 'origin', name]);
+                return name;
+              }
+
+
+              export async function getTicketBranchStatus(name: string):
+              Promise<{ exists: boolean; aheadCount: number; behindCount: number
+              }> {
+                try {
+                  await git(['rev-parse', '--verify', name]);
+                } catch {
+                  return { exists: false, aheadCount: 0, behindCount: 0 };
+                }
+
+                try {
+                  const { stdout } = await git(['rev-list', '--left-right', '--count', `master...${name}`]);
+                  const parts = stdout.trim().split(/\s+/);
+                  const behindCount = parseInt(parts[0] ?? '0', 10) || 0;
+                  const aheadCount = parseInt(parts[1] ?? '0', 10) || 0;
+                  return { exists: true, aheadCount, behindCount };
+                } catch {
+                  return { exists: true, aheadCount: 0, behindCount: 0 };
+                }
+              }
+
+
+              export async function deleteTicketBranch(name: string, force =
+              false): Promise<void> {
+                const flag = force ? '-D' : '-d';
+                await git(['branch', flag, name]);
+              }
+
+
+              export async function checkGhAuth(): Promise<boolean> {
+                try {
+                  await execFileAsync('gh', ['auth', 'status'], { windowsHide: true });
+                  return true;
+                } catch {
+                  return false;
+                }
+              }
+
+
+              export async function createPullRequest(branch: string, title:
+              string, body: string): Promise<string> {
+                await execFileAsync('git', ['-C', workspaceRoot!, 'push', '-u', 'origin', branch], { windowsHide: true });
+
+                try {
+                  const { stdout: existing } = await execFileAsync('gh', ['pr', 'view', branch, '--json', 'url', '--jq', '.url'], { windowsHide: true });
+                  const url = existing.trim();
+                  if (url) return url;
+                } catch {
+                  // No existing PR — fall through to create one.
+                }
+
+                const { stdout } = await execFileAsync('gh', ['pr', 'create', '--title', title, '--body', body, '--head', branch], { windowsHide: true });
+                return stdout.trim();
+              }
+
+              ```
+
+
+              Check for:
+
+              1. **Shell argument injection**: `execFileAsync` uses array args
+              (safe). But are `branch`, `title`, `body` passed to `gh` CLI via
+              array args? If `title` or `body` contains newlines or shell
+              metacharacters, would that break the CLI invocation?
+
+              2. **`parseInt(...) || 0`** pattern — falsy-zero: `parseInt('0',
+              10)` returns `0`, which is falsy, so `parseInt('0', 10) || 0`
+              returns `0`. This is correct behavior here but may mask real
+              errors in the count parsing.
+
+              3. **`workspaceRoot!`** — the non-null assertion. If
+              `workspaceRoot` is actually `null`, TypeScript compiles but at
+              runtime `execFileAsync('git', ['-C', null!])` — what does Node
+              pass to the process? The string `"null"` because `null` gets
+              coerced to string in array spread? Actually in Node.js, the `args`
+              array is stringified — check if `null!` in an array becomes the
+              string "null" or throws.
+
+              4. **`stdout.trim()`** for PR URL — `gh pr create` outputs only
+              the URL on success? Or might it include additional text (warnings,
+              notices)?
+
+              5. **`git rev-list --left-right --count master...branch`** — this
+              uses three dots (`...`) which is the symmetric difference. The
+              output format is `<behind>\t<ahead>`. Does splitting on whitespace
+              correctly handle tab vs space?
+
+              6. **Missing `--base` flag** on `gh pr create` — the default base
+              branch for a PR depends on the repository's default branch setting
+              on GitHub. If the repo's default branch is `main` but the engine
+              uses `master`, PRs target `main` instead of `master`.
+
+
+              Return up to 8 candidates:
+
+              ```json
+
+              [{"file": "path", "line": N, "summary": "one sentence",
+              "failure_scenario": "concrete trigger → wrong output"}]
+
+              ```
+      - timestamp: '2026-06-03T03:32:29.582Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: workspaceRoot|setWorkspaceRoot
+            path: /Users/guy/Event-Horizon/engine/src/workspace.ts
+            output_mode: content
+            context: 3
+      - timestamp: '2026-06-03T03:32:33.143Z'
+        message: Reading branch-manager.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/branch-manager.ts
+      - timestamp: '2026-06-03T03:32:33.441Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Glob
+          parameters:
+            pattern: /Users/guy/Event-Horizon/engine/src/workspace.ts
+      - timestamp: '2026-06-03T03:32:34.305Z'
+        message: Reading claude-code.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/agents/claude-code.ts
+      - timestamp: '2026-06-03T03:32:35.477Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: broadcastEvent|ghAuthMissing
+            path: /Users/guy/Event-Horizon/engine/src/events.ts
+            output_mode: content
+            context: 5
+      - timestamp: '2026-06-03T03:32:35.950Z'
+        message: Reading workspace.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/workspace.ts
+      - timestamp: '2026-06-03T03:32:37.593Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-06-03T03:32:39.357Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: ghAuthMissing|checkGhAuth|re-check|recheck
+            path: /Users/guy/Event-Horizon
+            output_mode: content
+            glob: '**/*.ts'
+      - timestamp: '2026-06-03T03:32:41.336Z'
+        message: Delegating
+        type: tool
+        data:
+          toolName: Agent
+          parameters:
+            description: Angle E — wrapper/proxy correctness and ghost event
+            prompt: >-
+              You are a code reviewer performing Angle E — wrapper/proxy
+              correctness and event system audit.
+
+
+              Context: The diff adds a `ghAuthMissing` SSE broadcast event at
+              engine startup, and adds new MCP tools that wrap git operations.
+
+
+              **Ghost event issue:**
+
+              In `engine/src/index.ts`, at server startup:
+
+              ```ts
+
+              checkGhAuth().then(ok => {
+                if (!ok) {
+                  console.warn('[branch] GitHub CLI not configured...');
+                  broadcastEvent('ghAuthMissing', {});
+                }
+              }).catch(() => {});
+
+              ```
+
+
+              `broadcastEvent` iterates over currently-connected SSE clients:
+
+              ```ts
+
+              export function broadcastEvent(event: string, data: unknown) {
+                const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+                for (const res of clients) {
+                  res.write(payload);
+                }
+              }
+
+              ```
+
+
+              At server startup (inside the `listening` event callback), the
+              portal has not yet connected its SSE client. So `clients` is empty
+              and the event fires into void. The portal never receives the
+              `ghAuthMissing` event and never shows the banner.
+
+
+              **Check the portal** for `ghAuthMissing` event handling: Does the
+              portal have any code that listens for `ghAuthMissing` and displays
+              a banner? If not, the entire warning system is dead on arrival.
+
+
+              **MCP tool `delete_branch` — branch name passed to git:**
+
+              ```ts
+
+              async ({ ticketId, force }) => {
+                const task = tasksCache[ticketId];
+                if (!task) return errorResult(`Ticket ${ticketId} not found`);
+                const name: string | undefined = task.branch;
+                if (!name) return errorResult(`Ticket ${ticketId} has no associated branch`);
+
+                try {
+                  await deleteTicketBranch(name, force ?? false);
+                  await updateTaskWithHistory(ticketId, { updatedBy: 'Agent', extraFields: { branch: null } });
+              ```
+
+
+              `deleteTicketBranch` calls:
+
+              ```ts
+
+              await git(['branch', flag, name]);
+
+              ```
+
+
+              This only deletes the LOCAL branch. If the branch was pushed to
+              origin (which `createTicketBranch` does), the remote branch
+              remains. Is this intentional? The design doc says "branch is a
+              useful historical artifact" — but does the user want the remote
+              branch to linger?
+
+
+              **`create_branch` tool double-update race:**
+
+              ```ts
+
+              const branch = await createTicketBranch(ticketId, task.title ||
+              ticketId, baseBranch || 'master');
+
+              await updateTaskWithHistory(ticketId, { updatedBy: 'Agent',
+              extraFields: { branch } });
+
+              broadcastEvent('taskUpdated', { id: ticketId });
+
+              return jsonResult({ branch });
+
+              ```
+
+
+              If `updateTaskWithHistory` fails (e.g., disk full, concurrent
+              write), the git branch has already been created remotely but the
+              ticket has no `branch` field. There is no rollback. On retry,
+              `createTicketBranch` would fail with "branch already exists" and
+              `create_branch` would error on the pre-check `if (task.branch)`
+              returning `errorResult`. But `task.branch` is still null (the
+              update failed), so the pre-check passes and `createTicketBranch`
+              is called again — hitting "branch already exists."
+
+
+              Return up to 8 candidates:
+
+              ```json
+
+              [{"file": "path", "line": N, "summary": "one sentence",
+              "failure_scenario": "concrete trigger → wrong output"}]
+
+              ```
+      - timestamp: '2026-06-03T03:32:42.898Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: ghAuthMissing
+            path: /Users/guy/Event-Horizon/portal/src
+            output_mode: content
+            context: 3
+      - timestamp: '2026-06-03T03:32:46.446Z'
+        message: 'Running: grep -n "ghAuthMissing\|broadcastEvent\|SSE\|clien...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              grep -n
+              "ghAuthMissing\|broadcastEvent\|SSE\|clients\|EventSource\|useSSE\|ghAuth"
+              /Users/guy/Event-Horizon/portal/src/components/TaskCard.tsx
+              /Users/guy/Event-Horizon/portal/src/types.ts 2>/dev/null | head
+              -60
+            description: Search portal components for ghAuthMissing handling
+      - timestamp: '2026-06-03T03:32:51.004Z'
+        message: Delegating
+        type: tool
+        data:
+          toolName: Agent
+          parameters:
+            description: 'Angle F — reuse: existing utilities in the codebase'
+            prompt: >-
+              You are a code reviewer performing Angle F — reuse. Find new code
+              that re-implements something the codebase already has.
+
+
+              Context: This diff adds `engine/src/branch-manager.ts` to an
+              existing TypeScript Express engine. The engine already has:
+
+              - `engine/src/workspace.ts` — exports `workspaceRoot`,
+              `getFluxDir()`, `getFluxStoreDir()`
+
+              - `engine/src/task-store.ts` — task cache and persistence
+
+              - `engine/src/history.ts` — history normalization utilities
+
+
+              The new `branch-manager.ts` does:
+
+              1. Creates a `git()` helper using `execFile` from `child_process`
+
+              2. Uses `workspaceRoot` with non-null assertion for git operations
+
+
+              Check: Does the engine already have a git utility or `simple-git`
+              dependency? The design spec says "Prefer `simple-git` for
+              consistency with any existing engine git usage. Fall back to
+              `execSync` only if `simple-git` is not already a dependency."
+
+
+              Look for: 
+
+              - Any existing git operation pattern in engine source files (grep
+              for `execFile`, `execSync`, `simple-git`, `git(`)
+
+              - Whether `simple-git` is in `engine/package.json`
+
+              - Whether there's already a git helper in the engine
+
+
+              Also check: 
+
+              - The `slugify` function in `branch-manager.ts` — is there an
+              existing slug/sanitize utility in the codebase?
+
+              - The `branchName` function — is branch naming logic duplicated
+              anywhere?
+
+
+              The design spec said to prefer `simple-git` over `execSync` but
+              the implementation uses `execFile` instead. Flag this discrepancy
+              if `simple-git` is not available.
+
+
+              Return up to 8 candidates as JSON:
+
+              ```json
+
+              [{"file": "path", "line": N, "summary": "one sentence",
+              "failure_scenario": "concrete cost (what is
+              duplicated/inconsistent)"}]
+
+              ```
+
+
+              Note: For reuse/simplification findings, `failure_scenario` should
+              state the concrete maintenance cost, not a crash.
+      - timestamp: '2026-06-03T03:32:52.083Z'
+        message: Reading AppContext.tsx
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/portal/src/AppContext.tsx
+            offset: 755
+            limit: 80
+      - timestamp: '2026-06-03T03:32:52.593Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-06-03T03:32:55.644Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: execFile|execSync|simple-git|simpleGit
+            path: /Users/guy/Event-Horizon/engine/src
+            output_mode: content
+            glob: '*.ts'
+            '-n': true
+      - timestamp: '2026-06-03T03:32:55.980Z'
+        message: Reading package.json
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/package.json
+      - timestamp: '2026-06-03T03:32:57.903Z'
+        message: 'Running: grep -n "ghAuthMissing\|ghAuth\|banner\|gh_auth\|G...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              grep -n "ghAuthMissing\|ghAuth\|banner\|gh_auth\|GitHubAuth"
+              /Users/guy/Event-Horizon/portal/src/AppContext.tsx 2>/dev/null |
+              head -30
+            description: Search AppContext for ghAuthMissing handler
+      - timestamp: '2026-06-03T03:32:58.534Z'
+        message: Reading branch-manager.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/branch-manager.ts
+      - timestamp: '2026-06-03T03:33:00.543Z'
+        message: Delegating
+        type: tool
+        data:
+          toolName: Agent
+          parameters:
+            description: 'Angle G — simplification: unnecessary complexity in the diff'
+            prompt: >-
+              You are a code reviewer performing Angle G — simplification. Find
+              unnecessary complexity in the changed code.
+
+
+              Review this diff section in `engine/src/mcp-server.ts` (the
+              `finish_ticket` handler changes):
+
+
+              ```ts
+
+              let finalLink = implementationLink;
+
+              let noteForComment = '';
+
+
+              if (task.branch) {
+                const ghAvailable = await checkGhAuth();
+                if (ghAvailable) {
+                  try {
+                    const prBody = `${task.body ? task.body.slice(0, 800) : ''}\n\n---\nTicket: ${ticketId}`;
+                    const prUrl = await createPullRequest(task.branch, task.title || ticketId, prBody);
+                    finalLink = prUrl;
+                  } catch (err: any) {
+                    noteForComment = `\n\n⚠️ PR creation failed: ${err.message}. Commit: ${implementationLink}`;
+                    finalLink = implementationLink;
+                  }
+                } else {
+                  noteForComment = `\n\n⚠️ PR creation skipped — gh not configured. Commit: ${implementationLink}. Open a PR manually when ready.`;
+                  finalLink = implementationLink;
+                }
+              }
+
+              ```
+
+
+              Questions:
+
+              1. `finalLink = implementationLink` in the `else` branch is
+              redundant since `finalLink` is already initialized to
+              `implementationLink`. Same in the `catch` block. This is harmless
+              but noisy.
+
+
+              2. `checkGhAuth()` is called inside `finish_ticket` even though it
+              was already called at startup. The result may have changed (user
+              ran `gh auth login` after startup), so re-checking is correct. But
+              calling it on every `finish_ticket` invocation adds latency for a
+              command that's only run once per ticket. Is there a way to cache
+              the result?
+
+
+              3. In `createPullRequest`, the function first pushes the branch,
+              then checks if a PR exists, then creates one. The push is
+              unconditional even if the PR already exists and there's nothing
+              new to push. This is "push-always" but in the context of
+              `finish_ticket`, the caller wants to ensure the branch is up to
+              date, so push-always is correct.
+
+
+              4. The `rev-list --left-right --count` output format: when the
+              branch IS master (0 divergence), what does the output look like?
+              Is it `0\t0\n` or could it be empty?
+
+
+              5. Review `deleteTicketBranch` — it only deletes the local branch
+              with `git branch -d name`. If the branch was pushed to remote via
+              `createTicketBranch`, the remote ref remains. The design says this
+              is intentional ("useful historical artifact"), but the function
+              name `deleteTicketBranch` suggests a full delete. This is a
+              misleading API.
+
+
+              Return up to 8 candidates:
+
+              ```json
+
+              [{"file": "path", "line": N, "summary": "one sentence",
+              "failure_scenario": "concrete cost (what is duplicated, wasted, or
+              harder to maintain)"}]
+
+              ```
+      - timestamp: '2026-06-03T03:33:01.808Z'
+        message: 'Running: grep -n "ghAuthMissing\|ghAuth\|addEventListener" ...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              grep -n "ghAuthMissing\|ghAuth\|addEventListener"
+              /Users/guy/Event-Horizon/portal/src/AppContext.tsx 2>/dev/null |
+              head -30
+            description: Check AppContext for all addEventListener calls and ghAuth
+      - timestamp: '2026-06-03T03:33:02.184Z'
+        message: Reading events.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/events.ts
+      - timestamp: '2026-06-03T03:33:04.980Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: slug|sanitize|kebab|toLowerCase.*replace
+            path: /Users/guy/Event-Horizon/engine/src
+            output_mode: content
+            glob: '*.ts'
+            '-n': true
+      - timestamp: '2026-06-03T03:33:05.824Z'
+        message: 'Running: grep -rn "ghAuthMissing\|ghAuth" /Users/guy/Event-...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              grep -rn "ghAuthMissing\|ghAuth"
+              /Users/guy/Event-Horizon/portal/src/ 2>/dev/null
+            description: Exhaustive search for ghAuthMissing in portal
+      - timestamp: '2026-06-03T03:33:07.474Z'
+        message: Reading file-utils.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/file-utils.ts
+            offset: 165
+            limit: 30
+      - timestamp: '2026-06-03T03:33:07.594Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-06-03T03:33:08.376Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: branchName|branch.*flux/|flux/.*branch
+            path: /Users/guy/Event-Horizon/engine/src
+            output_mode: content
+            glob: '*.ts'
+            '-n': true
+      - timestamp: '2026-06-03T03:33:09.527Z'
+        message: 'Running: grep -n "workspaceRoot" /Users/guy/Event-Horizon/e...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              grep -n "workspaceRoot"
+              /Users/guy/Event-Horizon/engine/src/workspace.ts 2>/dev/null |
+              head -20
+            description: Check workspaceRoot export and initialization
+      - timestamp: '2026-06-03T03:33:10.050Z'
+        message: Reading mcp-server.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/mcp-server.ts
+            offset: 1
+            limit: 30
+      - timestamp: '2026-06-03T03:33:11.353Z'
+        message: Delegating
+        type: tool
+        data:
+          toolName: Agent
+          parameters:
+            description: 'Angle H — efficiency: wasted work in the diff'
+            prompt: >-
+              You are a code reviewer performing Angle H — efficiency. Flag
+              wasted work the diff introduces.
+
+
+              Review these specific areas:
+
+
+              **1. `checkGhAuth()` called on every `finish_ticket`:**
+
+              ```ts
+
+              // in finish_ticket handler, mcp-server.ts
+
+              if (task.branch) {
+                const ghAvailable = await checkGhAuth();  // spawns gh process
+              ```
+
+              This spawns a `gh` subprocess on every `finish_ticket` call. `gh
+              auth status` contacts the auth provider. Since `finish_ticket` is
+              called once per ticket lifecycle, the overhead is negligible in
+              practice. But is there a module-level cache?
+
+
+              **2. `getTicketBranchStatus` calls `git rev-parse --verify <name>`
+              then `git rev-list --left-right`:**
+
+              Two git subprocess calls where the second also implicitly verifies
+              the branch exists. Could be one call.
+
+
+              **3. `createPullRequest` unconditional push then PR existence
+              check:**
+
+              ```ts
+
+              await execFileAsync('git', [..., 'push', '-u', 'origin', branch],
+              { windowsHide: true });
+
+              // then check if PR exists
+
+              try {
+                const { stdout: existing } = await execFileAsync('gh', ['pr', 'view', branch, ...]);
+              ```
+
+              The branch is pushed before we know if we even need to create a
+              PR. If the PR already exists and there's nothing new, we pushed
+              unnecessarily. However, in the `finish_ticket` flow, we always
+              want the branch up to date before the PR is reviewed, so
+              push-first is correct.
+
+
+              **4. Startup `checkGhAuth().then(...).catch(()=>{})` fires but
+              `broadcastEvent` has no clients yet:**
+
+              The startup check `broadcastEvent('ghAuthMissing', {})` fires into
+              an empty client set. The portal connects later (after page load),
+              misses the event, and never shows the banner. The entire warning
+              banner feature is effectively dead. This is both a correctness bug
+              AND a wasted startup operation.
+
+
+              **5. In `sendReview` (TaskCard.tsx):**
+
+              ```ts
+
+              await updateTask(task.id, { status: 'In Progress' });
+
+              await startTaskCliSession(task.id, framework, persona.prompt,
+              true);
+
+              ```
+
+              Two sequential API calls. If `startTaskCliSession` fails, the
+              ticket is already at `In Progress` but no agent is running. Is
+              there a rollback? The ticket is stranded in `In Progress` with no
+              agent session.
+
+
+              Return up to 8 candidates:
+
+              ```json
+
+              [{"file": "path", "line": N, "summary": "one sentence",
+              "failure_scenario": "concrete cost — what is wasted or at risk"}]
+
+              ```
+      - timestamp: '2026-06-03T03:33:11.884Z'
+        message: Reading file-utils.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/file-utils.ts
+            offset: 75
+            limit: 20
+      - timestamp: '2026-06-03T03:33:13.591Z'
+        message: 'Running: grep -n "getTicketBranchStatus\|behindCount\|ahead...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              grep -n
+              "getTicketBranchStatus\|behindCount\|aheadCount\|master\.\.\."
+              /Users/guy/Event-Horizon/engine/src/branch-manager.ts 2>/dev/null
+            description: Check hardcoded master reference in getTicketBranchStatus
+      - timestamp: '2026-06-03T03:33:13.609Z'
+        message: Reading mcp-server.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/mcp-server.ts
+            offset: 29
+            limit: 50
+      - timestamp: '2026-06-03T03:33:14.524Z'
+        message: 'Running: grep -n "listening\|server\.listen\|checkGhAuth" /...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              grep -n "listening\|server\.listen\|checkGhAuth"
+              /Users/guy/Event-Horizon/engine/src/index.ts 2>/dev/null | head
+              -20
+            description: Check server listen callback and checkGhAuth timing
+      - timestamp: '2026-06-03T03:33:14.843Z'
+        message: Reading mcp-server.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/mcp-server.ts
+      - timestamp: '2026-06-03T03:33:17.295Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: checkGhAuth|ghAvailable
+            path: /Users/guy/Event-Horizon/engine/src
+            output_mode: content
+            context: 2
+      - timestamp: '2026-06-03T03:33:17.603Z'
+        message: Reading index.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/index.ts
+            offset: 235
+            limit: 45
+      - timestamp: '2026-06-03T03:33:18.649Z'
+        message: 'Running: grep -n "delete_branch\|deleteTicketBranch\|remote...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              grep -n
+              "delete_branch\|deleteTicketBranch\|remote\|push.*delete\|origin"
+              /Users/guy/Event-Horizon/engine/src/branch-manager.ts 2>/dev/null
+            description: Check deleteTicketBranch for remote deletion
+      - timestamp: '2026-06-03T03:33:21.907Z'
+        message: Reading branch-manager.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/branch-manager.ts
+      - timestamp: '2026-06-03T03:33:21.967Z'
+        message: 'Running: grep -rn "taskUpdated\|addEventListener.*task\|es\...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              grep -rn
+              "taskUpdated\|addEventListener.*task\|es\.on\|es\.addEventListener"
+              /Users/guy/Event-Horizon/portal/src/AppContext.tsx 2>/dev/null |
+              head -30
+            description: Check how portal handles taskUpdated SSE events
+      - timestamp: '2026-06-03T03:33:22.324Z'
+        message: Reading index.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/index.ts
+      - timestamp: '2026-06-03T03:33:22.595Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-06-03T03:33:26.487Z'
+        message: 'Running: grep -rn "taskUpdated\|taskCreated" /Users/guy/Eve...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              grep -rn "taskUpdated\|taskCreated"
+              /Users/guy/Event-Horizon/portal/src/ 2>/dev/null | head -20
+            description: Check portal handling of taskUpdated/taskCreated SSE events
+      - timestamp: '2026-06-03T03:33:27.102Z'
+        message: Delegating
+        type: tool
+        data:
+          toolName: Agent
+          parameters:
+            description: 'Angle I — altitude: bandaid vs proper fix'
+            prompt: >-
+              You are a code reviewer performing Angle I — altitude. Check that
+              each change is at the right depth in the architecture, not a
+              fragile bandaid.
+
+
+              Review these design decisions:
+
+
+              **1. `sendReview` status pre-set in portal (TaskCard.tsx):**
+
+              ```ts
+
+              await updateTask(task.id, { status: 'In Progress' });
+
+              await startTaskCliSession(task.id, framework, persona.prompt,
+              true);
+
+              ```
+
+              The portal manually pre-sets status to `In Progress` before
+              launching the reviewer agent. This duplicates the status-change
+              logic that should be owned by the agent via MCP tools. The agent
+              is told to use `change_status` via MCP — but the portal is also
+              independently changing status. What if the agent also calls
+              `change_status` to `In Progress` (per the implementation skill)?
+              Does this create a duplicate status_change history entry? Also:
+              the agent receives `persona.prompt` directly instead of a slash
+              command that would trigger the orchestrator skill loading. The
+              orchestrator skill says: "Load skill when ticket status is In
+              Progress." If the agent starts with the ticket already at In
+              Progress and the full persona prompt directly, it may skip
+              orchestrator skill routing entirely.
+
+
+              **2. `branchName` export:**
+
+              `branchName` is exported from `branch-manager.ts` but only used
+              internally in `createTicketBranch`. It's also imported in
+              `mcp-server.ts` but never called there (per the import line:
+              `import { createTicketBranch, getTicketBranchStatus,
+              deleteTicketBranch, createPullRequest, checkGhAuth, branchName }
+              from './branch-manager.js'`). Dead export in the MCP server
+              import.
+
+
+              **3. `workspaceRoot!` non-null assertion:**
+
+              The `git()` helper and `createPullRequest` both use
+              `workspaceRoot!`. The workspace root is set asynchronously during
+              startup. If any of these functions are called before
+              `setWorkspaceRoot()` completes (e.g., during a test or if the
+              engine has a startup race), the `!` silently passes `null` to the
+              args array, and git receives `-C null` — which is a directory
+              named "null" (probably doesn't exist → git fails with "not a git
+              repository" error rather than an obvious null-pointer message).
+
+
+              **4. `gh pr create` without `--base`:**
+
+              The PR is created with `--head branch` but no `--base`. On GitHub,
+              `--base` defaults to the repository's default branch. If the
+              repository's default branch is not `master` (e.g., it's `main`),
+              the PR targets the wrong base. The engine design uses `master`
+              throughout, but GitHub repos created after 2020 default to `main`.
+              This is a hard-to-diagnose failure for users who renamed their
+              default branch.
+
+
+              **5. Remote-only branch creation:**
+
+              `createTicketBranch` uses `git branch <name> <base>` (local) then
+              `git push -u origin <name>`. This creates a LOCAL branch ref that
+              the engine process will never use. The comment says "the engine
+              only needs to create the ref." But the local branch ref is never
+              cleaned up — it will accumulate indefinitely as tickets are
+              created. A cleaner design would be `git push origin <base>:<name>`
+              to create the remote branch directly without a local ref.
+
+
+              Return up to 8 candidates:
+
+              ```json
+
+              [{"file": "path", "line": N, "summary": "one sentence",
+              "failure_scenario": "concrete cost — what breaks or is harder to
+              maintain"}]
+
+              ```
+      - timestamp: '2026-06-03T03:33:27.211Z'
+        message: 'Running: grep -n "branch\|null" /Users/guy/Event-Horizon/po...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              grep -n "branch\|null"
+              /Users/guy/Event-Horizon/portal/src/types.ts 2>/dev/null | head
+              -30
+            description: Check Task type definition for branch field
+      - timestamp: '2026-06-03T03:33:29.910Z'
+        message: Reading TaskCard.tsx
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/portal/src/components/TaskCard.tsx
+      - timestamp: '2026-06-03T03:33:30.136Z'
+        message: 'Running: grep -rn "onerror\|onmessage\|onopen\|message.*add...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              grep -rn "onerror\|onmessage\|onopen\|message.*addEventListener"
+              /Users/guy/Event-Horizon/portal/src/AppContext.tsx 2>/dev/null |
+              head -20
+            description: Check SSE default message handler in AppContext
+      - timestamp: '2026-06-03T03:33:30.201Z'
+        message: Reading branch-manager.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/branch-manager.ts
+      - timestamp: '2026-06-03T03:33:31.177Z'
+        message: 'Running: grep -n "taskUpdated\|taskCreated\|loadTask\|loadT...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              grep -n "taskUpdated\|taskCreated\|loadTask\|loadTasks\|fetchTask"
+              /Users/guy/Event-Horizon/portal/src/api.ts 2>/dev/null | head -20
+            description: Check api.ts for taskUpdated SSE handling and task fetch
+      - timestamp: '2026-06-03T03:33:33.742Z'
+        message: Reading api.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/portal/src/api.ts
+            offset: 425
+            limit: 40
+      - timestamp: '2026-06-03T03:33:35.971Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: >-
+              branchName|createTicketBranch|getTicketBranchStatus|deleteTicketBranch|createPullRequest|checkGhAuth
+            path: /Users/guy/Event-Horizon/engine/src/mcp-server.ts
+            output_mode: content
+            '-n': true
+      - timestamp: '2026-06-03T03:33:37.597Z'
+        message: Working
+        type: info
+      - timestamp: '2026-06-03T03:33:38.584Z'
+        message: Reading workspace.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/workspace.ts
+      - timestamp: '2026-06-03T03:33:39.425Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: branchName
+            path: /Users/guy/Event-Horizon/engine/src/mcp-server.ts
+            output_mode: content
+            '-n': true
+            '-C': 5
+      - timestamp: '2026-06-03T03:33:47.551Z'
+        message: Reading CodeReviewButton.tsx
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: >-
+              /Users/guy/Event-Horizon/portal/src/components/CodeReviewButton.tsx
+      - timestamp: '2026-06-03T03:33:48.916Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: startTaskCliSession|updateTask
+            path: /Users/guy/Event-Horizon/engine/src/routes/tasks.ts
+            output_mode: content
+            '-n': true
+            '-C': 3
+      - timestamp: '2026-06-03T03:33:52.599Z'
+        message: Working
+        type: info
+      - timestamp: '2026-06-03T03:35:02.300Z'
+        message: Delegating
+        type: tool
+        data:
+          toolName: Agent
+          parameters:
+            description: 'Verify: gh pr create stdout format and --base flag'
+            prompt: >-
+              You are a code verifier. Determine whether two specific candidates
+              are CONFIRMED, PLAUSIBLE, or REFUTED.
+
+
+              **File**: `engine/src/branch-manager.ts` lines 77-78:
+
+              ```ts
+
+              const { stdout } = await execFileAsync('gh', ['pr', 'create',
+              '--title', title, '--body', body, '--head', branch], {
+              windowsHide: true });
+
+              return stdout.trim();
+
+              ```
+
+
+              **Candidate 1**: `gh pr create` emits more than just the PR URL to
+              stdout (e.g. "Creating pull request for...\n\nhttps://..."), so
+              `stdout.trim()` returns a multi-line string rather than a clean
+              URL. This would corrupt the stored `implementationLink`.
+
+
+              **Candidate 2**: `gh pr create` is called without `--base`, so the
+              PR targets the GitHub repository's default branch. If the repo's
+              default branch is `main` but the engine consistently uses `master`
+              as the base branch, the PR targets the wrong base.
+
+
+              For Candidate 1: Look up the actual stdout behavior of `gh pr
+              create`. According to GitHub CLI documentation and known behavior:
+
+              - When running in a non-interactive/piped context (no TTY), `gh pr
+              create` typically outputs ONLY the PR URL to stdout
+
+              - When running with a TTY, it outputs additional prompts and
+              status messages
+
+              - The `--title` and `--body` flags make it non-interactive
+
+              - The `windowsHide: true` option suggests it is run in a
+              subprocess without a TTY
+
+
+              For Candidate 2: `gh pr create` without `--base` uses the
+              repository's default branch on GitHub as the base. In repositories
+              that use `main` instead of `master`, this means PRs would be
+              opened against `main`. The engine creates branches with `git
+              branch <name> master` (hardcoded) but creates PRs targeting
+              whatever GitHub says the default is.
+
+
+              Verdict for each:
+
+              - CONFIRMED: can name inputs/state that trigger it and the wrong
+              output
+
+              - PLAUSIBLE: mechanism is real, trigger uncertain
+
+              - REFUTED: code doesn't say that or is guarded elsewhere
+
+
+              Return:
+
+              ```json
+
+              {"candidate1": {"verdict": "...", "evidence": "..."},
+              "candidate2": {"verdict": "...", "evidence": "..."}}
+      - timestamp: '2026-06-03T03:35:04.805Z'
+        message: Reading branch-manager.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/branch-manager.ts
+      - timestamp: '2026-06-03T03:35:07.601Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-06-03T03:35:08.223Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: createPullRequest|implementationLink
+            path: /Users/guy/Event-Horizon/engine/src
+            output_mode: content
+            '-n': true
+      - timestamp: '2026-06-03T03:35:08.995Z'
+        message: 'Running: gh pr create --help 2>&1 | head -60'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: gh pr create --help 2>&1 | head -60
+            description: Check gh pr create help output and flags
+      - timestamp: '2026-06-03T03:35:11.442Z'
+        message: Delegating
+        type: tool
+        data:
+          toolName: Agent
+          parameters:
+            description: >-
+              Verify: ghAuthMissing broadcast dead on startup + no portal
+              handler
+            prompt: >-
+              You are a code verifier. Verify whether a specific candidate is
+              CONFIRMED, PLAUSIBLE, or REFUTED.
+
+
+              **Candidate**: `broadcastEvent('ghAuthMissing', {})` fires at
+              engine startup before any SSE client has connected (so the event
+              goes into an empty clients set), AND the portal has no handler for
+              the 'ghAuthMissing' event name. The result is that the "GitHub CLI
+              not configured" banner feature is completely non-functional.
+
+
+              **Evidence in `engine/src/index.ts`** (startup):
+
+              ```ts
+
+              checkGhAuth().then(ok => {
+                if (!ok) {
+                  console.warn('[branch] GitHub CLI not configured...');
+                  broadcastEvent('ghAuthMissing', {});
+                }
+              }).catch(() => {});
+
+              ```
+
+              This is called inside `app.listen(port, () => { ... })` callback.
+
+
+              **Evidence in `engine/src/events.ts`**:
+
+              ```ts
+
+              const clients = new Set<Response>();
+
+              export function broadcastEvent(event: string, data: unknown) {
+                const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+                for (const res of clients) {
+                  res.write(payload);
+                }
+              }
+
+              ```
+
+
+              **Evidence from grep of portal/src for 'ghAuthMissing'**: `No
+              matches found`
+
+
+              The portal's SSE event listener only handles: 'activity',
+              'progress', 'notification', 'taskUpdated', etc.
+
+
+              For this candidate to be REFUTED, there would need to be:
+
+              1. A portal reconnect/retry mechanism that re-fetches auth status
+              on load, OR
+
+              2. A REST endpoint that the portal polls for gh auth status, OR  
+
+              3. A handler for 'ghAuthMissing' in the portal
+
+
+              Please evaluate: is this CONFIRMED, PLAUSIBLE, or REFUTED? Quote
+              the relevant lines.
+
+
+              Return: `{"verdict": "CONFIRMED/PLAUSIBLE/REFUTED", "evidence":
+              "..."}`
+      - timestamp: '2026-06-03T03:35:11.747Z'
+        message: 'Running: gh --version 2>&1'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: gh --version 2>&1
+            description: Check gh CLI version
+      - timestamp: '2026-06-03T03:35:17.726Z'
+        message: Reading index.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/index.ts
+      - timestamp: '2026-06-03T03:35:18.066Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Glob
+          parameters:
+            pattern: /Users/guy/Event-Horizon/engine/src/events.ts
+      - timestamp: '2026-06-03T03:35:19.746Z'
+        message: 'Running: # Test what gh pr create outputs to stdout in non-...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              # Test what gh pr create outputs to stdout in non-interactive mode
+              by looking at gh source/docs
+
+              # Also check the gh changelog/release notes for this version
+
+              gh pr create --help 2>&1 | grep -i "stdout\|output\|url\|print" |
+              head -20
+            description: Check gh pr create output documentation
+      - timestamp: '2026-06-03T03:35:20.778Z'
+        message: Reading events.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/events.ts
+      - timestamp: '2026-06-03T03:35:22.603Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-06-03T03:35:24.090Z'
+        message: Delegating
+        type: tool
+        data:
+          toolName: Agent
+          parameters:
+            description: >-
+              Verify: sendReview status not rolled back on session failure +
+              workspaceRoot null
+            prompt: >-
+              You are a code verifier. Verify two candidates.
+
+
+              **Candidate 1**: `sendReview` in TaskCard.tsx (line 282) updates
+              ticket status to 'In Progress' before starting the CLI session. If
+              `startTaskCliSession` throws, the ticket is permanently stuck at
+              'In Progress' with no running agent and no rollback.
+
+
+              Code:
+
+              ```ts
+
+              const sendReview = async (e: React.MouseEvent, personaId: string)
+              => {
+                e.stopPropagation();
+                setReviewSelectorOpen(false);
+                setReviewBusy(true);
+                try {
+                  const persona = REVIEW_PERSONAS.find(p => p.id === personaId);
+                  if (!persona) return;
+                  const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
+                  await updateTask(task.id, { status: 'In Progress' });   // line 282
+                  await startTaskCliSession(task.id, framework, persona.prompt, true);  // line 283
+                  triggerRefresh();
+                } finally {
+                  setReviewBusy(false);
+                }
+              };
+
+              ```
+
+
+              For this to be REFUTED, there must be:
+
+              - An error catch around startTaskCliSession that rolls back the
+              status
+
+              - Or the `finally` block must roll back
+
+
+              The `finally` block only clears `reviewBusy`. There is no catch
+              block, so any rejection from `startTaskCliSession` propagates up
+              to the caller (React event handler), which will silently swallow
+              it. The ticket remains at 'In Progress'.
+
+
+              **Candidate 2**: `workspaceRoot!` non-null assertion in
+              `engine/src/branch-manager.ts`:
+
+              ```ts
+
+              function git(args: string[]): Promise<{ stdout: string; stderr:
+              string }> {
+                return execFileAsync('git', ['-C', workspaceRoot!, ...args], { windowsHide: true });
+              }
+
+              ```
+
+
+              `workspaceRoot` is `let workspaceRoot: string | null = null` in
+              workspace.ts. It's set by `setWorkspaceRoot()` which is called
+              during startup. The startup flow calls `checkGhAuth()` at the
+              server `listening` event. Does `checkGhAuth()` use `git()`? No, it
+              uses `execFileAsync('gh', ...)` directly. So `checkGhAuth()` at
+              startup does NOT trigger the null deref.
+
+
+              However, the MCP tools (`create_branch`, `get_branch`,
+              `delete_branch`) call `createTicketBranch`,
+              `getTicketBranchStatus`, `deleteTicketBranch` — all of which call
+              `git()` with `workspaceRoot!`. If these tools are called before
+              `setWorkspaceRoot()` completes, this would be an issue.
+
+
+              In practice, `setWorkspaceRoot()` is called synchronously during
+              workspace activation, before the server starts listening. So by
+              the time any client could connect and call an MCP tool,
+              `workspaceRoot` should be set.
+
+
+              Is Candidate 2 CONFIRMED (always null-deref risk), PLAUSIBLE
+              (timing-dependent), or REFUTED (workspace always set before any
+              MCP call)?
+
+
+              Return:
+
+              ```json
+
+              {"candidate1": {"verdict": "...", "evidence": "..."},
+              "candidate2": {"verdict": "...", "evidence": "..."}}
+      - timestamp: '2026-06-03T03:35:25.665Z'
+        message: 'Running: grep -r "SSE\|EventSource\|event-stream\|useEvents...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              grep -r
+              "SSE\|EventSource\|event-stream\|useEvents\|useSSE\|addEventListener\|onmessage\|onopen\|onerror\|ghAuth\|ghMissing\|gh_auth\|banners\|Banner\|notification.*github\|github.*notif"
+              /Users/guy/Event-Horizon/portal/src/ 2>/dev/null | grep -v ".d.ts"
+              | head -80
+            description: Search portal for SSE/EventSource and banner patterns
+      - timestamp: '2026-06-03T03:35:26.911Z'
+        message: Reading TaskCard.tsx
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/portal/src/components/TaskCard.tsx
+            offset: 270
+            limit: 30
+      - timestamp: '2026-06-03T03:35:27.178Z'
+        message: 'Running: # Check if gh pr create outputs extra lines in non...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              # Check if gh pr create outputs extra lines in non-TTY mode by
+              looking at known behavior
+
+              # The key distinction: does "Upon success, the URL of the created
+              pull request will be printed" mean ONLY the URL?
+
+              # Let's check if there's any known output format in gh docs or
+              issues
+
+              # Also check if --head flag changes behavior (it skips
+              forking/pushing)
+
+
+              # Check if gh writes status messages to stderr vs stdout
+
+              # In gh CLI, progress/status messages go to stderr, URL goes to
+              stdout
+
+              # This is the standard UNIX convention
+
+
+              # Let's verify by checking the gh cli source behavior
+
+              # When --title and --body are provided AND --head is provided (no
+              TTY interaction needed),
+
+              # gh pr create in non-TTY mode should output ONLY the PR URL to
+              stdout
+
+
+              # Let's also check if there's any test or example in the repo
+
+              grep -r "createPullRequest\|gh.*pr.*create"
+              /Users/guy/Event-Horizon/engine/src/ 2>/dev/null | grep -v
+              "branch-manager.ts"
+            description: Search for gh pr create usage patterns in engine source
+      - timestamp: '2026-06-03T03:35:27.227Z'
+        message: Reading branch-manager.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/branch-manager.ts
+      - timestamp: '2026-06-03T03:35:31.022Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Glob
+          parameters:
+            pattern: '**/workspace.ts'
+            path: /Users/guy/Event-Horizon/engine/src
+      - timestamp: '2026-06-03T03:35:33.321Z'
+        message: Reading workspace.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/workspace.ts
+      - timestamp: '2026-06-03T03:35:33.647Z'
+        message: 'Running: # Check what version of gh introduced the "only UR...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              # Check what version of gh introduced the "only URL on stdout"
+              behavior
+
+              # and whether the --head flag (which skips forking/pushing)
+              affects this
+
+
+              # The gh help text says:
+
+              # "Upon success, the URL of the created pull request will be
+              printed."
+
+              # This strongly implies stdout gets ONLY the URL.
+
+
+              # Key insight: gh uses stderr for all status/progress messages
+              (like "Creating pull request for...")
+
+              # and stdout ONLY for the PR URL. This is well-documented gh
+              behavior.
+
+
+              # Let's verify with a quick test looking at gh behavior in pipes
+
+              # (we can't actually create a PR but we can test with --dry-run)
+
+              echo "Testing gh pr create --dry-run stdout vs stderr"
+
+              # Can't actually run this without a real branch, but let's check
+              known behavior
+
+
+              # Check if there's a .env or config that sets
+              GH_NO_UPDATE_NOTIFIER or similar
+
+              env | grep -i gh 2>/dev/null | head -10
+
+              echo "---"
+
+              # Check if GH_PROMPT_DISABLED is relevant
+
+              gh config list 2>/dev/null | head -20
+            description: Check gh environment configuration
+      - timestamp: '2026-06-03T03:35:33.648Z'
+        message: Reading index.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/index.ts
+      - timestamp: '2026-06-03T03:35:35.120Z'
+        message: 'Running: grep -r "ghAuth\|gh_auth\|github.*auth\|auth.*gith...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              grep -r
+              "ghAuth\|gh_auth\|github.*auth\|auth.*github\|banner\|Banner\|ghMissing"
+              /Users/guy/Event-Horizon/portal/src/ 2>/dev/null | grep -v ".d.ts"
+              | head -40
+            description: Search portal for any GitHub auth or banner components
+      - timestamp: '2026-06-03T03:35:37.603Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-06-03T03:35:37.932Z'
+        message: Reading mcp-server.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/mcp-server.ts
+      - timestamp: '2026-06-03T03:35:37.977Z'
+        message: Delegating
+        type: tool
+        data:
+          toolName: Agent
+          parameters:
+            description: >-
+              Verify: getTicketBranchStatus hardcodes master + duplicate
+              status_change
+            prompt: >-
+              You are a code verifier. Verify two candidates.
+
+
+              **Candidate 1**: `getTicketBranchStatus` hardcodes 'master' in the
+              rev-list comparison:
+
+              ```ts
+
+              const { stdout } = await git(['rev-list', '--left-right',
+              '--count', `master...${name}`]);
+
+              ```
+
+              If the repository's default branch is 'main' and 'master' doesn't
+              exist, this command fails and the catch block returns `{ exists:
+              true, aheadCount: 0, behindCount: 0 }`, silently reporting
+              incorrect ahead/behind counts.
+
+
+              For this to be REFUTED, either:
+
+              - The engine always ensures 'master' exists (e.g., always operates
+              on a 'master' branch repo)
+
+              - There's a board config that specifies the base branch that is
+              used here
+
+
+              Looking at `engine/src/branch-manager.ts`:
+
+              ```ts
+
+              export async function createTicketBranch(ticketId: string, title:
+              string, baseBranch = 'master'): Promise<string> {
+
+              ```
+
+              The `baseBranch` defaults to 'master' but is not stored on the
+              ticket or passed to `getTicketBranchStatus`. The status function
+              has no way to know what base branch was used.
+
+
+              **Candidate 2**: `sendReview` in TaskCard.tsx pre-sets ticket
+              status to 'In Progress' via REST API before launching the reviewer
+              agent. The agent's implementation skill says to call
+              `change_status` to 'In Progress' via MCP tool before making
+              changes. Does this produce a duplicate status_change history
+              entry?
+
+
+              The REST PUT call (updateTask) goes to `PUT /api/tasks/:id` which
+              calls `updateTaskWithHistory` in the engine. This creates a
+              status_change history entry.
+
+
+              Then the reviewer agent reads the implementation skill, sees it's
+              In Progress, and per skill step 5: "Use `change_status` with
+              `newStatus: 'In Progress'` before the first substantive code
+              change." The agent then calls `change_status` again → second
+              status_change entry (In Progress → In Progress, which may be a
+              no-op or a duplicate).
+
+
+              Actually, the reviewer's persona prompt (in CodeReviewButton.tsx)
+              does NOT tell the agent to call change_status. The persona prompt
+              says to:
+
+              1. Call `get_ticket` 
+
+              2. Run git log
+
+              3. Evaluate
+
+              4. Call `add_comment` and `change_status`
+
+
+              So the reviewer agent receives the persona prompt directly, not
+              the implementation skill. The reviewer is NOT told to call
+              `change_status('In Progress')` first. The reviewer starts the
+              session, calls `get_ticket`, sees it's already In Progress, and
+              proceeds with reviewing.
+
+
+              Is this a duplicate status_change issue? Only if the reviewer
+              agent follows the implementation skill (step 5: "change_status In
+              Progress before first code change"). But the reviewer isn't an
+              implementer — it has a custom persona prompt.
+
+
+              For Candidate 1: Is this CONFIRMED, PLAUSIBLE, or REFUTED?
+
+              For Candidate 2: Is this CONFIRMED, PLAUSIBLE, or REFUTED?
+
+
+              Return:
+
+              ```json
+
+              {"candidate1": {"verdict": "...", "evidence": "..."},
+              "candidate2": {"verdict": "...", "evidence": "..."}}
+      - timestamp: '2026-06-03T03:35:40.365Z'
+        message: Reading CodeReviewButton.tsx
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: >-
+              /Users/guy/Event-Horizon/portal/src/components/CodeReviewButton.tsx
+      - timestamp: '2026-06-03T03:35:41.474Z'
+        message: 'Running: grep -rn "ghAuth\|gh_auth\|github_auth\|ghMissing\...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              grep -rn "ghAuth\|gh_auth\|github_auth\|ghMissing\|GhAuth\|GHAuth"
+              /Users/guy/Event-Horizon/ --include="*.ts" --include="*.tsx"
+              --include="*.js" --include="*.jsx" 2>/dev/null | grep -v
+              "node_modules" | head -40
+            description: Exhaustive project-wide search for any ghAuth handling
+      - timestamp: '2026-06-03T03:35:41.931Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: setWorkspaceRoot|activateWorkspace
+            path: /Users/guy/Event-Horizon/engine/src
+            output_mode: content
+            glob: '*.ts'
+      - timestamp: '2026-06-03T03:35:44.057Z'
+        message: Reading TaskCard.tsx
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/portal/src/components/TaskCard.tsx
+      - timestamp: '2026-06-03T03:35:50.490Z'
+        message: Delegating
+        type: tool
+        data:
+          toolName: Agent
+          parameters:
+            description: >-
+              Verify: createTicketBranch push rejects if remote ahead +
+              baseBranch injection
+            prompt: >-
+              You are a code verifier. Verify two candidates.
+
+
+              **Candidate 1**: `createPullRequest` in `branch-manager.ts`
+              unconditionally calls `git push -u origin <branch>` (line 66). If
+              the local branch ref is behind the remote (e.g., another agent
+              pushed commits to the same branch), this push fails with
+              'non-fast-forward rejected' and the PR is never created.
+
+
+              ```ts
+
+              export async function createPullRequest(branch: string, title:
+              string, body: string): Promise<string> {
+                await execFileAsync('git', ['-C', workspaceRoot!, 'push', '-u', 'origin', branch], { windowsHide: true });
+                // ...
+              }
+
+              ```
+
+
+              In the `finish_ticket` MCP handler:
+
+              ```ts
+
+              try {
+                const prUrl = await createPullRequest(task.branch, task.title || ticketId, prBody);
+                finalLink = prUrl;
+              } catch (err: any) {
+                noteForComment = `⚠️ PR creation failed: ${err.message}. Commit: ${implementationLink}`;
+                finalLink = implementationLink;
+              }
+
+              ```
+
+
+              So if the push fails, the catch block stores the commit hash as
+              `implementationLink` instead of the PR URL, with a warning
+              comment. This is the intended degradation behavior.
+
+
+              Is this CONFIRMED (can the push actually fail causing wrong
+              implementationLink) or PLAUSIBLE (conditions are unusual) or
+              REFUTED (push always succeeds)?
+
+
+              **Candidate 2**: In `engine/src/routes/tasks.ts`:
+
+              ```ts
+
+              router.post('/:id/branch', async (req, res) => {
+                const baseBranch: string = req.body?.baseBranch || 'master';
+                const branch = await createTicketBranch(id, title, baseBranch);
+              ```
+
+
+              `baseBranch` comes from user input and is passed as an argument to
+              `execFileAsync('git', ['branch', name, baseBranch])`. Since
+              `execFileAsync` uses array args (not shell interpretation), this
+              is NOT a shell injection vulnerability. However, a user could pass
+              a git refspec like '--orphan' or a path traversal as baseBranch.
+
+
+              Can `git branch <name> --orphan` be injected this way? No —
+              `execFileAsync` passes args as an array, so `--orphan` would be a
+              literal argument after `<name>`, which `git branch <name>
+              <startpoint>` interprets as the startpoint ref `--orphan`. Git
+              would look for a commit/branch named `--orphan` and fail with 'not
+              a valid object name'. This is NOT a git command injection.
+
+
+              Is Candidate 1 CONFIRMED or PLAUSIBLE?
+
+              Is Candidate 2 CONFIRMED (real issue) or REFUTED (execFileAsync
+              array args make it safe)?
+
+
+              Return:
+
+              ```json
+
+              {"candidate1": {"verdict": "...", "evidence": "..."},
+              "candidate2": {"verdict": "...", "evidence": "..."}}
+      - timestamp: '2026-06-03T03:35:51.003Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: updateTaskWithHistory|appendHistory
+            path: /Users/guy/Event-Horizon/engine/src
+            output_mode: files_with_matches
+      - timestamp: '2026-06-03T03:35:51.820Z'
+        message: 'Running: grep -rn "taskUpdated\|''activity''\|''progress''\|''no...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              grep -rn
+              "taskUpdated\|'activity'\|'progress'\|'notification'\|addEventListener.*'"
+              /Users/guy/Event-Horizon/portal/src/AppContext.tsx 2>/dev/null |
+              head -20
+            description: Confirm the full list of SSE event handlers in AppContext
+      - timestamp: '2026-06-03T03:35:52.603Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-06-03T03:35:53.035Z'
+        message: Reading branch-manager.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/branch-manager.ts
+      - timestamp: '2026-06-03T03:35:53.583Z'
+        message: 'Running: grep -rn "ghAuth\|github.*cli\|gh.*cli\|pr.*creati...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              grep -rn
+              "ghAuth\|github.*cli\|gh.*cli\|pr.*creation\|pullrequest\|pull_request\|createPR"
+              /Users/guy/Event-Horizon/portal/src/ 2>/dev/null | grep -v
+              "node_modules" | head -20
+            description: Final check for any GitHub CLI or PR creation references in portal
+      - timestamp: '2026-06-03T03:36:00.250Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: finish_ticket|createPullRequest|noteForComment|finalLink
+            path: /Users/guy/Event-Horizon/engine/src/mcp-server.ts
+            output_mode: content
+            '-n': true
+            '-C': 10
+      - timestamp: '2026-06-03T03:36:06.273Z'
+        message: Reading mcp-server.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/mcp-server.ts
+            offset: 241
+            limit: 40
+      - timestamp: '2026-06-03T03:36:07.604Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-06-03T03:36:10.131Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: updateTaskWithHistory
+            path: /Users/guy/Event-Horizon/engine/src/task-store.ts
+            output_mode: content
+            '-n': true
+            '-C': 40
+      - timestamp: '2026-06-03T03:36:22.605Z'
+        message: Working
+        type: info
+      - timestamp: '2026-06-03T03:36:37.607Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-06-03T03:37:06.241Z'
+        message: Delegating
+        type: tool
+        data:
+          toolName: Agent
+          parameters:
+            description: Phase 3 sweep — gaps missed by first pass
+            prompt: >-
+              You are a fresh code reviewer doing a gap sweep. The first pass
+              found the following bugs. Your job is to find ONLY NEW defects not
+              already on this list:
+
+
+              **Already found:**
+
+              1. `ghAuthMissing` SSE event fires at startup before any client
+              connects AND portal has no handler for it → warning banner
+              completely non-functional
+
+              2. `sendReview` in TaskCard.tsx sets status 'In Progress' before
+              `startTaskCliSession` — no rollback if session start fails →
+              ticket stranded
+
+              3. `getTicketBranchStatus` hardcodes 'master' in rev-list
+              comparison → wrong ahead/behind on non-master repos
+
+              4. `createPullRequest` push fails non-fast-forward if remote is
+              ahead → catch block stores commit hash as implementationLink
+              (confirmed degradation path, intentional behavior)
+
+              5. `workspaceRoot!` null assertion — PLAUSIBLE but not reachable
+              in production through current call paths
+
+              6. `deleteTicketBranch` only deletes local branch, remote branch
+              persists — API is misleading
+
+              7. create_branch not idempotent — if updateTaskWithHistory fails
+              after git branch succeeds, retry hits "branch already exists"
+
+              8. PR creation missing `--base` flag — REFUTED (this repo uses
+              master)
+
+              9. `gh pr create` stdout format — REFUTED (non-interactive, URL
+              only)
+
+
+              **Now re-read this code and find defects NOT yet listed:**
+
+
+              **engine/src/branch-manager.ts** (full):
+
+              ```ts
+
+              import { execFile } from 'child_process';
+
+              import { promisify } from 'util';
+
+              import { workspaceRoot } from './workspace.js';
+
+
+              const execFileAsync = promisify(execFile);
+
+
+              function git(args: string[]): Promise<{ stdout: string; stderr:
+              string }> {
+                return execFileAsync('git', ['-C', workspaceRoot!, ...args], { windowsHide: true });
+              }
+
+
+              export function slugify(title: string): string {
+                return title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
+              }
+
+
+              export function branchName(ticketId: string, title: string):
+              string {
+                return `flux/${ticketId}-${slugify(title)}`;
+              }
+
+
+              export async function createTicketBranch(ticketId: string, title:
+              string, baseBranch = 'master'): Promise<string> {
+                const name = branchName(ticketId, title);
+                await git(['branch', name, baseBranch]);
+                await git(['push', '-u', 'origin', name]);
+                return name;
+              }
+
+
+              export async function getTicketBranchStatus(name: string):
+              Promise<{ exists: boolean; aheadCount: number; behindCount: number
+              }> {
+                try {
+                  await git(['rev-parse', '--verify', name]);
+                } catch {
+                  return { exists: false, aheadCount: 0, behindCount: 0 };
+                }
+                try {
+                  const { stdout } = await git(['rev-list', '--left-right', '--count', `master...${name}`]);
+                  const parts = stdout.trim().split(/\s+/);
+                  const behindCount = parseInt(parts[0] ?? '0', 10) || 0;
+                  const aheadCount = parseInt(parts[1] ?? '0', 10) || 0;
+                  return { exists: true, aheadCount, behindCount };
+                } catch {
+                  return { exists: true, aheadCount: 0, behindCount: 0 };
+                }
+              }
+
+
+              export async function deleteTicketBranch(name: string, force =
+              false): Promise<void> {
+                const flag = force ? '-D' : '-d';
+                await git(['branch', flag, name]);
+              }
+
+
+              export async function checkGhAuth(): Promise<boolean> {
+                try {
+                  await execFileAsync('gh', ['auth', 'status'], { windowsHide: true });
+                  return true;
+                } catch {
+                  return false;
+                }
+              }
+
+
+              export async function createPullRequest(branch: string, title:
+              string, body: string): Promise<string> {
+                await execFileAsync('git', ['-C', workspaceRoot!, 'push', '-u', 'origin', branch], { windowsHide: true });
+
+                try {
+                  const { stdout: existing } = await execFileAsync('gh', ['pr', 'view', branch, '--json', 'url', '--jq', '.url'], { windowsHide: true });
+                  const url = existing.trim();
+                  if (url) return url;
+                } catch {
+                  // No existing PR — fall through to create one.
+                }
+
+                const { stdout } = await execFileAsync('gh', ['pr', 'create', '--title', title, '--body', body, '--head', branch], { windowsHide: true });
+                return stdout.trim();
+              }
+
+              ```
+
+
+              **engine/src/mcp-server.ts** (finish_ticket handler):
+
+              ```ts
+
+              let finalLink = implementationLink;
+
+              let noteForComment = '';
+
+
+              if (task.branch) {
+                const ghAvailable = await checkGhAuth();
+                if (ghAvailable) {
+                  try {
+                    const prBody = `${task.body ? task.body.slice(0, 800) : ''}\n\n---\nTicket: ${ticketId}`;
+                    const prUrl = await createPullRequest(task.branch, task.title || ticketId, prBody);
+                    finalLink = prUrl;
+                  } catch (err: any) {
+                    noteForComment = `\n\n⚠️ PR creation failed: ${err.message}. Commit: ${implementationLink}`;
+                    finalLink = implementationLink;
+                  }
+                } else {
+                  noteForComment = `\n\n⚠️ PR creation skipped — gh not configured. Commit: ${implementationLink}. Open a PR manually when ready.`;
+                  finalLink = implementationLink;
+                }
+              }
+
+
+              const entries = [{ type: 'comment', user: 'Agent', comment:
+              completionComment + noteForComment, date: new Date().toISOString()
+              }];
+
+              const result = await updateTaskWithHistory(ticketId, {
+                entries,
+                updatedBy: 'Agent',
+                nextStatus: 'Done',
+                extraFields: { implementationLink: finalLink },
+              });
+
+              ```
+
+
+              **portal/src/components/TaskCard.tsx** (sendReturn function):
+
+              ```ts
+
+              const sendReturn = async (e: React.MouseEvent) => {
+                e.stopPropagation();
+                if (!returnReason.trim()) return;
+                setReturnBusy(true);
+                try {
+                  const comment = returnReason.trim();
+                  const newHistory = [...(task.history || []), { type: 'comment' as const, user: currentUser, date: new Date().toISOString(), comment }];
+                  await updateTask(task.id, { status: 'In Progress', history: newHistory, updatedBy: currentUser } as any);
+                  triggerRefresh();
+                  setReturnPromptOpen(false);
+                } finally {
+                  setReturnBusy(false);
+                }
+              };
+
+              ```
+
+
+              **Key question for sendReturn**: This directly constructs and
+              appends a history entry via the REST `updateTask` call. The
+              history entry is manually constructed. Does the engine's `PUT
+              /api/tasks/:id` route accept a full `history` array replacement?
+              Or does it use `appendHistory`? If it replaces the entire history
+              array, this could truncate existing history to just this one new
+              entry.
+
+
+              Look at `engine/src/routes/tasks.ts` — the PUT handler. Does it:
+
+              - Replace `task.history` entirely with whatever is in
+              `req.body.history`?
+
+              - Or does it use `appendHistory` logic?
+
+
+              If it replaces history, `sendReturn` would wipe all previous
+              ticket history with a single-entry array.
+
+
+              Return up to 8 NEW candidates (not already in the list above):
+
+              ```json
+
+              [{"file": "path", "line": N, "summary": "one sentence",
+              "failure_scenario": "concrete inputs/state → wrong output/crash"}]
+
+              ```
+      - timestamp: '2026-06-03T03:37:07.609Z'
+        message: Delegating
+        type: info
+      - timestamp: '2026-06-03T03:37:09.468Z'
+        message: Reading tasks.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/routes/tasks.ts
+      - timestamp: '2026-06-03T03:37:22.610Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-06-03T03:38:41.287Z'
+        message: 'Running: grep -n "requireInput" /Users/guy/Event-Horizon/en...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              grep -n "requireInput"
+              /Users/guy/Event-Horizon/engine/src/routes/tasks.ts | head -20
+            description: Check requireInput handling order in tasks.ts PUT route
+      - timestamp: '2026-06-03T03:38:52.616Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-06-03T03:39:37.619Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-06-03T03:39:38.138Z'
+        message: Reading index.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/index.ts
+            offset: 258
+            limit: 15
+      - timestamp: '2026-06-03T03:39:52.619Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-06-03T03:41:12.482Z'
+        message: |-
+          Now I have everything needed to compile the final ranked list.
+
+          ```json
+          [
+            {
+              "file": "engine/src/index.ts",
+              "line": 270,
+              "summary": "ghAuthMissing SSE event fires at startup before any SSE client connects AND the portal has no handler for this event — the gh-auth warning banner is completely non-functional",
+              "failure_scenario": "Engine starts, gh auth fails, broadcastEvent('ghAuthMissing') iterates an empty clients Set (no portal has connected yet) — event is silently dropped. Even if timing were fixed, a project-wide grep confirms the portal registers handlers only for 'activity', 'progress', 'notification', etc. — 'ghAuthMissing' has no handler, no banner component, and no REST fallback. The feature is dead on both legs independently."
+            },
+            {
+              "file": "portal/src/components/TaskCard.tsx",
+              "line": 282,
+              "summary": "sendReview sets ticket status to 'In Progress' before startTaskCliSession; if the session start fails the ticket is permanently stranded at In Progress with no agent and no rollback",
+              "failure_scenario": "updateTask({status:'In Progress'}) commits to disk. startTaskCliSession then throws (network error, 409 from existing session, claude binary missing). The finally block only clears setReviewBusy(false) — no catch, no status rollback. The ticket card shows In Progress indefinitely with no agent label; recovery requires a manual status reset."
+            },
+            {
+              "file": "engine/src/branch-manager.ts",
+              "line": 40,
+              "summary": "getTicketBranchStatus hardcodes 'master' in the rev-list comparison regardless of what base branch was used to create the ticket branch",
+              "failure_scenario": "Repo default branch is 'main' and 'master' ref does not exist. git rev-list --left-right --count master...flux/FLUX-41-foo fails. The catch block returns { exists: true, aheadCount: 0, behindCount: 0 }. The get_branch MCP tool and the GET /api/tasks/:id/branch REST route both silently report zero divergence for every branch on the repo, mak...
     user: Claude Code
     date: '2026-06-03T03:30:37.538Z'
+    outcome: Claude Code session ended with code 0.
+    endedAt: '2026-06-03T03:41:12.483Z'
 tokenMetadata:
-  inputTokens: 360373
-  outputTokens: 18266
-  costUSD: 2.450054
+  inputTokens: 1060999
+  outputTokens: 43303
+  costUSD: 6.84406
   costIsEstimated: false
-  cacheReadTokens: 291581
-  cacheCreationTokens: 68779
+  cacheReadTokens: 902862
+  cacheCreationTokens: 157307
 ---
 ## Problem / Motivation
 
