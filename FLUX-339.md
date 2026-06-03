@@ -1,7 +1,7 @@
 ---
 id: FLUX-339
 title: Agent workflow skill integration for branch management
-status: In Progress
+status: Ready
 priority: Medium
 effort: S
 assignee: unassigned
@@ -51,6 +51,26 @@ history:
     to: In Progress
     user: Agent
     date: '2026-06-03T03:01:22.776Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Updated `.github/skills/event-horizon/implementation.md` (v2.4.0): added
+      step 2 to check `get_branch` at session start and checkout the ticket
+      branch if set; added "Branch Rules" section covering stay-on-branch
+      discipline, no auto-creation, returning from Ready, and XS exemption;
+      added "Reviewer Agent Handoff" section. Updated
+      `.github/skills/event-horizon/orchestrator.md`: added `branch` field to
+      ticket model table; added `create_branch`, `get_branch`, `delete_branch`
+      to MCP tools table with notes; added note that `finish_ticket` triggers PR
+      creation when branch is set; added note that no `switch_branch` tool
+      exists.
+    date: '2026-06-03T03:02:14.181Z'
+    id: c-2026-06-03t03-02-14-181z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-06-03T03:02:14.181Z'
 ---
 ## Problem / Motivation
 
