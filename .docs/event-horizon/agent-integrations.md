@@ -13,9 +13,11 @@ Event Horizon integrates with three AI coding CLI frameworks. Each can be launch
 
 | Framework | Binary | Status | Install Command |
 |-----------|--------|--------|-----------------|
-| **Claude Code** | `claude` | ✅ Fully supported | `npm install -g @anthropic-ai/claude-code` |
-| **Gemini CLI** | `gemini` | ✅ Fully supported | `npm install -g @google/gemini-cli` |
-| **Copilot CLI** | `copilot` | ✅ Fully supported | `npm install -g @github/copilot` |
+| **Claude Code** | `claude` | Fully supported | `npm install -g @anthropic-ai/claude-code` |
+| **Gemini CLI** | `gemini` | Fully supported | `npm install -g @google/gemini-cli` |
+| **Copilot CLI** | `copilot` | Fully supported | `npm install -g @github/copilot` |
+
+All three frameworks plug in through the same `AgentAdapter` interface. To add a fourth framework, or to understand exactly how the engine drives a CLI, see [[Agent Adapter Contract]].
 
 ---
 

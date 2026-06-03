@@ -44,6 +44,7 @@ Tickets have these fields (relevant when calling `update_ticket` or reading `get
 | `body` | markdown | Description / plan in the ticket body |
 | `subtasks` | string[] | Child ticket IDs — use `create_subtask` to add |
 | `implementationLink` | string | Commit hash or PR URL — set by `finish_ticket` |
+| `branch` | string | Git branch name (e.g. `flux/FLUX-41-add-effort-field`) — set by `create_branch` or portal Start Task prompt |
 
 History is an append-only event log (types: `comment`, `status_change`, `activity`, `agent_session`). You read it via `get_ticket` and append to it via `add_comment`, `change_status`, `log_progress`. Never construct history entries manually.
 
@@ -111,12 +112,16 @@ The MCP tools handle schema validation, timestamps, history normalization, and p
 | `add_comment` | Adding a comment to ticket history |
 | `log_progress` | Logging a progress update |
 | `finish_ticket` | Completing a ticket (sets implementationLink + Done atomically) |
+| `create_branch` | Create a git feature branch for a ticket (`flux/<ID>-<slug>`) and store its name on the ticket |
+| `get_branch` | Get branch name + existence + ahead/behind counts vs master |
+| `delete_branch` | Delete the branch associated with a ticket (refuses unmerged unless `force: true`) |
 
 Notes:
 - `change_status` enforces comment requirements: you MUST provide a `comment` when transitioning to `Require Input` (the question) or `Ready` (the completion summary).
-- `finish_ticket` is atomic: it sets the implementation link, adds a completion comment, and moves status to Done in one operation.
+- `finish_ticket` is atomic: it sets the implementation link, adds a completion comment, and moves status to Done in one operation. When the ticket has a `branch`, it also pushes the branch and creates a PR via `gh` — the PR URL becomes the `implementationLink`.
 - `create_subtask` creates a child ticket file and links it to the parent's `subtasks` array atomically.
 - All tools handle timestamps, history normalization, and schema validation server-side.
+- There is **no** `switch_branch` tool. Agents stay on their ticket branch for the full session. Switching branches requires explicit user confirmation in chat.
 
 ### REST API (last-resort fallback)
 
@@ -140,6 +145,7 @@ Ticket changes that only exist in chat or agent memory are **lost**. The engine 
 - Treat ticket files as schema-sensitive. The engine validates and rejects malformed writes.
 - Do not delete ticket history; append only.
 - The `finish <ticket>` handoff is required before committing. Commit creation, `implementationLink` update, and status → `Done` happen as one atomic step.
+- **Reference docs (`.docs/event-horizon/reference/*`) are kept in sync with code.** If the ticket changes ticket-schema, MCP tools, REST endpoints, realtime channels, or the agent-adapter contract, the matching reference page MUST be updated in the same ticket. Fix the drift; do not file a follow-up.
 
 ## End-to-End Checklist
 
@@ -147,6 +153,6 @@ Ticket changes that only exist in chat or agent memory are **lost**. The engine 
 - Grooming produced a concrete plan with filled metadata
 - Implementation-critical choices clarified before coding
 - Status moved at the right time — Code changed in smallest surface — Validation passed
-- Docs refreshed before `Ready`/`Done`
+- **Docs refreshed before `Ready`/`Done` — reference pages match the new behavior, code-map points at any new modules, and the completion comment says either "docs updated: …" or "no docs needed because …"**
 - Questions went through `Require Input`, not only chat
 - `finish <ticket>` received before commit — Completion comment added — Status → `Done`

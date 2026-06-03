@@ -27,12 +27,21 @@ Event Horizon uses a dynamic workspace model similar to a code editor, allowing 
 
 ### Tickets
 
--   Each ticket is a markdown file in `.flux/` with YAML frontmatter and a body.
-    
+-   Each ticket is a markdown file with YAML frontmatter and a body.
+
 -   Ticket history is append-only and records comments, status changes, and other activity entries.
-    
--   The engine API is responsible for reading and persisting ticket changes.
-    
+
+-   The engine API is responsible for reading and persisting ticket changes. Schema details live in [[Ticket Schema]].
+
+### Storage modes
+
+Ticket files can live in one of two places. The engine resolves the active mode at startup from `.flux/config.json` and exposes it the same way to the portal and to agents.
+
+-   **In-repo (`.flux/`)**: tickets are committed to the main branch alongside source. Default for solo work and small projects; simple but produces a lot of ticket commits in `git log`.
+
+-   **Orphan branch (`.flux-store/` worktree on `flux-data`)**: tickets are committed to a parallel orphan branch checked out as a worktree. Keeps the main branch's history focused on code changes. Default for shared projects.
+
+The historical decision matrix is in [[ADR 0001 — Storage Modes]]; the runtime behavior is what this page describes.
 
 ### Documentation
 
@@ -62,6 +71,16 @@ Event Horizon uses a dynamic workspace model similar to a code editor, allowing 
 	newly created and moved tickets can animate into place instead of feeling
 	like a hard rerender.
     
+
+## Update channels
+
+Three mechanisms keep the portal in sync with what's on disk. They overlap deliberately — each one covers the gaps of the others. Full breakdown in [[Realtime Channels]].
+
+-   **Chokidar file watchers** in the engine pick up out-of-band edits to `.flux/` and `.docs/` (git checkout, manual file edits, agents writing through `fs`) and refresh the engine cache.
+
+-   **SSE on `/api/events`** broadcasts `activity`, `progress`, and `notification` events from in-flight agent sessions so the portal can stream live updates without polling.
+
+-   **Portal polling** on `/api/tasks` every 3 seconds is the safety net: it picks up anything the other two channels miss and keeps the board correct even if SSE drops.
 
 ## Design implications
 
