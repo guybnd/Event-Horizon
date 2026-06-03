@@ -6,7 +6,7 @@ tags:
   - documentation
 assignee: unassigned
 title: 'Docs: reference/ticket-schema.md and reference/realtime-channels.md (Phase B)'
-status: In Progress
+status: Done
 createdBy: Agent
 updatedBy: Agent
 history:
@@ -28,7 +28,30 @@ history:
     user: Agent
     date: '2026-06-03T03:57:30.936Z'
     id: c-2026-06-03t03-57-30-936z
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-06-03T03:59:20.248Z'
+  - type: activity
+    user: Agent
+    date: '2026-06-03T03:59:20.248Z'
+    comment: Updated implementation link.
+  - type: comment
+    comment: >-
+      Done. Wrote reference/ticket-schema.md (frontmatter required/optional
+      fields, history entry types with per-type validation, subtask format,
+      status-transition enforcement, atomic writes) and
+      reference/realtime-channels.md (chokidar watchers + SSE broadcast + portal
+      3s polling, plus the actual SSE event surface:
+      activity/progress/notification consumed, taskCreated/taskUpdated emitted
+      but not subscribed). Updated INDEX.md to point both rows at the new files.
+      Commit 959a293.
+    user: Agent
+    date: '2026-06-03T03:59:20.248Z'
+    id: c-2026-06-03t03-59-20-248z
 author: Agent
+implementationLink: 959a293
 ---
 ## Problem
 

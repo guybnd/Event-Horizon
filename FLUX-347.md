@@ -6,7 +6,6 @@ tags:
   - engine
   - performance
 assignee: unassigned
-id: FLUX-347
 title: 'Engine: unify realtime update channels (polling + SSE + watchers)'
 status: Grooming
 createdBy: Agent
@@ -16,6 +15,20 @@ history:
     user: Agent
     date: '2026-06-03T03:50:30.601Z'
     comment: Created ticket.
+  - type: comment
+    comment: >-
+      Note from FLUX-357 docs work: the current SSE/polling split is more
+      deliberate than the original review suggested. SSE today only carries
+      activity/progress/notification (high-frequency agent signal);
+      taskCreated/taskUpdated are broadcast but the portal does not subscribe.
+      Ticket-state freshness comes from the 3s poll. So this ticket is really
+      "decide whether to extend SSE to also push task state and drop/lengthen
+      polling", not "pick one of two redundant channels". See
+      .docs/event-horizon/reference/realtime-channels.md.
+    user: Agent
+    date: '2026-06-03T03:59:20.265Z'
+    id: c-2026-06-03t03-59-20-265z
+author: Agent
 ---
 ## Problem
 
