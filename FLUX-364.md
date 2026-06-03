@@ -97,6 +97,14 @@ history:
     to: Ready
     user: Agent
     date: '2026-06-03T05:11:32.479Z'
+  - type: activity
+    user: Agent
+    date: '2026-06-03T05:14:03.215Z'
+    comment: >-
+      Implemented hover-expansion interaction pass: actions no longer reserve
+      idle space (collapsed by default and expand on card hover), and tags now
+      render as a single-line clipped row with gradient tail that expands on
+      tag-area hover.
 ---
 Apply dashboard refinements:
 - Strengthen global search overlay depth separation and result readability
