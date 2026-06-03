@@ -41,6 +41,7 @@ import { CommentBox } from './task-modal/CommentBox';
 import type { CommentBoxHandle } from './task-modal/CommentBox';
 import { CliSessionPanel } from './task-modal/CliSessionPanel';
 import { ReadyForMergePrompt } from './task-modal/ReadyForMergePrompt';
+import { StartTaskPrompt } from './task-modal/StartTaskPrompt';
 import { TokenBadge } from './TokenBadge';
 import { HistoryList } from './task-modal/HistoryList';
 const ACTIVITY_FILTER_STORAGE_KEY = 'flux.activityFilter';
@@ -156,6 +157,8 @@ export function TaskModal() {
   const [finishError, setFinishError] = useState('');
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewError, setReviewError] = useState('');
+  const [showStartPrompt, setShowStartPrompt] = useState(false);
+  const [diffViewFile, setDiffViewFile] = useState<string | null>(null);
 
   const {
     handleCommentPaste,
@@ -702,6 +705,19 @@ export function TaskModal() {
     }
   }, [modalTask?.id, cliSession, currentUser, selectedCliFramework, skipPermissions, setCliSession, triggerRefresh]);
 
+  const handleLaunchWithBranchCheck = useCallback(async () => {
+    if (modalTask && status === 'Todo' && !modalTask.branch) {
+      setShowStartPrompt(true);
+      return;
+    }
+    await launchSession();
+  }, [modalTask, status, launchSession]);
+
+  const handleStartPromptConfirm = useCallback(async () => {
+    setShowStartPrompt(false);
+    await launchSession();
+  }, [launchSession]);
+
   const handleGrooming = useCallback(async () => {
     if (!modalTask?.id) return;
     setCliSessionBusy(true);
@@ -925,8 +941,6 @@ export function TaskModal() {
     exit: { opacity: 0, transition: { duration: 0.05, delay: 0 } },
   } : {};
 
-  const [diffViewFile, setDiffViewFile] = useState<string | null>(null);
-
   const metadataPanelProps = {
     status, setStatus,
     assignee, setAssignee,
@@ -1148,7 +1162,7 @@ export function TaskModal() {
           liveOutputRef={liveOutputRef}
           config={config}
           tokenMetadata={modalTask.tokenMetadata}
-          onLaunch={launchSession}
+          onLaunch={handleLaunchWithBranchCheck}
           onStop={stopSession}
           onToggleDisplayMode={config ? () => void saveConfig({ ...config, tokenDisplayMode: config.tokenDisplayMode === 'tokens' ? 'cost' : 'tokens' }) : undefined}
         />
@@ -1311,7 +1325,7 @@ export function TaskModal() {
                     size="sm"
                     busy={cliSessionBusy}
                     disabled={!modalTask?.id}
-                    onLaunch={launchSession}
+                    onLaunch={handleLaunchWithBranchCheck}
                     icon={FRAMEWORK_ICONS[selectedCliFramework]}
                   />
                 );
@@ -1664,6 +1678,14 @@ export function TaskModal() {
             </div>
           </div>
         </div>
+      )}
+
+      {showStartPrompt && modalTask && (
+        <StartTaskPrompt
+          task={modalTask as Task}
+          onConfirm={() => void handleStartPromptConfirm()}
+          onCancel={() => setShowStartPrompt(false)}
+        />
       )}
     </AnimatePresence>
   );

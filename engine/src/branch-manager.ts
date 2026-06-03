@@ -101,6 +101,10 @@ export async function createPullRequest(branch: string, title: string, body: str
   return stdout.trim();
 }
 
+export async function mergePullRequest(branch: string): Promise<void> {
+  await execFileAsync('gh', ['pr', 'merge', branch, '--squash', '--delete-branch'], { windowsHide: true });
+}
+
 export async function getCurrentCommit(): Promise<string | null> {
   try {
     const { stdout } = await git(['rev-parse', 'HEAD']);

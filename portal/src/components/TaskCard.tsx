@@ -794,8 +794,8 @@ export function TaskCard({
             <GripVertical className="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity" />
           </div>
 
-          <div 
-            className="flex-1 cursor-pointer p-3 pl-2 flex flex-col"
+          <div
+            className="flex-1 min-w-0 cursor-pointer p-3 pl-2 flex flex-col"
             onClick={() => {
               if (!isOverlay) {
                 openBoardTask(task);
@@ -943,21 +943,23 @@ export function TaskCard({
             </p>
 
             {task.branch && !isOverlay && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void navigator.clipboard.writeText(task.branch!).then(() => {
-                    setBranchCopied(true);
-                    setTimeout(() => setBranchCopied(false), 1500);
-                  });
-                }}
-                title="Copy branch name"
-                className="mb-2 flex items-center gap-1.5 rounded-md border border-gray-100 bg-gray-50 px-2 py-1 text-[10px] font-mono text-gray-500 transition-colors hover:border-gray-200 hover:text-gray-700 dark:border-white/5 dark:bg-black/20 dark:text-gray-400 dark:hover:border-white/10 dark:hover:text-gray-200 max-w-full"
-              >
+              <div className="mb-2 flex min-w-0 max-w-full items-center gap-1.5 overflow-hidden rounded-md border border-gray-100 bg-gray-50 px-2 py-1 text-[10px] font-mono text-gray-500 dark:border-white/5 dark:bg-black/20 dark:text-gray-400">
                 <GitBranch className="h-2.5 w-2.5 shrink-0 text-gray-400" />
-                <span className="truncate">{task.branch}</span>
-                {branchCopied ? <Check className="h-2.5 w-2.5 shrink-0 text-emerald-500" /> : <Copy className="h-2.5 w-2.5 shrink-0 opacity-50" />}
-              </button>
+                <span className="min-w-0 truncate">{task.branch}</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void navigator.clipboard.writeText(task.branch!).then(() => {
+                      setBranchCopied(true);
+                      setTimeout(() => setBranchCopied(false), 1500);
+                    });
+                  }}
+                  title="Copy branch name"
+                  className="shrink-0 rounded p-0.5 transition-colors hover:text-gray-700 dark:hover:text-gray-200"
+                >
+                  {branchCopied ? <Check className="h-2.5 w-2.5 text-emerald-500" /> : <Copy className="h-2.5 w-2.5 opacity-50" />}
+                </button>
+              </div>
             )}
 
             {isEpic && (

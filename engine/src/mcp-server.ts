@@ -12,7 +12,7 @@ import { broadcastEvent } from './events.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
 import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry } from './history.js';
 import { getCliWorkspace, getActiveFluxDir } from './workspace.js';
-import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, createPullRequest, checkGhAuth, captureDiff, getCurrentCommit } from './branch-manager.js';
+import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, checkGhAuth, captureDiff, getCurrentCommit } from './branch-manager.js';
 
 function textResult(text: string) {
   return { content: [{ type: 'text' as const, text }] };
@@ -252,6 +252,21 @@ export async function startMcpServer(): Promise<void> {
         if (head) extraFields.baselineCommit = head;
       }
 
+      // When moving to Ready with a branch, push and create a PR for review.
+      if (newStatus === readyStatus && task.branch) {
+        const ghAvailable = await checkGhAuth();
+        if (ghAvailable) {
+          try {
+            const prBody = `${task.body ? task.body.slice(0, 800) : ''}\n\n---\nTicket: ${ticketId}`;
+            const prUrl = await createPullRequest(task.branch, task.title || ticketId, prBody);
+            extraFields.implementationLink = prUrl;
+            entries.push({ type: 'activity', user: 'Agent', comment: `PR created: ${prUrl}`, date: new Date().toISOString() });
+          } catch (err: any) {
+            entries.push({ type: 'activity', user: 'Agent', comment: `⚠️ PR creation failed: ${err.message}. Push branch manually.`, date: new Date().toISOString() });
+          }
+        }
+      }
+
       const result = await updateTaskWithHistory(ticketId, {
         entries,
         updatedBy: 'Agent',
@@ -320,28 +335,42 @@ export async function startMcpServer(): Promise<void> {
       const task = tasksCache[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`);
 
+      const readyStatus = configCache.readyForMergeStatus || 'Ready';
+      if (task.status !== readyStatus) {
+        return errorResult(
+          `Cannot finish ${ticketId} — ticket must be in "${readyStatus}" status first (current: "${task.status}"). ` +
+          `Move to "${readyStatus}" with change_status and wait for user confirmation before finishing.`
+        );
+      }
+
       let finalLink = implementationLink;
       let noteForComment = '';
 
-      // If ticket has a branch, attempt to create a PR
+      // If ticket has a branch, merge the existing PR
       if (task.branch) {
         const ghAvailable = await checkGhAuth();
-        if (ghAvailable) {
-          try {
-            const prBody = `${task.body ? task.body.slice(0, 800) : ''}\n\n---\nTicket: ${ticketId}`;
-            const prUrl = await createPullRequest(task.branch, task.title || ticketId, prBody);
-            finalLink = prUrl;
-          } catch (err: any) {
-            noteForComment = `\n\n⚠️ PR creation failed: ${err.message}. Commit: ${implementationLink}`;
-            finalLink = implementationLink;
+        if (!ghAvailable) {
+          // Can't merge without gh — bounce back to In Progress
+          const failEntries = [{ type: 'comment', user: 'Agent', comment: `⚠️ Finish aborted — gh not configured. Merge the PR manually, then finish again.`, date: new Date().toISOString() }];
+          await updateTaskWithHistory(ticketId, { entries: failEntries, updatedBy: 'Agent', nextStatus: 'In Progress' });
+          broadcastEvent('taskUpdated', { id: ticketId });
+          return errorResult(`Cannot finish ${ticketId} — gh not configured. Ticket moved back to In Progress.`);
+        }
+        try {
+          await mergePullRequest(task.branch);
+          if (!finalLink || !finalLink.startsWith('http')) {
+            finalLink = task.implementationLink || implementationLink;
           }
-        } else {
-          noteForComment = `\n\n⚠️ PR creation skipped — gh not configured. Commit: ${implementationLink}. Open a PR manually when ready.`;
-          finalLink = implementationLink;
+        } catch (mergeErr: any) {
+          // Merge failed — bounce back to In Progress with explanation
+          const failEntries = [{ type: 'comment', user: 'Agent', comment: `⚠️ PR merge failed: ${mergeErr.message}. Fix the issue and try again.`, date: new Date().toISOString() }];
+          await updateTaskWithHistory(ticketId, { entries: failEntries, updatedBy: 'Agent', nextStatus: 'In Progress' });
+          broadcastEvent('taskUpdated', { id: ticketId });
+          return errorResult(`Cannot finish ${ticketId} — PR merge failed: ${mergeErr.message}. Ticket moved back to In Progress.`);
         }
       }
 
-      const entries = [{ type: 'comment', user: 'Agent', comment: completionComment + noteForComment, date: new Date().toISOString() }];
+      const entries = [{ type: 'comment', user: 'Agent', comment: completionComment, date: new Date().toISOString() }];
       const finishExtraFields: Record<string, any> = { implementationLink: finalLink };
 
       // Capture diff summary + sidecar file. Best-effort — failure here must not block finish.
