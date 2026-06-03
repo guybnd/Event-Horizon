@@ -6,7 +6,7 @@ tags:
   - documentation
 assignee: unassigned
 title: 'Docs: restructure — decisions folder + INDEX by subsystem (Phase A)'
-status: Ready
+status: Done
 createdBy: Agent
 updatedBy: Agent
 history:
@@ -90,7 +90,22 @@ history:
     user: Agent
     date: '2026-06-03T03:52:19.470Z'
     id: c-2026-06-03t03-52-19-470z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-06-03T03:54:12.859Z'
+  - type: activity
+    user: Agent
+    date: '2026-06-03T03:54:12.859Z'
+    comment: Updated implementation link.
+  - type: comment
+    comment: Committed as `93e4931` and closed.
+    user: Agent
+    date: '2026-06-03T03:54:12.859Z'
+    id: c-2026-06-03t03-54-12-859z
 author: Agent
+implementationLink: '93e4931'
 ---
 ## Problem
 

@@ -4727,6 +4727,42 @@ history:
     date: '2026-06-03T03:30:37.538Z'
     outcome: Claude Code session ended with code 0.
     endedAt: '2026-06-03T03:41:12.483Z'
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Agent
+    date: '2026-06-03T03:53:33.822Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Fixed 3 issues from second architect review:
+
+
+      1. **`ghAuthMissing` SSE dead on both legs:** Startup SSE broadcast fires
+      before any client connects (silently dropped), and portal had no handler
+      for the event. Fixed: store result in `ghAuthAvailable` module-level var
+      in index.ts, expose it on `GET /api/health` as `ghAuthAvailable: boolean |
+      null`. Portal can read this on connect. Removed unreliable SSE broadcast
+      and unused `broadcastEvent` import.
+
+
+      2. **`getTicketBranchStatus` hardcodes `master`:** On repos with `main` as
+      default, `git rev-list master...branch` fails and silently returns 0/0
+      counts. Fixed: added `getDefaultBranch()` helper using `git symbolic-ref
+      refs/remotes/origin/HEAD`, falls back to `master`. Both
+      `getTicketBranchStatus` and `createTicketBranch` now use it.
+
+
+      3. **Issue 2 (sendReview status race in TaskCard.tsx):** Pre-existing bug
+      unrelated to this ticket — not introduced by FLUX-337. Noted but not
+      addressed here.
+    date: '2026-06-03T03:53:44.714Z'
+    id: c-2026-06-03t03-53-44-714z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-06-03T03:53:44.714Z'
 tokenMetadata:
   inputTokens: 1060999
   outputTokens: 43303
