@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { Archive, Bot, ChevronDown, ChevronRight, ExternalLink, GitBranch, MessageCircle, Search, Trash2, X, Zap } from 'lucide-react';
 import type { Task } from '../types';
 import { useApp } from '../AppContext';
-import { deleteTask, updateTask } from '../api';
+import { createBranch, deleteTask, updateTask } from '../api';
 import { runAgentAction, AGENT_COMMANDS, EFFORT_LEVELS, REVIEW_PERSONAS, type EffortLevel, type AgentCommandVerb } from '../agentActions';
 import { getArchiveStatus, isPromptableStatus } from '../workflow';
 import { resolveEffectiveAgent } from '../utils';
@@ -19,6 +19,9 @@ export function ContextMenu({ task, position, onClose }: Props) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [activeSubmenu, setActiveSubmenu] = useState<'transition' | 'agent' | 'effort' | 'review' | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [branchBusy, setBranchBusy] = useState(false);
+
+  const needsBranchPrompt = task.status === 'Todo' && !task.branch;
 
   const effectiveAgent = resolveEffectiveAgent(undefined, config?.defaultAgent);
   const ActiveIcon = effectiveAgent === 'gemini' ? Zap : Bot;
@@ -84,6 +87,17 @@ export function ContextMenu({ task, position, onClose }: Props) {
     }).then(() => triggerRefresh()).catch((err: unknown) => {
       console.error('Failed to launch agent:', err instanceof Error ? err.message : err);
     });
+  };
+
+  const handleLaunchWithBranch = async () => {
+    setBranchBusy(true);
+    try {
+      await createBranch(task.id);
+      handleLaunchAgent();
+    } catch (err: any) {
+      console.error('Failed to create branch:', err.message || err);
+      setBranchBusy(false);
+    }
   };
 
   const handleTransition = async (status: string) => {
@@ -175,42 +189,60 @@ export function ContextMenu({ task, position, onClose }: Props) {
         Edit / Open
       </MenuItem>
 
-      {/* Launch Agent — split button */}
-      <div className="flex items-center">
-        <button
-          type="button"
-          onClick={() => handleLaunchAgent()}
-          className="flex flex-1 items-center gap-2 px-3 py-1.5 text-left text-xs text-gray-700 transition-colors hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-white/5"
-        >
-          <span className="flex-none text-gray-400">{<ActiveIcon className="h-3.5 w-3.5" />}</span>
-          Launch Agent
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveSubmenu(activeSubmenu === 'effort' ? null : 'effort')}
-          className="flex items-center justify-center px-2 py-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/5 dark:hover:text-gray-300"
-          aria-label="Choose effort level"
-        >
-          <ChevronDown className={`h-3 w-3 transition-transform ${activeSubmenu === 'effort' ? 'rotate-180' : ''}`} />
-        </button>
-      </div>
+      {/* Launch Agent */}
+      {needsBranchPrompt ? (
+        <>
+          <button
+            type="button"
+            disabled={branchBusy}
+            onClick={() => void handleLaunchWithBranch()}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-gray-700 transition-colors hover:bg-gray-100 disabled:opacity-50 dark:text-gray-200 dark:hover:bg-white/5"
+          >
+            <span className="flex-none text-gray-400"><GitBranch className="h-3.5 w-3.5" /></span>
+            {branchBusy ? 'Creating branch…' : 'New branch + Launch Agent'}
+          </button>
+          <MenuItem icon={<ActiveIcon className="h-3.5 w-3.5" />} onClick={() => handleLaunchAgent()}>
+            Launch Agent (no branch)
+          </MenuItem>
+        </>
+      ) : (
+        <>
+          <div className="flex items-center">
+            <button
+              type="button"
+              onClick={() => handleLaunchAgent()}
+              className="flex flex-1 items-center gap-2 px-3 py-1.5 text-left text-xs text-gray-700 transition-colors hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-white/5"
+            >
+              <span className="flex-none text-gray-400">{<ActiveIcon className="h-3.5 w-3.5" />}</span>
+              Launch Agent
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveSubmenu(activeSubmenu === 'effort' ? null : 'effort')}
+              className="flex items-center justify-center px-2 py-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/5 dark:hover:text-gray-300"
+              aria-label="Choose effort level"
+            >
+              <ChevronDown className={`h-3 w-3 transition-transform ${activeSubmenu === 'effort' ? 'rotate-180' : ''}`} />
+            </button>
+          </div>
+          {activeSubmenu === 'effort' && (
+            <div className="border-t border-gray-100 bg-gray-50/60 dark:border-white/5 dark:bg-white/3">
+              <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-400">Effort override</div>
+              {EFFORT_LEVELS.map((lvl) => (
+                <MenuItem key={lvl} onClick={() => handleLaunchAgent(lvl)}>
+                  <span className="ml-5">{lvl}</span>
+                </MenuItem>
+              ))}
+            </div>
+          )}
+        </>
+      )}
 
       {/* Groom Ticket */}
       {task.status !== 'Grooming' && (
         <MenuItem icon={<Zap className="h-3.5 w-3.5" />} onClick={handleSendForGrooming}>
           Send for Grooming
         </MenuItem>
-      )}
-
-      {activeSubmenu === 'effort' && (
-        <div className="border-t border-gray-100 bg-gray-50/60 dark:border-white/5 dark:bg-white/3">
-          <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-400">Effort override</div>
-          {EFFORT_LEVELS.map((lvl) => (
-            <MenuItem key={lvl} onClick={() => handleLaunchAgent(lvl)}>
-              <span className="ml-5">{lvl}</span>
-            </MenuItem>
-          ))}
-        </div>
       )}
 
       {/* Mark comments as read */}
