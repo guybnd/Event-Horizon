@@ -75,7 +75,7 @@ export function GlobalSearch() {
       </div>
 
       {isSearchOpen && globalSearchQuery.trim() && (
-        <div className="absolute left-0 right-0 top-[calc(100%+0.5rem)] z-20 overflow-hidden rounded-2xl border border-gray-200 bg-white/95 shadow-xl dark:border-white/10 dark:bg-[#15161d]/95">
+        <div className="absolute left-0 w-max min-w-full max-w-[600px] top-[calc(100%+0.5rem)] z-20 overflow-hidden rounded-2xl border border-gray-200 bg-white/95 shadow-xl dark:border-white/10 dark:bg-[#15161d]/95">
           <div className="border-b border-gray-200 px-4 py-3 text-xs font-medium text-gray-500 dark:border-white/10 dark:text-gray-400">
             Fuzzy search across all tickets. Results deep-link into full view, so browser tab actions work normally.
           </div>
