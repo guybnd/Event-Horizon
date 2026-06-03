@@ -6,7 +6,7 @@ tags:
   - documentation
 assignee: unassigned
 title: 'Docs: tighten existing pages + cross-links (Phase D)'
-status: In Progress
+status: Done
 createdBy: Agent
 updatedBy: copilot
 history:
@@ -51,6 +51,66 @@ history:
       as part of finishing.
     date: '2026-06-03T04:55:39.503Z'
     id: c-2026-06-03t04-55-39-503z
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: copilot
+    date: '2026-06-03T04:58:11.118Z'
+  - type: activity
+    user: copilot
+    date: '2026-06-03T04:58:11.118Z'
+    comment: Updated implementation link.
+  - type: comment
+    user: copilot
+    comment: >-
+      Shipped in commit 13aa9bc6e3af030052893ec547466137e9106357.
+
+
+      **Phase D doc tightening:**
+
+      - architecture/overview.md now describes the two storage modes (in-repo vs
+      orphan-branch worktree) directly, and has an 'Update channels' subsection
+      summarizing the chokidar/SSE/polling stack with a link to
+      reference/realtime-channels.md.
+
+      - workflow/ticket-lifecycle.md: every step now names the MCP tool that
+      performs it (get_ticket, update_ticket, change_status, add_comment,
+      log_progress, finish_ticket, create_subtask). The 'Documentation
+      touchpoints' section is now concrete — lists reference/*, code-map.md,
+      agent-integrations.md, workflow/*, README, and .flux/skills/ explicitly.
+
+      - agent-integrations.md: framework table now links to
+      reference/agent-adapter-contract.md as the entry point for adding a new
+      framework.
+
+      - decisions/0002-multi-agent-cli.md: the 'skip this for ticket work' note
+      now points at the existing reference/agent-adapter-contract.md (was
+      'planned').
+
+      - ADR 0001 already had the skip note from Phase A.
+
+
+      **Finish-task docs enforcement (user add-on):**
+
+      - .docs/skills/event-horizon-orchestrator.md: added an explicit Critical
+      Rule that reference/* is kept in sync with code as part of the ticket (no
+      follow-up filings). The end-to-end checklist now requires the completion
+      comment to either name the docs updated or explain why none were needed.
+
+      - .docs/skills/event-horizon-implementation.md: step 10 expanded into a
+      concrete pre-Ready/Done checklist enumerating the four doc categories to
+      verify; step 11 requires the completion comment to name updated docs.
+
+      - Re-ran install-skill for claude / copilot / gemini so .claude/,
+      .github/skills/, and .gemini/ all match the source.
+
+
+      No code changes. No reference page needed updating because nothing in the
+      schema, MCP tools, REST endpoints, realtime channels, or adapter contract
+      changed — this ticket was pure docs.
+    date: '2026-06-03T04:58:11.118Z'
+    id: c-2026-06-03t04-58-11-118z
+implementationLink: 13aa9bc6e3af030052893ec547466137e9106357
 ---
 ## Problem
 
