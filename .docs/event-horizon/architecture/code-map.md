@@ -21,7 +21,13 @@ This page is the quick orientation guide for where behavior lives today — file
 	backlog, and header surfaces.
     
 -   `portal/src/api.ts` is the portal's client for engine endpoints.
-    
+
+-   `portal/src/agentActions.ts` is the **single composition layer** for
+	launching agent CLI sessions. Every button that starts an agent (card
+	context menu, card quick-actions, modal CLI panel, modal Finish/Grooming,
+	Code Review picker) routes through `runAgentAction(...)`. Add new
+	launch entry points here, not by calling `startTaskCliSession` directly.
+
 
 ## Portal components to check first
 
@@ -57,7 +63,7 @@ This page is the quick orientation guide for where behavior lives today — file
 
 -   Ticket schema or workflow behavior: start in `engine/src/index.ts`, then check `portal/src/types.ts`, `portal/src/api.ts`, and the relevant UI screen.
     
--   Prompt or review workflow changes: check `portal/src/components/TaskModal.tsx`, `portal/src/components/Settings.tsx`, `.flux/config.json`, and the workflow asset templates under `.flux/skills/`.
+-   Prompt or review workflow changes: check `portal/src/agentActions.ts` (launch helper + persona/command registries), `portal/src/components/TaskModal.tsx`, `portal/src/components/Settings.tsx`, `.flux/config.json`, and the workflow asset templates under `.flux/skills/`.
     
 -   Docs experience changes: check `portal/src/components/DocsScreen.tsx`, `portal/src/components/DocsSidebar.tsx`, and the docs endpoints in `engine/src/index.ts`.
 
