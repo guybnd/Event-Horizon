@@ -110,6 +110,20 @@ history:
     to: In Progress
     user: Agent
     date: '2026-06-03T05:14:56.842Z'
+  - type: activity
+    user: Agent
+    date: '2026-06-03T05:15:10.738Z'
+    comment: >-
+      Refined tag trailing-fade behavior: tail is now conditional on actual
+      collapsed-row overflow using measured scrollWidth/clientWidth with
+      ResizeObserver, so no fade appears when tags fully fit.
+  - type: activity
+    user: Agent
+    date: '2026-06-03T05:15:51.565Z'
+    comment: >-
+      Refined tags UX: when tags already exist, Edit tags control is hidden by
+      default and reveals only on tag-area hover (or when tag menu is open),
+      removing idle-space redundancy.
 ---
 Apply dashboard refinements:
 - Strengthen global search overlay depth separation and result readability
