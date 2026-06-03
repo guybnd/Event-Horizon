@@ -866,10 +866,14 @@ history:
     to: Grooming
     user: Guy
     date: '2026-05-29T00:49:09.401Z'
+  - type: activity
+    user: Agent
+    date: '2026-06-03T01:54:36.477Z'
+    comment: Updated description. Updated tags.
 title: can we enrich tickets with the diffs that were performed?
 status: Grooming
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 tokenMetadata:
   inputTokens: 646783
   outputTokens: 8627
@@ -888,65 +892,61 @@ When a ticket is completed, there is no way to see what code changes were made w
 
 ### 1. Capture baseline commit on In Progress (engine)
 
-When `change_status` transitions a ticket to "In Progress", record `baselineCommit: <current HEAD hash>` in the ticket's extraFields. This marks the starting point for diff calculation.
+When `change_status` transitions a ticket to "In Progress", record `baselineCommit: <current HEAD hash>` in the ticket's extra fields. This marks the starting point for diff calculation.
 
 **File:** `engine/src/mcp-server.ts` (change_status handler)
 
 ### 2. Capture diff on finish (engine)
 
 When `finish_ticket` runs:
-- Read `baselineCommit` from the ticket
-- Run `git diff --stat <baselineCommit>...<implementationLink>` for the file summary
-- Run `git diff <baselineCommit>...<implementationLink>` for full diff content
-- Store file summary in ticket frontmatter as `diffSummary` (array of `{file, additions, deletions}`)
-- Write full diff to sidecar file: `.flux-store/<TICKET-ID>.diff` (or `.flux/<TICKET-ID>.diff` in standard mode)
+
+**Branch mode** (ticket has a `branch` field — FLUX-337 lands first):
+- Use `git diff $(git merge-base master <branch>)..<branch-tip>` for the full diff.
+- This gives the complete picture of everything the agent did on the branch, regardless of commit count.
+
+**No-branch mode** (fallback):
+- `git diff <baselineCommit>...<implementationLink>` for all commits since In Progress.
+- Fallback if no `baselineCommit`: `implementationLink~1..implementationLink` (single commit).
+
+In both modes:
+- Run `git diff --stat` for the file summary.
+- Store `diffSummary: [{ file, additions, deletions }]` in ticket frontmatter.
+- Write full unified diff to sidecar file: `.flux-store/<TICKET-ID>.diff` (or `.flux/<TICKET-ID>.diff` in in-repo mode).
 
 **Files:** `engine/src/mcp-server.ts`, `engine/src/task-store.ts`
 
-### 3. New API endpoint for diff content
+### 3. New API endpoint
 
-Add `GET /api/tasks/:id/diff` that reads the sidecar `.diff` file and returns it. Optional `?file=path/to/file.ts` query param to return only that file's hunk.
+Add `GET /api/tasks/:id/diff` — reads the sidecar `.diff` file and returns it. Optional `?file=path/to/file.ts` query param to return only that file's hunk.
 
-**File:** `engine/src/routes/` (new route or extend tasks route)
+**File:** `engine/src/routes/tasks.ts` or new `diff.ts` route file.
 
 ### 4. Type model updates
 
-Add to `Task` interface:
+Add to `Task` interface in `portal/src/types.ts` and engine schema:
 - `baselineCommit?: string`
 - `diffSummary?: { file: string; additions: number; deletions: number }[]`
 
-**Files:** `portal/src/types.ts`, `engine/src/` (if typed there)
+### 5. Portal — Changes section in right panel
 
-### 5. Portal - Changes section in right panel
+Add a "Changes" section in `MetadataPanel.tsx` (below Implementation Link / PR link):
+- Total files changed, total additions (+), total deletions (-).
+- Scrollable list of files with coloured `+N -N` counts.
+- Populated from `task.diffSummary`. Hidden when not set.
 
-Add a "Changes" section in the details panel (below Implementation Link) showing:
-- Total files changed, additions, deletions
-- List of files with colored +/- counts
-- Each file is clickable
+This is wired into FLUX-340's diff summary panel (`DiffSummaryPanel.tsx`).
 
-**File:** `portal/src/components/TaskModal.tsx` (detailsPanel section), potentially extract to `portal/src/components/task-modal/DiffSummaryPanel.tsx`
-
-### 6. Portal - Diff viewer on file click
+### 6. Portal — Diff viewer on file click
 
 When a file is clicked, replace the left-side description/activity view with a diff viewer:
-- Fetch full diff from `GET /api/tasks/:id/diff?file=<path>`
-- Render with syntax-highlighted unified diff view (use `react-diff-view` + `unidiff` parser, or a lightweight custom renderer)
-- Add a back button to return to description view
+- Fetch from `GET /api/tasks/:id/diff?file=<path>`
+- Render as syntax-highlighted unified diff (`react-diff-view` + `unidiff`, or lightweight custom renderer)
+- Back button returns to description view
 
-**Files:** New component `portal/src/components/task-modal/DiffViewer.tsx`
+**New component:** `portal/src/components/task-modal/DiffViewer.tsx`
 
-### 7. Future: branch-per-ticket mode
+### Edge Cases
 
-When branch-per-ticket is added, the diff will use `git diff $(git merge-base master <branch>)..<branch-tip>` instead of baseline..implementation. The `baselineCommit` field generalizes to this � no schema change needed, just different capture logic.
-
-### Dependencies
-
-- No external service dependencies
-- Needs `react-diff-view` (or similar) npm package in portal
-- Git must be available in the engine process (already is for other features)
-
-### Risks / Edge Cases
-
-- Large diffs: sidecar file approach avoids bloating frontmatter. Could add a size cap with truncation message.
-- Missing baseline: if ticket was never moved to In Progress (e.g. direct finish), fall back to `implementationLink~1..implementationLink` (parent commit).
-- Binary files: show in file list as "binary" without inline diff.
+- Large diffs: sidecar file avoids bloating frontmatter. Add a size cap (e.g. 2MB) with a truncation notice.
+- Binary files: show in file list as "binary" with no inline diff.
+- Missing baseline: fall back to single-commit diff as described above.
