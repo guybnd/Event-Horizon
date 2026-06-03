@@ -1954,6 +1954,55 @@ history:
     date: '2026-06-03T03:01:54.431Z'
     outcome: Claude Code session ended with code 0.
     endedAt: '2026-06-03T03:11:49.007Z'
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Agent
+    date: '2026-06-03T03:20:18.270Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Fixed 3 bugs found in architect review:
+
+
+      1. **Critical — engine HEAD drift:** `createTicketBranch` was using `git
+      checkout -b` which permanently moves the engine process's HEAD to the
+      ticket branch. Fixed to use `git branch <name> <base>` + `git push -u
+      origin <name>` instead — branch is created as a remote ref, engine HEAD
+      never moves.
+
+
+      2. **MCP `delete_branch` — stale branch field:** After deleting the git
+      branch, `task.branch` was never cleared. `finish_ticket` would then try to
+      push the deleted branch and fail. Fixed: now calls `updateTaskWithHistory`
+      with `extraFields: { branch: null }` after successful delete.
+
+
+      3. **REST `DELETE /:id/branch` — same stale field bug:** Same fix applied
+      to the REST route.
+
+
+      4. **PR already exists on retry:** `createPullRequest` now calls `gh pr
+      view <branch>` first and returns the existing PR URL if one exists, before
+      attempting `gh pr create`. Prevents the catch block from overwriting a
+      valid PR URL with a commit hash on re-finish.
+
+
+      Also fixed: `createPullRequest` was pushing the branch a second time (it's
+      already pushed in `createTicketBranch`). The push in `createPullRequest`
+      is now retained intentionally — it handles the case where the agent has
+      made additional commits on the branch before calling `finish_ticket`.
+
+
+      Skill files updated in `.docs/skills/` (source of truth). Engine
+      type-check clean.
+    date: '2026-06-03T03:20:31.426Z'
+    id: c-2026-06-03t03-20-31-426z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-06-03T03:20:31.426Z'
 tokenMetadata:
   inputTokens: 360373
   outputTokens: 18266
