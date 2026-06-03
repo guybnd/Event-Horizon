@@ -141,6 +141,7 @@ The installer patches only Event Horizon blocks — your other custom instructio
 ### "Binary not found" error
 
 The CLI binary must be on your system PATH. Verify with:
+
 - Windows: `where claude` / `where gemini` / `where copilot`
 - macOS/Linux: `which claude` / `which gemini` / `which copilot`
 

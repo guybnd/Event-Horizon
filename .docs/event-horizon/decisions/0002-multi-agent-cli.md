@@ -37,6 +37,7 @@ Research for FLUX-282. Covers execution arguments, system prompt injection, cont
 ### System Prompt Injection
 
 **Hierarchy (loaded in order):**
+
 1. Managed policy (`/Library/Application Support/ClaudeCode/CLAUDE.md` or `C:\Program Files\ClaudeCode\CLAUDE.md`)
 2. User (`~/.claude/CLAUDE.md`)
 3. Project (`./.claude/CLAUDE.md` or `./CLAUDE.md`)
@@ -75,6 +76,7 @@ You are a security auditor. Review for OWASP vulnerabilities.
 ```
 
 **Agent Teams** (experimental, `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`):
+
 - Team lead spawns independent teammates
 - Inter-agent messaging via mailbox
 - Shared task list
@@ -120,6 +122,7 @@ claude -p "Implement the feature" \
 ### System Prompt Injection
 
 **Hierarchy:**
+
 1. Global: `~/.gemini/GEMINI.md`
 2. Project root: `<project>/GEMINI.md`
 3. Subdirectories: component-level context
@@ -149,6 +152,7 @@ gemini -i "prompt"                     # Interactive with initial prompt
 ```
 
 **Approval in headless:**
+
 - `--yolo` / `--approval-mode yolo` — auto-approve all
 - `--approval-mode auto_edit` — auto-approve edits only
 - `ask_user` policies become `deny` in headless mode
@@ -213,6 +217,7 @@ toolName = "run_shell_command"
 ### System Prompt Injection
 
 **Instruction layers:**
+
 | Mechanism | File | Scope |
 |---|---|---|
 | Repo-wide | `.github/copilot-instructions.md` | All interactions |
@@ -248,6 +253,7 @@ COPILOT_GITHUB_TOKEN=ghp_... copilot -p "task" --allow-all
 ### Subagents & Multi-Agent
 
 **Agent modes (`--mode`):**
+
 - `interactive` — standard
 - `plan` — decompose before acting
 - `autopilot` — agent continues until done

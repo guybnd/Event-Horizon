@@ -45,6 +45,7 @@ event-horizon init --target /path/to/your-project --key MYAPP
 *(Note: If you are using the npm package, use `npx event-horizon init` instead).*
 
 This command creates:
+
 - `.flux/config.json` — Board configuration and project settings.
 - `.flux/assets/` — Image attachment storage.
 - `.docs/project-overview.md` — Starter documentation page (if `.docs/` doesn't exist).
@@ -99,6 +100,7 @@ The workspace list is persisted in the global settings file and remembered acros
 Event Horizon runs as a background process to continuously monitor your ticket files. Closing the browser does **not** stop the engine.
 
 To stop the service completely:
+
 - Find the Event Horizon icon in your system tray (Windows) or menu bar (macOS).
 - Right-click and select **Quit**.
 - Alternatively, you can click the Power icon in the portal header.

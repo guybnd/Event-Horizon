@@ -29,6 +29,7 @@ Shared internals: task-store, schema, config, events, workspace
 ```
 
 The MCP server shares all internals with the HTTP engine:
+
 - **task-store.ts**: `tasksCache` for reads, `updateTaskWithHistory()` for atomic writes
 - **schema.ts**: `validateTicketFrontmatter()` for validation before save
 - **events.ts**: `broadcastEvent()` for portal sync (when HTTP engine also running)
@@ -114,6 +115,7 @@ This is built alongside `index.js` and `init.js` by `npm run build` in the engin
 ## Relationship to REST API
 
 The MCP tools and REST API coexist:
+
 - **MCP tools** are the preferred path for agents — tools appear in the tool list and enforce workflow rules.
 - **REST API** (`http://localhost:3067/api/tasks`) remains available as a fallback and is used by the portal UI.
 - Both share the same `tasksCache` and file storage — changes from one are visible to the other immediately.
@@ -121,14 +123,17 @@ The MCP tools and REST API coexist:
 ## Troubleshooting
 
 **Tools don't appear in agent's tool list:**
+
 - Verify the MCP config file exists in the correct location for your CLI
 - Check that `npx tsx` is available (requires Node.js and tsx installed)
 - Try running manually: `npx tsx engine/src/mcp-server.ts --workspace .` — should output nothing on stdout until it receives input
 
 **"Workspace is activating, please retry":**
+
 - The server is still loading tickets from disk. Wait and retry.
 
 **Protocol errors / garbled output:**
+
 - Ensure no other process is writing to the same stdout. The MCP server redirects all `console.log` to stderr.
 
 ## Key Files

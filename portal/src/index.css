@@ -857,7 +857,11 @@ button:not(:disabled):active {
 }
 
 .docs-editor-content td {
-  @apply border border-gray-200 px-3 py-2 dark:border-white/10;
+  @apply border border-gray-200 px-3 py-2 align-top dark:border-white/10;
+}
+
+.docs-editor-content table p {
+  @apply m-0;
 }
 
 .docs-editor-content p.is-editor-empty:first-child::before {

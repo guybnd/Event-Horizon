@@ -2,7 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
+import { Table } from '@tiptap/extension-table';
+import { TableRow } from '@tiptap/extension-table-row';
+import { TableHeader } from '@tiptap/extension-table-header';
+import { TableCell } from '@tiptap/extension-table-cell';
 import TurndownService from 'turndown';
+import { gfm } from 'turndown-plugin-gfm';
 import { marked } from 'marked';
 import { AlertCircle, Bold, Code, FileText, Heading1, Heading2, Info, Italic, Link as LinkIcon, List, ListOrdered, Save, Trash2 } from 'lucide-react';
 import { createDoc, deleteDoc, fetchDoc, fetchDocs, updateDoc } from '../api';
@@ -54,6 +59,8 @@ function createTurndownService() {
     codeBlockStyle: 'fenced',
     bulletListMarker: '-',
   });
+
+  service.use(gfm);
 
   service.addRule('wiki-links', {
     filter: (node) => {
@@ -250,6 +257,10 @@ export function DocsScreen() {
         },
       }),
       Placeholder.configure({ placeholder: 'Start writing. Use [[doc-name]] for internal links.' }),
+      Table.configure({ resizable: false, HTMLAttributes: { class: 'docs-table' } }),
+      TableRow,
+      TableHeader,
+      TableCell,
     ],
     content: '<p></p>',
     editable: false,

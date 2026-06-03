@@ -42,6 +42,7 @@ Vite starts a hot-reload dev server (typically `http://localhost:5173`) that pro
 Because Event Horizon uses itself to manage its own tickets, agent sessions are often running while you are also editing the codebase.
 
 Key rules:
+
 - Always run the engine with `dev:no-watch` when agents are active.
 - If an agent edits engine source files (e.g. fixing a bug in `engine/src/`), the engine will **not** automatically pick up those changes. Restart it manually after the agent's session completes.
 - Portal source edits by agents are safe — Vite will hot-reload them without affecting the engine.

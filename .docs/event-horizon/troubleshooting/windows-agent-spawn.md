@@ -8,6 +8,7 @@ title: Windows Agent Spawn Issues
 ## Problem
 
 On Windows systems, especially when using Git Bash, launching Claude Code agents may fail with:
+
 - `Error: spawn EINVAL`
 - `Error: spawn claude ENOENT`  
 - Agent starts but receives no instructions (empty prompt)
@@ -19,6 +20,7 @@ On Windows systems, especially when using Git Bash, launching Claude Code agents
 **Symptom**: `spawn EINVAL` when trying to launch agent
 
 **Cause**: On Windows, npm global installs create three files:
+
 - `claude` (bash script for Git Bash/WSL)
 - `claude.cmd` (Windows batch wrapper)
 - `claude.ps1` (PowerShell wrapper)
@@ -68,6 +70,7 @@ if (process.platform === 'win32') {
 ```
 
 **Why this works**:
+
 - Spawns the actual `.exe` directly, not through cmd.exe or bash wrapper
 - Preserves stdio pipes for JSON stream output capture
 - Enables real-time "Thinking" status and tool activity indicators
@@ -120,6 +123,7 @@ The ticket is in Todo. Begin implementation...
 ## Environment Details
 
 This fix specifically addresses:
+
 - **OS**: Windows 10/11
 - **Shell**: Git Bash (MINGW64), PowerShell, CMD
 - **Node**: Native Windows builds (PE32+ executable)
@@ -134,6 +138,7 @@ The fix detects `process.platform === 'win32'` and applies the cmd.exe wrapper a
 - **FLUX-237**: Fixed stdio capture by spawning claude.exe directly (current solution)
 
 Evolution of the fix:
+
 1. FLUX-226 catches missing CLI **before** spawn attempt
 2. FLUX-229 fixed spawn but broke stdio capture with cmd.exe wrapper
 3. FLUX-237 fixed stdio capture by spawning .exe directly while preserving multi-line arg support
@@ -141,12 +146,14 @@ Evolution of the fix:
 ## Historical Context
 
 **Node.js spawn() on Windows**:
+
 - Node detects `.cmd`/`.bat` files and normally wraps them in shell automatically
 - But in hybrid environments (Git Bash + Windows Node), detection can fail
 - `shell: true` fixes spawn but breaks argument escaping (Node deprecation warning)
 - Manual cmd.exe wrapper gives full control over quoting
 
 **Why not shell: true everywhere?**
+
 - Security: shell=true enables command injection if args aren't sanitized
 - Performance: Mac/Linux don't need shell overhead
 - Correctness: shell=true's concatenation breaks complex args
