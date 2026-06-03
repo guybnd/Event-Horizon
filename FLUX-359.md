@@ -7,7 +7,7 @@ tags:
   - dx
 assignee: unassigned
 title: 'Docs: recipes.md — common change recipes (Phase C)'
-status: In Progress
+status: Done
 createdBy: Agent
 updatedBy: Agent
 history:
@@ -31,7 +31,33 @@ history:
     user: Agent
     date: '2026-06-03T04:01:02.652Z'
     id: c-2026-06-03t04-01-02-652z
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-06-03T04:05:40.282Z'
+  - type: activity
+    user: Agent
+    date: '2026-06-03T04:05:40.282Z'
+    comment: Updated implementation link.
+  - type: comment
+    comment: >-
+      Done. Wrote .docs/event-horizon/recipes.md with 6 task-oriented
+      walkthroughs (add ticket field, add MCP tool, add status with enforcement,
+      add agent framework, add portal screen, change history entry shape). Each
+      lists exact files in order plus verification steps; cross-links the
+      reference pages. Commit 0740959.
+
+
+      Separately, the docs view was stripping GFM tables because the tiptap
+      editor only registered StarterKit. Added @tiptap/extension-table family +
+      turndown gfm plugin and minor table CSS, plus normalized missing blank
+      lines before lists/tables across 7 docs (commit 3ec6fb1).
+    user: Agent
+    date: '2026-06-03T04:05:40.282Z'
+    id: c-2026-06-03t04-05-40-282z
 author: Agent
+implementationLink: 0740959
 ---
 ## Problem
 
