@@ -7,7 +7,7 @@ tags:
   - agents
 assignee: unassigned
 title: 'Docs: reference/agent-adapter-contract.md (Phase B)'
-status: In Progress
+status: Done
 createdBy: Agent
 updatedBy: Agent
 history:
@@ -30,7 +30,27 @@ history:
     user: Agent
     date: '2026-06-03T03:59:29.013Z'
     id: c-2026-06-03t03-59-29-013z
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-06-03T04:00:51.694Z'
+  - type: activity
+    user: Agent
+    date: '2026-06-03T04:00:51.694Z'
+    comment: Updated implementation link.
+  - type: comment
+    comment: >-
+      Done. Wrote reference/agent-adapter-contract.md: AgentAdapter interface,
+      ProviderManifest, CLI_CAPABILITIES matrix, full lifecycle (spawn →
+      stream-json parsing → SSE events → exit cleanup), session-record fields
+      adapters mutate, history helpers, and a step-by-step recipe for adding a
+      new framework. Updated INDEX.md. Commit e40b50a.
+    user: Agent
+    date: '2026-06-03T04:00:51.694Z'
+    id: c-2026-06-03t04-00-51-694z
 author: Agent
+implementationLink: e40b50a
 ---
 ## Problem
 

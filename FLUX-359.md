@@ -6,9 +6,8 @@ tags:
   - documentation
   - dx
 assignee: unassigned
-id: FLUX-359
 title: 'Docs: recipes.md — common change recipes (Phase C)'
-status: Grooming
+status: In Progress
 createdBy: Agent
 updatedBy: Agent
 history:
@@ -16,6 +15,23 @@ history:
     user: Agent
     date: '2026-06-03T03:50:39.912Z'
     comment: Created ticket.
+  - type: status_change
+    from: Grooming
+    to: In Progress
+    user: Agent
+    date: '2026-06-03T04:01:02.652Z'
+  - type: comment
+    comment: >-
+      Plan: write .docs/event-horizon/recipes.md with 6 task-oriented
+      walkthroughs: add a ticket field, add an MCP tool, add a status with
+      enforcement, add an agent framework, add a portal screen, change a history
+      entry shape. Each recipe lists exact files to touch in order, with
+      rationale and verification steps. Cross-link to the relevant reference
+      pages instead of duplicating their content.
+    user: Agent
+    date: '2026-06-03T04:01:02.652Z'
+    id: c-2026-06-03t04-01-02-652z
+author: Agent
 ---
 ## Problem
 
