@@ -368,10 +368,24 @@ history:
     to: Ready
     user: Guy
     date: '2026-06-03T05:20:42.780Z'
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Guy
+    date: '2026-06-03T05:20:47.580Z'
+  - type: agent_session
+    sessionId: 9013e91e-d50c-4889-b4bb-83f05cee61d7
+    startedAt: '2026-06-03T05:20:47.595Z'
+    status: cancelled
+    progress: []
+    user: Claude Code
+    date: '2026-06-03T05:20:47.595Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-06-03T05:20:53.450Z'
 title: separate columns into 'currently running' and not
-status: Ready
+status: In Progress
 createdBy: Guy
-updatedBy: Guy
+updatedBy: Agent
 tokenMetadata:
   inputTokens: 404453
   outputTokens: 4079
@@ -380,6 +394,7 @@ tokenMetadata:
   cacheReadTokens: 360443
   cacheCreationTokens: 43987
 order: 2
+id: FLUX-363
 ---
 ## Problem / Motivation
 
