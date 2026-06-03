@@ -75,27 +75,27 @@ export function GlobalSearch() {
       </div>
 
       {isSearchOpen && globalSearchQuery.trim() && (
-        <div className="absolute left-0 w-max min-w-full max-w-[600px] top-[calc(100%+0.5rem)] z-20 overflow-hidden rounded-2xl border border-gray-200 bg-white/95 shadow-xl dark:border-white/10 dark:bg-[#15161d]/95">
-          <div className="border-b border-gray-200 px-4 py-3 text-xs font-medium text-gray-500 dark:border-white/10 dark:text-gray-400">
+        <div className="absolute left-0 top-[calc(100%+0.625rem)] z-30 w-max min-w-full max-w-[640px] overflow-hidden rounded-2xl border border-gray-200/90 bg-white/95 shadow-[0_24px_60px_rgba(28,25,23,0.22)] ring-1 ring-white/70 backdrop-blur-xl dark:border-white/10 dark:bg-[#12131a]/96 dark:ring-white/5">
+          <div className="border-b border-gray-200/90 bg-gradient-to-r from-gray-50/90 to-white/40 px-4 py-3 text-xs font-semibold tracking-[0.01em] text-gray-600 dark:border-white/10 dark:from-white/[0.04] dark:to-transparent dark:text-gray-300">
             Fuzzy search across all tickets. Results deep-link into full view, so browser tab actions work normally.
           </div>
-          <div className="max-h-[420px] overflow-y-auto p-2">
+          <div className="max-h-[430px] overflow-y-auto px-2 py-2.5">
             {searchResults.length > 0 ? searchResults.map(({ task }) => (
               <a
                 key={task.id}
                 href={getTaskHref(task)}
-                className="flex w-full flex-col gap-1 rounded-xl px-3 py-3 text-left transition-colors hover:bg-gray-100 focus:bg-gray-100 focus:outline-none dark:hover:bg-white/5 dark:focus:bg-white/5"
+                className="group flex w-full flex-col gap-1.5 rounded-xl border border-transparent px-3 py-3 text-left transition-all duration-200 hover:border-gray-200 hover:bg-white hover:shadow-sm focus:border-gray-200 focus:bg-white focus:outline-none dark:hover:border-white/10 dark:hover:bg-white/[0.03] dark:focus:border-white/10 dark:focus:bg-white/[0.03]"
               >
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-semibold text-gray-900 dark:text-white">{task.title || 'Untitled ticket'}</span>
+                <div className="flex items-center gap-2.5">
+                  <span className="text-sm font-semibold text-gray-900 transition-colors group-hover:text-gray-950 dark:text-white">{task.title || 'Untitled ticket'}</span>
                   <StatusBadge
                     status={task.status}
                     colorClass={getStatusColorClass(config, task.status)}
                     className="text-[10px] font-bold uppercase tracking-[0.16em]"
                   />
                 </div>
-                <div className="text-xs font-semibold tracking-[0.18em] text-gray-400">{task.id}</div>
-                <div className="text-sm text-gray-500 dark:text-gray-400">{getResultPreview(task)}</div>
+                <div className="text-[11px] font-semibold tracking-[0.18em] text-gray-400 dark:text-gray-500">{task.id}</div>
+                <div className="text-sm leading-relaxed text-gray-600 dark:text-gray-400">{getResultPreview(task)}</div>
               </a>
             )) : (
               <div className="px-4 py-6 text-sm text-gray-500 dark:text-gray-400">

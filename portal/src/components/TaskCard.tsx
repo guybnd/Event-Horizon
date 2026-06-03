@@ -5,7 +5,7 @@ import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { Task, TaskLiveEvent } from '../types';
 import { normalizeSubtaskId } from '../types';
-import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, MessageCircle, Bot, SendHorizontal, Maximize2, Zap, Layers, MousePointerClick, Play, Search, Undo2 } from 'lucide-react';
+import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, MessageCircle, Bot, SendHorizontal, Maximize2, Zap, Layers, MousePointerClick, Play, Search, Undo2, GitBranch, Copy, Check } from 'lucide-react';
 import { TokenBadge } from './TokenBadge';
 import { useApp } from '../AppContext';
 import { sendTaskCliInput, updateTask } from '../api';
@@ -15,6 +15,9 @@ import { resolveEffectiveAgent } from '../utils';
 import { motion, AnimatePresence, useAnimationControls } from 'framer-motion';
 import { TaskMarkdown } from './TaskMarkdown';
 import { ContextMenu } from './ContextMenu';
+import { StartTaskPrompt } from './task-modal/StartTaskPrompt';
+import { StatusBadge } from './StatusBadge';
+import { getStatusColorClass } from '../statusStyles';
 
 export function TaskCard({
   task,
@@ -35,6 +38,8 @@ export function TaskCard({
   const [effortMenuOpen, setEffortMenuOpen] = useState(false);
   const [assigneeMenuOpen, setAssigneeMenuOpen] = useState(false);
   const [tagMenuOpen, setTagMenuOpen] = useState(false);
+  const [isTagRowOverflowing, setIsTagRowOverflowing] = useState(false);
+  const [isTagAreaActive, setIsTagAreaActive] = useState(false);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [priorityName, setPriorityName] = useState(task.priority || 'None');
   const [effortName, setEffortName] = useState(task.effort || 'None');
@@ -45,6 +50,7 @@ export function TaskCard({
   const effortMenuRef = useRef<HTMLDivElement | null>(null);
   const assigneeMenuRef = useRef<HTMLDivElement | null>(null);
   const tagMenuRef = useRef<HTMLDivElement | null>(null);
+  const tagPreviewRowRef = useRef<HTMLDivElement | null>(null);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
   const [commentPopoverOpen, setCommentPopoverOpen] = useState(false);
   const [commentPopoverPos, setCommentPopoverPos] = useState({ top: 0, left: 0 });
@@ -64,6 +70,7 @@ export function TaskCard({
   const [subtaskPopoverPos, setSubtaskPopoverPos] = useState({ top: 0, left: 0 });
   const subtaskBadgeRef = useRef<HTMLButtonElement | null>(null);
   const subtaskPopupRef = useRef<HTMLDivElement | null>(null);
+  const tagAreaHoverTimeout = useRef<number | null>(null);
 
   const subtaskIds = useMemo(() => task.subtasks?.map(normalizeSubtaskId) ?? [], [task.subtasks]);
   const isEpic = subtaskIds.length > 0;
@@ -199,6 +206,8 @@ export function TaskCard({
   const [returnPromptOpen, setReturnPromptOpen] = useState(false);
   const [returnReason, setReturnReason] = useState('');
   const [returnBusy, setReturnBusy] = useState(false);
+  const [showStartPrompt, setShowStartPrompt] = useState(false);
+  const [branchCopied, setBranchCopied] = useState(false);
   const reviewSelectorRef = useRef<HTMLDivElement | null>(null);
   const comments = task.history?.filter(e => e.type === 'comment') ?? [];
   const topLevelComments = [...comments.filter(c => !c.replyTo)].reverse();
@@ -256,23 +265,44 @@ export function TaskCard({
     }
   };
 
-  const statusActionMap: Record<string, { label: string; appendPrompt: string }> = {
-    'Grooming': { label: 'Start grooming', appendPrompt: `groom ${task.id}` },
-    'Todo': { label: 'Implement', appendPrompt: `implement ${task.id}` },
-    'In Progress': { label: 'Continue', appendPrompt: `implement ${task.id}` },
+  const statusActionMap: Record<string, { label: string; verb: 'groom' | 'implement' | 'finish' }> = {
+    'Grooming': { label: 'Start grooming', verb: 'groom' },
+    'Todo': { label: 'Implement', verb: 'implement' },
+    'In Progress': { label: 'Continue', verb: 'implement' },
   };
   const statusAction = !hasActiveCliSession && !isReadyForMerge ? statusActionMap[task.status] : null;
 
-  const sendStatusAction = async (e: React.MouseEvent) => {
+  const sendStatusAction = async (e: React.MouseEvent, skipBranchPrompt = false) => {
     e.stopPropagation();
     if (!statusAction) return;
+    if (task.status === 'Todo' && !task.branch && !skipBranchPrompt) {
+      setShowStartPrompt(true);
+      return;
+    }
     setActionBusy(true);
     try {
       const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
       await runAgentAction({
         taskId: task.id,
         framework,
-        action: { kind: 'prompt', appendPrompt: statusAction.appendPrompt },
+        action: { kind: 'command', verb: statusAction.verb },
+        currentUser,
+      });
+      triggerRefresh();
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleStartPromptConfirm = async (_branch: string | null) => {
+    setShowStartPrompt(false);
+    setActionBusy(true);
+    try {
+      const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
+      await runAgentAction({
+        taskId: task.id,
+        framework,
+        action: { kind: 'command', verb: 'implement' },
         currentUser,
       });
       triggerRefresh();
@@ -590,6 +620,7 @@ export function TaskCard({
       if (hoverTimeout.current !== null) window.clearTimeout(hoverTimeout.current);
       if (commentHoverTimeout.current !== null) window.clearTimeout(commentHoverTimeout.current);
       if (commentCloseTimeout.current !== null) window.clearTimeout(commentCloseTimeout.current);
+      if (tagAreaHoverTimeout.current !== null) window.clearTimeout(tagAreaHoverTimeout.current);
     };
   }, []);
 
@@ -626,6 +657,27 @@ export function TaskCard({
     document.addEventListener('mousedown', handlePointerDown);
     return () => document.removeEventListener('mousedown', handlePointerDown);
   }, [reviewSelectorOpen, returnPromptOpen]);
+
+  useEffect(() => {
+    const el = tagPreviewRowRef.current;
+    if (!el) return undefined;
+
+    const recompute = () => {
+      // Only show trailing fade when collapsed row is truly clipping content.
+      setIsTagRowOverflowing(el.scrollWidth > el.clientWidth + 1);
+    };
+
+    recompute();
+
+    const observer = new ResizeObserver(recompute);
+    observer.observe(el);
+    window.addEventListener('resize', recompute);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', recompute);
+    };
+  }, [tagNames, tagMenuOpen]);
 
   useEffect(() => {
     if (isThisTaskOpen) {
@@ -743,14 +795,14 @@ export function TaskCard({
           </div>
 
           <div 
-            className="flex-1 p-3 pl-2 cursor-pointer flex flex-col"
+            className="flex-1 cursor-pointer p-3 pl-2 flex flex-col"
             onClick={() => {
               if (!isOverlay) {
                 openBoardTask(task);
               }
             }}
           >
-            <div className="flex flex-col items-start mb-2">
+            <div className="mb-2 flex flex-col items-start gap-1">
               {isEditingTitle && !isOverlay ? (
                 <input
                   ref={titleInputRef}
@@ -788,10 +840,15 @@ export function TaskCard({
                   {visibleTitle}
                 </button>
               )}
-              <div className="flex items-center gap-1.5 relative">
-                <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 tracking-wider">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[10px] font-bold tracking-wider text-gray-400 dark:text-gray-500">
                   {task.id}
                 </span>
+                <StatusBadge
+                  status={task.status}
+                  colorClass={getStatusColorClass(config, task.status)}
+                  className="text-[9px] font-bold uppercase tracking-[0.12em]"
+                />
                 {isEpic && (
                   <span className="flex items-center gap-0.5 rounded-full bg-indigo-100 px-1.5 py-0.5 text-[9px] font-bold text-indigo-600 dark:bg-indigo-500/15 dark:text-indigo-300">
                     <Layers className="w-2.5 h-2.5" />
@@ -810,6 +867,8 @@ export function TaskCard({
                     -&gt; {parentTask.id}
                   </button>
                 )}
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5 relative">
                 {!isOverlay && (
                   <div ref={effortMenuRef} className="relative">
                     <button
@@ -879,9 +938,27 @@ export function TaskCard({
               </div>
             </div>
             
-            <p className="text-xs text-gray-600 dark:text-gray-400 mb-3 line-clamp-2">
+            <p className="mb-3 text-xs leading-relaxed text-gray-600 line-clamp-2 dark:text-gray-400">
               {snippet}
             </p>
+
+            {task.branch && !isOverlay && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void navigator.clipboard.writeText(task.branch!).then(() => {
+                    setBranchCopied(true);
+                    setTimeout(() => setBranchCopied(false), 1500);
+                  });
+                }}
+                title="Copy branch name"
+                className="mb-2 flex items-center gap-1.5 rounded-md border border-gray-100 bg-gray-50 px-2 py-1 text-[10px] font-mono text-gray-500 transition-colors hover:border-gray-200 hover:text-gray-700 dark:border-white/5 dark:bg-black/20 dark:text-gray-400 dark:hover:border-white/10 dark:hover:text-gray-200 max-w-full"
+              >
+                <GitBranch className="h-2.5 w-2.5 shrink-0 text-gray-400" />
+                <span className="truncate">{task.branch}</span>
+                {branchCopied ? <Check className="h-2.5 w-2.5 shrink-0 text-emerald-500" /> : <Copy className="h-2.5 w-2.5 shrink-0 opacity-50" />}
+              </button>
+            )}
 
             {isEpic && (
               <button
@@ -927,8 +1004,28 @@ export function TaskCard({
               </button>
             )}
 
-            <div className="flex flex-wrap items-center justify-between gap-2 mt-auto">
-              <div ref={tagMenuRef} className="relative flex flex-wrap gap-1.5">
+            <div className="mt-auto flex flex-wrap items-center justify-between gap-2">
+              <div
+                ref={tagMenuRef}
+                className="group/tags relative min-w-0 max-w-[210px]"
+                onMouseEnter={() => {
+                  if (tagAreaHoverTimeout.current !== null) {
+                    window.clearTimeout(tagAreaHoverTimeout.current);
+                  }
+                  tagAreaHoverTimeout.current = window.setTimeout(() => {
+                    setIsTagAreaActive(true);
+                    tagAreaHoverTimeout.current = null;
+                  }, 250);
+                }}
+                onMouseLeave={() => {
+                  if (tagAreaHoverTimeout.current !== null) {
+                    window.clearTimeout(tagAreaHoverTimeout.current);
+                    tagAreaHoverTimeout.current = null;
+                  }
+                  setIsTagAreaActive(false);
+                }}
+              >
+                <div ref={tagPreviewRowRef} className={`flex gap-1.5 transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] ${tagMenuOpen ? 'max-h-28 flex-wrap overflow-y-auto pr-1' : isTagAreaActive ? 'max-h-24 flex-wrap overflow-hidden' : 'max-h-5 flex-nowrap overflow-hidden'}`}>
                 {!isOverlay && (
                   <button
                     onClick={(event) => {
@@ -938,7 +1035,7 @@ export function TaskCard({
                       setEffortMenuOpen(false);
                       setAssigneeMenuOpen(false);
                     }}
-                    className="rounded border border-dashed border-gray-300 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 transition-colors hover:border-primary hover:text-primary dark:border-white/15 dark:text-gray-400"
+                    className={`rounded border border-dashed text-[10px] font-medium text-gray-500 transition-all duration-200 hover:border-primary hover:text-primary dark:text-gray-400 ${tagNames.length > 0 && !tagMenuOpen ? isTagAreaActive ? 'max-w-24 border-gray-300 px-1.5 py-0.5 opacity-100 dark:border-white/15' : 'max-w-0 overflow-hidden border-transparent px-0 py-0 opacity-0' : 'border-gray-300 px-1.5 py-0.5 dark:border-white/15'}`}
                   >
                     {tagNames.length ? 'Edit tags' : 'Add tags'}
                   </button>
@@ -960,6 +1057,10 @@ export function TaskCard({
                     {tag}
                   </button>
                 ))}
+                </div>
+                {!tagMenuOpen && isTagRowOverflowing && (
+                  <span className={`pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-white via-white/90 to-transparent transition-opacity dark:from-[#1e1f2a] dark:via-[#1e1f2a]/90 ${isTagAreaActive ? 'opacity-0' : 'opacity-100'}`} />
+                )}
                 {tagMenuOpen && !isOverlay && (
                   <div
                     className="absolute left-0 top-full z-[90] mt-1 min-w-40 rounded-lg border border-gray-200 bg-white p-1 shadow-xl dark:border-white/10 dark:bg-[#252630]"
@@ -1046,7 +1147,7 @@ export function TaskCard({
             </div>
             {/* Ready column — 3-button row: Review | Return | Finish */}
             {isReadyForMerge && !isOverlay && (
-              <div className="mt-2 flex items-center gap-1.5 justify-end relative" ref={reviewSelectorRef}>
+              <div className={`relative flex items-center justify-end gap-1.5 transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] ${reviewSelectorOpen || returnPromptOpen ? 'mt-2 max-h-40 overflow-visible opacity-100' : 'mt-0 max-h-0 overflow-hidden opacity-0 group-hover:mt-2 group-hover:max-h-20 group-hover:opacity-100'}`} ref={reviewSelectorRef}>
                 {/* Review */}
                 <button
                   onClick={(e) => { e.stopPropagation(); setReviewSelectorOpen(prev => !prev); setReturnPromptOpen(false); }}
@@ -1060,7 +1161,8 @@ export function TaskCard({
                 <button
                   onClick={(e) => { e.stopPropagation(); setReturnPromptOpen(prev => !prev); setReviewSelectorOpen(false); }}
                   disabled={returnBusy}
-                  className="flex items-center gap-1 rounded-md border border-gray-200 bg-white/80 px-2 py-1 text-[10px] font-semibold text-gray-600 transition-colors hover:border-amber-400 hover:text-amber-600 disabled:opacity-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:border-amber-400 dark:hover:text-amber-500"
+                  className="flex items-center gap-1 rounded-md border border-amber-300 bg-white/80 px-2 py-1 text-[10px] font-semibold text-amber-700 transition-colors hover:border-amber-400 hover:bg-amber-50 disabled:opacity-50 dark:border-amber-500/35 dark:bg-white/5 dark:text-amber-300 dark:hover:border-amber-400 dark:hover:bg-amber-500/12"
+                  title="Move ticket back to In Progress"
                 >
                   <Undo2 className="w-3 h-3" />
                   {returnBusy ? '…' : 'Return'}
@@ -1069,7 +1171,7 @@ export function TaskCard({
                 <button
                   onClick={(e) => void sendFinishCommand(e)}
                   disabled={finishBusy}
-                  className="flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-[10px] font-semibold text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+                  className="flex items-center gap-1 rounded-md bg-primary px-3 py-1 text-[10px] font-semibold text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
                 >
                   <SendHorizontal className="w-3 h-3" />
                   {finishBusy ? '…' : 'Finish'}
@@ -1127,7 +1229,8 @@ export function TaskCard({
             )}
             {/* Per-status action button — compact, right-aligned */}
             {statusAction && !isOverlay && (
-              <div className="mt-2 flex justify-end opacity-0 group-hover:opacity-100 transition-opacity">
+              <div className="mt-0 max-h-0 overflow-hidden opacity-0 transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover:mt-2 group-hover:max-h-12 group-hover:opacity-100">
+                <div className="flex justify-end">
                 <button
                   onClick={(e) => void sendStatusAction(e)}
                   disabled={actionBusy}
@@ -1136,6 +1239,7 @@ export function TaskCard({
                   <Play className="w-2.5 h-2.5" />
                   {actionBusy ? '…' : statusAction.label}
                 </button>
+                </div>
               </div>
             )}
           </div>
@@ -1424,6 +1528,15 @@ export function TaskCard({
           position={contextMenuPos}
           onClose={() => setContextMenuPos(null)}
         />
+      )}
+
+      {showStartPrompt && !isOverlay && createPortal(
+        <StartTaskPrompt
+          task={task}
+          onConfirm={(branch) => void handleStartPromptConfirm(branch)}
+          onCancel={() => setShowStartPrompt(false)}
+        />,
+        document.body
       )}
     </CardContainer>
   );
