@@ -1,21 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Archive, Bot, ChevronDown, ChevronRight, ExternalLink, GitBranch, MessageCircle, Trash2, X, Zap } from 'lucide-react';
+import { Archive, Bot, ChevronDown, ChevronRight, ExternalLink, GitBranch, MessageCircle, Search, Trash2, X, Zap } from 'lucide-react';
 import type { Task } from '../types';
 import { useApp } from '../AppContext';
-import { deleteTask, startTaskCliSession, updateTask } from '../api';
+import { deleteTask, updateTask } from '../api';
+import { runAgentAction, AGENT_COMMANDS, EFFORT_LEVELS, REVIEW_PERSONAS, type EffortLevel, type AgentCommandVerb } from '../agentActions';
 import { getArchiveStatus, isPromptableStatus } from '../workflow';
 import { resolveEffectiveAgent } from '../utils';
-
-const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
-type EffortLevel = typeof EFFORT_LEVELS[number];
-
-const AGENT_COMMANDS = [
-  { label: 'Implement', command: (id: string) => `implement ${id}` },
-  { label: 'Groom', command: (id: string) => `groom ${id}` },
-  { label: 'Finish', command: (id: string) => `finish ${id}` },
-  { label: 'Review', command: (id: string) => `review ${id}` },
-];
 
 interface Props {
   task: Task;
@@ -26,7 +17,7 @@ interface Props {
 export function ContextMenu({ task, position, onClose }: Props) {
   const { config, currentUser, triggerRefresh, readComments, markAllCommentsRead, openTaskModal, openTaskFullView } = useApp();
   const menuRef = useRef<HTMLDivElement>(null);
-  const [activeSubmenu, setActiveSubmenu] = useState<'transition' | 'agent' | 'effort' | null>(null);
+  const [activeSubmenu, setActiveSubmenu] = useState<'transition' | 'agent' | 'effort' | 'review' | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const effectiveAgent = resolveEffectiveAgent(undefined, config?.defaultAgent);
@@ -84,7 +75,15 @@ export function ContextMenu({ task, position, onClose }: Props) {
 
   const handleLaunchAgent = (effortOverride?: EffortLevel) => {
     onClose();
-    void startTaskCliSession(task.id, effectiveAgent, undefined, true, effortOverride).then(() => triggerRefresh());
+    void runAgentAction({
+      taskId: task.id,
+      framework: effectiveAgent,
+      action: { kind: 'launch' },
+      currentUser,
+      effortOverride,
+    }).then(() => triggerRefresh()).catch((err: unknown) => {
+      console.error('Failed to launch agent:', err instanceof Error ? err.message : err);
+    });
   };
 
   const handleTransition = async (status: string) => {
@@ -101,21 +100,46 @@ export function ContextMenu({ task, position, onClose }: Props) {
     triggerRefresh();
   };
 
-  const handleAgentCommand = async (cmd: string) => {
+  const handleAgentCommand = async (verb: AgentCommandVerb) => {
     onClose();
     try {
-      await startTaskCliSession(task.id, effectiveAgent, cmd, true);
+      await runAgentAction({
+        taskId: task.id,
+        framework: effectiveAgent,
+        action: { kind: 'command', verb },
+        currentUser,
+      });
       triggerRefresh();
     } catch (err: unknown) {
       console.error('Failed to run agent command:', err instanceof Error ? err.message : err);
     }
   };
 
+  const handleReviewPersona = async (personaPrompt: string) => {
+    onClose();
+    try {
+      await runAgentAction({
+        taskId: task.id,
+        framework: effectiveAgent,
+        action: { kind: 'prompt', appendPrompt: personaPrompt },
+        currentUser,
+        preStatus: 'In Progress',
+      });
+      triggerRefresh();
+    } catch (err: unknown) {
+      console.error('Failed to start review:', err instanceof Error ? err.message : err);
+    }
+  };
+
   const handleSendForGrooming = async () => {
     onClose();
     try {
-      await updateTask(task.id, { status: 'Grooming', updatedBy: currentUser });
-      await startTaskCliSession(task.id, effectiveAgent, `groom ${task.id}`, true);
+      await runAgentAction({
+        taskId: task.id,
+        framework: effectiveAgent,
+        action: { kind: 'command', verb: 'groom' },
+        currentUser,
+      });
       triggerRefresh();
     } catch (err: unknown) {
       console.error('Failed to send for grooming:', err instanceof Error ? err.message : err);
@@ -219,18 +243,32 @@ export function ContextMenu({ task, position, onClose }: Props) {
         open={activeSubmenu === 'agent'}
         onOpen={() => setActiveSubmenu(activeSubmenu === 'agent' ? null : 'agent')}
       >
-        {AGENT_COMMANDS.map((item) => {
-          const cmd = item.command(task.id);
+        {AGENT_COMMANDS.filter((item) => item.verb !== 'review').map((item) => {
+          const cmd = `${item.verb} ${task.id}`;
           return (
             <MenuItem
-              key={item.label}
-              onClick={() => handleAgentCommand(cmd)}
+              key={item.verb}
+              onClick={() => void handleAgentCommand(item.verb)}
             >
               <span className="flex-1">{item.label}</span>
               <span className="ml-2 truncate text-[10px] text-gray-400 dark:text-gray-500">{cmd}</span>
             </MenuItem>
           );
         })}
+      </SubMenuItem>
+
+      {/* Send for Code Review → (persona picker, mirrors modal CodeReviewButton) */}
+      <SubMenuItem
+        icon={<Search className="h-3.5 w-3.5" />}
+        label="Send for Code Review"
+        open={activeSubmenu === 'review'}
+        onOpen={() => setActiveSubmenu(activeSubmenu === 'review' ? null : 'review')}
+      >
+        {REVIEW_PERSONAS.map((persona) => (
+          <MenuItem key={persona.id} onClick={() => void handleReviewPersona(persona.prompt)}>
+            <span className="flex-1">{persona.label}</span>
+          </MenuItem>
+        ))}
       </SubMenuItem>
 
       <Divider />

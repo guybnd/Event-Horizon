@@ -1,5 +1,6 @@
 import { startTransition, useCallback, useEffect, useRef, useState } from 'react';
-import { fetchTaskCliSession, startTaskCliSession, stopTaskCliSession } from '../api';
+import { fetchTaskCliSession, stopTaskCliSession } from '../api';
+import { runAgentAction } from '../agentActions';
 import type { CliFramework, CliSessionSummary } from '../types';
 import { useApp } from '../AppContext';
 import { resolveEffectiveAgent } from '../utils';
@@ -12,7 +13,7 @@ interface UseCliSessionOptions {
 }
 
 export function useCliSession({ isModalOpen, taskId, liveOutputRef, onSessionChange }: UseCliSessionOptions) {
-  const { config } = useApp();
+  const { config, currentUser } = useApp();
   const [cliSession, setCliSession] = useState<CliSessionSummary | null>(null);
   const [cliSessionBusy, setCliSessionBusy] = useState(false);
   const [cliSessionError, setCliSessionError] = useState('');
@@ -74,7 +75,14 @@ export function useCliSession({ isModalOpen, taskId, liveOutputRef, onSessionCha
     setCliSessionBusy(true);
     setCliSessionError('');
     try {
-      const session = await startTaskCliSession(taskId, selectedCliFramework, undefined, skipPermissions, effortOverride);
+      const session = await runAgentAction({
+        taskId,
+        framework: selectedCliFramework,
+        action: { kind: 'launch' },
+        currentUser,
+        skipPermissions,
+        effortOverride,
+      });
       setCliSession(session);
       onSessionChange?.();
     } catch (error: unknown) {
@@ -82,7 +90,7 @@ export function useCliSession({ isModalOpen, taskId, liveOutputRef, onSessionCha
     } finally {
       setCliSessionBusy(false);
     }
-  }, [taskId, selectedCliFramework, skipPermissions, onSessionChange]);
+  }, [taskId, selectedCliFramework, skipPermissions, currentUser, onSessionChange]);
 
   const stopSession = useCallback(async () => {
     if (!taskId) return;

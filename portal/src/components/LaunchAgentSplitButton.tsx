@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Bot, ChevronDown, type LucideIcon } from 'lucide-react';
-
-const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
-type EffortLevel = typeof EFFORT_LEVELS[number];
+import { EFFORT_LEVELS, type EffortLevel } from '../agentActions';
 
 interface Props {
   /** Called when the main button or an effort option is clicked. */

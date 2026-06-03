@@ -18,7 +18,8 @@ import {
   Zap,
 } from 'lucide-react';
 import { useApp } from '../AppContext';
-import { createTask, deleteTask, fetchTask, sendTaskCliInput, startTaskCliSession, updateTask } from '../api';
+import { createTask, deleteTask, fetchTask, sendTaskCliInput, updateTask } from '../api';
+import { runAgentAction } from '../agentActions';
 import { LaunchAgentSplitButton } from './LaunchAgentSplitButton';
 import type { ReviewPersona } from './CodeReviewButton';
 import { isAgentSession } from '../types';
@@ -654,8 +655,14 @@ export function TaskModal() {
     setReviewBusy(true);
     setReviewError('');
     try {
-      await updateTask(modalTask.id, { status: 'In Progress' });
-      const session = await startTaskCliSession(modalTask.id, selectedCliFramework, persona.prompt, skipPermissions);
+      const session = await runAgentAction({
+        taskId: modalTask.id,
+        framework: selectedCliFramework,
+        action: { kind: 'prompt', appendPrompt: persona.prompt },
+        currentUser,
+        skipPermissions,
+        preStatus: 'In Progress',
+      });
       setCliSession(session);
       triggerRefresh();
       closeModal();
@@ -664,7 +671,7 @@ export function TaskModal() {
     } finally {
       setReviewBusy(false);
     }
-  }, [modalTask?.id, selectedCliFramework, skipPermissions, setCliSession, triggerRefresh, closeModal]);
+  }, [modalTask?.id, selectedCliFramework, skipPermissions, currentUser, setCliSession, triggerRefresh, closeModal]);
 
   const sendFinishCommand = useCallback(async () => {
     if (!modalTask?.id) return;
@@ -677,7 +684,13 @@ export function TaskModal() {
         const nextSession = await sendTaskCliInput(modalTask.id, command, currentUser);
         setCliSession(nextSession);
       } else {
-        const nextSession = await startTaskCliSession(modalTask.id, selectedCliFramework, command);
+        const nextSession = await runAgentAction({
+          taskId: modalTask.id,
+          framework: selectedCliFramework,
+          action: { kind: 'command', verb: 'finish' },
+          currentUser,
+          skipPermissions,
+        });
         setCliSession(nextSession);
       }
       triggerRefresh();
@@ -686,14 +699,20 @@ export function TaskModal() {
     } finally {
       setFinishBusy(false);
     }
-  }, [modalTask?.id, cliSession, currentUser, selectedCliFramework, triggerRefresh]);
+  }, [modalTask?.id, cliSession, currentUser, selectedCliFramework, skipPermissions, setCliSession, triggerRefresh]);
 
   const handleGrooming = useCallback(async () => {
     if (!modalTask?.id) return;
     setCliSessionBusy(true);
     setCliSessionError('');
     try {
-      const session = await startTaskCliSession(modalTask.id, selectedCliFramework, `groom ${modalTask.id}`, skipPermissions);
+      const session = await runAgentAction({
+        taskId: modalTask.id,
+        framework: selectedCliFramework,
+        action: { kind: 'command', verb: 'groom' },
+        currentUser,
+        skipPermissions,
+      });
       setCliSession(session);
       triggerRefresh();
     } catch (error: any) {
@@ -701,7 +720,7 @@ export function TaskModal() {
     } finally {
       setCliSessionBusy(false);
     }
-  }, [modalTask?.id, selectedCliFramework, skipPermissions, setCliSession, triggerRefresh]);
+  }, [modalTask?.id, selectedCliFramework, skipPermissions, currentUser, setCliSession, triggerRefresh, setCliSessionBusy, setCliSessionError]);
 
   const handleToggleReply = useCallback((entryId: string | undefined) => {
     setReplyTargetId((current) => current === entryId ? null : entryId || null);

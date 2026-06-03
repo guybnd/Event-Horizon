@@ -8,13 +8,13 @@ import { normalizeSubtaskId } from '../types';
 import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, MessageCircle, Bot, SendHorizontal, Maximize2, Zap, Layers, MousePointerClick, Play, Search, Undo2 } from 'lucide-react';
 import { TokenBadge } from './TokenBadge';
 import { useApp } from '../AppContext';
-import { sendTaskCliInput, startTaskCliSession, updateTask } from '../api';
+import { sendTaskCliInput, updateTask } from '../api';
+import { runAgentAction, REVIEW_PERSONAS } from '../agentActions';
 import { getArchiveStatus, getReadyForMergeStatus, isPromptableStatus, relativeTime } from '../workflow';
 import { resolveEffectiveAgent } from '../utils';
 import { motion, AnimatePresence, useAnimationControls } from 'framer-motion';
 import { TaskMarkdown } from './TaskMarkdown';
 import { ContextMenu } from './ContextMenu';
-import { REVIEW_PERSONAS } from './CodeReviewButton';
 
 export function TaskCard({
   task,
@@ -243,7 +243,12 @@ export function TaskCard({
         await sendTaskCliInput(task.id, command, currentUser);
       } else {
         const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
-        await startTaskCliSession(task.id, framework, command);
+        await runAgentAction({
+          taskId: task.id,
+          framework,
+          action: { kind: 'command', verb: 'finish' },
+          currentUser,
+        });
       }
       triggerRefresh();
     } finally {
@@ -251,10 +256,10 @@ export function TaskCard({
     }
   };
 
-  const statusActionMap: Record<string, { label: string; command: string }> = {
-    'Grooming': { label: 'Start grooming', command: `groom ${task.id}` },
-    'Todo': { label: 'Implement', command: `do ${task.id}` },
-    'In Progress': { label: 'Continue', command: `do ${task.id}` },
+  const statusActionMap: Record<string, { label: string; appendPrompt: string }> = {
+    'Grooming': { label: 'Start grooming', appendPrompt: `groom ${task.id}` },
+    'Todo': { label: 'Implement', appendPrompt: `implement ${task.id}` },
+    'In Progress': { label: 'Continue', appendPrompt: `implement ${task.id}` },
   };
   const statusAction = !hasActiveCliSession && !isReadyForMerge ? statusActionMap[task.status] : null;
 
@@ -264,7 +269,12 @@ export function TaskCard({
     setActionBusy(true);
     try {
       const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
-      await startTaskCliSession(task.id, framework, statusAction.command);
+      await runAgentAction({
+        taskId: task.id,
+        framework,
+        action: { kind: 'prompt', appendPrompt: statusAction.appendPrompt },
+        currentUser,
+      });
       triggerRefresh();
     } finally {
       setActionBusy(false);
@@ -279,8 +289,13 @@ export function TaskCard({
       const persona = REVIEW_PERSONAS.find(p => p.id === personaId);
       if (!persona) return;
       const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
-      await updateTask(task.id, { status: 'In Progress' });
-      await startTaskCliSession(task.id, framework, persona.prompt, true);
+      await runAgentAction({
+        taskId: task.id,
+        framework,
+        action: { kind: 'prompt', appendPrompt: persona.prompt },
+        currentUser,
+        preStatus: 'In Progress',
+      });
       triggerRefresh();
     } finally {
       setReviewBusy(false);
