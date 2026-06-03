@@ -377,11 +377,56 @@ history:
     sessionId: 9013e91e-d50c-4889-b4bb-83f05cee61d7
     startedAt: '2026-06-03T05:20:47.595Z'
     status: cancelled
-    progress: []
+    progress:
+      - timestamp: '2026-06-03T05:20:58.272Z'
+        message: 'Running: git log --oneline -10'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: git log --oneline -10
+            description: Get recent git log
+      - timestamp: '2026-06-03T05:20:58.948Z'
+        message: Working
+        type: tool
+        data:
+          toolName: ToolSearch
+          parameters:
+            query: 'select:WebFetch'
+            max_results: 1
+      - timestamp: '2026-06-03T05:21:02.669Z'
+        message: Working
+        type: info
+      - timestamp: '2026-06-03T05:21:05.789Z'
+        message: 'Running: git diff HEAD -- portal/src/components/Column.tsx'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: git diff HEAD -- portal/src/components/Column.tsx
+            description: Check uncommitted changes to Column.tsx
+      - timestamp: '2026-06-03T05:21:06.271Z'
+        message: Working
+        type: tool
+        data:
+          toolName: ToolSearch
+          parameters:
+            query: event-horizon get_ticket
+            max_results: 3
+      - timestamp: '2026-06-03T05:21:10.439Z'
+        message: Reading Column.tsx
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/portal/src/components/Column.tsx
+      - timestamp: '2026-06-03T05:21:17.670Z'
+        message: Reading
+        type: info
     user: Claude Code
     date: '2026-06-03T05:20:47.595Z'
-    outcome: Session abandoned (engine restarted).
-    endedAt: '2026-06-03T05:20:53.450Z'
+    outcome: Claude Code session stopped by user.
+    endedAt: '2026-06-03T05:21:33.841Z'
 title: separate columns into 'currently running' and not
 status: In Progress
 createdBy: Guy
