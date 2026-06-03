@@ -1754,10 +1754,12 @@ history:
   - type: agent_session
     sessionId: c63dbe2c-0aac-450e-9e3f-546bea88ef9d
     startedAt: '2026-06-03T03:55:08.397Z'
-    status: active
+    status: cancelled
     progress: []
     user: Claude Code
     date: '2026-06-03T03:55:08.397Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-06-03T03:55:14.490Z'
 tokenMetadata:
   inputTokens: 318205
   outputTokens: 18905
