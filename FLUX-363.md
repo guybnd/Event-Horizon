@@ -175,29 +175,192 @@ history:
   - type: agent_session
     sessionId: b52a3d13-a5dd-4bb8-984b-79df699fe348
     startedAt: '2026-06-03T05:18:41.953Z'
-    status: cancelled
-    progress: []
+    status: completed
+    progress:
+      - timestamp: '2026-06-03T05:18:51.605Z'
+        message: Working
+        type: tool
+        data:
+          toolName: ToolSearch
+          parameters:
+            query: >-
+              select:mcp__event-horizon__change_status,mcp__event-horizon__get_ticket,mcp__event-horizon__add_comment
+            max_results: 5
+      - timestamp: '2026-06-03T05:18:52.134Z'
+        message: Reading Column.tsx
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/portal/src/components/Column.tsx
+      - timestamp: '2026-06-03T05:18:56.192Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp__event-horizon__change_status
+          parameters:
+            ticketId: FLUX-363
+            newStatus: In Progress
+      - timestamp: '2026-06-03T05:18:56.995Z'
+        message: Working
+        type: info
+      - timestamp: '2026-06-03T05:19:11.995Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-06-03T05:19:16.861Z'
+        message: Editing Column.tsx
+        type: tool
+        data:
+          toolName: Edit
+          parameters:
+            replace_all: false
+            file_path: /Users/guy/Event-Horizon/portal/src/components/Column.tsx
+            old_string: |2-
+                      {tasks.length > 0 && (
+                        <SortableContext items={tasks.map(t => t.id)} strategy={verticalListSortingStrategy}>
+                          {tasks
+                            .map(task => (
+                              <TaskCard
+                                key={task.id}
+                                task={task}
+                                parentTask={parentByChildId.get(task.id)}
+                                liveEvent={taskLiveEvents[task.id]}
+                                travelDirection={getTaskTravelDirection(task.id)}
+                              />
+                            ))}
+                        </SortableContext>
+                      )}
+            new_string: |2-
+                      {tasks.length > 0 && (() => {
+                        const runningTasks = tasks.filter(
+                          t => t.cliSession && ['pending', 'running', 'waiting-input'].includes(t.cliSession.status)
+                        );
+                        const restTasks = tasks.filter(
+                          t => !(t.cliSession && ['pending', 'running', 'waiting-input'].includes(t.cliSession.status))
+                        );
+                        const sortedTasks = [...runningTasks, ...restTasks];
+                        return (
+                          <SortableContext items={sortedTasks.map(t => t.id)} strategy={verticalListSortingStrategy}>
+                            {runningTasks.map(task => (
+                              <TaskCard
+                                key={task.id}
+                                task={task}
+                                parentTask={parentByChildId.get(task.id)}
+                                liveEvent={taskLiveEvents[task.id]}
+                                travelDirection={getTaskTravelDirection(task.id)}
+                              />
+                            ))}
+                            {runningTasks.length > 0 && restTasks.length > 0 && (
+                              <div className="flex items-center gap-2 my-1 px-1 shrink-0">
+                                <div className="flex-1 h-px bg-gray-200 dark:bg-white/10" />
+                                <span className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">Queued</span>
+                                <div className="flex-1 h-px bg-gray-200 dark:bg-white/10" />
+                              </div>
+                            )}
+                            {restTasks.map(task => (
+                              <TaskCard
+                                key={task.id}
+                                task={task}
+                                parentTask={parentByChildId.get(task.id)}
+                                liveEvent={taskLiveEvents[task.id]}
+                                travelDirection={getTaskTravelDirection(task.id)}
+                              />
+                            ))}
+                          </SortableContext>
+                        );
+                      })()}
+      - timestamp: '2026-06-03T05:19:19.186Z'
+        message: Reading Column.tsx
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/portal/src/components/Column.tsx
+            offset: 80
+      - timestamp: '2026-06-03T05:19:22.191Z'
+        message: 'Running: cd /Users/guy/Event-Horizon/portal && npx tsc --no...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              cd /Users/guy/Event-Horizon/portal && npx tsc --noEmit 2>&1 | head
+              -30
+            description: Type-check portal
+      - timestamp: '2026-06-03T05:19:26.996Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-06-03T05:19:28.445Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp__event-horizon__change_status
+          parameters:
+            ticketId: FLUX-363
+            newStatus: Ready
+            comment: >-
+              Implemented in `portal/src/components/Column.tsx`. Tasks with
+              active cliSession (pending/running/waiting-input) are partitioned
+              into a `runningTasks` bucket and floated to the top of their
+              column. When both buckets are non-empty, a labeled "Queued"
+              divider separates them. The `SortableContext` items array uses the
+              same sorted order so DnD indices stay consistent. No engine
+              changes needed. TypeScript clean. No docs changes needed — this is
+              a pure UI sort with no API/schema impact.
+      - timestamp: '2026-06-03T05:19:32.727Z'
+        message: >-
+          Done. The changes are all in
+          `portal/src/components/Column.tsx:81-118`:
+
+
+          - **Running tasks bubble up** — tasks with `cliSession.status` in
+          `['pending', 'running', 'waiting-input']` are partitioned out and
+          rendered first
+
+          - **"Queued" divider** — a subtle labeled `<hr>`-style separator
+          appears between the running and queued sections only when both are
+          non-empty
+
+          - **DnD-safe** — `SortableContext` receives `sortedTasks` (same order
+          as rendered), so drag indices stay consistent with the visual order
     user: Claude Code
     date: '2026-06-03T05:18:41.953Z'
-    outcome: Session abandoned (engine restarted).
-    endedAt: '2026-06-03T05:18:48.531Z'
+    outcome: Claude Code session ended with code 0.
+    endedAt: '2026-06-03T05:19:32.727Z'
   - type: status_change
     from: Todo
     to: In Progress
     user: Agent
     date: '2026-06-03T05:18:56.219Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Implemented in `portal/src/components/Column.tsx`. Tasks with active
+      cliSession (pending/running/waiting-input) are partitioned into a
+      `runningTasks` bucket and floated to the top of their column. When both
+      buckets are non-empty, a labeled "Queued" divider separates them. The
+      `SortableContext` items array uses the same sorted order so DnD indices
+      stay consistent. No engine changes needed. TypeScript clean. No docs
+      changes needed — this is a pure UI sort with no API/schema impact.
+    date: '2026-06-03T05:19:28.453Z'
+    id: c-2026-06-03t05-19-28-453z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-06-03T05:19:28.453Z'
 id: FLUX-363
 title: separate columns into 'currently running' and not
-status: In Progress
+status: Ready
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
-  inputTokens: 174967
-  outputTokens: 1501
-  costUSD: 0.193133
+  inputTokens: 404453
+  outputTokens: 4079
+  costUSD: 0.421772
   costIsEstimated: false
-  cacheReadTokens: 165769
-  cacheCreationTokens: 9186
+  cacheReadTokens: 360443
+  cacheCreationTokens: 43987
 ---
 ## Problem / Motivation
 
