@@ -6,9 +6,8 @@ tags:
   - documentation
   - agents
 assignee: unassigned
-id: FLUX-358
 title: 'Docs: reference/agent-adapter-contract.md (Phase B)'
-status: Grooming
+status: In Progress
 createdBy: Agent
 updatedBy: Agent
 history:
@@ -16,6 +15,22 @@ history:
     user: Agent
     date: '2026-06-03T03:50:39.078Z'
     comment: Created ticket.
+  - type: status_change
+    from: Grooming
+    to: In Progress
+    user: Agent
+    date: '2026-06-03T03:59:29.013Z'
+  - type: comment
+    comment: >-
+      Plan: derive reference/agent-adapter-contract.md from agents/types.ts
+      (AgentAdapter interface, CliCapabilities) and the three existing adapters
+      (claude-code.ts, copilot.ts, gemini.ts). Cover: interface methods,
+      lifecycle, stream-json parsing expectations, token/cost reporting, SSE
+      events emitted, registration path, how to add a new framework.
+    user: Agent
+    date: '2026-06-03T03:59:29.013Z'
+    id: c-2026-06-03t03-59-29-013z
+author: Agent
 ---
 ## Problem
 
