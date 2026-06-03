@@ -78,10 +78,17 @@ export function Column({ id, title, tasks, parentByChildId, liveEvent, taskLiveE
           </button>
         )}
 
-        {tasks.length > 0 && (
-          <SortableContext items={tasks.map(t => t.id)} strategy={verticalListSortingStrategy}>
-            {tasks
-              .map(task => (
+        {tasks.length > 0 && (() => {
+          const runningTasks = tasks.filter(
+            t => t.cliSession && ['pending', 'running', 'waiting-input'].includes(t.cliSession.status)
+          );
+          const restTasks = tasks.filter(
+            t => !(t.cliSession && ['pending', 'running', 'waiting-input'].includes(t.cliSession.status))
+          );
+          const sortedTasks = [...runningTasks, ...restTasks];
+          return (
+            <SortableContext items={sortedTasks.map(t => t.id)} strategy={verticalListSortingStrategy}>
+              {runningTasks.map(task => (
                 <TaskCard
                   key={task.id}
                   task={task}
@@ -90,8 +97,25 @@ export function Column({ id, title, tasks, parentByChildId, liveEvent, taskLiveE
                   travelDirection={getTaskTravelDirection(task.id)}
                 />
               ))}
-          </SortableContext>
-        )}
+              {runningTasks.length > 0 && restTasks.length > 0 && (
+                <div className="flex items-center gap-2 my-1 px-1 shrink-0">
+                  <div className="flex-1 h-px bg-gray-200 dark:bg-white/10" />
+                  <span className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">Queued</span>
+                  <div className="flex-1 h-px bg-gray-200 dark:bg-white/10" />
+                </div>
+              )}
+              {restTasks.map(task => (
+                <TaskCard
+                  key={task.id}
+                  task={task}
+                  parentTask={parentByChildId.get(task.id)}
+                  liveEvent={taskLiveEvents[task.id]}
+                  travelDirection={getTaskTravelDirection(task.id)}
+                />
+              ))}
+            </SortableContext>
+          );
+        })()}
       </div>
     </div>
   );
