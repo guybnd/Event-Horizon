@@ -2003,6 +2003,13 @@ history:
     to: Ready
     user: Agent
     date: '2026-06-03T03:20:31.426Z'
+  - type: agent_session
+    sessionId: 3b3c0dc6-746a-4b14-aac9-99bcee0b9d03
+    startedAt: '2026-06-03T03:30:37.538Z'
+    status: active
+    progress: []
+    user: Claude Code
+    date: '2026-06-03T03:30:37.538Z'
 tokenMetadata:
   inputTokens: 360373
   outputTokens: 18266
