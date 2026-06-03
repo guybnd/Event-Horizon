@@ -1,7 +1,7 @@
 ---
 id: FLUX-364
 title: Improve board search readability and card scan/action hierarchy
-status: In Progress
+status: Ready
 priority: Medium
 effort: M
 assignee: unassigned
@@ -124,6 +124,30 @@ history:
       Refined tags UX: when tags already exist, Edit tags control is hidden by
       default and reveals only on tag-area hover (or when tag menu is open),
       removing idle-space redundancy.
+  - type: comment
+    user: Agent
+    comment: >-
+      Implemented requested hover-intent gating for tags area.
+
+
+      Change:
+
+      - Added 250ms delay before tag area reacts (expands tags / reveals Edit
+      tags / hides fade tail).
+
+      - Mouse pass-through no longer causes immediate jittering reactions.
+
+
+      Validation:
+
+      - No diagnostics in TaskCard file.
+    date: '2026-06-03T05:17:08.089Z'
+    id: c-2026-06-03t05-17-08-089z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-06-03T05:17:08.089Z'
 ---
 Apply dashboard refinements:
 - Strengthen global search overlay depth separation and result readability
