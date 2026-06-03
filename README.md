@@ -247,3 +247,4 @@ npx tsx engine/src/patch-ticket.ts FLUX-42 --workspace . --status "Done"
 ```
 
 Works in both in-repo and Git Sync modes.
+<!-- branch-feature smoke test — safe to revert -->
