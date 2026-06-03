@@ -1,7 +1,7 @@
 ---
 id: FLUX-364
 title: Improve board search readability and card scan/action hierarchy
-status: In Progress
+status: Ready
 priority: Medium
 effort: M
 assignee: unassigned
@@ -31,6 +31,41 @@ history:
     to: In Progress
     user: Agent
     date: '2026-06-03T05:07:42.328Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Implemented notes 2, 3, 4, and 5.
+
+
+      What changed:
+
+      - Global search overlay now has stronger depth separation (elevated
+      shadow/ring/backdrop), clearer header contrast, and improved result-row
+      readability.
+
+      - Task cards now use clearer hierarchy: title -> identity/status row ->
+      detail chips (effort/priority) -> summary block -> context row.
+
+      - Metadata chips were tiered visually: status elevated, effort/priority as
+      secondary bordered chips, tags/assignee as contextual chips.
+
+      - Ready actions were rebalanced: Review neutral, Return explicit caution
+      style, Finish remains primary.
+
+
+      Validation:
+
+      - No TypeScript errors in edited files.
+
+      - portal build currently fails due to pre-existing TaskModal type issues
+      unrelated to this change.
+    date: '2026-06-03T05:09:17.938Z'
+    id: c-2026-06-03t05-09-17-938z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-06-03T05:09:17.938Z'
 ---
 Apply dashboard refinements:
 - Strengthen global search overlay depth separation and result readability

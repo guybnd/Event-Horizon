@@ -46,6 +46,29 @@ history:
       implementationLink now shows 'View PR ↗' for GitHub URLs. Portal
       TypeScript check passes clean.
     id: c-2026-06-03t05-01-41-086z
+  - type: comment
+    user: Agent
+    comment: >-
+      Portal UI for branch management complete. Changes:
+
+      - StartTaskPrompt wired into TaskCard's Implement button — intercepts Todo
+      tickets without a branch, shows modal (create branch / continue on
+      current), then proceeds with agent action after confirm
+
+      - Branch badge added to TaskCard below snippet — shows flux/FLUX-XX-slug
+      in monospace chip, click to copy with checkmark confirm, hidden if no
+      branch set
+
+      - MetadataPanel: branch row with live ahead/behind indicators (↑N ↓N),
+      copy button, strikethrough when branch deleted; DiffSummaryPanel stub
+      renders below branch, activates automatically when FLUX-334 ships
+
+      - TaskModal: implementationLink shows "View PR ↗" button for GitHub URLs
+      vs monospace for commit hashes
+
+      - Portal TypeScript check passes clean
+    date: '2026-06-03T05:09:20.906Z'
+    id: c-2026-06-03t05-09-20-906z
 ---
 ## Problem / Motivation
 
