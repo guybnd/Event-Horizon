@@ -1,7 +1,7 @@
 ---
 id: FLUX-337
 title: Engine branch-manager module and REST routes
-status: Todo
+status: In Progress
 priority: Medium
 effort: M
 assignee: unassigned
@@ -48,6 +48,11 @@ history:
       No hard failure.
     date: '2026-06-03T02:52:57.831Z'
     id: c-2026-06-03t02-52-57-831z
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-06-03T02:58:20.616Z'
 ---
 ## Problem / Motivation
 
