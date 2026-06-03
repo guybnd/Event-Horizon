@@ -66,6 +66,37 @@ history:
     to: Ready
     user: Agent
     date: '2026-06-03T05:09:17.938Z'
+  - type: status_change
+    from: Ready
+    to: In Progress
+    user: Agent
+    date: '2026-06-03T05:11:22.737Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Follow-up polish based on reviewer feedback ("cards looked ugly/busy"):
+
+      - Simplified card spacing and reduced top-section density.
+
+      - Reverted heavy bordered/boxed chip treatments to lighter, cleaner pills.
+
+      - Removed boxed excerpt background and restored plain text excerpt.
+
+      - Removed strong footer/action separators for a cleaner card silhouette.
+
+      - Kept action safety semantics (Return remains caution-coded) with reduced
+      visual harshness.
+
+
+      Validation: edited TaskCard file has no type/lint errors from language
+      diagnostics.
+    date: '2026-06-03T05:11:32.479Z'
+    id: c-2026-06-03t05-11-32-479z
+  - type: status_change
+    from: In Progress
+    to: Ready
+    user: Agent
+    date: '2026-06-03T05:11:32.479Z'
 ---
 Apply dashboard refinements:
 - Strengthen global search overlay depth separation and result readability
