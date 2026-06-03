@@ -39,6 +39,8 @@ Console logging is redirected to stderr so it doesn't corrupt the MCP protocol s
 
 ## Tools
 
+For the full per-tool reference (inputs, outputs, enforcement, examples), see [Reference: MCP Tools](reference/mcp-tools.md). Summary table:
+
 | Tool | Purpose | Required Params |
 |------|---------|----------------|
 | `get_ticket` | Read ticket by ID (full frontmatter + body + history) | `ticketId` |
