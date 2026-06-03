@@ -53,11 +53,14 @@ function normalizeTaskList(tasks: Task[]) {
 }
 
 function buildTaskSignature(task: Task) {
+  const history = task.history || [];
+  const lastEntry = history[history.length - 1];
   return JSON.stringify({
     id: task.id,
     status: task.status,
     title: task.title || '',
-    body: task.body || '',
+    bodyLen: (task.body || '').length,
+    bodyHead: (task.body || '').slice(0, 200),
     assignee: task.assignee || 'unassigned',
     priority: task.priority || 'None',
     effort: task.effort || 'None',
@@ -65,8 +68,8 @@ function buildTaskSignature(task: Task) {
     order: task.order ?? null,
     tags: task.tags || [],
     subtasks: task.subtasks || [],
-    history: task.history || [],
-    // cliSession fields that matter for UI — liveOutput is excluded (append-only, grows unboundedly)
+    historyLen: history.length,
+    historyLast: lastEntry ? (lastEntry.date || '') + (lastEntry.type || '') : null,
     sessionStatus: task.cliSession?.status ?? null,
     sessionActivity: task.cliSession?.currentActivity ?? null,
     sessionLabel: task.cliSession?.label ?? null,

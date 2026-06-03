@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useMemo, memo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import type { CSSProperties } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
@@ -19,7 +19,7 @@ import { StartTaskPrompt } from './task-modal/StartTaskPrompt';
 import { StatusBadge } from './StatusBadge';
 import { getStatusColorClass } from '../statusStyles';
 
-export function TaskCard({
+export const TaskCard = memo(function TaskCard({
   task,
   parentTask,
   isOverlay,
@@ -1516,7 +1516,7 @@ export function TaskCard({
               onMouseLeave={handleMouseLeave}
             >
               <div className="prose prose-sm dark:prose-invert max-w-none">
-                <TaskMarkdown body={task.body} taskId={task.id} compact />
+                <TaskMarkdown body={task.body.length > 4000 ? task.body.slice(0, 4000) + '\n\n---\n*Truncated — open ticket for full view*' : task.body} taskId={task.id} compact />
               </div>
             </motion.div>
           )}
@@ -1542,4 +1542,4 @@ export function TaskCard({
       )}
     </CardContainer>
   );
-}
+});

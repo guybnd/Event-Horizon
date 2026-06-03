@@ -1,4 +1,4 @@
-import { memo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { 
   ArrowRight, Bot, MessageSquare, ChevronDown, ChevronRight, 
   Search, FileText, Terminal, PenTool, Zap, Info 
@@ -200,6 +200,8 @@ export interface HistoryListProps {
   onReplyDrop: (event: React.DragEvent<HTMLTextAreaElement>) => void;
 }
 
+const INITIAL_VISIBLE_COUNT = 30;
+
 export const HistoryList = memo(function HistoryList({
   topLevelEntries, repliesByParent, collapsedThreads, replyTargetId, replyDraft,
   replyAssetError, isUploadingReplyAsset, saving, readCommentIds, currentUser,
@@ -207,12 +209,17 @@ export const HistoryList = memo(function HistoryList({
   onMarkCommentRead, onToggleReply, onSetReplyDraft, onClearReplyAssetError,
   onToggleCollapsed, onSendReply, onCancelReply, onReplyPaste, onReplyDragOver, onReplyDrop,
 }: HistoryListProps) {
+  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE_COUNT);
+  const reversedEntries = useMemo(() => [...topLevelEntries].reverse(), [topLevelEntries]);
+  const visibleEntries = reversedEntries.length > visibleCount ? reversedEntries.slice(0, visibleCount) : reversedEntries;
+  const hiddenCount = reversedEntries.length - visibleEntries.length;
+
   return (
     <div className="space-y-4">
       {topLevelEntries.length === 0 ? (
         <p className="text-sm italic text-gray-500">No activity yet.</p>
-      ) : (
-        [...topLevelEntries].reverse().map((entry, index) => {
+      ) : (<>
+        {visibleEntries.map((entry, index) => {
           // Handle agent_session entries separately
           if (entry.type === 'agent_session') {
             return <SessionHistoryEntry key={`session-${(entry as AgentSessionEntry).sessionId}-${index}`} session={entry as AgentSessionEntry} />;
@@ -362,8 +369,17 @@ export const HistoryList = memo(function HistoryList({
               )}
             </div>
           </div>
-        )})
-      )}
+        )})}
+        {hiddenCount > 0 && (
+          <button
+            type="button"
+            onClick={() => setVisibleCount(prev => prev + INITIAL_VISIBLE_COUNT)}
+            className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs font-semibold text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:bg-black/20 dark:text-gray-400 dark:hover:bg-white/5"
+          >
+            Show {Math.min(hiddenCount, INITIAL_VISIBLE_COUNT)} more ({hiddenCount} remaining)
+          </button>
+        )}
+      </>)}
     </div>
   );
 });

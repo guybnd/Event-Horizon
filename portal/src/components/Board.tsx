@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DndContext, DragOverlay, pointerWithin } from '@dnd-kit/core';
 import type { DragEndEvent, DragStartEvent } from '@dnd-kit/core';
 import { arrayMove } from '@dnd-kit/sortable';
@@ -105,11 +105,12 @@ export function Board() {
     task.status !== archiveStatus &&
     !config.hiddenStatuses?.some((hiddenStatus) => hiddenStatus.name === task.status)
   );
-  const extraStatuses = Array.from(new Set(boardTasks.map(t => t.status)))
-    .filter(s => !config.columns?.find(c => c.name === s) && !config.hiddenStatuses?.find(h => h.name === s));
-
-  const allColumns = [...(config.columns?.map(c => c.name).filter(c => c !== archiveStatus) || []), ...extraStatuses];
-  const columnOrder = new Map(allColumns.map((columnId, index) => [columnId, index]));
+  const allColumns = useMemo(() => {
+    const extraStatuses = Array.from(new Set(boardTasks.map(t => t.status)))
+      .filter(s => !config.columns?.find(c => c.name === s) && !config.hiddenStatuses?.find(h => h.name === s));
+    return [...(config.columns?.map(c => c.name).filter(c => c !== archiveStatus) || []), ...extraStatuses];
+  }, [boardTasks, config.columns, config.hiddenStatuses, archiveStatus]);
+  const columnOrder = useMemo(() => new Map(allColumns.map((columnId, index) => [columnId, index])), [allColumns]);
   const visibleTasks = filterAndSortTasks(boardTasks, config, {
     searchQuery,
     sortOption,
@@ -120,20 +121,22 @@ export function Board() {
     readComments,
     requireInputStatus: getRequireInputStatus(config),
   });
-  const parentByChildId = new Map<string, Task>();
-
-  [...tasks]
-    .sort((left, right) => left.id.localeCompare(right.id))
-    .forEach((candidateParent) => {
-      candidateParent.subtasks?.forEach((entry) => {
-        const childId = normalizeSubtaskId(entry);
-        if (!parentByChildId.has(childId)) {
-          parentByChildId.set(childId, candidateParent);
-        }
+  const parentByChildId = useMemo(() => {
+    const map = new Map<string, Task>();
+    [...tasks]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .forEach((candidateParent) => {
+        candidateParent.subtasks?.forEach((entry) => {
+          const childId = normalizeSubtaskId(entry);
+          if (!map.has(childId)) {
+            map.set(childId, candidateParent);
+          }
+        });
       });
-    });
+    return map;
+  }, [tasks]);
 
-  const getTaskTravelDirection = (taskId: string) => {
+  const getTaskTravelDirection = useCallback((taskId: string) => {
     const liveEvent = taskLiveEvents[taskId];
     if (!liveEvent || liveEvent.kind !== 'moved' || !liveEvent.fromStatus || !liveEvent.toStatus) {
       return 0;
@@ -147,7 +150,7 @@ export function Board() {
     }
 
     return Math.sign(toIndex - fromIndex) as -1 | 0 | 1;
-  };
+  }, [taskLiveEvents, columnOrder]);
 
   const handleDragStart = (event: DragStartEvent) => {
     const { active } = event;

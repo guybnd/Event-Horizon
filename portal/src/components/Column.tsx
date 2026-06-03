@@ -1,3 +1,4 @@
+import { memo, useMemo } from 'react';
 import { useDroppable } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { TaskCard } from './TaskCard';
@@ -17,18 +18,17 @@ interface ColumnProps {
   getTaskTravelDirection: (taskId: string) => -1 | 0 | 1;
 }
 
-export function Column({ id, title, tasks, parentByChildId, liveEvent, taskLiveEvents, getTaskTravelDirection }: ColumnProps) {
+export const Column = memo(function Column({ id, title, tasks, parentByChildId, liveEvent, taskLiveEvents, getTaskTravelDirection }: ColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id });
   const { openTaskModal, config, readComments, markAllCommentsRead } = useApp();
 
-  // Collect all unread comment IDs across every task in this column
-  const columnUnreadByTask = tasks.map(task => {
+  const columnUnreadByTask = useMemo(() => tasks.map(task => {
     const readIds = new Set(readComments[task.id] ?? []);
     const ids = (task.history ?? [])
       .filter(e => e.type === 'comment' && e.id && !readIds.has(e.id))
       .map(e => e.id!);
     return { taskId: task.id, ids };
-  }).filter(t => t.ids.length > 0);
+  }).filter(t => t.ids.length > 0), [tasks, readComments]);
   const hasColumnUnread = columnUnreadByTask.length > 0;
 
   return (
@@ -119,4 +119,4 @@ export function Column({ id, title, tasks, parentByChildId, liveEvent, taskLiveE
       </div>
     </div>
   );
-}
+});
