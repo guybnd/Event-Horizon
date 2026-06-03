@@ -172,9 +172,23 @@ history:
     to: Todo
     user: Agent
     date: '2026-06-03T04:53:35.208Z'
+  - type: agent_session
+    sessionId: b52a3d13-a5dd-4bb8-984b-79df699fe348
+    startedAt: '2026-06-03T05:18:41.953Z'
+    status: cancelled
+    progress: []
+    user: Claude Code
+    date: '2026-06-03T05:18:41.953Z'
+    outcome: Session abandoned (engine restarted).
+    endedAt: '2026-06-03T05:18:48.531Z'
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-06-03T05:18:56.219Z'
 id: FLUX-363
 title: separate columns into 'currently running' and not
-status: Todo
+status: In Progress
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:
