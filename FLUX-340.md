@@ -1,7 +1,7 @@
 ---
 id: FLUX-340
 title: 'Portal UI — branch display in card, modal, and metadata panel'
-status: Todo
+status: In Progress
 priority: Medium
 effort: L
 assignee: unassigned
@@ -15,11 +15,20 @@ history:
   - type: activity
     user: Agent
     date: '2026-05-29T01:25:44.306Z'
+    comment: Created ticket.
+  - type: activity
+    user: Agent
+    date: '2026-05-29T01:25:44.306Z'
     comment: Created as subtask of FLUX-292.
   - type: activity
     user: Agent
     date: '2026-06-03T01:53:49.464Z'
     comment: Updated description. Changed effort to L. Updated tags.
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-06-03T04:53:10.089Z'
 ---
 ## Problem / Motivation
 

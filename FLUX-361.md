@@ -397,6 +397,14 @@ history:
     date: '2026-06-03T04:51:21.285Z'
     outcome: Session abandoned (engine restarted).
     endedAt: '2026-06-03T04:51:27.106Z'
+  - type: activity
+    user: Agent
+    date: '2026-06-03T04:53:14.055Z'
+    comment: >-
+      Addressing three issues from Linus code review: (1) remove dead preStatus
+      from AgentCommandDef, (2) remove review from AGENT_COMMANDS and its manual
+      filter, (3) fix statusActionMap to use kind:'command', (4) finish
+      REVIEW_PERSONAS move from CodeReviewButton to agentActions
 author: Agent
 implementationLink: 17a6bcc3a6ec268d35ca4c11d5cf39cddc450216
 order: 1
