@@ -1,7 +1,7 @@
 ---
 id: FLUX-339
 title: Agent workflow skill integration for branch management
-status: Ready
+status: Done
 priority: Medium
 effort: S
 assignee: unassigned
@@ -201,6 +201,22 @@ history:
       PR update is not left implicit.
     date: '2026-06-03T03:11:21.748Z'
     id: c-2026-06-03t03-11-21-748z
+  - type: comment
+    user: Agent
+    comment: >-
+      Already shipped — skill files were updated in the prior session
+      (implementation.md v2.4.0 with branch checkout step, Branch Rules,
+      Reviewer Agent Handoff; orchestrator.md with branch field and
+      create/get/delete tools). This commit (17b4430) carries the underlying
+      engine + portal changes those instructions describe. No further docs
+      changes required.
+    date: '2026-06-03T05:30:29.591Z'
+    id: c-2026-06-03t05-30-29-591z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-06-03T05:30:29.591Z'
 tokenMetadata:
   inputTokens: 173456
   outputTokens: 4140
@@ -208,6 +224,7 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 153559
   cacheCreationTokens: 19888
+implementationLink: 17b4430
 ---
 ## Problem / Motivation
 

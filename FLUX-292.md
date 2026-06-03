@@ -1,6 +1,6 @@
 ---
 title: Agent should be able to create branch for each feature working on
-status: Todo
+status: Done
 priority: Medium
 effort: L
 assignee: unassigned
@@ -1500,7 +1500,64 @@ history:
       FLUX-340
     date: '2026-06-03T01:55:01.784Z'
     id: c-2026-06-03t01-55-01-784z
-implementationLink: ''
+  - type: comment
+    user: Agent
+    comment: >-
+      All six children landed in commit 17b4430. What shipped:
+
+
+      - **FLUX-336** — schema fields (`branch`, `baselineCommit`,
+      `diffSummary`).
+
+      - **FLUX-337** — `engine/src/branch-manager.ts` (branch
+      create/status/delete, gh auth probe, PR creation with idempotent retry);
+      REST `/api/tasks/:id/branch` (POST/GET/DELETE);
+      `/api/health.ghAuthAvailable`; `finish_ticket` opens a PR when branch+gh
+      present, graceful degradation otherwise.
+
+      - **FLUX-338** — three MCP tools (`create_branch`, `get_branch`,
+      `delete_branch`). Linus review fixes applied: dead `branchName` import
+      removed, remote ref now deleted alongside local, `baseBranch` passed
+      through so `getDefaultBranch()` fallback works on `main`-default repos.
+
+      - **FLUX-339** — agent skill v2.4.0 already documented branch checkout
+      step, stay-on-branch rule, reviewer handoff, XS exemption (shipped in
+      prior session).
+
+      - **FLUX-340** — `StartTaskPrompt` (with in-prompt gh-not-configured
+      warning), branch badge on cards, ahead/behind indicators + copy button in
+      `MetadataPanel`, PR-link rendering, `DiffSummaryPanel`, new `DiffViewer`
+      swapping the left description pane on file click.
+
+      - **FLUX-334** — pulled into this slice and implemented end to end:
+      `baselineCommit` capture on In Progress, diff capture at finish
+      (merge-base..tip for branch mode, baseline..HEAD fallback), 2MB sidecar at
+      `<flux-dir>/<ID>.diff`, `GET /api/tasks/:id/diff?file=` endpoint, portal
+      `DiffViewer`. Settings toggle for sidecar storage was descoped — single
+      default-on mode with 2MB cap. Add it if disk usage becomes a real concern.
+
+
+      Docs updated: `.docs/event-horizon/reference/ticket-schema.md` (new
+      fields), `.docs/event-horizon/reference/rest-api.md` (new endpoints),
+      `.docs/event-horizon/architecture/code-map.md` (branch-manager.ts entry
+      point). MCP tools reference already listed the three branch tools from the
+      prior session.
+
+
+      Open follow-ups (not blockers): bigger PR-body templating with file list
+      once a finished ticket has `diffSummary`; vitest specs for
+      `slugify`/`getDefaultBranch`/diff range resolution; reconsider the
+      Settings sidecar toggle if real diffs trend large. Not pushed —
+      `origin/master` advanced during this session (`fc339a3`); pull/rebase
+      before pushing.
+    date: '2026-06-03T05:30:45.427Z'
+    id: c-2026-06-03t05-30-45-427z
+  - type: status_change
+    from: Todo
+    to: Done
+    user: Agent
+    date: '2026-06-03T05:30:45.427Z'
+implementationLink: 17b4430
 subtasks:
   - FLUX-336
   - FLUX-337

@@ -7,7 +7,7 @@ tags:
   - git
 priority: Medium
 effort: L
-implementationLink: ''
+implementationLink: 17b4430
 subtasks: []
 history:
   - type: activity
@@ -893,8 +893,33 @@ history:
       not written to disk. Hard cap at 2MB per sidecar with truncation notice.
     date: '2026-06-03T02:52:57.843Z'
     id: c-2026-06-03t02-52-57-843z
+  - type: comment
+    user: Agent
+    comment: >-
+      Implemented in commit 17b4430. `baselineCommit` is recorded on the first
+      move to In Progress (in `change_status`). `finish_ticket` calls
+      `captureDiff` from branch-manager.ts which picks the correct range —
+      `merge-base(default)..branch-tip` when a branch is set,
+      `baselineCommit..HEAD` otherwise, `HEAD~1..HEAD` as final fallback — runs
+      `git diff --numstat` for the summary, writes the full unified diff to
+      `<flux-dir>/<TICKET-ID>.diff` with a 2MB hard cap (truncation notice
+      appended), and stores `diffSummary` on the ticket. New endpoint `GET
+      /api/tasks/:id/diff?file=<path>` returns the full diff or a single-file
+      hunk. Portal renders the summary in `DiffSummaryPanel` and the per-file
+      diff in the new `DiffViewer` component. Diff capture is best-effort — a
+      git failure logs and continues, never blocking finish. The optional
+      Settings toggle for sidecar storage was not implemented; default-on with
+      2MB cap is the only mode for now (can be added in a follow-up if disk
+      usage becomes a real concern).
+    date: '2026-06-03T05:30:29.591Z'
+    id: c-2026-06-03t05-30-29-591z
+  - type: status_change
+    from: Grooming
+    to: Done
+    user: Agent
+    date: '2026-06-03T05:30:29.591Z'
 title: can we enrich tickets with the diffs that were performed?
-status: Grooming
+status: Done
 createdBy: Guy
 updatedBy: Agent
 tokenMetadata:

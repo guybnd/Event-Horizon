@@ -1,6 +1,6 @@
 ---
 title: MCP tools for branch management
-status: In Progress
+status: Done
 priority: Medium
 effort: S
 assignee: unassigned
@@ -2007,6 +2007,34 @@ history:
       Fix items 1, 2, and 3 then this is done.
     date: '2026-06-03T03:57:28.824Z'
     id: c-2026-06-03t03-57-28-824z
+  - type: comment
+    user: Agent
+    comment: >-
+      All three review issues from the Linus pass fixed in commit 17b4430:
+
+
+      1. Removed the unused `branchName` import from `mcp-server.ts`.
+
+      2. `delete_branch` (via `deleteTicketBranch` in `branch-manager.ts`) now
+      runs `git push origin --delete <name>` after the local delete, best-effort
+      with errors swallowed. Remote refs no longer orphaned.
+
+      3. `create_branch` MCP tool now passes `baseBranch` through as-is
+      (`undefined` when not provided) instead of hardcoding `'master'`. This
+      restores the `getDefaultBranch()` fallback inside `createTicketBranch` so
+      repos on `main` get the right base. The same hardcode in the REST route
+      (`routes/tasks.ts`) was fixed as a drive-by.
+
+
+      Docs: `reference/mcp-tools.md` already lists all three branch tools — no
+      further changes needed there.
+    date: '2026-06-03T05:30:29.591Z'
+    id: c-2026-06-03t05-30-29-591z
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-06-03T05:30:29.591Z'
 tokenMetadata:
   inputTokens: 806784
   outputTokens: 25326
@@ -2015,6 +2043,7 @@ tokenMetadata:
   cacheReadTokens: 651287
   cacheCreationTokens: 155466
 id: FLUX-338
+implementationLink: 17b4430
 ---
 ## Problem / Motivation
 

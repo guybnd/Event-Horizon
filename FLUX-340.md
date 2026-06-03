@@ -1,7 +1,7 @@
 ---
 id: FLUX-340
 title: 'Portal UI — branch display in card, modal, and metadata panel'
-status: Ready
+status: Done
 priority: Medium
 effort: L
 assignee: unassigned
@@ -69,6 +69,27 @@ history:
       - Portal TypeScript check passes clean
     date: '2026-06-03T05:09:20.906Z'
     id: c-2026-06-03t05-09-20-906z
+  - type: comment
+    user: Agent
+    comment: >-
+      Shipped in commit 17b4430. StartTaskPrompt now also surfaces an in-prompt
+      warning when gh is not configured (banner alternative was considered;
+      in-prompt wins because the warning fires at the actual decision point).
+      DiffSummaryPanel + the new DiffViewer component are wired into both
+      TaskModal layouts — clicking a file in the summary swaps the left
+      description pane for a syntax-coloured unified-diff view with a Back
+      button. MetadataPanel exposes branch name + ahead/behind indicators. PR
+      links render distinct from commit hashes. Now backed by real data because
+      FLUX-334 landed in the same commit (diffSummary populated by
+      finish_ticket).
+    date: '2026-06-03T05:30:29.591Z'
+    id: c-2026-06-03t05-30-29-591z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-06-03T05:30:29.591Z'
+implementationLink: 17b4430
 ---
 ## Problem / Motivation
 

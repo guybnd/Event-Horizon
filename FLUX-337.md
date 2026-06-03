@@ -1,7 +1,7 @@
 ---
 id: FLUX-337
 title: Engine branch-manager module and REST routes
-status: Ready
+status: Done
 priority: Medium
 effort: M
 assignee: unassigned
@@ -4763,6 +4763,30 @@ history:
     to: Ready
     user: Agent
     date: '2026-06-03T03:53:44.714Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Shipped in commit 17b4430. `engine/src/branch-manager.ts` provides
+      createTicketBranch (creates ref + pushes, never moves engine HEAD),
+      getTicketBranchStatus (uses getDefaultBranch fallback), deleteTicketBranch
+      (now also removes the remote ref — FLUX-338 review fix), checkGhAuth,
+      createPullRequest (returns existing PR URL on retry), captureDiff, and
+      extractFileFromDiff. REST routes POST/GET/DELETE /api/tasks/:id/branch and
+      GET /api/tasks/:id/diff are wired in `engine/src/routes/tasks.ts`.
+      `finish_ticket` opens a PR via gh when the branch is set and gh is
+      authenticated; graceful degradation appends a warning comment and falls
+      back to the commit hash. `index.ts` probes gh auth on startup and exposes
+      the result at GET /api/health.ghAuthAvailable. Docs:
+      `reference/rest-api.md` lists the new endpoints;
+      `architecture/code-map.md` points at branch-manager.ts as the git plumbing
+      home.
+    date: '2026-06-03T05:30:29.591Z'
+    id: c-2026-06-03t05-30-29-591z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-06-03T05:30:29.591Z'
 tokenMetadata:
   inputTokens: 1060999
   outputTokens: 43303
@@ -4770,6 +4794,7 @@ tokenMetadata:
   costIsEstimated: false
   cacheReadTokens: 902862
   cacheCreationTokens: 157307
+implementationLink: 17b4430
 ---
 ## Problem / Motivation
 

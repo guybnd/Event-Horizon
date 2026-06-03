@@ -1,7 +1,7 @@
 ---
 id: FLUX-336
 title: Add `branch` field to ticket schema and types
-status: Ready
+status: Done
 priority: Medium
 effort: XS
 assignee: unassigned
@@ -40,6 +40,24 @@ history:
     to: Ready
     user: Agent
     date: '2026-06-03T02:55:37.698Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Shipped in commit 17b4430. `branch?: string` was on the Task type already
+      from prior session work; this commit additionally adds `baselineCommit?`
+      and `diffSummary?` to round out the schema needed by FLUX-292's full
+      slice. Engine task-store preserves the new fields via existing extraFields
+      machinery — no migration needed. Docs: updated
+      `.docs/event-horizon/reference/ticket-schema.md` with all three new
+      fields.
+    date: '2026-06-03T05:30:29.573Z'
+    id: c-2026-06-03t05-30-29-573z
+  - type: status_change
+    from: Ready
+    to: Done
+    user: Agent
+    date: '2026-06-03T05:30:29.573Z'
+implementationLink: 17b4430
 ---
 ## Problem / Motivation
 
