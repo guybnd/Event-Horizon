@@ -188,6 +188,19 @@ history:
     date: '2026-06-03T03:06:59.731Z'
     outcome: Claude Code session ended with code 0.
     endedAt: '2026-06-03T03:08:40.367Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Applied two fixes from architect review:\n\n1. **Branch fetch before
+      checkout (medium):** Step 2 now reads `git fetch origin <branch>` then
+      `git checkout <branch>` — the branch is created remotely via the portal
+      and won't exist locally without the fetch. Would have caused silent
+      failures on first use.\n\n2. **Explicit push in Returning from Ready
+      (low-medium):** Branch Rules now explicitly says `git push origin
+      <branch>` before calling `finish_ticket` when returning from Ready, so the
+      PR update is not left implicit.
+    date: '2026-06-03T03:11:21.748Z'
+    id: c-2026-06-03t03-11-21-748z
 tokenMetadata:
   inputTokens: 173456
   outputTokens: 4140
