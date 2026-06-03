@@ -1461,6 +1461,45 @@ history:
     to: Todo
     user: Agent
     date: '2026-05-29T01:25:51.330Z'
+  - type: comment
+    user: Agent
+    comment: >-
+      Design decisions made for the branch management slice (2026-06-03):
+
+
+      **finish = PR, not just commit.** When a ticket has a branch,
+      `finish_ticket` pushes the branch and runs `gh pr create`. The PR URL
+      replaces the commit hash in `implementationLink`. Ticket moves to `Ready`
+      = PR open and awaiting review. If reviewer sends it back, agent pushes to
+      the same branch and the open PR updates automatically.
+
+
+      **No `switch_branch` tool.** Agents stay on their ticket branch for the
+      full session. Switching mid-session requires explicit user confirmation in
+      chat. This prevents multi-agent sessions from clobbering each other's
+      working trees.
+
+
+      **Branch creation is a user choice at task start, not automatic.** When
+      starting a Todo ticket, the portal shows a small prompt: create a new
+      branch (pre-selected) or continue on current branch. XS tickets pre-select
+      "current branch" to avoid overhead.
+
+
+      **Base branch defaults to `master`.** Configurable per-project is a
+      deferred subtask.
+
+
+      **FLUX-334 diff view now first-class in this slice.** Branch diff uses
+      `git diff $(git merge-base master <branch>)..<branch-tip>` — full picture
+      of agent work. FLUX-340 enlarged to L effort to include the diff summary
+      panel and file-click diff viewer (pulling in FLUX-334's DiffViewer.tsx).
+
+
+      **Ticket order:** FLUX-336 → FLUX-337 → FLUX-338 → FLUX-334 → FLUX-339 →
+      FLUX-340
+    date: '2026-06-03T01:55:01.784Z'
+    id: c-2026-06-03t01-55-01-784z
 implementationLink: ''
 subtasks:
   - FLUX-336
