@@ -1754,19 +1754,266 @@ history:
   - type: agent_session
     sessionId: c63dbe2c-0aac-450e-9e3f-546bea88ef9d
     startedAt: '2026-06-03T03:55:08.397Z'
-    status: cancelled
-    progress: []
+    status: completed
+    progress:
+      - timestamp: '2026-06-03T03:55:19.632Z'
+        message: Working
+        type: tool
+        data:
+          toolName: ToolSearch
+          parameters:
+            query: 'select:WebFetch'
+            max_results: 1
+      - timestamp: '2026-06-03T03:55:23.393Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp__event-horizon__get_ticket
+          parameters:
+            ticketId: FLUX-338
+      - timestamp: '2026-06-03T03:55:23.442Z'
+        message: Working
+        type: info
+      - timestamp: '2026-06-03T03:55:24.026Z'
+        message: 'Running: git log --oneline -10'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: git log --oneline -10
+            description: Show recent git commits
+      - timestamp: '2026-06-03T03:55:30.550Z'
+        message: 'Running: git log --oneline --all | head -20'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: git log --oneline --all | head -20
+            description: Show all commits across all branches
+      - timestamp: '2026-06-03T03:55:31.078Z'
+        message: Reading branch-manager.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/branch-manager.ts
+      - timestamp: '2026-06-03T03:55:34.414Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: create_branch|get_branch|delete_branch|branch-manager
+            path: /Users/guy/Event-Horizon/engine/src/mcp-server.ts
+            output_mode: content
+            context: 8
+      - timestamp: '2026-06-03T03:55:38.442Z'
+        message: Working
+        type: info
+      - timestamp: '2026-06-03T03:55:41.295Z'
+        message: Reading mcp-server.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/mcp-server.ts
+            offset: 348
+            limit: 120
+      - timestamp: '2026-06-03T03:55:53.443Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-06-03T03:56:12.137Z'
+        message: Reading mcp-server.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/mcp-server.ts
+            offset: 358
+            limit: 62
+      - timestamp: '2026-06-03T03:56:23.446Z'
+        message: Reading
+        type: info
+      - timestamp: '2026-06-03T03:56:58.781Z'
+        message: Working
+        type: tool
+        data:
+          toolName: Grep
+          parameters:
+            pattern: checkGhAuth|createPullRequest|branchName
+            path: /Users/guy/Event-Horizon/engine/src/mcp-server.ts
+            output_mode: content
+            context: 3
+      - timestamp: '2026-06-03T03:57:05.113Z'
+        message: 'Running: grep -n "branchName" /Users/guy/Event-Horizon/engi...'
+        type: tool
+        data:
+          toolName: Bash
+          parameters:
+            command: >-
+              grep -n "branchName"
+              /Users/guy/Event-Horizon/engine/src/mcp-server.ts
+            description: Find all uses of branchName in mcp-server.ts
+      - timestamp: '2026-06-03T03:57:08.449Z'
+        message: Running command
+        type: info
+      - timestamp: '2026-06-03T03:57:09.239Z'
+        message: Reading branch-manager.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/branch-manager.ts
+            offset: 61
+            limit: 4
+      - timestamp: '2026-06-03T03:57:13.269Z'
+        message: Reading branch-manager.ts
+        type: tool
+        data:
+          toolName: Read
+          parameters:
+            file_path: /Users/guy/Event-Horizon/engine/src/branch-manager.ts
+            offset: 23
+            limit: 10
+      - timestamp: '2026-06-03T03:57:23.451Z'
+        message: Thinking
+        type: info
+      - timestamp: '2026-06-03T03:57:28.813Z'
+        message: Working
+        type: tool
+        data:
+          toolName: mcp__event-horizon__add_comment
+          parameters:
+            ticketId: FLUX-338
+            user: Linus Torvalds
+            comment: >-
+              **Code review — FLUX-338 MCP branch tools**
+
+
+              The three MCP tools work and the structure is fine. But there are
+              real problems.
+
+
+              **1. `branchName` is imported but never used in mcp-server.ts.**
+
+              Line 15 imports it. Nothing calls it. This is dead import noise.
+              Either it was intended for something that got cut, or whoever
+              wrote this just forgot to clean up. Either way, fix it.
+
+
+              **2. `deleteTicketBranch` only deletes the local ref. The remote
+              branch is orphaned.**
+
+              `createTicketBranch` pushes to origin. `deleteTicketBranch` only
+              runs `git branch -d/-D`. The remote tracking branch at
+              `origin/flux/FLUX-XXX` is just left dangling forever. That is
+              wrong. You created it, you clean it up. Add `git push origin
+              --delete <name>` (best-effort, swallow the error if it doesn't
+              exist remotely).
+
+
+              **3. `create_branch` hardcodes `'master'` as fallback instead of
+              calling `getDefaultBranch()`.**
+
+              Line 364: `baseBranch || 'master'`. The branch-manager module
+              already has `getDefaultBranch()` which reads
+              `refs/remotes/origin/HEAD`. You bypass it here and hardcode the
+              string. If this repo's default branch changes or is called
+              something else, the MCP tool silently uses the wrong base. The
+              `createTicketBranch` function already calls `getDefaultBranch()`
+              as a fallback — but only if you pass `undefined`. You're passing
+              `'master'` explicitly. You've broken the fallback. Just pass
+              `baseBranch` (which may be `undefined`) and let the function do
+              its job.
+
+
+              **What's actually fine:**
+
+              - The guard that refuses a second branch when one already exists —
+              correct.
+
+              - Nulling out `task.branch` after delete — correct.
+
+              - The `get_branch` returning a consistent shape (`name: null,
+              exists: false`) when no branch is recorded — clean.
+
+              - `force ?? false` — fine.
+
+
+              Fix items 1, 2, and 3 then this is done.
+      - timestamp: '2026-06-03T03:57:33.341Z'
+        message: >-
+          Three concrete problems: dead import, remote branch not cleaned up on
+          delete, and `create_branch` hardcoding `'master'` which defeats the
+          `getDefaultBranch()` fallback already in `createTicketBranch`. Ticket
+          stays at In Progress.
     user: Claude Code
     date: '2026-06-03T03:55:08.397Z'
-    outcome: Session abandoned (engine restarted).
-    endedAt: '2026-06-03T03:55:14.490Z'
+    outcome: Claude Code session ended with code 0.
+    endedAt: '2026-06-03T03:57:33.341Z'
+  - type: comment
+    user: Linus Torvalds
+    comment: >-
+      **Code review — FLUX-338 MCP branch tools**
+
+
+      The three MCP tools work and the structure is fine. But there are real
+      problems.
+
+
+      **1. `branchName` is imported but never used in mcp-server.ts.**
+
+      Line 15 imports it. Nothing calls it. This is dead import noise. Either it
+      was intended for something that got cut, or whoever wrote this just forgot
+      to clean up. Either way, fix it.
+
+
+      **2. `deleteTicketBranch` only deletes the local ref. The remote branch is
+      orphaned.**
+
+      `createTicketBranch` pushes to origin. `deleteTicketBranch` only runs `git
+      branch -d/-D`. The remote tracking branch at `origin/flux/FLUX-XXX` is
+      just left dangling forever. That is wrong. You created it, you clean it
+      up. Add `git push origin --delete <name>` (best-effort, swallow the error
+      if it doesn't exist remotely).
+
+
+      **3. `create_branch` hardcodes `'master'` as fallback instead of calling
+      `getDefaultBranch()`.**
+
+      Line 364: `baseBranch || 'master'`. The branch-manager module already has
+      `getDefaultBranch()` which reads `refs/remotes/origin/HEAD`. You bypass it
+      here and hardcode the string. If this repo's default branch changes or is
+      called something else, the MCP tool silently uses the wrong base. The
+      `createTicketBranch` function already calls `getDefaultBranch()` as a
+      fallback — but only if you pass `undefined`. You're passing `'master'`
+      explicitly. You've broken the fallback. Just pass `baseBranch` (which may
+      be `undefined`) and let the function do its job.
+
+
+      **What's actually fine:**
+
+      - The guard that refuses a second branch when one already exists —
+      correct.
+
+      - Nulling out `task.branch` after delete — correct.
+
+      - The `get_branch` returning a consistent shape (`name: null, exists:
+      false`) when no branch is recorded — clean.
+
+      - `force ?? false` — fine.
+
+
+      Fix items 1, 2, and 3 then this is done.
+    date: '2026-06-03T03:57:28.824Z'
+    id: c-2026-06-03t03-57-28-824z
 tokenMetadata:
-  inputTokens: 318205
-  outputTokens: 18905
-  costUSD: 3.04012
+  inputTokens: 806784
+  outputTokens: 25326
+  costUSD: 3.418619
   costIsEstimated: false
-  cacheReadTokens: 201655
-  cacheCreationTokens: 116537
+  cacheReadTokens: 651287
+  cacheCreationTokens: 155466
 id: FLUX-338
 ---
 ## Problem / Motivation

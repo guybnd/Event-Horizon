@@ -5,9 +5,8 @@ tags:
   - docs
   - documentation
 assignee: unassigned
-id: FLUX-357
 title: 'Docs: reference/ticket-schema.md and reference/realtime-channels.md (Phase B)'
-status: Grooming
+status: In Progress
 createdBy: Agent
 updatedBy: Agent
 history:
@@ -15,6 +14,21 @@ history:
     user: Agent
     date: '2026-06-03T03:50:38.380Z'
     comment: Created ticket.
+  - type: status_change
+    from: Grooming
+    to: In Progress
+    user: Agent
+    date: '2026-06-03T03:57:30.936Z'
+  - type: comment
+    comment: >-
+      Plan: read schema.ts end-to-end for ticket-schema.md (required/optional
+      fields, history entry shapes, validation rules). For realtime-channels.md,
+      document chokidar watchers in task-store.ts, SSE broadcast in events.ts,
+      and the 3s polling + LIVE_EVENT_DURATION_MS overlay in AppContext.tsx.
+    user: Agent
+    date: '2026-06-03T03:57:30.936Z'
+    id: c-2026-06-03t03-57-30-936z
+author: Agent
 ---
 ## Problem
 

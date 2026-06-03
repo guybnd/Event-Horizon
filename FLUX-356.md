@@ -7,7 +7,7 @@ tags:
   - mcp
 assignee: unassigned
 title: 'Docs: reference/rest-api.md and reference/mcp-tools.md (Phase B)'
-status: In Progress
+status: Done
 createdBy: Agent
 updatedBy: Agent
 history:
@@ -30,7 +30,35 @@ history:
     user: Agent
     date: '2026-06-03T03:54:58.483Z'
     id: c-2026-06-03t03-54-58-483z
+  - type: status_change
+    from: In Progress
+    to: Done
+    user: Agent
+    date: '2026-06-03T03:57:20.829Z'
+  - type: activity
+    user: Agent
+    date: '2026-06-03T03:57:20.829Z'
+    comment: Updated implementation link.
+  - type: comment
+    comment: >-
+      Committed as `bd5d5e1`.
+
+
+      - `.docs/event-horizon/reference/mcp-tools.md` (13 tools, with enforcement
+      and example).
+
+      - `.docs/event-horizon/reference/rest-api.md` (every /api/* route across
+      17 modules).
+
+      - INDEX.md REST/MCP rows now link to the references instead of
+      placeholders.
+
+      - mcp-server.md cross-links to the tool reference.
+    user: Agent
+    date: '2026-06-03T03:57:20.829Z'
+    id: c-2026-06-03t03-57-20-829z
 author: Agent
+implementationLink: bd5d5e1
 ---
 ## Problem
 
