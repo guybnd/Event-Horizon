@@ -536,6 +536,8 @@ export interface WorkflowTemplate {
   phases: Partial<Record<WorkflowPhase, WorkflowPhaseConfig>>;
   createdAt: string;
   updatedAt: string;
+  /** True for code-defined templates (read-only, forkable). */
+  builtIn?: boolean;
 }
 
 export type WorkflowInput = Pick<WorkflowTemplate, 'name' | 'cliTarget' | 'phases'>;

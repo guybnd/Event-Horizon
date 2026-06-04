@@ -9,8 +9,7 @@ import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, Message
 import { TokenBadge } from './TokenBadge';
 import { useApp } from '../AppContext';
 import { sendTaskCliInput, updateTask } from '../api';
-import { runAgentAction, launchOrchestration, getOrchestrationMode, phaseLaunchStatus, type LaunchPhase } from '../agentActions';
-import { CodeReviewButton } from './CodeReviewButton';
+import { runAgentAction, launchOrchestration, getOrchestrationMode, phaseLaunchStatus, statusToPhase, type LaunchPhase } from '../agentActions';
 import { OrchestrationLauncher, type OrchestrationLaunchPlan } from './OrchestrationLauncher';
 import { getArchiveStatus, getReadyForMergeStatus, isPromptableStatus, relativeTime } from '../workflow';
 import { isActiveSession, groupSessions, aggregateGroup, groupAggregateLine, normalizeRoleLabel, statusDotColor, isGroupLive, isCombinerPending } from '../orchestration';
@@ -222,6 +221,7 @@ export const TaskCard = memo(function TaskCard({
   const [reviewSelectorOpen, setReviewSelectorOpen] = useState(false);
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
   const [launcherPhase, setLauncherPhase] = useState<LaunchPhase>('review');
+  const [launcherTemplateId, setLauncherTemplateId] = useState<string | undefined>(undefined);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [returnPromptOpen, setReturnPromptOpen] = useState(false);
   const [returnReason, setReturnReason] = useState('');
@@ -331,6 +331,13 @@ export const TaskCard = memo(function TaskCard({
     }
   };
 
+  const openAgentLauncher = (variant: 'single' | 'multi') => {
+    const phase = statusToPhase(task.status, { readyStatus: readyForMergeStatus });
+    setLauncherPhase(phase);
+    setLauncherTemplateId(`builtin-${phase}-${variant}`);
+    setReviewModalOpen(true);
+  };
+
   const handleCardReviewLaunch = async (plan: OrchestrationLaunchPlan) => {
     setReviewModalOpen(false);
     setReviewBusy(true);
@@ -343,9 +350,16 @@ export const TaskCard = memo(function TaskCard({
         personaId: p.id,
         focusComment: plan.comment || undefined,
       }));
-      // Only the review phase ships a combiner persona (orchestrator) today.
-      const lead = def.hasLead && launcherPhase === 'review'
-        ? { role: 'orchestrator', label: 'Orchestrator', personaId: 'orchestrator' }
+      // Combiner persona that synthesizes peer output, per phase. Release relays have none.
+      const combinerByPhase: Record<string, { personaId: string; label: string } | undefined> = {
+        grooming: { personaId: 'planner', label: 'Planner' },
+        implementation: { personaId: 'orchestrator', label: 'Orchestrator' },
+        review: { personaId: 'orchestrator', label: 'Orchestrator' },
+        release: undefined,
+      };
+      const combiner = combinerByPhase[launcherPhase];
+      const lead = def.hasLead && plan.personas.length > 1 && combiner
+        ? { role: combiner.personaId, label: combiner.label, personaId: combiner.personaId }
         : undefined;
       await launchOrchestration({
         taskId: task.id,
@@ -1215,13 +1229,25 @@ export const TaskCard = memo(function TaskCard({
             {/* Ready column — 3-button row: Review | Return | Finish */}
             {isReadyForMerge && !isOverlay && (
               <div className={`relative flex items-center justify-end gap-1.5 transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] ${reviewSelectorOpen || returnPromptOpen ? 'mt-2 max-h-40 overflow-visible opacity-100' : 'mt-0 max-h-0 overflow-hidden opacity-0 group-hover:mt-2 group-hover:max-h-20 group-hover:overflow-visible group-hover:opacity-100'}`} ref={reviewSelectorRef}>
-                {/* Review */}
-                <CodeReviewButton
-                  compact
-                  busy={reviewBusy}
-                  disabled={false}
-                  onClick={() => { setLauncherPhase('review'); setReviewModalOpen(true); }}
-                />
+                {/* Review — single or multi-agent team */}
+                <button
+                  onClick={(e) => { e.stopPropagation(); openAgentLauncher('single'); }}
+                  disabled={reviewBusy}
+                  title="Review with a single agent"
+                  className="flex items-center gap-1 rounded-md border border-gray-200 bg-white/80 px-2 py-1 text-[10px] font-semibold text-gray-600 transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-primary disabled:opacity-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-primary/10"
+                >
+                  <Bot className="w-3 h-3" />
+                  Single
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); openAgentLauncher('multi'); }}
+                  disabled={reviewBusy}
+                  title="Review with a multi-agent team"
+                  className="flex items-center gap-1 rounded-md border border-gray-200 bg-white/80 px-2 py-1 text-[10px] font-semibold text-gray-600 transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-primary disabled:opacity-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-primary/10"
+                >
+                  <Layers className="w-3 h-3" />
+                  Multi
+                </button>
                 {/* Return */}
                 <button
                   onClick={(e) => { e.stopPropagation(); setReturnPromptOpen(prev => !prev); setReviewSelectorOpen(false); }}
@@ -1284,6 +1310,32 @@ export const TaskCard = memo(function TaskCard({
                   <Play className="w-2.5 h-2.5" />
                   {actionBusy ? '…' : statusAction.label}
                 </button>
+                </div>
+              </div>
+            )}
+            {/* Agents Single/Multi launcher — available on every status */}
+            {!isOverlay && !isReadyForMerge && (
+              <div className="mt-0 max-h-0 overflow-hidden opacity-0 transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover:mt-2 group-hover:max-h-12 group-hover:opacity-100">
+                <div className="flex items-center justify-end gap-1.5">
+                  <span className="mr-auto text-[9px] font-bold uppercase tracking-wider text-gray-400">Agents</span>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); openAgentLauncher('single'); }}
+                    disabled={reviewBusy}
+                    title="Launch a single agent for this phase"
+                    className="flex items-center gap-1 rounded-md border border-gray-200 bg-white/80 px-2 py-1 text-[10px] font-semibold text-gray-600 transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-primary disabled:opacity-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-primary/10"
+                  >
+                    <Bot className="w-3 h-3" />
+                    Single
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); openAgentLauncher('multi'); }}
+                    disabled={reviewBusy}
+                    title="Launch a multi-agent team for this phase"
+                    className="flex items-center gap-1 rounded-md border border-gray-200 bg-white/80 px-2 py-1 text-[10px] font-semibold text-gray-600 transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-primary disabled:opacity-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-primary/10"
+                  >
+                    <Layers className="w-3 h-3" />
+                    Multi
+                  </button>
                 </div>
               </div>
             )}
@@ -1590,6 +1642,7 @@ export const TaskCard = memo(function TaskCard({
           ticket={{ id: task.id, title: task.title || 'Untitled', status: task.status, branch: task.branch }}
           framework={resolveEffectiveAgent(undefined, config?.defaultAgent)}
           phase={launcherPhase}
+          initialTemplateId={launcherTemplateId}
           onClose={() => setReviewModalOpen(false)}
           onLaunch={handleCardReviewLaunch}
           busy={reviewBusy}

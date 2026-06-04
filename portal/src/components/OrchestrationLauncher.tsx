@@ -6,7 +6,7 @@ import {
   type OrchestrationMode,
   type ReviewPersona,
 } from '../agentActions';
-import { fetchOrchestrationPersonas, fetchConfig, fetchWorkflows, type WorkflowPhaseConfig } from '../api';
+import { fetchOrchestrationPersonas, fetchConfig, fetchWorkflows, type WorkflowPhaseConfig, type WorkflowTemplate } from '../api';
 import type { CliFramework, CliSessionSummary } from '../types';
 import { type SessionGroup } from '../orchestration';
 import { OrchestrationTopology, TopologyGlyph } from './OrchestrationTopology';
@@ -32,6 +32,8 @@ interface Props {
   framework: CliFramework;
   /** Ticket phase — drives which personas are offered. Defaults to 'review'. */
   phase?: string;
+  /** Template to pre-select on open (e.g. the Single/Multi choice from a card). Falls back to the board default. */
+  initialTemplateId?: string;
   onClose: () => void;
   onLaunch: (plan: OrchestrationLaunchPlan) => void;
   busy?: boolean;
@@ -102,12 +104,14 @@ function buildPreviewGroup(
   };
 }
 
-export function OrchestrationLauncher({ open, ticket, framework, phase = 'review', onClose, onLaunch, busy, error }: Props) {
+export function OrchestrationLauncher({ open, ticket, framework, phase = 'review', initialTemplateId, onClose, onLaunch, busy, error }: Props) {
   const [mode, setMode] = useState<OrchestrationMode>('scatter-gather');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [comment, setComment] = useState('');
   const [personas, setPersonas] = useState<ReviewPersona[]>([]);
   const [personasLoading, setPersonasLoading] = useState(false);
+  const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
   const defaultAppliedRef = useRef(false);
   const overlayRef = useRef<HTMLDivElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -120,6 +124,7 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
       setMode('scatter-gather');
       setSelectedIds([]);
       setComment('');
+      setSelectedTemplateId('');
       defaultAppliedRef.current = false;
     }
   }, [open]);
@@ -140,31 +145,56 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
     return () => { cancelled = true; };
   }, [open, phase]);
 
-  // Pre-populate mode + personas from the board default workflow for this phase.
+  // Apply a template's config for the current phase onto mode + selected personas.
+  const applyTemplate = useCallback((wf: WorkflowTemplate | undefined) => {
+    if (!wf) return;
+    const cfg = wf.phases?.[phase as keyof typeof wf.phases];
+    if (!cfg) return;
+    const memberIds = phaseConfigMembers(cfg).filter((id) => personas.some((p) => p.id === id));
+    const resolvedMode = PATTERN_TO_MODE[cfg.pattern];
+    if (resolvedMode) setMode(resolvedMode);
+    setSelectedIds(memberIds);
+  }, [phase, personas]);
+
+  // Load templates relevant to this phase when the launcher opens.
   useEffect(() => {
-    if (!open || personasLoading || defaultAppliedRef.current || personas.length === 0) return;
+    if (!open) return;
+    let cancelled = false;
+    fetchWorkflows()
+      .then((list) => { if (!cancelled) setTemplates(list); })
+      .catch(() => { if (!cancelled) setTemplates([]); });
+    return () => { cancelled = true; };
+  }, [open]);
+
+  // Templates that define a config for the current phase (the only ones worth offering).
+  const templatesForPhase = useMemo(
+    () => templates.filter((w) => w.phases?.[phase as keyof typeof w.phases]),
+    [templates, phase],
+  );
+
+  // Pre-populate from the card's chosen template, else the board default, once personas load.
+  useEffect(() => {
+    if (!open || personasLoading || defaultAppliedRef.current || personas.length === 0 || templates.length === 0) return;
     let cancelled = false;
     (async () => {
       try {
-        const config = await fetchConfig();
-        const defaultId = config.defaultWorkflowId;
-        if (!defaultId) return;
-        const workflows = await fetchWorkflows();
-        const wf = workflows.find((w) => w.id === defaultId);
-        const cfg = wf?.phases?.[phase as keyof typeof wf.phases];
-        if (!cfg) return;
-        const memberIds = phaseConfigMembers(cfg).filter((id) => personas.some((p) => p.id === id));
-        if (cancelled || memberIds.length === 0) return;
-        const resolvedMode = PATTERN_TO_MODE[cfg.pattern];
-        if (resolvedMode) setMode(resolvedMode);
-        setSelectedIds(memberIds);
+        let targetId = initialTemplateId;
+        if (!targetId) {
+          const config = await fetchConfig();
+          targetId = config.defaultWorkflowId || undefined;
+        }
+        if (cancelled || !targetId) return;
+        const wf = templates.find((w) => w.id === targetId);
+        if (!wf) return;
+        setSelectedTemplateId(wf.id);
+        applyTemplate(wf);
         defaultAppliedRef.current = true;
       } catch {
         // No default to apply — leave the launcher at its blank defaults.
       }
     })();
     return () => { cancelled = true; };
-  }, [open, phase, personas, personasLoading]);
+  }, [open, phase, personas, personasLoading, templates, initialTemplateId, applyTemplate]);
 
   useEffect(() => {
     if (!open) return;
@@ -191,6 +221,7 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
   }, [open]);
 
   const togglePersona = useCallback((id: string) => {
+    setSelectedTemplateId('');
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }, []);
 
@@ -246,6 +277,40 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
             )}
           </div>
 
+          {/* Template selector */}
+          {templatesForPhase.length > 0 && (
+            <div className="mb-4">
+              <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                Template
+              </label>
+              <select
+                value={selectedTemplateId}
+                onChange={(e) => {
+                  const id = e.target.value;
+                  setSelectedTemplateId(id);
+                  applyTemplate(templatesForPhase.find((w) => w.id === id));
+                }}
+                className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-xs font-semibold text-gray-800 outline-none focus:border-primary dark:border-white/10 dark:bg-black/20 dark:text-gray-100"
+              >
+                <option value="">Custom (manual selection)</option>
+                {templatesForPhase.some((w) => w.builtIn) && (
+                  <optgroup label="Built-in">
+                    {templatesForPhase.filter((w) => w.builtIn).map((w) => (
+                      <option key={w.id} value={w.id}>{w.name}</option>
+                    ))}
+                  </optgroup>
+                )}
+                {templatesForPhase.some((w) => !w.builtIn) && (
+                  <optgroup label="Custom">
+                    {templatesForPhase.filter((w) => !w.builtIn).map((w) => (
+                      <option key={w.id} value={w.id}>{w.name}</option>
+                    ))}
+                  </optgroup>
+                )}
+              </select>
+            </div>
+          )}
+
           {/* Pattern selector */}
           <div className="mb-4">
             <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wider text-gray-400">
@@ -260,7 +325,7 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
                     key={m.id}
                     type="button"
                     disabled={disabled}
-                    onClick={() => !disabled && setMode(m.id)}
+                    onClick={() => { if (!disabled) { setSelectedTemplateId(''); setMode(m.id); } }}
                     aria-disabled={disabled || undefined}
                     title={disabled ? 'Engine sequencing for this pattern is coming soon' : m.blurb}
                     className={`flex items-center gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors ${
