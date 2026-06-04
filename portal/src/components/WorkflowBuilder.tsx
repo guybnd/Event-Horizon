@@ -57,12 +57,6 @@ const CLI_COLORS: Record<CliTarget, string> = {
   copilot: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300',
 };
 
-const PHASE_COLORS: Record<WorkflowPhase, string> = {
-  grooming: 'border-l-purple-400',
-  implementation: 'border-l-blue-400',
-  review: 'border-l-amber-400',
-  finalize: 'border-l-emerald-400',
-};
 
 // --- Skill helpers (skills persist as docs under the skills/ directory) ---
 
@@ -376,35 +370,45 @@ function TemplateEditPanel({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
-      <div className="bg-white dark:bg-[#1f2028] rounded-2xl shadow-2xl w-full max-w-2xl max-h-[88vh] overflow-y-auto p-6 border border-gray-200 dark:border-white/10" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-bold text-gray-800 dark:text-gray-100">{isNew ? 'New Template' : 'Edit Template'}</h3>
-          <button onClick={onClose} className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400">
-            <X className="w-5 h-5" />
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md" onClick={onClose}>
+      <div className="bg-white dark:bg-[#18181a] rounded-2xl shadow-[0_24px_80px_rgba(0,0,0,0.25)] dark:shadow-[0_24px_80px_rgba(0,0,0,0.6)] w-full max-w-2xl max-h-[88vh] overflow-hidden border border-gray-200/60 dark:border-white/[0.08]" onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200/60 dark:border-white/[0.06]">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center justify-center w-8 h-8 rounded-xl bg-primary/8 ring-1 ring-primary/10">
+              <Network className="w-4 h-4 text-primary" />
+            </div>
+            <h3 className="text-base font-bold text-gray-800 dark:text-gray-100">{isNew ? 'New Template' : 'Edit Template'}</h3>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 transition-all duration-200">
+            <X className="w-4 h-4" />
           </button>
         </div>
 
-        <div className="space-y-4">
-          <div className="flex gap-3">
+        {/* Body */}
+        <div className="overflow-y-auto max-h-[calc(88vh-130px)] px-6 py-5 space-y-5">
+          {/* Name + CLI target row */}
+          <div className="flex gap-4 items-end">
             <div className="flex-1">
-              <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Name</label>
+              <label className="text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-[0.08em]">Name</label>
               <input
                 value={name}
                 onChange={e => setName(e.target.value)}
                 placeholder="e.g. Thorough Review"
-                className="mt-1 w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-black/30 text-sm text-gray-800 dark:text-gray-100 outline-none focus:border-primary"
+                className="mt-1.5 w-full px-3.5 py-2.5 rounded-xl border border-gray-200/60 dark:border-white/[0.08] bg-gray-50/50 dark:bg-black/20 text-sm text-gray-800 dark:text-gray-100 outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/10 transition-all duration-200"
               />
             </div>
             <div>
-              <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">CLI Target</label>
-              <div className="mt-1 flex gap-1.5">
+              <label className="text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-[0.08em]">Target</label>
+              <div className="mt-1.5 flex gap-1 p-1 rounded-xl bg-gray-100/60 dark:bg-white/[0.04] ring-1 ring-black/[0.03] dark:ring-white/[0.05]">
                 {(['claude', 'gemini', 'copilot'] as CliTarget[]).map(cli => (
                   <button
                     key={cli}
                     onClick={() => setCliTarget(cli)}
-                    className={`px-3 py-2 rounded-lg text-xs font-bold uppercase transition-all ${
-                      cliTarget === cli ? CLI_COLORS[cli] + ' ring-1 ring-primary/40' : 'bg-gray-100 dark:bg-white/10 text-gray-400'
+                    className={`px-3 py-2 rounded-[10px] text-[11px] font-bold uppercase transition-all duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] ${
+                      cliTarget === cli
+                        ? CLI_COLORS[cli] + ' shadow-sm'
+                        : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'
                     }`}
                   >
                     {cli}
@@ -414,78 +418,98 @@ function TemplateEditPanel({
             </div>
           </div>
 
-          {PHASES.map(({ key, label }) => {
-            const cfg = phases[key];
-            const pattern = (cfg?.pattern as Pattern) ?? 'relay';
-            const members = phaseMembers(cfg);
-            const phasePersonas = personas.filter(p => p.phase === key);
-            return (
-              <div key={key} className={`rounded-xl border border-gray-200 dark:border-white/10 border-l-4 ${PHASE_COLORS[key]} p-3`}>
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold uppercase tracking-wider text-gray-600 dark:text-gray-300">{label}</span>
-                  {members.length > 0 && (
-                    <button onClick={() => clearPhase(key)} className="text-[11px] text-gray-400 hover:text-red-500 transition-colors">Clear</button>
+          {/* Phase pipeline */}
+          <div className="space-y-3">
+            <span className="text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-[0.08em]">Pipeline Phases</span>
+            {PHASES.map(({ key, label }, idx) => {
+              const cfg = phases[key];
+              const pattern = (cfg?.pattern as Pattern) ?? 'relay';
+              const members = phaseMembers(cfg);
+              const phasePersonas = personas.filter(p => p.phase === key);
+              const dotClass = key === 'grooming' ? 'bg-purple-400' : key === 'implementation' ? 'bg-blue-400' : key === 'review' ? 'bg-amber-400' : 'bg-emerald-400';
+              return (
+                <div key={key}>
+                  {idx > 0 && (
+                    <div className="flex justify-center py-1">
+                      <div className="w-px h-3 bg-gray-200 dark:bg-white/[0.08]" />
+                    </div>
                   )}
-                </div>
+                  <div className={`rounded-xl border border-gray-200/60 dark:border-white/[0.06] bg-gray-50/30 dark:bg-white/[0.015] p-4 relative overflow-hidden`}>
+                    <div className={`absolute left-0 top-0 bottom-0 w-1 ${dotClass}`} />
+                    <div className="flex items-center justify-between ml-2">
+                      <div className="flex items-center gap-2">
+                        <div className={`w-2 h-2 rounded-full ${dotClass}`} />
+                        <span className="text-[11px] font-bold uppercase tracking-[0.06em] text-gray-700 dark:text-gray-200">{label}</span>
+                        {members.length > 0 && (
+                          <span className="text-[10px] text-gray-400 font-medium">{members.length} agent{members.length > 1 ? 's' : ''}</span>
+                        )}
+                      </div>
+                      {members.length > 0 && (
+                        <button onClick={() => clearPhase(key)} className="text-[10px] font-medium text-gray-400 hover:text-red-500 transition-colors duration-200 px-2 py-1 rounded-md hover:bg-red-50 dark:hover:bg-red-500/10">Clear</button>
+                      )}
+                    </div>
 
-                <div className="flex items-center gap-1 mt-2">
-                  {PATTERNS.map(p => {
-                    const supported = supportedPatterns.includes(p.key);
-                    return (
-                      <button
-                        key={p.key}
-                        disabled={!supported}
-                        onClick={() => setPhasePattern(key, p.key)}
-                        title={supported ? p.description : `Not supported by ${cliTarget}`}
-                        className={`px-2 py-1 rounded-md text-[10px] font-semibold transition-all ${
-                          pattern === p.key && members.length > 0
-                            ? 'bg-primary/10 text-primary border border-primary/30'
-                            : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 border border-transparent'
-                        } disabled:opacity-30 disabled:cursor-not-allowed`}
-                      >
-                        {p.label}
-                      </button>
-                    );
-                  })}
-                </div>
+                    <div className="flex items-center gap-1 mt-3 ml-2">
+                      {PATTERNS.map(p => {
+                        const supported = supportedPatterns.includes(p.key);
+                        return (
+                          <button
+                            key={p.key}
+                            disabled={!supported}
+                            onClick={() => setPhasePattern(key, p.key)}
+                            title={supported ? p.description : `Not supported by ${cliTarget}`}
+                            className={`px-2.5 py-1.5 rounded-lg text-[10px] font-semibold transition-all duration-200 ${
+                              pattern === p.key && members.length > 0
+                                ? 'bg-primary/10 text-primary ring-1 ring-primary/20'
+                                : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/[0.05]'
+                            } disabled:opacity-25 disabled:cursor-not-allowed`}
+                          >
+                            {p.label}
+                          </button>
+                        );
+                      })}
+                    </div>
 
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {phasePersonas.length === 0 && (
-                    <span className="text-[11px] text-gray-400 italic">No personas for this phase yet.</span>
-                  )}
-                  {phasePersonas.map(p => {
-                    const selected = members.includes(p.id);
-                    return (
-                      <button
-                        key={p.id}
-                        onClick={() => togglePhaseMember(key, p.id)}
-                        className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border transition-all ${
-                          selected
-                            ? 'border-primary bg-primary/5 text-primary dark:bg-primary/10'
-                            : 'border-gray-200 dark:border-white/10 text-gray-600 dark:text-gray-300 hover:border-primary/40'
-                        }`}
-                      >
-                        {selected && <Check className="w-3 h-3" />}
-                        {p.label}
-                      </button>
-                    );
-                  })}
+                    <div className="mt-3 ml-2 flex flex-wrap gap-2">
+                      {phasePersonas.length === 0 && (
+                        <span className="text-[11px] text-gray-400 italic">No personas for this phase yet.</span>
+                      )}
+                      {phasePersonas.map(p => {
+                        const selected = members.includes(p.id);
+                        return (
+                          <button
+                            key={p.id}
+                            onClick={() => togglePhaseMember(key, p.id)}
+                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium border transition-all duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] ${
+                              selected
+                                ? 'border-primary/50 bg-primary/[0.06] text-primary dark:bg-primary/10 shadow-[0_0_0_1px_rgba(var(--eh-accent),0.15)]'
+                                : 'border-gray-200/80 dark:border-white/[0.08] text-gray-600 dark:text-gray-300 hover:border-primary/30 hover:bg-primary/[0.02]'
+                            }`}
+                          >
+                            {selected && <Check className="w-3 h-3" />}
+                            {p.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
 
           {error && <p className="text-sm text-red-500">{error}</p>}
         </div>
 
-        <div className="flex items-center justify-end gap-2 mt-6 pt-4 border-t border-gray-200 dark:border-white/10">
-          <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-gray-500 hover:bg-gray-100 dark:hover:bg-white/10 transition-colors">
+        {/* Footer */}
+        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-200/60 dark:border-white/[0.06]">
+          <button onClick={onClose} className="px-4 py-2 rounded-xl text-sm font-medium text-gray-500 hover:bg-gray-100 dark:hover:bg-white/10 transition-all duration-200">
             Cancel
           </button>
           <button
             onClick={handleSave}
             disabled={!name.trim() || saving}
-            className="px-4 py-2 rounded-lg text-sm font-semibold bg-primary text-white hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+            className="flex items-center gap-1.5 px-5 py-2.5 rounded-full text-sm font-semibold bg-primary text-white hover:bg-primary-hover transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed shadow-[0_2px_8px_rgba(var(--eh-accent),0.2)]"
           >
             {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
             Save
@@ -497,10 +521,10 @@ function TemplateEditPanel({
 }
 
 // ============================================================================
-// Skill editor (skills persist as docs)
+// Skill inline editor (right-side panel, replaces modal)
 // ============================================================================
 
-function SkillEditPanel({
+function SkillInlineEditor({
   skill,
   onClose,
   onSave,
@@ -516,64 +540,64 @@ function SkillEditPanel({
   const [name, setName] = useState(skill.name);
   const [body, setBody] = useState(skill.body);
 
+  useEffect(() => {
+    setName(skill.name);
+    setBody(skill.body);
+  }, [skill.id, skill.name, skill.body]);
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
-      <div className="bg-white dark:bg-[#1f2028] rounded-2xl shadow-2xl w-full max-w-xl max-h-[85vh] overflow-y-auto p-6 border border-gray-200 dark:border-white/10" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-bold text-gray-800 dark:text-gray-100">Configure Skill</h3>
-          <button onClick={onClose} className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400">
-            <X className="w-5 h-5" />
+    <div className="flex flex-col h-full">
+      <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200/60 dark:border-white/[0.06]">
+        <div className="flex items-center gap-2.5">
+          <div className="flex items-center justify-center w-7 h-7 rounded-lg bg-primary/8 ring-1 ring-primary/10">
+            <BookOpen className="w-3.5 h-3.5 text-primary/70" />
+          </div>
+          <h3 className="text-sm font-bold text-gray-800 dark:text-gray-100">Edit Skill</h3>
+        </div>
+        <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 transition-all duration-200">
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5">
+        <div>
+          <label className="text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-[0.08em]">Name</label>
+          <input
+            value={name}
+            onChange={e => setName(e.target.value)}
+            className="mt-1.5 w-full px-3 py-2.5 rounded-xl border border-gray-200/60 dark:border-white/[0.08] bg-gray-50/50 dark:bg-black/20 text-sm text-gray-800 dark:text-gray-100 outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/10 transition-all duration-200"
+          />
+        </div>
+        {skill.path && (
+          <div>
+            <label className="text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-[0.08em]">Source</label>
+            <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400 font-mono bg-gray-50/50 dark:bg-black/20 px-3 py-2 rounded-lg">{skill.path}</p>
+          </div>
+        )}
+        <div className="flex-1">
+          <label className="text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-[0.08em]">Content</label>
+          <textarea
+            value={body}
+            onChange={e => setBody(e.target.value)}
+            className="mt-1.5 w-full px-3 py-3 rounded-xl border border-gray-200/60 dark:border-white/[0.08] bg-gray-50/50 dark:bg-black/20 text-[12px] text-gray-800 dark:text-gray-100 outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/10 resize-y font-mono leading-relaxed min-h-[300px] transition-all duration-200"
+          />
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between px-5 py-4 border-t border-gray-200/60 dark:border-white/[0.06]">
+        {onDelete ? (
+          <button onClick={onDelete} className="px-3 py-2 rounded-lg text-[12px] font-medium text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-all duration-200">
+            Delete
           </button>
-        </div>
-
-        <div className="space-y-4">
-          <div>
-            <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Name</label>
-            <input
-              value={name}
-              onChange={e => setName(e.target.value)}
-              className="mt-1 w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-black/30 text-sm text-gray-800 dark:text-gray-100 outline-none focus:border-primary"
-            />
-          </div>
-          {skill.path && (
-            <div>
-              <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Source File</label>
-              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400 font-mono">{skill.path}</p>
-            </div>
-          )}
-          <div>
-            <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Skill Content</label>
-            <textarea
-              value={body}
-              onChange={e => setBody(e.target.value)}
-              rows={12}
-              className="mt-1.5 w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-black/30 text-sm text-gray-800 dark:text-gray-100 outline-none focus:border-primary resize-y font-mono leading-relaxed"
-            />
-          </div>
-        </div>
-
-        <div className="flex items-center justify-between mt-6 pt-4 border-t border-gray-200 dark:border-white/10">
-          <div>
-            {onDelete && (
-              <button onClick={onDelete} className="px-3 py-2 rounded-lg text-sm font-medium text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors">
-                Delete Skill
-              </button>
-            )}
-          </div>
-          <div className="flex gap-2">
-            <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-gray-500 hover:bg-gray-100 dark:hover:bg-white/10 transition-colors">
-              Cancel
-            </button>
-            <button
-              onClick={() => onSave({ ...skill, name, body })}
-              disabled={!name.trim() || isSaving}
-              className="px-4 py-2 rounded-lg text-sm font-semibold bg-primary text-white hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
-            >
-              {isSaving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-              Save
-            </button>
-          </div>
-        </div>
+        ) : <div />}
+        <button
+          onClick={() => onSave({ ...skill, name, body })}
+          disabled={!name.trim() || isSaving}
+          className="flex items-center gap-1.5 px-4 py-2 rounded-full text-[12px] font-semibold bg-primary text-white hover:bg-primary-hover transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {isSaving && <Loader2 className="w-3 h-3 animate-spin" />}
+          Save
+        </button>
       </div>
     </div>
   );
@@ -783,30 +807,30 @@ export function WorkflowBuilder() {
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between mb-5">
-        <div className="flex items-center gap-3">
-          <div className="bg-primary/10 p-2 rounded-xl">
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center gap-3.5">
+          <div className="bg-primary/8 p-2.5 rounded-2xl ring-1 ring-primary/10">
             <Workflow className="w-5 h-5 text-primary" />
           </div>
           <div>
-            <h2 className="text-xl font-bold text-gray-800 dark:text-gray-100">Workflow Builder</h2>
-            <p className="text-xs text-gray-500 dark:text-gray-400">Personas, templates &amp; board defaults for the agent launcher</p>
+            <h2 className="text-xl font-bold text-gray-800 dark:text-gray-100 tracking-tight">Workflow Builder</h2>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Personas, templates &amp; board defaults for the agent launcher</p>
           </div>
         </div>
       </div>
 
       {/* Tabs */}
-      <div className="flex items-center gap-1 mb-5 bg-gray-100 dark:bg-black/30 p-0.5 rounded-lg w-fit">
+      <div className="flex items-center gap-0.5 mb-6 bg-gray-100/80 dark:bg-white/[0.04] p-1 rounded-xl w-fit ring-1 ring-black/[0.04] dark:ring-white/[0.06]">
         {TABS.map(t => {
           const Icon = t.icon;
           return (
             <button
               key={t.key}
               onClick={() => setTab(t.key)}
-              className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-sm font-semibold transition-all ${
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-[10px] text-sm font-semibold transition-all duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] ${
                 tab === t.key
-                  ? 'bg-white dark:bg-white/10 text-gray-800 dark:text-gray-100 shadow-sm'
-                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+                  ? 'bg-white dark:bg-white/10 text-gray-800 dark:text-gray-100 shadow-[0_1px_3px_rgba(0,0,0,0.08),0_1px_1px_rgba(0,0,0,0.04)] dark:shadow-[0_1px_3px_rgba(0,0,0,0.3)] ring-1 ring-black/[0.04] dark:ring-white/[0.08]'
+                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-white/50 dark:hover:bg-white/[0.04]'
               }`}
             >
               <Icon className="w-4 h-4" />
@@ -824,56 +848,66 @@ export function WorkflowBuilder() {
         <div className="flex-1 overflow-y-auto">
           {/* Personas tab */}
           {tab === 'personas' && (
-            <div className="space-y-6">
+            <div className="space-y-8">
               <div className="flex justify-end">
                 <button
                   onClick={() => setCreatingPersona(true)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold bg-primary text-white hover:bg-primary-hover transition-colors"
+                  className="group flex items-center gap-2 pl-4 pr-3 py-2 rounded-full text-sm font-semibold bg-primary text-white hover:bg-primary-hover transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] active:scale-[0.97] shadow-[0_2px_8px_rgba(var(--eh-accent),0.2)]"
                 >
-                  <Plus className="w-4 h-4" /> New Persona
+                  New Persona
+                  <span className="flex items-center justify-center w-6 h-6 rounded-full bg-white/20">
+                    <Plus className="w-3.5 h-3.5" />
+                  </span>
                 </button>
               </div>
               {PHASES.map(({ key, label }) => (
                 <div key={key}>
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">{label}</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5">
+                  <div className="flex items-center gap-2.5 mb-3">
+                    <div className={`w-2 h-2 rounded-full ${key === 'grooming' ? 'bg-purple-400' : key === 'implementation' ? 'bg-blue-400' : key === 'review' ? 'bg-amber-400' : 'bg-emerald-400'}`} />
+                    <h3 className="text-[11px] font-bold uppercase tracking-[0.08em] text-gray-600 dark:text-gray-300">{label}</h3>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                     {personasByPhase[key].length === 0 && (
                       <p className="text-xs text-gray-400 italic">No personas.</p>
                     )}
                     {personasByPhase[key].map(p => (
                       <div
                         key={p.id}
-                        className={`group p-3 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-white/5 border-l-4 ${PHASE_COLORS[key]} transition-all hover:shadow-sm`}
+                        className={`group relative p-[1px] rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] hover:-translate-y-[1px] hover:shadow-[0_4px_12px_rgba(0,0,0,0.06)] dark:hover:shadow-[0_4px_16px_rgba(0,0,0,0.3)] ${
+                          key === 'grooming' ? 'bg-gradient-to-b from-purple-400/20 to-transparent' : key === 'implementation' ? 'bg-gradient-to-b from-blue-400/20 to-transparent' : key === 'review' ? 'bg-gradient-to-b from-amber-400/20 to-transparent' : 'bg-gradient-to-b from-emerald-400/20 to-transparent'
+                        }`}
                       >
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-semibold text-gray-800 dark:text-gray-100 flex-1 truncate">{p.label}</span>
-                          {p.builtIn ? (
-                            <div className="flex items-center gap-1.5">
-                              <span className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
-                                <Lock className="w-3 h-3" /> Built-in
-                              </span>
-                              <button onClick={() => setEditingPersona(p)} title="View & duplicate" className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-colors">
-                                <Eye className="w-3.5 h-3.5" />
-                              </button>
-                              <button onClick={() => handleDuplicatePersona(p)} title="Duplicate" className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-colors">
-                                <Copy className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <button onClick={() => setEditingPersona(p)} title="Edit" className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-colors">
-                                <Pencil className="w-3.5 h-3.5" />
-                              </button>
-                              <button onClick={() => handleDuplicatePersona(p)} title="Duplicate" className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-colors">
-                                <Copy className="w-3.5 h-3.5" />
-                              </button>
-                              <button onClick={() => handleDeletePersona(p)} title="Delete" className="p-1 rounded hover:bg-red-50 dark:hover:bg-red-500/10 text-gray-400 hover:text-red-500 transition-colors">
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          )}
+                        <div className="p-3.5 rounded-[calc(1rem-1px)] bg-white dark:bg-[#1c1c1a] border border-gray-200/60 dark:border-white/[0.06] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+                          <div className="flex items-center gap-2">
+                            <span className="text-[13px] font-semibold text-gray-800 dark:text-gray-100 flex-1 truncate">{p.label}</span>
+                            {p.builtIn ? (
+                              <div className="flex items-center gap-1.5">
+                                <span className="flex items-center gap-1 text-[10px] font-semibold uppercase text-gray-400/80 tracking-wide">
+                                  <Lock className="w-3 h-3" /> Built-in
+                                </span>
+                                <button onClick={() => setEditingPersona(p)} title="View & duplicate" className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-all duration-200">
+                                  <Eye className="w-3.5 h-3.5" />
+                                </button>
+                                <button onClick={() => handleDuplicatePersona(p)} title="Duplicate" className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-all duration-200">
+                                  <Copy className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-all duration-200">
+                                <button onClick={() => setEditingPersona(p)} title="Edit" className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-all duration-200">
+                                  <Pencil className="w-3.5 h-3.5" />
+                                </button>
+                                <button onClick={() => handleDuplicatePersona(p)} title="Duplicate" className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-all duration-200">
+                                  <Copy className="w-3.5 h-3.5" />
+                                </button>
+                                <button onClick={() => handleDeletePersona(p)} title="Delete" className="p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-500/10 text-gray-400 hover:text-red-500 transition-all duration-200">
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                          {p.description && <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1.5 line-clamp-2 leading-relaxed">{p.description}</p>}
                         </div>
-                        {p.description && <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 line-clamp-2">{p.description}</p>}
                       </div>
                     ))}
                   </div>
@@ -884,25 +918,25 @@ export function WorkflowBuilder() {
 
           {/* Templates tab — grouped by phase, with single/multi defaults per phase */}
           {tab === 'templates' && (
-            <div className="space-y-6">
+            <div className="space-y-8">
               {/* How-to / orchestration mode reference */}
-              <div className="rounded-2xl border border-primary/20 bg-primary/[0.03] dark:border-primary/25 dark:bg-primary/5">
+              <div className="rounded-2xl border border-primary/15 bg-primary/[0.02] dark:border-primary/20 dark:bg-primary/[0.03] overflow-hidden">
                 <button
                   onClick={() => setTemplatesHelpOpen(o => !o)}
-                  className="flex w-full items-center gap-2 px-4 py-3 text-left"
+                  className="flex w-full items-center gap-2.5 px-5 py-3.5 text-left"
                   aria-expanded={templatesHelpOpen}
                 >
-                  <Info className="h-4 w-4 shrink-0 text-primary" />
-                  <span className="text-[13px] font-semibold text-gray-800 dark:text-gray-100">
+                  <Info className="h-4 w-4 shrink-0 text-primary/70" />
+                  <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-200">
                     How templates &amp; orchestration modes work
                   </span>
-                  <ChevronDown className={`ml-auto h-4 w-4 text-gray-400 transition-transform ${templatesHelpOpen ? 'rotate-180' : ''}`} />
+                  <ChevronDown className={`ml-auto h-4 w-4 text-gray-400 transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] ${templatesHelpOpen ? 'rotate-180' : ''}`} />
                 </button>
                 {templatesHelpOpen && (
-                  <div className="space-y-4 border-t border-primary/15 px-4 py-4 text-[12px] leading-relaxed text-gray-600 dark:border-primary/15 dark:text-gray-300">
+                  <div className="space-y-4 border-t border-primary/10 px-5 py-5 text-[12px] leading-relaxed text-gray-600 dark:border-primary/10 dark:text-gray-300">
                     <div>
-                      <p className="mb-1.5 font-semibold text-gray-800 dark:text-gray-100">Building a template</p>
-                      <ol className="ml-4 list-decimal space-y-1">
+                      <p className="mb-2 font-semibold text-gray-800 dark:text-gray-100">Building a template</p>
+                      <ol className="ml-4 list-decimal space-y-1.5">
                         <li>Click <strong>New Template</strong>, give it a name, and pick the CLI target (Claude / Gemini / Copilot).</li>
                         <li>The editor shows one block per <strong>phase</strong> — Grooming, Implementation, Review, Release. A template belongs to a phase simply by having one or more personas selected in that block; leave a block empty to skip it.</li>
                         <li>For each phase you use, choose an <strong>orchestration mode</strong> and click the personas to include.</li>
@@ -911,22 +945,22 @@ export function WorkflowBuilder() {
                       </ol>
                     </div>
                     <div>
-                      <p className="mb-1.5 font-semibold text-gray-800 dark:text-gray-100">Orchestration modes</p>
-                      <ul className="space-y-2">
-                        <li className="flex gap-2">
+                      <p className="mb-2 font-semibold text-gray-800 dark:text-gray-100">Orchestration modes</p>
+                      <ul className="space-y-2.5">
+                        <li className="flex gap-2.5">
                           <GitBranch className="mt-0.5 h-3.5 w-3.5 shrink-0 text-gray-400" />
                           <span><strong>Relay</strong> — personas run one after another in a pipeline (A → B → C), each handing its output to the next. Good for sequenced work like test-first then implement.</span>
                         </li>
-                        <li className="flex gap-2">
+                        <li className="flex gap-2.5">
                           <Layers className="mt-0.5 h-3.5 w-3.5 shrink-0 text-gray-400" />
                           <span><strong>Scatter-Gather</strong> — personas run in parallel, then a combiner synthesizes their findings and decides the next step. Good for multi-perspective review.</span>
                         </li>
-                        <li className="flex gap-2">
+                        <li className="flex gap-2.5">
                           <GitMerge className="mt-0.5 h-3.5 w-3.5 shrink-0 text-gray-400" />
                           <span><strong>Supervisor</strong> — a lead persona coordinates assistants, delegating and resuming once they report back.</span>
                         </li>
                       </ul>
-                      <p className="mt-2 text-[11px] text-gray-500 dark:text-gray-400">
+                      <p className="mt-3 text-[11px] text-gray-500 dark:text-gray-400">
                         A <strong>Single</strong> agent always launches standalone — the orchestration mode only applies once two or more personas are involved. All four patterns (Scatter-Gather, Parallel, Relay, Supervisor) are fully functional.
                       </p>
                     </div>
@@ -939,14 +973,17 @@ export function WorkflowBuilder() {
                 </p>
                 <button
                   onClick={() => setCreatingTemplate(true)}
-                  className="flex shrink-0 items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold bg-primary text-white hover:bg-primary-hover transition-colors"
+                  className="group flex shrink-0 items-center gap-2 pl-4 pr-3 py-2 rounded-full text-sm font-semibold bg-primary text-white hover:bg-primary-hover transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] active:scale-[0.97] shadow-[0_2px_8px_rgba(var(--eh-accent),0.2)]"
                 >
-                  <Plus className="w-4 h-4" /> New Template
+                  New Template
+                  <span className="flex items-center justify-center w-6 h-6 rounded-full bg-white/20">
+                    <Plus className="w-3.5 h-3.5" />
+                  </span>
                 </button>
               </div>
               {templates.length === 0 && (
-                <div className="flex flex-col items-center justify-center py-16 text-gray-400">
-                  <Network className="w-8 h-8 mb-2 opacity-30" />
+                <div className="flex flex-col items-center justify-center py-20 text-gray-400">
+                  <Network className="w-8 h-8 mb-3 opacity-20" />
                   <span className="text-sm">No templates yet. Create one to set a phase default.</span>
                 </div>
               )}
@@ -965,53 +1002,59 @@ export function WorkflowBuilder() {
                   return (
                     <div
                       key={t.id}
-                      className={`group rounded-xl border p-3 transition-all hover:shadow-sm ${
-                        isDefault ? 'border-primary/50 bg-primary/[0.03] ring-1 ring-primary/20 dark:bg-primary/5' : 'border-gray-200 bg-white dark:border-white/10 dark:bg-white/5'
+                      className={`group p-[1px] rounded-2xl transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] hover:-translate-y-[1px] ${
+                        isDefault ? 'bg-gradient-to-b from-primary/30 to-primary/5' : 'bg-gradient-to-b from-black/[0.04] dark:from-white/[0.06] to-transparent'
                       }`}
                     >
-                      <div className="flex items-start gap-2">
-                        <button
-                          onClick={() => handleSetPhaseDefault(phase, variant, t.id)}
-                          title={isDefault ? `Default ${variant} for ${phaseLabel} (click to unset)` : `Set as default ${variant} for ${phaseLabel}`}
-                          className={`mt-0.5 shrink-0 rounded p-0.5 transition-colors ${
-                            isDefault ? 'text-amber-400' : 'text-gray-300 hover:text-amber-400 dark:text-gray-600'
-                          }`}
-                        >
-                          <Star className="h-4 w-4" fill={isDefault ? 'currentColor' : 'none'} />
-                        </button>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <span className="truncate text-[13px] font-semibold text-gray-800 dark:text-gray-100">{t.name}</span>
-                            {isDefault && <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[9px] font-bold uppercase text-primary">Default</span>}
-                            {t.builtIn && <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[9px] font-bold uppercase text-gray-500 dark:bg-white/10 dark:text-gray-400">Built-in</span>}
-                            <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase ${CLI_COLORS[t.cliTarget as CliTarget] ?? 'bg-gray-100 text-gray-500'}`}>{t.cliTarget}</span>
-                          </div>
-                          <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-gray-500 dark:text-gray-400">
-                            <span className="inline-flex items-center gap-1 rounded bg-gray-100 px-1.5 py-0.5 font-semibold dark:bg-white/10">
-                              <Network className="h-2.5 w-2.5" />{patternLabel}
-                            </span>
-                            {members.map((id, i) => (
-                              <span key={`${id}-${i}`} className="inline-flex items-center gap-1 rounded bg-gray-100 px-1.5 py-0.5 dark:bg-white/10">
-                                {variant === 'multi' && cfg?.pattern === 'relay' && <span className="font-mono text-gray-400">{i + 1}.</span>}
-                                {personaLabels[id] ?? id}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-                          {!t.builtIn && (
-                            <button onClick={() => setEditingTemplate(t)} title="Edit" className="rounded p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-primary dark:hover:bg-white/10">
-                              <Pencil className="h-3.5 w-3.5" />
-                            </button>
-                          )}
-                          <button onClick={() => handleDuplicateTemplate(t)} title="Duplicate" className="rounded p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-primary dark:hover:bg-white/10">
-                            <Copy className="h-3.5 w-3.5" />
+                      <div className={`p-3.5 rounded-[calc(1rem-1px)] transition-all ${
+                        isDefault
+                          ? 'bg-primary/[0.02] dark:bg-primary/[0.04] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
+                          : 'bg-white dark:bg-[#1c1c1a] shadow-[inset_0_1px_0_rgba(255,255,255,0.8)] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]'
+                      }`}>
+                        <div className="flex items-start gap-2.5">
+                          <button
+                            onClick={() => handleSetPhaseDefault(phase, variant, t.id)}
+                            title={isDefault ? `Default ${variant} for ${phaseLabel} (click to unset)` : `Set as default ${variant} for ${phaseLabel}`}
+                            className={`mt-0.5 shrink-0 rounded-lg p-1 transition-all duration-200 ${
+                              isDefault ? 'text-amber-400 scale-110' : 'text-gray-300 hover:text-amber-400 hover:scale-110 dark:text-gray-600'
+                            }`}
+                          >
+                            <Star className="h-4 w-4" fill={isDefault ? 'currentColor' : 'none'} />
                           </button>
-                          {!t.builtIn && (
-                            <button onClick={() => handleDeleteTemplate(t)} title="Delete" className="rounded p-1.5 text-gray-400 transition-colors hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/10">
-                              <Trash2 className="h-3.5 w-3.5" />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="truncate text-[13px] font-semibold text-gray-800 dark:text-gray-100">{t.name}</span>
+                              {isDefault && <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[9px] font-bold uppercase text-primary tracking-wide">Default</span>}
+                              {t.builtIn && <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[9px] font-bold uppercase text-gray-500 dark:bg-white/10 dark:text-gray-400 tracking-wide">Built-in</span>}
+                              <span className={`rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide ${CLI_COLORS[t.cliTarget as CliTarget] ?? 'bg-gray-100 text-gray-500'}`}>{t.cliTarget}</span>
+                            </div>
+                            <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px] text-gray-500 dark:text-gray-400">
+                              <span className="inline-flex items-center gap-1 rounded-md bg-gray-100/80 px-2 py-1 font-semibold dark:bg-white/[0.07]">
+                                <Network className="h-2.5 w-2.5" />{patternLabel}
+                              </span>
+                              {members.map((id, i) => (
+                                <span key={`${id}-${i}`} className="inline-flex items-center gap-1 rounded-md bg-gray-100/80 px-2 py-1 dark:bg-white/[0.07]">
+                                  {variant === 'multi' && cfg?.pattern === 'relay' && <span className="font-mono text-gray-400">{i + 1}.</span>}
+                                  {personaLabels[id] ?? id}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-all duration-200 group-hover:opacity-100">
+                            {!t.builtIn && (
+                              <button onClick={() => setEditingTemplate(t)} title="Edit" className="rounded-lg p-1.5 text-gray-400 transition-all duration-200 hover:bg-gray-100 hover:text-primary dark:hover:bg-white/10">
+                                <Pencil className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                            <button onClick={() => handleDuplicateTemplate(t)} title="Duplicate" className="rounded-lg p-1.5 text-gray-400 transition-all duration-200 hover:bg-gray-100 hover:text-primary dark:hover:bg-white/10">
+                              <Copy className="h-3.5 w-3.5" />
                             </button>
-                          )}
+                            {!t.builtIn && (
+                              <button onClick={() => handleDeleteTemplate(t)} title="Delete" className="rounded-lg p-1.5 text-gray-400 transition-all duration-200 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/10">
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -1019,66 +1062,98 @@ export function WorkflowBuilder() {
                 };
 
                 return (
-                  <div key={phase} className={`rounded-2xl border-l-4 ${PHASE_COLORS[phase]} border-y border-r border-gray-200 bg-gray-50/50 p-4 dark:border-white/10 dark:bg-white/[0.02]`}>
-                    <h3 className="mb-3 text-sm font-bold text-gray-800 dark:text-gray-100">{phaseLabel}</h3>
-                    {inPhase.length === 0 ? (
-                      <p className="text-[11px] text-gray-400">No templates configure this phase yet.</p>
-                    ) : (
-                      <div className="grid gap-4 md:grid-cols-2">
-                        <div>
-                          <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-400">Single agent</p>
-                          <div className="space-y-2">
-                            {singles.length === 0 && <p className="text-[11px] text-gray-400">None</p>}
-                            {singles.map(t => renderCard(t, 'single'))}
-                          </div>
-                        </div>
-                        <div>
-                          <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-400">Multi-agent team</p>
-                          <div className="space-y-2">
-                            {multis.length === 0 && <p className="text-[11px] text-gray-400">None</p>}
-                            {multis.map(t => renderCard(t, 'multi'))}
-                          </div>
-                        </div>
+                  <div key={phase} className="rounded-2xl p-[1px] bg-gradient-to-b from-black/[0.04] dark:from-white/[0.06] to-transparent">
+                    <div className={`rounded-[calc(1rem-1px)] p-5 bg-gray-50/70 dark:bg-white/[0.015] shadow-[inset_0_1px_0_rgba(255,255,255,0.6)] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]`}>
+                      <div className="flex items-center gap-2.5 mb-4">
+                        <div className={`w-2.5 h-2.5 rounded-full ${phase === 'grooming' ? 'bg-purple-400' : phase === 'implementation' ? 'bg-blue-400' : phase === 'review' ? 'bg-amber-400' : 'bg-emerald-400'}`} />
+                        <h3 className="text-sm font-bold text-gray-800 dark:text-gray-100">{phaseLabel}</h3>
                       </div>
-                    )}
+                      {inPhase.length === 0 ? (
+                        <p className="text-[11px] text-gray-400">No templates configure this phase yet.</p>
+                      ) : (
+                        <div className="grid gap-5 md:grid-cols-2">
+                          <div>
+                            <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.08em] text-gray-400">Single agent</p>
+                            <div className="space-y-2.5">
+                              {singles.length === 0 && <p className="text-[11px] text-gray-400">None</p>}
+                              {singles.map(t => renderCard(t, 'single'))}
+                            </div>
+                          </div>
+                          <div>
+                            <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.08em] text-gray-400">Multi-agent team</p>
+                            <div className="space-y-2.5">
+                              {multis.length === 0 && <p className="text-[11px] text-gray-400">None</p>}
+                              {multis.map(t => renderCard(t, 'multi'))}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 );
               })}
             </div>
           )}
 
-          {/* Skills tab */}
+          {/* Skills tab — split layout: list left, editor right */}
           {tab === 'skills' && (
-            <div className="space-y-2.5 max-w-2xl">
-              <div className="flex justify-end">
-                <button
-                  onClick={() => setEditingSkill({ id: '', name: 'New Skill', body: '', path: '' })}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold bg-primary text-white hover:bg-primary-hover transition-colors"
-                >
-                  <Plus className="w-4 h-4" /> New Skill
-                </button>
-              </div>
-              {skills.map(skill => (
-                <div
-                  key={skill.id}
-                  className="group p-3 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-white/5 hover:border-primary/40 hover:shadow-sm transition-all cursor-pointer"
-                  onClick={() => setEditingSkill(skill)}
-                >
-                  <div className="flex items-center gap-2">
-                    <BookOpen className="w-3.5 h-3.5 text-primary/60 shrink-0" />
-                    <span className="text-sm font-semibold text-gray-800 dark:text-gray-100 flex-1 truncate">{skill.name}</span>
-                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
-                      <button onClick={() => setEditingSkill(skill)} title="Edit" className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-colors">
-                        <Pencil className="w-3 h-3" />
-                      </button>
-                      <button onClick={() => handleDuplicateSkill(skill)} title="Duplicate" className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-colors">
+            <div className="flex gap-0 h-full min-h-[500px]">
+              {/* Skill list */}
+              <div className={`space-y-2 overflow-y-auto pr-4 transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] ${editingSkill ? 'w-[280px] shrink-0' : 'flex-1 max-w-xl'}`}>
+                <div className="flex justify-between items-center mb-3">
+                  <span className="text-[10px] font-bold uppercase tracking-[0.08em] text-gray-500 dark:text-gray-400">{skills.length} skills</span>
+                  <button
+                    onClick={() => setEditingSkill({ id: '', name: 'New Skill', body: '', path: '' })}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-semibold bg-primary text-white hover:bg-primary-hover transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] active:scale-[0.97]"
+                  >
+                    <Plus className="w-3 h-3" /> New
+                  </button>
+                </div>
+                {skills.map(skill => (
+                  <div
+                    key={skill.id}
+                    className={`group p-3 rounded-xl cursor-pointer transition-all duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] border ${
+                      editingSkill?.id === skill.id
+                        ? 'bg-primary/[0.04] dark:bg-primary/[0.06] border-primary/30 ring-1 ring-primary/15'
+                        : 'border-gray-200/60 dark:border-white/[0.06] hover:border-gray-300 dark:hover:border-white/[0.1] bg-white dark:bg-white/[0.02] hover:bg-gray-50/50 dark:hover:bg-white/[0.03]'
+                    }`}
+                    onClick={() => setEditingSkill(skill)}
+                  >
+                    <div className="flex items-center gap-2">
+                      <BookOpen className={`w-3.5 h-3.5 shrink-0 transition-colors duration-200 ${editingSkill?.id === skill.id ? 'text-primary' : 'text-gray-400 dark:text-gray-500'}`} />
+                      <span className="text-[12px] font-semibold text-gray-800 dark:text-gray-100 flex-1 truncate">{skill.name}</span>
+                      <button
+                        onClick={e => { e.stopPropagation(); handleDuplicateSkill(skill); }}
+                        title="Duplicate"
+                        className="p-1 rounded-md opacity-0 group-hover:opacity-100 hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-all duration-200"
+                      >
                         <Copy className="w-3 h-3" />
                       </button>
                     </div>
+                    {!editingSkill && <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-1 ml-[22px] line-clamp-1 leading-relaxed">{skill.body.split('\n')[0]}</p>}
                   </div>
-                  <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 ml-5.5 line-clamp-2">{skill.body.split('\n')[0]}</p>
+                ))}
+              </div>
+              {/* Editor panel */}
+              {editingSkill && (
+                <div className="flex-1 ml-4 rounded-2xl border border-gray-200/60 dark:border-white/[0.06] bg-white dark:bg-[#1a1a18] shadow-[0_4px_24px_rgba(0,0,0,0.04)] dark:shadow-[0_4px_24px_rgba(0,0,0,0.3)] overflow-hidden">
+                  <SkillInlineEditor
+                    skill={editingSkill}
+                    onClose={() => setEditingSkill(null)}
+                    onSave={handleSaveSkill}
+                    onDelete={editingSkill.path ? () => handleDeleteSkill(editingSkill) : undefined}
+                    isSaving={skillSaving}
+                  />
                 </div>
-              ))}
+              )}
+              {!editingSkill && (
+                <div className="flex-1 flex items-center justify-center">
+                  <div className="text-center">
+                    <BookOpen className="w-8 h-8 mx-auto mb-3 text-gray-300 dark:text-gray-600" />
+                    <p className="text-sm text-gray-400 dark:text-gray-500">Select a skill to edit</p>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1098,15 +1173,6 @@ export function WorkflowBuilder() {
           personas={personas}
           onClose={() => { setCreatingTemplate(false); setEditingTemplate(null); }}
           onSaved={() => { setCreatingTemplate(false); setEditingTemplate(null); reloadTemplates(); }}
-        />
-      )}
-      {editingSkill && (
-        <SkillEditPanel
-          skill={editingSkill}
-          onClose={() => setEditingSkill(null)}
-          onSave={handleSaveSkill}
-          onDelete={editingSkill.path ? () => handleDeleteSkill(editingSkill) : undefined}
-          isSaving={skillSaving}
         />
       )}
     </div>
