@@ -29,9 +29,34 @@ import { getAdapter } from '../agents/index.js';
 import { updateTaskWithHistory } from '../task-store.js';
 import { resolvePersonaPrompt } from '../orchestration-personas.js';
 import { buildActivityEntry } from '../history.js';
+import { captureDiffForPrompt, type PromptDiffCapture } from '../branch-manager.js';
 import type { CliSessionRecord, CliFramework, ExecutionPattern, PatternPosition, GroupVariant } from '../agents/types.js';
 
 const router = express.Router();
+
+function formatDiffBlock(capture: PromptDiffCapture): string {
+  const lines = [
+    '## Scoped Diff (auto-injected)',
+    '',
+    `The following diff represents the changes under review (${capture.range}):`,
+    '',
+    '```diff',
+    capture.diff,
+    '```',
+  ];
+  if (capture.truncated) {
+    lines.push('', `Note: Diff truncated at 80KB. Run \`git diff ${capture.range}\` for the full output.`);
+  }
+  return lines.join('\n');
+}
+
+async function computeDiffBlockForTask(task: any): Promise<string | undefined> {
+  const branch = task.branch || null;
+  const baseline = task.baselineCommit || null;
+  const capture = await captureDiffForPrompt(branch, baseline);
+  if (!capture || !capture.diff.trim()) return undefined;
+  return formatDiffBlock(capture);
+}
 
 interface SpawnOptions {
   framework: CliFramework;
@@ -47,6 +72,7 @@ interface SpawnOptions {
   groupType?: ExecutionPattern;
   groupVariant?: GroupVariant;
   lockedPaths?: string[];
+  diffBlock?: string;
 }
 
 /**
@@ -88,6 +114,7 @@ async function spawnSession(task: any, opts: SpawnOptions): Promise<CliSessionRe
   if (opts.groupType) session.groupType = opts.groupType;
   if (opts.groupVariant) session.groupVariant = opts.groupVariant;
   if (opts.lockedPaths && opts.lockedPaths.length > 0) session.lockedPaths = opts.lockedPaths;
+  if (opts.diffBlock) session.diffBlock = opts.diffBlock;
 
   cliSessionsById.set(sessionId, session);
   registerSession(task.id, sessionId);
@@ -258,6 +285,12 @@ router.post('/:id/cli-session/start', async (req, res) => {
   }
 
   try {
+    // Inject pre-computed diff for scatter-gather review workers
+    let diffBlock: string | undefined;
+    if (groupType === 'scatter-gather' && patternPosition !== 'lead') {
+      diffBlock = await computeDiffBlockForTask(task);
+    }
+
     await spawnSession(task, {
       framework,
       appendPrompt,
@@ -272,6 +305,7 @@ router.post('/:id/cli-session/start', async (req, res) => {
       groupType,
       groupVariant,
       lockedPaths,
+      diffBlock,
     });
     res.status(201).json({ session: getCliSessionSummaryForTask(id) });
   } catch (error: any) {

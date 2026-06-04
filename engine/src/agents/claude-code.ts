@@ -128,7 +128,7 @@ export function flushSessionOutput(session: CliSessionRecord, force = false) {
   }, 1000);
 }
 
-export function buildInitialPrompt(task: any, appendPrompt: string): string {
+export function buildInitialPrompt(task: any, appendPrompt: string, opts?: { diffBlock?: string }): string {
   const readyStatus = (configCache as any)?.readyForMergeStatus || 'Ready';
   const taskStatus = (task as any).status || 'Unknown';
   const mcpNote = 'CRITICAL: Use the "event-horizon" MCP tools (change_status, update_ticket, add_comment, log_progress) for ALL ticket updates. Do NOT edit .flux/ files directly — direct edits corrupt session tracking.';
@@ -168,6 +168,7 @@ export function buildInitialPrompt(task: any, appendPrompt: string): string {
       return `- [${entry?.date || ''}] ${entry?.user || 'Unknown'}: ${entry?.comment || entry?.type || 'activity'}`;
     }) : ['- (No history)']),
     '',
+    ...(opts?.diffBlock ? [opts.diffBlock, ''] : []),
     actionInstruction,
     ...(appendPrompt ? ['', appendPrompt] : []),
   ];
@@ -324,7 +325,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     ? (groomingStatuses.includes(task.status) ? claudeIntegration.groomingModel : claudeIntegration.implementationModel)
     : null;
 
-  const initialPrompt = buildInitialPrompt(task, appendPrompt);
+  const initialPrompt = buildInitialPrompt(task, appendPrompt, { diffBlock: session.diffBlock });
 
   const claudeArgs = [
     ...(selectedModel ? ['--model', selectedModel] : []),

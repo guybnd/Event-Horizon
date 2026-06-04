@@ -127,6 +127,7 @@ export interface DiffCapture {
 }
 
 const DIFF_MAX_BYTES = 2 * 1024 * 1024;
+export const DIFF_PROMPT_MAX_BYTES = 80 * 1024;
 
 // Resolve the range to diff: branch mode (merge-base..tip) takes precedence; otherwise
 // baseline..HEAD; otherwise the single most recent commit on HEAD.
@@ -202,6 +203,32 @@ export async function captureDiff(branch?: string | null, baselineCommit?: strin
   }
 
   return { summary, fullDiff, truncated };
+}
+
+export interface PromptDiffCapture {
+  diff: string;
+  truncated: boolean;
+  range: string;
+}
+
+export async function captureDiffForPrompt(branch?: string | null, baselineCommit?: string | null): Promise<PromptDiffCapture | null> {
+  const range = await resolveDiffRange(branch, baselineCommit);
+  if (!range) return null;
+
+  try {
+    const { stdout } = await gitDiff(['diff', range]);
+    const byteLen = Buffer.byteLength(stdout, 'utf-8');
+    if (byteLen > DIFF_PROMPT_MAX_BYTES) {
+      return {
+        diff: stdout.slice(0, DIFF_PROMPT_MAX_BYTES),
+        truncated: true,
+        range,
+      };
+    }
+    return { diff: stdout, truncated: false, range };
+  } catch {
+    return null;
+  }
 }
 
 // Extract a single file's hunk from a unified diff blob. Simple parser — splits on

@@ -49,7 +49,7 @@ Your approach: collegial, constructive, and encouraging. You care about code qua
 
 Steps to follow:
 1. Read the full ticket description and all history comments — especially any **Acceptance criteria** — to understand what was intended.
-2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present) to see the actual changes.
+2. Review the scoped diff provided above. If no diff is present or you need additional context beyond what's shown, run \`git diff HEAD~1\`.
 3. Evaluate the implementation broadly:
    - **Correctness**: does it meet the acceptance criteria? edge cases, error states, regressions?
    - **Quality**: naming, readability, structure, test coverage, anything that would confuse a future maintainer.
@@ -76,7 +76,7 @@ Your approach: skeptical and systematic. You trace the diff against the ticket's
 
 Steps to follow:
 1. Read the full ticket description and all history comments — especially the **Acceptance criteria** and any **TEST CONDITIONS**. These are your checklist.
-2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present) and read the actual changes.
+2. Review the scoped diff provided above. If no diff is present or you need additional context beyond what's shown, run \`git diff HEAD~1\`.
 3. Verify methodically:
    - Walk each acceptance criterion and confirm the diff satisfies it. Call out any that are missing or only partially met.
    - Hunt **edge cases**: empty/null inputs, boundaries, concurrency, large inputs, unexpected order of operations.
@@ -103,7 +103,7 @@ Your approach: assume input is hostile until proven otherwise. You care about re
 
 Steps to follow:
 1. Read the full ticket description and history to understand what was built and where it sits (does it touch input handling, auth, file system, network, persistence, or user-rendered output?).
-2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present) and read the actual changes.
+2. Review the scoped diff provided above. If no diff is present or you need additional context beyond what's shown, run \`git diff HEAD~1\`.
 3. Audit for:
    - **Injection** (SQL/command/path/template) and unsafe deserialization
    - **Input validation & sanitization** at trust boundaries; XSS in rendered output
@@ -132,7 +132,7 @@ Your approach: terse, blunt, brutally honest. No softening. No hand-holding. If 
 
 Steps to follow:
 1. Read the full ticket description and all history comments.
-2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present).
+2. Review the scoped diff provided above. If no diff is present or you need additional context beyond what's shown, run \`git diff HEAD~1\`.
 3. Evaluate ruthlessly. Look for: bad naming, unnecessary complexity, missing error handling, confusing logic, wrong abstractions, obvious bugs, or anything that would make you question whether the author thought about what they were doing.
 4. Post your review using the \`add_comment\` MCP tool with a structured comment:
    - Start with **APPROVED** or **CHANGES NEEDED**
@@ -156,7 +156,7 @@ Your approach: you think in systems. You care about design patterns, separation 
 
 Steps to follow:
 1. Read the full ticket description and history to understand scope and constraints.
-2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present).
+2. Review the scoped diff provided above. If no diff is present or you need additional context beyond what's shown, run \`git diff HEAD~1\`.
 3. Evaluate architectural quality: Are responsibilities well-separated? Is the abstraction at the right level? Does this introduce hidden coupling? Will this scale? Are there simpler designs that achieve the same goal?
 4. Post your review using the \`add_comment\` MCP tool with a structured comment:
    - Start with **APPROVED** or **CHANGES NEEDED**
@@ -178,7 +178,7 @@ Your approach: you think in cycles, bytes, and render trees. You look for algori
 
 Steps to follow:
 1. Read the full ticket description and history to understand what was built.
-2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present).
+2. Review the scoped diff provided above. If no diff is present or you need additional context beyond what's shown, run \`git diff HEAD~1\`.
 3. Evaluate performance characteristics: O(n) where O(1) is possible? Unnecessary useEffect dependencies causing cascading re-renders? Large imports where tree-shaking won't help? Synchronous work on the main thread? Missing memoization on expensive computations?
 4. Post your review using the \`add_comment\` MCP tool with a structured comment:
    - Start with **APPROVED** or **CHANGES NEEDED**
@@ -200,7 +200,7 @@ Your approach: you think from the user's perspective first. You evaluate interac
 
 Steps to follow:
 1. Read the full ticket description and history to understand the intended user experience and what was built.
-2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present). Pay close attention to JSX, CSS classes, and event handlers.
+2. Review the scoped diff provided above. Pay close attention to JSX, CSS classes, and event handlers. If no diff is present or you need additional context beyond what's shown, run \`git diff HEAD~1\`.
 3. Evaluate UX/UI quality: Is the interaction model intuitive? Are loading, error, and empty states handled gracefully? Is the component accessible (keyboard nav, ARIA labels, focus management, color contrast)? Does it match the visual language of the rest of the portal? Are there confusing affordances or missing feedback?
 4. Post your review using the \`add_comment\` MCP tool with a structured comment:
    - Start with **APPROVED** or **CHANGES NEEDED**

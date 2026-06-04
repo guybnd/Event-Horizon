@@ -99,6 +99,8 @@ export interface CliSessionRecord extends CliSessionSummary {
   patternPosition?: PatternPosition;
   lockedPaths?: string[];
   outputData?: string;
+  /** Pre-computed diff block injected into the initial prompt (scatter-gather reviews). */
+  diffBlock?: string;
 }
 
 export interface AgentEvent {
