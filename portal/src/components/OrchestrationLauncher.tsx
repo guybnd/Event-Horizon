@@ -6,7 +6,7 @@ import {
   type OrchestrationMode,
   type ReviewPersona,
 } from '../agentActions';
-import { fetchOrchestrationPersonas } from '../api';
+import { fetchOrchestrationPersonas, fetchConfig, fetchWorkflows, type WorkflowPhaseConfig } from '../api';
 import type { CliFramework, CliSessionSummary } from '../types';
 import { type SessionGroup } from '../orchestration';
 import { OrchestrationTopology, TopologyGlyph } from './OrchestrationTopology';
@@ -45,6 +45,21 @@ const PHASE_HEADINGS: Record<string, string> = {
   review: 'Orchestrate agents',
   release: 'Release with agents',
 };
+
+/** Map a stored workflow execution pattern onto a launcher orchestration mode. */
+const PATTERN_TO_MODE: Record<string, OrchestrationMode> = {
+  relay: 'serialized',
+  scatter: 'scatter-gather',
+  supervisor: 'handoff',
+};
+
+/** Persona ids configured for a phase, regardless of how the pattern stores them. */
+function phaseConfigMembers(cfg: WorkflowPhaseConfig | undefined): string[] {
+  if (!cfg) return [];
+  if (cfg.pattern === 'relay') return cfg.steps ?? [];
+  if (cfg.pattern === 'supervisor') return cfg.assistants ?? [];
+  return cfg.parallel ?? [];
+}
 
 /** Build a synthetic run group so the topology preview matches what will launch. */
 function buildPreviewGroup(
@@ -93,6 +108,7 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
   const [comment, setComment] = useState('');
   const [personas, setPersonas] = useState<ReviewPersona[]>([]);
   const [personasLoading, setPersonasLoading] = useState(false);
+  const defaultAppliedRef = useRef(false);
   const overlayRef = useRef<HTMLDivElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const headingId = useId();
@@ -104,6 +120,7 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
       setMode('scatter-gather');
       setSelectedIds([]);
       setComment('');
+      defaultAppliedRef.current = false;
     }
   }, [open]);
 
@@ -122,6 +139,32 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
       .finally(() => { if (!cancelled) setPersonasLoading(false); });
     return () => { cancelled = true; };
   }, [open, phase]);
+
+  // Pre-populate mode + personas from the board default workflow for this phase.
+  useEffect(() => {
+    if (!open || personasLoading || defaultAppliedRef.current || personas.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const config = await fetchConfig();
+        const defaultId = config.defaultWorkflowId;
+        if (!defaultId) return;
+        const workflows = await fetchWorkflows();
+        const wf = workflows.find((w) => w.id === defaultId);
+        const cfg = wf?.phases?.[phase as keyof typeof wf.phases];
+        if (!cfg) return;
+        const memberIds = phaseConfigMembers(cfg).filter((id) => personas.some((p) => p.id === id));
+        if (cancelled || memberIds.length === 0) return;
+        const resolvedMode = PATTERN_TO_MODE[cfg.pattern];
+        if (resolvedMode) setMode(resolvedMode);
+        setSelectedIds(memberIds);
+        defaultAppliedRef.current = true;
+      } catch {
+        // No default to apply — leave the launcher at its blank defaults.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open, phase, personas, personasLoading]);
 
   useEffect(() => {
     if (!open) return;
