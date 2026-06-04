@@ -65,16 +65,14 @@ export async function migrateToOrphan(workspaceRoot: string): Promise<void> {
   }
 
   const { stdout: branchList } = await git(workspaceRoot, ['branch', '--list', 'flux-data']);
-  if (branchList.trim()) {
-    throw new Error('flux-data branch already exists — remove it with "git branch -D flux-data" before migrating');
-  }
+  const hasLocal = !!branchList.trim();
 
   // Check if remote already has flux-data (e.g. set up on another machine)
   const { stdout: remoteBranches } = await git(workspaceRoot, ['branch', '-r']).catch(() => ({ stdout: '' }));
   const hasRemote = remoteBranches.split('\n').some((l) => l.trim() === 'origin/flux-data');
 
-  if (hasRemote) {
-    await git(workspaceRoot, ['worktree', 'add', '-b', 'flux-data', storeDir, 'origin/flux-data']);
+  if (hasLocal || hasRemote) {
+    await git(workspaceRoot, ['worktree', 'add', storeDir, 'flux-data']);
 
     const gitignorePath = path.join(workspaceRoot, '.gitignore');
     const existing = await fs.readFile(gitignorePath, 'utf-8').catch(() => '');

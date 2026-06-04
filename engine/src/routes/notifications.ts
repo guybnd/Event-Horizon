@@ -10,7 +10,7 @@ import {
   checkSkillStaleness,
 } from '../notifications.js';
 import { installWorkspaceWorkflow, type Framework } from '../workflow-installer.js';
-import { workspaceRoot } from '../workspace.js';
+import { workspaceRoot, resolveSkillSourceRoot } from '../workspace.js';
 import { broadcastEvent } from '../events.js';
 
 const router = express.Router();
@@ -62,7 +62,7 @@ router.post('/:id/action', async (req, res) => {
   if (actionId === 'reinstall' && notification.framework && workspaceRoot) {
     try {
       const result = await installWorkspaceWorkflow({
-        sourceRoot: workspaceRoot,
+        sourceRoot: resolveSkillSourceRoot(),
         targetDir: workspaceRoot,
         framework: notification.framework as Framework,
       });
