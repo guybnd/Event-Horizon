@@ -20,6 +20,8 @@ import {
   unregisterPendingRelay,
   setRelayStepLauncher,
   notifyGroupSessionTerminal,
+  awaitDelegation,
+  cancelDelegation,
   type PendingCombinerSpec,
   type PendingRelaySpec,
 } from '../session-store.js';
@@ -381,6 +383,97 @@ router.post('/:id/cli-session/unregister-relay', (req, res) => {
   if (!groupId) return res.status(400).json({ error: 'groupId is required' });
   const removed = unregisterPendingRelay(groupId);
   res.json({ removed, groupId });
+});
+
+// ── Supervisor delegation endpoint ───────────────────────────────────────────
+// Spawns a child session and holds the HTTP response open until the child
+// reaches a terminal state. The MCP delegation tool calls this single endpoint
+// and awaits the response — no polling needed.
+router.post('/:id/cli-session/delegate', async (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+  if (!task) return res.status(404).json({ error: 'Task not found' });
+
+  const frameworkRaw = String(req.body?.framework || 'claude').trim().toLowerCase();
+  if (frameworkRaw !== 'claude' && frameworkRaw !== 'copilot' && frameworkRaw !== 'gemini') {
+    return res.status(400).json({ error: 'framework must be claude, copilot or gemini' });
+  }
+  const framework = frameworkRaw as CliFramework;
+  const personaId = typeof req.body?.personaId === 'string' ? req.body.personaId.trim() : '';
+  const taskPrompt = typeof req.body?.task === 'string' ? req.body.task.trim() : '';
+  const focusComment = typeof req.body?.focusComment === 'string' ? req.body.focusComment.trim() : '';
+  const effortOverride = typeof req.body?.effortOverride === 'string' ? req.body.effortOverride.trim() : '';
+  const skipPermissions = req.body?.skipPermissions !== false;
+  const timeoutMs = typeof req.body?.timeout === 'number' && req.body.timeout > 0
+    ? Math.min(req.body.timeout, 600_000)
+    : 300_000; // Default 5 minutes
+
+  // Parent session context (for grouping and topology rendering)
+  const parentSessionId = typeof req.body?.parentSessionId === 'string' ? req.body.parentSessionId.trim() : undefined;
+  const groupId = typeof req.body?.groupId === 'string' ? req.body.groupId.trim() : undefined;
+
+  if (!personaId && !taskPrompt) {
+    return res.status(400).json({ error: 'personaId or task is required' });
+  }
+
+  // Build the child's prompt: persona prompt (if any) + delegation task
+  let appendPrompt = '';
+  if (personaId) {
+    const resolved = resolvePersonaPrompt(personaId, focusComment);
+    if (!resolved) return res.status(400).json({ error: `Unknown personaId: ${personaId}` });
+    appendPrompt = resolved;
+  }
+  if (taskPrompt) {
+    appendPrompt = appendPrompt
+      ? `${appendPrompt}\n\n## Delegation Task\n\n${taskPrompt}`
+      : taskPrompt;
+  }
+
+  let session: CliSessionRecord;
+  try {
+    session = await spawnSession(task, {
+      framework,
+      appendPrompt,
+      effortOverride,
+      skipPermissions,
+      role: personaId ? `assistant:${personaId}` : 'assistant',
+      pattern: 'supervisor',
+      patternPosition: 'assistant',
+      groupId,
+      groupType: 'supervisor',
+      groupVariant: 'combiner',
+    });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message || 'Failed to spawn delegate' });
+  }
+
+  // Set up a race between delegation completion and timeout.
+  const delegationPromise = awaitDelegation(session.id);
+  const timeoutId = setTimeout(() => {
+    cancelDelegation(session.id, `Delegation timed out after ${timeoutMs / 1000}s`);
+    // Also kill the child process if still running.
+    const childSession = cliSessionsById.get(session.id);
+    if (childSession && ['pending', 'running', 'waiting-input'].includes(childSession.status)) {
+      childSession.requestedStop = true;
+      childSession.status = 'cancelled';
+      childSession.endedAt = new Date().toISOString();
+      try { getAdapter(childSession.framework).stop(childSession); } catch {}
+    }
+  }, timeoutMs);
+
+  try {
+    const result = await delegationPromise;
+    clearTimeout(timeoutId);
+    res.json({
+      sessionId: result.sessionId,
+      status: result.status,
+      output: result.output,
+      succeeded: result.succeeded,
+    });
+  } catch (error: any) {
+    clearTimeout(timeoutId);
+    res.status(500).json({ error: error.message || 'Delegation failed' });
+  }
 });
 
 router.post('/:id/cli-session/input', async (req, res) => {

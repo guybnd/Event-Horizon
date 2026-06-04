@@ -565,6 +565,129 @@ export async function startMcpServer(): Promise<void> {
     },
   );
 
+  // ─── Delegation Tools (Supervisor Pattern) ──────────────────────────────────
+  // These tools allow a supervisor lead agent to dynamically spawn child agents
+  // and receive their results. The MCP server calls the engine's long-poll
+  // delegation endpoint; the response blocks until the child finishes.
+
+  const ENGINE_URL = process.env.EVENT_HORIZON_ENGINE_URL || 'http://localhost:3067';
+
+  server.tool(
+    'list_available_agents',
+    'List available agent personas that can be delegated to. Returns id, label, description, and phase for each.',
+    {
+      phase: z.string().optional().describe('Filter by phase (grooming, implementation, review, release). Omit to see all.'),
+    },
+    async ({ phase }) => {
+      try {
+        const url = phase
+          ? `${ENGINE_URL}/api/orchestration/personas?phase=${encodeURIComponent(phase)}`
+          : `${ENGINE_URL}/api/orchestration/personas`;
+        const res = await fetch(url);
+        if (!res.ok) return errorResult('Failed to fetch agent roster');
+        const personas = await res.json();
+        const summary = personas.map((p: any) => ({
+          id: p.id,
+          label: p.label,
+          description: p.description,
+          phase: p.phase,
+        }));
+        return jsonResult(summary);
+      } catch (err: any) {
+        return errorResult(`Failed to list agents: ${err.message}`);
+      }
+    },
+  );
+
+  server.tool(
+    'delegate_to_agent',
+    'Delegate a task to a specialist agent. Spawns the agent, waits for it to finish, and returns its output. Use this when specialist knowledge would produce better results than doing the work yourself.',
+    {
+      ticketId: z.string().describe('Ticket ID the delegation is for'),
+      personaId: z.string().describe('Agent persona ID to delegate to (from list_available_agents)'),
+      task: z.string().describe('Clear description of what the delegate should do. Be specific about files, scope, and expected output format.'),
+      effort: z.string().optional().describe('Effort level for the delegate: low, medium, high (default: medium). Use low for quick checks, high for thorough work.'),
+      timeout: z.number().optional().describe('Timeout in seconds (default: 300, max: 600). The delegation fails if the agent takes longer.'),
+    },
+    async ({ ticketId, personaId, task: delegationTask, effort, timeout }) => {
+      try {
+        const timeoutMs = timeout ? Math.min(timeout * 1000, 600_000) : 300_000;
+        const res = await fetch(`${ENGINE_URL}/api/tasks/${ticketId}/cli-session/delegate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            framework: 'claude',
+            personaId,
+            task: delegationTask,
+            effortOverride: effort || '',
+            skipPermissions: true,
+            timeout: timeoutMs,
+          }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          return errorResult(`Delegation failed: ${err.error || res.statusText}`);
+        }
+        const result = await res.json();
+        if (!result.succeeded) {
+          return errorResult(`Delegate "${personaId}" ${result.status}: ${result.output || 'no output'}`);
+        }
+        return textResult(result.output || '(delegate produced no output)');
+      } catch (err: any) {
+        return errorResult(`Delegation error: ${err.message}`);
+      }
+    },
+  );
+
+  server.tool(
+    'delegate_parallel',
+    'Delegate tasks to multiple agents in parallel. All agents run simultaneously; returns when all finish. Use for independent work that benefits from different specialist perspectives.',
+    {
+      ticketId: z.string().describe('Ticket ID the delegations are for'),
+      delegations: z.array(z.object({
+        personaId: z.string().describe('Agent persona ID'),
+        task: z.string().describe('What this specific delegate should do'),
+        effort: z.string().optional().describe('Effort level: low, medium, high'),
+      })).describe('Array of delegation specs to run in parallel'),
+      timeout: z.number().optional().describe('Timeout in seconds for ALL delegations (default: 300, max: 600)'),
+    },
+    async ({ ticketId, delegations, timeout }) => {
+      const timeoutMs = timeout ? Math.min(timeout * 1000, 600_000) : 300_000;
+      const results = await Promise.allSettled(
+        delegations.map(async (d) => {
+          const res = await fetch(`${ENGINE_URL}/api/tasks/${ticketId}/cli-session/delegate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              framework: 'claude',
+              personaId: d.personaId,
+              task: d.task,
+              effortOverride: d.effort || '',
+              skipPermissions: true,
+              timeout: timeoutMs,
+            }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || res.statusText);
+          }
+          return res.json();
+        })
+      );
+
+      const output: any[] = results.map((r, i) => {
+        const persona = delegations[i]!.personaId;
+        if (r.status === 'fulfilled') {
+          const v = r.value as any;
+          return { persona, succeeded: v.succeeded, status: v.status, output: v.output || '(no output)' };
+        }
+        const reason = (r as PromiseRejectedResult).reason;
+        return { persona, succeeded: false, status: 'error', output: reason?.message || 'unknown error' };
+      });
+      return jsonResult(output);
+    },
+  );
+
   // ─── Start Transport ────────────────────────────────────────────────────────
 
   const transport = new StdioServerTransport();

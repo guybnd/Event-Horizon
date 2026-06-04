@@ -700,8 +700,8 @@ export function TaskModal() {
         personaId: p.id,
         focusComment: plan.comment || undefined,
       }));
-      // Combiner persona that synthesizes peer output, per phase.
-      const combiner = phaseCombiner(launcherPhase);
+      // Combiner/lead persona per phase and mode. Supervisor uses delegation-aware lead.
+      const combiner = phaseCombiner(launcherPhase, plan.mode);
       const lead = def.hasLead && combiner
         ? { role: combiner.personaId, label: combiner.label, personaId: combiner.personaId }
         : undefined;

@@ -455,9 +455,9 @@ export const TaskCard = memo(function TaskCard({
         personaId: p.id,
         focusComment: plan.comment || undefined,
       }));
-      // Combiner persona that synthesizes peer output, per phase. Release relays have none.
-      const combiner = phaseCombiner(launcherPhase);
-      const lead = def.hasLead && plan.personas.length > 1 && combiner
+      // Combiner/lead persona per phase and mode. Supervisor uses delegation-aware lead.
+      const combiner = phaseCombiner(launcherPhase, plan.mode);
+      const lead = def.hasLead && combiner
         ? { role: combiner.personaId, label: combiner.label, personaId: combiner.personaId }
         : undefined;
       await launchOrchestration({

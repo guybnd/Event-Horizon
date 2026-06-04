@@ -927,7 +927,7 @@ export function WorkflowBuilder() {
                         </li>
                       </ul>
                       <p className="mt-2 text-[11px] text-gray-500 dark:text-gray-400">
-                        A <strong>Single</strong> agent always launches standalone — the orchestration mode only applies once two or more personas are involved. Relay and Scatter-Gather run end-to-end today; Supervisor is coming soon.
+                        A <strong>Single</strong> agent always launches standalone — the orchestration mode only applies once two or more personas are involved. All four patterns (Scatter-Gather, Parallel, Relay, Supervisor) are fully functional.
                       </p>
                     </div>
                   </div>

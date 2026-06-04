@@ -332,6 +332,63 @@ export function unregisterPendingRelay(groupId: string): boolean {
   return pendingRelaysByGroup.delete(groupId);
 }
 
+// ── Supervisor delegation completion tracking ───────────────────────────────
+// When a supervisor lead delegates to a child agent, the HTTP request blocks
+// until the child finishes. We store a resolve callback per child session ID
+// so that `notifyGroupSessionTerminal` (or direct session-end) can unblock it.
+
+export interface DelegationResult {
+  sessionId: string;
+  status: string;
+  output: string;
+  succeeded: boolean;
+}
+
+type DelegationResolver = (result: DelegationResult) => void;
+const pendingDelegations = new Map<string, DelegationResolver>();
+
+/**
+ * Register a pending delegation: returns a Promise that resolves when the
+ * child session reaches a terminal state. Called by the delegation endpoint
+ * before spawning the child.
+ */
+export function awaitDelegation(sessionId: string): Promise<DelegationResult> {
+  return new Promise<DelegationResult>((resolve) => {
+    pendingDelegations.set(sessionId, resolve);
+  });
+}
+
+/**
+ * Called when any session reaches terminal state. If this session is a pending
+ * delegation, resolve its awaiter with the output.
+ */
+export function notifyDelegationComplete(session: CliSessionRecord): void {
+  const resolver = pendingDelegations.get(session.id);
+  if (!resolver) return;
+  pendingDelegations.delete(session.id);
+  resolver({
+    sessionId: session.id,
+    status: session.status,
+    output: session.outputData || session.cumulativeOutput || '',
+    succeeded: session.status === 'completed',
+  });
+}
+
+/**
+ * Cancel a pending delegation (e.g. on timeout). Resolves with a failure result.
+ */
+export function cancelDelegation(sessionId: string, reason: string): void {
+  const resolver = pendingDelegations.get(sessionId);
+  if (!resolver) return;
+  pendingDelegations.delete(sessionId);
+  resolver({
+    sessionId,
+    status: 'cancelled',
+    output: reason,
+    succeeded: false,
+  });
+}
+
 // File-lock enforcement: check if any active session holds a conflicting path lock
 export function checkPathConflicts(taskId: string, requestedPaths: string[]): { conflict: boolean; holder?: string; paths?: string[] } {
   if (!requestedPaths || requestedPaths.length === 0) return { conflict: false };

@@ -165,8 +165,11 @@ export function resolvePhaseDefaultId(
   return phaseDefaults?.[phase]?.[variant] || `builtin-${phase}-${variant}`;
 }
 
-/** Combiner persona that synthesizes peer output for a phase (none for finalize relays). */
-export function phaseCombiner(phase: LaunchPhase): { personaId: string; label: string } | undefined {
+/** Combiner/lead persona for a phase. Supervisor pattern uses a delegation-aware lead. */
+export function phaseCombiner(phase: LaunchPhase, mode?: OrchestrationMode): { personaId: string; label: string } | undefined {
+  if (mode === 'handoff') {
+    return { personaId: 'supervisor', label: 'Supervisor' };
+  }
   switch (phase) {
     case 'grooming': return { personaId: 'planner', label: 'Planner' };
     case 'implementation': return { personaId: 'orchestrator', label: 'Orchestrator' };
@@ -227,12 +230,12 @@ export const ORCHESTRATION_MODES: OrchestrationModeDef[] = [
   {
     id: 'handoff',
     label: 'Hand-off',
-    blurb: 'A lead agent delegates to assistants and resumes once they report back.',
+    blurb: 'A lead agent delegates to assistants dynamically using MCP tools — it decides who to call and when.',
     pattern: 'supervisor',
     variant: 'combiner',
     topology: 'tree',
     hasLead: true,
-    launchable: false,
+    launchable: true,
     minAgents: 1,
   },
 ];
@@ -325,7 +328,33 @@ export async function launchOrchestration(opts: {
     }
   }
 
-  // ── Scatter-gather / parallel / supervisor ───────────────────────────────
+  // ── Supervisor: launch only the lead with delegation context ─────────────
+  if (def.pattern === 'supervisor' && lead) {
+    // Build the delegation roster so the lead knows who's available.
+    const rosterLines = participants.map(p => `- **${p.label}** (id: \`${p.personaId}\`): ${p.focusComment || 'general specialist'}`);
+    const rosterContext = `## Available Agents for Delegation\n\nYou can delegate to these specialists using the \`delegate_to_agent\` MCP tool:\n\n${rosterLines.join('\n')}\n\nUse \`list_available_agents\` to see the full roster if you need specialists not listed above. Delegate only when specialist knowledge adds value — handle simple tasks yourself.`;
+
+    try {
+      const leadSession = await startTaskCliSessionEx(taskId, {
+        framework,
+        personaId: lead.personaId,
+        focusComment: rosterContext + (lead.focusComment ? `\n\n${lead.focusComment}` : ''),
+        skipPermissions,
+        effortOverride,
+        role: lead.role,
+        pattern: 'supervisor',
+        patternPosition: 'lead',
+        groupId,
+        groupType: 'supervisor',
+        groupVariant: def.variant,
+      });
+      return { sessions: [leadSession], errors: [] };
+    } catch (err: any) {
+      throw new Error(`${lead.label}: ${err?.message || 'failed to launch supervisor lead'}`);
+    }
+  }
+
+  // ── Scatter-gather / parallel ──────────────────────────────────────────────
 
   // A combiner/lead only earns its keep when there are multiple workers to
   // synthesize. With a single participant, skip it entirely and just run that
