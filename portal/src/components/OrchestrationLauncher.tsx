@@ -30,11 +30,21 @@ interface Props {
   ticket: LauncherTicketInfo | null;
   /** Framework all sessions launch with (Claude Code for now). */
   framework: CliFramework;
+  /** Ticket phase — drives which personas are offered. Defaults to 'review'. */
+  phase?: string;
   onClose: () => void;
   onLaunch: (plan: OrchestrationLaunchPlan) => void;
   busy?: boolean;
   error?: string;
 }
+
+/** Phase-aware dialog heading. */
+const PHASE_HEADINGS: Record<string, string> = {
+  grooming: 'Groom with agents',
+  implementation: 'Implement with agents',
+  review: 'Orchestrate agents',
+  release: 'Release with agents',
+};
 
 /** Build a synthetic run group so the topology preview matches what will launch. */
 function buildPreviewGroup(
@@ -77,7 +87,7 @@ function buildPreviewGroup(
   };
 }
 
-export function OrchestrationLauncher({ open, ticket, framework, onClose, onLaunch, busy, error }: Props) {
+export function OrchestrationLauncher({ open, ticket, framework, phase = 'review', onClose, onLaunch, busy, error }: Props) {
   const [mode, setMode] = useState<OrchestrationMode>('scatter-gather');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [comment, setComment] = useState('');
@@ -106,12 +116,12 @@ export function OrchestrationLauncher({ open, ticket, framework, onClose, onLaun
     if (!open) return;
     let cancelled = false;
     setPersonasLoading(true);
-    fetchOrchestrationPersonas()
+    fetchOrchestrationPersonas(phase)
       .then((list) => { if (!cancelled) setPersonas(list); })
       .catch(() => { if (!cancelled) setPersonas([]); })
       .finally(() => { if (!cancelled) setPersonasLoading(false); });
     return () => { cancelled = true; };
-  }, [open]);
+  }, [open, phase]);
 
   useEffect(() => {
     if (!open) return;
@@ -167,7 +177,7 @@ export function OrchestrationLauncher({ open, ticket, framework, onClose, onLaun
       <div ref={dialogRef} tabIndex={-1} className="relative z-10 flex max-h-[90vh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl outline-none dark:border-white/10 dark:bg-[#1a1b23]">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-gray-100 px-5 py-3 dark:border-white/5">
-          <h3 id={headingId} className="text-sm font-bold text-gray-900 dark:text-gray-100">Orchestrate agents</h3>
+          <h3 id={headingId} className="text-sm font-bold text-gray-900 dark:text-gray-100">{PHASE_HEADINGS[phase] ?? 'Orchestrate agents'}</h3>
           <button
             onClick={onClose}
             className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/10 dark:hover:text-gray-200"

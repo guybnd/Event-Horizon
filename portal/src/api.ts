@@ -433,13 +433,16 @@ export interface OrchestrationPersonaMeta {
   id: string;
   label: string;
   description: string;
+  /** Ticket phase this persona belongs to (grooming | implementation | review | release). */
+  phase: string;
   compatiblePatterns: string[];
   requiredCapabilities: string[];
 }
 
 /** Fetch the selectable orchestration personas (metadata only) from the engine. */
-export async function fetchOrchestrationPersonas(): Promise<OrchestrationPersonaMeta[]> {
-  const res = await fetch(`${API_URL}/orchestration/personas`);
+export async function fetchOrchestrationPersonas(phase?: string): Promise<OrchestrationPersonaMeta[]> {
+  const qs = phase ? `?phase=${encodeURIComponent(phase)}` : '';
+  const res = await fetch(`${API_URL}/orchestration/personas${qs}`);
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
     throw new Error(payload.error || 'Failed to load orchestration personas');

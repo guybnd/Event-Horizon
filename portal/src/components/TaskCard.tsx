@@ -9,7 +9,7 @@ import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, Message
 import { TokenBadge } from './TokenBadge';
 import { useApp } from '../AppContext';
 import { sendTaskCliInput, updateTask } from '../api';
-import { runAgentAction, launchOrchestration, getOrchestrationMode } from '../agentActions';
+import { runAgentAction, launchOrchestration, getOrchestrationMode, phaseLaunchStatus, type LaunchPhase } from '../agentActions';
 import { CodeReviewButton } from './CodeReviewButton';
 import { OrchestrationLauncher, type OrchestrationLaunchPlan } from './OrchestrationLauncher';
 import { getArchiveStatus, getReadyForMergeStatus, isPromptableStatus, relativeTime } from '../workflow';
@@ -221,6 +221,7 @@ export const TaskCard = memo(function TaskCard({
   const [actionBusy, setActionBusy] = useState(false);
   const [reviewSelectorOpen, setReviewSelectorOpen] = useState(false);
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
+  const [launcherPhase, setLauncherPhase] = useState<LaunchPhase>('review');
   const [reviewBusy, setReviewBusy] = useState(false);
   const [returnPromptOpen, setReturnPromptOpen] = useState(false);
   const [returnReason, setReturnReason] = useState('');
@@ -337,12 +338,13 @@ export const TaskCard = memo(function TaskCard({
       const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
       const def = getOrchestrationMode(plan.mode);
       const participants = plan.personas.map(p => ({
-        role: `reviewer:${p.id}`,
+        role: `${launcherPhase}:${p.id}`,
         label: p.label,
         personaId: p.id,
         focusComment: plan.comment || undefined,
       }));
-      const lead = def.hasLead
+      // Only the review phase ships a combiner persona (orchestrator) today.
+      const lead = def.hasLead && launcherPhase === 'review'
         ? { role: 'orchestrator', label: 'Orchestrator', personaId: 'orchestrator' }
         : undefined;
       await launchOrchestration({
@@ -352,7 +354,7 @@ export const TaskCard = memo(function TaskCard({
         participants,
         lead,
         currentUser,
-        preStatus: 'In Progress',
+        preStatus: phaseLaunchStatus(launcherPhase),
       });
       triggerRefresh();
     } finally {
@@ -1218,7 +1220,7 @@ export const TaskCard = memo(function TaskCard({
                   compact
                   busy={reviewBusy}
                   disabled={false}
-                  onClick={() => setReviewModalOpen(true)}
+                  onClick={() => { setLauncherPhase('review'); setReviewModalOpen(true); }}
                 />
                 {/* Return */}
                 <button
@@ -1587,6 +1589,7 @@ export const TaskCard = memo(function TaskCard({
           open={reviewModalOpen}
           ticket={{ id: task.id, title: task.title || 'Untitled', status: task.status, branch: task.branch }}
           framework={resolveEffectiveAgent(undefined, config?.defaultAgent)}
+          phase={launcherPhase}
           onClose={() => setReviewModalOpen(false)}
           onLaunch={handleCardReviewLaunch}
           busy={reviewBusy}

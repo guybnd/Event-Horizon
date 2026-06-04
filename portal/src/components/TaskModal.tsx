@@ -15,11 +15,12 @@ import {
   Trash2,
   X,
   Bot,
+  Network,
   Zap,
 } from 'lucide-react';
 import { useApp } from '../AppContext';
 import { createTask, deleteTask, fetchTask, sendTaskCliInput, updateTask } from '../api';
-import { runAgentAction, launchOrchestration, getOrchestrationMode } from '../agentActions';
+import { runAgentAction, launchOrchestration, getOrchestrationMode, phaseLaunchStatus, statusToPhase, type LaunchPhase } from '../agentActions';
 import { LaunchAgentSplitButton } from './LaunchAgentSplitButton';
 import { OrchestrationLauncher, type OrchestrationLaunchPlan } from './OrchestrationLauncher';
 import { isAgentSession } from '../types';
@@ -663,6 +664,13 @@ export function TaskModal() {
   }, [modalTask, currentUser, readyForMergeStatus, preReadyStatus, title, body, assignee, tags, priority, effort, effortLevel, implementationLink, setModalTask, triggerRefresh, closeModal, launchSession]);
 
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
+  const [launcherPhase, setLauncherPhase] = useState<LaunchPhase>('review');
+
+  const openLauncher = useCallback((phase: LaunchPhase) => {
+    setLauncherPhase(phase);
+    setReviewError('');
+    setReviewModalOpen(true);
+  }, []);
 
   const handleReviewLaunch = useCallback(async (plan: OrchestrationLaunchPlan) => {
     if (!modalTask?.id) return;
@@ -671,12 +679,13 @@ export function TaskModal() {
     try {
       const def = getOrchestrationMode(plan.mode);
       const participants = plan.personas.map(p => ({
-        role: `reviewer:${p.id}`,
+        role: `${launcherPhase}:${p.id}`,
         label: p.label,
         personaId: p.id,
         focusComment: plan.comment || undefined,
       }));
-      const lead = def.hasLead
+      // Only the review phase ships a combiner persona (orchestrator) today.
+      const lead = def.hasLead && launcherPhase === 'review'
         ? { role: 'orchestrator', label: 'Orchestrator', personaId: 'orchestrator' }
         : undefined;
       const { sessions, errors } = await launchOrchestration({
@@ -687,7 +696,7 @@ export function TaskModal() {
         lead,
         currentUser,
         skipPermissions,
-        preStatus: 'In Progress',
+        preStatus: phaseLaunchStatus(launcherPhase),
       });
       if (sessions.length > 0) setCliSession(sessions[0]);
       if (errors.length > 0) {
@@ -704,7 +713,7 @@ export function TaskModal() {
     } finally {
       setReviewBusy(false);
     }
-  }, [modalTask?.id, selectedCliFramework, skipPermissions, currentUser, setCliSession, triggerRefresh, closeModal]);
+  }, [modalTask?.id, selectedCliFramework, skipPermissions, currentUser, launcherPhase, setCliSession, triggerRefresh, closeModal]);
 
   const sendFinishCommand = useCallback(async () => {
     if (!modalTask?.id) return;
@@ -948,7 +957,7 @@ export function TaskModal() {
       onReturnToWork={() => void handleReturnToWork()}
       onReturnToWorkAndLaunch={() => void handleReturnToWork({ launch: true })}
       onFinish={sendFinishCommand}
-      onOpenReviewModal={() => setReviewModalOpen(true)}
+      onOpenReviewModal={() => openLauncher('review')}
       onSetReturnToWorkOpen={setReturnToWorkOpen}
       onSetIsFullView={setIsFullView}
       onSetIsPromptModalOpen={setIsPromptModalOpen}
@@ -1364,13 +1373,25 @@ export function TaskModal() {
                   );
                 }
                 return (
-                  <LaunchAgentSplitButton
-                    size="sm"
-                    busy={cliSessionBusy}
-                    disabled={!modalTask?.id}
-                    onLaunch={handleLaunchWithBranchCheck}
-                    icon={FRAMEWORK_ICONS[selectedCliFramework]}
-                  />
+                  <>
+                    <button
+                      type="button"
+                      disabled={!modalTask?.id}
+                      onClick={() => openLauncher(statusToPhase(status, { readyStatus: readyForMergeStatus }))}
+                      title="Orchestrate agents for this ticket's phase"
+                      className="flex items-center gap-1.5 rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-100 disabled:opacity-50 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
+                    >
+                      <Network className="h-3.5 w-3.5" />
+                      Orchestrate
+                    </button>
+                    <LaunchAgentSplitButton
+                      size="sm"
+                      busy={cliSessionBusy}
+                      disabled={!modalTask?.id}
+                      onLaunch={handleLaunchWithBranchCheck}
+                      icon={FRAMEWORK_ICONS[selectedCliFramework]}
+                    />
+                  </>
                 );
               })()}
               <button onClick={handleCloseAttempt} className="rounded p-2 text-gray-400 transition-colors hover:bg-gray-200 hover:text-gray-700 dark:hover:bg-white/5 dark:hover:text-white">
@@ -1736,6 +1757,7 @@ export function TaskModal() {
       open={reviewModalOpen}
       ticket={modalTask?.id ? { id: modalTask.id, title: modalTask.title || 'Untitled', status: modalTask.status, branch: modalTask.branch } : null}
       framework={selectedCliFramework}
+      phase={launcherPhase}
       onClose={() => setReviewModalOpen(false)}
       onLaunch={handleReviewLaunch}
       busy={reviewBusy}

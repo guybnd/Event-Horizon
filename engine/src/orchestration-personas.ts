@@ -1,4 +1,5 @@
 import type { ExecutionPattern, CliCapabilities } from './agents/types.js';
+import type { Phase } from './models/workflow.js';
 
 /**
  * Server-side orchestration persona catalog.
@@ -12,6 +13,8 @@ export interface OrchestrationPersona {
   id: string;
   label: string;
   description: string;
+  /** Ticket phase this persona belongs to (drives phase-aware launch filtering). */
+  phase: Phase;
   /** Orchestration modes this persona can participate in. Empty = any mode. */
   compatiblePatterns: ExecutionPattern[];
   /** CLI capabilities the persona needs. Empty = runnable on any framework. */
@@ -28,6 +31,7 @@ export const ORCHESTRATION_PERSONAS: OrchestrationPersona[] = [
     id: 'senior-dev',
     label: 'Senior Friendly Dev',
     description: 'Collegial, constructive — quality, readability & maintainability',
+    phase: 'review',
     compatiblePatterns: [],
     requiredCapabilities: [],
     prompt: `You are acting as a senior friendly developer performing a thorough code review of this ticket's implementation.
@@ -51,6 +55,7 @@ Keep your tone warm but precise. Lead with the most important feedback.`,
     id: 'angry-linus',
     label: 'Angry Linus',
     description: 'Brutally honest — no softening, no hand-holding',
+    phase: 'review',
     compatiblePatterns: [],
     requiredCapabilities: [],
     prompt: `You are acting as an angry Linus Torvalds performing a code review of this ticket's implementation.
@@ -74,6 +79,7 @@ Do not pad your response. Be direct.`,
     id: 'architect',
     label: 'Architect Genius',
     description: 'System design, patterns, separation of concerns, scalability',
+    phase: 'review',
     compatiblePatterns: [],
     requiredCapabilities: [],
     prompt: `You are acting as an elite software architect performing a code review of this ticket's implementation.
@@ -95,6 +101,7 @@ IMPORTANT: Do NOT use \`change_status\`. You are one of potentially multiple rev
     id: 'perf-expert',
     label: 'Performance Expert',
     description: 'Complexity, hot paths, bundle size, memory, re-renders',
+    phase: 'review',
     compatiblePatterns: [],
     requiredCapabilities: [],
     prompt: `You are acting as a performance engineering expert performing a code review of this ticket's implementation.
@@ -116,6 +123,7 @@ IMPORTANT: Do NOT use \`change_status\`. You are one of potentially multiple rev
     id: 'ux-expert',
     label: 'UX/UI Expert',
     description: 'Usability, accessibility, interaction design, visual consistency',
+    phase: 'review',
     compatiblePatterns: [],
     requiredCapabilities: [],
     prompt: `You are acting as a senior UX/UI expert performing a code review of this ticket's implementation.
@@ -133,6 +141,45 @@ Steps to follow:
 
 IMPORTANT: Do NOT use \`change_status\`. You are one of potentially multiple reviewers — an orchestrator will synthesize all reviews and decide the next step.`,
   },
+  {
+    id: 'planner',
+    label: 'Planner',
+    description: 'Turns requirements into a concrete, sequenced implementation plan',
+    phase: 'grooming',
+    compatiblePatterns: [],
+    requiredCapabilities: [],
+    prompt: `You are acting as a planning agent grooming this ticket. Your job is to turn the requirements into a concrete, actionable implementation plan — not to write code.
+
+Steps to follow:
+1. Read the full ticket description and all history comments to understand the intent, constraints, and any prior decisions.
+2. Explore the relevant parts of the codebase to ground the plan in how things actually work today. Identify the smallest surface that owns the change.
+3. If an implementation-critical decision is genuinely ambiguous, post ONE clear question with a proposed default using the \`change_status\` MCP tool to move the ticket to "Require Input"; otherwise continue.
+4. Rewrite the ticket body via \`update_ticket\` with:
+   - **Problem / Motivation** (1-3 sentences)
+   - **Implementation plan**: concrete, sequenced steps another agent could pick up without re-discovery, naming the key files.
+   - Filled metadata (priority, effort, tags) where inferable.
+5. When the plan is solid and no input is pending, use \`change_status\` to move the ticket to "Todo". Do not start coding.
+
+Keep the plan tight and specific. Prefer the smallest change that satisfies the intent.`,
+  },
+  {
+    id: 'implementer',
+    label: 'Implementer',
+    description: 'Implements the ticket plan in the smallest correct change',
+    phase: 'implementation',
+    compatiblePatterns: [],
+    requiredCapabilities: [],
+    prompt: `You are acting as an implementation agent building this ticket. Your job is to implement the planned change correctly in the smallest reasonable surface.
+
+Steps to follow:
+1. Read the full ticket description and all history comments to understand the plan and any review feedback.
+2. Use \`change_status\` to move the ticket to "In Progress" before the first substantive code change (if it isn't already).
+3. Implement the change in the smallest owning surface. Read nearby files first; match existing conventions. Validate as you go (build/tests) after the first edit.
+4. Use \`log_progress\` to record meaningful progress, scope changes, or validation failures. If you hit a genuine blocker needing a decision, use \`change_status\` to "Require Input" with a concrete question + proposed default.
+5. When the work is implemented and validated, use \`change_status\` to move the ticket to "Ready" with a comment summarizing what was implemented, what you validated, and any caveats. Do not commit — the user finalizes via the finish handoff.
+
+Prefer correctness and minimal footprint over cleverness. Do not add features, refactors, or abstractions beyond what the ticket asks.`,
+  },
 ];
 
 /**
@@ -144,6 +191,7 @@ export const ORCHESTRATOR_PERSONA: OrchestrationPersona = {
   id: 'orchestrator',
   label: 'Orchestrator',
   description: 'Synthesizes reviewer findings and decides the next status',
+  phase: 'review',
   compatiblePatterns: ['scatter-gather', 'supervisor'],
   requiredCapabilities: [],
   prompt: `You are a code review orchestrator. Your job is to wait for all reviewer sessions to complete, then synthesize their findings into an actionable summary.
@@ -179,9 +227,15 @@ export function toPersonaMeta(p: OrchestrationPersona): OrchestrationPersonaMeta
   return meta;
 }
 
-/** Metadata for all user-selectable reviewer personas (no prompts, no orchestrator). */
-export function listSelectablePersonaMeta(): OrchestrationPersonaMeta[] {
-  return ORCHESTRATION_PERSONAS.map(toPersonaMeta);
+/**
+ * Metadata for user-selectable personas (no prompts, no orchestrator). Pass a
+ * `phase` to return only the personas configured for that ticket phase.
+ */
+export function listSelectablePersonaMeta(phase?: Phase): OrchestrationPersonaMeta[] {
+  const personas = phase
+    ? ORCHESTRATION_PERSONAS.filter((p) => p.phase === phase)
+    : ORCHESTRATION_PERSONAS;
+  return personas.map(toPersonaMeta);
 }
 
 /**

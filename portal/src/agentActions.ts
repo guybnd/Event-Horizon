@@ -109,6 +109,38 @@ export interface MultiReviewResult {
 
 export type OrchestrationMode = 'scatter-gather' | 'parallel' | 'serialized' | 'handoff';
 
+/** Ticket lifecycle phase a launch belongs to. Drives which personas are offered. */
+export type LaunchPhase = 'grooming' | 'implementation' | 'review' | 'release';
+
+/**
+ * Map a board status to the launch phase whose personas apply. Uses the board's
+ * configured review status; everything before review is implementation, the
+ * grooming column maps to grooming, terminal columns fall back to review.
+ */
+export function statusToPhase(
+  status: string | undefined,
+  opts?: { readyStatus?: string; groomingStatus?: string },
+): LaunchPhase {
+  const s = (status || '').trim();
+  const readyStatus = (opts?.readyStatus || 'Ready').trim();
+  const groomingStatus = (opts?.groomingStatus || 'Grooming').trim();
+  if (!s) return 'implementation';
+  if (s === groomingStatus || /^groom/i.test(s)) return 'grooming';
+  if (s === readyStatus || /^review/i.test(s)) return 'review';
+  if (/^(done|archived|released)$/i.test(s)) return 'review';
+  return 'implementation';
+}
+
+/** Default board status to move a ticket to when launching agents for a phase. */
+export function phaseLaunchStatus(phase: LaunchPhase): string | undefined {
+  switch (phase) {
+    case 'grooming': return 'Grooming';
+    case 'implementation': return 'In Progress';
+    case 'review': return 'In Progress';
+    default: return undefined;
+  }
+}
+
 export interface OrchestrationModeDef {
   id: OrchestrationMode;
   label: string;

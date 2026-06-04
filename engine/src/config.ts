@@ -43,6 +43,7 @@ export let configCache: any = {
     releaseNotesPath: 'release-notes'
   },
   defaultAgent: 'claude',
+  defaultWorkflowId: '',
   integrations: {
     claudeCode: {
       groomingModel: '',
