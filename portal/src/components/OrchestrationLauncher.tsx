@@ -4,6 +4,7 @@ import {
   ORCHESTRATION_MODES,
   getOrchestrationMode,
   resolvePhaseDefaultId,
+  effortDisplayLabel,
   EFFORT_LEVELS,
   type EffortLevel,
   type LaunchPhase,
@@ -38,7 +39,7 @@ interface Props {
   /** Framework all sessions launch with (Claude Code for now). */
   framework: CliFramework;
   /** Ticket phase — drives which personas are offered. Defaults to 'review'. */
-  phase?: string;
+  phase?: LaunchPhase;
   /** Template to pre-select on open (e.g. the Single/Multi choice from a card). Falls back to the board default. */
   initialTemplateId?: string;
   onClose: () => void;
@@ -48,7 +49,7 @@ interface Props {
 }
 
 /** Phase-aware dialog heading. */
-const PHASE_HEADINGS: Record<string, string> = {
+const PHASE_HEADINGS: Record<LaunchPhase, string> = {
   grooming: 'Groom with agents',
   implementation: 'Implement with agents',
   review: 'Orchestrate agents',
@@ -168,7 +169,7 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
   // Apply a template's config for the current phase onto mode + selected personas.
   const applyTemplate = useCallback((wf: WorkflowTemplate | undefined) => {
     if (!wf) return;
-    const cfg = wf.phases?.[phase as keyof typeof wf.phases];
+    const cfg = wf.phases?.[phase];
     if (!cfg) return;
     const memberIds = phaseConfigMembers(cfg).filter((id) => personas.some((p) => p.id === id));
     const resolvedMode = PATTERN_TO_MODE[cfg.pattern];
@@ -188,7 +189,7 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
 
   // Templates that define a config for the current phase (the only ones worth offering).
   const templatesForPhase = useMemo(
-    () => templates.filter((w) => w.phases?.[phase as keyof typeof w.phases]),
+    () => templates.filter((w) => w.phases?.[phase]),
     [templates, phase],
   );
 
@@ -201,7 +202,7 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
         let targetId = initialTemplateId;
         if (!targetId) {
           const config = await fetchConfig();
-          targetId = resolvePhaseDefaultId(config.phaseDefaults, phase as LaunchPhase, 'single');
+          targetId = resolvePhaseDefaultId(config.phaseDefaults, phase, 'single');
         }
         if (cancelled || !targetId) return;
         const wf = templates.find((w) => w.id === targetId);
@@ -382,8 +383,8 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
                 <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">
                   Reasoning effort
                 </label>
-                <span className="text-[10px] font-bold capitalize text-primary">
-                  {effort === '' ? 'Default' : effort}
+                <span className="text-[10px] font-bold text-primary">
+                  {effort === '' ? 'Default' : effortDisplayLabel(effort)}
                 </span>
               </div>
               <input
@@ -402,7 +403,7 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
               <div className="mt-1 flex justify-between text-[8px] font-semibold uppercase tracking-wide text-gray-400">
                 <span>Default</span>
                 {EFFORT_LEVELS.map((lvl) => (
-                  <span key={lvl} className={effort === lvl ? 'text-primary' : undefined}>{lvl}</span>
+                  <span key={lvl} className={effort === lvl ? 'text-primary' : undefined}>{effortDisplayLabel(lvl)}</span>
                 ))}
               </div>
             </div>

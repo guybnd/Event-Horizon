@@ -632,9 +632,9 @@ export async function setupPath(mode: 'auto' | 'instructional'): Promise<{ ok: b
 
 export async function stopTaskCliSession(
   taskId: string,
-  opts?: string | { sessionId?: string; groupId?: string; stopAll?: boolean },
+  opts?: { sessionId?: string; groupId?: string; stopAll?: boolean },
 ): Promise<CliSessionSummary> {
-  const body = typeof opts === 'string' ? { sessionId: opts } : (opts ?? {});
+  const body = opts ?? {};
   const hasBody = !!(body.sessionId || body.groupId || body.stopAll);
   const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/stop`, {
     method: 'POST',

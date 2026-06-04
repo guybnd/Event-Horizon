@@ -12,6 +12,13 @@ export type ReviewPersona = OrchestrationPersonaMeta;
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type EffortLevel = typeof EFFORT_LEVELS[number];
 
+const EFFORT_DISPLAY: Record<EffortLevel, string> = {
+  low: 'Low', medium: 'Medium', high: 'High', xhigh: 'X-High', max: 'Max',
+};
+export function effortDisplayLabel(level: EffortLevel): string {
+  return EFFORT_DISPLAY[level];
+}
+
 export type AgentCommandVerb = 'implement' | 'groom' | 'finish';
 
 export interface AgentCommandDef {
@@ -116,6 +123,10 @@ export type LaunchPhase = 'grooming' | 'implementation' | 'review' | 'finalize';
  * Map a board status to the launch phase whose personas apply. Uses the board's
  * configured review status; everything before review is implementation, the
  * grooming column maps to grooming, terminal columns fall back to review.
+ *
+ * Note: never returns 'finalize' — that phase is action-triggered (user clicks
+ * Finish), not status-driven. The LaunchPhase union includes it for template
+ * resolution and persona filtering, but status mapping skips it intentionally.
  */
 export function statusToPhase(
   status: string | undefined,

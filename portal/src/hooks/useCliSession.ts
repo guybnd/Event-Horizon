@@ -97,7 +97,7 @@ export function useCliSession({ isModalOpen, taskId, liveOutputRef, onSessionCha
     setCliSessionBusy(true);
     setCliSessionError('');
     try {
-      const session = await stopTaskCliSession(taskId, sessionId);
+      const session = await stopTaskCliSession(taskId, sessionId ? { sessionId } : undefined);
       setCliSession(session);
       onSessionChange?.();
     } catch (error: unknown) {

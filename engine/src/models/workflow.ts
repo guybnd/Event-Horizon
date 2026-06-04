@@ -14,6 +14,8 @@ export interface WorkflowPhaseConfig {
   combiner?: string;
   lead?: string;
   assistants?: string[];
+  /** Override the built-in combiner persona for multi-agent launches in this phase. */
+  combinerPersonaId?: string;
 }
 
 export interface WorkflowTemplate {
