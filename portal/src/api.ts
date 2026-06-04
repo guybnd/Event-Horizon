@@ -933,3 +933,59 @@ export async function fetchTaskDiff(taskId: string, file?: string): Promise<stri
   if (!res.ok) throw new Error('Failed to fetch diff');
   return res.text();
 }
+
+// ─── Bootstrap ──────────────────────────────────────────────────────────────
+
+export interface BootstrapDocItem {
+  relativePath: string;
+  type: 'folder' | 'file';
+  sizeLines: number;
+}
+
+export interface BootstrapTaskItem {
+  title: string;
+  body?: string;
+  sourceFile: string;
+  lineNumber: number;
+  extractionMode: 'checklist' | 'heading';
+}
+
+export interface BootstrapScanResult {
+  docs: BootstrapDocItem[];
+  tasks: BootstrapTaskItem[];
+  warnings: string[];
+}
+
+export interface BootstrapImportSelections {
+  selectedDocs: string[];
+  selectedTasks: Array<{ title: string; body?: string }>;
+}
+
+export interface BootstrapImportResult {
+  docsImported: number;
+  ticketsCreated: number;
+  ticketsSkipped: number;
+}
+
+export async function scanBootstrap(): Promise<BootstrapScanResult> {
+  const res = await fetch(`${API_URL}/bootstrap/scan`);
+  if (!res.ok) throw new Error('Failed to scan workspace for bootstrap');
+  return res.json();
+}
+
+export async function importBootstrap(selections: BootstrapImportSelections): Promise<BootstrapImportResult> {
+  const res = await fetch(`${API_URL}/bootstrap/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(selections),
+  });
+  if (!res.ok) {
+    let message = 'Failed to import bootstrap selections';
+    try {
+      const payload = await res.json();
+      if (payload.error) message = payload.error;
+    } catch {}
+    throw new Error(message);
+  }
+  return res.json();
+}

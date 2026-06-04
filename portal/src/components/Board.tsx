@@ -9,18 +9,20 @@ import { updateTask } from '../api';
 import { useApp } from '../AppContext';
 import type { Task, HistoryEntry } from '../types';
 import { normalizeSubtaskId } from '../types';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Upload } from 'lucide-react';
 import { TaskViewControls } from './TaskViewControls';
 import { filterAndSortTasks } from '../taskSearch';
 import { getStatusColorClass } from '../statusStyles';
 import { ReleaseModal } from './ReleaseModal';
 import { getArchiveStatus, getRequireInputStatus } from '../workflow';
 import { ParseErrorButton } from './ParseErrorButton';
+import { BootstrapPreview } from './BootstrapPreview';
 
 export function Board() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [activeTask, setActiveTask] = useState<Task | null>(null);
   const [releaseModalTasks, setReleaseModalTasks] = useState<Task[] | null>(null);
+  const [showBootstrap, setShowBootstrap] = useState(false);
   const {
     tasks: liveTasks,
     tasksLoading,
@@ -325,6 +327,18 @@ export function Board() {
         </div>
 
         <div className="min-h-0 flex-1">
+          {boardTasks.length === 0 && !tasksLoading && (
+            <div className="flex flex-col items-center justify-center gap-4 py-16">
+              <p className="text-sm text-gray-500 dark:text-gray-400">No tickets yet.</p>
+              <button
+                onClick={() => setShowBootstrap(true)}
+                className="flex items-center gap-2 rounded-2xl bg-primary px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:bg-primary-hover"
+              >
+                <Upload className="h-4 w-4" />
+                Import from project
+              </button>
+            </div>
+          )}
           <DndContext onDragStart={handleDragStart} onDragEnd={handleDragEnd} collisionDetection={pointerWithin}>
             <div ref={scrollerRef} className="flex h-full min-h-0 gap-6 overflow-x-auto pb-4 items-start">
               {allColumns.map(columnId => (
@@ -379,6 +393,18 @@ export function Board() {
       )}
       {releaseModalTasks && (
         <ReleaseModal tasks={releaseModalTasks} onClose={() => setReleaseModalTasks(null)} />
-      )}    </>
+      )}
+      {showBootstrap && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm pointer-events-auto">
+          <div className="eh-surface-overlay p-6 rounded-xl shadow-2xl w-[480px] max-h-[80vh] overflow-y-auto border eh-border">
+            <h3 className="text-lg font-bold mb-4 text-gray-900 dark:text-white">Import from project</h3>
+            <BootstrapPreview
+              onComplete={() => { setShowBootstrap(false); triggerRefresh(); }}
+              onSkip={() => setShowBootstrap(false)}
+            />
+          </div>
+        </div>
+      )}
+    </>
   );
 }

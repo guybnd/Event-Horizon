@@ -45,43 +45,57 @@ const CLI_PATTERN_SUPPORT: Record<CliTarget, ExecutionPattern[]> = {
 const BUILTIN_TS = '2026-01-01T00:00:00.000Z';
 
 export const BUILTIN_WORKFLOWS: WorkflowTemplate[] = [
+  // ── Grooming ────────────────────────────────────────────────────────────────
   {
     id: 'builtin-grooming-single', name: 'Grooming · Single', cliTarget: 'claude',
     phases: { grooming: { pattern: 'relay', steps: ['planner'] } },
     createdAt: BUILTIN_TS, updatedAt: BUILTIN_TS, builtIn: true,
   },
   {
-    id: 'builtin-grooming-multi', name: 'Grooming · Multi', cliTarget: 'claude',
-    phases: { grooming: { pattern: 'scatter', parallel: ['context-scout', 'requirements-interrogator'], combiner: 'planner' } },
+    id: 'builtin-grooming-multi', name: 'Grooming · Sequential', cliTarget: 'claude',
+    phases: { grooming: { pattern: 'relay', steps: ['context-scout', 'requirements-interrogator', 'planner'] } },
     createdAt: BUILTIN_TS, updatedAt: BUILTIN_TS, builtIn: true,
   },
+  // ── Implementation ──────────────────────────────────────────────────────────
   {
     id: 'builtin-implementation-single', name: 'Implementation · Single', cliTarget: 'claude',
     phases: { implementation: { pattern: 'relay', steps: ['implementer'] } },
     createdAt: BUILTIN_TS, updatedAt: BUILTIN_TS, builtIn: true,
   },
   {
-    id: 'builtin-implementation-multi', name: 'Implementation · Multi (TDD)', cliTarget: 'claude',
-    phases: { implementation: { pattern: 'relay', steps: ['test-engineer', 'implementer'], combiner: 'orchestrator' } },
+    id: 'builtin-implementation-multi', name: 'Implementation · TDD', cliTarget: 'claude',
+    phases: { implementation: { pattern: 'relay', steps: ['test-engineer', 'implementer'] } },
     createdAt: BUILTIN_TS, updatedAt: BUILTIN_TS, builtIn: true,
   },
+  {
+    id: 'builtin-implementation-supervisor', name: 'Implementation · Supervisor', cliTarget: 'claude',
+    phases: { implementation: { pattern: 'supervisor', lead: 'supervisor', assistants: ['implementer', 'test-engineer'] } },
+    createdAt: BUILTIN_TS, updatedAt: BUILTIN_TS, builtIn: true,
+  },
+  // ── Review ──────────────────────────────────────────────────────────────────
   {
     id: 'builtin-review-single', name: 'Review · Single', cliTarget: 'claude',
     phases: { review: { pattern: 'relay', steps: ['senior-dev'] } },
     createdAt: BUILTIN_TS, updatedAt: BUILTIN_TS, builtIn: true,
   },
   {
-    id: 'builtin-review-multi', name: 'Review · Multi', cliTarget: 'claude',
+    id: 'builtin-review-multi', name: 'Review · Panel', cliTarget: 'claude',
     phases: { review: { pattern: 'scatter', parallel: ['qa-correctness', 'architect', 'security-auditor'], combiner: 'orchestrator' } },
     createdAt: BUILTIN_TS, updatedAt: BUILTIN_TS, builtIn: true,
   },
+  {
+    id: 'builtin-review-supervisor', name: 'Review · Supervisor', cliTarget: 'claude',
+    phases: { review: { pattern: 'supervisor', lead: 'supervisor', assistants: ['qa-correctness', 'architect', 'security-auditor', 'perf-expert', 'ux-expert'] } },
+    createdAt: BUILTIN_TS, updatedAt: BUILTIN_TS, builtIn: true,
+  },
+  // ── Finalize ────────────────────────────────────────────────────────────────
   {
     id: 'builtin-finalize-single', name: 'Finalize · Single', cliTarget: 'claude',
     phases: { finalize: { pattern: 'relay', steps: ['finalizer'] } },
     createdAt: BUILTIN_TS, updatedAt: BUILTIN_TS, builtIn: true,
   },
   {
-    id: 'builtin-finalize-multi', name: 'Finalize · Multi', cliTarget: 'claude',
+    id: 'builtin-finalize-multi', name: 'Finalize · Pipeline', cliTarget: 'claude',
     phases: { finalize: { pattern: 'relay', steps: ['docs-auditor', 'committer', 'ticket-curator', 'pr-merger'] } },
     createdAt: BUILTIN_TS, updatedAt: BUILTIN_TS, builtIn: true,
   },

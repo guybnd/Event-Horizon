@@ -7,8 +7,8 @@
     "portal"
   ],
   "scripts": {
-    "predev": "node --input-type=module -e \"await fetch('http://localhost:3067/api/shutdown',{method:'POST'}).catch(()=>{});await new Promise(r=>setTimeout(r,300))\"",
-    "dev": "npm run dev -ws --if-present",
+    "predev": "node scripts/predev.mjs",
+    "dev": "node scripts/dev.mjs",
     "build": "npm run build -w portal && npm run build -w engine",
     "init": "npm run init -w engine --",
     "package": "npm run build && npm run package -w engine",

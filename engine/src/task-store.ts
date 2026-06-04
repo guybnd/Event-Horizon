@@ -3,7 +3,9 @@ import { renameSync } from 'fs';
 import path from 'path';
 import matter from 'gray-matter';
 import chokidar from 'chokidar';
-import { getActiveFluxDir, getTaskAssetsDir, setWorkspaceRoot, workspaceRoot } from './workspace.js';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import { getActiveFluxDir, getTaskAssetsDir, getFluxStoreDir, isOrphanMode, setWorkspaceRoot, workspaceRoot } from './workspace.js';
 import { attachWorktreeIfPresent, migrateStrandedFluxTickets } from './storage-sync.js';
 import { startSyncWatcher } from './sync-watcher.js';
 import { configCache, loadConfig, autoRegisterUnknownTags } from './config.js';
@@ -11,6 +13,7 @@ import { loadCustomPersonas } from './orchestration-personas.js';
 import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate, getHistoryTimestamp } from './history.js';
 import { generatePromptNotification, generateCompletionNotification, clearNotifications, checkSkillStaleness } from './notifications.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
+import { broadcastEvent } from './events.js';
 import { getCliSessionSummaryForTask, getAllSessionSummariesForTask, getListSessionSummariesForTask, cliSessionsById, cliSessionIdByTaskId } from './session-store.js';
 import { isTopLevelTaskFile, getDocsDir, isDocFile, getDocPathFromFile, titleFromDocPath, slugifyDocValue, parseDocOrder } from './file-utils.js';
 import type { StoredDoc } from './file-utils.js';
@@ -206,6 +209,109 @@ export async function updateTaskWithHistory(taskId: string, options: {
   }
 
   return tasksCache[taskId];
+}
+
+export interface CreateTaskOptions {
+  title: string;
+  status?: string;
+  priority?: string;
+  effort?: string;
+  assignee?: string;
+  tags?: string[];
+  body?: string | undefined;
+  author?: string;
+  projectKey?: string;
+}
+
+export interface CreateTaskResult {
+  id: string;
+  task: any;
+}
+
+const execFileAsync = promisify(execFile);
+
+async function getMaxIdFromRemote(projectKey: string): Promise<number> {
+  if (!isOrphanMode()) return 0;
+
+  const storeDir = getFluxStoreDir();
+  try {
+    await execFileAsync('git', ['-C', storeDir, 'fetch', 'origin', 'flux-data'], { windowsHide: true });
+    const { stdout } = await execFileAsync('git', [
+      '-C', storeDir, 'ls-tree', '-r', '--name-only', 'origin/flux-data'
+    ], { windowsHide: true });
+
+    let maxId = 0;
+    stdout.split('\n').forEach(file => {
+      const fileName = path.basename(file);
+      if (fileName.startsWith(`${projectKey}-`) && fileName.endsWith('.md')) {
+        const idPart = fileName.replace(`${projectKey}-`, '').replace('.md', '');
+        const num = parseInt(idPart, 10);
+        if (!isNaN(num) && num > maxId) maxId = num;
+      }
+    });
+
+    return maxId;
+  } catch (err: any) {
+    console.warn(`[tasks] Could not check remote for max ticket ID: ${err.message}`);
+    return 0;
+  }
+}
+
+export async function createTask(options: CreateTaskOptions): Promise<CreateTaskResult> {
+  const pKey = options.projectKey || configCache.projects?.[0] || 'PROJECT';
+  let maxId = 0;
+  Object.keys(tasksCache).forEach((key) => {
+    if (key.startsWith(`${pKey}-`)) {
+      const num = parseInt(key.replace(`${pKey}-`, ''), 10);
+      if (!isNaN(num) && num > maxId) maxId = num;
+    }
+  });
+
+  if (isOrphanMode()) {
+    const remoteMaxId = await getMaxIdFromRemote(pKey);
+    maxId = Math.max(maxId, remoteMaxId);
+    if (remoteMaxId > 0) {
+      console.log(`[tasks] Remote max ID for ${pKey}: ${remoteMaxId}, using ${maxId + 1}`);
+    }
+  }
+
+  const nextId = `${pKey}-${maxId + 1}`;
+  const filePath = path.join(getActiveFluxDir(), `${nextId}.md`);
+  const createdAt = new Date().toISOString();
+  const actor = options.author || 'Unknown';
+
+  const normalizedHistory = normalizeHistoryEntries([]);
+  const historyWithCreation = ensureCreationActivity(normalizedHistory.history, actor, createdAt);
+
+  const frontmatter: any = {
+    id: nextId,
+    title: options.title || 'New Task',
+    status: options.status || 'Todo',
+    priority: options.priority || 'None',
+    effort: options.effort || 'None',
+    assignee: options.assignee || 'unassigned',
+    tags: options.tags || [],
+    createdBy: actor,
+    updatedBy: actor,
+    history: historyWithCreation.history,
+  };
+
+  const validationErrors = validateTicketFrontmatter(frontmatter);
+  if (validationErrors.length > 0) {
+    throw new Error(`Schema validation failed:\n${formatValidationErrors(validationErrors)}`);
+  }
+
+  if (frontmatter.tags.length > 0) {
+    await autoRegisterUnknownTags(frontmatter.tags);
+  }
+
+  const body = options.body || '';
+  const fileContent = matter.stringify(body, frontmatter);
+  await atomicWriteFile(filePath, fileContent);
+  tasksCache[nextId] = { ...frontmatter, body, id: nextId, _path: filePath };
+  broadcastEvent('taskCreated', { id: nextId });
+
+  return { id: nextId, task: tasksCache[nextId] };
 }
 
 /**

@@ -10,10 +10,12 @@ let child: ChildProcess | null = null;
 let restartPending = false;
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
+const isWin = process.platform === 'win32';
+
 function spawnEngine() {
   child = spawn('tsx', [ENGINE_ENTRY, ...args], {
     stdio: 'inherit',
-    shell: true,
+    shell: isWin,
   });
 
   child.on('exit', (code) => {

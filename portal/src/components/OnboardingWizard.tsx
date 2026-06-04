@@ -13,9 +13,11 @@ import {
   GitBranch,
   HardDrive,
   User,
+  Package,
 } from 'lucide-react';
 import { pickWorkspaceFolder, setWorkspace, installWorkspaceSkill, fetchPathInfo, setupPath, migrateStorage, fetchConfig, saveConfig as apiSaveConfig } from '../api';
 import { useApp } from '../AppContext';
+import { BootstrapPreview } from './BootstrapPreview';
 
 const COMPLETE_KEY = 'eh-onboarding-complete';
 const SKIP_INSTALL_KEY = 'onboarding-install-skipped';
@@ -167,9 +169,9 @@ export function OnboardingWizard() {
     setStep(5);
   }
 
-  // Step 5 — PATH setup
+  // Step 6 — PATH setup
   useEffect(() => {
-    if (step !== 5) return;
+    if (step !== 6) return;
     fetchPathInfo().then(setPathInfo).catch(() => setPathInfo({ binaryDir: null, isPkg: false, platform: '' }));
   }, [step]);
 
@@ -196,13 +198,13 @@ export function OnboardingWizard() {
     });
   }
 
-  // Step 5 — docs
+  // Step 7 — docs
   function handleGoDocs() {
     complete();
     setView('docs');
   }
 
-  // Step 6 — finish
+  // Step 8 — finish
   function handleFirstTicket() {
     complete();
   }
@@ -210,7 +212,7 @@ export function OnboardingWizard() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-gray-50 dark:bg-bg-dark p-8">
       <div className="w-full max-w-lg">
-        <StepDots current={step} total={7} />
+        <StepDots current={step} total={8} />
 
         {step === 1 && (
           <div>
@@ -505,6 +507,23 @@ export function OnboardingWizard() {
           <div>
             <div className="mb-8 flex flex-col items-center gap-3 text-center">
               <div className="flex items-center justify-center rounded-2xl bg-primary/10 p-4">
+                <Package className="h-8 w-8 text-primary" />
+              </div>
+              <h1 className="text-2xl font-bold tracking-tight text-gray-900 dark:text-white">
+                Import from your project
+              </h1>
+              <p className="text-sm text-gray-500 dark:text-gray-400 max-w-sm">
+                Let's check if your project has docs or tasks we can import.
+              </p>
+            </div>
+            <BootstrapPreview onComplete={() => setStep(6)} onSkip={() => setStep(6)} />
+          </div>
+        )}
+
+        {step === 6 && (
+          <div>
+            <div className="mb-8 flex flex-col items-center gap-3 text-center">
+              <div className="flex items-center justify-center rounded-2xl bg-primary/10 p-4">
                 <Terminal className="h-8 w-8 text-primary" />
               </div>
               <h1 className="text-2xl font-bold tracking-tight text-gray-900 dark:text-white">
@@ -583,7 +602,7 @@ export function OnboardingWizard() {
             )}
 
             <button
-              onClick={() => setStep(6)}
+              onClick={() => setStep(7)}
               className="mt-3 flex h-11 w-full items-center justify-center rounded-2xl border border-gray-200 bg-white px-6 text-sm font-medium text-gray-700 shadow-sm transition-all hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
             >
               {pathDone ? 'Continue →' : 'Skip'}
@@ -591,7 +610,7 @@ export function OnboardingWizard() {
           </div>
         )}
 
-        {step === 6 && (
+        {step === 7 && (
           <div>
             <div className="mb-8 flex flex-col items-center gap-3 text-center">
               <div className="flex items-center justify-center rounded-2xl bg-primary/10 p-4">
@@ -613,7 +632,7 @@ export function OnboardingWizard() {
                 Open the docs
               </button>
               <button
-                onClick={() => setStep(7)}
+                onClick={() => setStep(8)}
                 className="flex h-11 items-center justify-center rounded-2xl border border-gray-200 bg-white px-6 text-sm font-medium text-gray-700 shadow-sm transition-all hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
               >
                 I'll check later
@@ -622,7 +641,7 @@ export function OnboardingWizard() {
           </div>
         )}
 
-        {step === 7 && (
+        {step === 8 && (
           <div>
             <div className="mb-8 flex flex-col items-center gap-3 text-center">
               <div className="flex items-center justify-center rounded-2xl bg-primary/10 p-4">
