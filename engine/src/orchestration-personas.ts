@@ -1,5 +1,9 @@
 import type { ExecutionPattern, CliCapabilities } from './agents/types.js';
 import type { Phase } from './models/workflow.js';
+import fs from 'fs/promises';
+import { existsSync } from 'fs';
+import path from 'path';
+import { getActiveFluxDir } from './workspace.js';
 
 /**
  * Server-side orchestration persona catalog.
@@ -8,6 +12,9 @@ import type { Phase } from './models/workflow.js';
  * `personaId` at launch and the engine resolves the full prompt text. This keeps
  * ~10KB of prompt literals out of the client bundle and makes personas the
  * single authoritative source for orchestration roles.
+ *
+ * Built-in personas are defined in code (read-only). User-authored personas are
+ * persisted under `<fluxDir>/personas/*.json` and merged in at read time.
  */
 export interface OrchestrationPersona {
   id: string;
@@ -19,8 +26,10 @@ export interface OrchestrationPersona {
   compatiblePatterns: ExecutionPattern[];
   /** CLI capabilities the persona needs. Empty = runnable on any framework. */
   requiredCapabilities: (keyof CliCapabilities)[];
-  /** Full prompt the agent session launches with. Never sent to the client. */
+  /** Full prompt the agent session launches with. Never sent to the client for built-ins. */
   prompt: string;
+  /** True for code-defined personas (cannot be edited or deleted). */
+  builtIn?: boolean;
 }
 
 /** Persona metadata with the prompt stripped — the shape exposed over the API. */
@@ -214,11 +223,120 @@ Steps:
 You have full authority to change the ticket status based on reviewer consensus.`,
 };
 
-const ALL_PERSONAS: OrchestrationPersona[] = [...ORCHESTRATION_PERSONAS, ORCHESTRATOR_PERSONA];
+// Stamp built-in personas so the client can tell them apart from custom ones.
+for (const p of ORCHESTRATION_PERSONAS) p.builtIn = true;
+ORCHESTRATOR_PERSONA.builtIn = true;
 
-/** Resolve a persona (selectable reviewer or the orchestrator) by id. */
+const ALL_BUILT_IN: OrchestrationPersona[] = [...ORCHESTRATION_PERSONAS, ORCHESTRATOR_PERSONA];
+
+// ── Custom persona persistence ───────────────────────────────────────────────
+// User-authored personas live as JSON files under <fluxDir>/personas/ and are
+// merged with the built-ins at read time. Built-ins are never written to disk.
+
+const VALID_PHASES: Phase[] = ['grooming', 'implementation', 'review', 'release'];
+
+let customPersonaCache: OrchestrationPersona[] = [];
+
+export function getPersonasDir(): string {
+  return path.join(getActiveFluxDir(), 'personas');
+}
+
+/** Load all custom personas from disk into the cache. Safe to call repeatedly. */
+export async function loadCustomPersonas(): Promise<OrchestrationPersona[]> {
+  const dir = getPersonasDir();
+  if (!existsSync(dir)) {
+    customPersonaCache = [];
+    return [];
+  }
+  const files = await fs.readdir(dir);
+  const personas: OrchestrationPersona[] = [];
+  for (const file of files) {
+    if (!file.endsWith('.json')) continue;
+    try {
+      const raw = await fs.readFile(path.join(dir, file), 'utf-8');
+      const parsed = JSON.parse(raw) as OrchestrationPersona;
+      parsed.builtIn = false;
+      personas.push(parsed);
+    } catch {
+      // Skip malformed persona files rather than failing the whole load.
+    }
+  }
+  customPersonaCache = personas;
+  return personas;
+}
+
+/** All personas (built-in + custom), excluding the non-selectable orchestrator. */
+function getSelectablePersonas(): OrchestrationPersona[] {
+  return [...ORCHESTRATION_PERSONAS, ...customPersonaCache];
+}
+
+/** Validate a custom persona payload. Returns an error string or null if valid. */
+export function validatePersona(p: Partial<OrchestrationPersona>): string | null {
+  if (!p.id?.trim() || !/^[a-z0-9][a-z0-9-]*$/.test(p.id.trim())) {
+    return 'id is required and must be a slug (lowercase letters, numbers, hyphens)';
+  }
+  if (!p.label?.trim()) return 'label is required';
+  if (!p.phase || !VALID_PHASES.includes(p.phase)) {
+    return `phase must be one of: ${VALID_PHASES.join(', ')}`;
+  }
+  if (!p.prompt?.trim()) return 'prompt is required';
+  return null;
+}
+
+/**
+ * Create or update a custom persona. Refuses ids that collide with a built-in.
+ * Returns the persisted persona (with builtIn=false).
+ */
+export async function saveCustomPersona(input: Partial<OrchestrationPersona>): Promise<OrchestrationPersona> {
+  const err = validatePersona(input);
+  if (err) throw new Error(err);
+  const id = input.id!.trim();
+  if (ALL_BUILT_IN.some((p) => p.id === id)) {
+    throw new Error(`"${id}" is a built-in persona and cannot be overwritten`);
+  }
+  const persona: OrchestrationPersona = {
+    id,
+    label: input.label!.trim(),
+    description: input.description?.trim() ?? '',
+    phase: input.phase!,
+    compatiblePatterns: Array.isArray(input.compatiblePatterns) ? input.compatiblePatterns : [],
+    requiredCapabilities: Array.isArray(input.requiredCapabilities) ? input.requiredCapabilities : [],
+    prompt: input.prompt!,
+    builtIn: false,
+  };
+  const dir = getPersonasDir();
+  if (!existsSync(dir)) await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, `${id}.json`), JSON.stringify(persona, null, 2), 'utf-8');
+  const idx = customPersonaCache.findIndex((p) => p.id === id);
+  if (idx >= 0) customPersonaCache[idx] = persona;
+  else customPersonaCache.push(persona);
+  return persona;
+}
+
+/** Delete a custom persona by id. Refuses built-ins. Returns false if not found. */
+export async function deleteCustomPersona(id: string): Promise<boolean> {
+  if (ALL_BUILT_IN.some((p) => p.id === id)) {
+    throw new Error(`"${id}" is a built-in persona and cannot be deleted`);
+  }
+  const filePath = path.join(getPersonasDir(), `${id}.json`);
+  if (!existsSync(filePath)) return false;
+  await fs.unlink(filePath);
+  customPersonaCache = customPersonaCache.filter((p) => p.id !== id);
+  return true;
+}
+
+/** Resolve a persona (built-in, orchestrator, or custom) by id. */
 export function getPersonaById(id: string): OrchestrationPersona | undefined {
-  return ALL_PERSONAS.find((p) => p.id === id);
+  return ALL_BUILT_IN.find((p) => p.id === id) ?? customPersonaCache.find((p) => p.id === id);
+}
+
+/**
+ * Full persona for editing — includes prompt. Only custom personas expose their
+ * prompt; built-ins return undefined so their prompt text never reaches the client.
+ */
+export function getEditablePersona(id: string): OrchestrationPersona | undefined {
+  const custom = customPersonaCache.find((p) => p.id === id);
+  return custom ? { ...custom } : undefined;
 }
 
 /** Strip the prompt — the only shape that should ever reach the client. */
@@ -229,12 +347,12 @@ export function toPersonaMeta(p: OrchestrationPersona): OrchestrationPersonaMeta
 
 /**
  * Metadata for user-selectable personas (no prompts, no orchestrator). Pass a
- * `phase` to return only the personas configured for that ticket phase.
+ * `phase` to return only the personas configured for that ticket phase. Includes
+ * both built-in and custom personas.
  */
 export function listSelectablePersonaMeta(phase?: Phase): OrchestrationPersonaMeta[] {
-  const personas = phase
-    ? ORCHESTRATION_PERSONAS.filter((p) => p.phase === phase)
-    : ORCHESTRATION_PERSONAS;
+  const all = getSelectablePersonas();
+  const personas = phase ? all.filter((p) => p.phase === phase) : all;
   return personas.map(toPersonaMeta);
 }
 

@@ -207,6 +207,8 @@ export interface Config {
     };
   };
   defaultAgent?: CliFramework | 'auto';
+  /** Workflow template the launcher pre-selects by default (empty = none). */
+  defaultWorkflowId?: string;
   enableFireworks?: boolean;
   tokenDisplayMode?: 'cost' | 'tokens';
   tokenCostThresholds?: { green: number; yellow: number };

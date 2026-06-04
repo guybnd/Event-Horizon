@@ -1,142 +1,54 @@
-import React, { useState, useCallback, useMemo, useEffect } from 'react';
-import { DndContext, DragOverlay, useDroppable, useDraggable, type DragEndEvent, type DragStartEvent } from '@dnd-kit/core';
-import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
-import { GripVertical, Plus, Check, X, ChevronDown, Copy, Play, Save, Workflow, Bot, Pencil, BookOpen, ArrowRight, GitBranch, Layers, Trash2, Loader2 } from 'lucide-react';
-import { fetchDocs, updateDoc, createDoc, deleteDoc } from '../api';
-import type { Doc } from '../types';
+import { useState, useCallback, useEffect, useMemo } from 'react';
+import {
+  Workflow, Plus, X, Pencil, Trash2, Loader2, BookOpen, Check, Users, Network, Star, Lock,
+} from 'lucide-react';
+import {
+  fetchOrchestrationPersonas,
+  fetchEditablePersona,
+  createPersona,
+  updatePersona,
+  deletePersona,
+  fetchWorkflows,
+  createWorkflow,
+  updateWorkflow,
+  deleteWorkflow,
+  fetchConfig,
+  saveConfig,
+  fetchDocs,
+  updateDoc,
+  createDoc,
+  deleteDoc,
+  type OrchestrationPersonaMeta,
+  type PersonaInput,
+  type WorkflowTemplate,
+  type WorkflowPhaseConfig,
+  type WorkflowPhase,
+} from '../api';
+import type { Config, Doc } from '../types';
 
-// --- Types ---
+// --- Constants ---
 
-export type CliTarget = 'claude' | 'gemini' | 'copilot';
-
-export type WorkflowMode = 'sequential' | 'parallel' | 'scatter-gather';
-
-export interface SkillDef {
-  id: string;
-  name: string;
-  body: string;
-  path: string;
-}
-
-export interface AgentDef {
-  id: string;
-  name: string;
-  category: 'grooming' | 'execution' | 'validation' | 'release';
-  prompt: string;
-  skillIds: string[];
-}
-
-export interface WorkflowStep {
-  id: string;
-  agentId: string;
-  enabled: boolean;
-}
-
-export interface WorkflowTemplate {
-  id: string;
-  name: string;
-  mode: WorkflowMode;
-  steps: WorkflowStep[];
-}
-
-export interface PhaseWorkflows {
-  [phase: string]: {
-    templates: WorkflowTemplate[];
-    activeTemplateId: string;
-  };
-}
-
-const MODE_ALLOWED_CLIS: Record<WorkflowMode, CliTarget[]> = {
-  sequential: ['claude', 'gemini', 'copilot'],
-  parallel: ['claude', 'gemini'],
-  'scatter-gather': ['claude', 'gemini'],
-};
-
-const MODE_INFO: Record<WorkflowMode, { label: string; description: string; icon: typeof ArrowRight }> = {
-  sequential: { label: 'Sequential', description: 'Agents run one after another', icon: ArrowRight },
-  parallel: { label: 'Parallel', description: 'All agents run simultaneously', icon: GitBranch },
-  'scatter-gather': { label: 'Scatter-Gather', description: 'Parallel agents then synthesis agent', icon: Layers },
-};
-
-// --- Default Data ---
-
-function docToSkill(doc: Doc): SkillDef {
-  return { id: doc.path, name: doc.title, body: doc.body, path: doc.path };
-}
-
-const DEFAULT_AGENTS: AgentDef[] = [
-  { id: 'interrogator', name: 'Interrogator', category: 'grooming', prompt: 'Analyze requirements and ask clarifying questions to refine the ticket scope. Identify ambiguities, missing acceptance criteria, and implementation-critical decisions that need resolution before coding begins.', skillIds: ['skills/event-horizon-grooming'] },
-  { id: 'context-scout', name: 'Context Scout', category: 'execution', prompt: 'Gather relevant context from the codebase, docs, and related tickets. Map the affected surface area, identify dependencies, and report what files/patterns the implementer needs to know about.', skillIds: [] },
-  { id: 'spec-writer', name: 'Spec Writer', category: 'grooming', prompt: 'Synthesize findings from research agents into a concrete implementation plan with clear sequential steps. The plan should be specific enough that another agent can execute without re-discovery.', skillIds: ['skills/event-horizon-grooming'] },
-  { id: 'implementer', name: 'Implementer', category: 'execution', prompt: 'Execute the implementation plan, writing minimal focused code changes. Make small edits and validate immediately. Prefer the smallest owning surface area.', skillIds: ['skills/event-horizon-implementation'] },
-  { id: 'refactorer', name: 'Refactorer', category: 'execution', prompt: 'Review implementation for code quality. Simplify overly complex code, remove duplication, improve naming, and ensure consistency with surrounding patterns. Do not change behavior.', skillIds: ['skills/event-horizon-implementation'] },
-  { id: 'pedant', name: 'Pedant', category: 'validation', prompt: 'Perform strict code review focusing on correctness, edge cases, type safety, and adherence to project standards. Flag anything that could break in production. Be specific and cite line numbers.', skillIds: [] },
-  { id: 'product-proxy', name: 'Product Proxy', category: 'validation', prompt: 'Review from the user perspective. Does this solve the stated problem? Are there UX issues, missing error states, or confusing flows? Think like a user encountering this for the first time.', skillIds: [] },
-  { id: 'qa-automator', name: 'QA Automator', category: 'validation', prompt: 'Write or verify test coverage for the changes made. Ensure edge cases are covered, integration points are tested, and the tests actually validate the described behavior (not just that code runs).', skillIds: [] },
-  { id: 'documenter', name: 'Documenter', category: 'release', prompt: 'Update documentation to reflect the changes. Keep docs concise and current. Remove outdated sections, add new behavior descriptions, and ensure examples still work.', skillIds: [] },
-  { id: 'release-agent', name: 'Release Agent', category: 'release', prompt: 'Orchestrate the release process. Gather completed work, generate changelog entries, bump version numbers, create the release commit and tag. Follow semantic versioning.', skillIds: ['skills/event-horizon-release'] },
+const PHASES: { key: WorkflowPhase; label: string }[] = [
+  { key: 'grooming', label: 'Grooming' },
+  { key: 'implementation', label: 'Implementation' },
+  { key: 'review', label: 'Review' },
+  { key: 'release', label: 'Release' },
 ];
 
-const PHASES = ['Grooming', 'Implementation', 'Review', 'Release'] as const;
+type Pattern = 'relay' | 'scatter' | 'supervisor';
+type CliTarget = 'claude' | 'gemini' | 'copilot';
 
-function createDefaultWorkflows(): PhaseWorkflows {
-  return {
-    Grooming: {
-      templates: [{
-        id: 'default-grooming',
-        name: 'Default',
-        mode: 'sequential',
-        steps: [
-          { id: 'gs1', agentId: 'interrogator', enabled: true },
-          { id: 'gs2', agentId: 'context-scout', enabled: true },
-          { id: 'gs3', agentId: 'spec-writer', enabled: true },
-        ],
-      }],
-      activeTemplateId: 'default-grooming',
-    },
-    Implementation: {
-      templates: [{
-        id: 'default-impl',
-        name: 'Default',
-        mode: 'sequential',
-        steps: [
-          { id: 'is1', agentId: 'context-scout', enabled: true },
-          { id: 'is2', agentId: 'implementer', enabled: true },
-          { id: 'is3', agentId: 'refactorer', enabled: false },
-        ],
-      }],
-      activeTemplateId: 'default-impl',
-    },
-    Review: {
-      templates: [{
-        id: 'default-review',
-        name: 'Default',
-        mode: 'parallel',
-        steps: [
-          { id: 'rs1', agentId: 'pedant', enabled: true },
-          { id: 'rs2', agentId: 'product-proxy', enabled: true },
-          { id: 'rs3', agentId: 'qa-automator', enabled: true },
-        ],
-      }],
-      activeTemplateId: 'default-review',
-    },
-    Release: {
-      templates: [{
-        id: 'default-release',
-        name: 'Default',
-        mode: 'sequential',
-        steps: [
-          { id: 'les1', agentId: 'documenter', enabled: true },
-          { id: 'les2', agentId: 'release-agent', enabled: true },
-        ],
-      }],
-      activeTemplateId: 'default-release',
-    },
-  };
-}
+const PATTERNS: { key: Pattern; label: string; description: string }[] = [
+  { key: 'relay', label: 'Relay', description: 'Personas run one after another' },
+  { key: 'scatter', label: 'Scatter-Gather', description: 'Personas run in parallel, then a combiner synthesizes' },
+  { key: 'supervisor', label: 'Supervisor', description: 'A lead persona coordinates assistants' },
+];
 
-// --- Helpers ---
+const CLI_PATTERN_SUPPORT: Record<CliTarget, Pattern[]> = {
+  claude: ['relay', 'scatter', 'supervisor'],
+  gemini: ['relay', 'scatter'],
+  copilot: ['relay', 'scatter'],
+};
 
 const CLI_COLORS: Record<CliTarget, string> = {
   claude: 'bg-orange-100 text-orange-700 dark:bg-orange-500/20 dark:text-orange-300',
@@ -144,181 +56,107 @@ const CLI_COLORS: Record<CliTarget, string> = {
   copilot: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300',
 };
 
-const CATEGORY_COLORS: Record<string, string> = {
+const PHASE_COLORS: Record<WorkflowPhase, string> = {
   grooming: 'border-l-purple-400',
-  execution: 'border-l-blue-400',
-  validation: 'border-l-amber-400',
+  implementation: 'border-l-blue-400',
+  review: 'border-l-amber-400',
   release: 'border-l-emerald-400',
 };
 
-let idCounter = 1000;
-function nextId(prefix: string) {
-  return `${prefix}-${Date.now()}-${idCounter++}`;
+// --- Skill helpers (skills persist as docs under the skills/ directory) ---
+
+interface SkillDef { id: string; name: string; body: string; path: string; }
+function docToSkill(doc: Doc): SkillDef {
+  return { id: doc.path, name: doc.title, body: doc.body, path: doc.path };
 }
 
-// --- DnD Sub-components ---
-
-function DraggableLibraryCard({ agent, onEdit }: { agent: AgentDef; onEdit: () => void }) {
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
-    id: `library-${agent.id}`,
-    data: { type: 'library-agent', agentId: agent.id },
-  });
-
-  const style = transform ? { transform: `translate(${transform.x}px, ${transform.y}px)` } : undefined;
-
-  return (
-    <div
-      ref={setNodeRef}
-      style={style}
-      className={`group p-3 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-white/5 transition-all border-l-4 ${CATEGORY_COLORS[agent.category]} ${isDragging ? 'opacity-40 shadow-lg' : 'hover:border-primary/40 hover:shadow-sm'}`}
-    >
-      <div className="flex items-center gap-2">
-        <div {...listeners} {...attributes} className="cursor-grab active:cursor-grabbing shrink-0 touch-none">
-          <GripVertical className="w-3.5 h-3.5 text-gray-300 dark:text-gray-600" />
-        </div>
-        <span className="text-sm font-semibold text-gray-800 dark:text-gray-100 flex-1 truncate">{agent.name}</span>
-        <button
-          onClick={onEdit}
-          className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-all"
-        >
-          <Pencil className="w-3 h-3" />
-        </button>
-      </div>
-      <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 ml-5.5 line-clamp-1">{agent.prompt}</p>
-    </div>
-  );
+// Persona ids configured for a phase, regardless of pattern storage shape.
+function phaseMembers(cfg: WorkflowPhaseConfig | undefined): string[] {
+  if (!cfg) return [];
+  if (cfg.pattern === 'relay') return cfg.steps ?? [];
+  if (cfg.pattern === 'supervisor') return cfg.assistants ?? [];
+  return cfg.parallel ?? [];
 }
 
-function SortableStepCard({
-  step,
-  agent,
-  index,
-  onToggle,
-  onRemove,
-  onEdit,
-}: {
-  step: WorkflowStep;
-  agent: AgentDef | undefined;
-  index: number;
-  onToggle: () => void;
-  onRemove: () => void;
-  onEdit: () => void;
-}) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: step.id });
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-  };
-
-  if (!agent) return null;
-
-  return (
-    <div
-      ref={setNodeRef}
-      style={style}
-      className={`group relative p-3 rounded-xl border bg-white dark:bg-white/5 transition-all border-l-4 ${CATEGORY_COLORS[agent.category]} ${
-        isDragging ? 'opacity-40 shadow-lg z-10' :
-        step.enabled
-          ? 'border-gray-200 dark:border-white/10'
-          : 'border-gray-100 dark:border-white/5 opacity-50'
-      }`}
-    >
-      <div className="flex items-center gap-2">
-        <div {...listeners} {...attributes} className="cursor-grab active:cursor-grabbing shrink-0 touch-none">
-          <GripVertical className="w-3.5 h-3.5 text-gray-300 dark:text-gray-600" />
-        </div>
-        <button onClick={onToggle} className="shrink-0">
-          {step.enabled ? (
-            <div className="w-4 h-4 rounded border-2 border-primary bg-primary flex items-center justify-center">
-              <Check className="w-3 h-3 text-white" />
-            </div>
-          ) : (
-            <div className="w-4 h-4 rounded border-2 border-gray-300 dark:border-gray-600" />
-          )}
-        </button>
-        <span className={`text-sm font-semibold flex-1 truncate ${step.enabled ? 'text-gray-800 dark:text-gray-100' : 'text-gray-400 dark:text-gray-500 line-through'}`}>
-          {agent.name}
-        </span>
-        <span className="text-[10px] text-gray-400 dark:text-gray-500 font-mono">#{index + 1}</span>
-      </div>
-      <div className="absolute top-2 right-2 hidden group-hover:flex items-center gap-1">
-        <button onClick={onEdit} className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-colors">
-          <Pencil className="w-3 h-3" />
-        </button>
-        <button onClick={onRemove} className="p-1 rounded hover:bg-red-50 dark:hover:bg-red-500/10 text-gray-400 hover:text-red-500 transition-colors">
-          <X className="w-3 h-3" />
-        </button>
-      </div>
-    </div>
-  );
+function buildPhaseConfig(pattern: Pattern, memberIds: string[]): WorkflowPhaseConfig {
+  if (pattern === 'relay') return { pattern, steps: memberIds };
+  if (pattern === 'supervisor') return { pattern, assistants: memberIds };
+  return { pattern, parallel: memberIds };
 }
 
-function DroppablePhaseColumn({ phase, children }: { phase: string; children: React.ReactNode }) {
-  const { setNodeRef, isOver } = useDroppable({ id: `phase-${phase}` });
+// ============================================================================
+// Persona editor
+// ============================================================================
 
-  return (
-    <div
-      ref={setNodeRef}
-      className={`flex-1 overflow-y-auto rounded-2xl bg-gray-100/50 dark:bg-black/20 p-3 border transition-colors ${
-        isOver ? 'border-primary/40 bg-primary/5' : 'border-transparent'
-      }`}
-    >
-      {children}
-    </div>
-  );
-}
-
-function StepConnector({ mode }: { mode: WorkflowMode }) {
-  if (mode === 'parallel') {
-    return (
-      <div className="flex justify-center py-1">
-        <div className="flex items-center gap-1">
-          <div className="w-1 h-1 rounded-full bg-blue-400/60" />
-          <div className="w-1 h-1 rounded-full bg-blue-400/60" />
-          <div className="w-1 h-1 rounded-full bg-blue-400/60" />
-        </div>
-      </div>
-    );
-  }
-  return (
-    <div className="flex justify-center py-1">
-      <div className="w-px h-4 bg-gray-300 dark:bg-white/20" />
-    </div>
-  );
-}
-
-// --- Edit Panels ---
-
-function AgentEditPanel({
-  agent,
-  skills,
+function PersonaEditPanel({
+  initial,
   onClose,
-  onSave,
-  onDelete,
+  onSaved,
 }: {
-  agent: AgentDef;
-  skills: SkillDef[];
+  initial: OrchestrationPersonaMeta | null;
   onClose: () => void;
-  onSave: (updated: AgentDef) => void;
-  onDelete?: () => void;
+  onSaved: () => void;
 }) {
-  const [name, setName] = useState(agent.name);
-  const [category, setCategory] = useState(agent.category);
-  const [prompt, setPrompt] = useState(agent.prompt);
-  const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>(agent.skillIds);
+  const isNew = !initial;
+  const [label, setLabel] = useState(initial?.label ?? '');
+  const [id, setId] = useState(initial?.id ?? '');
+  const [description, setDescription] = useState(initial?.description ?? '');
+  const [phase, setPhase] = useState<WorkflowPhase>((initial?.phase as WorkflowPhase) ?? 'review');
+  const [patterns, setPatterns] = useState<string[]>(initial?.compatiblePatterns ?? []);
+  const [prompt, setPrompt] = useState('');
+  const [loadingPrompt, setLoadingPrompt] = useState(!isNew);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const toggleSkill = (skillId: string) => {
-    setSelectedSkillIds(prev =>
-      prev.includes(skillId) ? prev.filter(s => s !== skillId) : [...prev, skillId]
-    );
+  useEffect(() => {
+    let cancelled = false;
+    if (initial && !initial.builtIn) {
+      setLoadingPrompt(true);
+      fetchEditablePersona(initial.id)
+        .then(p => { if (!cancelled) setPrompt(p.prompt); })
+        .catch(() => { if (!cancelled) setError('Failed to load persona prompt'); })
+        .finally(() => { if (!cancelled) setLoadingPrompt(false); });
+    }
+    return () => { cancelled = true; };
+  }, [initial]);
+
+  // Auto-derive a slug id for new personas from the label.
+  useEffect(() => {
+    if (!isNew) return;
+    setId(label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, ''));
+  }, [label, isNew]);
+
+  const togglePattern = (p: string) =>
+    setPatterns(prev => (prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p]));
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError(null);
+    const payload: PersonaInput = {
+      id,
+      label: label.trim(),
+      description: description.trim(),
+      phase,
+      compatiblePatterns: patterns,
+      requiredCapabilities: [],
+      prompt,
+    };
+    try {
+      if (isNew) await createPersona(payload);
+      else await updatePersona(initial!.id, payload);
+      onSaved();
+    } catch (err: any) {
+      setError(err?.message || 'Failed to save persona');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
-      <div className="bg-white dark:bg-[#1f2028] rounded-2xl shadow-2xl w-full max-w-xl max-h-[85vh] overflow-y-auto p-6 border border-gray-200 dark:border-white/10" onClick={e => e.stopPropagation()}>
+      <div className="bg-white dark:bg-[#1f2028] rounded-2xl shadow-2xl w-full max-w-xl max-h-[88vh] overflow-y-auto p-6 border border-gray-200 dark:border-white/10" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-bold text-gray-800 dark:text-gray-100">Configure Agent</h3>
+          <h3 className="text-lg font-bold text-gray-800 dark:text-gray-100">{isNew ? 'New Persona' : 'Edit Persona'}</h3>
           <button onClick={onClose} className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400">
             <X className="w-5 h-5" />
           </button>
@@ -328,98 +166,297 @@ function AgentEditPanel({
           <div>
             <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Name</label>
             <input
-              value={name}
-              onChange={e => setName(e.target.value)}
+              value={label}
+              onChange={e => setLabel(e.target.value)}
+              placeholder="e.g. Security Auditor"
+              className="mt-1 w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-black/30 text-sm text-gray-800 dark:text-gray-100 outline-none focus:border-primary"
+            />
+            {isNew && id && <p className="mt-1 text-[11px] text-gray-400 font-mono">id: {id}</p>}
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Description</label>
+            <input
+              value={description}
+              onChange={e => setDescription(e.target.value)}
+              placeholder="Short summary shown in the launcher"
               className="mt-1 w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-black/30 text-sm text-gray-800 dark:text-gray-100 outline-none focus:border-primary"
             />
           </div>
 
           <div>
-            <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Category</label>
+            <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Phase</label>
             <div className="mt-1 flex gap-2 flex-wrap">
-              {(['grooming', 'execution', 'validation', 'release'] as const).map(cat => (
+              {PHASES.map(p => (
                 <button
-                  key={cat}
-                  onClick={() => setCategory(cat)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold capitalize transition-all ${
-                    category === cat
+                  key={p.key}
+                  onClick={() => setPhase(p.key)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                    phase === p.key
                       ? 'bg-primary text-white'
                       : 'bg-gray-100 dark:bg-white/10 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-white/20'
                   }`}
                 >
-                  {cat}
+                  {p.label}
                 </button>
               ))}
             </div>
           </div>
 
           <div>
-            <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">System Prompt</label>
-            <textarea
-              value={prompt}
-              onChange={e => setPrompt(e.target.value)}
-              rows={6}
-              className="mt-1 w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-black/30 text-sm text-gray-800 dark:text-gray-100 outline-none focus:border-primary resize-y font-mono leading-relaxed"
-            />
-          </div>
-
-          <div>
-            <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Attached Skills</label>
-            <div className="mt-2 space-y-1.5">
-              {skills.map(skill => (
+            <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Compatible Patterns</label>
+            <div className="mt-1 flex gap-2 flex-wrap">
+              {PATTERNS.map(p => (
                 <button
-                  key={skill.id}
-                  onClick={() => toggleSkill(skill.id)}
-                  className={`w-full flex items-start gap-2.5 px-3 py-2.5 rounded-lg text-left text-xs transition-all border ${
-                    selectedSkillIds.includes(skill.id)
-                      ? 'border-primary bg-primary/5 dark:bg-primary/10'
-                      : 'border-gray-200 dark:border-white/10 hover:border-primary/30'
+                  key={p.key}
+                  onClick={() => togglePattern(p.key)}
+                  title={p.description}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                    patterns.includes(p.key)
+                      ? 'bg-primary/10 text-primary border border-primary/30'
+                      : 'bg-gray-100 dark:bg-white/10 text-gray-500 dark:text-gray-400 border border-transparent hover:bg-gray-200 dark:hover:bg-white/20'
                   }`}
                 >
-                  <div className="mt-0.5 shrink-0">
-                    {selectedSkillIds.includes(skill.id) ? (
-                      <div className="w-3.5 h-3.5 rounded border-2 border-primary bg-primary flex items-center justify-center">
-                        <Check className="w-2.5 h-2.5 text-white" />
-                      </div>
-                    ) : (
-                      <div className="w-3.5 h-3.5 rounded border-2 border-gray-300 dark:border-gray-600" />
-                    )}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <span className={`font-semibold ${selectedSkillIds.includes(skill.id) ? 'text-primary' : 'text-gray-700 dark:text-gray-200'}`}>{skill.name}</span>
-                    <p className="text-gray-500 dark:text-gray-400 mt-0.5 line-clamp-1">{skill.body.split('\n')[0]}</p>
-                  </div>
+                  {p.label}
                 </button>
               ))}
             </div>
+            <p className="text-[11px] text-gray-400 mt-1">Leave empty to allow the persona in any orchestration mode.</p>
           </div>
-        </div>
 
-        <div className="flex items-center justify-between mt-6 pt-4 border-t border-gray-200 dark:border-white/10">
           <div>
-            {onDelete && (
-              <button onClick={onDelete} className="px-3 py-2 rounded-lg text-sm font-medium text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors">
-                Delete Agent
-              </button>
+            <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Prompt</label>
+            {loadingPrompt ? (
+              <div className="mt-1 flex items-center gap-2 text-gray-400 text-sm"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</div>
+            ) : (
+              <textarea
+                value={prompt}
+                onChange={e => setPrompt(e.target.value)}
+                rows={8}
+                placeholder="The full instructions this persona launches with…"
+                className="mt-1 w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-black/30 text-sm text-gray-800 dark:text-gray-100 outline-none focus:border-primary resize-y font-mono leading-relaxed"
+              />
             )}
           </div>
-          <div className="flex gap-2">
-            <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-gray-500 hover:bg-gray-100 dark:hover:bg-white/10 transition-colors">
-              Cancel
-            </button>
-            <button
-              onClick={() => onSave({ ...agent, name, category, prompt, skillIds: selectedSkillIds })}
-              disabled={!name.trim()}
-              className="px-4 py-2 rounded-lg text-sm font-semibold bg-primary text-white hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Save
-            </button>
-          </div>
+
+          {error && <p className="text-sm text-red-500">{error}</p>}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 mt-6 pt-4 border-t border-gray-200 dark:border-white/10">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-gray-500 hover:bg-gray-100 dark:hover:bg-white/10 transition-colors">
+            Cancel
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={!label.trim() || !prompt.trim() || saving || loadingPrompt}
+            className="px-4 py-2 rounded-lg text-sm font-semibold bg-primary text-white hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+          >
+            {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+            Save
+          </button>
         </div>
       </div>
     </div>
   );
 }
+
+// ============================================================================
+// Template editor
+// ============================================================================
+
+function TemplateEditPanel({
+  initial,
+  personas,
+  onClose,
+  onSaved,
+}: {
+  initial: WorkflowTemplate | null;
+  personas: OrchestrationPersonaMeta[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const isNew = !initial;
+  const [name, setName] = useState(initial?.name ?? '');
+  const [cliTarget, setCliTarget] = useState<CliTarget>((initial?.cliTarget as CliTarget) ?? 'claude');
+  const [phases, setPhases] = useState<Partial<Record<WorkflowPhase, WorkflowPhaseConfig>>>(initial?.phases ?? {});
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const supportedPatterns = CLI_PATTERN_SUPPORT[cliTarget];
+
+  const setPhasePattern = (phase: WorkflowPhase, pattern: Pattern) => {
+    setPhases(prev => {
+      const members = phaseMembers(prev[phase]);
+      return { ...prev, [phase]: buildPhaseConfig(pattern, members) };
+    });
+  };
+
+  const togglePhaseMember = (phase: WorkflowPhase, personaId: string) => {
+    setPhases(prev => {
+      const existing = prev[phase];
+      const pattern = (existing?.pattern as Pattern) ?? 'relay';
+      const members = phaseMembers(existing);
+      const next = members.includes(personaId)
+        ? members.filter(m => m !== personaId)
+        : [...members, personaId];
+      return { ...prev, [phase]: buildPhaseConfig(pattern, next) };
+    });
+  };
+
+  const clearPhase = (phase: WorkflowPhase) => {
+    setPhases(prev => {
+      const next = { ...prev };
+      delete next[phase];
+      return next;
+    });
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError(null);
+    // Drop empty phases and coerce unsupported patterns to relay before saving.
+    const cleaned: Partial<Record<WorkflowPhase, WorkflowPhaseConfig>> = {};
+    for (const { key } of PHASES) {
+      const cfg = phases[key];
+      if (!cfg || phaseMembers(cfg).length === 0) continue;
+      const pattern = supportedPatterns.includes(cfg.pattern as Pattern) ? (cfg.pattern as Pattern) : 'relay';
+      cleaned[key] = buildPhaseConfig(pattern, phaseMembers(cfg));
+    }
+    try {
+      if (isNew) await createWorkflow({ name: name.trim(), cliTarget, phases: cleaned });
+      else await updateWorkflow(initial!.id, { name: name.trim(), cliTarget, phases: cleaned });
+      onSaved();
+    } catch (err: any) {
+      setError(err?.message || 'Failed to save template');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-white dark:bg-[#1f2028] rounded-2xl shadow-2xl w-full max-w-2xl max-h-[88vh] overflow-y-auto p-6 border border-gray-200 dark:border-white/10" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-bold text-gray-800 dark:text-gray-100">{isNew ? 'New Template' : 'Edit Template'}</h3>
+          <button onClick={onClose} className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="space-y-4">
+          <div className="flex gap-3">
+            <div className="flex-1">
+              <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Name</label>
+              <input
+                value={name}
+                onChange={e => setName(e.target.value)}
+                placeholder="e.g. Thorough Review"
+                className="mt-1 w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-black/30 text-sm text-gray-800 dark:text-gray-100 outline-none focus:border-primary"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">CLI Target</label>
+              <div className="mt-1 flex gap-1.5">
+                {(['claude', 'gemini', 'copilot'] as CliTarget[]).map(cli => (
+                  <button
+                    key={cli}
+                    onClick={() => setCliTarget(cli)}
+                    className={`px-3 py-2 rounded-lg text-xs font-bold uppercase transition-all ${
+                      cliTarget === cli ? CLI_COLORS[cli] + ' ring-1 ring-primary/40' : 'bg-gray-100 dark:bg-white/10 text-gray-400'
+                    }`}
+                  >
+                    {cli}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {PHASES.map(({ key, label }) => {
+            const cfg = phases[key];
+            const pattern = (cfg?.pattern as Pattern) ?? 'relay';
+            const members = phaseMembers(cfg);
+            const phasePersonas = personas.filter(p => p.phase === key);
+            return (
+              <div key={key} className={`rounded-xl border border-gray-200 dark:border-white/10 border-l-4 ${PHASE_COLORS[key]} p-3`}>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold uppercase tracking-wider text-gray-600 dark:text-gray-300">{label}</span>
+                  {members.length > 0 && (
+                    <button onClick={() => clearPhase(key)} className="text-[11px] text-gray-400 hover:text-red-500 transition-colors">Clear</button>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-1 mt-2">
+                  {PATTERNS.map(p => {
+                    const supported = supportedPatterns.includes(p.key);
+                    return (
+                      <button
+                        key={p.key}
+                        disabled={!supported}
+                        onClick={() => setPhasePattern(key, p.key)}
+                        title={supported ? p.description : `Not supported by ${cliTarget}`}
+                        className={`px-2 py-1 rounded-md text-[10px] font-semibold transition-all ${
+                          pattern === p.key && members.length > 0
+                            ? 'bg-primary/10 text-primary border border-primary/30'
+                            : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 border border-transparent'
+                        } disabled:opacity-30 disabled:cursor-not-allowed`}
+                      >
+                        {p.label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {phasePersonas.length === 0 && (
+                    <span className="text-[11px] text-gray-400 italic">No personas for this phase yet.</span>
+                  )}
+                  {phasePersonas.map(p => {
+                    const selected = members.includes(p.id);
+                    return (
+                      <button
+                        key={p.id}
+                        onClick={() => togglePhaseMember(key, p.id)}
+                        className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border transition-all ${
+                          selected
+                            ? 'border-primary bg-primary/5 text-primary dark:bg-primary/10'
+                            : 'border-gray-200 dark:border-white/10 text-gray-600 dark:text-gray-300 hover:border-primary/40'
+                        }`}
+                      >
+                        {selected && <Check className="w-3 h-3" />}
+                        {p.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+
+          {error && <p className="text-sm text-red-500">{error}</p>}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 mt-6 pt-4 border-t border-gray-200 dark:border-white/10">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-gray-500 hover:bg-gray-100 dark:hover:bg-white/10 transition-colors">
+            Cancel
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={!name.trim() || saving}
+            className="px-4 py-2 rounded-lg text-sm font-semibold bg-primary text-white hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+          >
+            {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// Skill editor (skills persist as docs)
+// ============================================================================
 
 function SkillEditPanel({
   skill,
@@ -456,15 +493,14 @@ function SkillEditPanel({
               className="mt-1 w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-black/30 text-sm text-gray-800 dark:text-gray-100 outline-none focus:border-primary"
             />
           </div>
-
-          <div>
-            <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Source File</label>
-            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400 font-mono">{skill.path}</p>
-          </div>
-
+          {skill.path && (
+            <div>
+              <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Source File</label>
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400 font-mono">{skill.path}</p>
+            </div>
+          )}
           <div>
             <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Skill Content</label>
-            <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">The markdown instructions injected when this skill is attached to an agent.</p>
             <textarea
               value={body}
               onChange={e => setBody(e.target.value)}
@@ -501,486 +537,341 @@ function SkillEditPanel({
   );
 }
 
-// --- Main Component ---
+// ============================================================================
+// Main component
+// ============================================================================
+
+type Tab = 'personas' | 'templates' | 'skills';
 
 export function WorkflowBuilder() {
-  const [agents, setAgents] = useState<AgentDef[]>(DEFAULT_AGENTS);
+  const [tab, setTab] = useState<Tab>('personas');
+
+  const [personas, setPersonas] = useState<OrchestrationPersonaMeta[]>([]);
+  const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
+  const [config, setConfigState] = useState<Config | null>(null);
   const [skills, setSkills] = useState<SkillDef[]>([]);
-  const [skillsLoading, setSkillsLoading] = useState(true);
+  const [loading, setLoading] = useState(true);
   const [skillSaving, setSkillSaving] = useState(false);
-  const [workflows, setWorkflows] = useState<PhaseWorkflows>(createDefaultWorkflows);
-  const [editingAgent, setEditingAgent] = useState<AgentDef | null>(null);
+
+  const [editingPersona, setEditingPersona] = useState<OrchestrationPersonaMeta | null>(null);
+  const [creatingPersona, setCreatingPersona] = useState(false);
+  const [editingTemplate, setEditingTemplate] = useState<WorkflowTemplate | null>(null);
+  const [creatingTemplate, setCreatingTemplate] = useState(false);
   const [editingSkill, setEditingSkill] = useState<SkillDef | null>(null);
-  const [libraryTab, setLibraryTab] = useState<'agents' | 'skills'>('agents');
-  const [activeDragId, setActiveDragId] = useState<string | null>(null);
+
+  const reloadPersonas = useCallback(() => fetchOrchestrationPersonas().then(setPersonas).catch(() => {}), []);
+  const reloadTemplates = useCallback(() => fetchWorkflows().then(setTemplates).catch(() => {}), []);
 
   useEffect(() => {
     let cancelled = false;
-    setSkillsLoading(true);
-    fetchDocs()
-      .then(docs => {
+    setLoading(true);
+    Promise.all([
+      fetchOrchestrationPersonas(),
+      fetchWorkflows(),
+      fetchConfig(),
+      fetchDocs(),
+    ])
+      .then(([p, w, c, docs]) => {
         if (cancelled) return;
-        const skillDocs = docs.filter(d => d.directory === 'skills');
-        setSkills(skillDocs.map(docToSkill));
+        setPersonas(p);
+        setTemplates(w);
+        setConfigState(c);
+        setSkills(docs.filter(d => d.directory === 'skills').map(docToSkill));
       })
       .catch(() => {})
-      .finally(() => { if (!cancelled) setSkillsLoading(false); });
+      .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, []);
 
-  const getAgent = useCallback((id: string) => agents.find(a => a.id === id), [agents]);
-
-  const getActiveTemplate = useCallback((phase: string): WorkflowTemplate | undefined => {
-    const pw = workflows[phase];
-    if (!pw) return undefined;
-    return pw.templates.find(t => t.id === pw.activeTemplateId);
-  }, [workflows]);
-
-  const setActiveTemplate = useCallback((phase: string, templateId: string) => {
-    setWorkflows(prev => ({ ...prev, [phase]: { ...prev[phase], activeTemplateId: templateId } }));
-  }, []);
-
-  const setTemplateMode = useCallback((phase: string, mode: WorkflowMode) => {
-    setWorkflows(prev => {
-      const pw = prev[phase];
-      const tpl = pw.templates.find(t => t.id === pw.activeTemplateId);
-      if (!tpl) return prev;
-      return { ...prev, [phase]: { ...pw, templates: pw.templates.map(t => t.id === tpl.id ? { ...t, mode } : t) } };
-    });
-  }, []);
-
-  const addTemplateToPhase = useCallback((phase: string) => {
-    const id = nextId('tpl');
-    const name = `Template ${(workflows[phase]?.templates.length ?? 0) + 1}`;
-    setWorkflows(prev => ({
-      ...prev,
-      [phase]: { ...prev[phase], templates: [...prev[phase].templates, { id, name, mode: 'sequential', steps: [] }], activeTemplateId: id },
-    }));
-  }, [workflows]);
-
-  const duplicateTemplate = useCallback((phase: string) => {
-    const current = getActiveTemplate(phase);
-    if (!current) return;
-    const id = nextId('tpl');
-    const copy: WorkflowTemplate = { id, name: `${current.name} (copy)`, mode: current.mode, steps: current.steps.map(s => ({ ...s, id: nextId('s') })) };
-    setWorkflows(prev => ({ ...prev, [phase]: { ...prev[phase], templates: [...prev[phase].templates, copy], activeTemplateId: id } }));
-  }, [getActiveTemplate]);
-
-  const renameTemplate = useCallback((phase: string) => {
-    const current = getActiveTemplate(phase);
-    if (!current) return;
-    const newName = window.prompt('Rename template:', current.name);
-    if (!newName || !newName.trim()) return;
-    setWorkflows(prev => {
-      const pw = prev[phase];
-      return { ...prev, [phase]: { ...pw, templates: pw.templates.map(t => t.id === current.id ? { ...t, name: newName.trim() } : t) } };
-    });
-  }, [getActiveTemplate]);
-
-  const deleteTemplate = useCallback((phase: string) => {
-    const pw = workflows[phase];
-    if (!pw || pw.templates.length <= 1) return;
-    const current = getActiveTemplate(phase);
-    if (!current) return;
-    if (!window.confirm(`Delete template "${current.name}"?`)) return;
-    const remaining = pw.templates.filter(t => t.id !== current.id);
-    setWorkflows(prev => ({ ...prev, [phase]: { ...prev[phase], templates: remaining, activeTemplateId: remaining[0].id } }));
-  }, [workflows, getActiveTemplate]);
-
-  const toggleStep = useCallback((phase: string, stepId: string) => {
-    setWorkflows(prev => {
-      const pw = prev[phase];
-      const tpl = pw.templates.find(t => t.id === pw.activeTemplateId);
-      if (!tpl) return prev;
-      return { ...prev, [phase]: { ...pw, templates: pw.templates.map(t => t.id === tpl.id ? { ...t, steps: t.steps.map(s => s.id === stepId ? { ...s, enabled: !s.enabled } : s) } : t) } };
-    });
-  }, []);
-
-  const removeStep = useCallback((phase: string, stepId: string) => {
-    setWorkflows(prev => {
-      const pw = prev[phase];
-      const tpl = pw.templates.find(t => t.id === pw.activeTemplateId);
-      if (!tpl) return prev;
-      return { ...prev, [phase]: { ...pw, templates: pw.templates.map(t => t.id === tpl.id ? { ...t, steps: t.steps.filter(s => s.id !== stepId) } : t) } };
-    });
-  }, []);
-
-  const addAgentToPhase = useCallback((phase: string, agentId: string) => {
-    setWorkflows(prev => {
-      const pw = prev[phase];
-      const tpl = pw.templates.find(t => t.id === pw.activeTemplateId);
-      if (!tpl) return prev;
-      const newStep: WorkflowStep = { id: nextId('s'), agentId, enabled: true };
-      return { ...prev, [phase]: { ...pw, templates: pw.templates.map(t => t.id === tpl.id ? { ...t, steps: [...t.steps, newStep] } : t) } };
-    });
-  }, []);
-
-  // DnD handlers
-  const handleDragStart = useCallback((event: DragStartEvent) => {
-    setActiveDragId(event.active.id as string);
-  }, []);
-
-  const handleDragEnd = useCallback((event: DragEndEvent) => {
-    setActiveDragId(null);
-    const { active, over } = event;
-    if (!over) return;
-
-    const activeData = active.data.current;
-    const overId = over.id as string;
-
-    // Library agent dropped onto a phase column
-    if (activeData?.type === 'library-agent' && overId.startsWith('phase-')) {
-      const phase = overId.replace('phase-', '');
-      addAgentToPhase(phase, activeData.agentId);
-      return;
+  const personasByPhase = useMemo(() => {
+    const map: Record<WorkflowPhase, OrchestrationPersonaMeta[]> = {
+      grooming: [], implementation: [], review: [], release: [],
+    };
+    for (const p of personas) {
+      if (map[p.phase as WorkflowPhase]) map[p.phase as WorkflowPhase].push(p);
     }
+    return map;
+  }, [personas]);
 
-    // Sortable reorder within same column
-    if (active.id !== over.id) {
-      // Find which phase contains this step
-      for (const phase of PHASES) {
-        const tpl = getActiveTemplate(phase);
-        if (!tpl) continue;
-        const oldIndex = tpl.steps.findIndex(s => s.id === active.id);
-        const newIndex = tpl.steps.findIndex(s => s.id === over.id);
-        if (oldIndex !== -1 && newIndex !== -1) {
-          setWorkflows(prev => {
-            const pw = prev[phase];
-            const t = pw.templates.find(t => t.id === pw.activeTemplateId)!;
-            const reordered = arrayMove(t.steps, oldIndex, newIndex);
-            return { ...prev, [phase]: { ...pw, templates: pw.templates.map(tp => tp.id === t.id ? { ...tp, steps: reordered } : tp) } };
-          });
-          return;
-        }
+  const handleDeletePersona = useCallback(async (p: OrchestrationPersonaMeta) => {
+    if (!window.confirm(`Delete persona "${p.label}"?`)) return;
+    try {
+      await deletePersona(p.id);
+      await reloadPersonas();
+    } catch (err) {
+      console.error('Failed to delete persona:', err);
+    }
+  }, [reloadPersonas]);
+
+  const handleDeleteTemplate = useCallback(async (t: WorkflowTemplate) => {
+    if (!window.confirm(`Delete template "${t.name}"?`)) return;
+    try {
+      await deleteWorkflow(t.id);
+      await reloadTemplates();
+      if (config?.defaultWorkflowId === t.id) {
+        const next = { ...config, defaultWorkflowId: '' };
+        await saveConfig(next);
+        setConfigState(next);
       }
+    } catch (err) {
+      console.error('Failed to delete template:', err);
     }
-  }, [addAgentToPhase, getActiveTemplate]);
+  }, [reloadTemplates, config]);
 
-  const handleSaveAgent = useCallback((updated: AgentDef) => {
-    setAgents(prev => {
-      const exists = prev.some(a => a.id === updated.id);
-      return exists ? prev.map(a => a.id === updated.id ? updated : a) : [...prev, updated];
-    });
-    setEditingAgent(null);
-  }, []);
-
-  const handleDeleteAgent = useCallback((agentId: string) => {
-    setAgents(prev => prev.filter(a => a.id !== agentId));
-    setEditingAgent(null);
-  }, []);
+  const handleSetDefault = useCallback(async (templateId: string) => {
+    if (!config) return;
+    const nextId = config.defaultWorkflowId === templateId ? '' : templateId;
+    const next = { ...config, defaultWorkflowId: nextId };
+    try {
+      await saveConfig(next);
+      setConfigState(next);
+    } catch (err) {
+      console.error('Failed to set default workflow:', err);
+    }
+  }, [config]);
 
   const handleSaveSkill = useCallback(async (updated: SkillDef) => {
     setSkillSaving(true);
     try {
-      const exists = skills.some(s => s.id === updated.id);
-      if (exists) {
+      if (updated.path) {
         await updateDoc(updated.path, { title: updated.name, body: updated.body });
+        setSkills(prev => prev.map(s => (s.id === updated.id ? updated : s)));
       } else {
         const slug = updated.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-        const path = `skills/${slug}.md`;
-        const doc = await createDoc({ path, title: updated.name, body: updated.body });
-        updated = docToSkill(doc);
+        const doc = await createDoc({ path: `skills/${slug}.md`, title: updated.name, body: updated.body });
+        setSkills(prev => [...prev, docToSkill(doc)]);
       }
-      setSkills(prev => {
-        const idx = prev.findIndex(s => s.id === updated.id);
-        return idx >= 0 ? prev.map(s => s.id === updated.id ? updated : s) : [...prev, updated];
-      });
       setEditingSkill(null);
     } catch (err) {
       console.error('Failed to save skill:', err);
     } finally {
       setSkillSaving(false);
     }
-  }, [skills]);
+  }, []);
 
-  const handleDeleteSkill = useCallback(async (skillId: string) => {
-    const skill = skills.find(s => s.id === skillId);
-    if (!skill) return;
-    if (!window.confirm(`Delete skill "${skill.name}"? This will remove the file.`)) return;
+  const handleDeleteSkill = useCallback(async (skill: SkillDef) => {
+    if (!window.confirm(`Delete skill "${skill.name}"? This removes the file.`)) return;
     try {
       await deleteDoc(skill.path);
-      setSkills(prev => prev.filter(s => s.id !== skillId));
-      setAgents(prev => prev.map(a => ({ ...a, skillIds: a.skillIds.filter(s => s !== skillId) })));
+      setSkills(prev => prev.filter(s => s.id !== skill.id));
       setEditingSkill(null);
     } catch (err) {
       console.error('Failed to delete skill:', err);
     }
-  }, [skills]);
-
-  const handleNewAgent = useCallback(() => {
-    setEditingAgent({ id: nextId('agent'), name: 'New Agent', category: 'execution', prompt: '', skillIds: [] });
   }, []);
 
-  const handleNewSkill = useCallback(() => {
-    setEditingSkill({ id: '', name: 'New Skill', body: '', path: '' });
-  }, []);
-
-  // Drag overlay content
-  const dragOverlayContent = useMemo(() => {
-    if (!activeDragId) return null;
-    if (activeDragId.startsWith('library-')) {
-      const agentId = activeDragId.replace('library-', '');
-      const agent = getAgent(agentId);
-      if (!agent) return null;
-      return (
-        <div className={`p-3 rounded-xl border border-primary/40 bg-white dark:bg-[#1f2028] shadow-xl border-l-4 ${CATEGORY_COLORS[agent.category]} w-[230px]`}>
-          <span className="text-sm font-semibold text-gray-800 dark:text-gray-100">{agent.name}</span>
-        </div>
-      );
-    }
-    return null;
-  }, [activeDragId, getAgent]);
+  const TABS: { key: Tab; label: string; icon: typeof Users }[] = [
+    { key: 'personas', label: 'Personas', icon: Users },
+    { key: 'templates', label: 'Templates', icon: Network },
+    { key: 'skills', label: 'Skills', icon: BookOpen },
+  ];
 
   return (
-    <DndContext onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-      <div className="h-full flex flex-col">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center gap-3">
-            <div className="bg-primary/10 p-2 rounded-xl">
-              <Workflow className="w-5 h-5 text-primary" />
-            </div>
-            <div>
-              <h2 className="text-xl font-bold text-gray-800 dark:text-gray-100">Workflow Builder</h2>
-              <p className="text-xs text-gray-500 dark:text-gray-400">Configure agent pipelines per phase</p>
-            </div>
+    <div className="h-full flex flex-col">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-5">
+        <div className="flex items-center gap-3">
+          <div className="bg-primary/10 p-2 rounded-xl">
+            <Workflow className="w-5 h-5 text-primary" />
           </div>
-          <div className="flex items-center gap-2">
-            <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-gray-100 dark:bg-white/10 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-white/20 transition-colors">
-              <Save className="w-3.5 h-3.5" />
-              Save
-            </button>
-            <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold bg-primary text-white hover:bg-primary-hover transition-colors">
-              <Play className="w-3.5 h-3.5" />
-              Run
-            </button>
+          <div>
+            <h2 className="text-xl font-bold text-gray-800 dark:text-gray-100">Workflow Builder</h2>
+            <p className="text-xs text-gray-500 dark:text-gray-400">Personas, templates &amp; board defaults for the agent launcher</p>
           </div>
         </div>
+      </div>
 
-        {/* Kanban Layout */}
-        <div className="flex-1 flex gap-4 overflow-x-auto min-h-0">
+      {/* Tabs */}
+      <div className="flex items-center gap-1 mb-5 bg-gray-100 dark:bg-black/30 p-0.5 rounded-lg w-fit">
+        {TABS.map(t => {
+          const Icon = t.icon;
+          return (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-sm font-semibold transition-all ${
+                tab === t.key
+                  ? 'bg-white dark:bg-white/10 text-gray-800 dark:text-gray-100 shadow-sm'
+                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+              }`}
+            >
+              <Icon className="w-4 h-4" />
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
 
-          {/* Library Column */}
-          <div className="flex flex-col w-[260px] shrink-0">
-            <div className="flex items-center gap-1 mb-3 bg-gray-100 dark:bg-black/30 p-0.5 rounded-lg">
-              <button
-                onClick={() => setLibraryTab('agents')}
-                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-xs font-semibold transition-all ${
-                  libraryTab === 'agents'
-                    ? 'bg-white dark:bg-white/10 text-gray-800 dark:text-gray-100 shadow-sm'
-                    : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
-                }`}
-              >
-                <Bot className="w-3.5 h-3.5" />
-                Agents
-              </button>
-              <button
-                onClick={() => setLibraryTab('skills')}
-                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-xs font-semibold transition-all ${
-                  libraryTab === 'skills'
-                    ? 'bg-white dark:bg-white/10 text-gray-800 dark:text-gray-100 shadow-sm'
-                    : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
-                }`}
-              >
-                <BookOpen className="w-3.5 h-3.5" />
-                Skills
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto rounded-2xl bg-gray-100/50 dark:bg-black/20 p-3 space-y-2 border border-transparent">
-              {libraryTab === 'agents' && (
-                <>
-                  {agents.map(agent => (
-                    <DraggableLibraryCard key={agent.id} agent={agent} onEdit={() => setEditingAgent(agent)} />
-                  ))}
-                  <button
-                    onClick={handleNewAgent}
-                    className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-dashed border-gray-300 dark:border-white/20 text-gray-400 dark:text-gray-500 hover:text-primary hover:border-primary transition-colors text-sm font-medium cursor-pointer"
-                  >
-                    <Plus className="w-4 h-4" />
-                    New Agent
-                  </button>
-                </>
-              )}
-              {libraryTab === 'skills' && (
-                <>
-                  {skillsLoading ? (
-                    <div className="flex items-center justify-center py-8 text-gray-400">
-                      <Loader2 className="w-5 h-5 animate-spin" />
-                    </div>
-                  ) : (
-                    skills.map(skill => (
-                      <div key={skill.id} className="group p-3 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-white/5 hover:border-primary/40 hover:shadow-sm transition-all cursor-pointer" onClick={() => setEditingSkill(skill)}>
-                        <div className="flex items-center gap-2">
-                          <BookOpen className="w-3.5 h-3.5 text-primary/60 shrink-0" />
-                          <span className="text-sm font-semibold text-gray-800 dark:text-gray-100 flex-1 truncate">{skill.name}</span>
-                          <Pencil className="w-3 h-3 opacity-0 group-hover:opacity-100 text-gray-400 transition-opacity" />
-                        </div>
-                        <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 ml-5.5 line-clamp-2">{skill.body.split('\n')[0]}</p>
-                      </div>
-                    ))
-                  )}
-                  <button
-                    onClick={handleNewSkill}
-                    className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-dashed border-gray-300 dark:border-white/20 text-gray-400 dark:text-gray-500 hover:text-primary hover:border-primary transition-colors text-sm font-medium cursor-pointer"
-                  >
-                    <Plus className="w-4 h-4" />
-                    New Skill
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
-
-          {/* Phase Columns */}
-          {PHASES.map(phase => {
-            const pw = workflows[phase];
-            const activeTemplate = getActiveTemplate(phase);
-            const steps = activeTemplate?.steps ?? [];
-            const mode = activeTemplate?.mode ?? 'sequential';
-            const allowedClis = MODE_ALLOWED_CLIS[mode];
-
-            return (
-              <div key={phase} className="flex flex-col w-[280px] shrink-0">
-                {/* Column Header */}
-                <div className="mb-3 px-1">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400">{phase}</span>
-                    <span className="text-[10px] bg-gray-200 dark:bg-white/10 text-gray-500 dark:text-gray-400 px-2 py-0.5 rounded-full font-medium">
-                      {steps.filter(s => s.enabled).length}/{steps.length}
-                    </span>
-                  </div>
-
-                  {/* Template Picker */}
-                  <div className="flex items-center gap-1 mt-2">
-                    <div className="relative flex-1">
-                      <select
-                        value={pw.activeTemplateId}
-                        onChange={e => setActiveTemplate(phase, e.target.value)}
-                        className="w-full appearance-none pl-2.5 pr-7 py-1.5 rounded-lg text-xs font-medium bg-white dark:bg-white/5 border border-gray-200 dark:border-white/10 text-gray-700 dark:text-gray-200 outline-none focus:border-primary cursor-pointer"
+      {loading ? (
+        <div className="flex items-center justify-center flex-1 text-gray-400">
+          <Loader2 className="w-6 h-6 animate-spin" />
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto">
+          {/* Personas tab */}
+          {tab === 'personas' && (
+            <div className="space-y-6">
+              <div className="flex justify-end">
+                <button
+                  onClick={() => setCreatingPersona(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold bg-primary text-white hover:bg-primary-hover transition-colors"
+                >
+                  <Plus className="w-4 h-4" /> New Persona
+                </button>
+              </div>
+              {PHASES.map(({ key, label }) => (
+                <div key={key}>
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-2">{label}</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5">
+                    {personasByPhase[key].length === 0 && (
+                      <p className="text-xs text-gray-400 italic">No personas.</p>
+                    )}
+                    {personasByPhase[key].map(p => (
+                      <div
+                        key={p.id}
+                        className={`group p-3 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-white/5 border-l-4 ${PHASE_COLORS[key]} transition-all hover:shadow-sm`}
                       >
-                        {pw.templates.map(t => (
-                          <option key={t.id} value={t.id}>{t.name}</option>
-                        ))}
-                      </select>
-                      <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-400 pointer-events-none" />
-                    </div>
-                    <button onClick={() => renameTemplate(phase)} title="Rename template" className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-colors">
-                      <Pencil className="w-3.5 h-3.5" />
-                    </button>
-                    <button onClick={() => duplicateTemplate(phase)} title="Duplicate template" className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-colors">
-                      <Copy className="w-3.5 h-3.5" />
-                    </button>
-                    <button onClick={() => addTemplateToPhase(phase)} title="New template" className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-colors">
-                      <Plus className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      onClick={() => deleteTemplate(phase)}
-                      title="Delete template"
-                      disabled={pw.templates.length <= 1}
-                      className="p-1.5 rounded-lg hover:bg-red-50 dark:hover:bg-red-500/10 text-gray-400 hover:text-red-500 transition-colors disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-gray-400"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-
-                  {/* Workflow Mode Selector + CLI compatibility */}
-                  <div className="mt-2">
-                    <div className="flex items-center gap-1">
-                      {(Object.keys(MODE_INFO) as WorkflowMode[]).map(m => {
-                        const info = MODE_INFO[m];
-                        const Icon = info.icon;
-                        return (
-                          <button
-                            key={m}
-                            onClick={() => setTemplateMode(phase, m)}
-                            title={info.description}
-                            className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-semibold transition-all ${
-                              mode === m
-                                ? 'bg-primary/10 text-primary border border-primary/30'
-                                : 'text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 border border-transparent'
-                            }`}
-                          >
-                            <Icon className="w-3 h-3" />
-                            {info.label}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    {/* CLI compatibility badges at template level */}
-                    <div className="flex items-center gap-1.5 mt-1.5">
-                      <span className="text-[9px] text-gray-400 dark:text-gray-500 uppercase font-bold tracking-wider">Supports:</span>
-                      {(['claude', 'gemini', 'copilot'] as CliTarget[]).map(cli => (
-                        <span
-                          key={cli}
-                          className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${
-                            allowedClis.includes(cli) ? CLI_COLORS[cli] : 'bg-gray-100 dark:bg-white/5 text-gray-300 dark:text-gray-600 line-through'
-                          }`}
-                        >
-                          {cli}
-                        </span>
-                      ))}
-                    </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-semibold text-gray-800 dark:text-gray-100 flex-1 truncate">{p.label}</span>
+                          {p.builtIn ? (
+                            <span className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
+                              <Lock className="w-3 h-3" /> Built-in
+                            </span>
+                          ) : (
+                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <button onClick={() => setEditingPersona(p)} className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-colors">
+                                <Pencil className="w-3.5 h-3.5" />
+                              </button>
+                              <button onClick={() => handleDeletePersona(p)} className="p-1 rounded hover:bg-red-50 dark:hover:bg-red-500/10 text-gray-400 hover:text-red-500 transition-colors">
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                        {p.description && <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 line-clamp-2">{p.description}</p>}
+                      </div>
+                    ))}
                   </div>
                 </div>
+              ))}
+            </div>
+          )}
 
-                {/* Steps Drop Zone */}
-                <DroppablePhaseColumn phase={phase}>
-                  <SortableContext items={steps.map(s => s.id)} strategy={verticalListSortingStrategy}>
-                    <div className="space-y-0">
-                      {steps.map((step, index) => (
-                        <div key={step.id}>
-                          <SortableStepCard
-                            step={step}
-                            agent={getAgent(step.agentId)}
-                            index={index}
-                            onToggle={() => toggleStep(phase, step.id)}
-                            onRemove={() => removeStep(phase, step.id)}
-                            onEdit={() => {
-                              const a = getAgent(step.agentId);
-                              if (a) setEditingAgent(a);
-                            }}
-                          />
-                          {index < steps.length - 1 && <StepConnector mode={mode} />}
-                        </div>
-                      ))}
-                    </div>
-                  </SortableContext>
-                  {steps.length === 0 && (
-                    <div className="flex flex-col items-center justify-center h-32 text-gray-400 dark:text-gray-500">
-                      <Bot className="w-8 h-8 mb-2 opacity-30" />
-                      <span className="text-xs font-medium">Drag agents here</span>
-                    </div>
-                  )}
-                </DroppablePhaseColumn>
+          {/* Templates tab */}
+          {tab === 'templates' && (
+            <div className="space-y-3">
+              <div className="flex justify-end">
+                <button
+                  onClick={() => setCreatingTemplate(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold bg-primary text-white hover:bg-primary-hover transition-colors"
+                >
+                  <Plus className="w-4 h-4" /> New Template
+                </button>
               </div>
-            );
-          })}
+              {templates.length === 0 && (
+                <div className="flex flex-col items-center justify-center py-16 text-gray-400">
+                  <Network className="w-8 h-8 mb-2 opacity-30" />
+                  <span className="text-sm">No templates yet. Create one to set a board default.</span>
+                </div>
+              )}
+              {templates.map(t => {
+                const isDefault = config?.defaultWorkflowId === t.id;
+                const phaseCount = PHASES.filter(p => phaseMembers(t.phases[p.key]).length > 0).length;
+                return (
+                  <div
+                    key={t.id}
+                    className={`group p-4 rounded-xl border bg-white dark:bg-white/5 transition-all hover:shadow-sm ${
+                      isDefault ? 'border-primary/50 ring-1 ring-primary/20' : 'border-gray-200 dark:border-white/10'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={() => handleSetDefault(t.id)}
+                        title={isDefault ? 'Board default (click to unset)' : 'Set as board default'}
+                        className={`shrink-0 p-1 rounded transition-colors ${
+                          isDefault ? 'text-amber-400' : 'text-gray-300 dark:text-gray-600 hover:text-amber-400'
+                        }`}
+                      >
+                        <Star className="w-4 h-4" fill={isDefault ? 'currentColor' : 'none'} />
+                      </button>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-semibold text-gray-800 dark:text-gray-100 truncate">{t.name}</span>
+                          {isDefault && <span className="text-[10px] font-bold uppercase text-primary bg-primary/10 px-1.5 py-0.5 rounded">Default</span>}
+                          <span className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded ${CLI_COLORS[t.cliTarget as CliTarget] ?? 'bg-gray-100 text-gray-500'}`}>{t.cliTarget}</span>
+                        </div>
+                        <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">{phaseCount} phase{phaseCount === 1 ? '' : 's'} configured</p>
+                      </div>
+                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button onClick={() => setEditingTemplate(t)} className="p-1.5 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-colors">
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                        <button onClick={() => handleDeleteTemplate(t)} className="p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-500/10 text-gray-400 hover:text-red-500 transition-colors">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Skills tab */}
+          {tab === 'skills' && (
+            <div className="space-y-2.5 max-w-2xl">
+              <div className="flex justify-end">
+                <button
+                  onClick={() => setEditingSkill({ id: '', name: 'New Skill', body: '', path: '' })}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold bg-primary text-white hover:bg-primary-hover transition-colors"
+                >
+                  <Plus className="w-4 h-4" /> New Skill
+                </button>
+              </div>
+              {skills.map(skill => (
+                <div
+                  key={skill.id}
+                  className="group p-3 rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-white/5 hover:border-primary/40 hover:shadow-sm transition-all cursor-pointer"
+                  onClick={() => setEditingSkill(skill)}
+                >
+                  <div className="flex items-center gap-2">
+                    <BookOpen className="w-3.5 h-3.5 text-primary/60 shrink-0" />
+                    <span className="text-sm font-semibold text-gray-800 dark:text-gray-100 flex-1 truncate">{skill.name}</span>
+                    <Pencil className="w-3 h-3 opacity-0 group-hover:opacity-100 text-gray-400 transition-opacity" />
+                  </div>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 ml-5.5 line-clamp-2">{skill.body.split('\n')[0]}</p>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
+      )}
 
-        {/* Drag Overlay */}
-        <DragOverlay>{dragOverlayContent}</DragOverlay>
-
-        {/* Edit Modals */}
-        {editingAgent && (
-          <AgentEditPanel
-            agent={editingAgent}
-            skills={skills}
-            onClose={() => setEditingAgent(null)}
-            onSave={handleSaveAgent}
-            onDelete={agents.some(a => a.id === editingAgent.id) ? () => handleDeleteAgent(editingAgent.id) : undefined}
-          />
-        )}
-        {editingSkill && (
-          <SkillEditPanel
-            skill={editingSkill}
-            onClose={() => setEditingSkill(null)}
-            onSave={handleSaveSkill}
-            onDelete={editingSkill.id && skills.some(s => s.id === editingSkill.id) ? () => handleDeleteSkill(editingSkill.id) : undefined}
-            isSaving={skillSaving}
-          />
-        )}
-      </div>
-    </DndContext>
+      {/* Modals */}
+      {(creatingPersona || editingPersona) && (
+        <PersonaEditPanel
+          initial={editingPersona}
+          onClose={() => { setCreatingPersona(false); setEditingPersona(null); }}
+          onSaved={() => { setCreatingPersona(false); setEditingPersona(null); reloadPersonas(); }}
+        />
+      )}
+      {(creatingTemplate || editingTemplate) && (
+        <TemplateEditPanel
+          initial={editingTemplate}
+          personas={personas}
+          onClose={() => { setCreatingTemplate(false); setEditingTemplate(null); }}
+          onSaved={() => { setCreatingTemplate(false); setEditingTemplate(null); reloadTemplates(); }}
+        />
+      )}
+      {editingSkill && (
+        <SkillEditPanel
+          skill={editingSkill}
+          onClose={() => setEditingSkill(null)}
+          onSave={handleSaveSkill}
+          onDelete={editingSkill.path ? () => handleDeleteSkill(editingSkill) : undefined}
+          isSaving={skillSaving}
+        />
+      )}
+    </div>
   );
 }

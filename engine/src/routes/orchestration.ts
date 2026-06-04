@@ -1,5 +1,11 @@
 import express from 'express';
-import { listSelectablePersonaMeta } from '../orchestration-personas.js';
+import {
+  listSelectablePersonaMeta,
+  getEditablePersona,
+  saveCustomPersona,
+  deleteCustomPersona,
+  toPersonaMeta,
+} from '../orchestration-personas.js';
 import type { Phase } from '../models/workflow.js';
 
 const router = express.Router();
@@ -14,6 +20,51 @@ router.get('/personas', (req, res) => {
     ? (phaseRaw as Phase)
     : undefined;
   res.json({ personas: listSelectablePersonaMeta(phase) });
+});
+
+// GET a single custom persona including its prompt (for editing). Built-in
+// personas never expose their prompt, so this 404s for them.
+router.get('/personas/:id', (req, res) => {
+  const persona = getEditablePersona(req.params.id);
+  if (!persona) {
+    res.status(404).json({ error: 'Editable persona not found (built-in prompts are not exposed)' });
+    return;
+  }
+  res.json({ persona });
+});
+
+// POST create a custom persona.
+router.post('/personas', async (req, res) => {
+  try {
+    const persona = await saveCustomPersona(req.body);
+    res.status(201).json({ persona: toPersonaMeta(persona) });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Failed to create persona' });
+  }
+});
+
+// PUT update a custom persona.
+router.put('/personas/:id', async (req, res) => {
+  try {
+    const persona = await saveCustomPersona({ ...req.body, id: req.params.id });
+    res.json({ persona: toPersonaMeta(persona) });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Failed to update persona' });
+  }
+});
+
+// DELETE a custom persona.
+router.delete('/personas/:id', async (req, res) => {
+  try {
+    const ok = await deleteCustomPersona(req.params.id);
+    if (!ok) {
+      res.status(404).json({ error: 'Persona not found' });
+      return;
+    }
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Failed to delete persona' });
+  }
 });
 
 export default router;

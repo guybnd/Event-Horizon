@@ -7,6 +7,7 @@ import { getActiveFluxDir, getTaskAssetsDir, setWorkspaceRoot, workspaceRoot } f
 import { attachWorktreeIfPresent, migrateStrandedFluxTickets } from './storage-sync.js';
 import { startSyncWatcher } from './sync-watcher.js';
 import { configCache, loadConfig, autoRegisterUnknownTags } from './config.js';
+import { loadCustomPersonas } from './orchestration-personas.js';
 import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate, getHistoryTimestamp } from './history.js';
 import { generatePromptNotification, generateCompletionNotification, clearNotifications, checkSkillStaleness } from './notifications.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
@@ -709,6 +710,7 @@ export async function initDir() {
   }
   await loadConfig();
   await loadPricingDoc();
+  await loadCustomPersonas();
   const activeDir = getActiveFluxDir();
   const fluxFiles = await fs.readdir(activeDir).catch(() => [] as string[]);
   for (const name of fluxFiles) {

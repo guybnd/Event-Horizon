@@ -437,6 +437,13 @@ export interface OrchestrationPersonaMeta {
   phase: string;
   compatiblePatterns: string[];
   requiredCapabilities: string[];
+  /** True for code-defined personas (read-only — cannot be edited or deleted). */
+  builtIn?: boolean;
+}
+
+/** Full custom persona including prompt (only ever returned for editable personas). */
+export interface OrchestrationPersona extends OrchestrationPersonaMeta {
+  prompt: string;
 }
 
 /** Fetch the selectable orchestration personas (metadata only) from the engine. */
@@ -449,6 +456,128 @@ export async function fetchOrchestrationPersonas(phase?: string): Promise<Orches
   }
   const payload = await res.json();
   return payload.personas ?? [];
+}
+
+/** Fetch a single custom persona with its prompt for editing (built-ins 404). */
+export async function fetchEditablePersona(id: string): Promise<OrchestrationPersona> {
+  const res = await fetch(`${API_URL}/orchestration/personas/${encodeURIComponent(id)}`);
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to load persona');
+  }
+  const payload = await res.json();
+  return payload.persona;
+}
+
+export interface PersonaInput {
+  id?: string;
+  label: string;
+  description?: string;
+  phase: string;
+  compatiblePatterns?: string[];
+  requiredCapabilities?: string[];
+  prompt: string;
+}
+
+/** Create a new custom persona. */
+export async function createPersona(input: PersonaInput): Promise<OrchestrationPersonaMeta> {
+  const res = await fetch(`${API_URL}/orchestration/personas`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(payload.error || 'Failed to create persona');
+  return payload.persona;
+}
+
+/** Update an existing custom persona. */
+export async function updatePersona(id: string, input: PersonaInput): Promise<OrchestrationPersonaMeta> {
+  const res = await fetch(`${API_URL}/orchestration/personas/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(payload.error || 'Failed to update persona');
+  return payload.persona;
+}
+
+/** Delete a custom persona (built-ins refused server-side). */
+export async function deletePersona(id: string): Promise<void> {
+  const res = await fetch(`${API_URL}/orchestration/personas/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to delete persona');
+  }
+}
+
+// ── Workflow templates ───────────────────────────────────────────────────────
+
+export type WorkflowPhase = 'grooming' | 'implementation' | 'review' | 'release';
+
+/** Per-phase orchestration config inside a workflow template. */
+export interface WorkflowPhaseConfig {
+  pattern: string;
+  steps?: string[];
+  parallel?: string[];
+  combiner?: string;
+  lead?: string;
+  assistants?: string[];
+}
+
+/** A reusable workflow template (per-phase persona/pattern setup). */
+export interface WorkflowTemplate {
+  id: string;
+  name: string;
+  cliTarget: string;
+  phases: Partial<Record<WorkflowPhase, WorkflowPhaseConfig>>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type WorkflowInput = Pick<WorkflowTemplate, 'name' | 'cliTarget' | 'phases'>;
+
+/** List all workflow templates. */
+export async function fetchWorkflows(): Promise<WorkflowTemplate[]> {
+  const res = await fetch(`${API_URL}/workflows`);
+  if (!res.ok) throw new Error('Failed to load workflows');
+  return res.json();
+}
+
+/** Create a workflow template. */
+export async function createWorkflow(input: WorkflowInput): Promise<WorkflowTemplate> {
+  const res = await fetch(`${API_URL}/workflows`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(payload.error || 'Failed to create workflow');
+  return payload;
+}
+
+/** Update a workflow template. */
+export async function updateWorkflow(id: string, input: Partial<WorkflowInput>): Promise<WorkflowTemplate> {
+  const res = await fetch(`${API_URL}/workflows/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(payload.error || 'Failed to update workflow');
+  return payload;
+}
+
+/** Delete a workflow template. */
+export async function deleteWorkflow(id: string): Promise<void> {
+  const res = await fetch(`${API_URL}/workflows/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to delete workflow');
+  }
 }
 
 export async function fetchTaskCliSessions(taskId: string): Promise<CliSessionSummary[]> {
