@@ -16,6 +16,22 @@ This page is the quick orientation guide for where behavior lives today — file
 
 -   `engine/src/branch-manager.ts` owns all git plumbing for per-ticket branches: create, status, delete (local + remote), PR creation via `gh`, and the `finish_ticket` diff capture (numstat summary + unified-diff sidecar at `<flux-dir>/<ID>.diff`).
     
+-   `engine/src/session-store.ts` is the **land-here-first** module for CLI-session
+	state and orchestration sequencing. Besides the session registries, it owns the
+	**scatter-gather fan-in barrier**: a deferred combiner is registered against a
+	run group's `groupId` (`registerPendingCombiner`), and `notifyGroupSessionTerminal`
+	— called by each adapter when a session reaches a terminal state — spawns the
+	combiner only once every worker (`patternPosition: 'step'`) in the group is
+	terminal and at least `expectedWorkers` have registered. The actual launch is
+	delegated through `setCombinerLauncher` (injected by `routes/cli-session.ts`) to
+	avoid an import cycle. This is why scatter-gather combiners no longer race their
+	workers (the FLUX-281 failure mode).
+    
+-   `engine/src/routes/cli-session.ts` owns the CLI-session REST routes. `spawnSession`
+	is the single build-register-launch path shared by the `start` route and the
+	deferred-combiner launcher. The `register-combiner` / `unregister-combiner` routes
+	manage the fan-in barrier from the portal.
+    
 -   `portal/src/App.tsx` wires the top-level screens.
     
 -   `portal/src/AppContext.tsx` coordinates view state, routing-like context,

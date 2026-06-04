@@ -117,6 +117,30 @@ export function topologyShape(type?: ExecutionPattern, variant?: GroupVariant): 
   return 'swarm';
 }
 
+/**
+ * True when a run expects a combiner/lead (scatter-gather or supervisor with a
+ * `combiner` variant) that has not finished yet. Because the combiner is now
+ * launched engine-side only after every worker is terminal, the lead session
+ * may not exist in the group at all during the wait — so "pending" covers both
+ * "lead not spawned yet" and "lead spawned but still active".
+ */
+export function isCombinerPending(group: SessionGroup, agg: GroupAggregate): boolean {
+  const shape = topologyShape(group.groupType, group.groupVariant);
+  const expectsCombiner = (shape === 'fan' || shape === 'tree') && group.groupVariant === 'combiner';
+  if (!expectsCombiner) return false;
+  if (!agg.lead) return true;
+  return isActiveSession(agg.lead);
+}
+
+/**
+ * True while a run is still unfolding: any session active, or a combiner is
+ * still owed. Used to keep a run's cluster on the board through the combiner
+ * phase instead of hiding it the moment the last worker finishes.
+ */
+export function isGroupLive(group: SessionGroup, agg: GroupAggregate): boolean {
+  return agg.active > 0 || isCombinerPending(group, agg);
+}
+
 /** Pattern-aware one-line summary of group progress for cards/popover. */
 export function groupAggregateLine(group: SessionGroup, agg: GroupAggregate): string {
   const shape = topologyShape(group.groupType, group.groupVariant);
@@ -129,10 +153,15 @@ export function groupAggregateLine(group: SessionGroup, agg: GroupAggregate): st
   }
   if (shape === 'fan') {
     const workersDone = agg.steps.filter(s => !isActiveSession(s)).length;
+    const expectsCombiner = group.groupVariant === 'combiner';
     if (agg.lead && isActiveSession(agg.lead) && agg.steps.every(s => !isActiveSession(s))) {
       return 'Synthesizing results…';
     }
-    return `${workersDone} of ${agg.steps.length} reviewers done${agg.lead ? ' · waiting on combiner' : ''}`;
+    const allWorkersDone = workersDone === agg.steps.length && agg.steps.length > 0;
+    if (expectsCombiner && allWorkersDone && !agg.lead) {
+      return `${workersDone} of ${agg.steps.length} reviewers done · combiner starting…`;
+    }
+    return `${workersDone} of ${agg.steps.length} reviewers done${expectsCombiner ? ' · waiting on combiner' : ''}`;
   }
   if (shape === 'tree') {
     return agg.done ? 'Hand-off complete' : `Lead + ${agg.steps.length} delegate${agg.steps.length === 1 ? '' : 's'}`;

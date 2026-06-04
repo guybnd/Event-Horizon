@@ -1,4 +1,4 @@
-import { startTaskCliSessionEx, updateTask } from './api';
+import { startTaskCliSessionEx, updateTask, registerDeferredCombiner, unregisterDeferredCombiner } from './api';
 import type { CliFramework, CliSessionSummary, ExecutionPattern, GroupVariant, PatternPosition } from './types';
 import type { TopologyShape } from './orchestration';
 
@@ -307,6 +307,29 @@ export async function launchOrchestration(opts: {
   const groupId = crypto.randomUUID();
   const stepPosition: PatternPosition = def.pattern === 'supervisor' ? 'assistant' : 'step';
 
+  // Scatter-gather combiners must run AFTER their workers finish. Register the
+  // combiner as deferred BEFORE launching workers so the engine's fan-in barrier
+  // owns the sequencing — a Claude CLI session can't poll/block to wait itself.
+  const deferCombiner = def.hasLead && !!lead && def.pattern === 'scatter-gather';
+  let combinerDeferred = false;
+  if (deferCombiner && lead) {
+    try {
+      await registerDeferredCombiner(taskId, {
+        framework,
+        groupId,
+        role: lead.role,
+        appendPrompt: lead.prompt,
+        expectedWorkers: participants.length,
+        skipPermissions,
+        groupType: def.pattern,
+        groupVariant: def.variant,
+      });
+      combinerDeferred = true;
+    } catch {
+      // Non-fatal: fall back to inline launch below if registration fails.
+    }
+  }
+
   const results = await Promise.allSettled(
     participants.map((p, i) =>
       startTaskCliSessionEx(taskId, {
@@ -336,11 +359,16 @@ export async function launchOrchestration(opts: {
   }
 
   if (sessions.length === 0 && participants.length > 0) {
+    if (combinerDeferred) {
+      // No workers started — cancel the deferred combiner so it never fires.
+      await unregisterDeferredCombiner(taskId, groupId).catch(() => {});
+    }
     throw new Error(`All sessions failed: ${errors.join('; ')}`);
   }
 
-  // Lead / combiner agent runs as part of the same group.
-  if (def.hasLead && lead) {
+  // Lead / combiner agent. Scatter-gather combiners are deferred to the engine
+  // barrier (registered above); only supervisor-style leads launch inline here.
+  if (def.hasLead && lead && !combinerDeferred) {
     try {
       const leadSession = await startTaskCliSessionEx(taskId, {
         framework,

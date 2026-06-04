@@ -113,13 +113,29 @@ export const OrchestrationTopology = memo(function OrchestrationTopology({ group
     );
   };
 
+  const renderPendingCombiner = () => (
+    <div
+      key="pending-combiner"
+      className="flex items-center gap-1.5 rounded-lg border border-dashed border-violet-300 bg-violet-50/50 px-2 py-1 opacity-60 dark:border-violet-500/30 dark:bg-violet-500/5"
+      title="Combiner — pending (waiting for workers)"
+    >
+      <Bot className="h-3.5 w-3.5 text-violet-400 dark:text-violet-500" />
+      <span className="max-w-[120px] truncate text-[11px] font-medium italic text-violet-500 dark:text-violet-400">combiner</span>
+      <span className="inline-block h-2 w-2 rounded-full bg-amber-400 dark:bg-amber-500" aria-hidden />
+    </div>
+  );
+
+  // Show a ghost combiner node when the group expects a lead but none has launched yet.
+  const hasPendingCombiner = (shape === 'fan' || shape === 'tree') && !agg.lead && group.groupVariant === 'combiner';
+
   return (
     <div className={`flex items-center gap-2 ${className}`}>
       <span className="text-gray-400"><TopologyGlyph shape={shape} className="h-4 w-4" /></span>
       {shape === 'fan' || shape === 'tree' ? (
         <div className="flex items-center gap-2">
           {agg.lead && renderNode(agg.lead, true)}
-          {agg.lead && <span className="text-gray-300 dark:text-gray-600">→</span>}
+          {!agg.lead && hasPendingCombiner && renderPendingCombiner()}
+          {(agg.lead || hasPendingCombiner) && <span className="text-gray-300 dark:text-gray-600">→</span>}
           <div className="flex flex-wrap gap-1.5">{agg.steps.map(s => renderNode(s))}</div>
         </div>
       ) : shape === 'pipeline' ? (

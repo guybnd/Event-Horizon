@@ -12,6 +12,11 @@ import {
   getActiveSessionsForTask,
   checkPathConflicts,
   validatePatternSupport,
+  registerPendingCombiner,
+  unregisterPendingCombiner,
+  setCombinerLauncher,
+  notifyGroupSessionTerminal,
+  type PendingCombinerSpec,
 } from '../session-store.js';
 import { getAdapter } from '../agents/index.js';
 import { updateTaskWithHistory } from '../task-store.js';
@@ -19,6 +24,98 @@ import { buildActivityEntry } from '../history.js';
 import type { CliSessionRecord, CliFramework, ExecutionPattern, PatternPosition, GroupVariant } from '../agents/types.js';
 
 const router = express.Router();
+
+interface SpawnOptions {
+  framework: CliFramework;
+  appendPrompt: string;
+  effortOverride: string;
+  skipPermissions: boolean;
+  role?: string;
+  pattern?: ExecutionPattern;
+  patternPosition?: PatternPosition;
+  groupId?: string;
+  groupSeq?: number;
+  groupType?: ExecutionPattern;
+  groupVariant?: GroupVariant;
+  lockedPaths?: string[];
+}
+
+/**
+ * Build, register and launch one CLI session for a task. Shared by the start
+ * route and the deferred-combiner launcher so both paths stay identical.
+ */
+async function spawnSession(task: any, opts: SpawnOptions): Promise<CliSessionRecord> {
+  const adapter = getAdapter(opts.framework);
+  const sessionId = randomUUID();
+  const label = adapter.labelForFramework();
+  const startedAt = new Date().toISOString();
+
+  const session: CliSessionRecord = {
+    id: sessionId,
+    taskId: task.id,
+    framework: opts.framework,
+    status: 'pending',
+    command: opts.framework,
+    args: [],
+    startedAt,
+    label,
+    outputBuffer: '',
+    liveOutputBuffer: '',
+    pendingAssistantText: '',
+    skipPermissions: opts.skipPermissions,
+    requestedStop: false,
+    writeQueue: Promise.resolve(),
+    inputTokens: 0,
+    outputTokens: 0,
+    costUSD: 0,
+  };
+  if (opts.role) session.role = opts.role;
+  if (opts.pattern) session.pattern = opts.pattern;
+  if (opts.patternPosition && opts.patternPosition !== 'standalone') session.patternPosition = opts.patternPosition;
+  if (opts.groupId) session.groupId = opts.groupId;
+  if (opts.groupSeq != null) session.groupSeq = opts.groupSeq;
+  if (opts.groupType) session.groupType = opts.groupType;
+  if (opts.groupVariant) session.groupVariant = opts.groupVariant;
+  if (opts.lockedPaths && opts.lockedPaths.length > 0) session.lockedPaths = opts.lockedPaths;
+
+  cliSessionsById.set(sessionId, session);
+  registerSession(task.id, sessionId);
+
+  try {
+    await adapter.start(session, task, opts.appendPrompt, opts.effortOverride, workspaceRoot!);
+  } catch (error) {
+    unregisterSession(task.id, sessionId);
+    cliSessionsById.delete(sessionId);
+    throw error;
+  }
+  return session;
+}
+
+// Wire the deferred-combiner launcher: when a scatter-gather group's workers
+// all finish, session-store calls this to spawn the combiner.
+setCombinerLauncher(async (spec: PendingCombinerSpec, anyWorkerSucceeded: boolean) => {
+  const task = tasksCache[spec.taskId];
+  if (!task) {
+    console.warn(`Deferred combiner for ${spec.groupId}: task ${spec.taskId} not found.`);
+    return;
+  }
+  let prompt = spec.appendPrompt;
+  if (!anyWorkerSucceeded) {
+    prompt = `NOTE: No worker sessions completed successfully — all failed or were cancelled. There may be nothing to synthesize. Check the ticket history and summarize whatever is available, or report that no reviews were produced.\n\n${prompt}`;
+  }
+  await spawnSession(task, {
+    framework: spec.framework,
+    appendPrompt: prompt,
+    effortOverride: '',
+    skipPermissions: spec.skipPermissions,
+    role: spec.role,
+    pattern: spec.groupType,
+    patternPosition: 'lead',
+    groupId: spec.groupId,
+    groupType: spec.groupType,
+    groupVariant: spec.groupVariant,
+  });
+});
 
 // GET single session (backwards compat — returns most recent active)
 router.get('/:id/cli-session', (req, res) => {
@@ -94,56 +191,83 @@ router.post('/:id/cli-session/start', async (req, res) => {
     }
   }
 
-  let adapter;
   try {
-    adapter = getAdapter(framework);
+    getAdapter(framework);
   } catch {
     return res.status(400).json({ error: `Unsupported framework: ${framework}` });
   }
 
-  const sessionId = randomUUID();
-  const label = adapter.labelForFramework();
-  const startedAt = new Date().toISOString();
-
-  const session: CliSessionRecord = {
-    id: sessionId,
-    taskId: id,
-    framework,
-    status: 'pending',
-    command: framework,
-    args: [],
-    startedAt,
-    label,
-    outputBuffer: '',
-    liveOutputBuffer: '',
-    pendingAssistantText: '',
-    skipPermissions,
-    requestedStop: false,
-    writeQueue: Promise.resolve(),
-    inputTokens: 0,
-    outputTokens: 0,
-    costUSD: 0,
-  };
-  if (role) session.role = role;
-  if (pattern) session.pattern = pattern;
-  if (patternPosition && patternPosition !== 'standalone') session.patternPosition = patternPosition;
-  if (groupId) session.groupId = groupId;
-  if (groupSeq != null) session.groupSeq = groupSeq;
-  if (groupType) session.groupType = groupType;
-  if (groupVariant) session.groupVariant = groupVariant;
-  if (lockedPaths.length > 0) session.lockedPaths = lockedPaths;
-
-  cliSessionsById.set(sessionId, session);
-  registerSession(id, sessionId);
-
   try {
-    await adapter.start(session, task, appendPrompt, effortOverrideRaw, workspaceRoot!);
+    await spawnSession(task, {
+      framework,
+      appendPrompt,
+      effortOverride: effortOverrideRaw,
+      skipPermissions,
+      role,
+      pattern,
+      patternPosition,
+      groupId,
+      groupSeq,
+      groupType,
+      groupVariant,
+      lockedPaths,
+    });
     res.status(201).json({ session: getCliSessionSummaryForTask(id) });
   } catch (error: any) {
-    unregisterSession(id, sessionId);
-    cliSessionsById.delete(sessionId);
-    res.status(500).json({ error: error.message || `Failed to launch ${label}` });
+    res.status(500).json({ error: error.message || `Failed to launch ${framework}` });
   }
+});
+
+// Register a deferred combiner: stored against a run group's groupId and spawned
+// only once every worker ("step") session in that group reaches a terminal state.
+router.post('/:id/cli-session/register-combiner', (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+  if (!task) return res.status(404).json({ error: 'Task not found' });
+
+  const frameworkRaw = String(req.body?.framework || 'claude').trim().toLowerCase();
+  if (frameworkRaw !== 'claude' && frameworkRaw !== 'copilot' && frameworkRaw !== 'gemini') {
+    return res.status(400).json({ error: 'framework must be claude, copilot or gemini' });
+  }
+  const groupId = typeof req.body?.groupId === 'string' ? req.body.groupId.trim() : '';
+  const role = typeof req.body?.role === 'string' ? req.body.role.trim() : '';
+  const appendPrompt = typeof req.body?.appendPrompt === 'string' ? req.body.appendPrompt.trim() : '';
+  if (!groupId) return res.status(400).json({ error: 'groupId is required' });
+  if (!role) return res.status(400).json({ error: 'role is required' });
+  if (!appendPrompt) return res.status(400).json({ error: 'appendPrompt is required' });
+
+  const groupType = typeof req.body?.groupType === 'string' ? req.body.groupType.trim() as ExecutionPattern : undefined;
+  const groupVariant = typeof req.body?.groupVariant === 'string' ? req.body.groupVariant.trim() as GroupVariant : undefined;
+  const expectedWorkers = typeof req.body?.expectedWorkers === 'number' && req.body.expectedWorkers > 0
+    ? Math.floor(req.body.expectedWorkers)
+    : 1;
+
+  const spec: PendingCombinerSpec = {
+    taskId: id,
+    groupId,
+    framework: frameworkRaw as CliFramework,
+    role,
+    appendPrompt,
+    skipPermissions: req.body?.skipPermissions !== false,
+    groupType,
+    groupVariant,
+    expectedWorkers,
+  };
+  registerPendingCombiner(spec);
+  // Workers may already have finished between launch and registration — check now.
+  notifyGroupSessionTerminal(id, groupId).catch(() => {});
+  res.status(201).json({ registered: true, groupId });
+});
+
+// Cancel a deferred combiner (e.g. when all workers failed to launch).
+router.post('/:id/cli-session/unregister-combiner', (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+  if (!task) return res.status(404).json({ error: 'Task not found' });
+  const groupId = typeof req.body?.groupId === 'string' ? req.body.groupId.trim() : '';
+  if (!groupId) return res.status(400).json({ error: 'groupId is required' });
+  const removed = unregisterPendingCombiner(groupId);
+  res.json({ removed, groupId });
 });
 
 router.post('/:id/cli-session/input', async (req, res) => {

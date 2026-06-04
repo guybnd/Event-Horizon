@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useId } from 'react';
 import { Check, FileText, Lock, Rocket, X } from 'lucide-react';
 import {
   ORCHESTRATION_MODES,
@@ -81,6 +81,8 @@ export function OrchestrationLauncher({ open, ticket, framework, onClose, onLaun
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [comment, setComment] = useState('');
   const overlayRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const headingId = useId();
 
   useEffect(() => {
     if (!open) {
@@ -94,8 +96,24 @@ export function OrchestrationLauncher({ open, ticket, framework, onClose, onLaun
     if (!open) return;
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
+      if (e.key === 'Tab' && dialogRef.current) {
+        const focusable = dialogRef.current.querySelectorAll<HTMLElement>(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+        );
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
     };
     document.addEventListener('keydown', handleKey);
+    dialogRef.current?.focus();
     return () => document.removeEventListener('keydown', handleKey);
   }, [open, onClose]);
 
@@ -124,12 +142,12 @@ export function OrchestrationLauncher({ open, ticket, framework, onClose, onLaun
   if (!open || !ticket) return null;
 
   return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center">
+    <div className="fixed inset-0 z-[200] flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby={headingId}>
       <div ref={overlayRef} className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative z-10 flex max-h-[90vh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-white/10 dark:bg-[#1a1b23]">
+      <div ref={dialogRef} tabIndex={-1} className="relative z-10 flex max-h-[90vh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl outline-none dark:border-white/10 dark:bg-[#1a1b23]">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-gray-100 px-5 py-3 dark:border-white/5">
-          <h3 className="text-sm font-bold text-gray-900 dark:text-gray-100">Orchestrate agents</h3>
+          <h3 id={headingId} className="text-sm font-bold text-gray-900 dark:text-gray-100">Orchestrate agents</h3>
           <button
             onClick={onClose}
             className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/10 dark:hover:text-gray-200"
@@ -168,12 +186,16 @@ export function OrchestrationLauncher({ open, ticket, framework, onClose, onLaun
                   <button
                     key={m.id}
                     type="button"
-                    onClick={() => setMode(m.id)}
+                    disabled={disabled}
+                    onClick={() => !disabled && setMode(m.id)}
+                    aria-disabled={disabled || undefined}
                     title={disabled ? 'Engine sequencing for this pattern is coming soon' : m.blurb}
                     className={`flex items-center gap-2 rounded-lg border px-2.5 py-2 text-left transition-colors ${
-                      active
-                        ? 'border-primary bg-primary/5 dark:bg-primary/10'
-                        : 'border-gray-200 hover:bg-gray-50 dark:border-white/10 dark:hover:bg-white/5'
+                      disabled
+                        ? 'cursor-not-allowed border-gray-100 opacity-50 dark:border-white/5'
+                        : active
+                          ? 'border-primary bg-primary/5 dark:bg-primary/10'
+                          : 'border-gray-200 hover:bg-gray-50 dark:border-white/10 dark:hover:bg-white/5'
                     }`}
                   >
                     <span className={active ? 'text-primary' : 'text-gray-400'}>

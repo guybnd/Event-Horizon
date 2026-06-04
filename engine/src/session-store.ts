@@ -120,6 +120,82 @@ export function getSessionGroup(taskId: string, groupId: string): CliSessionReco
     .filter((s): s is CliSessionRecord => !!s && s.groupId === groupId);
 }
 
+// ── Deferred combiner (scatter-gather fan-in barrier) ───────────────────────
+// In a scatter-gather run with a combiner, the combiner must run AFTER its
+// worker ("step") sessions finish — otherwise it races them and synthesizes
+// nothing. We register the combiner as pending at launch and spawn it only once
+// every worker in the group reaches a terminal state.
+
+const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['completed', 'failed', 'cancelled']);
+
+export interface PendingCombinerSpec {
+  taskId: string;
+  groupId: string;
+  framework: CliFramework;
+  role: string;
+  appendPrompt: string;
+  skipPermissions: boolean;
+  groupType?: ExecutionPattern;
+  groupVariant?: 'combiner' | 'headless';
+  /** Number of worker sessions the combiner must wait for. Guards against
+   *  launching before every worker has registered (fast-completion race). */
+  expectedWorkers: number;
+}
+
+const pendingCombinersByGroup = new Map<string, PendingCombinerSpec>();
+
+/** A launcher is injected by the cli-session route to avoid an import cycle. */
+export type CombinerLauncher = (spec: PendingCombinerSpec, anyWorkerSucceeded: boolean) => Promise<void>;
+let combinerLauncher: CombinerLauncher | null = null;
+export function setCombinerLauncher(fn: CombinerLauncher): void {
+  combinerLauncher = fn;
+}
+
+export function registerPendingCombiner(spec: PendingCombinerSpec): void {
+  pendingCombinersByGroup.set(spec.groupId, spec);
+}
+
+export function getPendingCombiner(groupId: string): PendingCombinerSpec | undefined {
+  return pendingCombinersByGroup.get(groupId);
+}
+
+export function unregisterPendingCombiner(groupId: string): boolean {
+  return pendingCombinersByGroup.delete(groupId);
+}
+
+/**
+ * Called by adapters when a session reaches a terminal state. If the session
+ * belongs to a group with a pending combiner and every worker ("step") session
+ * in that group is now terminal, dequeue and launch the combiner.
+ */
+export async function notifyGroupSessionTerminal(taskId: string, groupId: string | undefined): Promise<void> {
+  if (!groupId) return;
+  const spec = pendingCombinersByGroup.get(groupId);
+  if (!spec) return;
+
+  const workers = getSessionGroup(taskId, groupId).filter(s => s.patternPosition === 'step');
+  if (workers.length === 0) return;
+  // Wait until every expected worker has registered AND all are terminal.
+  if (workers.length < spec.expectedWorkers) return;
+  const allTerminal = workers.every(s => TERMINAL_STATUSES.has(s.status));
+  if (!allTerminal) return;
+
+  // Claim the combiner so concurrent terminal events don't double-launch.
+  pendingCombinersByGroup.delete(groupId);
+  const anyWorkerSucceeded = workers.some(s => s.status === 'completed');
+
+  if (!combinerLauncher) {
+    console.warn(`No combiner launcher registered; pending combiner for group ${groupId} dropped.`);
+    return;
+  }
+  try {
+    await combinerLauncher(spec, anyWorkerSucceeded);
+  } catch (error) {
+    console.error(`Failed to launch deferred combiner for group ${groupId}:`, error);
+  }
+}
+
+
 // File-lock enforcement: check if any active session holds a conflicting path lock
 export function checkPathConflicts(taskId: string, requestedPaths: string[]): { conflict: boolean; holder?: string; paths?: string[] } {
   if (!requestedPaths || requestedPaths.length === 0) return { conflict: false };

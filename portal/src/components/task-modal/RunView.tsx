@@ -12,6 +12,7 @@ import {
   patternLabel,
   topologyShape,
   isActiveSession,
+  isCombinerPending,
   statusDotColor,
 } from '../../orchestration';
 
@@ -105,8 +106,10 @@ export function RunView({ group, config, busy, onStopSession, onStopAll }: RunVi
   const anyActive = group.sessions.some(isActiveSession);
   const isScatterGather = shape === 'fan';
   // Barrier: the combiner cannot synthesize until every worker has finished.
+  // The combiner session may not exist yet (it spawns engine-side once workers
+  // are done), so derive "pending" from the run shape, not the lead session.
   const workersDone = agg.steps.filter(s => !isActiveSession(s)).length;
-  const barrierPending = isScatterGather && agg.lead && workersDone < agg.steps.length;
+  const barrierPending = isScatterGather && isCombinerPending(group, agg) && workersDone < agg.steps.length;
 
   return (
     <div className="space-y-3 rounded-xl border border-gray-100 bg-gray-50 p-3 dark:border-white/5 dark:bg-black/20">

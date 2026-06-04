@@ -366,6 +366,58 @@ export async function startTaskCliSessionEx(taskId: string, opts: StartSessionOp
   return payload.session;
 }
 
+export interface RegisterCombinerOptions {
+  framework: CliFramework;
+  groupId: string;
+  role: string;
+  appendPrompt: string;
+  expectedWorkers: number;
+  skipPermissions?: boolean;
+  groupType?: string;
+  groupVariant?: string;
+}
+
+/**
+ * Register a deferred combiner for a scatter-gather run group. The engine spawns
+ * it only once every worker session in the group reaches a terminal state,
+ * preventing the combiner from racing (and out-running) its workers.
+ */
+export async function registerDeferredCombiner(taskId: string, opts: RegisterCombinerOptions): Promise<void> {
+  const body: Record<string, unknown> = {
+    framework: opts.framework,
+    groupId: opts.groupId,
+    role: opts.role,
+    appendPrompt: opts.appendPrompt,
+    expectedWorkers: opts.expectedWorkers,
+    skipPermissions: opts.skipPermissions ?? true,
+  };
+  if (opts.groupType) body.groupType = opts.groupType;
+  if (opts.groupVariant) body.groupVariant = opts.groupVariant;
+
+  const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/register-combiner`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to register combiner');
+  }
+}
+
+/** Cancel a previously registered deferred combiner (e.g. when no workers started). */
+export async function unregisterDeferredCombiner(taskId: string, groupId: string): Promise<void> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/unregister-combiner`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ groupId }),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to unregister combiner');
+  }
+}
+
 export async function fetchTaskCliSessions(taskId: string): Promise<CliSessionSummary[]> {
   const res = await fetch(`${API_URL}/tasks/${taskId}/cli-sessions`);
   if (!res.ok) throw new Error('Failed to fetch CLI sessions');

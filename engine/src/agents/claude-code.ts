@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import { configCache } from '../config.js';
 import { buildActivityEntry, buildCommentEntry, buildAgentMessageEntry, buildAgentSessionEntry, appendSessionProgress, closeAgentSession, type AgentSessionEntry } from '../history.js';
 import { updateTaskWithHistory, updateAgentSession, tasksCache, estimateCostUSD } from '../task-store.js';
-import { cliSessionsById, cliSessionIdByTaskId } from '../session-store.js';
+import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
@@ -537,8 +537,13 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
       checkFrameworkHealth(session.framework).catch(() => {});
       checkSkillStaleness(session.framework).catch(() => {});
     }
-  });
-}
+
+    // Fan-in: if this session belongs to a run group, a deferred combiner may
+    // be waiting for every worker to finish. Notify the barrier.
+    if (session.groupId) {
+      notifyGroupSessionTerminal(session.taskId, session.groupId).catch(() => {});
+    }
+  });}
 
 export class ClaudeCodeAdapter implements AgentAdapter {
   readonly manifest: ProviderManifest = {
