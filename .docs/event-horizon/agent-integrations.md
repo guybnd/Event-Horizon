@@ -157,7 +157,7 @@ Each session can be tagged with coordination metadata:
 
 Every non-Ready card exposes a **split button**: the primary action advances the ticket (status action) or, where there's no status action, launches the phase's default single agent in one click; a caret opens a menu listing the phase's **Single** default, **Multi** default, and any other templates configured for that phase (each labelled by template name). The "Ready" column has its own **Review** split button (primary = default single reviewer, caret = Single/Multi/templates) alongside the unchanged **Return** and **Finish** buttons.
 
-The card maps the ticket's board status to a launch phase (`grooming`, `implementation`, `review`, `release`). Defaults resolve through `config.phaseDefaults[phase].single` / `.multi` (falling back to `builtin-<phase>-<variant>`). A **single** selection always launches **standalone**: the launcher hides the orchestration pattern selector and runs the agent via `runAgentAction({ action: { kind: 'persona', … } })`, bypassing the pattern gating that blocks `serialized`/`handoff`. Selecting **two or more** participants launches an orchestrated team via `launchOrchestration(...)` with the phase's combiner as lead. Inside the launcher a **Template** dropdown lists every built-in and custom template that defines a config for the current phase — switching it re-applies that template's pattern and personas, while any manual edit drops the selection back to "Custom".
+The card maps the ticket's board status to a launch phase (`grooming`, `implementation`, `review`, `finalize`). Defaults resolve through `config.phaseDefaults[phase].single` / `.multi` (falling back to `builtin-<phase>-<variant>`). A **single** selection always launches **standalone**: the launcher hides the orchestration pattern selector and runs the agent via `runAgentAction({ action: { kind: 'persona', … } })`, bypassing the pattern gating that blocks `serialized`/`handoff`. Selecting **two or more** participants launches an orchestrated team via `launchOrchestration(...)` with the phase's combiner as lead. Inside the launcher a **Template** dropdown lists every built-in and custom template that defines a config for the current phase — switching it re-applies that template's pattern and personas, while any manual edit drops the selection back to "Custom".
 
 The **Workflows → Templates** screen groups templates by phase, splitting each phase into Single and Multi columns (by persona count). A star on each card sets that template as the phase's single or multi default; cards surface the resolved pattern and ordered persona chips.
 
@@ -206,10 +206,13 @@ Personas are organized by phase. Built-ins are code-defined (viewable, forkable,
 | Review | Architect Genius | System design, separation of concerns, scalability |
 | Review | Performance Expert | Complexity, hot paths, bundle size, re-renders |
 | Review | UX/UI Expert | Usability, accessibility, interaction design |
-| Release | Release Manager | Versioning, gathers Done tickets, runs the release |
-| Release | Documenter | Changelog and docs updates |
+| Finalize | Finalizer | End-to-end ticket finalize: docs check, commit, ticket tidy, merge PR |
+| Finalize | Docs Auditor | Verifies .docs and README reflect the shipped changes; fixes drift |
+| Finalize | Committer | Stages the work and creates one clean, well-described commit |
+| Finalize | Ticket Curator | Tidies the ticket title and posts a clear resolution comment |
+| Finalize | PR Merger | Closes and merges the ticket PR when one exists |
 
-The internal **Orchestrator** combiner is not user-selectable; it (or the phase-specific combiner — `planner` for grooming) is added automatically when a multi-agent scatter run has 2+ workers.
+The internal **Orchestrator** and **Supervisor** personas are not user-selectable; they are added automatically when the pattern requires a combiner (orchestrator) or lead (supervisor). The phase-specific combiner (`planner` for grooming, `orchestrator` for other phases) is attached when a multi-agent scatter run has 2+ workers.
 
 ### Conflict Prevention
 

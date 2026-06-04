@@ -65,7 +65,7 @@ Markdown body. Free-form. May contain image links to `.flux/assets/FLUX-42/<name
 | `diffSummary` | `{file, additions, deletions}[]` | Per-file change counts captured at `finish_ticket`. The matching full unified diff is written to `<flux-dir>/<ID>.diff` as a sidecar (2 MB hard cap). |
 | `order` | number | Per-status manual sort position (set by drag and drop). |
 | `cliSession` | object | **Not persisted** — serialized into API responses from the in-memory session store. Holds the most recent session summary for the ticket. Do not write this to the file. |
-| `cliSessions` | object[] | **Not persisted** — full list of session summaries for the ticket, serialized from the session store. Present when the ticket has any sessions; the portal uses it to group sessions launched together (shared `groupId`) into one orchestration run. Each summary may carry `groupId`, `groupSeq`, `groupType` (`relay` \| `scatter-gather` \| `supervisor`), and `groupVariant` (`combiner` \| `headless`). |
+| `cliSessions` | object[] | **Not persisted** — full list of session summaries for the ticket, serialized from the session store. Present when the ticket has any sessions; the portal uses it to group sessions launched together (shared `groupId`) into one orchestration run. Each summary may carry `groupId`, `groupSeq`, `groupTotal`, `groupType` (`relay` \| `scatter-gather` \| `supervisor`), and `groupVariant` (`combiner` \| `headless`). `groupTotal` is the expected session count in the group, letting the UI render placeholder slots before all sessions have spawned. |
 | `tokenMetadata` | object | Aggregated token counters surfaced to the UI. |
 
 ### Validation rules

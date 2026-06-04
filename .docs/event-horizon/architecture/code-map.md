@@ -41,7 +41,8 @@ This page is the quick orientation guide for where behavior lives today — file
 	(`context-scout`, `requirements-interrogator`, `planner`), implementation
 	(`test-engineer`, `implementer`), review (`senior-dev`, `qa-correctness`,
 	`security-auditor`, plus `angry-linus`/`architect`/`perf-expert`/`ux-expert`),
-	and release (`release-manager`, `documenter`) — and the resolver
+	and finalize (`finalizer`, `docs-auditor`, `committer`, `ticket-curator`,
+	`pr-merger`) — and the resolver
 	(`resolvePersonaPrompt(personaId, focusComment?)`). It also owns the
 	**custom persona store**: user-authored personas persist as JSON under
 	`<fluxDir>/personas/*.json` (`loadCustomPersonas` at startup,
@@ -93,7 +94,7 @@ This page is the quick orientation guide for where behavior lives today — file
 	pattern-first launch modal**: pick an orchestration pattern (Scatter-gather /
 	Parallel / Serialized / Hand-off), select participant roles from a catalog
 	fetched from `GET /api/orchestration/personas?phase=<phase>` on open
-	(phase-aware — grooming / implementation / review / release — and
+	(phase-aware — grooming / implementation / review / finalize — and
 	pattern-gated via `compatiblePatterns`), see a live `OrchestrationTopology`
 	preview, and
 	launch with partial-failure reporting. A **Template** dropdown lists every

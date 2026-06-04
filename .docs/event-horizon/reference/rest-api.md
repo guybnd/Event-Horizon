@@ -64,7 +64,7 @@ From [`orchestration.ts`](../../../engine/src/routes/orchestration.ts). Persona 
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/orchestration/personas` | List selectable personas as metadata only: `{ personas: Array<{ id, label, description, phase, compatiblePatterns, requiredCapabilities, builtIn }> }`. Prompt text is omitted. `phase` (`grooming` \| `implementation` \| `review` \| `release`) drives phase-aware launcher filtering; pass `?phase=<phase>` to return only personas for that phase. `compatiblePatterns` gates a persona to specific execution patterns (empty = any); `requiredCapabilities` lists CLI capabilities a persona needs; `builtIn` flags code-defined (read-only) personas. The internal `orchestrator` persona is excluded from this list. |
+| GET | `/api/orchestration/personas` | List selectable personas as metadata only: `{ personas: Array<{ id, label, description, phase, compatiblePatterns, requiredCapabilities, builtIn }> }`. Prompt text is omitted. `phase` (`grooming` \| `implementation` \| `review` \| `finalize`) drives phase-aware launcher filtering; pass `?phase=<phase>` to return only personas for that phase. `compatiblePatterns` gates a persona to specific execution patterns (empty = any); `requiredCapabilities` lists CLI capabilities a persona needs; `builtIn` flags code-defined (read-only) personas. The internal `orchestrator` and `supervisor` personas are excluded from this list (they are added automatically by the launcher when the pattern requires a combiner/lead). |
 | GET | `/api/orchestration/personas/:id` | Full persona **including prompt** (`{ persona }`), for both built-in and custom personas. The `builtIn` flag tells the client whether to render it read-only; the portal offers a "Duplicate & Edit" fork for built-ins. |
 | POST | `/api/orchestration/personas` | Create a custom persona. Body: `{ id?, label, description?, phase, compatiblePatterns?, requiredCapabilities?, prompt }`. `id` is auto-validated as a slug; an id that collides with a built-in returns 400. Returns `{ persona }` (metadata). |
 | PUT | `/api/orchestration/personas/:id` | Update a custom persona (same body as POST). Refuses built-in ids with 400 — built-ins are maintained in code and updated via app releases. Returns `{ persona }` (metadata). |
@@ -88,7 +88,7 @@ From [`routes/config.ts`](../../../engine/src/routes/config.ts).
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/config` | Current board config (columns, hidden statuses, tags, priorities, users, project keys, sync settings, …). Includes `defaultAgent`, the legacy `defaultWorkflowId`, and `phaseDefaults` — a map of `{ grooming, implementation, review, release } → { single?, multi? }` template ids that drive the per-phase Single/Multi launch defaults (each falls back to `builtin-<phase>-<variant>` when unset). |
+| GET | `/api/config` | Current board config (columns, hidden statuses, tags, priorities, users, project keys, sync settings, …). Includes `defaultAgent`, the legacy `defaultWorkflowId`, and `phaseDefaults` — a map of `{ grooming, implementation, review, finalize } → { single?, multi? }` template ids that drive the per-phase Single/Multi launch defaults (each falls back to `builtin-<phase>-<variant>` when unset). |
 | PUT | `/api/config` | Replace the board config. |
 
 ## Workspace + workspaces
