@@ -331,12 +331,14 @@ export function getPersonaById(id: string): OrchestrationPersona | undefined {
 }
 
 /**
- * Full persona for editing — includes prompt. Only custom personas expose their
- * prompt; built-ins return undefined so their prompt text never reaches the client.
+ * Full persona including prompt, for viewing or editing. Returns both built-in
+ * and custom personas — built-ins are viewable (so users can read and fork them)
+ * but the client must treat them as read-only via the `builtIn` flag. Editing a
+ * built-in is rejected server-side in {@link saveCustomPersona}.
  */
 export function getEditablePersona(id: string): OrchestrationPersona | undefined {
-  const custom = customPersonaCache.find((p) => p.id === id);
-  return custom ? { ...custom } : undefined;
+  const persona = getPersonaById(id);
+  return persona ? { ...persona } : undefined;
 }
 
 /** Strip the prompt — the only shape that should ever reach the client. */

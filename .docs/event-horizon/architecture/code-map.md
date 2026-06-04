@@ -43,10 +43,12 @@ This page is the quick orientation guide for where behavior lives today — file
 	`<fluxDir>/personas/*.json` (`loadCustomPersonas` at startup,
 	`saveCustomPersona` / `deleteCustomPersona` / `getEditablePersona`,
 	`validatePersona`) and are merged with the built-ins by `getPersonaById` and
-	`listSelectablePersonaMeta(phase?)`. Built-ins are read-only and their prompts
-	never ship in the portal bundle; the portal fetches metadata via
-	`GET /api/orchestration/personas` and edits custom personas through the CRUD
-	routes in `engine/src/routes/orchestration.ts`.
+	`listSelectablePersonaMeta(phase?)`. Built-ins are **viewable but read-only**
+	(`getEditablePersona` returns them so the UI can show the prompt and offer a
+	fork); `saveCustomPersona` refuses ids that collide with a built-in, so the
+	curated set stays owned by Event Horizon and is updated via app releases. The
+	portal fetches metadata via `GET /api/orchestration/personas` and reads/edits
+	full personas through the CRUD routes in `engine/src/routes/orchestration.ts`.
 
 -   `engine/src/models/workflow.ts` owns reusable **workflow templates**
 	(per-phase pattern + persona membership) persisted under
@@ -92,7 +94,8 @@ This page is the quick orientation guide for where behavior lives today — file
 
 -   `portal/src/components/WorkflowBuilder.tsx` is the **Workflows screen** (backed
 	by `/api/orchestration/personas`, `/api/workflows`, and `/api/config`). Three
-	tabs: **Personas** (per-phase, built-in read-only + custom create/edit/delete),
+	tabs: **Personas** (per-phase; built-ins are viewable read-only with a
+	"Duplicate & Edit" fork, custom personas create/edit/delete),
 	**Templates** (per-phase pattern + persona selection, plus a star toggle to set
 	`config.defaultWorkflowId`), and **Skills** (skills persist as docs under the
 	`skills/` directory).

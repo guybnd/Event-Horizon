@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useMemo } from 'react';
 import {
-  Workflow, Plus, X, Pencil, Trash2, Loader2, BookOpen, Check, Users, Network, Star, Lock,
+  Workflow, Plus, X, Pencil, Trash2, Loader2, BookOpen, Check, Users, Network, Star, Lock, Copy, Eye,
 } from 'lucide-react';
 import {
   fetchOrchestrationPersonas,
@@ -97,20 +97,26 @@ function PersonaEditPanel({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const isNew = !initial;
+  // A built-in is shown read-only until the user forks it with "Duplicate & Edit".
+  const [forked, setForked] = useState(false);
+  const readOnly = !!initial?.builtIn && !forked;
+  // "creating" covers brand-new personas and forks of a built-in/custom one.
+  const creating = !initial || forked;
+
   const [label, setLabel] = useState(initial?.label ?? '');
   const [id, setId] = useState(initial?.id ?? '');
   const [description, setDescription] = useState(initial?.description ?? '');
   const [phase, setPhase] = useState<WorkflowPhase>((initial?.phase as WorkflowPhase) ?? 'review');
   const [patterns, setPatterns] = useState<string[]>(initial?.compatiblePatterns ?? []);
   const [prompt, setPrompt] = useState('');
-  const [loadingPrompt, setLoadingPrompt] = useState(!isNew);
+  const [loadingPrompt, setLoadingPrompt] = useState(!!initial);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Load the full prompt for any existing persona — built-ins are viewable too.
   useEffect(() => {
     let cancelled = false;
-    if (initial && !initial.builtIn) {
+    if (initial) {
       setLoadingPrompt(true);
       fetchEditablePersona(initial.id)
         .then(p => { if (!cancelled) setPrompt(p.prompt); })
@@ -120,11 +126,18 @@ function PersonaEditPanel({
     return () => { cancelled = true; };
   }, [initial]);
 
-  // Auto-derive a slug id for new personas from the label.
+  // Auto-derive a slug id from the label while creating/forking a persona.
   useEffect(() => {
-    if (!isNew) return;
+    if (!creating) return;
     setId(label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, ''));
-  }, [label, isNew]);
+  }, [label, creating]);
+
+  // Fork a viewed persona into a new editable copy.
+  const handleFork = () => {
+    setLabel(prev => `${prev} (Copy)`);
+    setForked(true);
+    setError(null);
+  };
 
   const togglePattern = (p: string) =>
     setPatterns(prev => (prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p]));
@@ -142,7 +155,7 @@ function PersonaEditPanel({
       prompt,
     };
     try {
-      if (isNew) await createPersona(payload);
+      if (creating) await createPersona(payload);
       else await updatePersona(initial!.id, payload);
       onSaved();
     } catch (err: any) {
@@ -156,11 +169,24 @@ function PersonaEditPanel({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
       <div className="bg-white dark:bg-[#1f2028] rounded-2xl shadow-2xl w-full max-w-xl max-h-[88vh] overflow-y-auto p-6 border border-gray-200 dark:border-white/10" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-bold text-gray-800 dark:text-gray-100">{isNew ? 'New Persona' : 'Edit Persona'}</h3>
+          <h3 className="text-lg font-bold text-gray-800 dark:text-gray-100 flex items-center gap-2">
+            {readOnly ? 'View Persona' : creating ? 'New Persona' : 'Edit Persona'}
+            {readOnly && (
+              <span className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
+                <Lock className="w-3 h-3" /> Built-in
+              </span>
+            )}
+          </h3>
           <button onClick={onClose} className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400">
             <X className="w-5 h-5" />
           </button>
         </div>
+
+        {readOnly && (
+          <p className="text-xs text-gray-500 dark:text-gray-400 mb-4 -mt-1">
+            Built-in personas are read-only and maintained by Event Horizon. Use <strong>Duplicate &amp; Edit</strong> to make your own editable copy.
+          </p>
+        )}
 
         <div className="space-y-4">
           <div>
@@ -168,10 +194,11 @@ function PersonaEditPanel({
             <input
               value={label}
               onChange={e => setLabel(e.target.value)}
+              disabled={readOnly}
               placeholder="e.g. Security Auditor"
-              className="mt-1 w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-black/30 text-sm text-gray-800 dark:text-gray-100 outline-none focus:border-primary"
+              className="mt-1 w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-black/30 text-sm text-gray-800 dark:text-gray-100 outline-none focus:border-primary disabled:opacity-60 disabled:cursor-not-allowed"
             />
-            {isNew && id && <p className="mt-1 text-[11px] text-gray-400 font-mono">id: {id}</p>}
+            {creating && id && <p className="mt-1 text-[11px] text-gray-400 font-mono">id: {id}</p>}
           </div>
 
           <div>
@@ -179,8 +206,9 @@ function PersonaEditPanel({
             <input
               value={description}
               onChange={e => setDescription(e.target.value)}
+              disabled={readOnly}
               placeholder="Short summary shown in the launcher"
-              className="mt-1 w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-black/30 text-sm text-gray-800 dark:text-gray-100 outline-none focus:border-primary"
+              className="mt-1 w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-black/30 text-sm text-gray-800 dark:text-gray-100 outline-none focus:border-primary disabled:opacity-60 disabled:cursor-not-allowed"
             />
           </div>
 
@@ -191,7 +219,8 @@ function PersonaEditPanel({
                 <button
                   key={p.key}
                   onClick={() => setPhase(p.key)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                  disabled={readOnly}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all disabled:opacity-60 disabled:cursor-not-allowed ${
                     phase === p.key
                       ? 'bg-primary text-white'
                       : 'bg-gray-100 dark:bg-white/10 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-white/20'
@@ -210,8 +239,9 @@ function PersonaEditPanel({
                 <button
                   key={p.key}
                   onClick={() => togglePattern(p.key)}
+                  disabled={readOnly}
                   title={p.description}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all disabled:opacity-60 disabled:cursor-not-allowed ${
                     patterns.includes(p.key)
                       ? 'bg-primary/10 text-primary border border-primary/30'
                       : 'bg-gray-100 dark:bg-white/10 text-gray-500 dark:text-gray-400 border border-transparent hover:bg-gray-200 dark:hover:bg-white/20'
@@ -232,9 +262,10 @@ function PersonaEditPanel({
               <textarea
                 value={prompt}
                 onChange={e => setPrompt(e.target.value)}
+                readOnly={readOnly}
                 rows={8}
                 placeholder="The full instructions this persona launches with…"
-                className="mt-1 w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-black/30 text-sm text-gray-800 dark:text-gray-100 outline-none focus:border-primary resize-y font-mono leading-relaxed"
+                className={`mt-1 w-full px-3 py-2 rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-black/30 text-sm text-gray-800 dark:text-gray-100 outline-none focus:border-primary resize-y font-mono leading-relaxed ${readOnly ? 'opacity-70 cursor-default' : ''}`}
               />
             )}
           </div>
@@ -244,16 +275,26 @@ function PersonaEditPanel({
 
         <div className="flex items-center justify-end gap-2 mt-6 pt-4 border-t border-gray-200 dark:border-white/10">
           <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-medium text-gray-500 hover:bg-gray-100 dark:hover:bg-white/10 transition-colors">
-            Cancel
+            {readOnly ? 'Close' : 'Cancel'}
           </button>
-          <button
-            onClick={handleSave}
-            disabled={!label.trim() || !prompt.trim() || saving || loadingPrompt}
-            className="px-4 py-2 rounded-lg text-sm font-semibold bg-primary text-white hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
-          >
-            {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-            Save
-          </button>
+          {readOnly ? (
+            <button
+              onClick={handleFork}
+              disabled={loadingPrompt}
+              className="px-4 py-2 rounded-lg text-sm font-semibold bg-primary text-white hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+            >
+              <Copy className="w-3.5 h-3.5" /> Duplicate &amp; Edit
+            </button>
+          ) : (
+            <button
+              onClick={handleSave}
+              disabled={!label.trim() || !prompt.trim() || saving || loadingPrompt}
+              className="px-4 py-2 rounded-lg text-sm font-semibold bg-primary text-white hover:bg-primary-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+            >
+              {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+              Save
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -734,9 +775,14 @@ export function WorkflowBuilder() {
                         <div className="flex items-center gap-2">
                           <span className="text-sm font-semibold text-gray-800 dark:text-gray-100 flex-1 truncate">{p.label}</span>
                           {p.builtIn ? (
-                            <span className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
-                              <Lock className="w-3 h-3" /> Built-in
-                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <span className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-400">
+                                <Lock className="w-3 h-3" /> Built-in
+                              </span>
+                              <button onClick={() => setEditingPersona(p)} title="View & duplicate" className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-colors">
+                                <Eye className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
                           ) : (
                             <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                               <button onClick={() => setEditingPersona(p)} className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-colors">

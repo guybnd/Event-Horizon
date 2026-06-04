@@ -22,12 +22,13 @@ router.get('/personas', (req, res) => {
   res.json({ personas: listSelectablePersonaMeta(phase) });
 });
 
-// GET a single custom persona including its prompt (for editing). Built-in
-// personas never expose their prompt, so this 404s for them.
+// GET a single persona including its prompt. Built-in personas are viewable
+// (read-only) so users can read and fork them; custom personas are editable.
+// The `builtIn` flag on the returned persona tells the client which is which.
 router.get('/personas/:id', (req, res) => {
   const persona = getEditablePersona(req.params.id);
   if (!persona) {
-    res.status(404).json({ error: 'Editable persona not found (built-in prompts are not exposed)' });
+    res.status(404).json({ error: 'Persona not found' });
     return;
   }
   res.json({ persona });
