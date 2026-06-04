@@ -88,7 +88,7 @@ From [`routes/config.ts`](../../../engine/src/routes/config.ts).
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/config` | Current board config (columns, hidden statuses, tags, priorities, users, project keys, sync settings, …). Includes `defaultAgent` and `defaultWorkflowId` (the workflow template the orchestration launcher pre-selects per phase; empty = none). |
+| GET | `/api/config` | Current board config (columns, hidden statuses, tags, priorities, users, project keys, sync settings, …). Includes `defaultAgent`, the legacy `defaultWorkflowId`, and `phaseDefaults` — a map of `{ grooming, implementation, review, release } → { single?, multi? }` template ids that drive the per-phase Single/Multi launch defaults (each falls back to `builtin-<phase>-<variant>` when unset). |
 | PUT | `/api/config` | Replace the board config. |
 
 ## Workspace + workspaces

@@ -141,6 +141,29 @@ export function phaseLaunchStatus(phase: LaunchPhase): string | undefined {
   }
 }
 
+/**
+ * Resolve the default template id for a phase + variant. Falls back to the
+ * built-in id convention (`builtin-<phase>-<variant>`) when the board has no
+ * configured override, so launches always have a sensible default.
+ */
+export function resolvePhaseDefaultId(
+  phaseDefaults: Partial<Record<LaunchPhase, { single?: string; multi?: string }>> | undefined,
+  phase: LaunchPhase,
+  variant: 'single' | 'multi',
+): string {
+  return phaseDefaults?.[phase]?.[variant] || `builtin-${phase}-${variant}`;
+}
+
+/** Combiner persona that synthesizes peer output for a phase (none for release relays). */
+export function phaseCombiner(phase: LaunchPhase): { personaId: string; label: string } | undefined {
+  switch (phase) {
+    case 'grooming': return { personaId: 'planner', label: 'Planner' };
+    case 'implementation': return { personaId: 'orchestrator', label: 'Orchestrator' };
+    case 'review': return { personaId: 'orchestrator', label: 'Orchestrator' };
+    default: return undefined;
+  }
+}
+
 export interface OrchestrationModeDef {
   id: OrchestrationMode;
   label: string;

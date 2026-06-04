@@ -209,6 +209,8 @@ export interface Config {
   defaultAgent?: CliFramework | 'auto';
   /** Workflow template the launcher pre-selects by default (empty = none). */
   defaultWorkflowId?: string;
+  /** Per-phase default templates for one-click single / multi agent launches. */
+  phaseDefaults?: Partial<Record<'grooming' | 'implementation' | 'review' | 'release', { single?: string; multi?: string }>>;
   enableFireworks?: boolean;
   tokenDisplayMode?: 'cost' | 'tokens';
   tokenCostThresholds?: { green: number; yellow: number };

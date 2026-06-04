@@ -62,8 +62,10 @@ This page is the quick orientation guide for where behavior lives today — file
 	merges built-ins first, `isBuiltInWorkflow(id)` guards `saveWorkflow` /
 	`deleteWorkflow` (built-ins are read-only, updated via releases — duplicate to
 	customize). Exposed through `engine/src/routes/workflows.ts` (`/api/workflows`;
-	PUT/DELETE return 400 for built-in ids). The board default is stored on
-	`config.defaultWorkflowId` and pre-populates the launcher per phase.
+	PUT/DELETE return 400 for built-in ids). Per-phase launch defaults are stored on
+	`config.phaseDefaults[phase].single` / `.multi` (each a template id; falls back
+	to `builtin-<phase>-<variant>`). The legacy board-wide `config.defaultWorkflowId`
+	still exists but is superseded by the per-phase defaults.
     
 -   `portal/src/App.tsx` wires the top-level screens.
     
@@ -98,8 +100,13 @@ This page is the quick orientation guide for where behavior lives today — file
 	built-in and custom template defining a config for the current phase; selecting
 	one re-applies its pattern + personas, and manual edits reset it to "Custom".
 	On open it pre-populates from an `initialTemplateId` prop (the card's
-	Single/Multi choice) or, failing that, the board default workflow
-	(`config.defaultWorkflowId` → that phase's config).
+	Single/Multi choice) or, failing that, the phase's single default
+	(`resolvePhaseDefaultId(config.phaseDefaults, phase, 'single')`).
+	When exactly **one** participant is selected the launcher treats it as a
+	**standalone single agent**: the pattern selector is hidden and the run is
+	always launchable (it bypasses orchestration gating). Consumers branch on
+	`plan.personas.length === 1` → `runAgentAction({ action: { kind: 'persona', … } })`
+	vs `launchOrchestration(...)` for teams, using `phaseCombiner(phase)` for the lead.
 	Code review is one configuration of it.
 	Claude Code is the only framework wired for now (no per-row framework picking);
 	`serialized` / `handoff` are shown but gated (`launchable: false`) until the
@@ -109,8 +116,10 @@ This page is the quick orientation guide for where behavior lives today — file
 	by `/api/orchestration/personas`, `/api/workflows`, and `/api/config`). Three
 	tabs: **Personas** (per-phase; built-ins are viewable read-only with a
 	"Duplicate & Edit" fork, custom personas create/edit/delete),
-	**Templates** (per-phase pattern + persona selection, plus a star toggle to set
-	`config.defaultWorkflowId`), and **Skills** (skills persist as docs under the
+	**Templates** (grouped by phase, each phase split into Single / Multi columns by
+	persona count; a per-column star sets `config.phaseDefaults[phase].single` /
+	`.multi` via `handleSetPhaseDefault`; cards show resolved pattern + ordered
+	persona chips), and **Skills** (skills persist as docs under the
 	`skills/` directory).
 
 -   `portal/src/components/CodeReviewButton.tsx` owns the entry button (compact +

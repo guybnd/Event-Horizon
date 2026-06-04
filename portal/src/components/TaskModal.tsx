@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../AppContext';
 import { createTask, deleteTask, fetchTask, sendTaskCliInput, updateTask } from '../api';
-import { runAgentAction, launchOrchestration, getOrchestrationMode, phaseLaunchStatus, statusToPhase, type LaunchPhase } from '../agentActions';
+import { runAgentAction, launchOrchestration, getOrchestrationMode, phaseCombiner, phaseLaunchStatus, statusToPhase, type LaunchPhase } from '../agentActions';
 import { LaunchAgentSplitButton } from './LaunchAgentSplitButton';
 import { OrchestrationLauncher, type OrchestrationLaunchPlan } from './OrchestrationLauncher';
 import { isAgentSession } from '../types';
@@ -677,6 +677,22 @@ export function TaskModal() {
     setReviewBusy(true);
     setReviewError('');
     try {
+      // A single selected agent launches standalone — bypass orchestration gating.
+      if (plan.personas.length === 1) {
+        const session = await runAgentAction({
+          taskId: modalTask.id,
+          framework: selectedCliFramework,
+          action: { kind: 'persona', personaId: plan.personas[0].id, focusComment: plan.comment || undefined },
+          currentUser,
+          skipPermissions,
+          preStatus: phaseLaunchStatus(launcherPhase),
+        });
+        if (session) setCliSession(session);
+        setReviewModalOpen(false);
+        triggerRefresh();
+        closeModal();
+        return;
+      }
       const def = getOrchestrationMode(plan.mode);
       const participants = plan.personas.map(p => ({
         role: `${launcherPhase}:${p.id}`,
@@ -684,9 +700,10 @@ export function TaskModal() {
         personaId: p.id,
         focusComment: plan.comment || undefined,
       }));
-      // Only the review phase ships a combiner persona (orchestrator) today.
-      const lead = def.hasLead && launcherPhase === 'review'
-        ? { role: 'orchestrator', label: 'Orchestrator', personaId: 'orchestrator' }
+      // Combiner persona that synthesizes peer output, per phase.
+      const combiner = phaseCombiner(launcherPhase);
+      const lead = def.hasLead && combiner
+        ? { role: combiner.personaId, label: combiner.label, personaId: combiner.personaId }
         : undefined;
       const { sessions, errors } = await launchOrchestration({
         taskId: modalTask.id,

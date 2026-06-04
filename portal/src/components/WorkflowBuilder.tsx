@@ -634,6 +634,13 @@ export function WorkflowBuilder() {
     return map;
   }, [personas]);
 
+  // Persona id → display label, for rendering ordered chips on template cards.
+  const personaLabels = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const p of personas) map[p.id] = p.label;
+    return map;
+  }, [personas]);
+
   const handleDeletePersona = useCallback(async (p: OrchestrationPersonaMeta) => {
     if (!window.confirm(`Delete persona "${p.label}"?`)) return;
     try {
@@ -649,8 +656,22 @@ export function WorkflowBuilder() {
     try {
       await deleteWorkflow(t.id);
       await reloadTemplates();
-      if (config?.defaultWorkflowId === t.id) {
-        const next = { ...config, defaultWorkflowId: '' };
+      if (!config) return;
+      // Drop any board/phase default references to the deleted template.
+      let next: Config = config;
+      if (config.defaultWorkflowId === t.id) next = { ...next, defaultWorkflowId: '' };
+      if (config.phaseDefaults) {
+        const pd: NonNullable<Config['phaseDefaults']> = {};
+        let changed = false;
+        for (const [phase, variants] of Object.entries(config.phaseDefaults)) {
+          const cleaned = { ...variants };
+          if (cleaned.single === t.id) { delete cleaned.single; changed = true; }
+          if (cleaned.multi === t.id) { delete cleaned.multi; changed = true; }
+          pd[phase as WorkflowPhase] = cleaned;
+        }
+        if (changed) next = { ...next, phaseDefaults: pd };
+      }
+      if (next !== config) {
         await saveConfig(next);
         setConfigState(next);
       }
@@ -659,15 +680,21 @@ export function WorkflowBuilder() {
     }
   }, [reloadTemplates, config]);
 
-  const handleSetDefault = useCallback(async (templateId: string) => {
+  // Toggle the per-phase single/multi default to a template (writes config.phaseDefaults).
+  const handleSetPhaseDefault = useCallback(async (phase: WorkflowPhase, variant: 'single' | 'multi', templateId: string) => {
     if (!config) return;
-    const nextId = config.defaultWorkflowId === templateId ? '' : templateId;
-    const next = { ...config, defaultWorkflowId: nextId };
+    const current = config.phaseDefaults?.[phase]?.[variant];
+    const nextVal = current === templateId ? undefined : templateId;
+    const phaseDefaults = {
+      ...config.phaseDefaults,
+      [phase]: { ...config.phaseDefaults?.[phase], [variant]: nextVal },
+    };
+    const next = { ...config, phaseDefaults };
     try {
       await saveConfig(next);
       setConfigState(next);
     } catch (err) {
-      console.error('Failed to set default workflow:', err);
+      console.error('Failed to set phase default:', err);
     }
   }, [config]);
 
@@ -803,13 +830,16 @@ export function WorkflowBuilder() {
             </div>
           )}
 
-          {/* Templates tab */}
+          {/* Templates tab — grouped by phase, with single/multi defaults per phase */}
           {tab === 'templates' && (
-            <div className="space-y-3">
-              <div className="flex justify-end">
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <p className="text-[12px] text-gray-500 dark:text-gray-400">
+                  Templates are grouped by phase. Star a template to make it the default <strong>single</strong> or <strong>multi</strong> launch for that phase.
+                </p>
                 <button
                   onClick={() => setCreatingTemplate(true)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold bg-primary text-white hover:bg-primary-hover transition-colors"
+                  className="flex shrink-0 items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold bg-primary text-white hover:bg-primary-hover transition-colors"
                 >
                   <Plus className="w-4 h-4" /> New Template
                 </button>
@@ -817,46 +847,95 @@ export function WorkflowBuilder() {
               {templates.length === 0 && (
                 <div className="flex flex-col items-center justify-center py-16 text-gray-400">
                   <Network className="w-8 h-8 mb-2 opacity-30" />
-                  <span className="text-sm">No templates yet. Create one to set a board default.</span>
+                  <span className="text-sm">No templates yet. Create one to set a phase default.</span>
                 </div>
               )}
-              {templates.map(t => {
-                const isDefault = config?.defaultWorkflowId === t.id;
-                const phaseCount = PHASES.filter(p => phaseMembers(t.phases[p.key]).length > 0).length;
-                return (
-                  <div
-                    key={t.id}
-                    className={`group p-4 rounded-xl border bg-white dark:bg-white/5 transition-all hover:shadow-sm ${
-                      isDefault ? 'border-primary/50 ring-1 ring-primary/20' : 'border-gray-200 dark:border-white/10'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <button
-                        onClick={() => handleSetDefault(t.id)}
-                        title={isDefault ? 'Board default (click to unset)' : 'Set as board default'}
-                        className={`shrink-0 p-1 rounded transition-colors ${
-                          isDefault ? 'text-amber-400' : 'text-gray-300 dark:text-gray-600 hover:text-amber-400'
-                        }`}
-                      >
-                        <Star className="w-4 h-4" fill={isDefault ? 'currentColor' : 'none'} />
-                      </button>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-semibold text-gray-800 dark:text-gray-100 truncate">{t.name}</span>
-                          {isDefault && <span className="text-[10px] font-bold uppercase text-primary bg-primary/10 px-1.5 py-0.5 rounded">Default</span>}
-                          <span className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded ${CLI_COLORS[t.cliTarget as CliTarget] ?? 'bg-gray-100 text-gray-500'}`}>{t.cliTarget}</span>
+              {templates.length > 0 && PHASES.map(({ key: phase, label: phaseLabel }) => {
+                const inPhase = templates.filter(t => phaseMembers(t.phases[phase]).length > 0);
+                const singles = inPhase.filter(t => phaseMembers(t.phases[phase]).length === 1);
+                const multis = inPhase.filter(t => phaseMembers(t.phases[phase]).length >= 2);
+                const singleDefaultId = config?.phaseDefaults?.[phase]?.single;
+                const multiDefaultId = config?.phaseDefaults?.[phase]?.multi;
+
+                const renderCard = (t: WorkflowTemplate, variant: 'single' | 'multi') => {
+                  const cfg = t.phases[phase];
+                  const members = phaseMembers(cfg);
+                  const patternLabel = PATTERNS.find(p => p.key === cfg?.pattern)?.label ?? cfg?.pattern;
+                  const isDefault = (variant === 'single' ? singleDefaultId : multiDefaultId) === t.id;
+                  return (
+                    <div
+                      key={t.id}
+                      className={`group rounded-xl border p-3 transition-all hover:shadow-sm ${
+                        isDefault ? 'border-primary/50 bg-primary/[0.03] ring-1 ring-primary/20 dark:bg-primary/5' : 'border-gray-200 bg-white dark:border-white/10 dark:bg-white/5'
+                      }`}
+                    >
+                      <div className="flex items-start gap-2">
+                        <button
+                          onClick={() => handleSetPhaseDefault(phase, variant, t.id)}
+                          title={isDefault ? `Default ${variant} for ${phaseLabel} (click to unset)` : `Set as default ${variant} for ${phaseLabel}`}
+                          className={`mt-0.5 shrink-0 rounded p-0.5 transition-colors ${
+                            isDefault ? 'text-amber-400' : 'text-gray-300 hover:text-amber-400 dark:text-gray-600'
+                          }`}
+                        >
+                          <Star className="h-4 w-4" fill={isDefault ? 'currentColor' : 'none'} />
+                        </button>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="truncate text-[13px] font-semibold text-gray-800 dark:text-gray-100">{t.name}</span>
+                            {isDefault && <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[9px] font-bold uppercase text-primary">Default</span>}
+                            {t.builtIn && <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[9px] font-bold uppercase text-gray-500 dark:bg-white/10 dark:text-gray-400">Built-in</span>}
+                            <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase ${CLI_COLORS[t.cliTarget as CliTarget] ?? 'bg-gray-100 text-gray-500'}`}>{t.cliTarget}</span>
+                          </div>
+                          <div className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-gray-500 dark:text-gray-400">
+                            <span className="inline-flex items-center gap-1 rounded bg-gray-100 px-1.5 py-0.5 font-semibold dark:bg-white/10">
+                              <Network className="h-2.5 w-2.5" />{patternLabel}
+                            </span>
+                            {members.map((id, i) => (
+                              <span key={`${id}-${i}`} className="inline-flex items-center gap-1 rounded bg-gray-100 px-1.5 py-0.5 dark:bg-white/10">
+                                {variant === 'multi' && cfg?.pattern === 'relay' && <span className="font-mono text-gray-400">{i + 1}.</span>}
+                                {personaLabels[id] ?? id}
+                              </span>
+                            ))}
+                          </div>
                         </div>
-                        <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">{phaseCount} phase{phaseCount === 1 ? '' : 's'} configured</p>
-                      </div>
-                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button onClick={() => setEditingTemplate(t)} className="p-1.5 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-colors">
-                          <Pencil className="w-3.5 h-3.5" />
-                        </button>
-                        <button onClick={() => handleDeleteTemplate(t)} className="p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-500/10 text-gray-400 hover:text-red-500 transition-colors">
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                          <button onClick={() => setEditingTemplate(t)} title={t.builtIn ? 'View / duplicate' : 'Edit'} className="rounded p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-primary dark:hover:bg-white/10">
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                          {!t.builtIn && (
+                            <button onClick={() => handleDeleteTemplate(t)} className="rounded p-1.5 text-gray-400 transition-colors hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/10">
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </div>
+                  );
+                };
+
+                return (
+                  <div key={phase} className={`rounded-2xl border-l-4 ${PHASE_COLORS[phase]} border-y border-r border-gray-200 bg-gray-50/50 p-4 dark:border-white/10 dark:bg-white/[0.02]`}>
+                    <h3 className="mb-3 text-sm font-bold text-gray-800 dark:text-gray-100">{phaseLabel}</h3>
+                    {inPhase.length === 0 ? (
+                      <p className="text-[11px] text-gray-400">No templates configure this phase yet.</p>
+                    ) : (
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <div>
+                          <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-400">Single agent</p>
+                          <div className="space-y-2">
+                            {singles.length === 0 && <p className="text-[11px] text-gray-400">None</p>}
+                            {singles.map(t => renderCard(t, 'single'))}
+                          </div>
+                        </div>
+                        <div>
+                          <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-400">Multi-agent team</p>
+                          <div className="space-y-2">
+                            {multis.length === 0 && <p className="text-[11px] text-gray-400">None</p>}
+                            {multis.map(t => renderCard(t, 'multi'))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}

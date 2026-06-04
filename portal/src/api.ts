@@ -542,6 +542,14 @@ export interface WorkflowTemplate {
 
 export type WorkflowInput = Pick<WorkflowTemplate, 'name' | 'cliTarget' | 'phases'>;
 
+/** Persona ids configured for a phase, regardless of how the pattern stores them. */
+export function workflowPhaseMembers(cfg: WorkflowPhaseConfig | undefined): string[] {
+  if (!cfg) return [];
+  if (cfg.pattern === 'relay') return cfg.steps ?? [];
+  if (cfg.pattern === 'supervisor') return cfg.assistants ?? [];
+  return cfg.parallel ?? [];
+}
+
 /** List all workflow templates. */
 export async function fetchWorkflows(): Promise<WorkflowTemplate[]> {
   const res = await fetch(`${API_URL}/workflows`);

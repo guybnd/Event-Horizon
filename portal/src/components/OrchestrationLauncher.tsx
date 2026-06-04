@@ -3,6 +3,8 @@ import { Check, FileText, Lock, Rocket, X } from 'lucide-react';
 import {
   ORCHESTRATION_MODES,
   getOrchestrationMode,
+  resolvePhaseDefaultId,
+  type LaunchPhase,
   type OrchestrationMode,
   type ReviewPersona,
 } from '../agentActions';
@@ -181,7 +183,7 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
         let targetId = initialTemplateId;
         if (!targetId) {
           const config = await fetchConfig();
-          targetId = config.defaultWorkflowId || undefined;
+          targetId = resolvePhaseDefaultId(config.phaseDefaults, phase as LaunchPhase, 'single');
         }
         if (cancelled || !targetId) return;
         const wf = templates.find((w) => w.id === targetId);
@@ -236,7 +238,9 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
   );
 
   const enoughAgents = selectedPersonas.length >= def.minAgents;
-  const canLaunch = def.launchable && enoughAgents && !busy;
+  // A single agent launches standalone — no orchestration pattern, always runnable.
+  const isSingle = selectedPersonas.length === 1;
+  const canLaunch = (isSingle || (def.launchable && enoughAgents)) && !busy;
 
   const handleLaunch = () => {
     if (!canLaunch) return;
@@ -311,7 +315,12 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
             </div>
           )}
 
-          {/* Pattern selector */}
+          {/* Pattern selector — hidden for a single standalone agent (no orchestration needed) */}
+          {isSingle ? (
+            <div className="mb-4 rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-[11px] text-gray-500 dark:border-white/5 dark:bg-black/20 dark:text-gray-400">
+              Single agent — launches standalone with full access. Add another agent to orchestrate a team.
+            </div>
+          ) : (
           <div className="mb-4">
             <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wider text-gray-400">
               Orchestration pattern
@@ -352,6 +361,7 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
             </div>
             <p className="mt-1.5 text-[10px] leading-snug text-gray-500 dark:text-gray-400">{def.blurb}</p>
           </div>
+          )}
 
           {/* Participant selection */}
           <div className="mb-4">
@@ -449,6 +459,11 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
           >
             {busy ? (
               'Launching…'
+            ) : isSingle ? (
+              <>
+                <Rocket className="h-4 w-4" />
+                Launch agent
+              </>
             ) : !def.launchable ? (
               'Pattern coming soon — pick Scatter-gather or Parallel'
             ) : !enoughAgents ? (

@@ -5,11 +5,11 @@ import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { Task, TaskLiveEvent } from '../types';
 import { normalizeSubtaskId } from '../types';
-import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, MessageCircle, Bot, SendHorizontal, Maximize2, Zap, Layers, MousePointerClick, Play, Undo2, GitBranch, Copy, Check } from 'lucide-react';
+import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, MessageCircle, Bot, SendHorizontal, Maximize2, Zap, Layers, MousePointerClick, Play, Undo2, GitBranch, Copy, Check, FileText } from 'lucide-react';
 import { TokenBadge } from './TokenBadge';
 import { useApp } from '../AppContext';
-import { sendTaskCliInput, updateTask } from '../api';
-import { runAgentAction, launchOrchestration, getOrchestrationMode, phaseLaunchStatus, statusToPhase, type LaunchPhase } from '../agentActions';
+import { sendTaskCliInput, updateTask, fetchWorkflows, workflowPhaseMembers, type WorkflowTemplate } from '../api';
+import { runAgentAction, launchOrchestration, getOrchestrationMode, phaseCombiner, phaseLaunchStatus, resolvePhaseDefaultId, statusToPhase, type LaunchPhase } from '../agentActions';
 import { OrchestrationLauncher, type OrchestrationLaunchPlan } from './OrchestrationLauncher';
 import { getArchiveStatus, getReadyForMergeStatus, isPromptableStatus, relativeTime } from '../workflow';
 import { isActiveSession, groupSessions, aggregateGroup, groupAggregateLine, normalizeRoleLabel, statusDotColor, isGroupLive, isCombinerPending } from '../orchestration';
@@ -228,6 +228,9 @@ export const TaskCard = memo(function TaskCard({
   const [returnBusy, setReturnBusy] = useState(false);
   const [showStartPrompt, setShowStartPrompt] = useState(false);
   const [branchCopied, setBranchCopied] = useState(false);
+  const [agentMenuOpen, setAgentMenuOpen] = useState(false);
+  const [phaseTemplates, setPhaseTemplates] = useState<WorkflowTemplate[] | null>(null);
+  const agentMenuRef = useRef<HTMLDivElement | null>(null);
   const reviewSelectorRef = useRef<HTMLDivElement | null>(null);
   const comments = task.history?.filter(e => e.type === 'comment') ?? [];
   const topLevelComments = [...comments.filter(c => !c.replyTo)].reverse();
@@ -338,11 +341,81 @@ export const TaskCard = memo(function TaskCard({
     setReviewModalOpen(true);
   };
 
+  const cardPhase = statusToPhase(task.status, { readyStatus: readyForMergeStatus });
+
+  // Lazily load templates the first time the agent menu is opened.
+  const toggleAgentMenu = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setAgentMenuOpen((open) => !open);
+    if (phaseTemplates === null) {
+      fetchWorkflows().then(setPhaseTemplates).catch(() => setPhaseTemplates([]));
+    }
+  };
+
+  // Templates that configure the current phase.
+  const templatesForCardPhase = useMemo(
+    () => (phaseTemplates ?? []).filter((w) => w.phases?.[cardPhase as keyof typeof w.phases]),
+    [phaseTemplates, cardPhase],
+  );
+  const singleDefaultId = resolvePhaseDefaultId(config?.phaseDefaults, cardPhase, 'single');
+  const multiDefaultId = resolvePhaseDefaultId(config?.phaseDefaults, cardPhase, 'multi');
+  const singleDefaultName = templatesForCardPhase.find((w) => w.id === singleDefaultId)?.name;
+  const multiDefaultName = templatesForCardPhase.find((w) => w.id === multiDefaultId)?.name;
+  const otherCardTemplates = templatesForCardPhase.filter(
+    (w) => w.id !== singleDefaultId && w.id !== multiDefaultId,
+  );
+
+  const openLauncherWithTemplate = (templateId: string) => {
+    setAgentMenuOpen(false);
+    setLauncherPhase(cardPhase);
+    setLauncherTemplateId(templateId);
+    setReviewModalOpen(true);
+  };
+
+  // Primary one-click: launch the phase's single default as a standalone agent.
+  const launchSingleDefault = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setAgentMenuOpen(false);
+    if (task.status === 'Todo' && !task.branch) { setShowStartPrompt(true); return; }
+    setReviewBusy(true);
+    try {
+      const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
+      const list = phaseTemplates ?? (await fetchWorkflows());
+      if (phaseTemplates === null) setPhaseTemplates(list);
+      const wf = list.find((w) => w.id === singleDefaultId);
+      const members = workflowPhaseMembers(wf?.phases?.[cardPhase as keyof NonNullable<typeof wf.phases>]);
+      const personaId = members[0];
+      if (!personaId) { openAgentLauncher('single'); return; }
+      await runAgentAction({
+        taskId: task.id,
+        framework,
+        action: { kind: 'persona', personaId },
+        currentUser,
+        preStatus: phaseLaunchStatus(cardPhase),
+      });
+      triggerRefresh();
+    } finally {
+      setReviewBusy(false);
+    }
+  };
+
   const handleCardReviewLaunch = async (plan: OrchestrationLaunchPlan) => {
     setReviewModalOpen(false);
     setReviewBusy(true);
     try {
       const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
+      // A single selected agent launches standalone — bypass orchestration gating entirely.
+      if (plan.personas.length === 1) {
+        await runAgentAction({
+          taskId: task.id,
+          framework,
+          action: { kind: 'persona', personaId: plan.personas[0].id, focusComment: plan.comment || undefined },
+          currentUser,
+          preStatus: phaseLaunchStatus(launcherPhase),
+        });
+        triggerRefresh();
+        return;
+      }
       const def = getOrchestrationMode(plan.mode);
       const participants = plan.personas.map(p => ({
         role: `${launcherPhase}:${p.id}`,
@@ -351,13 +424,7 @@ export const TaskCard = memo(function TaskCard({
         focusComment: plan.comment || undefined,
       }));
       // Combiner persona that synthesizes peer output, per phase. Release relays have none.
-      const combinerByPhase: Record<string, { personaId: string; label: string } | undefined> = {
-        grooming: { personaId: 'planner', label: 'Planner' },
-        implementation: { personaId: 'orchestrator', label: 'Orchestrator' },
-        review: { personaId: 'orchestrator', label: 'Orchestrator' },
-        release: undefined,
-      };
-      const combiner = combinerByPhase[launcherPhase];
+      const combiner = phaseCombiner(launcherPhase);
       const lead = def.hasLead && plan.personas.length > 1 && combiner
         ? { role: combiner.personaId, label: combiner.label, personaId: combiner.personaId }
         : undefined;
@@ -701,6 +768,17 @@ export const TaskCard = memo(function TaskCard({
     document.addEventListener('mousedown', handlePointerDown);
     return () => document.removeEventListener('mousedown', handlePointerDown);
   }, [reviewSelectorOpen, returnPromptOpen]);
+
+  useEffect(() => {
+    if (!agentMenuOpen) return undefined;
+    const handlePointerDown = (e: MouseEvent) => {
+      if (agentMenuRef.current && !agentMenuRef.current.contains(e.target as Node)) {
+        setAgentMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [agentMenuOpen]);
 
   useEffect(() => {
     const el = tagPreviewRowRef.current;
@@ -1226,28 +1304,71 @@ export const TaskCard = memo(function TaskCard({
                 )}
               </div>
             </div>
-            {/* Ready column — 3-button row: Review | Return | Finish */}
+            {/* Ready column — Review (split) | Return | Finish */}
             {isReadyForMerge && !isOverlay && (
-              <div className={`relative flex items-center justify-end gap-1.5 transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] ${reviewSelectorOpen || returnPromptOpen ? 'mt-2 max-h-40 overflow-visible opacity-100' : 'mt-0 max-h-0 overflow-hidden opacity-0 group-hover:mt-2 group-hover:max-h-20 group-hover:overflow-visible group-hover:opacity-100'}`} ref={reviewSelectorRef}>
-                {/* Review — single or multi-agent team */}
-                <button
-                  onClick={(e) => { e.stopPropagation(); openAgentLauncher('single'); }}
-                  disabled={reviewBusy}
-                  title="Review with a single agent"
-                  className="flex items-center gap-1 rounded-md border border-gray-200 bg-white/80 px-2 py-1 text-[10px] font-semibold text-gray-600 transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-primary disabled:opacity-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-primary/10"
-                >
-                  <Bot className="w-3 h-3" />
-                  Single
-                </button>
-                <button
-                  onClick={(e) => { e.stopPropagation(); openAgentLauncher('multi'); }}
-                  disabled={reviewBusy}
-                  title="Review with a multi-agent team"
-                  className="flex items-center gap-1 rounded-md border border-gray-200 bg-white/80 px-2 py-1 text-[10px] font-semibold text-gray-600 transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-primary disabled:opacity-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-primary/10"
-                >
-                  <Layers className="w-3 h-3" />
-                  Multi
-                </button>
+              <div className={`relative flex items-center justify-end gap-1.5 transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] ${reviewSelectorOpen || returnPromptOpen || agentMenuOpen ? 'mt-2 max-h-40 overflow-visible opacity-100' : 'mt-0 max-h-0 overflow-hidden opacity-0 group-hover:mt-2 group-hover:max-h-20 group-hover:overflow-visible group-hover:opacity-100'}`} ref={reviewSelectorRef}>
+                {/* Review — split button: single default one-click + menu */}
+                <div className="relative flex items-stretch overflow-visible rounded-md" ref={agentMenuRef}>
+                  <button
+                    onClick={(e) => void launchSingleDefault(e)}
+                    disabled={reviewBusy}
+                    title="Review with the default single agent"
+                    className="flex items-center gap-1 rounded-l-md border border-gray-200 bg-white/80 px-2 py-1 text-[10px] font-semibold text-gray-600 transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-primary disabled:opacity-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-primary/10"
+                  >
+                    <Bot className="w-3 h-3" />
+                    {reviewBusy ? '…' : 'Review'}
+                  </button>
+                  <button
+                    onClick={toggleAgentMenu}
+                    disabled={reviewBusy}
+                    title="Choose a reviewer or template"
+                    aria-haspopup="menu"
+                    aria-expanded={agentMenuOpen}
+                    className="flex items-center rounded-r-md border border-l-0 border-gray-200 bg-white/80 px-1 py-1 text-gray-500 transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-primary disabled:opacity-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-primary/10"
+                  >
+                    <ChevronDown className={`h-3 w-3 transition-transform ${agentMenuOpen ? 'rotate-180' : ''}`} />
+                  </button>
+                  {agentMenuOpen && (
+                    <div
+                      className="absolute bottom-full right-0 z-[90] mb-1.5 w-60 rounded-xl border border-gray-200 bg-white p-1.5 shadow-xl dark:border-white/10 dark:bg-[#1e1f2a]"
+                      onClick={(e) => e.stopPropagation()}
+                      role="menu"
+                    >
+                      <p className="px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-gray-400">Review agents</p>
+                      <button
+                        onClick={(e) => void launchSingleDefault(e)}
+                        disabled={reviewBusy}
+                        className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-semibold text-gray-700 hover:bg-primary/5 hover:text-primary disabled:opacity-50 dark:text-gray-200 dark:hover:bg-primary/10"
+                      >
+                        <Bot className="h-3.5 w-3.5 shrink-0" />
+                        <span className="min-w-0 truncate">Single{singleDefaultName ? ` · ${singleDefaultName}` : ''}</span>
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); openLauncherWithTemplate(multiDefaultId); }}
+                        disabled={reviewBusy}
+                        className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-semibold text-gray-700 hover:bg-primary/5 hover:text-primary disabled:opacity-50 dark:text-gray-200 dark:hover:bg-primary/10"
+                      >
+                        <Layers className="h-3.5 w-3.5 shrink-0" />
+                        <span className="min-w-0 truncate">Multi{multiDefaultName ? ` · ${multiDefaultName}` : ''}</span>
+                      </button>
+                      {otherCardTemplates.length > 0 && (
+                        <>
+                          <div className="my-1 border-t border-gray-100 dark:border-white/5" />
+                          {otherCardTemplates.map((t) => (
+                            <button
+                              key={t.id}
+                              onClick={(e) => { e.stopPropagation(); openLauncherWithTemplate(t.id); }}
+                              className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-medium text-gray-600 hover:bg-primary/5 hover:text-primary dark:text-gray-300 dark:hover:bg-primary/10"
+                            >
+                              <FileText className="h-3.5 w-3.5 shrink-0" />
+                              <span className="min-w-0 truncate">{t.name}</span>
+                            </button>
+                          ))}
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
                 {/* Return */}
                 <button
                   onClick={(e) => { e.stopPropagation(); setReturnPromptOpen(prev => !prev); setReviewSelectorOpen(false); }}
@@ -1298,44 +1419,82 @@ export const TaskCard = memo(function TaskCard({
                 )}
               </div>
             )}
-            {/* Per-status action button — compact, right-aligned */}
-            {statusAction && !isOverlay && (
-              <div className="mt-0 max-h-0 overflow-hidden opacity-0 transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover:mt-2 group-hover:max-h-12 group-hover:opacity-100">
-                <div className="flex justify-end">
-                <button
-                  onClick={(e) => void sendStatusAction(e)}
-                  disabled={actionBusy}
-                  className="flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-[10px] font-semibold text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
-                >
-                  <Play className="w-2.5 h-2.5" />
-                  {actionBusy ? '…' : statusAction.label}
-                </button>
-                </div>
-              </div>
-            )}
-            {/* Agents Single/Multi launcher — available on every status */}
+            {/* Non-Ready action — split button: primary action + agent launch menu */}
             {!isOverlay && !isReadyForMerge && (
-              <div className="mt-0 max-h-0 overflow-hidden opacity-0 transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover:mt-2 group-hover:max-h-12 group-hover:opacity-100">
-                <div className="flex items-center justify-end gap-1.5">
-                  <span className="mr-auto text-[9px] font-bold uppercase tracking-wider text-gray-400">Agents</span>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); openAgentLauncher('single'); }}
-                    disabled={reviewBusy}
-                    title="Launch a single agent for this phase"
-                    className="flex items-center gap-1 rounded-md border border-gray-200 bg-white/80 px-2 py-1 text-[10px] font-semibold text-gray-600 transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-primary disabled:opacity-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-primary/10"
-                  >
-                    <Bot className="w-3 h-3" />
-                    Single
-                  </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); openAgentLauncher('multi'); }}
-                    disabled={reviewBusy}
-                    title="Launch a multi-agent team for this phase"
-                    className="flex items-center gap-1 rounded-md border border-gray-200 bg-white/80 px-2 py-1 text-[10px] font-semibold text-gray-600 transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-primary disabled:opacity-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-primary/10"
-                  >
-                    <Layers className="w-3 h-3" />
-                    Multi
-                  </button>
+              <div className="mt-0 max-h-0 overflow-hidden opacity-0 transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover:mt-2 group-hover:max-h-12 group-hover:overflow-visible group-hover:opacity-100">
+                <div className="relative flex items-center justify-end" ref={agentMenuRef}>
+                  <div className="flex items-stretch overflow-visible rounded-md">
+                    {statusAction ? (
+                      <button
+                        onClick={(e) => void sendStatusAction(e)}
+                        disabled={actionBusy}
+                        className="flex items-center gap-1 rounded-l-md bg-primary px-2.5 py-1 text-[10px] font-semibold text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+                      >
+                        <Play className="w-2.5 h-2.5" />
+                        {actionBusy ? '…' : statusAction.label}
+                      </button>
+                    ) : (
+                      <button
+                        onClick={(e) => void launchSingleDefault(e)}
+                        disabled={reviewBusy}
+                        title="Launch the default single agent for this phase"
+                        className="flex items-center gap-1 rounded-l-md bg-primary px-2.5 py-1 text-[10px] font-semibold text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+                      >
+                        <Bot className="w-3 h-3" />
+                        {reviewBusy ? '…' : 'Launch'}
+                      </button>
+                    )}
+                    <button
+                      onClick={toggleAgentMenu}
+                      disabled={reviewBusy || actionBusy}
+                      title="Choose an agent or template"
+                      aria-haspopup="menu"
+                      aria-expanded={agentMenuOpen}
+                      className="flex items-center rounded-r-md border-l border-white/20 bg-primary px-1.5 py-1 text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+                    >
+                      <ChevronDown className={`h-3 w-3 transition-transform ${agentMenuOpen ? 'rotate-180' : ''}`} />
+                    </button>
+                  </div>
+                  {agentMenuOpen && (
+                    <div
+                      className="absolute bottom-full right-0 z-[90] mb-1.5 w-60 rounded-xl border border-gray-200 bg-white p-1.5 shadow-xl dark:border-white/10 dark:bg-[#1e1f2a]"
+                      onClick={(e) => e.stopPropagation()}
+                      role="menu"
+                    >
+                      <p className="px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-gray-400">Launch agents</p>
+                      <button
+                        onClick={(e) => void launchSingleDefault(e)}
+                        disabled={reviewBusy}
+                        className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-semibold text-gray-700 hover:bg-primary/5 hover:text-primary disabled:opacity-50 dark:text-gray-200 dark:hover:bg-primary/10"
+                      >
+                        <Bot className="h-3.5 w-3.5 shrink-0" />
+                        <span className="min-w-0 truncate">Single{singleDefaultName ? ` · ${singleDefaultName}` : ''}</span>
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); openLauncherWithTemplate(multiDefaultId); }}
+                        disabled={reviewBusy}
+                        className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-semibold text-gray-700 hover:bg-primary/5 hover:text-primary disabled:opacity-50 dark:text-gray-200 dark:hover:bg-primary/10"
+                      >
+                        <Layers className="h-3.5 w-3.5 shrink-0" />
+                        <span className="min-w-0 truncate">Multi{multiDefaultName ? ` · ${multiDefaultName}` : ''}</span>
+                      </button>
+                      {otherCardTemplates.length > 0 && (
+                        <>
+                          <div className="my-1 border-t border-gray-100 dark:border-white/5" />
+                          {otherCardTemplates.map((t) => (
+                            <button
+                              key={t.id}
+                              onClick={(e) => { e.stopPropagation(); openLauncherWithTemplate(t.id); }}
+                              className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-medium text-gray-600 hover:bg-primary/5 hover:text-primary dark:text-gray-300 dark:hover:bg-primary/10"
+                            >
+                              <FileText className="h-3.5 w-3.5 shrink-0" />
+                              <span className="min-w-0 truncate">{t.name}</span>
+                            </button>
+                          ))}
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             )}

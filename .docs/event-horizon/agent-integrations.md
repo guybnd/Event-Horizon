@@ -155,7 +155,11 @@ Each session can be tagged with coordination metadata:
 
 ### Phase-Aware Single / Multi Launch
 
-Every card exposes **Single** and **Multi** agent controls (and the "Ready" column does too). The card maps the ticket's board status to a launch phase (`grooming`, `implementation`, `review`, `release`) and opens the launcher pre-populated from the matching built-in template (`builtin-<phase>-single` or `builtin-<phase>-multi`). Inside the launcher a **Template** dropdown lists every built-in and custom template that defines a config for the current phase — switching it re-applies that template's pattern and personas, while any manual edit drops the selection back to "Custom". This lets users launch a known-good single agent or multi-agent team from any status, and swap templates without leaving the dialog.
+Every non-Ready card exposes a **split button**: the primary action advances the ticket (status action) or, where there's no status action, launches the phase's default single agent in one click; a caret opens a menu listing the phase's **Single** default, **Multi** default, and any other templates configured for that phase (each labelled by template name). The "Ready" column has its own **Review** split button (primary = default single reviewer, caret = Single/Multi/templates) alongside the unchanged **Return** and **Finish** buttons.
+
+The card maps the ticket's board status to a launch phase (`grooming`, `implementation`, `review`, `release`). Defaults resolve through `config.phaseDefaults[phase].single` / `.multi` (falling back to `builtin-<phase>-<variant>`). A **single** selection always launches **standalone**: the launcher hides the orchestration pattern selector and runs the agent via `runAgentAction({ action: { kind: 'persona', … } })`, bypassing the pattern gating that blocks `serialized`/`handoff`. Selecting **two or more** participants launches an orchestrated team via `launchOrchestration(...)` with the phase's combiner as lead. Inside the launcher a **Template** dropdown lists every built-in and custom template that defines a config for the current phase — switching it re-applies that template's pattern and personas, while any manual edit drops the selection back to "Custom".
+
+The **Workflows → Templates** screen groups templates by phase, splitting each phase into Single and Multi columns (by persona count). A star on each card sets that template as the phase's single or multi default; cards surface the resolved pattern and ordered persona chips.
 
 ### Parallel Code Review
 
