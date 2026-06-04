@@ -37,7 +37,11 @@ This page is the quick orientation guide for where behavior lives today — file
 -   `engine/src/orchestration-personas.ts` is the **land-here-first** module for
 	reviewer/orchestrator persona prompts. It owns the built-in persona catalog
 	(`ORCHESTRATION_PERSONAS`, `ORCHESTRATOR_PERSONA`, each tagged with a `phase`
-	and `builtIn: true`) and the resolver
+	and `builtIn: true`) — a curated roster spanning all phases: grooming
+	(`context-scout`, `requirements-interrogator`, `planner`), implementation
+	(`test-engineer`, `implementer`), review (`senior-dev`, `qa-correctness`,
+	`security-auditor`, plus `angry-linus`/`architect`/`perf-expert`/`ux-expert`),
+	and release (`release-manager`, `documenter`) — and the resolver
 	(`resolvePersonaPrompt(personaId, focusComment?)`). It also owns the
 	**custom persona store**: user-authored personas persist as JSON under
 	`<fluxDir>/personas/*.json` (`loadCustomPersonas` at startup,
@@ -51,10 +55,15 @@ This page is the quick orientation guide for where behavior lives today — file
 	full personas through the CRUD routes in `engine/src/routes/orchestration.ts`.
 
 -   `engine/src/models/workflow.ts` owns reusable **workflow templates**
-	(per-phase pattern + persona membership) persisted under
-	`<fluxDir>/workflows/*.json`, exposed through `engine/src/routes/workflows.ts`
-	(`/api/workflows`). The board default is stored on `config.defaultWorkflowId`
-	and pre-populates the launcher per phase.
+	(per-phase pattern + persona membership). It ships a code-defined roster
+	(`BUILTIN_WORKFLOWS`, each `builtIn: true`): a single-agent and a multi-agent
+	template per phase, keyed `builtin-<phase>-single` / `builtin-<phase>-multi`.
+	Custom templates persist under `<fluxDir>/workflows/*.json`; `loadWorkflows`
+	merges built-ins first, `isBuiltInWorkflow(id)` guards `saveWorkflow` /
+	`deleteWorkflow` (built-ins are read-only, updated via releases — duplicate to
+	customize). Exposed through `engine/src/routes/workflows.ts` (`/api/workflows`;
+	PUT/DELETE return 400 for built-in ids). The board default is stored on
+	`config.defaultWorkflowId` and pre-populates the launcher per phase.
     
 -   `portal/src/App.tsx` wires the top-level screens.
     
@@ -85,9 +94,13 @@ This page is the quick orientation guide for where behavior lives today — file
 	(phase-aware — grooming / implementation / review / release — and
 	pattern-gated via `compatiblePatterns`), see a live `OrchestrationTopology`
 	preview, and
-	launch with partial-failure reporting. On open it resolves the board default
-	workflow (`config.defaultWorkflowId` → that phase's config) to pre-populate the
-	pattern + selected personas. Code review is one configuration of it.
+	launch with partial-failure reporting. A **Template** dropdown lists every
+	built-in and custom template defining a config for the current phase; selecting
+	one re-applies its pattern + personas, and manual edits reset it to "Custom".
+	On open it pre-populates from an `initialTemplateId` prop (the card's
+	Single/Multi choice) or, failing that, the board default workflow
+	(`config.defaultWorkflowId` → that phase's config).
+	Code review is one configuration of it.
 	Claude Code is the only framework wired for now (no per-row framework picking);
 	`serialized` / `handoff` are shown but gated (`launchable: false`) until the
 	engine can sequence them. Opened from both `TaskModal` and `TaskCard`.
@@ -125,7 +138,11 @@ This page is the quick orientation guide for where behavior lives today — file
 	and consume the live ticket arrival cues.
     
 -   `portal/src/components/TaskCard.tsx` handles card-level interactions and
-	the create/move animation treatment for live board updates.
+	the create/move animation treatment for live board updates. Every card (and the
+	"Ready" column) exposes **Single** / **Multi** agent controls that map the
+	ticket status to a launch phase (`statusToPhase`) and open `OrchestrationLauncher`
+	pre-set to `builtin-<phase>-single` / `builtin-<phase>-multi`; the multi launch
+	adds the phase combiner (`planner` for grooming, else `orchestrator`).
     
 -   `portal/src/components/TaskModal.tsx` is the main full-ticket editing surface.
     

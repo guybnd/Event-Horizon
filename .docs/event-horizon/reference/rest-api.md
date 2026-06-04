@@ -164,16 +164,16 @@ From [`routes/skill.ts`](../../../engine/src/routes/skill.ts).
 
 ## Workflows (`/api/workflows`)
 
-Multi-agent execution patterns (relay, scatter-gather, supervisor). From [`routes/workflows.ts`](../../../engine/src/routes/workflows.ts).
+Multi-agent execution patterns (relay, scatter-gather, supervisor). From [`routes/workflows.ts`](../../../engine/src/routes/workflows.ts). Templates are either **built-in** (code-defined in [`models/workflow.ts`](../../../engine/src/models/workflow.ts) `BUILTIN_WORKFLOWS`, maintained by Event Horizon and updated via releases) or **custom** (persisted as JSON under `<fluxDir>/workflows/*.json`). Built-ins ship a single-agent and a multi-agent template per phase (`builtin-<phase>-single`, `builtin-<phase>-multi`) and carry `builtIn: true`. Both kinds are merged at read time; built-ins always lead the list.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/workflows` | List workflows. |
+| GET | `/api/workflows` | List workflows (built-in + custom). Each item carries `builtIn` (`true` for code-defined templates). |
 | GET | `/api/workflows/patterns` | List available execution patterns. |
-| GET | `/api/workflows/:id` | One workflow. |
-| POST | `/api/workflows` | Create. |
-| PUT | `/api/workflows/:id` | Update. |
-| DELETE | `/api/workflows/:id` | Delete. |
+| GET | `/api/workflows/:id` | One workflow (built-in or custom). |
+| POST | `/api/workflows` | Create a custom template. An `id` that collides with a built-in is rejected. |
+| PUT | `/api/workflows/:id` | Update a custom template. Refuses built-in ids with 400 — duplicate a built-in to customize it. |
+| DELETE | `/api/workflows/:id` | Delete a custom template. Refuses built-in ids with 400. |
 
 ## Agents (`/api/agents`)
 

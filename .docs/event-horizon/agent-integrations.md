@@ -153,9 +153,13 @@ Each session can be tagged with coordination metadata:
 | `patternPosition` | Position within pattern: `lead`, `assistant`, `combiner`, `step`, `standalone` |
 | `lockedPaths` | File paths this session intends to write (engine rejects conflicts) |
 
+### Phase-Aware Single / Multi Launch
+
+Every card exposes **Single** and **Multi** agent controls (and the "Ready" column does too). The card maps the ticket's board status to a launch phase (`grooming`, `implementation`, `review`, `release`) and opens the launcher pre-populated from the matching built-in template (`builtin-<phase>-single` or `builtin-<phase>-multi`). Inside the launcher a **Template** dropdown lists every built-in and custom template that defines a config for the current phase — switching it re-applies that template's pattern and personas, while any manual edit drops the selection back to "Custom". This lets users launch a known-good single agent or multi-agent team from any status, and swap templates without leaving the dialog.
+
 ### Parallel Code Review
 
-From both the "Ready" status prompt (modal) and the card quick-action bar, clicking **Review** opens a multi-select persona picker. Select one persona for a single reviewer, or select multiple for parallel reviews.
+From both the "Ready" status prompt (modal) and the card quick-action bar, the **Single** / **Multi** controls open a multi-select persona picker. Select one persona for a single reviewer, or select multiple for parallel reviews.
 
 **With Orchestrator (default for 2+ reviewers):**
 An orchestrator agent launches alongside the reviewers. Reviewers only post structured comments (they cannot change ticket status). The orchestrator waits for all reviews, synthesizes findings, and decides:
@@ -180,15 +184,28 @@ Each reviewer session:
 
 Multiple reviewers run simultaneously — each as an independent session tagged with `role: 'reviewer:<persona-id>'`.
 
-### Available Review Personas
+### Built-In Persona Roster
 
-| Persona | Focus |
-|---------|-------|
-| Senior Friendly Dev | Quality, readability, maintainability — constructive tone |
-| Angry Linus | Brutally honest — zero tolerance for bad patterns |
-| Architect Genius | System design, separation of concerns, scalability |
-| Performance Expert | Complexity, hot paths, bundle size, re-renders |
-| UX/UI Expert | Usability, accessibility, interaction design |
+Personas are organized by phase. Built-ins are code-defined (viewable, forkable, updated via releases); custom personas live under `<fluxDir>/personas/*.json`.
+
+| Phase | Persona | Focus |
+|-------|---------|-------|
+| Grooming | Context Scout | Repo recon — maps the affected surface and prior art |
+| Grooming | Requirements Interrogator | Surfaces ambiguity, writes acceptance criteria |
+| Grooming | Planner | Combiner — synthesizes scout + interrogator into a plan |
+| Implementation | Test Engineer | TDD — writes failing tests first, no implementation |
+| Implementation | Implementer | Builds to satisfy the test conditions without weakening them |
+| Review | Senior Friendly Dev | Broad single-reviewer pass with severity tags |
+| Review | QA Correctness | Behavior vs. acceptance criteria |
+| Review | Security Auditor | OWASP Top 10 and injection surfaces |
+| Review | Angry Linus | Brutally honest — zero tolerance for bad patterns |
+| Review | Architect Genius | System design, separation of concerns, scalability |
+| Review | Performance Expert | Complexity, hot paths, bundle size, re-renders |
+| Review | UX/UI Expert | Usability, accessibility, interaction design |
+| Release | Release Manager | Versioning, gathers Done tickets, runs the release |
+| Release | Documenter | Changelog and docs updates |
+
+The internal **Orchestrator** combiner is not user-selectable; it (or the phase-specific combiner — `planner` for grooming) is added automatically when a multi-agent scatter run has 2+ workers.
 
 ### Conflict Prevention
 
