@@ -43,6 +43,7 @@ import storageRouter from './routes/storage.js';
 import syncStatusRouter from './routes/sync-status.js';
 import notificationsRouter from './routes/notifications.js';
 import settingsRouter from './routes/settings.js';
+import orchestrationRouter from './routes/orchestration.js';
 import { checkForUpdate, getCachedUpdateInfo, getLocalVersion } from './update-check.js';
 import { checkGhAuth } from './branch-manager.js';
 
@@ -79,6 +80,7 @@ app.use('/api/storage', requireWorkspace, storageRouter);
 app.use('/api/sync-status', requireWorkspace, syncStatusRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/settings', settingsRouter);
+app.use('/api/orchestration', requireWorkspace, orchestrationRouter);
 
 let ghAuthAvailable: boolean | null = null;
 

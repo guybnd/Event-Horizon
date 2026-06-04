@@ -1,8 +1,4 @@
 import { Search } from 'lucide-react';
-import { REVIEW_PERSONAS, type ReviewPersona } from '../agentActions';
-
-export type { ReviewPersona };
-export { REVIEW_PERSONAS };
 
 interface Props {
   onClick: () => void;

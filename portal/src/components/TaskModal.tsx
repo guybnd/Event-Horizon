@@ -19,7 +19,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../AppContext';
 import { createTask, deleteTask, fetchTask, sendTaskCliInput, updateTask } from '../api';
-import { runAgentAction, launchOrchestration, getOrchestrationMode, ORCHESTRATOR_PROMPT } from '../agentActions';
+import { runAgentAction, launchOrchestration, getOrchestrationMode } from '../agentActions';
 import { LaunchAgentSplitButton } from './LaunchAgentSplitButton';
 import { OrchestrationLauncher, type OrchestrationLaunchPlan } from './OrchestrationLauncher';
 import { isAgentSession } from '../types';
@@ -673,12 +673,11 @@ export function TaskModal() {
       const participants = plan.personas.map(p => ({
         role: `reviewer:${p.id}`,
         label: p.label,
-        prompt: plan.comment
-          ? `${p.prompt}\n\nThe user specifically asked you to focus on:\n${plan.comment}`
-          : p.prompt,
+        personaId: p.id,
+        focusComment: plan.comment || undefined,
       }));
       const lead = def.hasLead
-        ? { role: 'orchestrator', label: 'Orchestrator', prompt: ORCHESTRATOR_PROMPT }
+        ? { role: 'orchestrator', label: 'Orchestrator', personaId: 'orchestrator' }
         : undefined;
       const { sessions, errors } = await launchOrchestration({
         taskId: modalTask.id,

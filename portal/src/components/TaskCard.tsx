@@ -9,7 +9,7 @@ import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, Message
 import { TokenBadge } from './TokenBadge';
 import { useApp } from '../AppContext';
 import { sendTaskCliInput, updateTask } from '../api';
-import { runAgentAction, launchOrchestration, getOrchestrationMode, ORCHESTRATOR_PROMPT } from '../agentActions';
+import { runAgentAction, launchOrchestration, getOrchestrationMode } from '../agentActions';
 import { CodeReviewButton } from './CodeReviewButton';
 import { OrchestrationLauncher, type OrchestrationLaunchPlan } from './OrchestrationLauncher';
 import { getArchiveStatus, getReadyForMergeStatus, isPromptableStatus, relativeTime } from '../workflow';
@@ -339,12 +339,11 @@ export const TaskCard = memo(function TaskCard({
       const participants = plan.personas.map(p => ({
         role: `reviewer:${p.id}`,
         label: p.label,
-        prompt: plan.comment
-          ? `${p.prompt}\n\nThe user specifically asked you to focus on:\n${plan.comment}`
-          : p.prompt,
+        personaId: p.id,
+        focusComment: plan.comment || undefined,
       }));
       const lead = def.hasLead
-        ? { role: 'orchestrator', label: 'Orchestrator', prompt: ORCHESTRATOR_PROMPT }
+        ? { role: 'orchestrator', label: 'Orchestrator', personaId: 'orchestrator' }
         : undefined;
       await launchOrchestration({
         taskId: task.id,

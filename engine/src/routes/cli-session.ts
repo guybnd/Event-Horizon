@@ -20,6 +20,7 @@ import {
 } from '../session-store.js';
 import { getAdapter } from '../agents/index.js';
 import { updateTaskWithHistory } from '../task-store.js';
+import { resolvePersonaPrompt } from '../orchestration-personas.js';
 import { buildActivityEntry } from '../history.js';
 import type { CliSessionRecord, CliFramework, ExecutionPattern, PatternPosition, GroupVariant } from '../agents/types.js';
 
@@ -143,9 +144,20 @@ router.post('/:id/cli-session/start', async (req, res) => {
     return res.status(400).json({ error: 'framework must be claude, copilot or gemini' });
   }
   const framework = frameworkRaw as CliFramework;
-  const appendPrompt = typeof req.body?.appendPrompt === 'string' ? req.body.appendPrompt.trim() : '';
   const skipPermissions = req.body?.skipPermissions !== false;
   const effortOverrideRaw = typeof req.body?.effortOverride === 'string' ? req.body.effortOverride.trim() : '';
+
+  // Persona resolution: when a personaId is supplied the engine owns the prompt
+  // text (it never ships to the client). A raw appendPrompt is still accepted
+  // for ad-hoc, non-persona launches.
+  const personaId = typeof req.body?.personaId === 'string' ? req.body.personaId.trim() : '';
+  const focusComment = typeof req.body?.focusComment === 'string' ? req.body.focusComment.trim() : '';
+  let appendPrompt = typeof req.body?.appendPrompt === 'string' ? req.body.appendPrompt.trim() : '';
+  if (personaId) {
+    const resolved = resolvePersonaPrompt(personaId, focusComment);
+    if (!resolved) return res.status(400).json({ error: `Unknown personaId: ${personaId}` });
+    appendPrompt = resolved;
+  }
 
   // Multi-session fields
   const role = typeof req.body?.role === 'string' ? req.body.role.trim() : undefined;
@@ -231,10 +243,19 @@ router.post('/:id/cli-session/register-combiner', (req, res) => {
   }
   const groupId = typeof req.body?.groupId === 'string' ? req.body.groupId.trim() : '';
   const role = typeof req.body?.role === 'string' ? req.body.role.trim() : '';
-  const appendPrompt = typeof req.body?.appendPrompt === 'string' ? req.body.appendPrompt.trim() : '';
+  // Persona resolution mirrors the start route: a personaId resolves the prompt
+  // server-side; a raw appendPrompt is the fallback for ad-hoc combiners.
+  const personaId = typeof req.body?.personaId === 'string' ? req.body.personaId.trim() : '';
+  const focusComment = typeof req.body?.focusComment === 'string' ? req.body.focusComment.trim() : '';
+  let appendPrompt = typeof req.body?.appendPrompt === 'string' ? req.body.appendPrompt.trim() : '';
+  if (personaId) {
+    const resolved = resolvePersonaPrompt(personaId, focusComment);
+    if (!resolved) return res.status(400).json({ error: `Unknown personaId: ${personaId}` });
+    appendPrompt = resolved;
+  }
   if (!groupId) return res.status(400).json({ error: 'groupId is required' });
   if (!role) return res.status(400).json({ error: 'role is required' });
-  if (!appendPrompt) return res.status(400).json({ error: 'appendPrompt is required' });
+  if (!appendPrompt) return res.status(400).json({ error: 'appendPrompt or personaId is required' });
 
   const groupType = typeof req.body?.groupType === 'string' ? req.body.groupType.trim() as ExecutionPattern : undefined;
   const groupVariant = typeof req.body?.groupVariant === 'string' ? req.body.groupVariant.trim() as GroupVariant : undefined;

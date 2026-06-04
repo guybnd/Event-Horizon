@@ -2,11 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, useId } from 'react'
 import { Check, FileText, Lock, Rocket, X } from 'lucide-react';
 import {
   ORCHESTRATION_MODES,
-  REVIEW_PERSONAS,
   getOrchestrationMode,
   type OrchestrationMode,
   type ReviewPersona,
 } from '../agentActions';
+import { fetchOrchestrationPersonas } from '../api';
 import type { CliFramework, CliSessionSummary } from '../types';
 import { type SessionGroup } from '../orchestration';
 import { OrchestrationTopology, TopologyGlyph } from './OrchestrationTopology';
@@ -63,7 +63,8 @@ function buildPreviewGroup(
 
   const stepPosition = def.pattern === 'supervisor' ? 'assistant' : 'step';
   const sessions: CliSessionSummary[] = personas.map((p, i) => base(`reviewer:${p.id}`, i, stepPosition));
-  if (def.hasLead) {
+  // A lead/combiner only participates when there are multiple workers to synthesize.
+  if (def.hasLead && personas.length > 1) {
     sessions.unshift(base('orchestrator', -1, 'lead'));
   }
 
@@ -80,6 +81,8 @@ export function OrchestrationLauncher({ open, ticket, framework, onClose, onLaun
   const [mode, setMode] = useState<OrchestrationMode>('scatter-gather');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [comment, setComment] = useState('');
+  const [personas, setPersonas] = useState<ReviewPersona[]>([]);
+  const [personasLoading, setPersonasLoading] = useState(false);
   const overlayRef = useRef<HTMLDivElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const headingId = useId();
@@ -97,6 +100,17 @@ export function OrchestrationLauncher({ open, ticket, framework, onClose, onLaun
   useEffect(() => {
     if (!open) return;
     dialogRef.current?.focus();
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setPersonasLoading(true);
+    fetchOrchestrationPersonas()
+      .then((list) => { if (!cancelled) setPersonas(list); })
+      .catch(() => { if (!cancelled) setPersonas([]); })
+      .finally(() => { if (!cancelled) setPersonasLoading(false); });
+    return () => { cancelled = true; };
   }, [open]);
 
   useEffect(() => {
@@ -129,8 +143,8 @@ export function OrchestrationLauncher({ open, ticket, framework, onClose, onLaun
 
   const def = getOrchestrationMode(mode);
   const selectedPersonas = useMemo(
-    () => selectedIds.map((id) => REVIEW_PERSONAS.find((p) => p.id === id)).filter((p): p is ReviewPersona => Boolean(p)),
-    [selectedIds],
+    () => selectedIds.map((id) => personas.find((p) => p.id === id)).filter((p): p is ReviewPersona => Boolean(p)),
+    [selectedIds, personas],
   );
   const previewGroup = useMemo(
     () => buildPreviewGroup(mode, selectedPersonas, framework),
@@ -234,16 +248,30 @@ export function OrchestrationLauncher({ open, ticket, framework, onClose, onLaun
               )}
             </div>
             <div className="max-h-44 space-y-1 overflow-y-auto rounded-xl border border-gray-100 bg-gray-50 p-1 dark:border-white/5 dark:bg-black/20">
-              {REVIEW_PERSONAS.map((persona) => {
+              {personasLoading && personas.length === 0 && (
+                <div className="px-3 py-2 text-xs text-gray-400">Loading agents…</div>
+              )}
+              {!personasLoading && personas.length === 0 && (
+                <div className="px-3 py-2 text-xs text-gray-400">No agents available.</div>
+              )}
+              {personas.map((persona) => {
                 const order = selectedIds.indexOf(persona.id);
                 const isSelected = order >= 0;
+                const incompatible =
+                  persona.compatiblePatterns.length > 0 && !persona.compatiblePatterns.includes(def.pattern);
                 return (
                   <button
                     key={persona.id}
                     type="button"
+                    disabled={incompatible}
+                    aria-disabled={incompatible}
                     onClick={() => togglePersona(persona.id)}
                     className={`flex w-full items-start gap-2.5 rounded-lg px-3 py-2 text-left transition-colors ${
-                      isSelected ? 'bg-primary/5 dark:bg-primary/10' : 'hover:bg-white dark:hover:bg-white/5'
+                      incompatible
+                        ? 'cursor-not-allowed opacity-40'
+                        : isSelected
+                          ? 'bg-primary/5 dark:bg-primary/10'
+                          : 'hover:bg-white dark:hover:bg-white/5'
                     }`}
                   >
                     <div
@@ -306,12 +334,12 @@ export function OrchestrationLauncher({ open, ticket, framework, onClose, onLaun
             ) : !def.launchable ? (
               'Pattern coming soon — pick Scatter-gather or Parallel'
             ) : !enoughAgents ? (
-              `Select at least ${def.minAgents} agents`
+              `Select at least ${def.minAgents} agent${def.minAgents === 1 ? '' : 's'}`
             ) : (
               <>
                 <Rocket className="h-4 w-4" />
                 Launch {selectedPersonas.length} agent{selectedPersonas.length === 1 ? '' : 's'}
-                {def.hasLead ? ' + combiner' : ''}
+                {def.hasLead && selectedPersonas.length > 1 ? ' + combiner' : ''}
               </>
             )}
           </button>

@@ -30,9 +30,9 @@ Sourced from [`engine/src/routes/tasks.ts`](../../../engine/src/routes/tasks.ts)
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/tasks` | All tickets (array). The portal polls this. |
+| GET | `/api/tasks` | All tickets (array). The portal polls this. Each ticket carries a **capped** `cliSessions[]`: only active sessions plus the most-recent completed run group, with each `liveOutput` truncated to a short tail (~2KB) — so the poll payload doesn't grow with session history. Use `GET /api/tasks/:id` for the full set. |
 | GET | `/api/tasks/errors` | Parse errors keyed by file path — for the ParseError banner. |
-| GET | `/api/tasks/:id` | Single ticket. |
+| GET | `/api/tasks/:id` | Single ticket. Returns the **full** `cliSessions[]` (all sessions, full `liveOutput`). |
 | POST | `/api/tasks` | Create a ticket. Body: `{ author, title, status?, priority?, effort?, tags?, body?, assignee?, history?, projectKey?, ... }`. Allocates next id from `projectKey` (or first configured project), checks remote ids in orphan mode to avoid collisions, validates schema, writes atomically. Returns the created ticket. |
 | POST | `/api/tasks/:parentId/subtasks` | Create a child ticket and link it from the parent. Body mirrors POST `/api/tasks` plus parent linkage. |
 | PUT | `/api/tasks/:id` | Update a ticket. Body: any subset of metadata fields, optional `body`, optional `status`, optional `appendHistory: HistoryEntry[]` to append comments / activity entries. Used by the portal and as the REST fallback for agents when MCP is unavailable. |
@@ -52,11 +52,19 @@ From [`cli-session.ts`](../../../engine/src/routes/cli-session.ts).
 |--------|------|---------|
 | GET | `/api/tasks/:id/cli-session` | Most recent CLI session summary for a ticket. |
 | GET | `/api/tasks/:id/cli-sessions` | All session summaries for a ticket. |
-| POST | `/api/tasks/:id/cli-session/start` | Launch a CLI agent (Claude / Gemini / Copilot) against the ticket. Body: `{ framework, appendPrompt?, effortOverride?, skipPermissions?, role?, pattern?, patternPosition?, groupId?, groupSeq?, groupType?, groupVariant?, lockedPaths? }`. Multi-session fields (`role`, `pattern`, `patternPosition`) tag the session for orchestration. Run-group fields (`groupId`, `groupSeq`, `groupType`, `groupVariant`) bind sessions launched together into one orchestration run so the UI can render them as a cluster. `lockedPaths` declares exclusive file access; engine returns 409 on conflicts. Spawns the child process; live output streams over SSE. |
+| POST | `/api/tasks/:id/cli-session/start` | Launch a CLI agent (Claude / Gemini / Copilot) against the ticket. Body: `{ framework, appendPrompt?, personaId?, focusComment?, effortOverride?, skipPermissions?, role?, pattern?, patternPosition?, groupId?, groupSeq?, groupType?, groupVariant?, lockedPaths? }`. `personaId` resolves a reviewer/orchestrator prompt **server-side** from the persona catalog (see `/api/orchestration/personas`); `focusComment` is an optional reviewer focus note appended to the resolved prompt. Provide either `appendPrompt` or `personaId` (an unknown `personaId` returns 400). Multi-session fields (`role`, `pattern`, `patternPosition`) tag the session for orchestration. Run-group fields (`groupId`, `groupSeq`, `groupType`, `groupVariant`) bind sessions launched together into one orchestration run so the UI can render them as a cluster. `lockedPaths` declares exclusive file access; engine returns 409 on conflicts. Spawns the child process; live output streams over SSE. |
 | POST | `/api/tasks/:id/cli-session/input` | Send follow-up input to a running session. Body: `{ message, user?, sessionId? }`. `sessionId` targets a specific session in a multi-agent run; omit to target the most recent active session. |
-| POST | `/api/tasks/:id/cli-session/register-combiner` | Register a **deferred combiner** for a scatter-gather run group. Body: `{ framework, groupId, role, appendPrompt, expectedWorkers, skipPermissions?, groupType?, groupVariant? }`. The combiner is spawned by the engine's fan-in barrier only once every worker (`patternPosition: 'step'`) session in `groupId` reaches a terminal state — preventing the combiner from racing its workers. `expectedWorkers` guards against launching before all workers have registered. Registering re-checks immediately in case workers already finished. |
+| POST | `/api/tasks/:id/cli-session/register-combiner` | Register a **deferred combiner** for a scatter-gather run group. Body: `{ framework, groupId, role, appendPrompt?, personaId?, expectedWorkers, skipPermissions?, groupType?, groupVariant? }`. Provide either `appendPrompt` or `personaId` (resolved server-side; typically `'orchestrator'`). The combiner is spawned by the engine's fan-in barrier only once every worker (`patternPosition: 'step'`) session in `groupId` reaches a terminal state — preventing the combiner from racing its workers. `expectedWorkers` guards against launching before all workers have registered. Registering re-checks immediately in case workers already finished. |
 | POST | `/api/tasks/:id/cli-session/unregister-combiner` | Cancel a pending deferred combiner. Body: `{ groupId }`. Used when no worker sessions actually started. |
 | POST | `/api/tasks/:id/cli-session/stop` | Cancel a running session. Body: `{ sessionId? }`. `sessionId` stops one agent in a run group; omit to stop the most recent active session. |
+
+## Orchestration (`/api/orchestration`) — workspace-scoped
+
+From [`orchestration.ts`](../../../engine/src/routes/orchestration.ts). Persona prompts live engine-side in [`orchestration-personas.ts`](../../../engine/src/orchestration-personas.ts) and are resolved server-side at launch from a `personaId` — they are never shipped in the portal bundle.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/orchestration/personas` | List selectable reviewer personas as metadata only: `{ personas: Array<{ id, label, description, compatiblePatterns, requiredCapabilities }> }`. Prompt text is omitted. `compatiblePatterns` gates a persona to specific execution patterns (empty = any); `requiredCapabilities` lists CLI capabilities a persona needs. The internal `orchestrator` persona is excluded from this list. |
 
 ## Docs (`/api/docs`) — workspace-scoped
 

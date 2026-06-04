@@ -327,6 +327,10 @@ export async function fetchTaskCliSession(taskId: string): Promise<CliSessionSum
 export interface StartSessionOptions {
   framework: CliFramework;
   appendPrompt?: string;
+  /** Resolve the prompt server-side from a persona catalog id (preferred). */
+  personaId?: string;
+  /** Optional user focus note appended to the resolved persona prompt. */
+  focusComment?: string;
   skipPermissions?: boolean;
   effortOverride?: string;
   role?: string;
@@ -340,9 +344,11 @@ export interface StartSessionOptions {
 }
 
 export async function startTaskCliSessionEx(taskId: string, opts: StartSessionOptions): Promise<CliSessionSummary> {
-  const { framework, appendPrompt, skipPermissions = true, effortOverride, role, pattern, patternPosition, groupId, groupSeq, groupType, groupVariant, lockedPaths } = opts;
+  const { framework, appendPrompt, personaId, focusComment, skipPermissions = true, effortOverride, role, pattern, patternPosition, groupId, groupSeq, groupType, groupVariant, lockedPaths } = opts;
   const body: Record<string, unknown> = { framework, skipPermissions };
   if (appendPrompt) body.appendPrompt = appendPrompt;
+  if (personaId) body.personaId = personaId;
+  if (focusComment) body.focusComment = focusComment;
   if (effortOverride) body.effortOverride = effortOverride;
   if (role) body.role = role;
   if (pattern) body.pattern = pattern;
@@ -370,7 +376,10 @@ export interface RegisterCombinerOptions {
   framework: CliFramework;
   groupId: string;
   role: string;
-  appendPrompt: string;
+  /** Prompt text, or omit and pass personaId to resolve it server-side. */
+  appendPrompt?: string;
+  /** Resolve the combiner prompt server-side from a persona catalog id. */
+  personaId?: string;
   expectedWorkers: number;
   skipPermissions?: boolean;
   groupType?: string;
@@ -387,10 +396,11 @@ export async function registerDeferredCombiner(taskId: string, opts: RegisterCom
     framework: opts.framework,
     groupId: opts.groupId,
     role: opts.role,
-    appendPrompt: opts.appendPrompt,
     expectedWorkers: opts.expectedWorkers,
     skipPermissions: opts.skipPermissions ?? true,
   };
+  if (opts.appendPrompt) body.appendPrompt = opts.appendPrompt;
+  if (opts.personaId) body.personaId = opts.personaId;
   if (opts.groupType) body.groupType = opts.groupType;
   if (opts.groupVariant) body.groupVariant = opts.groupVariant;
 
@@ -416,6 +426,26 @@ export async function unregisterDeferredCombiner(taskId: string, groupId: string
     const payload = await res.json().catch(() => ({}));
     throw new Error(payload.error || 'Failed to unregister combiner');
   }
+}
+
+/** Orchestration persona metadata (no prompt text — the engine owns prompts). */
+export interface OrchestrationPersonaMeta {
+  id: string;
+  label: string;
+  description: string;
+  compatiblePatterns: string[];
+  requiredCapabilities: string[];
+}
+
+/** Fetch the selectable orchestration personas (metadata only) from the engine. */
+export async function fetchOrchestrationPersonas(): Promise<OrchestrationPersonaMeta[]> {
+  const res = await fetch(`${API_URL}/orchestration/personas`);
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to load orchestration personas');
+  }
+  const payload = await res.json();
+  return payload.personas ?? [];
 }
 
 export async function fetchTaskCliSessions(taskId: string): Promise<CliSessionSummary[]> {

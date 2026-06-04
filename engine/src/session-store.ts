@@ -103,6 +103,62 @@ export function getAllSessionSummariesForTask(taskId: string): CliSessionSummary
   return summaries;
 }
 
+// Max `liveOutput` length (chars) retained per session on the LIST endpoint.
+// Cards only need a short preview; the detail endpoint keeps the full buffer.
+const LIST_LIVE_OUTPUT_TAIL = 2048;
+const ACTIVE_STATUSES: ReadonlySet<string> = new Set(['pending', 'running', 'waiting-input']);
+
+function truncateLiveOutput(summary: CliSessionSummary): CliSessionSummary {
+  if (summary.liveOutput && summary.liveOutput.length > LIST_LIVE_OUTPUT_TAIL) {
+    summary.liveOutput = summary.liveOutput.slice(-LIST_LIVE_OUTPUT_TAIL);
+  }
+  return summary;
+}
+
+/**
+ * List-scoped session summaries: bounds the payload of `GET /api/tasks` so it
+ * doesn't grow with completed-session history. Returns every **active** session
+ * plus only the **most-recent completed group** (or solo session), with each
+ * `liveOutput` truncated to a short tail. The detail endpoint (`/:id`) still
+ * uses {@link getAllSessionSummariesForTask} for the full set.
+ */
+export function getListSessionSummariesForTask(taskId: string): CliSessionSummary[] {
+  const ids = cliSessionsByTaskId.get(taskId);
+  if (!ids || ids.length === 0) return [];
+  const sessions = ids
+    .map(id => cliSessionsById.get(id))
+    .filter((s): s is CliSessionRecord => !!s);
+  if (sessions.length === 0) return [];
+
+  const inactive = sessions.filter(s => !ACTIVE_STATUSES.has(s.status));
+
+  // Most-recent completed group, keyed by groupId (solo sessions key on their id).
+  const keyOf = (s: CliSessionRecord) => s.groupId ?? `__solo__:${s.id}`;
+  const tsOf = (s: CliSessionRecord) => Date.parse(s.endedAt ?? s.startedAt) || 0;
+  let latestKey: string | undefined;
+  let latestTs = -1;
+  for (const s of inactive) {
+    const ts = tsOf(s);
+    if (ts > latestTs) {
+      latestTs = ts;
+      latestKey = keyOf(s);
+    }
+  }
+
+  const include = new Set<string>();
+  for (const s of sessions) {
+    if (ACTIVE_STATUSES.has(s.status) || (latestKey && keyOf(s) === latestKey)) {
+      include.add(s.id);
+    }
+  }
+
+  const result: CliSessionSummary[] = [];
+  for (const s of sessions) {
+    if (include.has(s.id)) result.push(truncateLiveOutput(toSummary(s)));
+  }
+  return result;
+}
+
 export function getActiveSessionsForTask(taskId: string): CliSessionRecord[] {
   const ids = cliSessionsByTaskId.get(taskId);
   if (!ids) return [];

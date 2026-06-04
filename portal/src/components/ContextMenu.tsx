@@ -3,8 +3,8 @@ import { createPortal } from 'react-dom';
 import { Archive, Bot, ChevronDown, ChevronRight, ExternalLink, GitBranch, MessageCircle, Search, Trash2, X, Zap } from 'lucide-react';
 import type { Task } from '../types';
 import { useApp } from '../AppContext';
-import { createBranch, deleteTask, updateTask } from '../api';
-import { runAgentAction, AGENT_COMMANDS, EFFORT_LEVELS, REVIEW_PERSONAS, type EffortLevel, type AgentCommandVerb } from '../agentActions';
+import { createBranch, deleteTask, updateTask, fetchOrchestrationPersonas, type OrchestrationPersonaMeta } from '../api';
+import { runAgentAction, AGENT_COMMANDS, EFFORT_LEVELS, type EffortLevel, type AgentCommandVerb } from '../agentActions';
 import { getArchiveStatus, isPromptableStatus } from '../workflow';
 import { resolveEffectiveAgent } from '../utils';
 
@@ -20,6 +20,15 @@ export function ContextMenu({ task, position, onClose }: Props) {
   const [activeSubmenu, setActiveSubmenu] = useState<'transition' | 'agent' | 'effort' | 'review' | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [branchBusy, setBranchBusy] = useState(false);
+  const [personas, setPersonas] = useState<OrchestrationPersonaMeta[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchOrchestrationPersonas()
+      .then(list => { if (!cancelled) setPersonas(list); })
+      .catch(() => { if (!cancelled) setPersonas([]); });
+    return () => { cancelled = true; };
+  }, []);
 
   const needsBranchPrompt = task.status === 'Todo' && !task.branch;
 
@@ -129,13 +138,13 @@ export function ContextMenu({ task, position, onClose }: Props) {
     }
   };
 
-  const handleReviewPersona = async (personaPrompt: string) => {
+  const handleReviewPersona = async (personaId: string) => {
     onClose();
     try {
       await runAgentAction({
         taskId: task.id,
         framework: effectiveAgent,
-        action: { kind: 'prompt', appendPrompt: personaPrompt },
+        action: { kind: 'persona', personaId },
         currentUser,
         preStatus: 'In Progress',
       });
@@ -296,8 +305,8 @@ export function ContextMenu({ task, position, onClose }: Props) {
         open={activeSubmenu === 'review'}
         onOpen={() => setActiveSubmenu(activeSubmenu === 'review' ? null : 'review')}
       >
-        {REVIEW_PERSONAS.map((persona) => (
-          <MenuItem key={persona.id} onClick={() => void handleReviewPersona(persona.prompt)}>
+        {personas.map((persona) => (
+          <MenuItem key={persona.id} onClick={() => void handleReviewPersona(persona.id)}>
             <span className="flex-1">{persona.label}</span>
           </MenuItem>
         ))}

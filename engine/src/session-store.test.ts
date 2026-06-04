@@ -31,6 +31,7 @@ import {
   unregisterSession,
   getCliSessionSummaryForTask,
   getAllSessionSummariesForTask,
+  getListSessionSummariesForTask,
   getActiveSessionsForTask,
   checkPathConflicts,
   validatePatternSupport,
@@ -161,6 +162,44 @@ describe('session-store', () => {
 
     it('returns empty array when no sessions', () => {
       expect(getAllSessionSummariesForTask('FLUX-NONE')).toEqual([]);
+    });
+  });
+
+  describe('getListSessionSummariesForTask', () => {
+    const reg = (s: CliSessionRecord) => {
+      cliSessionsById.set(s.id, s);
+      registerSession(s.taskId, s.id);
+    };
+
+    it('returns empty array when no sessions', () => {
+      expect(getListSessionSummariesForTask('FLUX-NONE')).toEqual([]);
+    });
+
+    it('keeps active sessions and the most-recent completed group, dropping older groups', () => {
+      // Older completed group
+      reg(createMockSession({ id: 'old-1', taskId: 'FLUX-1', status: 'completed', groupId: 'g-old', startedAt: '2026-06-01T00:00:00.000Z', endedAt: '2026-06-01T00:01:00.000Z' }));
+      reg(createMockSession({ id: 'old-2', taskId: 'FLUX-1', status: 'completed', groupId: 'g-old', startedAt: '2026-06-01T00:00:00.000Z', endedAt: '2026-06-01T00:02:00.000Z' }));
+      // Newer completed group
+      reg(createMockSession({ id: 'new-1', taskId: 'FLUX-1', status: 'completed', groupId: 'g-new', startedAt: '2026-06-02T00:00:00.000Z', endedAt: '2026-06-02T00:01:00.000Z' }));
+      reg(createMockSession({ id: 'new-2', taskId: 'FLUX-1', status: 'failed', groupId: 'g-new', startedAt: '2026-06-02T00:00:00.000Z', endedAt: '2026-06-02T00:02:00.000Z' }));
+      // An active session (separate group)
+      reg(createMockSession({ id: 'act-1', taskId: 'FLUX-1', status: 'running', groupId: 'g-live', startedAt: '2026-06-03T00:00:00.000Z' }));
+
+      const ids = getListSessionSummariesForTask('FLUX-1').map(s => s.id);
+      expect(ids).toContain('act-1');
+      expect(ids).toContain('new-1');
+      expect(ids).toContain('new-2');
+      expect(ids).not.toContain('old-1');
+      expect(ids).not.toContain('old-2');
+    });
+
+    it('truncates liveOutput to a short tail', () => {
+      const big = 'x'.repeat(5000);
+      reg(createMockSession({ id: 'big-1', taskId: 'FLUX-2', status: 'completed', startedAt: '2026-06-02T00:00:00.000Z', endedAt: '2026-06-02T00:01:00.000Z', liveOutputBuffer: big }));
+
+      const [summary] = getListSessionSummariesForTask('FLUX-2');
+      expect(summary.liveOutput!.length).toBe(2048);
+      expect(summary.liveOutput).toBe(big.slice(-2048));
     });
   });
 

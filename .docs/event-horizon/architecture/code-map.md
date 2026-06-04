@@ -30,7 +30,16 @@ This page is the quick orientation guide for where behavior lives today — file
 -   `engine/src/routes/cli-session.ts` owns the CLI-session REST routes. `spawnSession`
 	is the single build-register-launch path shared by the `start` route and the
 	deferred-combiner launcher. The `register-combiner` / `unregister-combiner` routes
-	manage the fan-in barrier from the portal.
+	manage the fan-in barrier from the portal. Both `start` and `register-combiner`
+	accept a `personaId` and resolve the prompt server-side via
+	`resolvePersonaPrompt(...)`.
+
+-   `engine/src/orchestration-personas.ts` is the **land-here-first** module for
+	reviewer/orchestrator persona prompts. It owns the persona catalog
+	(`ORCHESTRATION_PERSONAS`, `ORCHESTRATOR_PERSONA`) and the resolver
+	(`resolvePersonaPrompt(personaId, focusComment?)`). Prompts live here so they
+	never ship in the portal bundle; the portal fetches metadata only via
+	`GET /api/orchestration/personas` (`engine/src/routes/orchestration.ts`).
     
 -   `portal/src/App.tsx` wires the top-level screens.
     
@@ -47,6 +56,9 @@ This page is the quick orientation guide for where behavior lives today — file
 	runs, use the generic `launchOrchestration(...)` — it takes a pattern-first
 	`OrchestrationMode` (from `ORCHESTRATION_MODES`) plus ordered participants and
 	an optional combiner/lead, and stamps the shared `groupId` + pattern metadata.
+	Participants reference a persona by `personaId` (+ optional `focusComment`);
+	prompt text is resolved server-side. `ReviewPersona` is metadata-only — fetch
+	the catalog with `fetchOrchestrationPersonas()`.
 	`runParallelReviews(...)` / `launchOrchestratedReview(...)` are thin code-review
 	presets over it. Add new launch entry points here, not by calling
 	`startTaskCliSessionEx` directly.
@@ -54,15 +66,17 @@ This page is the quick orientation guide for where behavior lives today — file
 -   `portal/src/components/OrchestrationLauncher.tsx` is the **generic
 	pattern-first launch modal**: pick an orchestration pattern (Scatter-gather /
 	Parallel / Serialized / Hand-off), select participant roles from a catalog
-	(review personas today), see a live `OrchestrationTopology` preview, and
+	fetched from `GET /api/orchestration/personas` on open (review personas today,
+	pattern-gated via `compatiblePatterns`), see a live `OrchestrationTopology`
+	preview, and
 	launch with partial-failure reporting. Code review is one configuration of it.
 	Claude Code is the only framework wired for now (no per-row framework picking);
 	`serialized` / `handoff` are shown but gated (`launchable: false`) until the
 	engine can sequence them. Opened from both `TaskModal` and `TaskCard`.
 
 -   `portal/src/components/CodeReviewButton.tsx` owns the entry button (compact +
-	full variants) that opens the `OrchestrationLauncher`, and re-exports the
-	review persona catalog. Used by both `TaskModal` and `TaskCard`.
+	full variants) that opens the `OrchestrationLauncher`. Used by both `TaskModal`
+	and `TaskCard`.
 
 -   `portal/src/orchestration.ts` is the **land-here-first** module for
 	multi-agent run logic on the portal side. It groups a ticket's
@@ -113,7 +127,7 @@ This page is the quick orientation guide for where behavior lives today — file
 
 -   Ticket schema or workflow behavior: start in `engine/src/index.ts`, then check `portal/src/types.ts`, `portal/src/api.ts`, and the relevant UI screen.
     
--   Prompt or review workflow changes: check `portal/src/agentActions.ts` (launch helper + persona/command registries), `portal/src/components/TaskModal.tsx`, `portal/src/components/Settings.tsx`, `.flux/config.json`, and the workflow asset templates under `.flux/skills/`.
+-   Prompt or review workflow changes: check `engine/src/orchestration-personas.ts` (reviewer/orchestrator prompts + resolver), `portal/src/agentActions.ts` (launch helper + command registry), `portal/src/components/TaskModal.tsx`, `portal/src/components/Settings.tsx`, `.flux/config.json`, and the workflow asset templates under `.flux/skills/`.
     
 -   Docs experience changes: check `portal/src/components/DocsScreen.tsx`, `portal/src/components/DocsSidebar.tsx`, and the docs endpoints in `engine/src/index.ts`.
 

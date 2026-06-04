@@ -10,7 +10,7 @@ import {
   normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry,
   summarizeFieldChanges, hasAppendedStatusChange, findEarliestHistoryDate,
 } from '../history.js';
-import { tasksCache, serializeTaskForApi, updateTaskWithHistory, workspaceActivating, parseErrors, atomicWriteFile } from '../task-store.js';
+import { tasksCache, serializeTaskForApi, serializeTaskForList, updateTaskWithHistory, workspaceActivating, parseErrors, atomicWriteFile } from '../task-store.js';
 import { generatePromptNotification, generateCompletionNotification } from '../notifications.js';
 import { validateTicketFrontmatter, formatValidationErrors } from '../schema.js';
 import {
@@ -63,7 +63,7 @@ async function getMaxIdFromRemote(projectKey: string): Promise<number> {
 }
 
 router.get('/', (req, res) => {
-  res.json(Object.values(tasksCache).map(serializeTaskForApi));
+  res.json(Object.values(tasksCache).map(serializeTaskForList));
 });
 
 router.get('/errors', (req, res) => {

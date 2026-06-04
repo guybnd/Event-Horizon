@@ -1,115 +1,13 @@
-import { startTaskCliSessionEx, updateTask, registerDeferredCombiner, unregisterDeferredCombiner } from './api';
+import { startTaskCliSessionEx, updateTask, registerDeferredCombiner, unregisterDeferredCombiner, type OrchestrationPersonaMeta } from './api';
 import type { CliFramework, CliSessionSummary, ExecutionPattern, GroupVariant, PatternPosition } from './types';
 import type { TopologyShape } from './orchestration';
 
-export interface ReviewPersona {
-  id: string;
-  label: string;
-  description: string;
-  prompt: string;
-}
-
-export const REVIEW_PERSONAS: ReviewPersona[] = [
-  {
-    id: 'senior-dev',
-    label: 'Senior Friendly Dev',
-    description: 'Collegial, constructive — quality, readability & maintainability',
-    prompt: `You are acting as a senior friendly developer performing a thorough code review of this ticket's implementation.
-
-Your approach: collegial, constructive, and encouraging. You care about code quality, readability, and maintainability. You highlight strengths as well as weaknesses, and always explain the "why" behind your suggestions.
-
-Steps to follow:
-1. Read the full ticket description and all history comments to understand what was intended.
-2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present) to see the actual changes.
-3. Evaluate the implementation against the ticket intent. Consider: correctness, edge cases, naming, readability, test coverage, and anything that could confuse a future maintainer.
-4. Post your review using the \`add_comment\` MCP tool with a structured comment:
-   - Start with **APPROVED** or **CHANGES NEEDED**
-   - List specific findings with file paths and line references
-   - If changes needed, provide actionable items
-
-IMPORTANT: Do NOT use \`change_status\`. You are one of potentially multiple reviewers — an orchestrator will synthesize all reviews and decide the next step.
-
-Keep your tone warm but precise. Lead with the most important feedback.`,
-  },
-  {
-    id: 'angry-linus',
-    label: 'Angry Linus',
-    description: 'Brutally honest — no softening, no hand-holding',
-    prompt: `You are acting as an angry Linus Torvalds performing a code review of this ticket's implementation.
-
-Your approach: terse, blunt, brutally honest. No softening. No hand-holding. If the code is bad, say so and say exactly why. You have zero patience for over-engineering, unnecessary abstraction, unclear naming, or code that looks like it was written without thinking. You do acknowledge good work when you see it — briefly.
-
-Steps to follow:
-1. Read the full ticket description and all history comments.
-2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present).
-3. Evaluate ruthlessly. Look for: bad naming, unnecessary complexity, missing error handling, confusing logic, wrong abstractions, obvious bugs, or anything that would make you question whether the author thought about what they were doing.
-4. Post your review using the \`add_comment\` MCP tool with a structured comment:
-   - Start with **APPROVED** or **CHANGES NEEDED**
-   - List every problem clearly with file paths
-   - If it's fine, say so briefly
-
-IMPORTANT: Do NOT use \`change_status\`. You are one of potentially multiple reviewers — an orchestrator will synthesize all reviews and decide the next step.
-
-Do not pad your response. Be direct.`,
-  },
-  {
-    id: 'architect',
-    label: 'Architect Genius',
-    description: 'System design, patterns, separation of concerns, scalability',
-    prompt: `You are acting as an elite software architect performing a code review of this ticket's implementation.
-
-Your approach: you think in systems. You care about design patterns, separation of concerns, coupling vs cohesion, abstractions that will age well, and choices that will either constrain or enable the system as it grows. You are not pedantic about style — you care about structure and long-term maintainability at scale.
-
-Steps to follow:
-1. Read the full ticket description and history to understand scope and constraints.
-2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present).
-3. Evaluate architectural quality: Are responsibilities well-separated? Is the abstraction at the right level? Does this introduce hidden coupling? Will this scale? Are there simpler designs that achieve the same goal?
-4. Post your review using the \`add_comment\` MCP tool with a structured comment:
-   - Start with **APPROVED** or **CHANGES NEEDED**
-   - If structural issues found, be specific about what to restructure and why, including proposed alternatives
-   - If sound, note briefly what holds up well from a design perspective
-
-IMPORTANT: Do NOT use \`change_status\`. You are one of potentially multiple reviewers — an orchestrator will synthesize all reviews and decide the next step.`,
-  },
-  {
-    id: 'perf-expert',
-    label: 'Performance Expert',
-    description: 'Complexity, hot paths, bundle size, memory, re-renders',
-    prompt: `You are acting as a performance engineering expert performing a code review of this ticket's implementation.
-
-Your approach: you think in cycles, bytes, and render trees. You look for algorithmic complexity issues, unnecessary re-renders, wasteful allocations, blocking operations, bundle size contributions, and anything that hits a hot path more times than necessary.
-
-Steps to follow:
-1. Read the full ticket description and history to understand what was built.
-2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present).
-3. Evaluate performance characteristics: O(n) where O(1) is possible? Unnecessary useEffect dependencies causing cascading re-renders? Large imports where tree-shaking won't help? Synchronous work on the main thread? Missing memoization on expensive computations?
-4. Post your review using the \`add_comment\` MCP tool with a structured comment:
-   - Start with **APPROVED** or **CHANGES NEEDED**
-   - If performance issues found, quantify impact where possible and suggest concrete fixes
-   - If acceptable, note briefly that it passes performance scrutiny
-
-IMPORTANT: Do NOT use \`change_status\`. You are one of potentially multiple reviewers — an orchestrator will synthesize all reviews and decide the next step.`,
-  },
-  {
-    id: 'ux-expert',
-    label: 'UX/UI Expert',
-    description: 'Usability, accessibility, interaction design, visual consistency',
-    prompt: `You are acting as a senior UX/UI expert performing a code review of this ticket's implementation.
-
-Your approach: you think from the user's perspective first. You evaluate interaction design, visual hierarchy, accessibility, feedback loops, edge case handling in the UI, and consistency with established patterns in the codebase. You care about how things feel to use, not just how they look.
-
-Steps to follow:
-1. Read the full ticket description and history to understand the intended user experience and what was built.
-2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present). Pay close attention to JSX, CSS classes, and event handlers.
-3. Evaluate UX/UI quality: Is the interaction model intuitive? Are loading, error, and empty states handled gracefully? Is the component accessible (keyboard nav, ARIA labels, focus management, color contrast)? Does it match the visual language of the rest of the portal? Are there confusing affordances or missing feedback?
-4. Post your review using the \`add_comment\` MCP tool with a structured comment:
-   - Start with **APPROVED** or **CHANGES NEEDED**
-   - If UX issues found, name the interaction, describe the problem, and suggest a concrete fix
-   - If solid, note briefly what works well from a user experience perspective
-
-IMPORTANT: Do NOT use \`change_status\`. You are one of potentially multiple reviewers — an orchestrator will synthesize all reviews and decide the next step.`,
-  },
-];
+/**
+ * Persona metadata only. Prompt text lives engine-side (orchestration-personas.ts)
+ * and is resolved server-side from a `personaId` at launch — it never ships in the
+ * client bundle. Fetch the catalog via `fetchOrchestrationPersonas()`.
+ */
+export type ReviewPersona = OrchestrationPersonaMeta;
 
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type EffortLevel = typeof EFFORT_LEVELS[number];
@@ -130,7 +28,8 @@ export const AGENT_COMMANDS: AgentCommandDef[] = [
 export type AgentAction =
   | { kind: 'launch' }
   | { kind: 'command'; verb: AgentCommandVerb }
-  | { kind: 'prompt'; appendPrompt: string };
+  | { kind: 'prompt'; appendPrompt: string }
+  | { kind: 'persona'; personaId: string; focusComment?: string };
 
 export interface RunAgentActionOptions {
   taskId: string;
@@ -173,15 +72,22 @@ export async function runAgentAction(opts: RunAgentActionOptions): Promise<CliSe
   }
 
   let appendPrompt: string | undefined;
+  let personaId: string | undefined;
+  let focusComment: string | undefined;
   if (action.kind === 'command') {
     appendPrompt = `${action.verb} ${taskId}`;
   } else if (action.kind === 'prompt') {
     appendPrompt = action.appendPrompt;
+  } else if (action.kind === 'persona') {
+    personaId = action.personaId;
+    focusComment = action.focusComment;
   }
 
   return startTaskCliSessionEx(taskId, {
     framework,
     appendPrompt,
+    personaId,
+    focusComment,
     skipPermissions,
     effortOverride,
     role,
@@ -229,7 +135,7 @@ export const ORCHESTRATION_MODES: OrchestrationModeDef[] = [
     topology: 'fan',
     hasLead: true,
     launchable: true,
-    minAgents: 2,
+    minAgents: 1,
   },
   {
     id: 'parallel',
@@ -240,7 +146,7 @@ export const ORCHESTRATION_MODES: OrchestrationModeDef[] = [
     topology: 'swarm',
     hasLead: false,
     launchable: true,
-    minAgents: 2,
+    minAgents: 1,
   },
   {
     id: 'serialized',
@@ -276,8 +182,10 @@ export interface OrchestrationParticipant {
   role: string;
   /** Human label used for error messages. */
   label: string;
-  /** Prompt the agent session is launched with. */
-  prompt: string;
+  /** Persona whose prompt the engine resolves server-side at launch. */
+  personaId: string;
+  /** Optional reviewer focus note appended to the resolved prompt. */
+  focusComment?: string;
 }
 
 /**
@@ -307,10 +215,15 @@ export async function launchOrchestration(opts: {
   const groupId = crypto.randomUUID();
   const stepPosition: PatternPosition = def.pattern === 'supervisor' ? 'assistant' : 'step';
 
+  // A combiner/lead only earns its keep when there are multiple workers to
+  // synthesize. With a single participant, skip it entirely and just run that
+  // one agent solo — no orchestrator overhead for the cheap single-reviewer path.
+  const useLead = def.hasLead && !!lead && participants.length > 1;
+
   // Scatter-gather combiners must run AFTER their workers finish. Register the
   // combiner as deferred BEFORE launching workers so the engine's fan-in barrier
   // owns the sequencing — a Claude CLI session can't poll/block to wait itself.
-  const deferCombiner = def.hasLead && !!lead && def.pattern === 'scatter-gather';
+  const deferCombiner = useLead && def.pattern === 'scatter-gather';
   let combinerDeferred = false;
   if (deferCombiner && lead) {
     try {
@@ -318,7 +231,7 @@ export async function launchOrchestration(opts: {
         framework,
         groupId,
         role: lead.role,
-        appendPrompt: lead.prompt,
+        personaId: lead.personaId,
         expectedWorkers: participants.length,
         skipPermissions,
         groupType: def.pattern,
@@ -334,7 +247,8 @@ export async function launchOrchestration(opts: {
     participants.map((p, i) =>
       startTaskCliSessionEx(taskId, {
         framework,
-        appendPrompt: p.prompt,
+        personaId: p.personaId,
+        focusComment: p.focusComment,
         skipPermissions,
         role: p.role,
         pattern: def.pattern,
@@ -368,11 +282,12 @@ export async function launchOrchestration(opts: {
 
   // Lead / combiner agent. Scatter-gather combiners are deferred to the engine
   // barrier (registered above); only supervisor-style leads launch inline here.
-  if (def.hasLead && lead && !combinerDeferred) {
+  if (useLead && lead && !combinerDeferred) {
     try {
       const leadSession = await startTaskCliSessionEx(taskId, {
         framework,
-        appendPrompt: lead.prompt,
+        personaId: lead.personaId,
+        focusComment: lead.focusComment,
         skipPermissions,
         role: lead.role,
         pattern: def.pattern,
@@ -393,27 +308,8 @@ export async function launchOrchestration(opts: {
 const personaToParticipant = (p: ReviewPersona): OrchestrationParticipant => ({
   role: `reviewer:${p.id}`,
   label: p.label,
-  prompt: p.prompt,
+  personaId: p.id,
 });
-
-export const ORCHESTRATOR_PROMPT = `You are a code review orchestrator. Your job is to wait for all reviewer sessions to complete, then synthesize their findings into an actionable summary.
-
-Steps:
-1. Read the ticket with \`get_ticket\` to see all history comments from reviewers.
-2. Wait until all reviewer sessions for this ticket have ended (check the session list via the ticket's history — each reviewer posts a structured comment starting with APPROVED or CHANGES NEEDED).
-3. Once all reviews are in, synthesize:
-   - Count approvals vs change requests
-   - Merge overlapping findings, remove duplicates
-   - Produce a prioritized action item list
-4. Post your synthesis using \`add_comment\` with:
-   - **REVIEW SYNTHESIS** header
-   - Verdict: unanimous approval, or changes needed
-   - Consolidated action items (if any)
-5. Make the status decision:
-   - If ALL reviewers approved: use \`change_status\` to move to "Ready"
-   - If ANY reviewer flagged changes: use \`change_status\` to move to "In Progress" with a comment summarizing required changes
-
-You have full authority to change the ticket status based on reviewer consensus.`;
 
 /**
  * Launch multiple review sessions in parallel (headless scatter-gather / swarm).
@@ -455,7 +351,7 @@ export async function launchOrchestratedReview(opts: {
     framework: opts.framework,
     mode: 'scatter-gather',
     participants: opts.personas.map(personaToParticipant),
-    lead: { role: 'orchestrator', label: 'Orchestrator', prompt: ORCHESTRATOR_PROMPT },
+    lead: { role: 'orchestrator', label: 'Orchestrator', personaId: 'orchestrator' },
     currentUser: opts.currentUser,
     skipPermissions: opts.skipPermissions,
     preStatus: opts.preStatus,
