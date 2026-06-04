@@ -175,7 +175,7 @@ export const ActiveSessionsPopover = memo(function ActiveSessionsPopover({ tasks
   const handleStop = useCallback(async (e: React.MouseEvent, taskId: string) => {
     e.stopPropagation();
     try {
-      await stopTaskCliSession(taskId);
+      await stopTaskCliSession(taskId, { stopAll: true });
       triggerRefresh();
     } catch (err) {
       console.error('Failed to stop session:', err);

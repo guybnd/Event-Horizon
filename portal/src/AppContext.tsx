@@ -163,6 +163,10 @@ interface AppState {
   modalTask: Partial<Task> | null;
   setModalTask: (task: Partial<Task> | null) => void;
   isModalOpen: boolean;
+  /** True while a blocking overlay (e.g. the orchestration launcher) is open. Board hover popups are suppressed while set. */
+  isOverlayOpen: boolean;
+  pushOverlay: () => void;
+  popOverlay: () => void;
   closeModal: () => void;
   openTaskModal: (task?: Partial<Task>) => void;
   openTaskFullView: (task: Partial<Task>, options?: { scrollToComments?: boolean }) => void;
@@ -217,6 +221,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [view, setCurrentView] = useState<AppView>(() => getViewFromLocation());
   const [modalTask, setModalTask] = useState<Partial<Task> | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [overlayCount, setOverlayCount] = useState(0);
+  const pushOverlay = useCallback(() => setOverlayCount((n) => n + 1), []);
+  const popOverlay = useCallback(() => setOverlayCount((n) => Math.max(0, n - 1)), []);
   const [openModalScrollToComments, setOpenModalScrollToComments] = useState(false);
   const [openModalInFullView, setOpenModalInFullView] = useState(false);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -911,6 +918,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       clearTaskFilters,
       view, setView,
       modalTask, isModalOpen,
+      isOverlayOpen: overlayCount > 0,
+      pushOverlay,
+      popOverlay,
       openTaskModal,
       openTaskFullView,
       openModalScrollToComments,

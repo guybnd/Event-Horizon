@@ -259,8 +259,9 @@ export async function launchOrchestration(opts: {
   currentUser: string;
   skipPermissions?: boolean;
   preStatus?: string;
+  effortOverride?: string;
 }): Promise<MultiReviewResult> {
-  const { taskId, framework, mode, participants, lead, currentUser, skipPermissions = true, preStatus } = opts;
+  const { taskId, framework, mode, participants, lead, currentUser, skipPermissions = true, preStatus, effortOverride } = opts;
   const def = getOrchestrationMode(mode);
 
   if (preStatus) {
@@ -305,6 +306,7 @@ export async function launchOrchestration(opts: {
         personaId: p.personaId,
         focusComment: p.focusComment,
         skipPermissions,
+        effortOverride,
         role: p.role,
         pattern: def.pattern,
         patternPosition: stepPosition,
@@ -344,6 +346,7 @@ export async function launchOrchestration(opts: {
         personaId: lead.personaId,
         focusComment: lead.focusComment,
         skipPermissions,
+        effortOverride,
         role: lead.role,
         pattern: def.pattern,
         patternPosition: 'lead',

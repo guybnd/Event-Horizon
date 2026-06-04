@@ -21,11 +21,9 @@ import {
 import { useApp } from '../AppContext';
 import { createTask, deleteTask, fetchTask, sendTaskCliInput, updateTask } from '../api';
 import { runAgentAction, launchOrchestration, getOrchestrationMode, phaseCombiner, phaseLaunchStatus, statusToPhase, type LaunchPhase } from '../agentActions';
-import { LaunchAgentSplitButton } from './LaunchAgentSplitButton';
 import { OrchestrationLauncher, type OrchestrationLaunchPlan } from './OrchestrationLauncher';
 import { isAgentSession } from '../types';
 import type { Config, HistoryEntry, InlineSubtask, Task } from '../types';
-import { FRAMEWORK_ICONS } from '../constants';
 
 import { StatusBadge } from './StatusBadge';
 import { getStatusColorClass } from '../statusStyles';
@@ -134,6 +132,7 @@ export function TaskModal() {
     sessionIsActive,
     launchSession,
     stopSession,
+    stopGroup,
   } = useCliSession({ isModalOpen, taskId: modalTask?.id, liveOutputRef, onSessionChange: triggerRefresh });
 
   // Active multi-agent run group (2+ sessions sharing a groupId) for the Run View.
@@ -685,6 +684,7 @@ export function TaskModal() {
           action: { kind: 'persona', personaId: plan.personas[0].id, focusComment: plan.comment || undefined },
           currentUser,
           skipPermissions,
+          effortOverride: plan.effort,
           preStatus: phaseLaunchStatus(launcherPhase),
         });
         if (session) setCliSession(session);
@@ -713,6 +713,7 @@ export function TaskModal() {
         lead,
         currentUser,
         skipPermissions,
+        effortOverride: plan.effort,
         preStatus: phaseLaunchStatus(launcherPhase),
       });
       if (sessions.length > 0) setCliSession(sessions[0]);
@@ -1211,11 +1212,7 @@ export function TaskModal() {
             config={config}
             busy={cliSessionBusy}
             onStopSession={(sessionId) => void stopSession(sessionId)}
-            onStopAll={() => {
-              for (const s of activeRunGroup.sessions) {
-                if (['pending', 'running', 'waiting-input'].includes(s.status)) void stopSession(s.id);
-              }
-            }}
+            onStopAll={() => void stopGroup(activeRunGroup.groupId)}
           />
         ) : (
         <CliSessionPanel
@@ -1390,25 +1387,16 @@ export function TaskModal() {
                   );
                 }
                 return (
-                  <>
-                    <button
-                      type="button"
-                      disabled={!modalTask?.id}
-                      onClick={() => openLauncher(statusToPhase(status, { readyStatus: readyForMergeStatus }))}
-                      title="Orchestrate agents for this ticket's phase"
-                      className="flex items-center gap-1.5 rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-100 disabled:opacity-50 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
-                    >
-                      <Network className="h-3.5 w-3.5" />
-                      Orchestrate
-                    </button>
-                    <LaunchAgentSplitButton
-                      size="sm"
-                      busy={cliSessionBusy}
-                      disabled={!modalTask?.id}
-                      onLaunch={handleLaunchWithBranchCheck}
-                      icon={FRAMEWORK_ICONS[selectedCliFramework]}
-                    />
-                  </>
+                  <button
+                    type="button"
+                    disabled={!modalTask?.id}
+                    onClick={() => openLauncher(statusToPhase(status, { readyStatus: readyForMergeStatus }))}
+                    title="Configure and launch agents for this ticket's phase"
+                    className="eh-btn-accent flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors disabled:opacity-50"
+                  >
+                    <Network className="h-3.5 w-3.5" />
+                    Launch Agent
+                  </button>
                 );
               })()}
               <button onClick={handleCloseAttempt} className="rounded p-2 text-gray-400 transition-colors hover:bg-gray-200 hover:text-gray-700 dark:hover:bg-white/5 dark:hover:text-white">

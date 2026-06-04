@@ -4,6 +4,8 @@ import {
   ORCHESTRATION_MODES,
   getOrchestrationMode,
   resolvePhaseDefaultId,
+  EFFORT_LEVELS,
+  type EffortLevel,
   type LaunchPhase,
   type OrchestrationMode,
   type ReviewPersona,
@@ -11,6 +13,7 @@ import {
 import { fetchOrchestrationPersonas, fetchConfig, fetchWorkflows, type WorkflowPhaseConfig, type WorkflowTemplate } from '../api';
 import type { CliFramework, CliSessionSummary } from '../types';
 import { type SessionGroup } from '../orchestration';
+import { useApp } from '../AppContext';
 import { OrchestrationTopology, TopologyGlyph } from './OrchestrationTopology';
 
 export interface LauncherTicketInfo {
@@ -25,6 +28,8 @@ export interface OrchestrationLaunchPlan {
   /** Selected participants, in selection order (pipeline order for serialized). */
   personas: ReviewPersona[];
   comment: string;
+  /** Reasoning-effort override; undefined means inherit the ticket/global default. */
+  effort?: EffortLevel;
 }
 
 interface Props {
@@ -110,6 +115,7 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
   const [mode, setMode] = useState<OrchestrationMode>('scatter-gather');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [comment, setComment] = useState('');
+  const [effort, setEffort] = useState<EffortLevel | ''>('');
   const [personas, setPersonas] = useState<ReviewPersona[]>([]);
   const [personasLoading, setPersonasLoading] = useState(false);
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
@@ -120,12 +126,22 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
   const headingId = useId();
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  const { pushOverlay, popOverlay } = useApp();
+
+  // While open, register as a blocking overlay so board hover popups (card description
+  // previews, etc.) are suppressed and cannot render on top of the dialog.
+  useEffect(() => {
+    if (!open) return;
+    pushOverlay();
+    return () => popOverlay();
+  }, [open, pushOverlay, popOverlay]);
 
   useEffect(() => {
     if (!open) {
       setMode('scatter-gather');
       setSelectedIds([]);
       setComment('');
+      setEffort('');
       setSelectedTemplateId('');
       defaultAppliedRef.current = false;
     }
@@ -244,7 +260,7 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
 
   const handleLaunch = () => {
     if (!canLaunch) return;
-    onLaunch({ mode, personas: selectedPersonas, comment: comment.trim() });
+    onLaunch({ mode, personas: selectedPersonas, comment: comment.trim(), effort: effort || undefined });
   };
 
   if (!open || !ticket) return null;
@@ -441,6 +457,40 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
               className="w-full resize-none rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs outline-none placeholder:text-gray-400 focus:border-primary dark:border-white/10 dark:bg-black/20 dark:text-gray-200 dark:placeholder:text-gray-500"
               rows={2}
             />
+          </div>
+
+          {/* Reasoning effort */}
+          <div className="mt-3 mb-1">
+            <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wider text-gray-400">
+              Reasoning effort <span className="font-normal normal-case">(optional)</span>
+            </label>
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                type="button"
+                onClick={() => setEffort('')}
+                className={`rounded-md border px-2.5 py-1 text-[11px] font-semibold capitalize transition-colors ${
+                  effort === ''
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-gray-200 bg-white text-gray-600 hover:border-primary/40 hover:text-primary dark:border-white/10 dark:bg-white/5 dark:text-gray-300'
+                }`}
+              >
+                Default
+              </button>
+              {EFFORT_LEVELS.map((lvl) => (
+                <button
+                  key={lvl}
+                  type="button"
+                  onClick={() => setEffort(lvl)}
+                  className={`rounded-md border px-2.5 py-1 text-[11px] font-semibold capitalize transition-colors ${
+                    effort === lvl
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-gray-200 bg-white text-gray-600 hover:border-primary/40 hover:text-primary dark:border-white/10 dark:bg-white/5 dark:text-gray-300'
+                  }`}
+                >
+                  {lvl}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 

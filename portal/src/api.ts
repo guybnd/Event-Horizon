@@ -630,11 +630,16 @@ export async function setupPath(mode: 'auto' | 'instructional'): Promise<{ ok: b
   return res.json();
 }
 
-export async function stopTaskCliSession(taskId: string, sessionId?: string): Promise<CliSessionSummary> {
+export async function stopTaskCliSession(
+  taskId: string,
+  opts?: string | { sessionId?: string; groupId?: string; stopAll?: boolean },
+): Promise<CliSessionSummary> {
+  const body = typeof opts === 'string' ? { sessionId: opts } : (opts ?? {});
+  const hasBody = !!(body.sessionId || body.groupId || body.stopAll);
   const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/stop`, {
     method: 'POST',
-    headers: sessionId ? { 'Content-Type': 'application/json' } : undefined,
-    body: sessionId ? JSON.stringify({ sessionId }) : undefined,
+    headers: hasBody ? { 'Content-Type': 'application/json' } : undefined,
+    body: hasBody ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));

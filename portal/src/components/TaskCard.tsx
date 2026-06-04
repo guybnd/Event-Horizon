@@ -411,6 +411,7 @@ export const TaskCard = memo(function TaskCard({
           framework,
           action: { kind: 'persona', personaId: plan.personas[0].id, focusComment: plan.comment || undefined },
           currentUser,
+          effortOverride: plan.effort,
           preStatus: phaseLaunchStatus(launcherPhase),
         });
         triggerRefresh();
@@ -435,6 +436,7 @@ export const TaskCard = memo(function TaskCard({
         participants,
         lead,
         currentUser,
+        effortOverride: plan.effort,
         preStatus: phaseLaunchStatus(launcherPhase),
       });
       triggerRefresh();
@@ -582,7 +584,7 @@ export const TaskCard = memo(function TaskCard({
     transition: { type: 'spring' as const, bounce: 0.15, duration: duration + 0.3 } 
   } : {};
 
-  const { isModalOpen, modalTask } = useApp();
+  const { isModalOpen, modalTask, isOverlayOpen } = useApp();
   const isThisTaskOpen = isModalOpen && modalTask?.id === task.id;
   const [isAnimatingZ, setIsAnimatingZ] = useState(false);
   const [isHovering, setIsHovering] = useState(false);
@@ -600,6 +602,17 @@ export const TaskCard = memo(function TaskCard({
   const [popupPos, setPopupPos] = useState({ cardTop: 0, cardHeight: 0, top: 0, left: 'auto' as number | string, right: 'auto' as number | string });
   const hoverTimeout = useRef<number | null>(null);
   const popupRef = useRef<HTMLDivElement>(null);
+
+  // Immediately dismiss any pending/visible description popup when a blocking overlay or the
+  // agent dropdown opens, so it can never appear on top of (or be triggered through) them.
+  useEffect(() => {
+    if (!isOverlayOpen && !agentMenuOpen && !reviewSelectorOpen && !returnPromptOpen) return;
+    if (hoverTimeout.current !== null) {
+      window.clearTimeout(hoverTimeout.current);
+      hoverTimeout.current = null;
+    }
+    setIsHovering(false);
+  }, [isOverlayOpen, agentMenuOpen, reviewSelectorOpen, returnPromptOpen]);
 
   useEffect(() => {
     if (isHovering && popupRef.current) {
@@ -655,7 +668,9 @@ export const TaskCard = memo(function TaskCard({
     isMouseOverCard.current = true;
     if (!config?.hoverPopupsEnabled) return;
     if (isDragging) return;
+    if (isOverlayOpen) return;
     if (priorityMenuOpen || effortMenuOpen || assigneeMenuOpen || tagMenuOpen || isEditingTitle) return;
+    if (agentMenuOpen || reviewSelectorOpen || returnPromptOpen || reviewModalOpen || showStartPrompt) return;
     // If comment popover is open and was opened by a click (not hover), don't start description timer
     if (commentPopoverOpen && !commentOpenedByHover.current) return;
     // Don't trigger the description popup when the mouse enters via the comment badge
@@ -700,6 +715,8 @@ export const TaskCard = memo(function TaskCard({
 
   const startDescriptionTimer = () => {
     if (!config?.hoverPopupsEnabled || isDragging || !lastCardRectRef.current) return;
+    if (isOverlayOpen) return;
+    if (agentMenuOpen || reviewSelectorOpen || returnPromptOpen || reviewModalOpen || showStartPrompt) return;
     if (hoverTimeout.current !== null) window.clearTimeout(hoverTimeout.current);
     const delay = config?.hoverPopupDelay ?? 1500;
     hoverTimeout.current = window.setTimeout(() => {
@@ -1336,7 +1353,7 @@ export const TaskCard = memo(function TaskCard({
                     >
                       <p className="px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-gray-400">Review agents</p>
                       <button
-                        onClick={(e) => void launchSingleDefault(e)}
+                        onClick={(e) => { e.stopPropagation(); openLauncherWithTemplate(singleDefaultId); }}
                         disabled={reviewBusy}
                         className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-semibold text-gray-700 hover:bg-primary/5 hover:text-primary disabled:opacity-50 dark:text-gray-200 dark:hover:bg-primary/10"
                       >
@@ -1463,7 +1480,7 @@ export const TaskCard = memo(function TaskCard({
                     >
                       <p className="px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-gray-400">Launch agents</p>
                       <button
-                        onClick={(e) => void launchSingleDefault(e)}
+                        onClick={(e) => { e.stopPropagation(); openLauncherWithTemplate(singleDefaultId); }}
                         disabled={reviewBusy}
                         className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-semibold text-gray-700 hover:bg-primary/5 hover:text-primary disabled:opacity-50 dark:text-gray-200 dark:hover:bg-primary/10"
                       >
@@ -1749,7 +1766,7 @@ export const TaskCard = memo(function TaskCard({
 
       {createPortal(
         <AnimatePresence>
-          {isHovering && !isOverlay && !isThisTaskOpen && task.body?.trim() && (
+          {isHovering && !isOverlay && !isThisTaskOpen && !isOverlayOpen && !agentMenuOpen && !reviewSelectorOpen && !returnPromptOpen && !reviewModalOpen && !showStartPrompt && task.body?.trim() && (
             <motion.div
               ref={popupRef}
               key={`popup-${task.id}`}
@@ -1783,6 +1800,7 @@ export const TaskCard = memo(function TaskCard({
           task={task}
           position={contextMenuPos}
           onClose={() => setContextMenuPos(null)}
+          onLaunchAgent={() => openLauncherWithTemplate(singleDefaultId)}
         />
       )}
 

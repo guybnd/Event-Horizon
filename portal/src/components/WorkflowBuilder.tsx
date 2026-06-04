@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useMemo } from 'react';
 import {
   Workflow, Plus, X, Pencil, Trash2, Loader2, BookOpen, Check, Users, Network, Star, Lock, Copy, Eye,
+  Info, ChevronDown, GitBranch, Layers, GitMerge,
 } from 'lucide-react';
 import {
   fetchOrchestrationPersonas,
@@ -598,6 +599,7 @@ export function WorkflowBuilder() {
   const [creatingPersona, setCreatingPersona] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<WorkflowTemplate | null>(null);
   const [creatingTemplate, setCreatingTemplate] = useState(false);
+  const [templatesHelpOpen, setTemplatesHelpOpen] = useState(false);
   const [editingSkill, setEditingSkill] = useState<SkillDef | null>(null);
 
   const reloadPersonas = useCallback(() => fetchOrchestrationPersonas().then(setPersonas).catch(() => {}), []);
@@ -833,6 +835,54 @@ export function WorkflowBuilder() {
           {/* Templates tab — grouped by phase, with single/multi defaults per phase */}
           {tab === 'templates' && (
             <div className="space-y-6">
+              {/* How-to / orchestration mode reference */}
+              <div className="rounded-2xl border border-primary/20 bg-primary/[0.03] dark:border-primary/25 dark:bg-primary/5">
+                <button
+                  onClick={() => setTemplatesHelpOpen(o => !o)}
+                  className="flex w-full items-center gap-2 px-4 py-3 text-left"
+                  aria-expanded={templatesHelpOpen}
+                >
+                  <Info className="h-4 w-4 shrink-0 text-primary" />
+                  <span className="text-[13px] font-semibold text-gray-800 dark:text-gray-100">
+                    How templates &amp; orchestration modes work
+                  </span>
+                  <ChevronDown className={`ml-auto h-4 w-4 text-gray-400 transition-transform ${templatesHelpOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {templatesHelpOpen && (
+                  <div className="space-y-4 border-t border-primary/15 px-4 py-4 text-[12px] leading-relaxed text-gray-600 dark:border-primary/15 dark:text-gray-300">
+                    <div>
+                      <p className="mb-1.5 font-semibold text-gray-800 dark:text-gray-100">Building a template</p>
+                      <ol className="ml-4 list-decimal space-y-1">
+                        <li>Click <strong>New Template</strong>, give it a name, and pick the CLI target (Claude / Gemini / Copilot).</li>
+                        <li>The editor shows one block per <strong>phase</strong> — Grooming, Implementation, Review, Release. A template belongs to a phase simply by having one or more personas selected in that block; leave a block empty to skip it.</li>
+                        <li>For each phase you use, choose an <strong>orchestration mode</strong> and click the personas to include.</li>
+                        <li>Selecting <strong>one</strong> persona makes it a <strong>Single</strong> template; <strong>two or more</strong> makes it a <strong>Multi</strong> template. They're sorted into those columns automatically.</li>
+                        <li>Back on this page, click the <Star className="inline h-3 w-3 -mt-0.5 text-amber-400" /> star to set a template as the default Single or Multi launch for that phase.</li>
+                      </ol>
+                    </div>
+                    <div>
+                      <p className="mb-1.5 font-semibold text-gray-800 dark:text-gray-100">Orchestration modes</p>
+                      <ul className="space-y-2">
+                        <li className="flex gap-2">
+                          <GitBranch className="mt-0.5 h-3.5 w-3.5 shrink-0 text-gray-400" />
+                          <span><strong>Relay</strong> — personas run one after another in a pipeline (A → B → C), each handing its output to the next. Good for sequenced work like test-first then implement.</span>
+                        </li>
+                        <li className="flex gap-2">
+                          <Layers className="mt-0.5 h-3.5 w-3.5 shrink-0 text-gray-400" />
+                          <span><strong>Scatter-Gather</strong> — personas run in parallel, then a combiner synthesizes their findings and decides the next step. Good for multi-perspective review.</span>
+                        </li>
+                        <li className="flex gap-2">
+                          <GitMerge className="mt-0.5 h-3.5 w-3.5 shrink-0 text-gray-400" />
+                          <span><strong>Supervisor</strong> — a lead persona coordinates assistants, delegating and resuming once they report back.</span>
+                        </li>
+                      </ul>
+                      <p className="mt-2 text-[11px] text-gray-500 dark:text-gray-400">
+                        A <strong>Single</strong> agent always launches standalone — the orchestration mode only applies once two or more personas are involved. Relay and Supervisor sequencing is still being wired up; Scatter-Gather runs end-to-end today.
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
               <div className="flex items-center justify-between">
                 <p className="text-[12px] text-gray-500 dark:text-gray-400">
                   Templates are grouped by phase. Star a template to make it the default <strong>single</strong> or <strong>multi</strong> launch for that phase.

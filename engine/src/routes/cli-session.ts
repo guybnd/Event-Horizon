@@ -10,6 +10,7 @@ import {
   getCliSessionSummaryForTask,
   getAllSessionSummariesForTask,
   getActiveSessionsForTask,
+  getSessionGroup,
   checkPathConflicts,
   validatePatternSupport,
   registerPendingCombiner,
@@ -335,6 +336,41 @@ router.post('/:id/cli-session/stop', async (req, res) => {
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
   const targetSessionId = typeof req.body?.sessionId === 'string' ? req.body.sessionId.trim() : undefined;
+  const groupId = typeof req.body?.groupId === 'string' ? req.body.groupId.trim() : undefined;
+  const stopAll = req.body?.stopAll === true;
+
+  // ── Group / all stop: cancel every active session in scope in one request ──
+  if (groupId || stopAll) {
+    const candidates = groupId ? getSessionGroup(id, groupId) : getActiveSessionsForTask(id);
+    const active = candidates.filter(s => ['pending', 'running', 'waiting-input'].includes(s.status));
+    if (active.length === 0) {
+      return res.status(409).json({ error: 'No active sessions to stop', session: getCliSessionSummaryForTask(id) || null });
+    }
+    const now = new Date().toISOString();
+    const stoppedLabels: string[] = [];
+    for (const session of active) {
+      session.requestedStop = true;
+      session.status = 'cancelled';
+      session.endedAt = now;
+      stoppedLabels.push(session.label);
+      try {
+        getAdapter(session.framework).stop(session);
+      } catch (error: any) {
+        console.warn(`Failed to stop session ${session.id} for task ${id}:`, error?.message || error);
+      }
+    }
+    await updateTaskWithHistory(id, {
+      updatedBy: 'Agent',
+      entries: [buildActivityEntry(
+        active.length === 1
+          ? `${stoppedLabels[0]} session stopped.`
+          : `Stopped ${active.length} agent sessions (${stoppedLabels.join(', ')}).`,
+        'Agent',
+        now,
+      )],
+    });
+    return res.json({ session: getCliSessionSummaryForTask(id) });
+  }
 
   // Allow targeting a specific session, or fall back to most recent
   const sessionId = targetSessionId || cliSessionIdByTaskId.get(id);
