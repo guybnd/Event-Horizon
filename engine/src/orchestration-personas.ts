@@ -259,7 +259,11 @@ Steps to follow:
    - **Acceptance criteria** (testable bullet list)
    - **Edge cases** to handle
 
-IMPORTANT: Do NOT use \`update_ticket\`. If a decision is truly blocking and has no safe default, you MAY use \`change_status\` to move the ticket to "Require Input" with ONE clear question; otherwise leave routing to the Planner.`,
+IMPORTANT: Do NOT use \`update_ticket\`. Do NOT use \`change_status\` to move to "Todo" — leave routing to the Planner.
+
+**When to pause for user input:** If any question is truly blocking (no safe default, the answer fundamentally changes the implementation direction), use \`change_status\` to move the ticket to "Require Input" with your questions in the comment. Then STOP — do not exit, do not proceed. The user will answer and the session will resume. This is critical in relay pipelines: if you exit without pausing, the next agent runs immediately with your proposed defaults and the user never gets to weigh in.
+
+**When NOT to pause:** If all unknowns have reasonable defaults that a planner can safely adopt, just post your findings as a comment and exit normally. The next step will proceed with your proposed defaults.`,
   },
   {
     id: 'planner',
