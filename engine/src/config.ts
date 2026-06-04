@@ -48,7 +48,7 @@ export let configCache: any = {
     grooming: { single: 'builtin-grooming-single', multi: 'builtin-grooming-multi' },
     implementation: { single: 'builtin-implementation-single', multi: 'builtin-implementation-multi' },
     review: { single: 'builtin-review-single', multi: 'builtin-review-multi' },
-    release: { single: 'builtin-release-single', multi: 'builtin-release-multi' },
+    finalize: { single: 'builtin-finalize-single', multi: 'builtin-finalize-multi' },
   },
   integrations: {
     claudeCode: {

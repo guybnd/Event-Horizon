@@ -516,7 +516,7 @@ export async function deletePersona(id: string): Promise<void> {
 
 // ── Workflow templates ───────────────────────────────────────────────────────
 
-export type WorkflowPhase = 'grooming' | 'implementation' | 'review' | 'release';
+export type WorkflowPhase = 'grooming' | 'implementation' | 'review' | 'finalize';
 
 /** Per-phase orchestration config inside a workflow template. */
 export interface WorkflowPhaseConfig {

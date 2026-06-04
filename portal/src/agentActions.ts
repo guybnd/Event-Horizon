@@ -110,7 +110,7 @@ export interface MultiReviewResult {
 export type OrchestrationMode = 'scatter-gather' | 'parallel' | 'serialized' | 'handoff';
 
 /** Ticket lifecycle phase a launch belongs to. Drives which personas are offered. */
-export type LaunchPhase = 'grooming' | 'implementation' | 'review' | 'release';
+export type LaunchPhase = 'grooming' | 'implementation' | 'review' | 'finalize';
 
 /**
  * Map a board status to the launch phase whose personas apply. Uses the board's
@@ -154,7 +154,7 @@ export function resolvePhaseDefaultId(
   return phaseDefaults?.[phase]?.[variant] || `builtin-${phase}-${variant}`;
 }
 
-/** Combiner persona that synthesizes peer output for a phase (none for release relays). */
+/** Combiner persona that synthesizes peer output for a phase (none for finalize relays). */
 export function phaseCombiner(phase: LaunchPhase): { personaId: string; label: string } | undefined {
   switch (phase) {
     case 'grooming': return { personaId: 'planner', label: 'Planner' };

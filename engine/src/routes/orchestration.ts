@@ -10,7 +10,7 @@ import type { Phase } from '../models/workflow.js';
 
 const router = express.Router();
 
-const VALID_PHASES: Phase[] = ['grooming', 'implementation', 'review', 'release'];
+const VALID_PHASES: Phase[] = ['grooming', 'implementation', 'review', 'finalize'];
 
 // GET all user-selectable orchestration personas (metadata only — no prompt text).
 // Optional `?phase=` filters to personas configured for that ticket phase.

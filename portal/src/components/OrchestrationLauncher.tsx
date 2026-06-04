@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useId } from 'react';
-import { Check, FileText, Lock, Rocket, X } from 'lucide-react';
+import { Check, ChevronDown, FileText, Lock, Rocket, X } from 'lucide-react';
 import {
   ORCHESTRATION_MODES,
   getOrchestrationMode,
@@ -52,7 +52,7 @@ const PHASE_HEADINGS: Record<string, string> = {
   grooming: 'Groom with agents',
   implementation: 'Implement with agents',
   review: 'Orchestrate agents',
-  release: 'Release with agents',
+  finalize: 'Finalize with agents',
 };
 
 /** Map a stored workflow execution pattern onto a launcher orchestration mode. */
@@ -123,6 +123,8 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
   const defaultAppliedRef = useRef(false);
   const overlayRef = useRef<HTMLDivElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
+  const [templateMenuOpen, setTemplateMenuOpen] = useState(false);
+  const templateMenuRef = useRef<HTMLDivElement>(null);
   const headingId = useId();
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -238,6 +240,18 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
     return () => document.removeEventListener('keydown', handleKey);
   }, [open]);
 
+  // Close the custom template dropdown when clicking outside it.
+  useEffect(() => {
+    if (!templateMenuOpen) return;
+    const handleClick = (e: MouseEvent) => {
+      if (templateMenuRef.current && !templateMenuRef.current.contains(e.target as Node)) {
+        setTemplateMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [templateMenuOpen]);
+
   const togglePersona = useCallback((id: string) => {
     setSelectedTemplateId('');
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -268,7 +282,7 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center" role="dialog" aria-modal="true" aria-labelledby={headingId}>
       <div ref={overlayRef} className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
-      <div ref={dialogRef} tabIndex={-1} className="relative z-10 flex max-h-[90vh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl outline-none dark:border-white/10 dark:bg-[#1a1b23]">
+      <div ref={dialogRef} tabIndex={-1} className="relative z-10 flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl outline-none dark:border-white/10 dark:bg-[#1a1b23]">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-gray-100 px-5 py-3 dark:border-white/5">
           <h3 id={headingId} className="text-sm font-bold text-gray-900 dark:text-gray-100">{PHASE_HEADINGS[phase] ?? 'Orchestrate agents'}</h3>
@@ -297,39 +311,102 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
             )}
           </div>
 
-          {/* Template selector */}
-          {templatesForPhase.length > 0 && (
-            <div className="mb-4">
-              <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wider text-gray-400">
-                Template
-              </label>
-              <select
-                value={selectedTemplateId}
+          {/* Template + reasoning effort — share a row to save vertical space */}
+          <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start">
+            {templatesForPhase.length > 0 && (
+              <div className="sm:w-1/2">
+                <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                  Template
+                </label>
+                <div ref={templateMenuRef} className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setTemplateMenuOpen((o) => !o)}
+                    aria-haspopup="listbox"
+                    aria-expanded={templateMenuOpen}
+                    className="flex w-full items-center justify-between gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-gray-800 outline-none transition-colors hover:border-primary/40 focus:border-primary dark:border-white/10 dark:bg-black/20 dark:text-gray-100"
+                  >
+                    <span className="truncate">
+                      {templatesForPhase.find((w) => w.id === selectedTemplateId)?.name ?? 'Custom (manual selection)'}
+                    </span>
+                    <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-gray-400 transition-transform ${templateMenuOpen ? 'rotate-180' : ''}`} />
+                  </button>
+                  {templateMenuOpen && (
+                    <div
+                      role="listbox"
+                      className="absolute left-0 right-0 top-full z-20 mt-1 max-h-64 overflow-y-auto rounded-lg border border-gray-200 bg-white p-1 shadow-xl dark:border-white/10 dark:bg-[#1e1f2a]"
+                    >
+                      {[
+                        { id: '', name: 'Custom (manual selection)', group: '' as string },
+                        ...templatesForPhase.filter((w) => w.builtIn).map((w) => ({ id: w.id, name: w.name, group: 'Built-in' })),
+                        ...templatesForPhase.filter((w) => !w.builtIn).map((w) => ({ id: w.id, name: w.name, group: 'Custom' })),
+                      ].map((item, idx, arr) => {
+                        const active = selectedTemplateId === item.id;
+                        const showHeader = item.group && arr[idx - 1]?.group !== item.group;
+                        return (
+                          <div key={item.id || '__custom'}>
+                            {showHeader && (
+                              <div className="px-2.5 pb-1 pt-2 text-[9px] font-bold uppercase tracking-wider text-gray-400">
+                                {item.group}
+                              </div>
+                            )}
+                            <button
+                              type="button"
+                              role="option"
+                              aria-selected={active}
+                              onClick={() => {
+                                setSelectedTemplateId(item.id);
+                                applyTemplate(templatesForPhase.find((w) => w.id === item.id));
+                                setTemplateMenuOpen(false);
+                              }}
+                              className={`flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-left text-xs font-semibold transition-colors ${
+                                active
+                                  ? 'bg-primary/10 text-primary'
+                                  : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-white/5'
+                              }`}
+                            >
+                              <span className="truncate">{item.name}</span>
+                              {active && <Check className="h-3.5 w-3.5 shrink-0" />}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div className={templatesForPhase.length > 0 ? 'sm:flex-1' : 'w-full'}>
+              <div className="mb-1.5 flex items-center justify-between">
+                <label className="text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                  Reasoning effort
+                </label>
+                <span className="text-[10px] font-bold capitalize text-primary">
+                  {effort === '' ? 'Default' : effort}
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={EFFORT_LEVELS.length}
+                step={1}
+                value={effort === '' ? 0 : EFFORT_LEVELS.indexOf(effort) + 1}
                 onChange={(e) => {
-                  const id = e.target.value;
-                  setSelectedTemplateId(id);
-                  applyTemplate(templatesForPhase.find((w) => w.id === id));
+                  const v = Number(e.target.value);
+                  setEffort(v === 0 ? '' : EFFORT_LEVELS[v - 1]);
                 }}
-                className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-xs font-semibold text-gray-800 outline-none focus:border-primary dark:border-white/10 dark:bg-black/20 dark:text-gray-100"
-              >
-                <option value="">Custom (manual selection)</option>
-                {templatesForPhase.some((w) => w.builtIn) && (
-                  <optgroup label="Built-in">
-                    {templatesForPhase.filter((w) => w.builtIn).map((w) => (
-                      <option key={w.id} value={w.id}>{w.name}</option>
-                    ))}
-                  </optgroup>
-                )}
-                {templatesForPhase.some((w) => !w.builtIn) && (
-                  <optgroup label="Custom">
-                    {templatesForPhase.filter((w) => !w.builtIn).map((w) => (
-                      <option key={w.id} value={w.id}>{w.name}</option>
-                    ))}
-                  </optgroup>
-                )}
-              </select>
+                aria-label="Reasoning effort"
+                className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-gray-200 accent-primary dark:bg-white/10"
+              />
+              <div className="mt-1 flex justify-between text-[8px] font-semibold uppercase tracking-wide text-gray-400">
+                <span>Default</span>
+                {EFFORT_LEVELS.map((lvl) => (
+                  <span key={lvl} className={effort === lvl ? 'text-primary' : undefined}>{lvl}</span>
+                ))}
+              </div>
             </div>
-          )}
+          </div>
 
           {/* Pattern selector — hidden for a single standalone agent (no orchestration needed) */}
           {isSingle ? (
@@ -457,40 +534,6 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
               className="w-full resize-none rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs outline-none placeholder:text-gray-400 focus:border-primary dark:border-white/10 dark:bg-black/20 dark:text-gray-200 dark:placeholder:text-gray-500"
               rows={2}
             />
-          </div>
-
-          {/* Reasoning effort */}
-          <div className="mt-3 mb-1">
-            <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wider text-gray-400">
-              Reasoning effort <span className="font-normal normal-case">(optional)</span>
-            </label>
-            <div className="flex flex-wrap gap-1.5">
-              <button
-                type="button"
-                onClick={() => setEffort('')}
-                className={`rounded-md border px-2.5 py-1 text-[11px] font-semibold capitalize transition-colors ${
-                  effort === ''
-                    ? 'border-primary bg-primary/10 text-primary'
-                    : 'border-gray-200 bg-white text-gray-600 hover:border-primary/40 hover:text-primary dark:border-white/10 dark:bg-white/5 dark:text-gray-300'
-                }`}
-              >
-                Default
-              </button>
-              {EFFORT_LEVELS.map((lvl) => (
-                <button
-                  key={lvl}
-                  type="button"
-                  onClick={() => setEffort(lvl)}
-                  className={`rounded-md border px-2.5 py-1 text-[11px] font-semibold capitalize transition-colors ${
-                    effort === lvl
-                      ? 'border-primary bg-primary/10 text-primary'
-                      : 'border-gray-200 bg-white text-gray-600 hover:border-primary/40 hover:text-primary dark:border-white/10 dark:bg-white/5 dark:text-gray-300'
-                  }`}
-                >
-                  {lvl}
-                </button>
-              ))}
-            </div>
           </div>
         </div>
 

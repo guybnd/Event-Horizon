@@ -229,8 +229,10 @@ export const TaskCard = memo(function TaskCard({
   const [showStartPrompt, setShowStartPrompt] = useState(false);
   const [branchCopied, setBranchCopied] = useState(false);
   const [agentMenuOpen, setAgentMenuOpen] = useState(false);
+  const [finishMenuOpen, setFinishMenuOpen] = useState(false);
   const [phaseTemplates, setPhaseTemplates] = useState<WorkflowTemplate[] | null>(null);
   const agentMenuRef = useRef<HTMLDivElement | null>(null);
+  const finishMenuRef = useRef<HTMLDivElement | null>(null);
   const reviewSelectorRef = useRef<HTMLDivElement | null>(null);
   const comments = task.history?.filter(e => e.type === 'comment') ?? [];
   const topLevelComments = [...comments.filter(c => !c.replyTo)].reverse();
@@ -368,6 +370,35 @@ export const TaskCard = memo(function TaskCard({
   const openLauncherWithTemplate = (templateId: string) => {
     setAgentMenuOpen(false);
     setLauncherPhase(cardPhase);
+    setLauncherTemplateId(templateId);
+    setReviewModalOpen(true);
+  };
+
+  // Finalize templates (docs check / commit / ticket tidy / merge PR) for the Finish menu.
+  const finalizeTemplates = useMemo(
+    () => (phaseTemplates ?? []).filter((w) => w.phases?.finalize),
+    [phaseTemplates],
+  );
+  const finalizeSingleId = resolvePhaseDefaultId(config?.phaseDefaults, 'finalize', 'single');
+  const finalizeMultiId = resolvePhaseDefaultId(config?.phaseDefaults, 'finalize', 'multi');
+  const finalizeSingleName = finalizeTemplates.find((w) => w.id === finalizeSingleId)?.name;
+  const finalizeMultiName = finalizeTemplates.find((w) => w.id === finalizeMultiId)?.name;
+  const otherFinalizeTemplates = finalizeTemplates.filter(
+    (w) => w.id !== finalizeSingleId && w.id !== finalizeMultiId,
+  );
+
+  const toggleFinishMenu = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setFinishMenuOpen((open) => !open);
+    if (phaseTemplates === null) {
+      fetchWorkflows().then(setPhaseTemplates).catch(() => setPhaseTemplates([]));
+    }
+  };
+
+  // Open the launcher in the finalize phase (independent of the card's status phase).
+  const openFinalizeLauncher = (templateId: string) => {
+    setFinishMenuOpen(false);
+    setLauncherPhase('finalize');
     setLauncherTemplateId(templateId);
     setReviewModalOpen(true);
   };
@@ -606,13 +637,13 @@ export const TaskCard = memo(function TaskCard({
   // Immediately dismiss any pending/visible description popup when a blocking overlay or the
   // agent dropdown opens, so it can never appear on top of (or be triggered through) them.
   useEffect(() => {
-    if (!isOverlayOpen && !agentMenuOpen && !reviewSelectorOpen && !returnPromptOpen) return;
+    if (!isOverlayOpen && !agentMenuOpen && !finishMenuOpen && !reviewSelectorOpen && !returnPromptOpen) return;
     if (hoverTimeout.current !== null) {
       window.clearTimeout(hoverTimeout.current);
       hoverTimeout.current = null;
     }
     setIsHovering(false);
-  }, [isOverlayOpen, agentMenuOpen, reviewSelectorOpen, returnPromptOpen]);
+  }, [isOverlayOpen, agentMenuOpen, finishMenuOpen, reviewSelectorOpen, returnPromptOpen]);
 
   useEffect(() => {
     if (isHovering && popupRef.current) {
@@ -670,7 +701,7 @@ export const TaskCard = memo(function TaskCard({
     if (isDragging) return;
     if (isOverlayOpen) return;
     if (priorityMenuOpen || effortMenuOpen || assigneeMenuOpen || tagMenuOpen || isEditingTitle) return;
-    if (agentMenuOpen || reviewSelectorOpen || returnPromptOpen || reviewModalOpen || showStartPrompt) return;
+    if (agentMenuOpen || finishMenuOpen || reviewSelectorOpen || returnPromptOpen || reviewModalOpen || showStartPrompt) return;
     // If comment popover is open and was opened by a click (not hover), don't start description timer
     if (commentPopoverOpen && !commentOpenedByHover.current) return;
     // Don't trigger the description popup when the mouse enters via the comment badge
@@ -716,7 +747,7 @@ export const TaskCard = memo(function TaskCard({
   const startDescriptionTimer = () => {
     if (!config?.hoverPopupsEnabled || isDragging || !lastCardRectRef.current) return;
     if (isOverlayOpen) return;
-    if (agentMenuOpen || reviewSelectorOpen || returnPromptOpen || reviewModalOpen || showStartPrompt) return;
+    if (agentMenuOpen || finishMenuOpen || reviewSelectorOpen || returnPromptOpen || reviewModalOpen || showStartPrompt) return;
     if (hoverTimeout.current !== null) window.clearTimeout(hoverTimeout.current);
     const delay = config?.hoverPopupDelay ?? 1500;
     hoverTimeout.current = window.setTimeout(() => {
@@ -796,6 +827,17 @@ export const TaskCard = memo(function TaskCard({
     document.addEventListener('mousedown', handlePointerDown);
     return () => document.removeEventListener('mousedown', handlePointerDown);
   }, [agentMenuOpen]);
+
+  useEffect(() => {
+    if (!finishMenuOpen) return undefined;
+    const handlePointerDown = (e: MouseEvent) => {
+      if (finishMenuRef.current && !finishMenuRef.current.contains(e.target as Node)) {
+        setFinishMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [finishMenuOpen]);
 
   useEffect(() => {
     const el = tagPreviewRowRef.current;
@@ -1323,7 +1365,7 @@ export const TaskCard = memo(function TaskCard({
             </div>
             {/* Ready column — Review (split) | Return | Finish */}
             {isReadyForMerge && !isOverlay && (
-              <div className={`relative flex items-center justify-end gap-1.5 transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] ${reviewSelectorOpen || returnPromptOpen || agentMenuOpen ? 'mt-2 max-h-40 overflow-visible opacity-100' : 'mt-0 max-h-0 overflow-hidden opacity-0 group-hover:mt-2 group-hover:max-h-20 group-hover:overflow-visible group-hover:opacity-100'}`} ref={reviewSelectorRef}>
+              <div className={`relative flex items-center justify-end gap-1.5 transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] ${reviewSelectorOpen || returnPromptOpen || agentMenuOpen || finishMenuOpen ? 'mt-2 max-h-40 overflow-visible opacity-100' : 'mt-0 max-h-0 overflow-hidden opacity-0 group-hover:mt-2 group-hover:max-h-20 group-hover:overflow-visible group-hover:opacity-100'}`} ref={reviewSelectorRef}>
                 {/* Review — split button: single default one-click + menu */}
                 <div className="relative flex items-stretch overflow-visible rounded-md" ref={agentMenuRef}>
                   <button
@@ -1396,15 +1438,70 @@ export const TaskCard = memo(function TaskCard({
                   <Undo2 className="w-3 h-3" />
                   {returnBusy ? '…' : 'Return'}
                 </button>
-                {/* Finish */}
-                <button
-                  onClick={(e) => void sendFinishCommand(e)}
-                  disabled={finishBusy}
-                  className="flex items-center gap-1 rounded-md bg-primary px-3 py-1 text-[10px] font-semibold text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
-                >
-                  <SendHorizontal className="w-3 h-3" />
-                  {finishBusy ? '…' : 'Finish'}
-                </button>
+                {/* Finish — split button: one-click finish + menu of finalize templates */}
+                <div className="relative flex items-stretch overflow-visible rounded-md" ref={finishMenuRef}>
+                  <button
+                    onClick={(e) => void sendFinishCommand(e)}
+                    disabled={finishBusy}
+                    title="Finish this ticket (commit + close)"
+                    className="flex items-center gap-1 rounded-l-md bg-primary px-3 py-1 text-[10px] font-semibold text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+                  >
+                    <SendHorizontal className="w-3 h-3" />
+                    {finishBusy ? '…' : 'Finish'}
+                  </button>
+                  <button
+                    onClick={toggleFinishMenu}
+                    disabled={finishBusy}
+                    title="Finalize with agents"
+                    aria-haspopup="menu"
+                    aria-expanded={finishMenuOpen}
+                    className="flex items-center rounded-r-md border-l border-white/25 bg-primary px-1 py-1 text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+                  >
+                    <ChevronDown className={`h-3 w-3 transition-transform ${finishMenuOpen ? 'rotate-180' : ''}`} />
+                  </button>
+                  {finishMenuOpen && (
+                    <div
+                      className="absolute bottom-full right-0 z-[90] mb-1.5 w-60 rounded-xl border border-gray-200 bg-white p-1.5 shadow-xl dark:border-white/10 dark:bg-[#1e1f2a]"
+                      onClick={(e) => e.stopPropagation()}
+                      role="menu"
+                    >
+                      <p className="px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-gray-400">Finalize with agents</p>
+                      {finalizeSingleId && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); openFinalizeLauncher(finalizeSingleId); }}
+                          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-semibold text-gray-700 hover:bg-primary/5 hover:text-primary dark:text-gray-200 dark:hover:bg-primary/10"
+                        >
+                          <Bot className="h-3.5 w-3.5 shrink-0" />
+                          <span className="min-w-0 truncate">Single{finalizeSingleName ? ` · ${finalizeSingleName}` : ''}</span>
+                        </button>
+                      )}
+                      {finalizeMultiId && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); openFinalizeLauncher(finalizeMultiId); }}
+                          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-semibold text-gray-700 hover:bg-primary/5 hover:text-primary dark:text-gray-200 dark:hover:bg-primary/10"
+                        >
+                          <Layers className="h-3.5 w-3.5 shrink-0" />
+                          <span className="min-w-0 truncate">Multi{finalizeMultiName ? ` · ${finalizeMultiName}` : ''}</span>
+                        </button>
+                      )}
+                      {otherFinalizeTemplates.length > 0 && (
+                        <>
+                          <div className="my-1 border-t border-gray-100 dark:border-white/5" />
+                          {otherFinalizeTemplates.map((t) => (
+                            <button
+                              key={t.id}
+                              onClick={(e) => { e.stopPropagation(); openFinalizeLauncher(t.id); }}
+                              className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-medium text-gray-600 hover:bg-primary/5 hover:text-primary dark:text-gray-300 dark:hover:bg-primary/10"
+                            >
+                              <FileText className="h-3.5 w-3.5 shrink-0" />
+                              <span className="min-w-0 truncate">{t.name}</span>
+                            </button>
+                          ))}
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
                 {/* Return reason prompt */}
                 {returnPromptOpen && (
                   <div
@@ -1766,7 +1863,7 @@ export const TaskCard = memo(function TaskCard({
 
       {createPortal(
         <AnimatePresence>
-          {isHovering && !isOverlay && !isThisTaskOpen && !isOverlayOpen && !agentMenuOpen && !reviewSelectorOpen && !returnPromptOpen && !reviewModalOpen && !showStartPrompt && task.body?.trim() && (
+          {isHovering && !isOverlay && !isThisTaskOpen && !isOverlayOpen && !agentMenuOpen && !finishMenuOpen && !reviewSelectorOpen && !returnPromptOpen && !reviewModalOpen && !showStartPrompt && task.body?.trim() && (
             <motion.div
               ref={popupRef}
               key={`popup-${task.id}`}

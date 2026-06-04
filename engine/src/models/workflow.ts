@@ -3,7 +3,7 @@ import { existsSync } from 'fs';
 import path from 'path';
 import { getActiveFluxDir } from '../workspace.js';
 
-export type Phase = 'grooming' | 'implementation' | 'review' | 'release';
+export type Phase = 'grooming' | 'implementation' | 'review' | 'finalize';
 export type ExecutionPattern = 'relay' | 'scatter' | 'supervisor';
 export type CliTarget = 'claude' | 'gemini' | 'copilot';
 
@@ -74,13 +74,13 @@ export const BUILTIN_WORKFLOWS: WorkflowTemplate[] = [
     createdAt: BUILTIN_TS, updatedAt: BUILTIN_TS, builtIn: true,
   },
   {
-    id: 'builtin-release-single', name: 'Release · Single', cliTarget: 'claude',
-    phases: { release: { pattern: 'relay', steps: ['release-manager'] } },
+    id: 'builtin-finalize-single', name: 'Finalize · Single', cliTarget: 'claude',
+    phases: { finalize: { pattern: 'relay', steps: ['finalizer'] } },
     createdAt: BUILTIN_TS, updatedAt: BUILTIN_TS, builtIn: true,
   },
   {
-    id: 'builtin-release-multi', name: 'Release · Multi', cliTarget: 'claude',
-    phases: { release: { pattern: 'relay', steps: ['release-manager', 'documenter'] } },
+    id: 'builtin-finalize-multi', name: 'Finalize · Multi', cliTarget: 'claude',
+    phases: { finalize: { pattern: 'relay', steps: ['docs-auditor', 'committer', 'ticket-curator', 'pr-merger'] } },
     createdAt: BUILTIN_TS, updatedAt: BUILTIN_TS, builtIn: true,
   },
 ];

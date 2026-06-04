@@ -33,7 +33,7 @@ const PHASES: { key: WorkflowPhase; label: string }[] = [
   { key: 'grooming', label: 'Grooming' },
   { key: 'implementation', label: 'Implementation' },
   { key: 'review', label: 'Review' },
-  { key: 'release', label: 'Release' },
+  { key: 'finalize', label: 'Finalize' },
 ];
 
 type Pattern = 'relay' | 'scatter' | 'supervisor';
@@ -61,7 +61,7 @@ const PHASE_COLORS: Record<WorkflowPhase, string> = {
   grooming: 'border-l-purple-400',
   implementation: 'border-l-blue-400',
   review: 'border-l-amber-400',
-  release: 'border-l-emerald-400',
+  finalize: 'border-l-emerald-400',
 };
 
 // --- Skill helpers (skills persist as docs under the skills/ directory) ---
@@ -628,7 +628,7 @@ export function WorkflowBuilder() {
 
   const personasByPhase = useMemo(() => {
     const map: Record<WorkflowPhase, OrchestrationPersonaMeta[]> = {
-      grooming: [], implementation: [], review: [], release: [],
+      grooming: [], implementation: [], review: [], finalize: [],
     };
     for (const p of personas) {
       if (map[p.phase as WorkflowPhase]) map[p.phase as WorkflowPhase].push(p);
