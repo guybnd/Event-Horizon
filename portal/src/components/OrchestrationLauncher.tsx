@@ -83,6 +83,8 @@ export function OrchestrationLauncher({ open, ticket, framework, onClose, onLaun
   const overlayRef = useRef<HTMLDivElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const headingId = useId();
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!open) {
@@ -94,8 +96,13 @@ export function OrchestrationLauncher({ open, ticket, framework, onClose, onLaun
 
   useEffect(() => {
     if (!open) return;
+    dialogRef.current?.focus();
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') onCloseRef.current();
       if (e.key === 'Tab' && dialogRef.current) {
         const focusable = dialogRef.current.querySelectorAll<HTMLElement>(
           'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
@@ -113,9 +120,8 @@ export function OrchestrationLauncher({ open, ticket, framework, onClose, onLaun
       }
     };
     document.addEventListener('keydown', handleKey);
-    dialogRef.current?.focus();
     return () => document.removeEventListener('keydown', handleKey);
-  }, [open, onClose]);
+  }, [open]);
 
   const togglePersona = useCallback((id: string) => {
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
