@@ -182,6 +182,12 @@ export function getSessionGroup(taskId: string, groupId: string): CliSessionReco
 // nothing. We register the combiner as pending at launch and spawn it only once
 // every worker in the group reaches a terminal state.
 
+// ── Relay pipeline (sequential step barrier) ────────────────────────────────
+// In a relay run, steps execute one-at-a-time: step N must finish before step
+// N+1 launches. The portal registers the full step chain at launch, then only
+// starts step 0. When each step reaches a terminal state, the barrier spawns
+// the next step with the previous step's output prepended to its prompt.
+
 const TERMINAL_STATUSES: ReadonlySet<string> = new Set(['completed', 'failed', 'cancelled']);
 
 export interface PendingCombinerSpec {
@@ -220,37 +226,111 @@ export function unregisterPendingCombiner(groupId: string): boolean {
 }
 
 /**
- * Called by adapters when a session reaches a terminal state. If the session
- * belongs to a group with a pending combiner and every worker ("step") session
- * in that group is now terminal, dequeue and launch the combiner.
+ * Called by adapters when a session reaches a terminal state. Dispatches to:
+ * - Scatter-gather combiner barrier (all workers done → launch combiner)
+ * - Relay pipeline barrier (current step done → launch next step)
  */
 export async function notifyGroupSessionTerminal(taskId: string, groupId: string | undefined): Promise<void> {
   if (!groupId) return;
-  const spec = pendingCombinersByGroup.get(groupId);
-  if (!spec) return;
 
-  const workers = getSessionGroup(taskId, groupId).filter(s => s.patternPosition === 'step');
-  if (workers.length === 0) return;
-  // Wait until every expected worker has registered AND all are terminal.
-  if (workers.length < spec.expectedWorkers) return;
-  const allTerminal = workers.every(s => TERMINAL_STATUSES.has(s.status));
-  if (!allTerminal) return;
+  // ── Scatter-gather combiner barrier ──────────────────────────────────────
+  const combinerSpec = pendingCombinersByGroup.get(groupId);
+  if (combinerSpec) {
+    const workers = getSessionGroup(taskId, groupId).filter(s => s.patternPosition === 'step');
+    if (workers.length === 0) return;
+    if (workers.length < combinerSpec.expectedWorkers) return;
+    const allTerminal = workers.every(s => TERMINAL_STATUSES.has(s.status));
+    if (!allTerminal) return;
 
-  // Claim the combiner so concurrent terminal events don't double-launch.
-  pendingCombinersByGroup.delete(groupId);
-  const anyWorkerSucceeded = workers.some(s => s.status === 'completed');
+    pendingCombinersByGroup.delete(groupId);
+    const anyWorkerSucceeded = workers.some(s => s.status === 'completed');
 
-  if (!combinerLauncher) {
-    console.warn(`No combiner launcher registered; pending combiner for group ${groupId} dropped.`);
+    if (!combinerLauncher) {
+      console.warn(`No combiner launcher registered; pending combiner for group ${groupId} dropped.`);
+      return;
+    }
+    try {
+      await combinerLauncher(combinerSpec, anyWorkerSucceeded);
+    } catch (error) {
+      console.error(`Failed to launch deferred combiner for group ${groupId}:`, error);
+    }
     return;
   }
-  try {
-    await combinerLauncher(spec, anyWorkerSucceeded);
-  } catch (error) {
-    console.error(`Failed to launch deferred combiner for group ${groupId}:`, error);
+
+  // ── Relay pipeline step barrier ──────────────────────────────────────────
+  const relaySpec = pendingRelaysByGroup.get(groupId);
+  if (relaySpec) {
+    const sessions = getSessionGroup(taskId, groupId);
+    const currentSession = sessions.find(s => s.groupSeq === relaySpec.currentStep);
+    if (!currentSession || !TERMINAL_STATUSES.has(currentSession.status)) return;
+
+    const nextIndex = relaySpec.currentStep + 1;
+    if (nextIndex >= relaySpec.steps.length) {
+      // Pipeline complete — clean up.
+      pendingRelaysByGroup.delete(groupId);
+      return;
+    }
+
+    // Advance the chain pointer before launching to prevent double-spawn.
+    relaySpec.currentStep = nextIndex;
+    const previousOutput = currentSession.outputData || currentSession.cumulativeOutput || '';
+    const previousSucceeded = currentSession.status === 'completed';
+
+    if (!relayStepLauncher) {
+      console.warn(`No relay step launcher registered; pending relay for group ${groupId} dropped.`);
+      pendingRelaysByGroup.delete(groupId);
+      return;
+    }
+    try {
+      await relayStepLauncher(relaySpec, previousOutput, previousSucceeded);
+    } catch (error) {
+      console.error(`Failed to launch relay step ${nextIndex} for group ${groupId}:`, error);
+      pendingRelaysByGroup.delete(groupId);
+    }
   }
 }
 
+
+// ── Relay pipeline sequencing ────────────────────────────────────────────────
+
+export interface RelayStep {
+  personaId: string;
+  role: string;
+  focusComment?: string;
+}
+
+export interface PendingRelaySpec {
+  taskId: string;
+  groupId: string;
+  framework: CliFramework;
+  skipPermissions: boolean;
+  effortOverride: string;
+  groupType: ExecutionPattern;
+  /** Ordered chain of steps to execute. */
+  steps: RelayStep[];
+  /** Index of the step currently running. */
+  currentStep: number;
+}
+
+const pendingRelaysByGroup = new Map<string, PendingRelaySpec>();
+
+export type RelayStepLauncher = (spec: PendingRelaySpec, previousOutput: string, previousSucceeded: boolean) => Promise<void>;
+let relayStepLauncher: RelayStepLauncher | null = null;
+export function setRelayStepLauncher(fn: RelayStepLauncher): void {
+  relayStepLauncher = fn;
+}
+
+export function registerPendingRelay(spec: PendingRelaySpec): void {
+  pendingRelaysByGroup.set(spec.groupId, spec);
+}
+
+export function getPendingRelay(groupId: string): PendingRelaySpec | undefined {
+  return pendingRelaysByGroup.get(groupId);
+}
+
+export function unregisterPendingRelay(groupId: string): boolean {
+  return pendingRelaysByGroup.delete(groupId);
+}
 
 // File-lock enforcement: check if any active session holds a conflicting path lock
 export function checkPathConflicts(taskId: string, requestedPaths: string[]): { conflict: boolean; holder?: string; paths?: string[] } {

@@ -16,8 +16,12 @@ import {
   registerPendingCombiner,
   unregisterPendingCombiner,
   setCombinerLauncher,
+  registerPendingRelay,
+  unregisterPendingRelay,
+  setRelayStepLauncher,
   notifyGroupSessionTerminal,
   type PendingCombinerSpec,
+  type PendingRelaySpec,
 } from '../session-store.js';
 import { getAdapter } from '../agents/index.js';
 import { updateTaskWithHistory } from '../task-store.js';
@@ -64,6 +68,7 @@ async function spawnSession(task: any, opts: SpawnOptions): Promise<CliSessionRe
     outputBuffer: '',
     liveOutputBuffer: '',
     pendingAssistantText: '',
+    cumulativeOutput: '',
     skipPermissions: opts.skipPermissions,
     requestedStop: false,
     writeQueue: Promise.resolve(),
@@ -116,6 +121,42 @@ setCombinerLauncher(async (spec: PendingCombinerSpec, anyWorkerSucceeded: boolea
     groupId: spec.groupId,
     groupType: spec.groupType,
     groupVariant: spec.groupVariant,
+  });
+});
+
+// Wire the relay step launcher: when a relay step finishes, session-store
+// calls this to spawn the next step in the pipeline with the previous output.
+setRelayStepLauncher(async (spec: PendingRelaySpec, previousOutput: string, previousSucceeded: boolean) => {
+  const task = tasksCache[spec.taskId];
+  if (!task) {
+    console.warn(`Relay step for ${spec.groupId}: task ${spec.taskId} not found.`);
+    return;
+  }
+  const step = spec.steps[spec.currentStep];
+  if (!step) return;
+
+  const resolved = resolvePersonaPrompt(step.personaId, step.focusComment);
+  let prompt = resolved || '';
+
+  // Prepend previous step's output so this step has context of what came before.
+  const handoffHeader = previousSucceeded
+    ? `## Output from previous pipeline step\n\nThe previous agent in the pipeline completed successfully. Here is their output — continue from where they left off:\n\n---\n${previousOutput}\n---\n\n`
+    : `## Output from previous pipeline step\n\nNOTE: The previous agent FAILED or was cancelled. Their partial output is below — you may need to start fresh or recover from their state:\n\n---\n${previousOutput}\n---\n\n`;
+  if (previousOutput) {
+    prompt = handoffHeader + prompt;
+  }
+
+  await spawnSession(task, {
+    framework: spec.framework,
+    appendPrompt: prompt,
+    effortOverride: spec.effortOverride,
+    skipPermissions: spec.skipPermissions,
+    role: step.role,
+    pattern: 'relay',
+    patternPosition: 'step',
+    groupId: spec.groupId,
+    groupSeq: spec.currentStep,
+    groupType: spec.groupType,
   });
 });
 
@@ -289,6 +330,56 @@ router.post('/:id/cli-session/unregister-combiner', (req, res) => {
   const groupId = typeof req.body?.groupId === 'string' ? req.body.groupId.trim() : '';
   if (!groupId) return res.status(400).json({ error: 'groupId is required' });
   const removed = unregisterPendingCombiner(groupId);
+  res.json({ removed, groupId });
+});
+
+// Register a relay pipeline: stores the full step chain and launches only step 0.
+// Subsequent steps spawn automatically via the relay barrier as each finishes.
+router.post('/:id/cli-session/register-relay', (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+  if (!task) return res.status(404).json({ error: 'Task not found' });
+
+  const frameworkRaw = String(req.body?.framework || 'claude').trim().toLowerCase();
+  if (frameworkRaw !== 'claude' && frameworkRaw !== 'copilot' && frameworkRaw !== 'gemini') {
+    return res.status(400).json({ error: 'framework must be claude, copilot or gemini' });
+  }
+  const groupId = typeof req.body?.groupId === 'string' ? req.body.groupId.trim() : '';
+  if (!groupId) return res.status(400).json({ error: 'groupId is required' });
+
+  const steps = Array.isArray(req.body?.steps) ? req.body.steps : [];
+  if (steps.length < 2) return res.status(400).json({ error: 'relay requires at least 2 steps' });
+  for (let i = 0; i < steps.length; i++) {
+    if (!steps[i]?.personaId || !steps[i]?.role) {
+      return res.status(400).json({ error: `step[${i}] must have personaId and role` });
+    }
+  }
+
+  const effortOverride = typeof req.body?.effortOverride === 'string' ? req.body.effortOverride.trim() : '';
+  const skipPermissions = req.body?.skipPermissions !== false;
+
+  const spec: PendingRelaySpec = {
+    taskId: id,
+    groupId,
+    framework: frameworkRaw as CliFramework,
+    skipPermissions,
+    effortOverride,
+    groupType: 'relay',
+    steps,
+    currentStep: 0,
+  };
+  registerPendingRelay(spec);
+  res.status(201).json({ registered: true, groupId, totalSteps: steps.length });
+});
+
+// Cancel a pending relay pipeline (e.g. when step 0 fails to launch).
+router.post('/:id/cli-session/unregister-relay', (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+  if (!task) return res.status(404).json({ error: 'Task not found' });
+  const groupId = typeof req.body?.groupId === 'string' ? req.body.groupId.trim() : '';
+  if (!groupId) return res.status(400).json({ error: 'groupId is required' });
+  const removed = unregisterPendingRelay(groupId);
   res.json({ removed, groupId });
 });
 

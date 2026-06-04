@@ -428,6 +428,56 @@ export async function unregisterDeferredCombiner(taskId: string, groupId: string
   }
 }
 
+export interface RelayStepDef {
+  personaId: string;
+  role: string;
+  focusComment?: string;
+}
+
+export interface RegisterRelayOptions {
+  framework: CliFramework;
+  groupId: string;
+  steps: RelayStepDef[];
+  skipPermissions?: boolean;
+  effortOverride?: string;
+}
+
+/**
+ * Register a relay pipeline with the engine. The engine stores the full step
+ * chain and automatically spawns subsequent steps as each one finishes.
+ * The portal only needs to launch step 0 after registration.
+ */
+export async function registerRelayChain(taskId: string, opts: RegisterRelayOptions): Promise<void> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/register-relay`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      framework: opts.framework,
+      groupId: opts.groupId,
+      steps: opts.steps,
+      skipPermissions: opts.skipPermissions ?? true,
+      effortOverride: opts.effortOverride ?? '',
+    }),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to register relay chain');
+  }
+}
+
+/** Cancel a pending relay pipeline (e.g. when step 0 fails to launch). */
+export async function unregisterRelayChain(taskId: string, groupId: string): Promise<void> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/unregister-relay`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ groupId }),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to unregister relay chain');
+  }
+}
+
 /** Orchestration persona metadata (no prompt text — the engine owns prompts). */
 export interface OrchestrationPersonaMeta {
   id: string;

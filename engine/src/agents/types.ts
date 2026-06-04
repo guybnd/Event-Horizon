@@ -82,6 +82,8 @@ export interface CliSessionRecord extends CliSessionSummary {
   outputBuffer: string;
   liveOutputBuffer: string;
   pendingAssistantText: string;
+  /** Cumulative assistant text — never flushed, used for relay handoff. */
+  cumulativeOutput: string;
   flushTimer?: NodeJS.Timeout;
   requestedStop: boolean;
   writeQueue: Promise<void>;

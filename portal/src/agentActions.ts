@@ -1,4 +1,4 @@
-import { startTaskCliSessionEx, updateTask, registerDeferredCombiner, unregisterDeferredCombiner, type OrchestrationPersonaMeta } from './api';
+import { startTaskCliSessionEx, updateTask, registerDeferredCombiner, unregisterDeferredCombiner, registerRelayChain, unregisterRelayChain, type OrchestrationPersonaMeta } from './api';
 import type { CliFramework, CliSessionSummary, ExecutionPattern, GroupVariant, PatternPosition } from './types';
 import type { TopologyShape } from './orchestration';
 
@@ -221,7 +221,7 @@ export const ORCHESTRATION_MODES: OrchestrationModeDef[] = [
     pattern: 'relay',
     topology: 'pipeline',
     hasLead: false,
-    launchable: false,
+    launchable: true,
     minAgents: 2,
   },
   {
@@ -281,6 +281,51 @@ export async function launchOrchestration(opts: {
 
   const groupId = crypto.randomUUID();
   const stepPosition: PatternPosition = def.pattern === 'supervisor' ? 'assistant' : 'step';
+
+  // ── Relay pipeline: register step chain, launch only step 0 ──────────────
+  if (def.pattern === 'relay') {
+    const steps = participants.map(p => ({
+      personaId: p.personaId,
+      role: p.role,
+      focusComment: p.focusComment,
+    }));
+
+    try {
+      await registerRelayChain(taskId, {
+        framework,
+        groupId,
+        steps,
+        skipPermissions,
+        effortOverride,
+      });
+    } catch (err: any) {
+      throw new Error(`Failed to register relay chain: ${err?.message || 'unknown'}`);
+    }
+
+    // Launch only the first step; the engine barrier handles the rest.
+    const first = participants[0];
+    try {
+      const session = await startTaskCliSessionEx(taskId, {
+        framework,
+        personaId: first.personaId,
+        focusComment: first.focusComment,
+        skipPermissions,
+        effortOverride,
+        role: first.role,
+        pattern: 'relay',
+        patternPosition: 'step',
+        groupId,
+        groupSeq: 0,
+        groupType: 'relay',
+      });
+      return { sessions: [session], errors: [] };
+    } catch (err: any) {
+      await unregisterRelayChain(taskId, groupId).catch(() => {});
+      throw new Error(`${first.label}: ${err?.message || 'failed to launch step 0'}`);
+    }
+  }
+
+  // ── Scatter-gather / parallel / supervisor ───────────────────────────────
 
   // A combiner/lead only earns its keep when there are multiple workers to
   // synthesize. With a single participant, skip it entirely and just run that

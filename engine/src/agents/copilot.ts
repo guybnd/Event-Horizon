@@ -69,6 +69,7 @@ export function appendSessionOutput(session: CliSessionRecord, chunk: Buffer | s
   session.liveOutputBuffer += `${prefix}${text}`;
   if (isAssistantText) {
     session.outputBuffer += text;
+    session.cumulativeOutput += text;
   }
   session.lastOutputAt = new Date().toISOString();
 }
