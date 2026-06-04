@@ -448,6 +448,21 @@ export function stopAllCliSessions(reason: string) {
   }
 }
 
+// ── Auto-restart on idle ─────────────────────────────────────────────────────
+
+type AutoRestartCallback = () => void;
+let autoRestartCallback: AutoRestartCallback | null = null;
+
+export function setAutoRestartCallback(fn: AutoRestartCallback): void {
+  autoRestartCallback = fn;
+}
+
+export function checkAutoRestart(): void {
+  if (autoRestartCallback && getActiveSessionCount() === 0) {
+    autoRestartCallback();
+  }
+}
+
 export function stopAllSessionsForTask(taskId: string, reason: string) {
   const activeSessions = getActiveSessionsForTask(taskId);
   for (const session of activeSessions) {

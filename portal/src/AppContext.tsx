@@ -204,6 +204,7 @@ interface AppState {
   notifications: Notification[];
   notificationUnreadCount: number;
   refreshNotifications: () => void;
+  restartPending: boolean;
 }
 
 const AppContext = createContext<AppState | undefined>(undefined);
@@ -252,6 +253,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [parseErrorsLoading] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
+  const [restartPending, setRestartPending] = useState(false);
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
   const readCommentsLoadedRef = useRef(false);
   const configRef = useRef<Config | null>(null);
@@ -817,6 +819,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setNotificationUnreadCount(unreadCount);
       });
     });
+    es.addEventListener('restart_pending', () => {
+      setRestartPending(true);
+    });
+    es.addEventListener('auto_restarting', () => {
+      setRestartPending(false);
+    });
+    es.onerror = () => {
+      // When SSE reconnects after an engine restart, clear the pending state
+      if (es.readyState === EventSource.CONNECTING) {
+        setRestartPending(false);
+      }
+    };
     refreshNotifications();
     return () => es.close();
   }, [isConnected, refreshNotifications]);
@@ -943,6 +957,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       theme, setAppTheme, toggleTheme,
       parseErrors, parseErrorsLoading,
       notifications, notificationUnreadCount, refreshNotifications,
+      restartPending,
     }}>
       {children}
     </AppContext.Provider>

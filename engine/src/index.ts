@@ -26,7 +26,8 @@ import { requireWorkspace } from './middleware.js';
 import { workspaceRoot, loadAppSettings, getCliWorkspace, resolvePortalDist, autoRegisterWorkspace } from './workspace.js';
 import { migrateFromLegacy, getBootStatus } from './global-settings.js';
 import { activateWorkspace } from './task-store.js';
-import { stopAllCliSessions } from './session-store.js';
+import { stopAllCliSessions, setAutoRestartCallback } from './session-store.js';
+import { broadcastEvent } from './events.js';
 
 import tasksRouter, { bulkRenameHandler } from './routes/tasks.js';
 import cliSessionRouter from './routes/cli-session.js';
@@ -96,6 +97,20 @@ app.post('/api/shutdown', (_req, res) => {
   stopAllCliSessions('shutdown');
   res.json({ ok: true });
   setTimeout(() => process.exit(0), 150);
+});
+
+app.post('/api/restart', (_req, res) => {
+  res.json({ ok: true });
+  void gracefulShutdown('restart');
+});
+
+app.post('/api/events/restart-pending', (_req, res) => {
+  broadcastEvent('restart_pending', {});
+  setAutoRestartCallback(() => {
+    broadcastEvent('auto_restarting', {});
+    setTimeout(() => void gracefulShutdown('auto-restart'), 500);
+  });
+  res.json({ ok: true });
 });
 
 app.get('/api/update-check', (_req, res) => {

@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import { configCache } from '../config.js';
 import { buildActivityEntry, buildCommentEntry, buildAgentMessageEntry, buildAgentSessionEntry, appendSessionProgress, closeAgentSession, type AgentSessionEntry } from '../history.js';
 import { updateTaskWithHistory, updateAgentSession, tasksCache, estimateCostUSD } from '../task-store.js';
-import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal } from '../session-store.js';
+import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal, checkAutoRestart } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
@@ -735,6 +735,8 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     if (session.groupId) {
       notifyGroupSessionTerminal(session.taskId, session.groupId).catch(() => {});
     }
+
+    checkAutoRestart();
   });
 }
 

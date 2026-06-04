@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "bin": "dist/index.js",
   "scripts": {
-    "dev": "tsx watch src/index.ts -- --workspace ..",
+    "dev": "tsx src/dev-watcher.ts -- --workspace ..",
     "dev:no-watch": "tsx src/index.ts --workspace ..",
     "build": "node scripts/build.js",
     "init": "tsx src/init.ts",
