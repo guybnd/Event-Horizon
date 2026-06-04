@@ -6,6 +6,7 @@ import {
   deleteWorkflow,
   validateWorkflow,
   getCliPatternSupport,
+  isBuiltInWorkflow,
   type WorkflowTemplate,
 } from '../models/workflow.js';
 
@@ -59,6 +60,9 @@ router.post('/', async (req, res) => {
 
 router.put('/:id', async (req, res) => {
   try {
+    if (isBuiltInWorkflow(req.params.id)) {
+      return res.status(400).json({ error: 'Built-in templates cannot be edited — duplicate it to customize.' });
+    }
     const workflows = await loadWorkflows();
     const existing = workflows.find(w => w.id === req.params.id);
     if (!existing) return res.status(404).json({ error: 'Workflow not found' });
@@ -83,6 +87,9 @@ router.put('/:id', async (req, res) => {
 
 router.delete('/:id', async (req, res) => {
   try {
+    if (isBuiltInWorkflow(req.params.id)) {
+      return res.status(400).json({ error: 'Built-in templates cannot be deleted.' });
+    }
     const deleted = await deleteWorkflow(req.params.id);
     if (!deleted) return res.status(404).json({ error: 'Workflow not found' });
     res.json({ ok: true });
