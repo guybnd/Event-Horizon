@@ -653,6 +653,38 @@ export function WorkflowBuilder() {
     }
   }, [reloadPersonas]);
 
+  const handleDuplicatePersona = useCallback(async (p: OrchestrationPersonaMeta) => {
+    try {
+      const full = await fetchEditablePersona(p.id);
+      const copy = await createPersona({
+        label: `${p.label} (Copy)`,
+        description: p.description,
+        phase: p.phase,
+        compatiblePatterns: p.compatiblePatterns ?? [],
+        requiredCapabilities: p.requiredCapabilities ?? [],
+        prompt: full.prompt,
+      });
+      await reloadPersonas();
+      setEditingPersona(copy);
+    } catch (err) {
+      console.error('Failed to duplicate persona:', err);
+    }
+  }, [reloadPersonas]);
+
+  const handleDuplicateTemplate = useCallback(async (t: WorkflowTemplate) => {
+    try {
+      const copy = await createWorkflow({
+        name: `Copy of ${t.name}`,
+        cliTarget: t.cliTarget,
+        phases: t.phases,
+      });
+      await reloadTemplates();
+      setEditingTemplate(copy);
+    } catch (err) {
+      console.error('Failed to duplicate template:', err);
+    }
+  }, [reloadTemplates]);
+
   const handleDeleteTemplate = useCallback(async (t: WorkflowTemplate) => {
     if (!window.confirm(`Delete template "${t.name}"?`)) return;
     try {
@@ -727,6 +759,18 @@ export function WorkflowBuilder() {
       setEditingSkill(null);
     } catch (err) {
       console.error('Failed to delete skill:', err);
+    }
+  }, []);
+
+  const handleDuplicateSkill = useCallback(async (skill: SkillDef) => {
+    try {
+      const slug = `${skill.path.replace(/^skills\//, '').replace(/\.md$/, '')}-copy`;
+      const doc = await createDoc({ path: `skills/${slug}.md`, title: `${skill.name} (Copy)`, body: skill.body });
+      const copy = docToSkill(doc);
+      setSkills(prev => [...prev, copy]);
+      setEditingSkill(copy);
+    } catch (err) {
+      console.error('Failed to duplicate skill:', err);
     }
   }, []);
 
@@ -811,13 +855,19 @@ export function WorkflowBuilder() {
                               <button onClick={() => setEditingPersona(p)} title="View & duplicate" className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-colors">
                                 <Eye className="w-3.5 h-3.5" />
                               </button>
+                              <button onClick={() => handleDuplicatePersona(p)} title="Duplicate" className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-colors">
+                                <Copy className="w-3.5 h-3.5" />
+                              </button>
                             </div>
                           ) : (
                             <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                              <button onClick={() => setEditingPersona(p)} className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-colors">
+                              <button onClick={() => setEditingPersona(p)} title="Edit" className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-colors">
                                 <Pencil className="w-3.5 h-3.5" />
                               </button>
-                              <button onClick={() => handleDeletePersona(p)} className="p-1 rounded hover:bg-red-50 dark:hover:bg-red-500/10 text-gray-400 hover:text-red-500 transition-colors">
+                              <button onClick={() => handleDuplicatePersona(p)} title="Duplicate" className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-colors">
+                                <Copy className="w-3.5 h-3.5" />
+                              </button>
+                              <button onClick={() => handleDeletePersona(p)} title="Delete" className="p-1 rounded hover:bg-red-50 dark:hover:bg-red-500/10 text-gray-400 hover:text-red-500 transition-colors">
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
                             </div>
@@ -949,11 +999,16 @@ export function WorkflowBuilder() {
                           </div>
                         </div>
                         <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-                          <button onClick={() => setEditingTemplate(t)} title={t.builtIn ? 'View / duplicate' : 'Edit'} className="rounded p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-primary dark:hover:bg-white/10">
-                            <Pencil className="h-3.5 w-3.5" />
+                          {!t.builtIn && (
+                            <button onClick={() => setEditingTemplate(t)} title="Edit" className="rounded p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-primary dark:hover:bg-white/10">
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                          <button onClick={() => handleDuplicateTemplate(t)} title="Duplicate" className="rounded p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-primary dark:hover:bg-white/10">
+                            <Copy className="h-3.5 w-3.5" />
                           </button>
                           {!t.builtIn && (
-                            <button onClick={() => handleDeleteTemplate(t)} className="rounded p-1.5 text-gray-400 transition-colors hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/10">
+                            <button onClick={() => handleDeleteTemplate(t)} title="Delete" className="rounded p-1.5 text-gray-400 transition-colors hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/10">
                               <Trash2 className="h-3.5 w-3.5" />
                             </button>
                           )}
@@ -1012,7 +1067,14 @@ export function WorkflowBuilder() {
                   <div className="flex items-center gap-2">
                     <BookOpen className="w-3.5 h-3.5 text-primary/60 shrink-0" />
                     <span className="text-sm font-semibold text-gray-800 dark:text-gray-100 flex-1 truncate">{skill.name}</span>
-                    <Pencil className="w-3 h-3 opacity-0 group-hover:opacity-100 text-gray-400 transition-opacity" />
+                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
+                      <button onClick={() => setEditingSkill(skill)} title="Edit" className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-colors">
+                        <Pencil className="w-3 h-3" />
+                      </button>
+                      <button onClick={() => handleDuplicateSkill(skill)} title="Duplicate" className="p-1 rounded hover:bg-gray-100 dark:hover:bg-white/10 text-gray-400 hover:text-primary transition-colors">
+                        <Copy className="w-3 h-3" />
+                      </button>
+                    </div>
                   </div>
                   <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 ml-5.5 line-clamp-2">{skill.body.split('\n')[0]}</p>
                 </div>
