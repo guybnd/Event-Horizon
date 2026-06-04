@@ -47,13 +47,15 @@ export function groupSessions(sessions: CliSessionSummary[] | undefined | null):
     const head = ordered[0];
     // A relay pipeline may only have 1 session spawned so far but groupTotal
     // tells us how many are expected — treat it as multi from the start.
+    // Supervisor groups are always multi (the lead can delegate at any time).
     const expectedTotal = head.groupTotal ?? ordered.length;
+    const isSupervisor = head.groupType === 'supervisor';
     groups.push({
       groupId: head.groupId || key,
       groupType: head.groupType,
       groupVariant: head.groupVariant,
       sessions: ordered,
-      isMulti: expectedTotal > 1,
+      isMulti: isSupervisor || expectedTotal > 1,
     });
   }
 
@@ -146,6 +148,8 @@ export function isGroupLive(group: SessionGroup, agg: GroupAggregate): boolean {
   // Relay: still live while the engine will spawn more steps.
   const expectedTotal = group.sessions[0]?.groupTotal;
   if (expectedTotal && group.sessions.length < expectedTotal) return true;
+  // Supervisor: live as long as the lead exists and the group hasn't fully terminated.
+  if (group.groupType === 'supervisor' && !agg.done) return true;
   return false;
 }
 
