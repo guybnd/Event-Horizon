@@ -60,11 +60,15 @@ From [`cli-session.ts`](../../../engine/src/routes/cli-session.ts).
 
 ## Orchestration (`/api/orchestration`) — workspace-scoped
 
-From [`orchestration.ts`](../../../engine/src/routes/orchestration.ts). Persona prompts live engine-side in [`orchestration-personas.ts`](../../../engine/src/orchestration-personas.ts) and are resolved server-side at launch from a `personaId` — they are never shipped in the portal bundle.
+From [`orchestration.ts`](../../../engine/src/routes/orchestration.ts). Persona prompts live engine-side in [`orchestration-personas.ts`](../../../engine/src/orchestration-personas.ts) and are resolved server-side at launch from a `personaId` — they are never shipped in the portal bundle. Built-in personas are defined in code (read-only); user-authored personas persist as JSON files under `<fluxDir>/personas/*.json` and are merged with the built-ins at read time.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/orchestration/personas` | List selectable reviewer personas as metadata only: `{ personas: Array<{ id, label, description, compatiblePatterns, requiredCapabilities }> }`. Prompt text is omitted. `compatiblePatterns` gates a persona to specific execution patterns (empty = any); `requiredCapabilities` lists CLI capabilities a persona needs. The internal `orchestrator` persona is excluded from this list. |
+| GET | `/api/orchestration/personas` | List selectable personas as metadata only: `{ personas: Array<{ id, label, description, phase, compatiblePatterns, requiredCapabilities, builtIn }> }`. Prompt text is omitted. `phase` (`grooming` \| `implementation` \| `review` \| `release`) drives phase-aware launcher filtering; pass `?phase=<phase>` to return only personas for that phase. `compatiblePatterns` gates a persona to specific execution patterns (empty = any); `requiredCapabilities` lists CLI capabilities a persona needs; `builtIn` flags code-defined personas. The internal `orchestrator` persona is excluded from this list. |
+| GET | `/api/orchestration/personas/:id` | Full custom persona **including prompt** for editing: `{ persona }`. Returns 404 for built-in personas — their prompts stay server-side. |
+| POST | `/api/orchestration/personas` | Create a custom persona. Body: `{ id?, label, description?, phase, compatiblePatterns?, requiredCapabilities?, prompt }`. `id` is auto-validated as a slug; an id that collides with a built-in returns 400. Returns `{ persona }` (metadata). |
+| PUT | `/api/orchestration/personas/:id` | Update a custom persona (same body as POST). Refuses built-in ids with 400. Returns `{ persona }` (metadata). |
+| DELETE | `/api/orchestration/personas/:id` | Delete a custom persona. Refuses built-in ids with 400; returns 404 if not found. |
 
 ## Docs (`/api/docs`) — workspace-scoped
 
@@ -84,7 +88,7 @@ From [`routes/config.ts`](../../../engine/src/routes/config.ts).
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/config` | Current board config (columns, hidden statuses, tags, priorities, users, project keys, sync settings, …). |
+| GET | `/api/config` | Current board config (columns, hidden statuses, tags, priorities, users, project keys, sync settings, …). Includes `defaultAgent` and `defaultWorkflowId` (the workflow template the orchestration launcher pre-selects per phase; empty = none). |
 | PUT | `/api/config` | Replace the board config. |
 
 ## Workspace + workspaces

@@ -35,11 +35,24 @@ This page is the quick orientation guide for where behavior lives today — file
 	`resolvePersonaPrompt(...)`.
 
 -   `engine/src/orchestration-personas.ts` is the **land-here-first** module for
-	reviewer/orchestrator persona prompts. It owns the persona catalog
-	(`ORCHESTRATION_PERSONAS`, `ORCHESTRATOR_PERSONA`) and the resolver
-	(`resolvePersonaPrompt(personaId, focusComment?)`). Prompts live here so they
-	never ship in the portal bundle; the portal fetches metadata only via
-	`GET /api/orchestration/personas` (`engine/src/routes/orchestration.ts`).
+	reviewer/orchestrator persona prompts. It owns the built-in persona catalog
+	(`ORCHESTRATION_PERSONAS`, `ORCHESTRATOR_PERSONA`, each tagged with a `phase`
+	and `builtIn: true`) and the resolver
+	(`resolvePersonaPrompt(personaId, focusComment?)`). It also owns the
+	**custom persona store**: user-authored personas persist as JSON under
+	`<fluxDir>/personas/*.json` (`loadCustomPersonas` at startup,
+	`saveCustomPersona` / `deleteCustomPersona` / `getEditablePersona`,
+	`validatePersona`) and are merged with the built-ins by `getPersonaById` and
+	`listSelectablePersonaMeta(phase?)`. Built-ins are read-only and their prompts
+	never ship in the portal bundle; the portal fetches metadata via
+	`GET /api/orchestration/personas` and edits custom personas through the CRUD
+	routes in `engine/src/routes/orchestration.ts`.
+
+-   `engine/src/models/workflow.ts` owns reusable **workflow templates**
+	(per-phase pattern + persona membership) persisted under
+	`<fluxDir>/workflows/*.json`, exposed through `engine/src/routes/workflows.ts`
+	(`/api/workflows`). The board default is stored on `config.defaultWorkflowId`
+	and pre-populates the launcher per phase.
     
 -   `portal/src/App.tsx` wires the top-level screens.
     
@@ -66,13 +79,23 @@ This page is the quick orientation guide for where behavior lives today — file
 -   `portal/src/components/OrchestrationLauncher.tsx` is the **generic
 	pattern-first launch modal**: pick an orchestration pattern (Scatter-gather /
 	Parallel / Serialized / Hand-off), select participant roles from a catalog
-	fetched from `GET /api/orchestration/personas` on open (review personas today,
+	fetched from `GET /api/orchestration/personas?phase=<phase>` on open
+	(phase-aware — grooming / implementation / review / release — and
 	pattern-gated via `compatiblePatterns`), see a live `OrchestrationTopology`
 	preview, and
-	launch with partial-failure reporting. Code review is one configuration of it.
+	launch with partial-failure reporting. On open it resolves the board default
+	workflow (`config.defaultWorkflowId` → that phase's config) to pre-populate the
+	pattern + selected personas. Code review is one configuration of it.
 	Claude Code is the only framework wired for now (no per-row framework picking);
 	`serialized` / `handoff` are shown but gated (`launchable: false`) until the
 	engine can sequence them. Opened from both `TaskModal` and `TaskCard`.
+
+-   `portal/src/components/WorkflowBuilder.tsx` is the **Workflows screen** (backed
+	by `/api/orchestration/personas`, `/api/workflows`, and `/api/config`). Three
+	tabs: **Personas** (per-phase, built-in read-only + custom create/edit/delete),
+	**Templates** (per-phase pattern + persona selection, plus a star toggle to set
+	`config.defaultWorkflowId`), and **Skills** (skills persist as docs under the
+	`skills/` directory).
 
 -   `portal/src/components/CodeReviewButton.tsx` owns the entry button (compact +
 	full variants) that opens the `OrchestrationLauncher`. Used by both `TaskModal`
