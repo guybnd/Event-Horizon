@@ -1,4 +1,4 @@
-import { startTaskCliSession, updateTask } from './api';
+import { startTaskCliSessionEx, updateTask } from './api';
 import type { CliFramework, CliSessionSummary } from './types';
 
 export interface ReviewPersona {
@@ -21,9 +21,12 @@ Steps to follow:
 1. Read the full ticket description and all history comments to understand what was intended.
 2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present) to see the actual changes.
 3. Evaluate the implementation against the ticket intent. Consider: correctness, edge cases, naming, readability, test coverage, and anything that could confuse a future maintainer.
-4. Make a decision:
-   - **If changes needed**: Use the \`add_comment\` MCP tool to post a detailed review comment listing specific, actionable improvements. Leave the ticket at In Progress so the implementer sees it.
-   - **If approved**: Use the \`add_comment\` MCP tool to post a short approval comment explaining what looks good. Then use \`change_status\` to move the ticket back to "Ready".
+4. Post your review using the \`add_comment\` MCP tool with a structured comment:
+   - Start with **APPROVED** or **CHANGES NEEDED**
+   - List specific findings with file paths and line references
+   - If changes needed, provide actionable items
+
+IMPORTANT: Do NOT use \`change_status\`. You are one of potentially multiple reviewers — an orchestrator will synthesize all reviews and decide the next step.
 
 Keep your tone warm but precise. Lead with the most important feedback.`,
   },
@@ -39,9 +42,12 @@ Steps to follow:
 1. Read the full ticket description and all history comments.
 2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present).
 3. Evaluate ruthlessly. Look for: bad naming, unnecessary complexity, missing error handling, confusing logic, wrong abstractions, obvious bugs, or anything that would make you question whether the author thought about what they were doing.
-4. Make a decision:
-   - **If changes needed**: Use the \`add_comment\` MCP tool to post a blunt, specific review comment listing every problem clearly. Leave the ticket at In Progress.
-   - **If it's actually fine**: Use the \`add_comment\` MCP tool to post a short comment saying it passes. Then use \`change_status\` to move the ticket back to "Ready".
+4. Post your review using the \`add_comment\` MCP tool with a structured comment:
+   - Start with **APPROVED** or **CHANGES NEEDED**
+   - List every problem clearly with file paths
+   - If it's fine, say so briefly
+
+IMPORTANT: Do NOT use \`change_status\`. You are one of potentially multiple reviewers — an orchestrator will synthesize all reviews and decide the next step.
 
 Do not pad your response. Be direct.`,
   },
@@ -57,9 +63,12 @@ Steps to follow:
 1. Read the full ticket description and history to understand scope and constraints.
 2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present).
 3. Evaluate architectural quality: Are responsibilities well-separated? Is the abstraction at the right level? Does this introduce hidden coupling? Will this scale? Are there simpler designs that achieve the same goal?
-4. Make a decision:
-   - **If structural issues found**: Use the \`add_comment\` MCP tool to post a detailed architectural review comment. Be specific about what to restructure and why, including proposed alternatives where helpful. Leave the ticket at In Progress.
-   - **If the architecture is sound**: Use the \`add_comment\` MCP tool to post a brief approval noting what holds up well from a design perspective. Then use \`change_status\` to move the ticket back to "Ready".`,
+4. Post your review using the \`add_comment\` MCP tool with a structured comment:
+   - Start with **APPROVED** or **CHANGES NEEDED**
+   - If structural issues found, be specific about what to restructure and why, including proposed alternatives
+   - If sound, note briefly what holds up well from a design perspective
+
+IMPORTANT: Do NOT use \`change_status\`. You are one of potentially multiple reviewers — an orchestrator will synthesize all reviews and decide the next step.`,
   },
   {
     id: 'perf-expert',
@@ -73,9 +82,12 @@ Steps to follow:
 1. Read the full ticket description and history to understand what was built.
 2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present).
 3. Evaluate performance characteristics: O(n) where O(1) is possible? Unnecessary useEffect dependencies causing cascading re-renders? Large imports where tree-shaking won't help? Synchronous work on the main thread? Missing memoization on expensive computations?
-4. Make a decision:
-   - **If performance issues found**: Use the \`add_comment\` MCP tool to post a specific, actionable review comment. Quantify impact where possible and suggest concrete fixes. Leave the ticket at In Progress.
-   - **If performance is acceptable**: Use the \`add_comment\` MCP tool to post a brief approval noting it passes performance scrutiny. Then use \`change_status\` to move the ticket back to "Ready".`,
+4. Post your review using the \`add_comment\` MCP tool with a structured comment:
+   - Start with **APPROVED** or **CHANGES NEEDED**
+   - If performance issues found, quantify impact where possible and suggest concrete fixes
+   - If acceptable, note briefly that it passes performance scrutiny
+
+IMPORTANT: Do NOT use \`change_status\`. You are one of potentially multiple reviewers — an orchestrator will synthesize all reviews and decide the next step.`,
   },
   {
     id: 'ux-expert',
@@ -89,9 +101,12 @@ Steps to follow:
 1. Read the full ticket description and history to understand the intended user experience and what was built.
 2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present). Pay close attention to JSX, CSS classes, and event handlers.
 3. Evaluate UX/UI quality: Is the interaction model intuitive? Are loading, error, and empty states handled gracefully? Is the component accessible (keyboard nav, ARIA labels, focus management, color contrast)? Does it match the visual language of the rest of the portal? Are there confusing affordances or missing feedback?
-4. Make a decision:
-   - **If UX/UI issues found**: Use the \`add_comment\` MCP tool to post a detailed review comment. Be specific — name the interaction, describe the problem, and suggest a concrete fix. Leave the ticket at In Progress.
-   - **If the UX is solid**: Use the \`add_comment\` MCP tool to post a brief approval noting what works well from a user experience perspective. Then use \`change_status\` to move the ticket back to "Ready".`,
+4. Post your review using the \`add_comment\` MCP tool with a structured comment:
+   - Start with **APPROVED** or **CHANGES NEEDED**
+   - If UX issues found, name the interaction, describe the problem, and suggest a concrete fix
+   - If solid, note briefly what works well from a user experience perspective
+
+IMPORTANT: Do NOT use \`change_status\`. You are one of potentially multiple reviewers — an orchestrator will synthesize all reviews and decide the next step.`,
   },
 ];
 
@@ -125,6 +140,12 @@ export interface RunAgentActionOptions {
   effortOverride?: string;
   /** Status to move the ticket to before launching the agent. */
   preStatus?: string;
+  /** Multi-session role tag (e.g. 'reviewer', 'implementer'). */
+  role?: string;
+  /** Orchestration pattern for multi-session coordination. */
+  pattern?: 'relay' | 'scatter-gather' | 'supervisor';
+  /** Position within the pattern. */
+  patternPosition?: 'lead' | 'assistant' | 'combiner' | 'step' | 'standalone';
 }
 
 /**
@@ -141,6 +162,9 @@ export async function runAgentAction(opts: RunAgentActionOptions): Promise<CliSe
     skipPermissions = true,
     effortOverride,
     preStatus,
+    role,
+    pattern,
+    patternPosition,
   } = opts;
 
   if (preStatus) {
@@ -154,5 +178,151 @@ export async function runAgentAction(opts: RunAgentActionOptions): Promise<CliSe
     appendPrompt = action.appendPrompt;
   }
 
-  return startTaskCliSession(taskId, framework, appendPrompt, skipPermissions, effortOverride);
+  return startTaskCliSessionEx(taskId, {
+    framework,
+    appendPrompt,
+    skipPermissions,
+    effortOverride,
+    role,
+    pattern,
+    patternPosition,
+  });
+}
+
+export interface MultiReviewResult {
+  sessions: CliSessionSummary[];
+  errors: string[];
+}
+
+const ORCHESTRATOR_PROMPT = `You are a code review orchestrator. Your job is to wait for all reviewer sessions to complete, then synthesize their findings into an actionable summary.
+
+Steps:
+1. Read the ticket with \`get_ticket\` to see all history comments from reviewers.
+2. Wait until all reviewer sessions for this ticket have ended (check the session list via the ticket's history — each reviewer posts a structured comment starting with APPROVED or CHANGES NEEDED).
+3. Once all reviews are in, synthesize:
+   - Count approvals vs change requests
+   - Merge overlapping findings, remove duplicates
+   - Produce a prioritized action item list
+4. Post your synthesis using \`add_comment\` with:
+   - **REVIEW SYNTHESIS** header
+   - Verdict: unanimous approval, or changes needed
+   - Consolidated action items (if any)
+5. Make the status decision:
+   - If ALL reviewers approved: use \`change_status\` to move to "Ready"
+   - If ANY reviewer flagged changes: use \`change_status\` to move to "In Progress" with a comment summarizing required changes
+
+You have full authority to change the ticket status based on reviewer consensus.`;
+
+/**
+ * Launch multiple review sessions in parallel (scatter-gather pattern).
+ * Each persona becomes a separate reviewer session running concurrently.
+ */
+export async function runParallelReviews(opts: {
+  taskId: string;
+  framework: CliFramework;
+  personas: ReviewPersona[];
+  currentUser: string;
+  skipPermissions?: boolean;
+  preStatus?: string;
+}): Promise<MultiReviewResult> {
+  const { taskId, framework, personas, currentUser, skipPermissions = true, preStatus } = opts;
+
+  if (preStatus) {
+    await updateTask(taskId, { status: preStatus, updatedBy: currentUser });
+  }
+
+  const results = await Promise.allSettled(
+    personas.map((persona) =>
+      startTaskCliSessionEx(taskId, {
+        framework,
+        appendPrompt: persona.prompt,
+        skipPermissions,
+        role: `reviewer:${persona.id}`,
+        pattern: 'scatter-gather',
+        patternPosition: 'step',
+      })
+    )
+  );
+
+  const sessions: CliSessionSummary[] = [];
+  const errors: string[] = [];
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    if (result.status === 'fulfilled') {
+      sessions.push(result.value);
+    } else {
+      errors.push(`${personas[i].label}: ${result.reason?.message || 'failed'}`);
+    }
+  }
+
+  if (sessions.length === 0) {
+    throw new Error(`All review sessions failed: ${errors.join('; ')}`);
+  }
+
+  return { sessions, errors };
+}
+
+/**
+ * Launch an orchestrated review: orchestrator + parallel reviewers.
+ * The orchestrator waits for all reviewers, synthesizes, and decides status.
+ */
+export async function launchOrchestratedReview(opts: {
+  taskId: string;
+  framework: CliFramework;
+  personas: ReviewPersona[];
+  currentUser: string;
+  skipPermissions?: boolean;
+  preStatus?: string;
+}): Promise<MultiReviewResult> {
+  const { taskId, framework, personas, currentUser, skipPermissions = true, preStatus } = opts;
+
+  if (preStatus) {
+    await updateTask(taskId, { status: preStatus, updatedBy: currentUser });
+  }
+
+  // Launch reviewers first
+  const reviewerResults = await Promise.allSettled(
+    personas.map((persona) =>
+      startTaskCliSessionEx(taskId, {
+        framework,
+        appendPrompt: persona.prompt,
+        skipPermissions,
+        role: `reviewer:${persona.id}`,
+        pattern: 'scatter-gather',
+        patternPosition: 'step',
+      })
+    )
+  );
+
+  const sessions: CliSessionSummary[] = [];
+  const errors: string[] = [];
+  for (let i = 0; i < reviewerResults.length; i++) {
+    const result = reviewerResults[i];
+    if (result.status === 'fulfilled') {
+      sessions.push(result.value);
+    } else {
+      errors.push(`${personas[i].label}: ${result.reason?.message || 'failed'}`);
+    }
+  }
+
+  if (sessions.length === 0) {
+    throw new Error(`All review sessions failed: ${errors.join('; ')}`);
+  }
+
+  // Launch orchestrator
+  try {
+    const orchestratorSession = await startTaskCliSessionEx(taskId, {
+      framework,
+      appendPrompt: ORCHESTRATOR_PROMPT,
+      skipPermissions,
+      role: 'orchestrator',
+      pattern: 'scatter-gather',
+      patternPosition: 'lead',
+    });
+    sessions.unshift(orchestratorSession);
+  } catch (err: any) {
+    errors.push(`Orchestrator: ${err?.message || 'failed to launch'}`);
+  }
+
+  return { sessions, errors };
 }

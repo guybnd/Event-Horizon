@@ -13,6 +13,7 @@ import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
 import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry } from './history.js';
 import { getCliWorkspace, getActiveFluxDir } from './workspace.js';
 import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, checkGhAuth, captureDiff, getCurrentCommit } from './branch-manager.js';
+import { getActiveSessionsForTask } from './session-store.js';
 
 function textResult(text: string) {
   return { content: [{ type: 'text' as const, text }] };
@@ -219,15 +220,31 @@ export async function startMcpServer(): Promise<void> {
 
   server.tool(
     'change_status',
-    'Move a ticket to a new status. A comment is REQUIRED when moving to Require Input or Ready.',
+    'Move a ticket to a new status. A comment is REQUIRED when moving to Require Input or Ready. Set callerRole to your role (e.g. "orchestrator") when calling from a multi-session context.',
     {
       ticketId: z.string().describe('Ticket ID'),
       newStatus: z.string().describe('Target status'),
       comment: z.string().optional().describe('Required for Require Input/Ready transitions. Provide the question or completion summary.'),
+      callerRole: z.string().optional().describe('Role of the calling session (e.g. "orchestrator"). Required to change status when scatter-gather sessions are active.'),
     },
-    async ({ ticketId, newStatus, comment }) => {
+    async ({ ticketId, newStatus, comment, callerRole }) => {
       const task = tasksCache[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`);
+
+      // Scatter-gather guard: if there are active step sessions on this task,
+      // only an orchestrator (or explicit lead) can change status.
+      const activeSessions = getActiveSessionsForTask(ticketId);
+      const hasActiveStepSessions = activeSessions.some(s => s.patternPosition === 'step');
+      if (hasActiveStepSessions && activeSessions.length >= 2) {
+        const isOrchestrator = callerRole === 'orchestrator' || callerRole === 'lead';
+        if (!isOrchestrator) {
+          return errorResult(
+            `Cannot change status: ${activeSessions.length} scatter-gather sessions are active on ${ticketId}. ` +
+            `Only the orchestrator can change status while parallel reviews are running. ` +
+            `Post your findings via add_comment instead.`
+          );
+        }
+      }
 
       const requireInputStatus = configCache.requireInputStatus || 'Require Input';
       const readyStatus = configCache.readyForMergeStatus || 'Ready';

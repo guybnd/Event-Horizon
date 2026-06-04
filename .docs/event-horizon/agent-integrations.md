@@ -138,6 +138,64 @@ The installer patches only Event Horizon blocks — your other custom instructio
 
 ---
 
+## Multi-Agent Sessions
+
+Event Horizon supports running multiple agent sessions concurrently against the same ticket. This enables parallel code review with different reviewer personas and orchestrated multi-agent workflows.
+
+### Session Roles & Patterns
+
+Each session can be tagged with coordination metadata:
+
+| Field | Purpose |
+|-------|---------|
+| `role` | Identifies the session's function (e.g. `reviewer:senior-dev`, `implementer`) |
+| `pattern` | Orchestration pattern: `relay`, `scatter-gather`, or `supervisor` |
+| `patternPosition` | Position within pattern: `lead`, `assistant`, `combiner`, `step`, `standalone` |
+| `lockedPaths` | File paths this session intends to write (engine rejects conflicts) |
+
+### Parallel Code Review
+
+From both the "Ready" status prompt (modal) and the card quick-action bar, clicking **Review** opens a multi-select persona picker. Select one persona for a single reviewer, or select multiple for parallel reviews.
+
+**With Orchestrator (default for 2+ reviewers):**
+An orchestrator agent launches alongside the reviewers. Reviewers only post structured comments (they cannot change ticket status). The orchestrator waits for all reviews, synthesizes findings, and decides:
+- All approved → moves ticket to `Ready`
+- Any flagged changes → moves ticket to `In Progress` with consolidated action items
+
+**Without Orchestrator (checkbox unchecked):**
+Reviewers launch independently but are status-restricted — they can only post comments. The ticket stays in `In Progress` and the user reads comments manually.
+
+**Single reviewer:**
+Existing behavior preserved — a single reviewer has full access (including status changes).
+
+### Status Restriction (Engine-Enforced)
+
+When a ticket has 2+ active scatter-gather sessions, the `change_status` MCP tool rejects calls unless the caller identifies as `callerRole: 'orchestrator'` or `'lead'`. This prevents individual reviewers from moving the ticket while peers are still reviewing.
+
+Each reviewer session:
+1. Reads the ticket description and history via MCP tools
+2. Inspects the diff via git commands
+3. Posts a structured comment via `add_comment` (starts with **APPROVED** or **CHANGES NEEDED**)
+4. Exits — does NOT change status
+
+Multiple reviewers run simultaneously — each as an independent session tagged with `role: 'reviewer:<persona-id>'`.
+
+### Available Review Personas
+
+| Persona | Focus |
+|---------|-------|
+| Senior Friendly Dev | Quality, readability, maintainability — constructive tone |
+| Angry Linus | Brutally honest — zero tolerance for bad patterns |
+| Architect Genius | System design, separation of concerns, scalability |
+| Performance Expert | Complexity, hot paths, bundle size, re-renders |
+| UX/UI Expert | Usability, accessibility, interaction design |
+
+### Conflict Prevention
+
+The session store enforces file-lock conventions: if a session declares `lockedPaths`, no other session can start with overlapping paths. Reviewer sessions declare no locks (read-only), so multiple reviewers never conflict.
+
+---
+
 ## Troubleshooting
 
 ### "Binary not found" error

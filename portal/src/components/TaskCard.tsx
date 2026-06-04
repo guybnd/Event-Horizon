@@ -5,11 +5,13 @@ import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { Task, TaskLiveEvent } from '../types';
 import { normalizeSubtaskId } from '../types';
-import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, MessageCircle, Bot, SendHorizontal, Maximize2, Zap, Layers, MousePointerClick, Play, Search, Undo2, GitBranch, Copy, Check } from 'lucide-react';
+import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, MessageCircle, Bot, SendHorizontal, Maximize2, Zap, Layers, MousePointerClick, Play, Undo2, GitBranch, Copy, Check } from 'lucide-react';
 import { TokenBadge } from './TokenBadge';
 import { useApp } from '../AppContext';
 import { sendTaskCliInput, updateTask } from '../api';
-import { runAgentAction, REVIEW_PERSONAS } from '../agentActions';
+import { runAgentAction, runParallelReviews, launchOrchestratedReview, type ReviewPersona } from '../agentActions';
+import { CodeReviewButton } from './CodeReviewButton';
+import { ReviewModal } from './ReviewModal';
 import { getArchiveStatus, getReadyForMergeStatus, isPromptableStatus, relativeTime } from '../workflow';
 import { resolveEffectiveAgent } from '../utils';
 import { motion, AnimatePresence, useAnimationControls } from 'framer-motion';
@@ -202,6 +204,7 @@ export const TaskCard = memo(function TaskCard({
   const [finishBusy, setFinishBusy] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [reviewSelectorOpen, setReviewSelectorOpen] = useState(false);
+  const [reviewModalOpen, setReviewModalOpen] = useState(false);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [returnPromptOpen, setReturnPromptOpen] = useState(false);
   const [returnReason, setReturnReason] = useState('');
@@ -311,21 +314,37 @@ export const TaskCard = memo(function TaskCard({
     }
   };
 
-  const sendReview = async (e: React.MouseEvent, personaId: string) => {
-    e.stopPropagation();
-    setReviewSelectorOpen(false);
+  const handleCardReviewLaunch = async (personas: ReviewPersona[], withOrchestrator: boolean, userComment: string) => {
+    setReviewModalOpen(false);
     setReviewBusy(true);
     try {
-      const persona = REVIEW_PERSONAS.find(p => p.id === personaId);
-      if (!persona) return;
       const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
-      await runAgentAction({
-        taskId: task.id,
-        framework,
-        action: { kind: 'prompt', appendPrompt: persona.prompt },
-        currentUser,
-        preStatus: 'In Progress',
-      });
+      const enrichedPersonas = userComment
+        ? personas.map(p => ({ ...p, prompt: `${p.prompt}\n\nThe user specifically asked you to focus on:\n${userComment}` }))
+        : personas;
+
+      if (enrichedPersonas.length === 1 && !withOrchestrator) {
+        const persona = enrichedPersonas[0];
+        await runAgentAction({
+          taskId: task.id,
+          framework,
+          action: { kind: 'prompt', appendPrompt: persona.prompt },
+          currentUser,
+          preStatus: 'In Progress',
+          role: `reviewer:${persona.id}`,
+          pattern: 'scatter-gather',
+          patternPosition: 'step',
+        });
+      } else {
+        const launcher = withOrchestrator ? launchOrchestratedReview : runParallelReviews;
+        await launcher({
+          taskId: task.id,
+          framework,
+          personas: enrichedPersonas,
+          currentUser,
+          preStatus: 'In Progress',
+        });
+      }
       triggerRefresh();
     } finally {
       setReviewBusy(false);
@@ -1149,16 +1168,14 @@ export const TaskCard = memo(function TaskCard({
             </div>
             {/* Ready column — 3-button row: Review | Return | Finish */}
             {isReadyForMerge && !isOverlay && (
-              <div className={`relative flex items-center justify-end gap-1.5 transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] ${reviewSelectorOpen || returnPromptOpen ? 'mt-2 max-h-40 overflow-visible opacity-100' : 'mt-0 max-h-0 overflow-hidden opacity-0 group-hover:mt-2 group-hover:max-h-20 group-hover:opacity-100'}`} ref={reviewSelectorRef}>
+              <div className={`relative flex items-center justify-end gap-1.5 transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] ${reviewSelectorOpen || returnPromptOpen ? 'mt-2 max-h-40 overflow-visible opacity-100' : 'mt-0 max-h-0 overflow-hidden opacity-0 group-hover:mt-2 group-hover:max-h-20 group-hover:overflow-visible group-hover:opacity-100'}`} ref={reviewSelectorRef}>
                 {/* Review */}
-                <button
-                  onClick={(e) => { e.stopPropagation(); setReviewSelectorOpen(prev => !prev); setReturnPromptOpen(false); }}
-                  disabled={reviewBusy}
-                  className="flex items-center gap-1 rounded-md border border-gray-200 bg-white/80 px-2 py-1 text-[10px] font-semibold text-gray-600 transition-colors hover:border-primary/40 hover:text-primary disabled:opacity-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:border-primary/40 dark:hover:text-primary"
-                >
-                  <Search className="w-3 h-3" />
-                  {reviewBusy ? '…' : 'Review'}
-                </button>
+                <CodeReviewButton
+                  compact
+                  busy={reviewBusy}
+                  disabled={false}
+                  onClick={() => setReviewModalOpen(true)}
+                />
                 {/* Return */}
                 <button
                   onClick={(e) => { e.stopPropagation(); setReturnPromptOpen(prev => !prev); setReviewSelectorOpen(false); }}
@@ -1178,26 +1195,6 @@ export const TaskCard = memo(function TaskCard({
                   <SendHorizontal className="w-3 h-3" />
                   {finishBusy ? '…' : 'Finish'}
                 </button>
-                {/* Reviewer selector dropdown */}
-                {reviewSelectorOpen && (
-                  <div
-                    className="absolute bottom-full right-0 z-[90] mb-1.5 w-56 rounded-xl border border-gray-200 bg-white py-1 shadow-xl dark:border-white/10 dark:bg-[#1e1f2a]"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <div className="px-3 py-1 text-[9px] font-bold uppercase tracking-wider text-gray-400">Choose reviewer</div>
-                    {REVIEW_PERSONAS.map((persona) => (
-                      <button
-                        key={persona.id}
-                        type="button"
-                        onClick={(e) => void sendReview(e, persona.id)}
-                        className="flex w-full flex-col items-start gap-0.5 px-3 py-1.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5"
-                      >
-                        <span className="text-[11px] font-semibold text-gray-800 dark:text-gray-100">{persona.label}</span>
-                        <span className="text-[10px] text-gray-500 dark:text-gray-400">{persona.description}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
                 {/* Return reason prompt */}
                 {returnPromptOpen && (
                   <div
@@ -1539,6 +1536,15 @@ export const TaskCard = memo(function TaskCard({
           onCancel={() => setShowStartPrompt(false)}
         />,
         document.body
+      )}
+
+      {reviewModalOpen && !isOverlay && (
+        <ReviewModal
+          open={reviewModalOpen}
+          onClose={() => setReviewModalOpen(false)}
+          onLaunch={handleCardReviewLaunch}
+          busy={reviewBusy}
+        />
       )}
     </CardContainer>
   );

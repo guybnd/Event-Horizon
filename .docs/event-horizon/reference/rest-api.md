@@ -52,7 +52,7 @@ From [`cli-session.ts`](../../../engine/src/routes/cli-session.ts).
 |--------|------|---------|
 | GET | `/api/tasks/:id/cli-session` | Most recent CLI session summary for a ticket. |
 | GET | `/api/tasks/:id/cli-sessions` | All session summaries for a ticket. |
-| POST | `/api/tasks/:id/cli-session/start` | Launch a CLI agent (Claude / Gemini / Copilot) against the ticket. Body: `{ framework, prompt?, effort?, skipPermissions?, ... }`. Spawns the child process; live output streams over SSE. |
+| POST | `/api/tasks/:id/cli-session/start` | Launch a CLI agent (Claude / Gemini / Copilot) against the ticket. Body: `{ framework, appendPrompt?, effortOverride?, skipPermissions?, role?, pattern?, patternPosition?, lockedPaths? }`. Multi-session fields (`role`, `pattern`, `patternPosition`) tag the session for orchestration. `lockedPaths` declares exclusive file access; engine returns 409 on conflicts. Spawns the child process; live output streams over SSE. |
 | POST | `/api/tasks/:id/cli-session/input` | Send follow-up input to a running session. Body: `{ message, user? }`. |
 | POST | `/api/tasks/:id/cli-session/stop` | Cancel a running session. |
 

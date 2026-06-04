@@ -42,7 +42,14 @@ const SessionItem = memo(function SessionItem({ task, onClose, openTask, handleS
             <Icon className="h-4 w-4" />
           </div>
           <div className="min-w-0">
-            <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{task.id}</div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{task.id}</span>
+              {session.role && (
+                <span className="rounded-full bg-violet-100 px-1.5 py-0.5 text-[9px] font-semibold text-violet-700 dark:bg-violet-500/10 dark:text-violet-300">
+                  {session.role.replace('reviewer:', '')}
+                </span>
+              )}
+            </div>
             <div className="truncate text-xs font-semibold text-gray-900 dark:text-gray-100">{task.title}</div>
           </div>
         </div>

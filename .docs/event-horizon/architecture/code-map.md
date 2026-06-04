@@ -27,8 +27,14 @@ This page is the quick orientation guide for where behavior lives today — file
 -   `portal/src/agentActions.ts` is the **single composition layer** for
 	launching agent CLI sessions. Every button that starts an agent (card
 	context menu, card quick-actions, modal CLI panel, modal Finish/Grooming,
-	Code Review picker) routes through `runAgentAction(...)`. Add new
-	launch entry points here, not by calling `startTaskCliSession` directly.
+	Code Review picker) routes through `runAgentAction(...)`. For parallel
+	multi-reviewer launches, use `runParallelReviews(...)` or
+	`launchOrchestratedReview(...)`. Add new launch entry points here,
+	not by calling `startTaskCliSessionEx` directly.
+
+-   `portal/src/components/CodeReviewButton.tsx` owns the reviewer persona
+	picker with multi-select support, orchestrator checkbox, and compact mode
+	for card quick-actions. Used by both `TaskModal` and `TaskCard`.
 
 
 ## Portal components to check first

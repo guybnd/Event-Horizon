@@ -79,6 +79,9 @@ export interface Task {
 export type CliFramework = 'claude' | 'copilot' | 'gemini';
 export type CliSessionStatus = 'pending' | 'running' | 'waiting-input' | 'completed' | 'failed' | 'cancelled';
 
+export type ExecutionPattern = 'relay' | 'scatter-gather' | 'supervisor';
+export type PatternPosition = 'lead' | 'assistant' | 'combiner' | 'step' | 'standalone';
+
 export interface CliSessionSummary {
   id: string;
   taskId: string;
@@ -102,6 +105,9 @@ export interface CliSessionSummary {
   costIsEstimated?: boolean;
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
+  role?: string;
+  pattern?: ExecutionPattern;
+  patternPosition?: PatternPosition;
 }
 
 export interface TaskLiveEvent {

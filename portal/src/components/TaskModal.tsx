@@ -19,9 +19,9 @@ import {
 } from 'lucide-react';
 import { useApp } from '../AppContext';
 import { createTask, deleteTask, fetchTask, sendTaskCliInput, updateTask } from '../api';
-import { runAgentAction } from '../agentActions';
+import { runAgentAction, runParallelReviews, launchOrchestratedReview, type ReviewPersona } from '../agentActions';
 import { LaunchAgentSplitButton } from './LaunchAgentSplitButton';
-import type { ReviewPersona } from './CodeReviewButton';
+import { ReviewModal } from './ReviewModal';
 import { isAgentSession } from '../types';
 import type { Config, HistoryEntry, InlineSubtask, Task } from '../types';
 import { FRAMEWORK_ICONS } from '../constants';
@@ -654,24 +654,54 @@ export function TaskModal() {
     }
   }, [modalTask, currentUser, readyForMergeStatus, preReadyStatus, title, body, assignee, tags, priority, effort, effortLevel, implementationLink, setModalTask, triggerRefresh, closeModal, launchSession]);
 
-  const handleSendForCodeReview = useCallback(async (persona: ReviewPersona) => {
+  const [reviewModalOpen, setReviewModalOpen] = useState(false);
+
+  const handleReviewLaunch = useCallback(async (personas: ReviewPersona[], withOrchestrator: boolean, userComment: string) => {
     if (!modalTask?.id) return;
     setReviewBusy(true);
     setReviewError('');
     try {
-      const session = await runAgentAction({
-        taskId: modalTask.id,
-        framework: selectedCliFramework,
-        action: { kind: 'prompt', appendPrompt: persona.prompt },
-        currentUser,
-        skipPermissions,
-        preStatus: 'In Progress',
-      });
-      setCliSession(session);
+      // Append user comment to each persona's prompt if provided
+      const enrichedPersonas = userComment
+        ? personas.map(p => ({ ...p, prompt: `${p.prompt}\n\nThe user specifically asked you to focus on:\n${userComment}` }))
+        : personas;
+
+      if (enrichedPersonas.length === 1 && !withOrchestrator) {
+        const persona = enrichedPersonas[0];
+        const session = await runAgentAction({
+          taskId: modalTask.id,
+          framework: selectedCliFramework,
+          action: { kind: 'prompt', appendPrompt: persona.prompt },
+          currentUser,
+          skipPermissions,
+          preStatus: 'In Progress',
+          role: `reviewer:${persona.id}`,
+          pattern: 'scatter-gather',
+          patternPosition: 'step',
+        });
+        setCliSession(session);
+      } else {
+        const launcher = withOrchestrator ? launchOrchestratedReview : runParallelReviews;
+        const { sessions, errors } = await launcher({
+          taskId: modalTask.id,
+          framework: selectedCliFramework,
+          personas: enrichedPersonas,
+          currentUser,
+          skipPermissions,
+          preStatus: 'In Progress',
+        });
+        if (sessions.length > 0) setCliSession(sessions[0]);
+        if (errors.length > 0) {
+          setReviewError(`${sessions.length} of ${sessions.length + errors.length} reviewers started. Failed: ${errors.join('; ')}`);
+          triggerRefresh();
+          return;
+        }
+      }
+      setReviewModalOpen(false);
       triggerRefresh();
       closeModal();
     } catch (error: any) {
-      setReviewError(error?.message || 'Failed to start review session.');
+      setReviewError(error?.message || 'Failed to start review sessions.');
     } finally {
       setReviewBusy(false);
     }
@@ -919,7 +949,7 @@ export function TaskModal() {
       onReturnToWork={() => void handleReturnToWork()}
       onReturnToWorkAndLaunch={() => void handleReturnToWork({ launch: true })}
       onFinish={sendFinishCommand}
-      onCodeReview={handleSendForCodeReview}
+      onOpenReviewModal={() => setReviewModalOpen(true)}
       onSetReturnToWorkOpen={setReturnToWorkOpen}
       onSetIsFullView={setIsFullView}
       onSetIsPromptModalOpen={setIsPromptModalOpen}
@@ -1219,7 +1249,7 @@ export function TaskModal() {
     textareaRef: commentRef,
   };
 
-  return (
+  return (<>
     <AnimatePresence>
       {isModalOpen && config && !isFullView && (
         <motion.div
@@ -1688,5 +1718,14 @@ export function TaskModal() {
         />
       )}
     </AnimatePresence>
+
+    <ReviewModal
+      open={reviewModalOpen}
+      onClose={() => setReviewModalOpen(false)}
+      onLaunch={handleReviewLaunch}
+      busy={reviewBusy}
+      error={reviewError}
+    />
+    </>
   );
 }

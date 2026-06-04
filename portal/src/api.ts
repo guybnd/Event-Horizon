@@ -324,11 +324,31 @@ export async function fetchTaskCliSession(taskId: string): Promise<CliSessionSum
   return payload.session || null;
 }
 
-export async function startTaskCliSession(taskId: string, framework: CliFramework, appendPrompt?: string, skipPermissions = true, effortOverride?: string): Promise<CliSessionSummary> {
+export interface StartSessionOptions {
+  framework: CliFramework;
+  appendPrompt?: string;
+  skipPermissions?: boolean;
+  effortOverride?: string;
+  role?: string;
+  pattern?: string;
+  patternPosition?: string;
+  lockedPaths?: string[];
+}
+
+export async function startTaskCliSessionEx(taskId: string, opts: StartSessionOptions): Promise<CliSessionSummary> {
+  const { framework, appendPrompt, skipPermissions = true, effortOverride, role, pattern, patternPosition, lockedPaths } = opts;
+  const body: Record<string, unknown> = { framework, skipPermissions };
+  if (appendPrompt) body.appendPrompt = appendPrompt;
+  if (effortOverride) body.effortOverride = effortOverride;
+  if (role) body.role = role;
+  if (pattern) body.pattern = pattern;
+  if (patternPosition) body.patternPosition = patternPosition;
+  if (lockedPaths?.length) body.lockedPaths = lockedPaths;
+
   const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ framework, skipPermissions, ...(appendPrompt ? { appendPrompt } : {}), ...(effortOverride ? { effortOverride } : {}) }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
@@ -336,6 +356,13 @@ export async function startTaskCliSession(taskId: string, framework: CliFramewor
   }
   const payload = await res.json();
   return payload.session;
+}
+
+export async function fetchTaskCliSessions(taskId: string): Promise<CliSessionSummary[]> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/cli-sessions`);
+  if (!res.ok) throw new Error('Failed to fetch CLI sessions');
+  const payload = await res.json();
+  return payload.sessions || [];
 }
 
 export async function sendTaskCliInput(taskId: string, message: string, user: string): Promise<CliSessionSummary> {
