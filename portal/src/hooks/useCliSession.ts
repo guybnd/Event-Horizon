@@ -92,12 +92,12 @@ export function useCliSession({ isModalOpen, taskId, liveOutputRef, onSessionCha
     }
   }, [taskId, selectedCliFramework, skipPermissions, currentUser, onSessionChange]);
 
-  const stopSession = useCallback(async () => {
+  const stopSession = useCallback(async (sessionId?: string) => {
     if (!taskId) return;
     setCliSessionBusy(true);
     setCliSessionError('');
     try {
-      const session = await stopTaskCliSession(taskId);
+      const session = await stopTaskCliSession(taskId, sessionId);
       setCliSession(session);
       onSessionChange?.();
     } catch (error: unknown) {

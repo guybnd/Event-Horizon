@@ -18,6 +18,9 @@ export interface AgentSessionEntry {
   id?: string;
   replyTo?: string;
   comment?: string;
+  role?: string;
+  groupId?: string;
+  pattern?: ExecutionPattern;
 }
 
 export interface BasicHistoryEntry {
@@ -72,6 +75,7 @@ export interface Task {
   releasedAt?: string;
   releaseDocPath?: string;
   cliSession?: CliSessionSummary | null;
+  cliSessions?: CliSessionSummary[];
   tokenMetadata?: { inputTokens: number; outputTokens: number; costUSD: number; costIsEstimated?: boolean; cacheReadTokens?: number; cacheCreationTokens?: number };
   sessionHistoryEntry?: AgentSessionEntry;
 }
@@ -81,6 +85,7 @@ export type CliSessionStatus = 'pending' | 'running' | 'waiting-input' | 'comple
 
 export type ExecutionPattern = 'relay' | 'scatter-gather' | 'supervisor';
 export type PatternPosition = 'lead' | 'assistant' | 'combiner' | 'step' | 'standalone';
+export type GroupVariant = 'combiner' | 'headless';
 
 export interface CliSessionSummary {
   id: string;
@@ -108,6 +113,10 @@ export interface CliSessionSummary {
   role?: string;
   pattern?: ExecutionPattern;
   patternPosition?: PatternPosition;
+  groupId?: string;
+  groupSeq?: number;
+  groupType?: ExecutionPattern;
+  groupVariant?: GroupVariant;
 }
 
 export interface TaskLiveEvent {

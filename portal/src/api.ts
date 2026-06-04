@@ -332,17 +332,25 @@ export interface StartSessionOptions {
   role?: string;
   pattern?: string;
   patternPosition?: string;
+  groupId?: string;
+  groupSeq?: number;
+  groupType?: string;
+  groupVariant?: string;
   lockedPaths?: string[];
 }
 
 export async function startTaskCliSessionEx(taskId: string, opts: StartSessionOptions): Promise<CliSessionSummary> {
-  const { framework, appendPrompt, skipPermissions = true, effortOverride, role, pattern, patternPosition, lockedPaths } = opts;
+  const { framework, appendPrompt, skipPermissions = true, effortOverride, role, pattern, patternPosition, groupId, groupSeq, groupType, groupVariant, lockedPaths } = opts;
   const body: Record<string, unknown> = { framework, skipPermissions };
   if (appendPrompt) body.appendPrompt = appendPrompt;
   if (effortOverride) body.effortOverride = effortOverride;
   if (role) body.role = role;
   if (pattern) body.pattern = pattern;
   if (patternPosition) body.patternPosition = patternPosition;
+  if (groupId) body.groupId = groupId;
+  if (groupSeq != null) body.groupSeq = groupSeq;
+  if (groupType) body.groupType = groupType;
+  if (groupVariant) body.groupVariant = groupVariant;
   if (lockedPaths?.length) body.lockedPaths = lockedPaths;
 
   const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/start`, {
@@ -398,9 +406,11 @@ export async function setupPath(mode: 'auto' | 'instructional'): Promise<{ ok: b
   return res.json();
 }
 
-export async function stopTaskCliSession(taskId: string): Promise<CliSessionSummary> {
+export async function stopTaskCliSession(taskId: string, sessionId?: string): Promise<CliSessionSummary> {
   const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/stop`, {
     method: 'POST',
+    headers: sessionId ? { 'Content-Type': 'application/json' } : undefined,
+    body: sessionId ? JSON.stringify({ sessionId }) : undefined,
   });
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));

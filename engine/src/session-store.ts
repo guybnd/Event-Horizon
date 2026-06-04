@@ -67,6 +67,10 @@ function toSummary(session: CliSessionRecord): CliSessionSummary {
   if (session.role) summary.role = session.role;
   if (session.pattern) summary.pattern = session.pattern;
   if (session.patternPosition) summary.patternPosition = session.patternPosition;
+  if (session.groupId) summary.groupId = session.groupId;
+  if (session.groupSeq != null) summary.groupSeq = session.groupSeq;
+  if (session.groupType) summary.groupType = session.groupType;
+  if (session.groupVariant) summary.groupVariant = session.groupVariant;
   if (session.lockedPaths) summary.lockedPaths = session.lockedPaths;
   if (session.outputData) summary.outputData = session.outputData;
   return summary;
@@ -105,6 +109,15 @@ export function getActiveSessionsForTask(taskId: string): CliSessionRecord[] {
   return ids
     .map(id => cliSessionsById.get(id))
     .filter((s): s is CliSessionRecord => !!s && ['pending', 'running', 'waiting-input'].includes(s.status));
+}
+
+// Return all sessions belonging to one orchestration run group, in launch order.
+export function getSessionGroup(taskId: string, groupId: string): CliSessionRecord[] {
+  const ids = cliSessionsByTaskId.get(taskId);
+  if (!ids) return [];
+  return ids
+    .map(id => cliSessionsById.get(id))
+    .filter((s): s is CliSessionRecord => !!s && s.groupId === groupId);
 }
 
 // File-lock enforcement: check if any active session holds a conflicting path lock

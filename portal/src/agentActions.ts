@@ -1,5 +1,6 @@
 import { startTaskCliSessionEx, updateTask } from './api';
-import type { CliFramework, CliSessionSummary } from './types';
+import type { CliFramework, CliSessionSummary, ExecutionPattern, GroupVariant, PatternPosition } from './types';
+import type { TopologyShape } from './orchestration';
 
 export interface ReviewPersona {
   id: string;
@@ -194,7 +195,180 @@ export interface MultiReviewResult {
   errors: string[];
 }
 
-const ORCHESTRATOR_PROMPT = `You are a code review orchestrator. Your job is to wait for all reviewer sessions to complete, then synthesize their findings into an actionable summary.
+// ── Generic orchestration model ─────────────────────────────────────────────
+// A single, framework-agnostic launch primitive. The code-review use case is
+// just one configuration of it (a scatter-gather of reviewer roles, optionally
+// with a combiner). Focused on Claude Code for now: no per-row framework
+// picking / cross-framework capability gating — the caller passes the framework.
+
+export type OrchestrationMode = 'scatter-gather' | 'parallel' | 'serialized' | 'handoff';
+
+export interface OrchestrationModeDef {
+  id: OrchestrationMode;
+  label: string;
+  blurb: string;
+  /** Engine execution pattern this mode maps to. */
+  pattern: ExecutionPattern;
+  /** Scatter-gather variant (combiner = synthesis node, headless = peer swarm). */
+  variant?: GroupVariant;
+  topology: TopologyShape;
+  /** A coordinating lead/combiner agent participates in this mode. */
+  hasLead: boolean;
+  /** The engine can run this mode end-to-end today. */
+  launchable: boolean;
+  minAgents: number;
+}
+
+export const ORCHESTRATION_MODES: OrchestrationModeDef[] = [
+  {
+    id: 'scatter-gather',
+    label: 'Scatter-gather',
+    blurb: 'Fan out to N agents in parallel, then a combiner synthesizes their findings and decides the next step.',
+    pattern: 'scatter-gather',
+    variant: 'combiner',
+    topology: 'fan',
+    hasLead: true,
+    launchable: true,
+    minAgents: 2,
+  },
+  {
+    id: 'parallel',
+    label: 'Parallel',
+    blurb: 'Run N independent agents at once. No combiner — you review the results and decide.',
+    pattern: 'scatter-gather',
+    variant: 'headless',
+    topology: 'swarm',
+    hasLead: false,
+    launchable: true,
+    minAgents: 2,
+  },
+  {
+    id: 'serialized',
+    label: 'Serialized',
+    blurb: 'Pipeline A → B → C, one agent at a time, each handing off to the next.',
+    pattern: 'relay',
+    topology: 'pipeline',
+    hasLead: false,
+    launchable: false,
+    minAgents: 2,
+  },
+  {
+    id: 'handoff',
+    label: 'Hand-off',
+    blurb: 'A lead agent delegates to assistants and resumes once they report back.',
+    pattern: 'supervisor',
+    variant: 'combiner',
+    topology: 'tree',
+    hasLead: true,
+    launchable: false,
+    minAgents: 1,
+  },
+];
+
+export function getOrchestrationMode(mode: OrchestrationMode): OrchestrationModeDef {
+  const def = ORCHESTRATION_MODES.find(m => m.id === mode);
+  if (!def) throw new Error(`Unknown orchestration mode: ${mode}`);
+  return def;
+}
+
+export interface OrchestrationParticipant {
+  /** Multi-session role tag (e.g. 'reviewer:architect'). */
+  role: string;
+  /** Human label used for error messages. */
+  label: string;
+  /** Prompt the agent session is launched with. */
+  prompt: string;
+}
+
+/**
+ * Generic orchestration launcher. Stamps every session in one run with a shared
+ * groupId and the correct pattern metadata so all portal surfaces (card cluster,
+ * Run View, popover, grouped history) render the same topology. Returns started
+ * sessions plus any per-participant launch errors (partial-failure aware).
+ */
+export async function launchOrchestration(opts: {
+  taskId: string;
+  framework: CliFramework;
+  mode: OrchestrationMode;
+  participants: OrchestrationParticipant[];
+  /** Combiner (scatter-gather) / lead (supervisor) agent, when the mode has one. */
+  lead?: OrchestrationParticipant;
+  currentUser: string;
+  skipPermissions?: boolean;
+  preStatus?: string;
+}): Promise<MultiReviewResult> {
+  const { taskId, framework, mode, participants, lead, currentUser, skipPermissions = true, preStatus } = opts;
+  const def = getOrchestrationMode(mode);
+
+  if (preStatus) {
+    await updateTask(taskId, { status: preStatus, updatedBy: currentUser });
+  }
+
+  const groupId = crypto.randomUUID();
+  const stepPosition: PatternPosition = def.pattern === 'supervisor' ? 'assistant' : 'step';
+
+  const results = await Promise.allSettled(
+    participants.map((p, i) =>
+      startTaskCliSessionEx(taskId, {
+        framework,
+        appendPrompt: p.prompt,
+        skipPermissions,
+        role: p.role,
+        pattern: def.pattern,
+        patternPosition: stepPosition,
+        groupId,
+        groupSeq: i,
+        groupType: def.pattern,
+        groupVariant: def.variant,
+      })
+    )
+  );
+
+  const sessions: CliSessionSummary[] = [];
+  const errors: string[] = [];
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    if (result.status === 'fulfilled') {
+      sessions.push(result.value);
+    } else {
+      errors.push(`${participants[i].label}: ${result.reason?.message || 'failed'}`);
+    }
+  }
+
+  if (sessions.length === 0 && participants.length > 0) {
+    throw new Error(`All sessions failed: ${errors.join('; ')}`);
+  }
+
+  // Lead / combiner agent runs as part of the same group.
+  if (def.hasLead && lead) {
+    try {
+      const leadSession = await startTaskCliSessionEx(taskId, {
+        framework,
+        appendPrompt: lead.prompt,
+        skipPermissions,
+        role: lead.role,
+        pattern: def.pattern,
+        patternPosition: 'lead',
+        groupId,
+        groupType: def.pattern,
+        groupVariant: def.variant,
+      });
+      sessions.unshift(leadSession);
+    } catch (err: any) {
+      errors.push(`${lead.label}: ${err?.message || 'failed to launch'}`);
+    }
+  }
+
+  return { sessions, errors };
+}
+
+const personaToParticipant = (p: ReviewPersona): OrchestrationParticipant => ({
+  role: `reviewer:${p.id}`,
+  label: p.label,
+  prompt: p.prompt,
+});
+
+export const ORCHESTRATOR_PROMPT = `You are a code review orchestrator. Your job is to wait for all reviewer sessions to complete, then synthesize their findings into an actionable summary.
 
 Steps:
 1. Read the ticket with \`get_ticket\` to see all history comments from reviewers.
@@ -214,8 +388,8 @@ Steps:
 You have full authority to change the ticket status based on reviewer consensus.`;
 
 /**
- * Launch multiple review sessions in parallel (scatter-gather pattern).
- * Each persona becomes a separate reviewer session running concurrently.
+ * Launch multiple review sessions in parallel (headless scatter-gather / swarm).
+ * Thin preset over {@link launchOrchestration} for the code-review use case.
  */
 export async function runParallelReviews(opts: {
   taskId: string;
@@ -225,46 +399,20 @@ export async function runParallelReviews(opts: {
   skipPermissions?: boolean;
   preStatus?: string;
 }): Promise<MultiReviewResult> {
-  const { taskId, framework, personas, currentUser, skipPermissions = true, preStatus } = opts;
-
-  if (preStatus) {
-    await updateTask(taskId, { status: preStatus, updatedBy: currentUser });
-  }
-
-  const results = await Promise.allSettled(
-    personas.map((persona) =>
-      startTaskCliSessionEx(taskId, {
-        framework,
-        appendPrompt: persona.prompt,
-        skipPermissions,
-        role: `reviewer:${persona.id}`,
-        pattern: 'scatter-gather',
-        patternPosition: 'step',
-      })
-    )
-  );
-
-  const sessions: CliSessionSummary[] = [];
-  const errors: string[] = [];
-  for (let i = 0; i < results.length; i++) {
-    const result = results[i];
-    if (result.status === 'fulfilled') {
-      sessions.push(result.value);
-    } else {
-      errors.push(`${personas[i].label}: ${result.reason?.message || 'failed'}`);
-    }
-  }
-
-  if (sessions.length === 0) {
-    throw new Error(`All review sessions failed: ${errors.join('; ')}`);
-  }
-
-  return { sessions, errors };
+  return launchOrchestration({
+    taskId: opts.taskId,
+    framework: opts.framework,
+    mode: 'parallel',
+    participants: opts.personas.map(personaToParticipant),
+    currentUser: opts.currentUser,
+    skipPermissions: opts.skipPermissions,
+    preStatus: opts.preStatus,
+  });
 }
 
 /**
- * Launch an orchestrated review: orchestrator + parallel reviewers.
- * The orchestrator waits for all reviewers, synthesizes, and decides status.
+ * Launch an orchestrated review: parallel reviewers + a combiner that synthesizes
+ * and decides status. Thin preset over {@link launchOrchestration}.
  */
 export async function launchOrchestratedReview(opts: {
   taskId: string;
@@ -274,55 +422,14 @@ export async function launchOrchestratedReview(opts: {
   skipPermissions?: boolean;
   preStatus?: string;
 }): Promise<MultiReviewResult> {
-  const { taskId, framework, personas, currentUser, skipPermissions = true, preStatus } = opts;
-
-  if (preStatus) {
-    await updateTask(taskId, { status: preStatus, updatedBy: currentUser });
-  }
-
-  // Launch reviewers first
-  const reviewerResults = await Promise.allSettled(
-    personas.map((persona) =>
-      startTaskCliSessionEx(taskId, {
-        framework,
-        appendPrompt: persona.prompt,
-        skipPermissions,
-        role: `reviewer:${persona.id}`,
-        pattern: 'scatter-gather',
-        patternPosition: 'step',
-      })
-    )
-  );
-
-  const sessions: CliSessionSummary[] = [];
-  const errors: string[] = [];
-  for (let i = 0; i < reviewerResults.length; i++) {
-    const result = reviewerResults[i];
-    if (result.status === 'fulfilled') {
-      sessions.push(result.value);
-    } else {
-      errors.push(`${personas[i].label}: ${result.reason?.message || 'failed'}`);
-    }
-  }
-
-  if (sessions.length === 0) {
-    throw new Error(`All review sessions failed: ${errors.join('; ')}`);
-  }
-
-  // Launch orchestrator
-  try {
-    const orchestratorSession = await startTaskCliSessionEx(taskId, {
-      framework,
-      appendPrompt: ORCHESTRATOR_PROMPT,
-      skipPermissions,
-      role: 'orchestrator',
-      pattern: 'scatter-gather',
-      patternPosition: 'lead',
-    });
-    sessions.unshift(orchestratorSession);
-  } catch (err: any) {
-    errors.push(`Orchestrator: ${err?.message || 'failed to launch'}`);
-  }
-
-  return { sessions, errors };
+  return launchOrchestration({
+    taskId: opts.taskId,
+    framework: opts.framework,
+    mode: 'scatter-gather',
+    participants: opts.personas.map(personaToParticipant),
+    lead: { role: 'orchestrator', label: 'Orchestrator', prompt: ORCHESTRATOR_PROMPT },
+    currentUser: opts.currentUser,
+    skipPermissions: opts.skipPermissions,
+    preStatus: opts.preStatus,
+  });
 }

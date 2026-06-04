@@ -4,6 +4,9 @@ export type CliSessionStatus = 'pending' | 'running' | 'waiting-input' | 'comple
 export type CliFramework = 'claude' | 'copilot' | 'gemini';
 export type ExecutionPattern = 'relay' | 'scatter-gather' | 'supervisor';
 export type PatternPosition = 'lead' | 'assistant' | 'combiner' | 'step' | 'standalone';
+// Run-group classification: every session launched in one orchestration run shares
+// these so any surface can render the topology without inspecting sibling sessions.
+export type GroupVariant = 'combiner' | 'headless';
 
 export interface CliCapabilities {
   resume: boolean;
@@ -60,6 +63,14 @@ export interface CliSessionSummary {
   role?: string;
   pattern?: ExecutionPattern;
   patternPosition?: PatternPosition;
+  /** Shared by all sessions launched in one orchestration run. */
+  groupId?: string;
+  /** Order within a relay pipeline (0,1,2...). */
+  groupSeq?: number;
+  /** Authoritative orchestration type of the whole group. */
+  groupType?: ExecutionPattern;
+  /** Disambiguates the two scatter-gather visuals: fan-in vs swarm of peers. */
+  groupVariant?: GroupVariant;
   lockedPaths?: string[];
   outputData?: string;
 }

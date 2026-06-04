@@ -10,7 +10,7 @@ import { configCache, loadConfig, autoRegisterUnknownTags } from './config.js';
 import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate, getHistoryTimestamp } from './history.js';
 import { generatePromptNotification, generateCompletionNotification, clearNotifications, checkSkillStaleness } from './notifications.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
-import { getCliSessionSummaryForTask, cliSessionsById, cliSessionIdByTaskId } from './session-store.js';
+import { getCliSessionSummaryForTask, getAllSessionSummariesForTask, cliSessionsById, cliSessionIdByTaskId } from './session-store.js';
 import { isTopLevelTaskFile, getDocsDir, isDocFile, getDocPathFromFile, titleFromDocPath, slugifyDocValue, parseDocOrder } from './file-utils.js';
 import type { StoredDoc } from './file-utils.js';
 import { resolveEmbeddedDocsRoot, copyDir, buildStarterProjectOverview } from './docs-seeder.js';
@@ -41,9 +41,11 @@ export async function atomicWriteFile(filePath: string, content: string): Promis
 }
 
 export function serializeTaskForApi(task: any) {
+  const cliSessions = getAllSessionSummariesForTask(task.id);
   return {
     ...task,
     cliSession: getCliSessionSummaryForTask(task.id),
+    cliSessions: cliSessions.length > 0 ? cliSessions : undefined,
   };
 }
 

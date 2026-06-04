@@ -16,7 +16,7 @@ import {
 import { getAdapter } from '../agents/index.js';
 import { updateTaskWithHistory } from '../task-store.js';
 import { buildActivityEntry } from '../history.js';
-import type { CliSessionRecord, CliFramework, ExecutionPattern, PatternPosition } from '../agents/types.js';
+import type { CliSessionRecord, CliFramework, ExecutionPattern, PatternPosition, GroupVariant } from '../agents/types.js';
 
 const router = express.Router();
 
@@ -55,6 +55,12 @@ router.post('/:id/cli-session/start', async (req, res) => {
   const pattern = typeof req.body?.pattern === 'string' ? req.body.pattern.trim() as ExecutionPattern : undefined;
   const patternPosition = typeof req.body?.patternPosition === 'string' ? req.body.patternPosition.trim() as PatternPosition : 'standalone';
   const lockedPaths: string[] = Array.isArray(req.body?.lockedPaths) ? req.body.lockedPaths : [];
+
+  // Run-group fields: shared identity + topology classification for one orchestration run
+  const groupId = typeof req.body?.groupId === 'string' ? req.body.groupId.trim() : undefined;
+  const groupSeq = typeof req.body?.groupSeq === 'number' ? req.body.groupSeq : undefined;
+  const groupType = typeof req.body?.groupType === 'string' ? req.body.groupType.trim() as ExecutionPattern : undefined;
+  const groupVariant = typeof req.body?.groupVariant === 'string' ? req.body.groupVariant.trim() as GroupVariant : undefined;
 
   // Validate pattern support for the chosen CLI
   if (pattern && patternPosition) {
@@ -121,6 +127,10 @@ router.post('/:id/cli-session/start', async (req, res) => {
   if (role) session.role = role;
   if (pattern) session.pattern = pattern;
   if (patternPosition && patternPosition !== 'standalone') session.patternPosition = patternPosition;
+  if (groupId) session.groupId = groupId;
+  if (groupSeq != null) session.groupSeq = groupSeq;
+  if (groupType) session.groupType = groupType;
+  if (groupVariant) session.groupVariant = groupVariant;
   if (lockedPaths.length > 0) session.lockedPaths = lockedPaths;
 
   cliSessionsById.set(sessionId, session);

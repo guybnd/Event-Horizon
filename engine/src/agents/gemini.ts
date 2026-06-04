@@ -618,7 +618,11 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   });
 
   // Create agent_session history entry
-  const sessionEntry = buildAgentSessionEntry(session.id, session.startedAt, label);
+  const sessionEntry = buildAgentSessionEntry(session.id, session.startedAt, label, {
+    groupId: session.groupId,
+    role: session.role,
+    pattern: session.groupType,
+  });
   session.sessionHistoryEntry = sessionEntry;
 
   await updateTaskWithHistory(id, {

@@ -711,6 +711,7 @@ button:not(:disabled):active {
 .activity-badge {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   padding: 1px 7px;
   border-radius: 9999px;
   font-size: 10px;
@@ -722,6 +723,16 @@ button:not(:disabled):active {
   color: white;
   white-space: nowrap;
   flex-shrink: 0;
+  /* Dedicated, fixed-width slot so the changing activity text never reflows the card. */
+  width: 7rem;
+}
+
+.activity-badge__label {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .activity-badge--thinking {

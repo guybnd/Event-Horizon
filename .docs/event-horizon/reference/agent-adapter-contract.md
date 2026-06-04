@@ -177,7 +177,7 @@ Via the helpers in [`history.ts`](../../../engine/src/history.ts):
 
 | Helper | Entry type | When |
 |--------|-----------|------|
-| `buildAgentSessionEntry` | `agent_session` | session start |
+| `buildAgentSessionEntry` | `agent_session` | session start. Accepts an optional group descriptor (`{ groupId, role, pattern }`) so orchestrated sessions stamp their run id, role, and execution pattern onto the history entry. |
 | `appendSessionProgress` | (mutates the `agent_session.progress[]`) | each flushed chunk (in-memory until session end) |
 | `closeAgentSession` | (mutates the `agent_session`) | session exit — flushes progress, sets `endedAt` and final `status` |
 | `buildAgentMessageEntry` | `agent_message` | each user input sent into the session |

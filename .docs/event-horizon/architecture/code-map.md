@@ -27,14 +27,40 @@ This page is the quick orientation guide for where behavior lives today — file
 -   `portal/src/agentActions.ts` is the **single composition layer** for
 	launching agent CLI sessions. Every button that starts an agent (card
 	context menu, card quick-actions, modal CLI panel, modal Finish/Grooming,
-	Code Review picker) routes through `runAgentAction(...)`. For parallel
-	multi-reviewer launches, use `runParallelReviews(...)` or
-	`launchOrchestratedReview(...)`. Add new launch entry points here,
-	not by calling `startTaskCliSessionEx` directly.
+	Code Review picker) routes through `runAgentAction(...)`. For multi-agent
+	runs, use the generic `launchOrchestration(...)` — it takes a pattern-first
+	`OrchestrationMode` (from `ORCHESTRATION_MODES`) plus ordered participants and
+	an optional combiner/lead, and stamps the shared `groupId` + pattern metadata.
+	`runParallelReviews(...)` / `launchOrchestratedReview(...)` are thin code-review
+	presets over it. Add new launch entry points here, not by calling
+	`startTaskCliSessionEx` directly.
 
--   `portal/src/components/CodeReviewButton.tsx` owns the reviewer persona
-	picker with multi-select support, orchestrator checkbox, and compact mode
-	for card quick-actions. Used by both `TaskModal` and `TaskCard`.
+-   `portal/src/components/OrchestrationLauncher.tsx` is the **generic
+	pattern-first launch modal**: pick an orchestration pattern (Scatter-gather /
+	Parallel / Serialized / Hand-off), select participant roles from a catalog
+	(review personas today), see a live `OrchestrationTopology` preview, and
+	launch with partial-failure reporting. Code review is one configuration of it.
+	Claude Code is the only framework wired for now (no per-row framework picking);
+	`serialized` / `handoff` are shown but gated (`launchable: false`) until the
+	engine can sequence them. Opened from both `TaskModal` and `TaskCard`.
+
+-   `portal/src/components/CodeReviewButton.tsx` owns the entry button (compact +
+	full variants) that opens the `OrchestrationLauncher`, and re-exports the
+	review persona catalog. Used by both `TaskModal` and `TaskCard`.
+
+-   `portal/src/orchestration.ts` is the **land-here-first** module for
+	multi-agent run logic on the portal side. It groups a ticket's
+	`cliSessions[]` into runs by shared `groupId`, aggregates per-run status,
+	and derives the topology shape / labels. Pure functions, no React. Paired
+	with `portal/src/components/OrchestrationTopology.tsx`, which renders the
+	run shape as a compact glyph (cards/popover) or a per-agent node map
+	(modal Run View).
+
+-   `portal/src/components/task-modal/RunView.tsx` is the modal surface for a
+	live multi-agent run: topology map header, per-agent collapsible output,
+	per-session and group-level Stop, and the scatter-gather barrier banner.
+	Single-session tickets still use `task-modal/CliSessionPanel.tsx`;
+	`TaskModal` switches to `RunView` when an active 2+ session group exists.
 
 
 ## Portal components to check first

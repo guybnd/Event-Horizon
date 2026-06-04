@@ -232,14 +232,15 @@ export async function startMcpServer(): Promise<void> {
       if (!task) return errorResult(`Ticket ${ticketId} not found`);
 
       // Scatter-gather guard: if there are active step sessions on this task,
-      // only an orchestrator (or explicit lead) can change status.
+      // only an orchestrator (or explicit lead) can change status. Scope the check
+      // to active sessions so concurrent reviewers in the same run hold the barrier.
       const activeSessions = getActiveSessionsForTask(ticketId);
-      const hasActiveStepSessions = activeSessions.some(s => s.patternPosition === 'step');
-      if (hasActiveStepSessions && activeSessions.length >= 2) {
+      const activeStepSessions = activeSessions.filter(s => s.patternPosition === 'step');
+      if (activeStepSessions.length > 0 && activeSessions.length >= 2) {
         const isOrchestrator = callerRole === 'orchestrator' || callerRole === 'lead';
         if (!isOrchestrator) {
           return errorResult(
-            `Cannot change status: ${activeSessions.length} scatter-gather sessions are active on ${ticketId}. ` +
+            `Cannot change status: ${activeStepSessions.length} scatter-gather sessions are active on ${ticketId}. ` +
             `Only the orchestrator can change status while parallel reviews are running. ` +
             `Post your findings via add_comment instead.`
           );

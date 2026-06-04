@@ -19,9 +19,9 @@ import {
 } from 'lucide-react';
 import { useApp } from '../AppContext';
 import { createTask, deleteTask, fetchTask, sendTaskCliInput, updateTask } from '../api';
-import { runAgentAction, runParallelReviews, launchOrchestratedReview, type ReviewPersona } from '../agentActions';
+import { runAgentAction, launchOrchestration, getOrchestrationMode, ORCHESTRATOR_PROMPT } from '../agentActions';
 import { LaunchAgentSplitButton } from './LaunchAgentSplitButton';
-import { ReviewModal } from './ReviewModal';
+import { OrchestrationLauncher, type OrchestrationLaunchPlan } from './OrchestrationLauncher';
 import { isAgentSession } from '../types';
 import type { Config, HistoryEntry, InlineSubtask, Task } from '../types';
 import { FRAMEWORK_ICONS } from '../constants';
@@ -40,7 +40,8 @@ import { TicketPicker } from './TicketPicker';
 import { CommentBox } from './task-modal/CommentBox';
 import type { CommentBoxHandle } from './task-modal/CommentBox';
 import { CliSessionPanel } from './task-modal/CliSessionPanel';
-import { ReadyForMergePrompt } from './task-modal/ReadyForMergePrompt';
+import { RunView } from './task-modal/RunView';
+import { groupSessions, isActiveSession } from '../orchestration';import { ReadyForMergePrompt } from './task-modal/ReadyForMergePrompt';
 import { StartTaskPrompt } from './task-modal/StartTaskPrompt';
 import { TokenBadge } from './TokenBadge';
 import { HistoryList } from './task-modal/HistoryList';
@@ -132,6 +133,12 @@ export function TaskModal() {
     launchSession,
     stopSession,
   } = useCliSession({ isModalOpen, taskId: modalTask?.id, liveOutputRef, onSessionChange: triggerRefresh });
+
+  // Active multi-agent run group (2+ sessions sharing a groupId) for the Run View.
+  const activeRunGroup = useMemo(() => {
+    const groups = groupSessions(modalTask?.cliSessions);
+    return groups.find(g => g.isMulti && g.sessions.some(isActiveSession)) ?? null;
+  }, [modalTask?.cliSessions]);
 
   const [requireInputDraft, setRequireInputDraft] = useState('');
   const [activityFilter, setActivityFilter] = useState<ActivityFilter>(getInitialActivityFilter);
@@ -656,52 +663,44 @@ export function TaskModal() {
 
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
 
-  const handleReviewLaunch = useCallback(async (personas: ReviewPersona[], withOrchestrator: boolean, userComment: string) => {
+  const handleReviewLaunch = useCallback(async (plan: OrchestrationLaunchPlan) => {
     if (!modalTask?.id) return;
     setReviewBusy(true);
     setReviewError('');
     try {
-      // Append user comment to each persona's prompt if provided
-      const enrichedPersonas = userComment
-        ? personas.map(p => ({ ...p, prompt: `${p.prompt}\n\nThe user specifically asked you to focus on:\n${userComment}` }))
-        : personas;
-
-      if (enrichedPersonas.length === 1 && !withOrchestrator) {
-        const persona = enrichedPersonas[0];
-        const session = await runAgentAction({
-          taskId: modalTask.id,
-          framework: selectedCliFramework,
-          action: { kind: 'prompt', appendPrompt: persona.prompt },
-          currentUser,
-          skipPermissions,
-          preStatus: 'In Progress',
-          role: `reviewer:${persona.id}`,
-          pattern: 'scatter-gather',
-          patternPosition: 'step',
-        });
-        setCliSession(session);
-      } else {
-        const launcher = withOrchestrator ? launchOrchestratedReview : runParallelReviews;
-        const { sessions, errors } = await launcher({
-          taskId: modalTask.id,
-          framework: selectedCliFramework,
-          personas: enrichedPersonas,
-          currentUser,
-          skipPermissions,
-          preStatus: 'In Progress',
-        });
-        if (sessions.length > 0) setCliSession(sessions[0]);
-        if (errors.length > 0) {
-          setReviewError(`${sessions.length} of ${sessions.length + errors.length} reviewers started. Failed: ${errors.join('; ')}`);
-          triggerRefresh();
-          return;
-        }
+      const def = getOrchestrationMode(plan.mode);
+      const participants = plan.personas.map(p => ({
+        role: `reviewer:${p.id}`,
+        label: p.label,
+        prompt: plan.comment
+          ? `${p.prompt}\n\nThe user specifically asked you to focus on:\n${plan.comment}`
+          : p.prompt,
+      }));
+      const lead = def.hasLead
+        ? { role: 'orchestrator', label: 'Orchestrator', prompt: ORCHESTRATOR_PROMPT }
+        : undefined;
+      const { sessions, errors } = await launchOrchestration({
+        taskId: modalTask.id,
+        framework: selectedCliFramework,
+        mode: plan.mode,
+        participants,
+        lead,
+        currentUser,
+        skipPermissions,
+        preStatus: 'In Progress',
+      });
+      if (sessions.length > 0) setCliSession(sessions[0]);
+      if (errors.length > 0) {
+        const total = sessions.length + errors.length;
+        setReviewError(`${sessions.length} of ${total} agents started. Failed: ${errors.join('; ')}`);
+        triggerRefresh();
+        return;
       }
       setReviewModalOpen(false);
       triggerRefresh();
       closeModal();
     } catch (error: any) {
-      setReviewError(error?.message || 'Failed to start review sessions.');
+      setReviewError(error?.message || 'Failed to start agent sessions.');
     } finally {
       setReviewBusy(false);
     }
@@ -1180,6 +1179,19 @@ export function TaskModal() {
         )}
       </div>
       {modalTask?.id && (
+        activeRunGroup ? (
+          <RunView
+            group={activeRunGroup}
+            config={config}
+            busy={cliSessionBusy}
+            onStopSession={(sessionId) => void stopSession(sessionId)}
+            onStopAll={() => {
+              for (const s of activeRunGroup.sessions) {
+                if (['pending', 'running', 'waiting-input'].includes(s.status)) void stopSession(s.id);
+              }
+            }}
+          />
+        ) : (
         <CliSessionPanel
           cliSession={cliSession}
           cliSessionBusy={cliSessionBusy}
@@ -1196,6 +1208,7 @@ export function TaskModal() {
           onStop={stopSession}
           onToggleDisplayMode={config ? () => void saveConfig({ ...config, tokenDisplayMode: config.tokenDisplayMode === 'tokens' ? 'cost' : 'tokens' }) : undefined}
         />
+        )
       )}
       {modalTask?.id && (
         <button
@@ -1341,7 +1354,7 @@ export function TaskModal() {
                       <button
                         type="button"
                         disabled={cliSessionBusy}
-                        onClick={stopSession}
+                        onClick={() => void stopSession()}
                         className="flex items-center gap-1 rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-100 disabled:opacity-50 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
                       >
                         <Square className="h-3 w-3" />
@@ -1719,9 +1732,10 @@ export function TaskModal() {
       )}
     </AnimatePresence>
 
-    <ReviewModal
+    <OrchestrationLauncher
       open={reviewModalOpen}
       ticket={modalTask?.id ? { id: modalTask.id, title: modalTask.title || 'Untitled', status: modalTask.status, branch: modalTask.branch } : null}
+      framework={selectedCliFramework}
       onClose={() => setReviewModalOpen(false)}
       onLaunch={handleReviewLaunch}
       busy={reviewBusy}

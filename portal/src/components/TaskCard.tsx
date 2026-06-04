@@ -9,9 +9,9 @@ import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, Message
 import { TokenBadge } from './TokenBadge';
 import { useApp } from '../AppContext';
 import { sendTaskCliInput, updateTask } from '../api';
-import { runAgentAction, runParallelReviews, launchOrchestratedReview, type ReviewPersona } from '../agentActions';
+import { runAgentAction, launchOrchestration, getOrchestrationMode, ORCHESTRATOR_PROMPT } from '../agentActions';
 import { CodeReviewButton } from './CodeReviewButton';
-import { ReviewModal } from './ReviewModal';
+import { OrchestrationLauncher, type OrchestrationLaunchPlan } from './OrchestrationLauncher';
 import { getArchiveStatus, getReadyForMergeStatus, isPromptableStatus, relativeTime } from '../workflow';
 import { isActiveSession, groupSessions, aggregateGroup, groupAggregateLine, normalizeRoleLabel, statusDotColor } from '../orchestration';
 import { OrchestrationTopology } from './OrchestrationTopology';
@@ -327,37 +327,31 @@ export const TaskCard = memo(function TaskCard({
     }
   };
 
-  const handleCardReviewLaunch = async (personas: ReviewPersona[], withOrchestrator: boolean, userComment: string) => {
+  const handleCardReviewLaunch = async (plan: OrchestrationLaunchPlan) => {
     setReviewModalOpen(false);
     setReviewBusy(true);
     try {
       const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
-      const enrichedPersonas = userComment
-        ? personas.map(p => ({ ...p, prompt: `${p.prompt}\n\nThe user specifically asked you to focus on:\n${userComment}` }))
-        : personas;
-
-      if (enrichedPersonas.length === 1 && !withOrchestrator) {
-        const persona = enrichedPersonas[0];
-        await runAgentAction({
-          taskId: task.id,
-          framework,
-          action: { kind: 'prompt', appendPrompt: persona.prompt },
-          currentUser,
-          preStatus: 'In Progress',
-          role: `reviewer:${persona.id}`,
-          pattern: 'scatter-gather',
-          patternPosition: 'step',
-        });
-      } else {
-        const launcher = withOrchestrator ? launchOrchestratedReview : runParallelReviews;
-        await launcher({
-          taskId: task.id,
-          framework,
-          personas: enrichedPersonas,
-          currentUser,
-          preStatus: 'In Progress',
-        });
-      }
+      const def = getOrchestrationMode(plan.mode);
+      const participants = plan.personas.map(p => ({
+        role: `reviewer:${p.id}`,
+        label: p.label,
+        prompt: plan.comment
+          ? `${p.prompt}\n\nThe user specifically asked you to focus on:\n${plan.comment}`
+          : p.prompt,
+      }));
+      const lead = def.hasLead
+        ? { role: 'orchestrator', label: 'Orchestrator', prompt: ORCHESTRATOR_PROMPT }
+        : undefined;
+      await launchOrchestration({
+        taskId: task.id,
+        framework,
+        mode: plan.mode,
+        participants,
+        lead,
+        currentUser,
+        preStatus: 'In Progress',
+      });
       triggerRefresh();
     } finally {
       setReviewBusy(false);
@@ -1161,8 +1155,8 @@ export const TaskCard = memo(function TaskCard({
                   </span>
                 )}
                 {currentActivity && !shouldShowProgress && (
-                  <span className={`activity-badge activity-badge--${currentActivity.toLowerCase().replace(/\s+/g, '-')}`}>
-                    {currentActivity}
+                  <span className={`activity-badge activity-badge--${currentActivity.toLowerCase().replace(/\s+/g, '-')}`} title={currentActivity}>
+                    <span className="activity-badge__label">{currentActivity}</span>
                   </span>
                 )}
                 <motion.button
@@ -1578,9 +1572,10 @@ export const TaskCard = memo(function TaskCard({
       )}
 
       {reviewModalOpen && !isOverlay && (
-        <ReviewModal
+        <OrchestrationLauncher
           open={reviewModalOpen}
           ticket={{ id: task.id, title: task.title || 'Untitled', status: task.status, branch: task.branch }}
+          framework={resolveEffectiveAgent(undefined, config?.defaultAgent)}
           onClose={() => setReviewModalOpen(false)}
           onLaunch={handleCardReviewLaunch}
           busy={reviewBusy}
