@@ -1721,6 +1721,7 @@ export function TaskModal() {
 
     <ReviewModal
       open={reviewModalOpen}
+      ticket={modalTask?.id ? { id: modalTask.id, title: modalTask.title || 'Untitled', status: modalTask.status, branch: modalTask.branch } : null}
       onClose={() => setReviewModalOpen(false)}
       onLaunch={handleReviewLaunch}
       busy={reviewBusy}

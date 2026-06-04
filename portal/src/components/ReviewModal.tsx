@@ -1,16 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, Users, X } from 'lucide-react';
+import { Check, ChevronDown, FileText, Users, X } from 'lucide-react';
 import { REVIEW_PERSONAS, type ReviewPersona } from '../agentActions';
+
+export interface ReviewModalTicketInfo {
+  id: string;
+  title: string;
+  status?: string;
+  branch?: string;
+}
 
 interface Props {
   open: boolean;
+  ticket: ReviewModalTicketInfo | null;
   onClose: () => void;
   onLaunch: (personas: ReviewPersona[], withOrchestrator: boolean, userComment: string) => void;
   busy?: boolean;
   error?: string;
 }
 
-export function ReviewModal({ open, onClose, onLaunch, busy, error }: Props) {
+export function ReviewModal({ open, ticket, onClose, onLaunch, busy, error }: Props) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [withOrchestrator, setWithOrchestrator] = useState(true);
   const [comment, setComment] = useState('');
@@ -48,7 +56,7 @@ export function ReviewModal({ open, onClose, onLaunch, busy, error }: Props) {
     onLaunch(personas, personas.length >= 2 ? withOrchestrator : false, comment.trim());
   };
 
-  if (!open) return null;
+  if (!open || !ticket) return null;
 
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center">
@@ -59,13 +67,46 @@ export function ReviewModal({ open, onClose, onLaunch, busy, error }: Props) {
       />
       <div className="relative z-10 w-full max-w-md rounded-2xl border border-gray-200 bg-white p-5 shadow-2xl dark:border-white/10 dark:bg-[#1a1b23]">
         {/* Header */}
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-3">
           <h3 className="text-sm font-bold text-gray-900 dark:text-gray-100">Send for Code Review</h3>
           <button
             onClick={onClose}
             className="rounded-lg p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/10 dark:hover:text-gray-200"
           >
             <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* Ticket context */}
+        <div className="mb-4 rounded-lg border border-gray-100 bg-gray-50 px-3 py-2.5 dark:border-white/5 dark:bg-black/20">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-bold text-primary">
+              {ticket.id}
+            </span>
+            <span className="truncate text-xs font-semibold text-gray-800 dark:text-gray-100">
+              {ticket.title}
+            </span>
+          </div>
+          {ticket.branch && (
+            <div className="mt-1.5 flex items-center gap-1.5 text-[10px] text-gray-500 dark:text-gray-400">
+              <FileText className="h-3 w-3 shrink-0" />
+              <span className="truncate font-mono">{ticket.branch}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Template selector (placeholder for orchestration templates) */}
+        <div className="mb-4">
+          <label className="block text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">
+            Review template
+          </label>
+          <button
+            type="button"
+            disabled
+            className="flex w-full items-center justify-between rounded-lg border border-dashed border-gray-200 bg-white px-3 py-2 text-xs text-gray-400 dark:border-white/10 dark:bg-black/20 dark:text-gray-500"
+          >
+            <span>Default (select reviewers below)</span>
+            <ChevronDown className="h-3.5 w-3.5" />
           </button>
         </div>
 
@@ -79,7 +120,7 @@ export function ReviewModal({ open, onClose, onLaunch, busy, error }: Props) {
               </span>
             )}
           </div>
-          <div className="space-y-1 max-h-60 overflow-y-auto rounded-xl border border-gray-100 bg-gray-50 p-1 dark:border-white/5 dark:bg-black/20">
+          <div className="space-y-1 max-h-52 overflow-y-auto rounded-xl border border-gray-100 bg-gray-50 p-1 dark:border-white/5 dark:bg-black/20">
             {REVIEW_PERSONAS.map((persona) => (
               <button
                 key={persona.id}

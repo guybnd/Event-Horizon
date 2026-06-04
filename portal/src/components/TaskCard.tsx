@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo, memo, useCallback } from 'react';
+import { useState, useRef, useEffect, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import type { CSSProperties } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
@@ -13,6 +13,8 @@ import { runAgentAction, runParallelReviews, launchOrchestratedReview, type Revi
 import { CodeReviewButton } from './CodeReviewButton';
 import { ReviewModal } from './ReviewModal';
 import { getArchiveStatus, getReadyForMergeStatus, isPromptableStatus, relativeTime } from '../workflow';
+import { isActiveSession, groupSessions, aggregateGroup, groupAggregateLine, normalizeRoleLabel, statusDotColor } from '../orchestration';
+import { OrchestrationTopology } from './OrchestrationTopology';
 import { resolveEffectiveAgent } from '../utils';
 import { motion, AnimatePresence, useAnimationControls } from 'framer-motion';
 import { TaskMarkdown } from './TaskMarkdown';
@@ -184,6 +186,17 @@ export const TaskCard = memo(function TaskCard({
   const readCommentIds = new Set(readComments[task.id] ?? []);
   const hasActiveCliSession = Boolean(task.cliSession && ['pending', 'running', 'waiting-input'].includes(task.cliSession.status));
   const currentActivity = hasActiveCliSession ? (task.cliSession?.currentActivity ?? 'Running') : undefined;
+
+  // Multi-agent cluster: detect a run group with 2+ active sessions to render inline.
+  const activeSessionList = useMemo(
+    () => (task.cliSessions ?? []).filter(isActiveSession),
+    [task.cliSessions]
+  );
+  const clusterGroup = useMemo(() => {
+    const groups = groupSessions(activeSessionList);
+    return groups.find(g => g.isMulti) ?? null;
+  }, [activeSessionList]);
+  const clusterAgg = useMemo(() => (clusterGroup ? aggregateGroup(clusterGroup) : null), [clusterGroup]);
 
   // Check agent session history for recent activity
   const agentProgressEnabled = config?.agentProgress?.enabled !== false;
@@ -961,6 +974,32 @@ export const TaskCard = memo(function TaskCard({
               {snippet}
             </p>
 
+            {clusterGroup && clusterAgg && !isOverlay && (
+              <div className="mb-3 rounded-lg border border-emerald-200/70 bg-emerald-50/60 p-2 dark:border-emerald-500/20 dark:bg-emerald-500/5">
+                <div className="mb-1.5 flex items-center justify-between gap-2">
+                  <OrchestrationTopology group={clusterGroup} variant="glyph" />
+                  <span className="text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+                    {clusterAgg.active > 0 ? `${clusterAgg.active} running` : 'done'}
+                  </span>
+                </div>
+                <p className="mb-1.5 truncate text-[11px] text-gray-600 dark:text-gray-300">
+                  {groupAggregateLine(clusterGroup, clusterAgg)}
+                </p>
+                <div className="flex flex-wrap gap-1">
+                  {clusterGroup.sessions.map(s => (
+                    <span
+                      key={s.id}
+                      title={`${normalizeRoleLabel(s.role) ?? s.framework} — ${s.status}`}
+                      className="flex items-center gap-1 rounded-md border border-gray-200 bg-white px-1.5 py-0.5 text-[10px] font-medium text-gray-700 dark:border-white/10 dark:bg-white/5 dark:text-gray-200"
+                    >
+                      <span className={`inline-block h-1.5 w-1.5 rounded-full bg-current ${statusDotColor(s.status)} ${isActiveSession(s) && s.status !== 'waiting-input' ? 'animate-pulse' : ''}`} />
+                      <span className="max-w-[90px] truncate">{normalizeRoleLabel(s.role) ?? s.framework}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {task.branch && !isOverlay && (
               <div className="mb-2 flex min-w-0 max-w-full items-center gap-1.5 overflow-hidden rounded-md border border-gray-100 bg-gray-50 px-2 py-1 text-[10px] font-mono text-gray-500 dark:border-white/5 dark:bg-black/20 dark:text-gray-400">
                 <GitBranch className="h-2.5 w-2.5 shrink-0 text-gray-400" />
@@ -1541,6 +1580,7 @@ export const TaskCard = memo(function TaskCard({
       {reviewModalOpen && !isOverlay && (
         <ReviewModal
           open={reviewModalOpen}
+          ticket={{ id: task.id, title: task.title || 'Untitled', status: task.status, branch: task.branch }}
           onClose={() => setReviewModalOpen(false)}
           onLaunch={handleCardReviewLaunch}
           busy={reviewBusy}
