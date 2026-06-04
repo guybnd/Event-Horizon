@@ -106,6 +106,7 @@ When you add a new framework, add a row here too.
    - Calls `closeAgentSession` to finalize the `agent_session` history entry (sets `endedAt`, `status`, flushes accumulated progress to disk).
    - Fires `taskUpdated` SSE.
    - On `completed`: runs `checkFrameworkHealth` and `checkSkillStaleness` (notification side effects).
+   - If the session has a `groupId`: calls `notifyGroupSessionTerminal(taskId, groupId)` (session-store fan-in barrier). This lets a deferred scatter-gather combiner spawn once every worker in the group has reached a terminal state. Adapters must call this for orchestration sequencing to work.
 
 `task` is typed `unknown` because the adapter only reads its `id` and (optionally) `title`. The engine passes the live cache entry.
 
@@ -177,7 +178,7 @@ Via the helpers in [`history.ts`](../../../engine/src/history.ts):
 
 | Helper | Entry type | When |
 |--------|-----------|------|
-| `buildAgentSessionEntry` | `agent_session` | session start |
+| `buildAgentSessionEntry` | `agent_session` | session start. Accepts an optional group descriptor (`{ groupId, role, pattern }`) so orchestrated sessions stamp their run id, role, and execution pattern onto the history entry. |
 | `appendSessionProgress` | (mutates the `agent_session.progress[]`) | each flushed chunk (in-memory until session end) |
 | `closeAgentSession` | (mutates the `agent_session`) | session exit — flushes progress, sets `endedAt` and final `status` |
 | `buildAgentMessageEntry` | `agent_message` | each user input sent into the session |

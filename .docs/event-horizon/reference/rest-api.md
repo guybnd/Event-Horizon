@@ -30,9 +30,9 @@ Sourced from [`engine/src/routes/tasks.ts`](../../../engine/src/routes/tasks.ts)
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/tasks` | All tickets (array). The portal polls this. |
+| GET | `/api/tasks` | All tickets (array). The portal polls this. Each ticket carries a **capped** `cliSessions[]`: only active sessions plus the most-recent completed run group, with each `liveOutput` truncated to a short tail (~2KB) — so the poll payload doesn't grow with session history. Use `GET /api/tasks/:id` for the full set. |
 | GET | `/api/tasks/errors` | Parse errors keyed by file path — for the ParseError banner. |
-| GET | `/api/tasks/:id` | Single ticket. |
+| GET | `/api/tasks/:id` | Single ticket. Returns the **full** `cliSessions[]` (all sessions, full `liveOutput`). |
 | POST | `/api/tasks` | Create a ticket. Body: `{ author, title, status?, priority?, effort?, tags?, body?, assignee?, history?, projectKey?, ... }`. Allocates next id from `projectKey` (or first configured project), checks remote ids in orphan mode to avoid collisions, validates schema, writes atomically. Returns the created ticket. |
 | POST | `/api/tasks/:parentId/subtasks` | Create a child ticket and link it from the parent. Body mirrors POST `/api/tasks` plus parent linkage. |
 | PUT | `/api/tasks/:id` | Update a ticket. Body: any subset of metadata fields, optional `body`, optional `status`, optional `appendHistory: HistoryEntry[]` to append comments / activity entries. Used by the portal and as the REST fallback for agents when MCP is unavailable. |
@@ -52,9 +52,23 @@ From [`cli-session.ts`](../../../engine/src/routes/cli-session.ts).
 |--------|------|---------|
 | GET | `/api/tasks/:id/cli-session` | Most recent CLI session summary for a ticket. |
 | GET | `/api/tasks/:id/cli-sessions` | All session summaries for a ticket. |
-| POST | `/api/tasks/:id/cli-session/start` | Launch a CLI agent (Claude / Gemini / Copilot) against the ticket. Body: `{ framework, prompt?, effort?, skipPermissions?, ... }`. Spawns the child process; live output streams over SSE. |
-| POST | `/api/tasks/:id/cli-session/input` | Send follow-up input to a running session. Body: `{ message, user? }`. |
-| POST | `/api/tasks/:id/cli-session/stop` | Cancel a running session. |
+| POST | `/api/tasks/:id/cli-session/start` | Launch a CLI agent (Claude / Gemini / Copilot) against the ticket. Body: `{ framework, appendPrompt?, personaId?, focusComment?, effortOverride?, skipPermissions?, role?, pattern?, patternPosition?, groupId?, groupSeq?, groupType?, groupVariant?, lockedPaths? }`. `personaId` resolves a reviewer/orchestrator prompt **server-side** from the persona catalog (see `/api/orchestration/personas`); `focusComment` is an optional reviewer focus note appended to the resolved prompt. Provide either `appendPrompt` or `personaId` (an unknown `personaId` returns 400). Multi-session fields (`role`, `pattern`, `patternPosition`) tag the session for orchestration. Run-group fields (`groupId`, `groupSeq`, `groupType`, `groupVariant`) bind sessions launched together into one orchestration run so the UI can render them as a cluster. `lockedPaths` declares exclusive file access; engine returns 409 on conflicts. Spawns the child process; live output streams over SSE. |
+| POST | `/api/tasks/:id/cli-session/input` | Send follow-up input to a running session. Body: `{ message, user?, sessionId? }`. `sessionId` targets a specific session in a multi-agent run; omit to target the most recent active session. |
+| POST | `/api/tasks/:id/cli-session/register-combiner` | Register a **deferred combiner** for a scatter-gather run group. Body: `{ framework, groupId, role, appendPrompt?, personaId?, expectedWorkers, skipPermissions?, groupType?, groupVariant? }`. Provide either `appendPrompt` or `personaId` (resolved server-side; typically `'orchestrator'`). The combiner is spawned by the engine's fan-in barrier only once every worker (`patternPosition: 'step'`) session in `groupId` reaches a terminal state — preventing the combiner from racing its workers. `expectedWorkers` guards against launching before all workers have registered. Registering re-checks immediately in case workers already finished. |
+| POST | `/api/tasks/:id/cli-session/unregister-combiner` | Cancel a pending deferred combiner. Body: `{ groupId }`. Used when no worker sessions actually started. |
+| POST | `/api/tasks/:id/cli-session/stop` | Cancel a running session. Body: `{ sessionId? }`. `sessionId` stops one agent in a run group; omit to stop the most recent active session. |
+
+## Orchestration (`/api/orchestration`) — workspace-scoped
+
+From [`orchestration.ts`](../../../engine/src/routes/orchestration.ts). Persona prompts live engine-side in [`orchestration-personas.ts`](../../../engine/src/orchestration-personas.ts) and are resolved server-side at launch from a `personaId`. Built-in personas are defined in code, maintained by Event Horizon, and are **viewable but read-only** (so users can read and fork them); user-authored personas persist as JSON files under `<fluxDir>/personas/*.json` and are fully editable. Both are merged at read time.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/orchestration/personas` | List selectable personas as metadata only: `{ personas: Array<{ id, label, description, phase, compatiblePatterns, requiredCapabilities, builtIn }> }`. Prompt text is omitted. `phase` (`grooming` \| `implementation` \| `review` \| `finalize`) drives phase-aware launcher filtering; pass `?phase=<phase>` to return only personas for that phase. `compatiblePatterns` gates a persona to specific execution patterns (empty = any); `requiredCapabilities` lists CLI capabilities a persona needs; `builtIn` flags code-defined (read-only) personas. The internal `orchestrator` and `supervisor` personas are excluded from this list (they are added automatically by the launcher when the pattern requires a combiner/lead). |
+| GET | `/api/orchestration/personas/:id` | Full persona **including prompt** (`{ persona }`), for both built-in and custom personas. The `builtIn` flag tells the client whether to render it read-only; the portal offers a "Duplicate & Edit" fork for built-ins. |
+| POST | `/api/orchestration/personas` | Create a custom persona. Body: `{ id?, label, description?, phase, compatiblePatterns?, requiredCapabilities?, prompt }`. `id` is auto-validated as a slug; an id that collides with a built-in returns 400. Returns `{ persona }` (metadata). |
+| PUT | `/api/orchestration/personas/:id` | Update a custom persona (same body as POST). Refuses built-in ids with 400 — built-ins are maintained in code and updated via app releases. Returns `{ persona }` (metadata). |
+| DELETE | `/api/orchestration/personas/:id` | Delete a custom persona. Refuses built-in ids with 400; returns 404 if not found. |
 
 ## Docs (`/api/docs`) — workspace-scoped
 
@@ -74,7 +88,7 @@ From [`routes/config.ts`](../../../engine/src/routes/config.ts).
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/config` | Current board config (columns, hidden statuses, tags, priorities, users, project keys, sync settings, …). |
+| GET | `/api/config` | Current board config (columns, hidden statuses, tags, priorities, users, project keys, sync settings, …). Includes `defaultAgent`, the legacy `defaultWorkflowId`, and `phaseDefaults` — a map of `{ grooming, implementation, review, finalize } → { single?, multi? }` template ids that drive the per-phase Single/Multi launch defaults (each falls back to `builtin-<phase>-<variant>` when unset). |
 | PUT | `/api/config` | Replace the board config. |
 
 ## Workspace + workspaces
@@ -150,16 +164,16 @@ From [`routes/skill.ts`](../../../engine/src/routes/skill.ts).
 
 ## Workflows (`/api/workflows`)
 
-Multi-agent execution patterns (relay, scatter-gather, supervisor). From [`routes/workflows.ts`](../../../engine/src/routes/workflows.ts).
+Multi-agent execution patterns (relay, scatter-gather, supervisor). From [`routes/workflows.ts`](../../../engine/src/routes/workflows.ts). Templates are either **built-in** (code-defined in [`models/workflow.ts`](../../../engine/src/models/workflow.ts) `BUILTIN_WORKFLOWS`, maintained by Event Horizon and updated via releases) or **custom** (persisted as JSON under `<fluxDir>/workflows/*.json`). Built-ins ship a single-agent and a multi-agent template per phase (`builtin-<phase>-single`, `builtin-<phase>-multi`) and carry `builtIn: true`. Both kinds are merged at read time; built-ins always lead the list.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/workflows` | List workflows. |
+| GET | `/api/workflows` | List workflows (built-in + custom). Each item carries `builtIn` (`true` for code-defined templates). |
 | GET | `/api/workflows/patterns` | List available execution patterns. |
-| GET | `/api/workflows/:id` | One workflow. |
-| POST | `/api/workflows` | Create. |
-| PUT | `/api/workflows/:id` | Update. |
-| DELETE | `/api/workflows/:id` | Delete. |
+| GET | `/api/workflows/:id` | One workflow (built-in or custom). |
+| POST | `/api/workflows` | Create a custom template. An `id` that collides with a built-in is rejected. |
+| PUT | `/api/workflows/:id` | Update a custom template. Refuses built-in ids with 400 — duplicate a built-in to customize it. |
+| DELETE | `/api/workflows/:id` | Delete a custom template. Refuses built-in ids with 400. |
 
 ## Agents (`/api/agents`)
 

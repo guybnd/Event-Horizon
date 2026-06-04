@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import { configCache } from '../config.js';
 import { buildActivityEntry, buildCommentEntry, buildAgentMessageEntry, buildAgentSessionEntry, appendSessionProgress, closeAgentSession, type AgentSessionEntry } from '../history.js';
 import { updateTaskWithHistory, updateAgentSession, tasksCache, estimateCostUSD } from '../task-store.js';
-import { cliSessionsById, cliSessionIdByTaskId } from '../session-store.js';
+import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
@@ -618,7 +618,11 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   });
 
   // Create agent_session history entry
-  const sessionEntry = buildAgentSessionEntry(session.id, session.startedAt, label);
+  const sessionEntry = buildAgentSessionEntry(session.id, session.startedAt, label, {
+    groupId: session.groupId,
+    role: session.role,
+    pattern: session.groupType,
+  });
   session.sessionHistoryEntry = sessionEntry;
 
   await updateTaskWithHistory(id, {
@@ -726,6 +730,10 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     if (finalStatus === 'completed') {
       checkFrameworkHealth(session.framework).catch(() => {});
       checkSkillStaleness(session.framework).catch(() => {});
+    }
+
+    if (session.groupId) {
+      notifyGroupSessionTerminal(session.taskId, session.groupId).catch(() => {});
     }
   });
 }

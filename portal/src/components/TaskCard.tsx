@@ -1,16 +1,19 @@
-import { useState, useRef, useEffect, useMemo, memo, useCallback } from 'react';
+import { useState, useRef, useEffect, useMemo, memo } from 'react';
 import { createPortal } from 'react-dom';
 import type { CSSProperties } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { Task, TaskLiveEvent } from '../types';
 import { normalizeSubtaskId } from '../types';
-import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, MessageCircle, Bot, SendHorizontal, Maximize2, Zap, Layers, MousePointerClick, Play, Search, Undo2, GitBranch, Copy, Check } from 'lucide-react';
+import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, MessageCircle, Bot, SendHorizontal, Maximize2, Zap, Layers, MousePointerClick, Play, Undo2, GitBranch, Copy, Check, FileText } from 'lucide-react';
 import { TokenBadge } from './TokenBadge';
 import { useApp } from '../AppContext';
-import { sendTaskCliInput, updateTask } from '../api';
-import { runAgentAction, REVIEW_PERSONAS } from '../agentActions';
+import { sendTaskCliInput, updateTask, fetchWorkflows, workflowPhaseMembers, type WorkflowTemplate } from '../api';
+import { runAgentAction, launchOrchestration, getOrchestrationMode, phaseCombiner, phaseLaunchStatus, resolvePhaseDefaultId, statusToPhase, type LaunchPhase } from '../agentActions';
+import { OrchestrationLauncher, type OrchestrationLaunchPlan } from './OrchestrationLauncher';
 import { getArchiveStatus, getReadyForMergeStatus, isPromptableStatus, relativeTime } from '../workflow';
+import { isActiveSession, groupSessions, aggregateGroup, groupAggregateLine, normalizeRoleLabel, statusDotColor, isGroupLive, isCombinerPending } from '../orchestration';
+import { OrchestrationTopology } from './OrchestrationTopology';
 import { resolveEffectiveAgent } from '../utils';
 import { motion, AnimatePresence, useAnimationControls } from 'framer-motion';
 import { TaskMarkdown } from './TaskMarkdown';
@@ -183,6 +186,20 @@ export const TaskCard = memo(function TaskCard({
   const hasActiveCliSession = Boolean(task.cliSession && ['pending', 'running', 'waiting-input'].includes(task.cliSession.status));
   const currentActivity = hasActiveCliSession ? (task.cliSession?.currentActivity ?? 'Running') : undefined;
 
+  // Multi-agent cluster: show the most recent multi-session run group while it is
+  // still live (workers running, or a combiner still owed). Grouping ALL sessions
+  // — not just active ones — keeps completed/failed agents visible as the run
+  // unfolds, instead of having them vanish one by one as each finishes.
+  const clusterGroup = useMemo(() => {
+    const groups = groupSessions(task.cliSessions ?? []);
+    return groups.find(g => g.isMulti && isGroupLive(g, aggregateGroup(g))) ?? null;
+  }, [task.cliSessions]);
+  const clusterAgg = useMemo(() => (clusterGroup ? aggregateGroup(clusterGroup) : null), [clusterGroup]);
+  const clusterCombinerPending = useMemo(
+    () => (clusterGroup && clusterAgg ? isCombinerPending(clusterGroup, clusterAgg) : false),
+    [clusterGroup, clusterAgg]
+  );
+
   // Check agent session history for recent activity
   const agentProgressEnabled = config?.agentProgress?.enabled !== false;
   const agentProgressDelay = (config?.agentProgress?.inlineDelay ?? 2) * 1000;
@@ -202,12 +219,20 @@ export const TaskCard = memo(function TaskCard({
   const [finishBusy, setFinishBusy] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [reviewSelectorOpen, setReviewSelectorOpen] = useState(false);
+  const [reviewModalOpen, setReviewModalOpen] = useState(false);
+  const [launcherPhase, setLauncherPhase] = useState<LaunchPhase>('review');
+  const [launcherTemplateId, setLauncherTemplateId] = useState<string | undefined>(undefined);
   const [reviewBusy, setReviewBusy] = useState(false);
   const [returnPromptOpen, setReturnPromptOpen] = useState(false);
   const [returnReason, setReturnReason] = useState('');
   const [returnBusy, setReturnBusy] = useState(false);
   const [showStartPrompt, setShowStartPrompt] = useState(false);
   const [branchCopied, setBranchCopied] = useState(false);
+  const [agentMenuOpen, setAgentMenuOpen] = useState(false);
+  const [finishMenuOpen, setFinishMenuOpen] = useState(false);
+  const [phaseTemplates, setPhaseTemplates] = useState<WorkflowTemplate[] | null>(null);
+  const agentMenuRef = useRef<HTMLDivElement | null>(null);
+  const finishMenuRef = useRef<HTMLDivElement | null>(null);
   const reviewSelectorRef = useRef<HTMLDivElement | null>(null);
   const comments = task.history?.filter(e => e.type === 'comment') ?? [];
   const topLevelComments = [...comments.filter(c => !c.replyTo)].reverse();
@@ -311,20 +336,139 @@ export const TaskCard = memo(function TaskCard({
     }
   };
 
-  const sendReview = async (e: React.MouseEvent, personaId: string) => {
+  const openAgentLauncher = (variant: 'single' | 'multi') => {
+    const phase = statusToPhase(task.status, { readyStatus: readyForMergeStatus });
+    setLauncherPhase(phase);
+    setLauncherTemplateId(`builtin-${phase}-${variant}`);
+    setReviewModalOpen(true);
+  };
+
+  const cardPhase = statusToPhase(task.status, { readyStatus: readyForMergeStatus });
+
+  // Lazily load templates the first time the agent menu is opened.
+  const toggleAgentMenu = (e: React.MouseEvent) => {
     e.stopPropagation();
-    setReviewSelectorOpen(false);
+    setAgentMenuOpen((open) => !open);
+    if (phaseTemplates === null) {
+      fetchWorkflows().then(setPhaseTemplates).catch(() => setPhaseTemplates([]));
+    }
+  };
+
+  // Templates that configure the current phase.
+  const templatesForCardPhase = useMemo(
+    () => (phaseTemplates ?? []).filter((w) => w.phases?.[cardPhase as keyof typeof w.phases]),
+    [phaseTemplates, cardPhase],
+  );
+  const singleDefaultId = resolvePhaseDefaultId(config?.phaseDefaults, cardPhase, 'single');
+  const multiDefaultId = resolvePhaseDefaultId(config?.phaseDefaults, cardPhase, 'multi');
+  const singleDefaultName = templatesForCardPhase.find((w) => w.id === singleDefaultId)?.name;
+  const multiDefaultName = templatesForCardPhase.find((w) => w.id === multiDefaultId)?.name;
+  const otherCardTemplates = templatesForCardPhase.filter(
+    (w) => w.id !== singleDefaultId && w.id !== multiDefaultId,
+  );
+
+  const openLauncherWithTemplate = (templateId: string) => {
+    setAgentMenuOpen(false);
+    setLauncherPhase(cardPhase);
+    setLauncherTemplateId(templateId);
+    setReviewModalOpen(true);
+  };
+
+  // Finalize templates (docs check / commit / ticket tidy / merge PR) for the Finish menu.
+  const finalizeTemplates = useMemo(
+    () => (phaseTemplates ?? []).filter((w) => w.phases?.finalize),
+    [phaseTemplates],
+  );
+  const finalizeSingleId = resolvePhaseDefaultId(config?.phaseDefaults, 'finalize', 'single');
+  const finalizeMultiId = resolvePhaseDefaultId(config?.phaseDefaults, 'finalize', 'multi');
+  const finalizeSingleName = finalizeTemplates.find((w) => w.id === finalizeSingleId)?.name;
+  const finalizeMultiName = finalizeTemplates.find((w) => w.id === finalizeMultiId)?.name;
+  const otherFinalizeTemplates = finalizeTemplates.filter(
+    (w) => w.id !== finalizeSingleId && w.id !== finalizeMultiId,
+  );
+
+  const toggleFinishMenu = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setFinishMenuOpen((open) => !open);
+    if (phaseTemplates === null) {
+      fetchWorkflows().then(setPhaseTemplates).catch(() => setPhaseTemplates([]));
+    }
+  };
+
+  // Open the launcher in the finalize phase (independent of the card's status phase).
+  const openFinalizeLauncher = (templateId: string) => {
+    setFinishMenuOpen(false);
+    setLauncherPhase('finalize');
+    setLauncherTemplateId(templateId);
+    setReviewModalOpen(true);
+  };
+
+  // Primary one-click: launch the phase's single default as a standalone agent.
+  const launchSingleDefault = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setAgentMenuOpen(false);
+    if (task.status === 'Todo' && !task.branch) { setShowStartPrompt(true); return; }
     setReviewBusy(true);
     try {
-      const persona = REVIEW_PERSONAS.find(p => p.id === personaId);
-      if (!persona) return;
       const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
+      const list = phaseTemplates ?? (await fetchWorkflows());
+      if (phaseTemplates === null) setPhaseTemplates(list);
+      const wf = list.find((w) => w.id === singleDefaultId);
+      const members = workflowPhaseMembers(wf?.phases?.[cardPhase as keyof NonNullable<typeof wf.phases>]);
+      const personaId = members[0];
+      if (!personaId) { openAgentLauncher('single'); return; }
       await runAgentAction({
         taskId: task.id,
         framework,
-        action: { kind: 'prompt', appendPrompt: persona.prompt },
+        action: { kind: 'persona', personaId },
         currentUser,
-        preStatus: 'In Progress',
+        preStatus: phaseLaunchStatus(cardPhase),
+      });
+      triggerRefresh();
+    } finally {
+      setReviewBusy(false);
+    }
+  };
+
+  const handleCardReviewLaunch = async (plan: OrchestrationLaunchPlan) => {
+    setReviewModalOpen(false);
+    setReviewBusy(true);
+    try {
+      const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
+      // A single selected agent launches standalone — bypass orchestration gating entirely.
+      if (plan.personas.length === 1) {
+        await runAgentAction({
+          taskId: task.id,
+          framework,
+          action: { kind: 'persona', personaId: plan.personas[0].id, focusComment: plan.comment || undefined },
+          currentUser,
+          effortOverride: plan.effort,
+          preStatus: phaseLaunchStatus(launcherPhase),
+        });
+        triggerRefresh();
+        return;
+      }
+      const def = getOrchestrationMode(plan.mode);
+      const participants = plan.personas.map(p => ({
+        role: `${launcherPhase}:${p.id}`,
+        label: p.label,
+        personaId: p.id,
+        focusComment: plan.comment || undefined,
+      }));
+      // Combiner/lead persona per phase and mode. Supervisor uses delegation-aware lead.
+      const combiner = phaseCombiner(launcherPhase, plan.mode);
+      const lead = def.hasLead && combiner
+        ? { role: combiner.personaId, label: combiner.label, personaId: combiner.personaId }
+        : undefined;
+      await launchOrchestration({
+        taskId: task.id,
+        framework,
+        mode: plan.mode,
+        participants,
+        lead,
+        currentUser,
+        effortOverride: plan.effort,
+        preStatus: phaseLaunchStatus(launcherPhase),
       });
       triggerRefresh();
     } finally {
@@ -471,7 +615,7 @@ export const TaskCard = memo(function TaskCard({
     transition: { type: 'spring' as const, bounce: 0.15, duration: duration + 0.3 } 
   } : {};
 
-  const { isModalOpen, modalTask } = useApp();
+  const { isModalOpen, modalTask, isOverlayOpen } = useApp();
   const isThisTaskOpen = isModalOpen && modalTask?.id === task.id;
   const [isAnimatingZ, setIsAnimatingZ] = useState(false);
   const [isHovering, setIsHovering] = useState(false);
@@ -489,6 +633,17 @@ export const TaskCard = memo(function TaskCard({
   const [popupPos, setPopupPos] = useState({ cardTop: 0, cardHeight: 0, top: 0, left: 'auto' as number | string, right: 'auto' as number | string });
   const hoverTimeout = useRef<number | null>(null);
   const popupRef = useRef<HTMLDivElement>(null);
+
+  // Immediately dismiss any pending/visible description popup when a blocking overlay or the
+  // agent dropdown opens, so it can never appear on top of (or be triggered through) them.
+  useEffect(() => {
+    if (!isOverlayOpen && !agentMenuOpen && !finishMenuOpen && !reviewSelectorOpen && !returnPromptOpen) return;
+    if (hoverTimeout.current !== null) {
+      window.clearTimeout(hoverTimeout.current);
+      hoverTimeout.current = null;
+    }
+    setIsHovering(false);
+  }, [isOverlayOpen, agentMenuOpen, finishMenuOpen, reviewSelectorOpen, returnPromptOpen]);
 
   useEffect(() => {
     if (isHovering && popupRef.current) {
@@ -544,7 +699,9 @@ export const TaskCard = memo(function TaskCard({
     isMouseOverCard.current = true;
     if (!config?.hoverPopupsEnabled) return;
     if (isDragging) return;
+    if (isOverlayOpen) return;
     if (priorityMenuOpen || effortMenuOpen || assigneeMenuOpen || tagMenuOpen || isEditingTitle) return;
+    if (agentMenuOpen || finishMenuOpen || reviewSelectorOpen || returnPromptOpen || reviewModalOpen || showStartPrompt) return;
     // If comment popover is open and was opened by a click (not hover), don't start description timer
     if (commentPopoverOpen && !commentOpenedByHover.current) return;
     // Don't trigger the description popup when the mouse enters via the comment badge
@@ -589,6 +746,8 @@ export const TaskCard = memo(function TaskCard({
 
   const startDescriptionTimer = () => {
     if (!config?.hoverPopupsEnabled || isDragging || !lastCardRectRef.current) return;
+    if (isOverlayOpen) return;
+    if (agentMenuOpen || finishMenuOpen || reviewSelectorOpen || returnPromptOpen || reviewModalOpen || showStartPrompt) return;
     if (hoverTimeout.current !== null) window.clearTimeout(hoverTimeout.current);
     const delay = config?.hoverPopupDelay ?? 1500;
     hoverTimeout.current = window.setTimeout(() => {
@@ -657,6 +816,28 @@ export const TaskCard = memo(function TaskCard({
     document.addEventListener('mousedown', handlePointerDown);
     return () => document.removeEventListener('mousedown', handlePointerDown);
   }, [reviewSelectorOpen, returnPromptOpen]);
+
+  useEffect(() => {
+    if (!agentMenuOpen) return undefined;
+    const handlePointerDown = (e: MouseEvent) => {
+      if (agentMenuRef.current && !agentMenuRef.current.contains(e.target as Node)) {
+        setAgentMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [agentMenuOpen]);
+
+  useEffect(() => {
+    if (!finishMenuOpen) return undefined;
+    const handlePointerDown = (e: MouseEvent) => {
+      if (finishMenuRef.current && !finishMenuRef.current.contains(e.target as Node)) {
+        setFinishMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [finishMenuOpen]);
 
   useEffect(() => {
     const el = tagPreviewRowRef.current;
@@ -942,6 +1123,41 @@ export const TaskCard = memo(function TaskCard({
               {snippet}
             </p>
 
+            {clusterGroup && clusterAgg && !isOverlay && (
+              <div className="mb-3 rounded-lg border border-emerald-200/70 bg-emerald-50/60 p-2 dark:border-emerald-500/20 dark:bg-emerald-500/5">
+                <div className="mb-1.5 flex items-center justify-between gap-2">
+                  <OrchestrationTopology group={clusterGroup} variant="glyph" />
+                  <span className="text-[10px] font-medium text-emerald-700 dark:text-emerald-300">
+                    {clusterAgg.active > 0 ? `${clusterAgg.active} running` : clusterCombinerPending ? 'combining…' : 'done'}
+                  </span>
+                </div>
+                <p className="mb-1.5 truncate text-[11px] text-gray-600 dark:text-gray-300">
+                  {groupAggregateLine(clusterGroup, clusterAgg)}
+                </p>
+                <div className="flex flex-wrap gap-1">
+                  {clusterGroup.sessions.map(s => (
+                    <span
+                      key={s.id}
+                      title={`${normalizeRoleLabel(s.role) ?? s.framework} — ${s.status}`}
+                      className="flex items-center gap-1 rounded-md border border-gray-200 bg-white px-1.5 py-0.5 text-[10px] font-medium text-gray-700 dark:border-white/10 dark:bg-white/5 dark:text-gray-200"
+                    >
+                      <span className={`inline-block h-1.5 w-1.5 rounded-full bg-current ${statusDotColor(s.status)} ${isActiveSession(s) && s.status !== 'waiting-input' ? 'animate-pulse' : ''}`} />
+                      <span className="max-w-[90px] truncate">{normalizeRoleLabel(s.role) ?? s.framework}</span>
+                    </span>
+                  ))}
+                  {clusterCombinerPending && (
+                    <span
+                      title="combiner — pending (waiting for workers to finish)"
+                      className="flex items-center gap-1 rounded-md border border-dashed border-violet-300 bg-violet-50/60 px-1.5 py-0.5 text-[10px] font-medium italic text-violet-600 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-300"
+                    >
+                      <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-400 dark:bg-amber-500" />
+                      <span className="max-w-[90px] truncate">combiner</span>
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
             {task.branch && !isOverlay && (
               <div className="mb-2 flex min-w-0 max-w-full items-center gap-1.5 overflow-hidden rounded-md border border-gray-100 bg-gray-50 px-2 py-1 text-[10px] font-mono text-gray-500 dark:border-white/5 dark:bg-black/20 dark:text-gray-400">
                 <GitBranch className="h-2.5 w-2.5 shrink-0 text-gray-400" />
@@ -1103,8 +1319,8 @@ export const TaskCard = memo(function TaskCard({
                   </span>
                 )}
                 {currentActivity && !shouldShowProgress && (
-                  <span className={`activity-badge activity-badge--${currentActivity.toLowerCase().replace(/\s+/g, '-')}`}>
-                    {currentActivity}
+                  <span className={`activity-badge activity-badge--${currentActivity.toLowerCase().replace(/\s+/g, '-')}`} title={currentActivity}>
+                    <span className="activity-badge__label">{currentActivity}</span>
                   </span>
                 )}
                 <motion.button
@@ -1147,18 +1363,71 @@ export const TaskCard = memo(function TaskCard({
                 )}
               </div>
             </div>
-            {/* Ready column — 3-button row: Review | Return | Finish */}
+            {/* Ready column — Review (split) | Return | Finish */}
             {isReadyForMerge && !isOverlay && (
-              <div className={`relative flex items-center justify-end gap-1.5 transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] ${reviewSelectorOpen || returnPromptOpen ? 'mt-2 max-h-40 overflow-visible opacity-100' : 'mt-0 max-h-0 overflow-hidden opacity-0 group-hover:mt-2 group-hover:max-h-20 group-hover:opacity-100'}`} ref={reviewSelectorRef}>
-                {/* Review */}
-                <button
-                  onClick={(e) => { e.stopPropagation(); setReviewSelectorOpen(prev => !prev); setReturnPromptOpen(false); }}
-                  disabled={reviewBusy}
-                  className="flex items-center gap-1 rounded-md border border-gray-200 bg-white/80 px-2 py-1 text-[10px] font-semibold text-gray-600 transition-colors hover:border-primary/40 hover:text-primary disabled:opacity-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:border-primary/40 dark:hover:text-primary"
-                >
-                  <Search className="w-3 h-3" />
-                  {reviewBusy ? '…' : 'Review'}
-                </button>
+              <div className={`relative flex items-center justify-end gap-1.5 transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] ${reviewSelectorOpen || returnPromptOpen || agentMenuOpen || finishMenuOpen ? 'mt-2 max-h-40 overflow-visible opacity-100' : 'mt-0 max-h-0 overflow-hidden opacity-0 group-hover:mt-2 group-hover:max-h-20 group-hover:overflow-visible group-hover:opacity-100'}`} ref={reviewSelectorRef}>
+                {/* Review — split button: single default one-click + menu */}
+                <div className="relative flex items-stretch overflow-visible rounded-md" ref={agentMenuRef}>
+                  <button
+                    onClick={(e) => void launchSingleDefault(e)}
+                    disabled={reviewBusy}
+                    title="Review with the default single agent"
+                    className="flex items-center gap-1 rounded-l-md border border-gray-200 bg-white/80 px-2 py-1 text-[10px] font-semibold text-gray-600 transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-primary disabled:opacity-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-primary/10"
+                  >
+                    <Bot className="w-3 h-3" />
+                    {reviewBusy ? '…' : 'Review'}
+                  </button>
+                  <button
+                    onClick={toggleAgentMenu}
+                    disabled={reviewBusy}
+                    title="Choose a reviewer or template"
+                    aria-haspopup="menu"
+                    aria-expanded={agentMenuOpen}
+                    className="flex items-center rounded-r-md border border-l-0 border-gray-200 bg-white/80 px-1 py-1 text-gray-500 transition-colors hover:border-primary/40 hover:bg-primary/5 hover:text-primary disabled:opacity-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-primary/10"
+                  >
+                    <ChevronDown className={`h-3 w-3 transition-transform ${agentMenuOpen ? 'rotate-180' : ''}`} />
+                  </button>
+                  {agentMenuOpen && (
+                    <div
+                      className="absolute bottom-full right-0 z-[90] mb-1.5 w-60 rounded-xl border border-gray-200 bg-white p-1.5 shadow-xl dark:border-white/10 dark:bg-[#1e1f2a]"
+                      onClick={(e) => e.stopPropagation()}
+                      role="menu"
+                    >
+                      <p className="px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-gray-400">Review agents</p>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); openLauncherWithTemplate(singleDefaultId); }}
+                        disabled={reviewBusy}
+                        className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-semibold text-gray-700 hover:bg-primary/5 hover:text-primary disabled:opacity-50 dark:text-gray-200 dark:hover:bg-primary/10"
+                      >
+                        <Bot className="h-3.5 w-3.5 shrink-0" />
+                        <span className="min-w-0 truncate">Single{singleDefaultName ? ` · ${singleDefaultName}` : ''}</span>
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); openLauncherWithTemplate(multiDefaultId); }}
+                        disabled={reviewBusy}
+                        className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-semibold text-gray-700 hover:bg-primary/5 hover:text-primary disabled:opacity-50 dark:text-gray-200 dark:hover:bg-primary/10"
+                      >
+                        <Layers className="h-3.5 w-3.5 shrink-0" />
+                        <span className="min-w-0 truncate">Multi{multiDefaultName ? ` · ${multiDefaultName}` : ''}</span>
+                      </button>
+                      {otherCardTemplates.length > 0 && (
+                        <>
+                          <div className="my-1 border-t border-gray-100 dark:border-white/5" />
+                          {otherCardTemplates.map((t) => (
+                            <button
+                              key={t.id}
+                              onClick={(e) => { e.stopPropagation(); openLauncherWithTemplate(t.id); }}
+                              className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-medium text-gray-600 hover:bg-primary/5 hover:text-primary dark:text-gray-300 dark:hover:bg-primary/10"
+                            >
+                              <FileText className="h-3.5 w-3.5 shrink-0" />
+                              <span className="min-w-0 truncate">{t.name}</span>
+                            </button>
+                          ))}
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
                 {/* Return */}
                 <button
                   onClick={(e) => { e.stopPropagation(); setReturnPromptOpen(prev => !prev); setReviewSelectorOpen(false); }}
@@ -1169,35 +1438,70 @@ export const TaskCard = memo(function TaskCard({
                   <Undo2 className="w-3 h-3" />
                   {returnBusy ? '…' : 'Return'}
                 </button>
-                {/* Finish */}
-                <button
-                  onClick={(e) => void sendFinishCommand(e)}
-                  disabled={finishBusy}
-                  className="flex items-center gap-1 rounded-md bg-primary px-3 py-1 text-[10px] font-semibold text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
-                >
-                  <SendHorizontal className="w-3 h-3" />
-                  {finishBusy ? '…' : 'Finish'}
-                </button>
-                {/* Reviewer selector dropdown */}
-                {reviewSelectorOpen && (
-                  <div
-                    className="absolute bottom-full right-0 z-[90] mb-1.5 w-56 rounded-xl border border-gray-200 bg-white py-1 shadow-xl dark:border-white/10 dark:bg-[#1e1f2a]"
-                    onClick={(e) => e.stopPropagation()}
+                {/* Finish — split button: one-click finish + menu of finalize templates */}
+                <div className="relative flex items-stretch overflow-visible rounded-md" ref={finishMenuRef}>
+                  <button
+                    onClick={(e) => void sendFinishCommand(e)}
+                    disabled={finishBusy}
+                    title="Finish this ticket (commit + close)"
+                    className="flex items-center gap-1 rounded-l-md bg-primary px-3 py-1 text-[10px] font-semibold text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
                   >
-                    <div className="px-3 py-1 text-[9px] font-bold uppercase tracking-wider text-gray-400">Choose reviewer</div>
-                    {REVIEW_PERSONAS.map((persona) => (
-                      <button
-                        key={persona.id}
-                        type="button"
-                        onClick={(e) => void sendReview(e, persona.id)}
-                        className="flex w-full flex-col items-start gap-0.5 px-3 py-1.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-white/5"
-                      >
-                        <span className="text-[11px] font-semibold text-gray-800 dark:text-gray-100">{persona.label}</span>
-                        <span className="text-[10px] text-gray-500 dark:text-gray-400">{persona.description}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
+                    <SendHorizontal className="w-3 h-3" />
+                    {finishBusy ? '…' : 'Finish'}
+                  </button>
+                  <button
+                    onClick={toggleFinishMenu}
+                    disabled={finishBusy}
+                    title="Finalize with agents"
+                    aria-haspopup="menu"
+                    aria-expanded={finishMenuOpen}
+                    className="flex items-center rounded-r-md border-l border-white/25 bg-primary px-1 py-1 text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+                  >
+                    <ChevronDown className={`h-3 w-3 transition-transform ${finishMenuOpen ? 'rotate-180' : ''}`} />
+                  </button>
+                  {finishMenuOpen && (
+                    <div
+                      className="absolute bottom-full right-0 z-[90] mb-1.5 w-60 rounded-xl border border-gray-200 bg-white p-1.5 shadow-xl dark:border-white/10 dark:bg-[#1e1f2a]"
+                      onClick={(e) => e.stopPropagation()}
+                      role="menu"
+                    >
+                      <p className="px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-gray-400">Finalize with agents</p>
+                      {finalizeSingleId && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); openFinalizeLauncher(finalizeSingleId); }}
+                          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-semibold text-gray-700 hover:bg-primary/5 hover:text-primary dark:text-gray-200 dark:hover:bg-primary/10"
+                        >
+                          <Bot className="h-3.5 w-3.5 shrink-0" />
+                          <span className="min-w-0 truncate">Single{finalizeSingleName ? ` · ${finalizeSingleName}` : ''}</span>
+                        </button>
+                      )}
+                      {finalizeMultiId && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); openFinalizeLauncher(finalizeMultiId); }}
+                          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-semibold text-gray-700 hover:bg-primary/5 hover:text-primary dark:text-gray-200 dark:hover:bg-primary/10"
+                        >
+                          <Layers className="h-3.5 w-3.5 shrink-0" />
+                          <span className="min-w-0 truncate">Multi{finalizeMultiName ? ` · ${finalizeMultiName}` : ''}</span>
+                        </button>
+                      )}
+                      {otherFinalizeTemplates.length > 0 && (
+                        <>
+                          <div className="my-1 border-t border-gray-100 dark:border-white/5" />
+                          {otherFinalizeTemplates.map((t) => (
+                            <button
+                              key={t.id}
+                              onClick={(e) => { e.stopPropagation(); openFinalizeLauncher(t.id); }}
+                              className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-medium text-gray-600 hover:bg-primary/5 hover:text-primary dark:text-gray-300 dark:hover:bg-primary/10"
+                            >
+                              <FileText className="h-3.5 w-3.5 shrink-0" />
+                              <span className="min-w-0 truncate">{t.name}</span>
+                            </button>
+                          ))}
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
                 {/* Return reason prompt */}
                 {returnPromptOpen && (
                   <div
@@ -1229,18 +1533,82 @@ export const TaskCard = memo(function TaskCard({
                 )}
               </div>
             )}
-            {/* Per-status action button — compact, right-aligned */}
-            {statusAction && !isOverlay && (
-              <div className="mt-0 max-h-0 overflow-hidden opacity-0 transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover:mt-2 group-hover:max-h-12 group-hover:opacity-100">
-                <div className="flex justify-end">
-                <button
-                  onClick={(e) => void sendStatusAction(e)}
-                  disabled={actionBusy}
-                  className="flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-[10px] font-semibold text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
-                >
-                  <Play className="w-2.5 h-2.5" />
-                  {actionBusy ? '…' : statusAction.label}
-                </button>
+            {/* Non-Ready action — split button: primary action + agent launch menu */}
+            {!isOverlay && !isReadyForMerge && (
+              <div className="mt-0 max-h-0 overflow-hidden opacity-0 transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] group-hover:mt-2 group-hover:max-h-12 group-hover:overflow-visible group-hover:opacity-100">
+                <div className="relative flex items-center justify-end" ref={agentMenuRef}>
+                  <div className="flex items-stretch overflow-visible rounded-md">
+                    {statusAction ? (
+                      <button
+                        onClick={(e) => void sendStatusAction(e)}
+                        disabled={actionBusy}
+                        className="flex items-center gap-1 rounded-l-md bg-primary px-2.5 py-1 text-[10px] font-semibold text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+                      >
+                        <Play className="w-2.5 h-2.5" />
+                        {actionBusy ? '…' : statusAction.label}
+                      </button>
+                    ) : (
+                      <button
+                        onClick={(e) => void launchSingleDefault(e)}
+                        disabled={reviewBusy}
+                        title="Launch the default single agent for this phase"
+                        className="flex items-center gap-1 rounded-l-md bg-primary px-2.5 py-1 text-[10px] font-semibold text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+                      >
+                        <Bot className="w-3 h-3" />
+                        {reviewBusy ? '…' : 'Launch'}
+                      </button>
+                    )}
+                    <button
+                      onClick={toggleAgentMenu}
+                      disabled={reviewBusy || actionBusy}
+                      title="Choose an agent or template"
+                      aria-haspopup="menu"
+                      aria-expanded={agentMenuOpen}
+                      className="flex items-center rounded-r-md border-l border-white/20 bg-primary px-1.5 py-1 text-white transition-colors hover:bg-primary-hover disabled:opacity-50"
+                    >
+                      <ChevronDown className={`h-3 w-3 transition-transform ${agentMenuOpen ? 'rotate-180' : ''}`} />
+                    </button>
+                  </div>
+                  {agentMenuOpen && (
+                    <div
+                      className="absolute bottom-full right-0 z-[90] mb-1.5 w-60 rounded-xl border border-gray-200 bg-white p-1.5 shadow-xl dark:border-white/10 dark:bg-[#1e1f2a]"
+                      onClick={(e) => e.stopPropagation()}
+                      role="menu"
+                    >
+                      <p className="px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-gray-400">Launch agents</p>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); openLauncherWithTemplate(singleDefaultId); }}
+                        disabled={reviewBusy}
+                        className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-semibold text-gray-700 hover:bg-primary/5 hover:text-primary disabled:opacity-50 dark:text-gray-200 dark:hover:bg-primary/10"
+                      >
+                        <Bot className="h-3.5 w-3.5 shrink-0" />
+                        <span className="min-w-0 truncate">Single{singleDefaultName ? ` · ${singleDefaultName}` : ''}</span>
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); openLauncherWithTemplate(multiDefaultId); }}
+                        disabled={reviewBusy}
+                        className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-semibold text-gray-700 hover:bg-primary/5 hover:text-primary disabled:opacity-50 dark:text-gray-200 dark:hover:bg-primary/10"
+                      >
+                        <Layers className="h-3.5 w-3.5 shrink-0" />
+                        <span className="min-w-0 truncate">Multi{multiDefaultName ? ` · ${multiDefaultName}` : ''}</span>
+                      </button>
+                      {otherCardTemplates.length > 0 && (
+                        <>
+                          <div className="my-1 border-t border-gray-100 dark:border-white/5" />
+                          {otherCardTemplates.map((t) => (
+                            <button
+                              key={t.id}
+                              onClick={(e) => { e.stopPropagation(); openLauncherWithTemplate(t.id); }}
+                              className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] font-medium text-gray-600 hover:bg-primary/5 hover:text-primary dark:text-gray-300 dark:hover:bg-primary/10"
+                            >
+                              <FileText className="h-3.5 w-3.5 shrink-0" />
+                              <span className="min-w-0 truncate">{t.name}</span>
+                            </button>
+                          ))}
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -1495,7 +1863,7 @@ export const TaskCard = memo(function TaskCard({
 
       {createPortal(
         <AnimatePresence>
-          {isHovering && !isOverlay && !isThisTaskOpen && task.body?.trim() && (
+          {isHovering && !isOverlay && !isThisTaskOpen && !isOverlayOpen && !agentMenuOpen && !finishMenuOpen && !reviewSelectorOpen && !returnPromptOpen && !reviewModalOpen && !showStartPrompt && task.body?.trim() && (
             <motion.div
               ref={popupRef}
               key={`popup-${task.id}`}
@@ -1529,6 +1897,7 @@ export const TaskCard = memo(function TaskCard({
           task={task}
           position={contextMenuPos}
           onClose={() => setContextMenuPos(null)}
+          onLaunchAgent={() => openLauncherWithTemplate(singleDefaultId)}
         />
       )}
 
@@ -1539,6 +1908,19 @@ export const TaskCard = memo(function TaskCard({
           onCancel={() => setShowStartPrompt(false)}
         />,
         document.body
+      )}
+
+      {reviewModalOpen && !isOverlay && (
+        <OrchestrationLauncher
+          open={reviewModalOpen}
+          ticket={{ id: task.id, title: task.title || 'Untitled', status: task.status, branch: task.branch }}
+          framework={resolveEffectiveAgent(undefined, config?.defaultAgent)}
+          phase={launcherPhase}
+          initialTemplateId={launcherTemplateId}
+          onClose={() => setReviewModalOpen(false)}
+          onLaunch={handleCardReviewLaunch}
+          busy={reviewBusy}
+        />
       )}
     </CardContainer>
   );

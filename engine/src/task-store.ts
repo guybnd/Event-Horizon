@@ -7,10 +7,11 @@ import { getActiveFluxDir, getTaskAssetsDir, setWorkspaceRoot, workspaceRoot } f
 import { attachWorktreeIfPresent, migrateStrandedFluxTickets } from './storage-sync.js';
 import { startSyncWatcher } from './sync-watcher.js';
 import { configCache, loadConfig, autoRegisterUnknownTags } from './config.js';
+import { loadCustomPersonas } from './orchestration-personas.js';
 import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate, getHistoryTimestamp } from './history.js';
 import { generatePromptNotification, generateCompletionNotification, clearNotifications, checkSkillStaleness } from './notifications.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
-import { getCliSessionSummaryForTask, cliSessionsById, cliSessionIdByTaskId } from './session-store.js';
+import { getCliSessionSummaryForTask, getAllSessionSummariesForTask, getListSessionSummariesForTask, cliSessionsById, cliSessionIdByTaskId } from './session-store.js';
 import { isTopLevelTaskFile, getDocsDir, isDocFile, getDocPathFromFile, titleFromDocPath, slugifyDocValue, parseDocOrder } from './file-utils.js';
 import type { StoredDoc } from './file-utils.js';
 import { resolveEmbeddedDocsRoot, copyDir, buildStarterProjectOverview } from './docs-seeder.js';
@@ -41,9 +42,26 @@ export async function atomicWriteFile(filePath: string, content: string): Promis
 }
 
 export function serializeTaskForApi(task: any) {
+  const cliSessions = getAllSessionSummariesForTask(task.id);
   return {
     ...task,
     cliSession: getCliSessionSummaryForTask(task.id),
+    cliSessions: cliSessions.length > 0 ? cliSessions : undefined,
+  };
+}
+
+/**
+ * List-endpoint serializer. Like {@link serializeTaskForApi} but attaches a
+ * capped `cliSessions[]` (active sessions + most-recent completed group, with
+ * truncated `liveOutput`) so `GET /api/tasks` payload doesn't grow with session
+ * history. The detail endpoint keeps {@link serializeTaskForApi}.
+ */
+export function serializeTaskForList(task: any) {
+  const cliSessions = getListSessionSummariesForTask(task.id);
+  return {
+    ...task,
+    cliSession: getCliSessionSummaryForTask(task.id),
+    cliSessions: cliSessions.length > 0 ? cliSessions : undefined,
   };
 }
 
@@ -692,6 +710,7 @@ export async function initDir() {
   }
   await loadConfig();
   await loadPricingDoc();
+  await loadCustomPersonas();
   const activeDir = getActiveFluxDir();
   const fluxFiles = await fs.readdir(activeDir).catch(() => [] as string[]);
   for (const name of fluxFiles) {

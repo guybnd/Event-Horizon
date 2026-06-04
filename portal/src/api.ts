@@ -324,11 +324,47 @@ export async function fetchTaskCliSession(taskId: string): Promise<CliSessionSum
   return payload.session || null;
 }
 
-export async function startTaskCliSession(taskId: string, framework: CliFramework, appendPrompt?: string, skipPermissions = true, effortOverride?: string): Promise<CliSessionSummary> {
+export interface StartSessionOptions {
+  framework: CliFramework;
+  appendPrompt?: string;
+  /** Resolve the prompt server-side from a persona catalog id (preferred). */
+  personaId?: string;
+  /** Optional user focus note appended to the resolved persona prompt. */
+  focusComment?: string;
+  skipPermissions?: boolean;
+  effortOverride?: string;
+  role?: string;
+  pattern?: string;
+  patternPosition?: string;
+  groupId?: string;
+  groupSeq?: number;
+  groupTotal?: number;
+  groupType?: string;
+  groupVariant?: string;
+  lockedPaths?: string[];
+}
+
+export async function startTaskCliSessionEx(taskId: string, opts: StartSessionOptions): Promise<CliSessionSummary> {
+  const { framework, appendPrompt, personaId, focusComment, skipPermissions = true, effortOverride, role, pattern, patternPosition, groupId, groupSeq, groupTotal, groupType, groupVariant, lockedPaths } = opts;
+  const body: Record<string, unknown> = { framework, skipPermissions };
+  if (appendPrompt) body.appendPrompt = appendPrompt;
+  if (personaId) body.personaId = personaId;
+  if (focusComment) body.focusComment = focusComment;
+  if (effortOverride) body.effortOverride = effortOverride;
+  if (role) body.role = role;
+  if (pattern) body.pattern = pattern;
+  if (patternPosition) body.patternPosition = patternPosition;
+  if (groupId) body.groupId = groupId;
+  if (groupSeq != null) body.groupSeq = groupSeq;
+  if (groupTotal != null) body.groupTotal = groupTotal;
+  if (groupType) body.groupType = groupType;
+  if (groupVariant) body.groupVariant = groupVariant;
+  if (lockedPaths?.length) body.lockedPaths = lockedPaths;
+
   const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ framework, skipPermissions, ...(appendPrompt ? { appendPrompt } : {}), ...(effortOverride ? { effortOverride } : {}) }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
@@ -336,6 +372,281 @@ export async function startTaskCliSession(taskId: string, framework: CliFramewor
   }
   const payload = await res.json();
   return payload.session;
+}
+
+export interface RegisterCombinerOptions {
+  framework: CliFramework;
+  groupId: string;
+  role: string;
+  /** Prompt text, or omit and pass personaId to resolve it server-side. */
+  appendPrompt?: string;
+  /** Resolve the combiner prompt server-side from a persona catalog id. */
+  personaId?: string;
+  expectedWorkers: number;
+  skipPermissions?: boolean;
+  groupType?: string;
+  groupVariant?: string;
+}
+
+/**
+ * Register a deferred combiner for a scatter-gather run group. The engine spawns
+ * it only once every worker session in the group reaches a terminal state,
+ * preventing the combiner from racing (and out-running) its workers.
+ */
+export async function registerDeferredCombiner(taskId: string, opts: RegisterCombinerOptions): Promise<void> {
+  const body: Record<string, unknown> = {
+    framework: opts.framework,
+    groupId: opts.groupId,
+    role: opts.role,
+    expectedWorkers: opts.expectedWorkers,
+    skipPermissions: opts.skipPermissions ?? true,
+  };
+  if (opts.appendPrompt) body.appendPrompt = opts.appendPrompt;
+  if (opts.personaId) body.personaId = opts.personaId;
+  if (opts.groupType) body.groupType = opts.groupType;
+  if (opts.groupVariant) body.groupVariant = opts.groupVariant;
+
+  const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/register-combiner`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to register combiner');
+  }
+}
+
+/** Cancel a previously registered deferred combiner (e.g. when no workers started). */
+export async function unregisterDeferredCombiner(taskId: string, groupId: string): Promise<void> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/unregister-combiner`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ groupId }),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to unregister combiner');
+  }
+}
+
+export interface RelayStepDef {
+  personaId: string;
+  role: string;
+  focusComment?: string;
+}
+
+export interface RegisterRelayOptions {
+  framework: CliFramework;
+  groupId: string;
+  steps: RelayStepDef[];
+  skipPermissions?: boolean;
+  effortOverride?: string;
+}
+
+/**
+ * Register a relay pipeline with the engine. The engine stores the full step
+ * chain and automatically spawns subsequent steps as each one finishes.
+ * The portal only needs to launch step 0 after registration.
+ */
+export async function registerRelayChain(taskId: string, opts: RegisterRelayOptions): Promise<void> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/register-relay`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      framework: opts.framework,
+      groupId: opts.groupId,
+      steps: opts.steps,
+      skipPermissions: opts.skipPermissions ?? true,
+      effortOverride: opts.effortOverride ?? '',
+    }),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to register relay chain');
+  }
+}
+
+/** Cancel a pending relay pipeline (e.g. when step 0 fails to launch). */
+export async function unregisterRelayChain(taskId: string, groupId: string): Promise<void> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/unregister-relay`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ groupId }),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to unregister relay chain');
+  }
+}
+
+/** Orchestration persona metadata (no prompt text — the engine owns prompts). */
+export interface OrchestrationPersonaMeta {
+  id: string;
+  label: string;
+  description: string;
+  /** Ticket phase this persona belongs to (grooming | implementation | review | release). */
+  phase: string;
+  compatiblePatterns: string[];
+  requiredCapabilities: string[];
+  /** True for code-defined personas (read-only — cannot be edited or deleted). */
+  builtIn?: boolean;
+}
+
+/** Full custom persona including prompt (only ever returned for editable personas). */
+export interface OrchestrationPersona extends OrchestrationPersonaMeta {
+  prompt: string;
+}
+
+/** Fetch the selectable orchestration personas (metadata only) from the engine. */
+export async function fetchOrchestrationPersonas(phase?: string): Promise<OrchestrationPersonaMeta[]> {
+  const qs = phase ? `?phase=${encodeURIComponent(phase)}` : '';
+  const res = await fetch(`${API_URL}/orchestration/personas${qs}`);
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to load orchestration personas');
+  }
+  const payload = await res.json();
+  return payload.personas ?? [];
+}
+
+/** Fetch a single custom persona with its prompt for editing (built-ins 404). */
+export async function fetchEditablePersona(id: string): Promise<OrchestrationPersona> {
+  const res = await fetch(`${API_URL}/orchestration/personas/${encodeURIComponent(id)}`);
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to load persona');
+  }
+  const payload = await res.json();
+  return payload.persona;
+}
+
+export interface PersonaInput {
+  id?: string;
+  label: string;
+  description?: string;
+  phase: string;
+  compatiblePatterns?: string[];
+  requiredCapabilities?: string[];
+  prompt: string;
+}
+
+/** Create a new custom persona. */
+export async function createPersona(input: PersonaInput): Promise<OrchestrationPersonaMeta> {
+  const res = await fetch(`${API_URL}/orchestration/personas`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(payload.error || 'Failed to create persona');
+  return payload.persona;
+}
+
+/** Update an existing custom persona. */
+export async function updatePersona(id: string, input: PersonaInput): Promise<OrchestrationPersonaMeta> {
+  const res = await fetch(`${API_URL}/orchestration/personas/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(payload.error || 'Failed to update persona');
+  return payload.persona;
+}
+
+/** Delete a custom persona (built-ins refused server-side). */
+export async function deletePersona(id: string): Promise<void> {
+  const res = await fetch(`${API_URL}/orchestration/personas/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to delete persona');
+  }
+}
+
+// ── Workflow templates ───────────────────────────────────────────────────────
+
+export type WorkflowPhase = 'grooming' | 'implementation' | 'review' | 'finalize';
+
+/** Per-phase orchestration config inside a workflow template. */
+export interface WorkflowPhaseConfig {
+  pattern: string;
+  steps?: string[];
+  parallel?: string[];
+  combiner?: string;
+  lead?: string;
+  assistants?: string[];
+}
+
+/** A reusable workflow template (per-phase persona/pattern setup). */
+export interface WorkflowTemplate {
+  id: string;
+  name: string;
+  cliTarget: string;
+  phases: Partial<Record<WorkflowPhase, WorkflowPhaseConfig>>;
+  createdAt: string;
+  updatedAt: string;
+  /** True for code-defined templates (read-only, forkable). */
+  builtIn?: boolean;
+}
+
+export type WorkflowInput = Pick<WorkflowTemplate, 'name' | 'cliTarget' | 'phases'>;
+
+/** Persona ids configured for a phase, regardless of how the pattern stores them. */
+export function workflowPhaseMembers(cfg: WorkflowPhaseConfig | undefined): string[] {
+  if (!cfg) return [];
+  if (cfg.pattern === 'relay') return cfg.steps ?? [];
+  if (cfg.pattern === 'supervisor') return cfg.assistants ?? [];
+  return cfg.parallel ?? [];
+}
+
+/** List all workflow templates. */
+export async function fetchWorkflows(): Promise<WorkflowTemplate[]> {
+  const res = await fetch(`${API_URL}/workflows`);
+  if (!res.ok) throw new Error('Failed to load workflows');
+  return res.json();
+}
+
+/** Create a workflow template. */
+export async function createWorkflow(input: WorkflowInput): Promise<WorkflowTemplate> {
+  const res = await fetch(`${API_URL}/workflows`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(payload.error || 'Failed to create workflow');
+  return payload;
+}
+
+/** Update a workflow template. */
+export async function updateWorkflow(id: string, input: Partial<WorkflowInput>): Promise<WorkflowTemplate> {
+  const res = await fetch(`${API_URL}/workflows/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(payload.error || 'Failed to update workflow');
+  return payload;
+}
+
+/** Delete a workflow template. */
+export async function deleteWorkflow(id: string): Promise<void> {
+  const res = await fetch(`${API_URL}/workflows/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to delete workflow');
+  }
+}
+
+export async function fetchTaskCliSessions(taskId: string): Promise<CliSessionSummary[]> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/cli-sessions`);
+  if (!res.ok) throw new Error('Failed to fetch CLI sessions');
+  const payload = await res.json();
+  return payload.sessions || [];
 }
 
 export async function sendTaskCliInput(taskId: string, message: string, user: string): Promise<CliSessionSummary> {
@@ -371,9 +682,16 @@ export async function setupPath(mode: 'auto' | 'instructional'): Promise<{ ok: b
   return res.json();
 }
 
-export async function stopTaskCliSession(taskId: string): Promise<CliSessionSummary> {
+export async function stopTaskCliSession(
+  taskId: string,
+  opts?: { sessionId?: string; groupId?: string; stopAll?: boolean },
+): Promise<CliSessionSummary> {
+  const body = opts ?? {};
+  const hasBody = !!(body.sessionId || body.groupId || body.stopAll);
   const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/stop`, {
     method: 'POST',
+    headers: hasBody ? { 'Content-Type': 'application/json' } : undefined,
+    body: hasBody ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));

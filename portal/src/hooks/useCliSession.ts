@@ -92,16 +92,31 @@ export function useCliSession({ isModalOpen, taskId, liveOutputRef, onSessionCha
     }
   }, [taskId, selectedCliFramework, skipPermissions, currentUser, onSessionChange]);
 
-  const stopSession = useCallback(async () => {
+  const stopSession = useCallback(async (sessionId?: string) => {
     if (!taskId) return;
     setCliSessionBusy(true);
     setCliSessionError('');
     try {
-      const session = await stopTaskCliSession(taskId);
+      const session = await stopTaskCliSession(taskId, sessionId ? { sessionId } : undefined);
       setCliSession(session);
       onSessionChange?.();
     } catch (error: unknown) {
       setCliSessionError(error instanceof Error ? error.message : 'Failed to stop CLI session.');
+    } finally {
+      setCliSessionBusy(false);
+    }
+  }, [taskId, onSessionChange]);
+
+  const stopGroup = useCallback(async (groupId?: string) => {
+    if (!taskId) return;
+    setCliSessionBusy(true);
+    setCliSessionError('');
+    try {
+      const session = await stopTaskCliSession(taskId, groupId ? { groupId } : { stopAll: true });
+      setCliSession(session);
+      onSessionChange?.();
+    } catch (error: unknown) {
+      setCliSessionError(error instanceof Error ? error.message : 'Failed to stop CLI sessions.');
     } finally {
       setCliSessionBusy(false);
     }
@@ -116,5 +131,6 @@ export function useCliSession({ isModalOpen, taskId, liveOutputRef, onSessionCha
     sessionIsActive,
     launchSession,
     stopSession,
+    stopGroup,
   };
 }

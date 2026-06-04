@@ -5,6 +5,16 @@ import { stopTaskCliSession } from '../api';
 import { useApp } from '../AppContext';
 import { FRAMEWORK_ICONS } from '../constants';
 import { FrameworkSelector } from './FrameworkSelector';
+import {
+  groupSessions,
+  aggregateGroup,
+  groupAggregateLine,
+  patternLabel,
+  normalizeRoleLabel,
+  isActiveSession,
+  statusDotColor,
+} from '../orchestration';
+import { OrchestrationTopology } from './OrchestrationTopology';
 
 interface Props {
   tasks: Task[];
@@ -42,7 +52,14 @@ const SessionItem = memo(function SessionItem({ task, onClose, openTask, handleS
             <Icon className="h-4 w-4" />
           </div>
           <div className="min-w-0">
-            <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{task.id}</div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{task.id}</span>
+              {session.role && (
+                <span className="rounded-full bg-violet-100 px-1.5 py-0.5 text-[9px] font-semibold text-violet-700 dark:bg-violet-500/10 dark:text-violet-300">
+                  {normalizeRoleLabel(session.role)}
+                </span>
+              )}
+            </div>
             <div className="truncate text-xs font-semibold text-gray-900 dark:text-gray-100">{task.title}</div>
           </div>
         </div>
@@ -75,6 +92,72 @@ const SessionItem = memo(function SessionItem({ task, onClose, openTask, handleS
   );
 });
 
+interface GroupItemProps {
+  task: Task;
+  group: ReturnType<typeof groupSessions>[number];
+  onClose: () => void;
+  openTask: (task: Task) => void;
+  handleStop: (e: React.MouseEvent, taskId: string) => void;
+}
+
+const GroupItem = memo(function GroupItem({ task, group, onClose, openTask, handleStop }: GroupItemProps) {
+  const agg = aggregateGroup(group);
+  return (
+    <div
+      onClick={() => { onClose(); openTask(task); }}
+      className="group relative flex flex-col gap-2 rounded-xl border border-emerald-200/70 bg-emerald-50/40 p-3 transition-all hover:border-primary/30 hover:bg-primary/5 cursor-pointer dark:border-emerald-500/20 dark:bg-emerald-500/5 dark:hover:bg-white/5"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <OrchestrationTopology group={group} variant="glyph" />
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{task.id}</span>
+              <span className="rounded-full bg-violet-100 px-1.5 py-0.5 text-[9px] font-semibold text-violet-700 dark:bg-violet-500/10 dark:text-violet-300">
+                {patternLabel(group.groupType, group.groupVariant)}
+              </span>
+            </div>
+            <div className="truncate text-xs font-semibold text-gray-900 dark:text-gray-100">{task.title}</div>
+          </div>
+        </div>
+        <button
+          onClick={(e) => handleStop(e, task.id)}
+          className="rounded-lg p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/10 transition-colors"
+          title="Stop all sessions"
+        >
+          <Square className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      <div className="flex items-center gap-1.5 px-1 py-0.5 rounded bg-emerald-50 text-[10px] font-medium text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">
+        <CircleDot className="h-2.5 w-2.5 animate-pulse" />
+        <span className="truncate">{groupAggregateLine(group, agg)}</span>
+      </div>
+
+      <div className="flex flex-wrap gap-1">
+        {group.sessions.map(s => {
+          const Icon = FRAMEWORK_ICONS[s.framework] || Bot;
+          return (
+            <span
+              key={s.id}
+              title={`${normalizeRoleLabel(s.role) ?? s.framework} — ${s.status}`}
+              className="flex items-center gap-1 rounded-md border border-gray-200 bg-white px-1.5 py-0.5 text-[10px] font-medium text-gray-700 dark:border-white/10 dark:bg-white/5 dark:text-gray-200"
+            >
+              <span className={`inline-block h-1.5 w-1.5 rounded-full bg-current ${statusDotColor(s.status)} ${isActiveSession(s) && s.status !== 'waiting-input' ? 'animate-pulse' : ''}`} />
+              <Icon className="h-2.5 w-2.5 text-gray-400" />
+              <span className="max-w-[80px] truncate">{normalizeRoleLabel(s.role) ?? s.framework}</span>
+            </span>
+          );
+        })}
+      </div>
+
+      <div className="absolute right-2 bottom-2 opacity-0 group-hover:opacity-100 transition-opacity">
+         <ExternalLink className="h-3 w-3 text-primary" />
+      </div>
+    </div>
+  );
+});
+
 export const ActiveSessionsPopover = memo(function ActiveSessionsPopover({ tasks, onClose, openTask }: Props) {
   const { triggerRefresh, config, saveConfig } = useApp();
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -92,7 +175,7 @@ export const ActiveSessionsPopover = memo(function ActiveSessionsPopover({ tasks
   const handleStop = useCallback(async (e: React.MouseEvent, taskId: string) => {
     e.stopPropagation();
     try {
-      await stopTaskCliSession(taskId);
+      await stopTaskCliSession(taskId, { stopAll: true });
       triggerRefresh();
     } catch (err) {
       console.error('Failed to stop session:', err);
@@ -147,15 +230,31 @@ export const ActiveSessionsPopover = memo(function ActiveSessionsPopover({ tasks
             No active agent sessions.
           </div>
         ) : (
-          activeTasks.map(task => (
-            <SessionItem 
-              key={task.id} 
-              task={task} 
-              onClose={onClose} 
-              openTask={openTask} 
-              handleStop={handleStop} 
-            />
-          ))
+          activeTasks.map(task => {
+            const groups = groupSessions(task.cliSessions);
+            const multi = groups.find(g => g.isMulti && g.sessions.some(isActiveSession));
+            if (multi) {
+              return (
+                <GroupItem
+                  key={task.id}
+                  task={task}
+                  group={multi}
+                  onClose={onClose}
+                  openTask={openTask}
+                  handleStop={handleStop}
+                />
+              );
+            }
+            return (
+              <SessionItem
+                key={task.id}
+                task={task}
+                onClose={onClose}
+                openTask={openTask}
+                handleStop={handleStop}
+              />
+            );
+          })
         )}
       </div>
       

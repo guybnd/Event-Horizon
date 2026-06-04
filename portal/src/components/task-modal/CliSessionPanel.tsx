@@ -34,7 +34,14 @@ export function CliSessionPanel({
   return (
     <div className="space-y-3 rounded-xl border border-gray-100 bg-gray-50 p-3 dark:border-white/5 dark:bg-black/20">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Agent Session</p>
+        <div className="flex items-center gap-2">
+          <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Agent Session</p>
+          {cliSession?.role && (
+            <span className="rounded-full bg-violet-100 px-1.5 py-0.5 text-[9px] font-semibold text-violet-700 dark:bg-violet-500/10 dark:text-violet-300">
+              {cliSession.role.replace(/^reviewer:/, '')}
+            </span>
+          )}
+        </div>
         {cliSession && (
           <span className="inline-flex items-center gap-1 rounded-full bg-gray-200 px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-gray-700 dark:bg-white/10 dark:text-gray-300">
             <CircleDot className="h-3 w-3" />

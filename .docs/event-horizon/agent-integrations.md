@@ -138,6 +138,88 @@ The installer patches only Event Horizon blocks — your other custom instructio
 
 ---
 
+## Multi-Agent Sessions
+
+Event Horizon supports running multiple agent sessions concurrently against the same ticket. This enables parallel code review with different reviewer personas and orchestrated multi-agent workflows.
+
+### Session Roles & Patterns
+
+Each session can be tagged with coordination metadata:
+
+| Field | Purpose |
+|-------|---------|
+| `role` | Identifies the session's function (e.g. `reviewer:senior-dev`, `implementer`) |
+| `pattern` | Orchestration pattern: `relay`, `scatter-gather`, or `supervisor` |
+| `patternPosition` | Position within pattern: `lead`, `assistant`, `combiner`, `step`, `standalone` |
+| `lockedPaths` | File paths this session intends to write (engine rejects conflicts) |
+
+### Phase-Aware Single / Multi Launch
+
+Every non-Ready card exposes a **split button**: the primary action advances the ticket (status action) or, where there's no status action, launches the phase's default single agent in one click; a caret opens a menu listing the phase's **Single** default, **Multi** default, and any other templates configured for that phase (each labelled by template name). The "Ready" column has its own **Review** split button (primary = default single reviewer, caret = Single/Multi/templates) alongside the unchanged **Return** and **Finish** buttons.
+
+The card maps the ticket's board status to a launch phase (`grooming`, `implementation`, `review`, `finalize`). Defaults resolve through `config.phaseDefaults[phase].single` / `.multi` (falling back to `builtin-<phase>-<variant>`). A **single** selection always launches **standalone**: the launcher hides the orchestration pattern selector and runs the agent via `runAgentAction({ action: { kind: 'persona', … } })`, bypassing the pattern gating that blocks `serialized`/`handoff`. Selecting **two or more** participants launches an orchestrated team via `launchOrchestration(...)` with the phase's combiner as lead. Inside the launcher a **Template** dropdown lists every built-in and custom template that defines a config for the current phase — switching it re-applies that template's pattern and personas, while any manual edit drops the selection back to "Custom".
+
+The **Workflows → Templates** screen groups templates by phase, splitting each phase into Single and Multi columns (by persona count). A star on each card sets that template as the phase's single or multi default; cards surface the resolved pattern and ordered persona chips.
+
+### Parallel Code Review
+
+From both the "Ready" status prompt (modal) and the card quick-action bar, the **Single** / **Multi** controls open a multi-select persona picker. Select one persona for a single reviewer, or select multiple for parallel reviews.
+
+**With Orchestrator (default for 2+ reviewers):**
+An orchestrator agent launches alongside the reviewers. Reviewers only post structured comments (they cannot change ticket status). The orchestrator waits for all reviews, synthesizes findings, and decides:
+- All approved → moves ticket to `Ready`
+- Any flagged changes → moves ticket to `In Progress` with consolidated action items
+
+**Without Orchestrator (checkbox unchecked):**
+Reviewers launch independently but are status-restricted — they can only post comments. The ticket stays in `In Progress` and the user reads comments manually.
+
+**Single reviewer:**
+Existing behavior preserved — a single reviewer has full access (including status changes).
+
+### Status Restriction (Engine-Enforced)
+
+When a ticket has 2+ active scatter-gather sessions, the `change_status` MCP tool rejects calls unless the caller identifies as `callerRole: 'orchestrator'` or `'lead'`. This prevents individual reviewers from moving the ticket while peers are still reviewing.
+
+Each reviewer session:
+1. Reads the ticket description and history via MCP tools
+2. Inspects the diff via git commands
+3. Posts a structured comment via `add_comment` (starts with **APPROVED** or **CHANGES NEEDED**)
+4. Exits — does NOT change status
+
+Multiple reviewers run simultaneously — each as an independent session tagged with `role: 'reviewer:<persona-id>'`.
+
+### Built-In Persona Roster
+
+Personas are organized by phase. Built-ins are code-defined (viewable, forkable, updated via releases); custom personas live under `<fluxDir>/personas/*.json`.
+
+| Phase | Persona | Focus |
+|-------|---------|-------|
+| Grooming | Context Scout | Repo recon — maps the affected surface and prior art |
+| Grooming | Requirements Interrogator | Surfaces ambiguity, writes acceptance criteria |
+| Grooming | Planner | Combiner — synthesizes scout + interrogator into a plan |
+| Implementation | Test Engineer | TDD — writes failing tests first, no implementation |
+| Implementation | Implementer | Builds to satisfy the test conditions without weakening them |
+| Review | Senior Friendly Dev | Broad single-reviewer pass with severity tags |
+| Review | QA Correctness | Behavior vs. acceptance criteria |
+| Review | Security Auditor | OWASP Top 10 and injection surfaces |
+| Review | Angry Linus | Brutally honest — zero tolerance for bad patterns |
+| Review | Architect Genius | System design, separation of concerns, scalability |
+| Review | Performance Expert | Complexity, hot paths, bundle size, re-renders |
+| Review | UX/UI Expert | Usability, accessibility, interaction design |
+| Finalize | Finalizer | End-to-end ticket finalize: docs check, commit, ticket tidy, merge PR |
+| Finalize | Docs Auditor | Verifies .docs and README reflect the shipped changes; fixes drift |
+| Finalize | Committer | Stages the work and creates one clean, well-described commit |
+| Finalize | Ticket Curator | Tidies the ticket title and posts a clear resolution comment |
+| Finalize | PR Merger | Closes and merges the ticket PR when one exists |
+
+The internal **Orchestrator** and **Supervisor** personas are not user-selectable; they are added automatically when the pattern requires a combiner (orchestrator) or lead (supervisor). The phase-specific combiner (`planner` for grooming, `orchestrator` for other phases) is attached when a multi-agent scatter run has 2+ workers.
+
+### Conflict Prevention
+
+The session store enforces file-lock conventions: if a session declares `lockedPaths`, no other session can start with overlapping paths. Reviewer sessions declare no locks (read-only), so multiple reviewers never conflict.
+
+---
+
 ## Troubleshooting
 
 ### "Binary not found" error

@@ -135,12 +135,14 @@ Move a ticket to a new status.
 | `ticketId` | string | yes |
 | `newStatus` | string | yes |
 | `comment` | string | conditional — see enforcement |
+| `callerRole` | string | no — set to `"orchestrator"` or `"lead"` to bypass scatter-gather restriction |
 
 **Enforcement:**
 
 - Transitioning **to** `Require Input` requires `comment` (the question to ask the user).
 - Transitioning **to** `Ready` requires `comment` (the completion summary), unless `config.requireCommentOnStatusChange === false`.
 - The `Require Input` / `Ready` status names are read from `configCache.requireInputStatus` / `readyForMergeStatus` and may be renamed in board config.
+- **Scatter-gather guard:** If the ticket has 2+ active sessions where at least one has `patternPosition: 'step'`, status changes are rejected unless `callerRole` is `'orchestrator'` or `'lead'`. This prevents individual reviewers from moving the ticket while peers are still reviewing. Affected sessions should use `add_comment` instead.
 
 **Output:** `<id> moved to <status>`.
 

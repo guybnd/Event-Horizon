@@ -64,7 +64,8 @@ Markdown body. Free-form. May contain image links to `.flux/assets/FLUX-42/<name
 | `baselineCommit` | string | HEAD sha captured the first time the ticket moves to `In Progress`. Used as the diff anchor at `finish_ticket` when the ticket has no branch. |
 | `diffSummary` | `{file, additions, deletions}[]` | Per-file change counts captured at `finish_ticket`. The matching full unified diff is written to `<flux-dir>/<ID>.diff` as a sidecar (2 MB hard cap). |
 | `order` | number | Per-status manual sort position (set by drag and drop). |
-| `cliSession` | object | **Not persisted** — serialized into API responses from the in-memory session store. Do not write this to the file. |
+| `cliSession` | object | **Not persisted** — serialized into API responses from the in-memory session store. Holds the most recent session summary for the ticket. Do not write this to the file. |
+| `cliSessions` | object[] | **Not persisted** — full list of session summaries for the ticket, serialized from the session store. Present when the ticket has any sessions; the portal uses it to group sessions launched together (shared `groupId`) into one orchestration run. Each summary may carry `groupId`, `groupSeq`, `groupTotal`, `groupType` (`relay` \| `scatter-gather` \| `supervisor`), and `groupVariant` (`combiner` \| `headless`). `groupTotal` is the expected session count in the group, letting the UI render placeholder slots before all sessions have spawned. |
 | `tokenMetadata` | object | Aggregated token counters surfaced to the UI. |
 
 ### Validation rules
@@ -105,7 +106,7 @@ Common requirements (validated for every entry):
 | `activity` | `comment: string` (non-empty) | Engine-recorded field changes ("Updated title."), creation activity, agent progress notes. |
 | `agent_message` | `comment: string` (non-empty) | Out-of-band agent message captured outside a session. |
 | `status_change` | `from: string`, `to: string` (both non-empty) | Status transitions. Old field names `oldStatus`/`newStatus` are explicitly rejected. |
-| `agent_session` | `sessionId: string`, `startedAt: ISO date`, `status: string` | A CLI agent session run against the ticket. Also carries `framework`, `endedAt`, `progress[]`, token counters; written by the agent adapters. |
+| `agent_session` | `sessionId: string`, `startedAt: ISO date`, `status: string` | A CLI agent session run against the ticket. Also carries `framework`, `endedAt`, `progress[]`, token counters; written by the agent adapters. Sessions that are part of an orchestration run also carry `groupId` (shared run id), `role` (e.g. `reviewer:architect`, `orchestrator`), and `pattern` (the execution pattern) so the activity feed can render the whole run as one collapsible block. |
 
 Any other `type` value is rejected by the validator as `unknown history entry type`.
 

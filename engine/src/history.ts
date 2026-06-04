@@ -43,12 +43,19 @@ export interface AgentSessionEntry {
   progress: AgentSessionProgress[];
   user: string;
   date: string;
+  /** Orchestration run this session belonged to (shared across the group). */
+  groupId?: string;
+  /** Role within the run (e.g. "reviewer:architect", "orchestrator"). */
+  role?: string;
+  /** Execution pattern of the run (relay | scatter-gather | supervisor). */
+  pattern?: string;
 }
 
 export function buildAgentSessionEntry(
   sessionId: string,
   startedAt: string,
   label: string,
+  group?: { groupId?: string; role?: string; pattern?: string },
 ): AgentSessionEntry {
   return {
     type: 'agent_session',
@@ -58,6 +65,9 @@ export function buildAgentSessionEntry(
     progress: [],
     user: label,
     date: startedAt,
+    ...(group?.groupId ? { groupId: group.groupId } : {}),
+    ...(group?.role ? { role: group.role } : {}),
+    ...(group?.pattern ? { pattern: group.pattern } : {}),
   };
 }
 

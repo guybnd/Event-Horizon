@@ -8,6 +8,8 @@ import { StatusBadge } from '../StatusBadge';
 import { getStatusColorClass } from '../../statusStyles';
 import { TaskMarkdown } from '../TaskMarkdown';
 import { relativeTime } from '../../workflow';
+import { patternLabel, normalizeRoleLabel } from '../../orchestration';
+import type { ExecutionPattern, GroupVariant } from '../../types';
 
 function unwrapAgentMessage(text: string): string {
   const match = text.match(/^```[^\n]*\n([\s\S]*?)```\s*$/);
@@ -173,6 +175,60 @@ function SessionHistoryEntry({ session }: { session: AgentSessionEntry }) {
   );
 }
 
+/** Collapsible block grouping all agent_session entries from one orchestration run. */
+function GroupedSessionHistory({ sessions }: { sessions: AgentSessionEntry[] }) {
+  const anyActive = sessions.some(s => s.status === 'active');
+  const [isExpanded, setIsExpanded] = useState(anyActive);
+  const pattern = sessions.find(s => s.pattern)?.pattern as ExecutionPattern | undefined;
+  // Combiner / orchestrator synthesis becomes the conclusion row.
+  const combiner = sessions.find(s => normalizeRoleLabel(s.role) === 'orchestrator' || s.role === 'orchestrator');
+  const workers = sessions.filter(s => s !== combiner);
+  const doneCount = sessions.filter(s => s.status !== 'active').length;
+  const label = patternLabel(pattern, undefined as GroupVariant | undefined);
+
+  return (
+    <div className="flex gap-3">
+      <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-violet-100 dark:bg-violet-500/15 border border-violet-200 dark:border-violet-500/20">
+        <Bot className="h-4 w-4 text-violet-600 dark:text-violet-400" />
+      </div>
+      <div className="flex-1 min-w-0 rounded-xl border border-violet-200 bg-violet-50/30 dark:border-violet-500/10 dark:bg-violet-500/5 p-4 shadow-sm">
+        <button onClick={() => setIsExpanded(!isExpanded)} className="w-full text-left">
+          <div className="flex items-center justify-between group">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-5 w-5 items-center justify-center rounded bg-white dark:bg-violet-500/20 shadow-sm border border-violet-100 dark:border-violet-500/30">
+                {isExpanded ? <ChevronDown className="h-3 w-3 text-violet-600 dark:text-violet-400" /> : <ChevronRight className="h-3 w-3 text-violet-600 dark:text-violet-400" />}
+              </div>
+              <div>
+                <div className="text-xs font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+                  {label} Run · {sessions.length} agents
+                  {anyActive && <span className="flex h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />}
+                </div>
+                <div className="text-[10px] text-gray-500 font-medium">
+                  {doneCount} of {sessions.length} finished
+                </div>
+              </div>
+            </div>
+          </div>
+        </button>
+
+        {isExpanded && (
+          <div className="mt-3 space-y-2">
+            {workers.map((s, idx) => (
+              <SessionHistoryEntry key={`grp-${s.sessionId}-${idx}`} session={s} />
+            ))}
+            {combiner && (
+              <div className="mt-1">
+                <p className="mb-1 px-1 text-[10px] font-bold uppercase tracking-wider text-violet-500">Synthesis</p>
+                <SessionHistoryEntry session={combiner} />
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export interface HistoryListProps {
   topLevelEntries: HistoryEntry[];
   repliesByParent: Map<string, HistoryEntry[]>;
@@ -214,6 +270,23 @@ export const HistoryList = memo(function HistoryList({
   const visibleEntries = reversedEntries.length > visibleCount ? reversedEntries.slice(0, visibleCount) : reversedEntries;
   const hiddenCount = reversedEntries.length - visibleEntries.length;
 
+  // Bucket agent_session entries that share a groupId (orchestration runs) so the
+  // history shows one collapsible block per run instead of N separate sessions.
+  const groupBuckets = useMemo(() => {
+    const map = new Map<string, AgentSessionEntry[]>();
+    for (const e of visibleEntries) {
+      const g = e.type === 'agent_session' ? (e as AgentSessionEntry).groupId : undefined;
+      if (g) {
+        const arr = map.get(g) ?? [];
+        arr.push(e as AgentSessionEntry);
+        map.set(g, arr);
+      }
+    }
+    for (const [k, v] of map) if (v.length < 2) map.delete(k);
+    return map;
+  }, [visibleEntries]);
+  const renderedGroups = new Set<string>();
+
   return (
     <div className="space-y-4">
       {topLevelEntries.length === 0 ? (
@@ -222,6 +295,12 @@ export const HistoryList = memo(function HistoryList({
         {visibleEntries.map((entry, index) => {
           // Handle agent_session entries separately
           if (entry.type === 'agent_session') {
+            const gid = (entry as AgentSessionEntry).groupId;
+            if (gid && groupBuckets.has(gid)) {
+              if (renderedGroups.has(gid)) return null;
+              renderedGroups.add(gid);
+              return <GroupedSessionHistory key={`grp-${gid}-${index}`} sessions={groupBuckets.get(gid)!} />;
+            }
             return <SessionHistoryEntry key={`session-${(entry as AgentSessionEntry).sessionId}-${index}`} session={entry as AgentSessionEntry} />;
           }
 

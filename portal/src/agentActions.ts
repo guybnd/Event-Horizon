@@ -1,102 +1,23 @@
-import { startTaskCliSession, updateTask } from './api';
-import type { CliFramework, CliSessionSummary } from './types';
+import { startTaskCliSessionEx, updateTask, registerDeferredCombiner, unregisterDeferredCombiner, registerRelayChain, unregisterRelayChain, type OrchestrationPersonaMeta } from './api';
+import type { CliFramework, CliSessionSummary, ExecutionPattern, GroupVariant, PatternPosition } from './types';
+import type { TopologyShape } from './orchestration';
 
-export interface ReviewPersona {
-  id: string;
-  label: string;
-  description: string;
-  prompt: string;
-}
-
-export const REVIEW_PERSONAS: ReviewPersona[] = [
-  {
-    id: 'senior-dev',
-    label: 'Senior Friendly Dev',
-    description: 'Collegial, constructive — quality, readability & maintainability',
-    prompt: `You are acting as a senior friendly developer performing a thorough code review of this ticket's implementation.
-
-Your approach: collegial, constructive, and encouraging. You care about code quality, readability, and maintainability. You highlight strengths as well as weaknesses, and always explain the "why" behind your suggestions.
-
-Steps to follow:
-1. Read the full ticket description and all history comments to understand what was intended.
-2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present) to see the actual changes.
-3. Evaluate the implementation against the ticket intent. Consider: correctness, edge cases, naming, readability, test coverage, and anything that could confuse a future maintainer.
-4. Make a decision:
-   - **If changes needed**: Use the \`add_comment\` MCP tool to post a detailed review comment listing specific, actionable improvements. Leave the ticket at In Progress so the implementer sees it.
-   - **If approved**: Use the \`add_comment\` MCP tool to post a short approval comment explaining what looks good. Then use \`change_status\` to move the ticket back to "Ready".
-
-Keep your tone warm but precise. Lead with the most important feedback.`,
-  },
-  {
-    id: 'angry-linus',
-    label: 'Angry Linus',
-    description: 'Brutally honest — no softening, no hand-holding',
-    prompt: `You are acting as an angry Linus Torvalds performing a code review of this ticket's implementation.
-
-Your approach: terse, blunt, brutally honest. No softening. No hand-holding. If the code is bad, say so and say exactly why. You have zero patience for over-engineering, unnecessary abstraction, unclear naming, or code that looks like it was written without thinking. You do acknowledge good work when you see it — briefly.
-
-Steps to follow:
-1. Read the full ticket description and all history comments.
-2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present).
-3. Evaluate ruthlessly. Look for: bad naming, unnecessary complexity, missing error handling, confusing logic, wrong abstractions, obvious bugs, or anything that would make you question whether the author thought about what they were doing.
-4. Make a decision:
-   - **If changes needed**: Use the \`add_comment\` MCP tool to post a blunt, specific review comment listing every problem clearly. Leave the ticket at In Progress.
-   - **If it's actually fine**: Use the \`add_comment\` MCP tool to post a short comment saying it passes. Then use \`change_status\` to move the ticket back to "Ready".
-
-Do not pad your response. Be direct.`,
-  },
-  {
-    id: 'architect',
-    label: 'Architect Genius',
-    description: 'System design, patterns, separation of concerns, scalability',
-    prompt: `You are acting as an elite software architect performing a code review of this ticket's implementation.
-
-Your approach: you think in systems. You care about design patterns, separation of concerns, coupling vs cohesion, abstractions that will age well, and choices that will either constrain or enable the system as it grows. You are not pedantic about style — you care about structure and long-term maintainability at scale.
-
-Steps to follow:
-1. Read the full ticket description and history to understand scope and constraints.
-2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present).
-3. Evaluate architectural quality: Are responsibilities well-separated? Is the abstraction at the right level? Does this introduce hidden coupling? Will this scale? Are there simpler designs that achieve the same goal?
-4. Make a decision:
-   - **If structural issues found**: Use the \`add_comment\` MCP tool to post a detailed architectural review comment. Be specific about what to restructure and why, including proposed alternatives where helpful. Leave the ticket at In Progress.
-   - **If the architecture is sound**: Use the \`add_comment\` MCP tool to post a brief approval noting what holds up well from a design perspective. Then use \`change_status\` to move the ticket back to "Ready".`,
-  },
-  {
-    id: 'perf-expert',
-    label: 'Performance Expert',
-    description: 'Complexity, hot paths, bundle size, memory, re-renders',
-    prompt: `You are acting as a performance engineering expert performing a code review of this ticket's implementation.
-
-Your approach: you think in cycles, bytes, and render trees. You look for algorithmic complexity issues, unnecessary re-renders, wasteful allocations, blocking operations, bundle size contributions, and anything that hits a hot path more times than necessary.
-
-Steps to follow:
-1. Read the full ticket description and history to understand what was built.
-2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present).
-3. Evaluate performance characteristics: O(n) where O(1) is possible? Unnecessary useEffect dependencies causing cascading re-renders? Large imports where tree-shaking won't help? Synchronous work on the main thread? Missing memoization on expensive computations?
-4. Make a decision:
-   - **If performance issues found**: Use the \`add_comment\` MCP tool to post a specific, actionable review comment. Quantify impact where possible and suggest concrete fixes. Leave the ticket at In Progress.
-   - **If performance is acceptable**: Use the \`add_comment\` MCP tool to post a brief approval noting it passes performance scrutiny. Then use \`change_status\` to move the ticket back to "Ready".`,
-  },
-  {
-    id: 'ux-expert',
-    label: 'UX/UI Expert',
-    description: 'Usability, accessibility, interaction design, visual consistency',
-    prompt: `You are acting as a senior UX/UI expert performing a code review of this ticket's implementation.
-
-Your approach: you think from the user's perspective first. You evaluate interaction design, visual hierarchy, accessibility, feedback loops, edge case handling in the UI, and consistency with established patterns in the codebase. You care about how things feel to use, not just how they look.
-
-Steps to follow:
-1. Read the full ticket description and history to understand the intended user experience and what was built.
-2. Run \`git log --oneline -10\` and \`git diff HEAD~1\` (or the implementationLink commit if present). Pay close attention to JSX, CSS classes, and event handlers.
-3. Evaluate UX/UI quality: Is the interaction model intuitive? Are loading, error, and empty states handled gracefully? Is the component accessible (keyboard nav, ARIA labels, focus management, color contrast)? Does it match the visual language of the rest of the portal? Are there confusing affordances or missing feedback?
-4. Make a decision:
-   - **If UX/UI issues found**: Use the \`add_comment\` MCP tool to post a detailed review comment. Be specific — name the interaction, describe the problem, and suggest a concrete fix. Leave the ticket at In Progress.
-   - **If the UX is solid**: Use the \`add_comment\` MCP tool to post a brief approval noting what works well from a user experience perspective. Then use \`change_status\` to move the ticket back to "Ready".`,
-  },
-];
+/**
+ * Persona metadata only. Prompt text lives engine-side (orchestration-personas.ts)
+ * and is resolved server-side from a `personaId` at launch — it never ships in the
+ * client bundle. Fetch the catalog via `fetchOrchestrationPersonas()`.
+ */
+export type ReviewPersona = OrchestrationPersonaMeta;
 
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type EffortLevel = typeof EFFORT_LEVELS[number];
+
+const EFFORT_DISPLAY: Record<EffortLevel, string> = {
+  low: 'Low', medium: 'Medium', high: 'High', xhigh: 'X-High', max: 'Max',
+};
+export function effortDisplayLabel(level: EffortLevel): string {
+  return EFFORT_DISPLAY[level];
+}
 
 export type AgentCommandVerb = 'implement' | 'groom' | 'finish';
 
@@ -114,7 +35,8 @@ export const AGENT_COMMANDS: AgentCommandDef[] = [
 export type AgentAction =
   | { kind: 'launch' }
   | { kind: 'command'; verb: AgentCommandVerb }
-  | { kind: 'prompt'; appendPrompt: string };
+  | { kind: 'prompt'; appendPrompt: string }
+  | { kind: 'persona'; personaId: string; focusComment?: string };
 
 export interface RunAgentActionOptions {
   taskId: string;
@@ -125,6 +47,12 @@ export interface RunAgentActionOptions {
   effortOverride?: string;
   /** Status to move the ticket to before launching the agent. */
   preStatus?: string;
+  /** Multi-session role tag (e.g. 'reviewer', 'implementer'). */
+  role?: string;
+  /** Orchestration pattern for multi-session coordination. */
+  pattern?: 'relay' | 'scatter-gather' | 'supervisor';
+  /** Position within the pattern. */
+  patternPosition?: 'lead' | 'assistant' | 'combiner' | 'step' | 'standalone';
 }
 
 /**
@@ -141,6 +69,9 @@ export async function runAgentAction(opts: RunAgentActionOptions): Promise<CliSe
     skipPermissions = true,
     effortOverride,
     preStatus,
+    role,
+    pattern,
+    patternPosition,
   } = opts;
 
   if (preStatus) {
@@ -148,11 +79,425 @@ export async function runAgentAction(opts: RunAgentActionOptions): Promise<CliSe
   }
 
   let appendPrompt: string | undefined;
+  let personaId: string | undefined;
+  let focusComment: string | undefined;
   if (action.kind === 'command') {
     appendPrompt = `${action.verb} ${taskId}`;
   } else if (action.kind === 'prompt') {
     appendPrompt = action.appendPrompt;
+  } else if (action.kind === 'persona') {
+    personaId = action.personaId;
+    focusComment = action.focusComment;
   }
 
-  return startTaskCliSession(taskId, framework, appendPrompt, skipPermissions, effortOverride);
+  return startTaskCliSessionEx(taskId, {
+    framework,
+    appendPrompt,
+    personaId,
+    focusComment,
+    skipPermissions,
+    effortOverride,
+    role,
+    pattern,
+    patternPosition,
+  });
+}
+
+export interface MultiReviewResult {
+  sessions: CliSessionSummary[];
+  errors: string[];
+}
+
+// ── Generic orchestration model ─────────────────────────────────────────────
+// A single, framework-agnostic launch primitive. The code-review use case is
+// just one configuration of it (a scatter-gather of reviewer roles, optionally
+// with a combiner). Focused on Claude Code for now: no per-row framework
+// picking / cross-framework capability gating — the caller passes the framework.
+
+export type OrchestrationMode = 'scatter-gather' | 'parallel' | 'serialized' | 'handoff';
+
+/** Ticket lifecycle phase a launch belongs to. Drives which personas are offered. */
+export type LaunchPhase = 'grooming' | 'implementation' | 'review' | 'finalize';
+
+/**
+ * Map a board status to the launch phase whose personas apply. Uses the board's
+ * configured review status; everything before review is implementation, the
+ * grooming column maps to grooming, terminal columns fall back to review.
+ *
+ * Note: never returns 'finalize' — that phase is action-triggered (user clicks
+ * Finish), not status-driven. The LaunchPhase union includes it for template
+ * resolution and persona filtering, but status mapping skips it intentionally.
+ */
+export function statusToPhase(
+  status: string | undefined,
+  opts?: { readyStatus?: string; groomingStatus?: string },
+): LaunchPhase {
+  const s = (status || '').trim();
+  const readyStatus = (opts?.readyStatus || 'Ready').trim();
+  const groomingStatus = (opts?.groomingStatus || 'Grooming').trim();
+  if (!s) return 'implementation';
+  if (s === groomingStatus || /^groom/i.test(s)) return 'grooming';
+  if (s === readyStatus || /^review/i.test(s)) return 'review';
+  if (/^(done|archived|released)$/i.test(s)) return 'review';
+  return 'implementation';
+}
+
+/** Default board status to move a ticket to when launching agents for a phase. */
+export function phaseLaunchStatus(phase: LaunchPhase): string | undefined {
+  switch (phase) {
+    case 'grooming': return 'Grooming';
+    case 'implementation': return 'In Progress';
+    case 'review': return 'In Progress';
+    default: return undefined;
+  }
+}
+
+/**
+ * Resolve the default template id for a phase + variant. Falls back to the
+ * built-in id convention (`builtin-<phase>-<variant>`) when the board has no
+ * configured override, so launches always have a sensible default.
+ */
+export function resolvePhaseDefaultId(
+  phaseDefaults: Partial<Record<LaunchPhase, { single?: string; multi?: string }>> | undefined,
+  phase: LaunchPhase,
+  variant: 'single' | 'multi',
+): string {
+  return phaseDefaults?.[phase]?.[variant] || `builtin-${phase}-${variant}`;
+}
+
+/** Combiner/lead persona for a phase. Supervisor pattern uses a delegation-aware lead. */
+export function phaseCombiner(phase: LaunchPhase, mode?: OrchestrationMode): { personaId: string; label: string } | undefined {
+  if (mode === 'handoff') {
+    return { personaId: 'supervisor', label: 'Supervisor' };
+  }
+  switch (phase) {
+    case 'grooming': return { personaId: 'planner', label: 'Planner' };
+    case 'implementation': return { personaId: 'orchestrator', label: 'Orchestrator' };
+    case 'review': return { personaId: 'orchestrator', label: 'Orchestrator' };
+    default: return undefined;
+  }
+}
+
+export interface OrchestrationModeDef {
+  id: OrchestrationMode;
+  label: string;
+  blurb: string;
+  /** Engine execution pattern this mode maps to. */
+  pattern: ExecutionPattern;
+  /** Scatter-gather variant (combiner = synthesis node, headless = peer swarm). */
+  variant?: GroupVariant;
+  topology: TopologyShape;
+  /** A coordinating lead/combiner agent participates in this mode. */
+  hasLead: boolean;
+  /** The engine can run this mode end-to-end today. */
+  launchable: boolean;
+  minAgents: number;
+}
+
+export const ORCHESTRATION_MODES: OrchestrationModeDef[] = [
+  {
+    id: 'scatter-gather',
+    label: 'Scatter-gather',
+    blurb: 'Fan out to N agents in parallel, then a combiner synthesizes their findings and decides the next step.',
+    pattern: 'scatter-gather',
+    variant: 'combiner',
+    topology: 'fan',
+    hasLead: true,
+    launchable: true,
+    minAgents: 1,
+  },
+  {
+    id: 'parallel',
+    label: 'Parallel',
+    blurb: 'Run N independent agents at once. No combiner — you review the results and decide.',
+    pattern: 'scatter-gather',
+    variant: 'headless',
+    topology: 'swarm',
+    hasLead: false,
+    launchable: true,
+    minAgents: 1,
+  },
+  {
+    id: 'serialized',
+    label: 'Serialized',
+    blurb: 'Pipeline A → B → C, one agent at a time, each handing off to the next.',
+    pattern: 'relay',
+    topology: 'pipeline',
+    hasLead: false,
+    launchable: true,
+    minAgents: 2,
+  },
+  {
+    id: 'handoff',
+    label: 'Hand-off',
+    blurb: 'A lead agent delegates to assistants dynamically using MCP tools — it decides who to call and when.',
+    pattern: 'supervisor',
+    variant: 'combiner',
+    topology: 'tree',
+    hasLead: true,
+    launchable: true,
+    minAgents: 1,
+  },
+];
+
+export function getOrchestrationMode(mode: OrchestrationMode): OrchestrationModeDef {
+  const def = ORCHESTRATION_MODES.find(m => m.id === mode);
+  if (!def) throw new Error(`Unknown orchestration mode: ${mode}`);
+  return def;
+}
+
+export interface OrchestrationParticipant {
+  /** Multi-session role tag (e.g. 'reviewer:architect'). */
+  role: string;
+  /** Human label used for error messages. */
+  label: string;
+  /** Persona whose prompt the engine resolves server-side at launch. */
+  personaId: string;
+  /** Optional reviewer focus note appended to the resolved prompt. */
+  focusComment?: string;
+}
+
+/**
+ * Generic orchestration launcher. Stamps every session in one run with a shared
+ * groupId and the correct pattern metadata so all portal surfaces (card cluster,
+ * Run View, popover, grouped history) render the same topology. Returns started
+ * sessions plus any per-participant launch errors (partial-failure aware).
+ */
+export async function launchOrchestration(opts: {
+  taskId: string;
+  framework: CliFramework;
+  mode: OrchestrationMode;
+  participants: OrchestrationParticipant[];
+  /** Combiner (scatter-gather) / lead (supervisor) agent, when the mode has one. */
+  lead?: OrchestrationParticipant;
+  currentUser: string;
+  skipPermissions?: boolean;
+  preStatus?: string;
+  effortOverride?: string;
+}): Promise<MultiReviewResult> {
+  const { taskId, framework, mode, participants, lead, currentUser, skipPermissions = true, preStatus, effortOverride } = opts;
+  const def = getOrchestrationMode(mode);
+
+  if (preStatus) {
+    await updateTask(taskId, { status: preStatus, updatedBy: currentUser });
+  }
+
+  const groupId = crypto.randomUUID();
+  const stepPosition: PatternPosition = def.pattern === 'supervisor' ? 'assistant' : 'step';
+
+  // ── Relay pipeline: register step chain, launch only step 0 ──────────────
+  if (def.pattern === 'relay') {
+    const steps = participants.map(p => ({
+      personaId: p.personaId,
+      role: p.role,
+      focusComment: p.focusComment,
+    }));
+
+    try {
+      await registerRelayChain(taskId, {
+        framework,
+        groupId,
+        steps,
+        skipPermissions,
+        effortOverride,
+      });
+    } catch (err: any) {
+      throw new Error(`Failed to register relay chain: ${err?.message || 'unknown'}`);
+    }
+
+    // Launch only the first step; the engine barrier handles the rest.
+    const first = participants[0];
+    try {
+      const session = await startTaskCliSessionEx(taskId, {
+        framework,
+        personaId: first.personaId,
+        focusComment: first.focusComment,
+        skipPermissions,
+        effortOverride,
+        role: first.role,
+        pattern: 'relay',
+        patternPosition: 'step',
+        groupId,
+        groupSeq: 0,
+        groupTotal: participants.length,
+        groupType: 'relay',
+      });
+      return { sessions: [session], errors: [] };
+    } catch (err: any) {
+      await unregisterRelayChain(taskId, groupId).catch(() => {});
+      throw new Error(`${first.label}: ${err?.message || 'failed to launch step 0'}`);
+    }
+  }
+
+  // ── Supervisor: launch only the lead with delegation context ─────────────
+  if (def.pattern === 'supervisor' && lead) {
+    // Build the delegation roster so the lead knows who's available.
+    const rosterLines = participants.map(p => `- **${p.label}** (id: \`${p.personaId}\`): ${p.focusComment || 'general specialist'}`);
+    const rosterContext = `## Available Agents for Delegation\n\nYou can delegate to these specialists using the \`delegate_to_agent\` MCP tool:\n\n${rosterLines.join('\n')}\n\nUse \`list_available_agents\` to see the full roster if you need specialists not listed above. Delegate only when specialist knowledge adds value — handle simple tasks yourself.`;
+
+    try {
+      const leadSession = await startTaskCliSessionEx(taskId, {
+        framework,
+        personaId: lead.personaId,
+        focusComment: rosterContext + (lead.focusComment ? `\n\n${lead.focusComment}` : ''),
+        skipPermissions,
+        effortOverride,
+        role: lead.role,
+        pattern: 'supervisor',
+        patternPosition: 'lead',
+        groupId,
+        groupType: 'supervisor',
+        groupVariant: def.variant,
+      });
+      return { sessions: [leadSession], errors: [] };
+    } catch (err: any) {
+      throw new Error(`${lead.label}: ${err?.message || 'failed to launch supervisor lead'}`);
+    }
+  }
+
+  // ── Scatter-gather / parallel ──────────────────────────────────────────────
+
+  // A combiner/lead only earns its keep when there are multiple workers to
+  // synthesize. With a single participant, skip it entirely and just run that
+  // one agent solo — no orchestrator overhead for the cheap single-reviewer path.
+  const useLead = def.hasLead && !!lead && participants.length > 1;
+
+  // Scatter-gather combiners must run AFTER their workers finish. Register the
+  // combiner as deferred BEFORE launching workers so the engine's fan-in barrier
+  // owns the sequencing — a Claude CLI session can't poll/block to wait itself.
+  const deferCombiner = useLead && def.pattern === 'scatter-gather';
+  let combinerDeferred = false;
+  if (deferCombiner && lead) {
+    try {
+      await registerDeferredCombiner(taskId, {
+        framework,
+        groupId,
+        role: lead.role,
+        personaId: lead.personaId,
+        expectedWorkers: participants.length,
+        skipPermissions,
+        groupType: def.pattern,
+        groupVariant: def.variant,
+      });
+      combinerDeferred = true;
+    } catch {
+      // Non-fatal: fall back to inline launch below if registration fails.
+    }
+  }
+
+  const results = await Promise.allSettled(
+    participants.map((p, i) =>
+      startTaskCliSessionEx(taskId, {
+        framework,
+        personaId: p.personaId,
+        focusComment: p.focusComment,
+        skipPermissions,
+        effortOverride,
+        role: p.role,
+        pattern: def.pattern,
+        patternPosition: stepPosition,
+        groupId,
+        groupSeq: i,
+        groupType: def.pattern,
+        groupVariant: def.variant,
+      })
+    )
+  );
+
+  const sessions: CliSessionSummary[] = [];
+  const errors: string[] = [];
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    if (result.status === 'fulfilled') {
+      sessions.push(result.value);
+    } else {
+      errors.push(`${participants[i].label}: ${result.reason?.message || 'failed'}`);
+    }
+  }
+
+  if (sessions.length === 0 && participants.length > 0) {
+    if (combinerDeferred) {
+      // No workers started — cancel the deferred combiner so it never fires.
+      await unregisterDeferredCombiner(taskId, groupId).catch(() => {});
+    }
+    throw new Error(`All sessions failed: ${errors.join('; ')}`);
+  }
+
+  // Lead / combiner agent. Scatter-gather combiners are deferred to the engine
+  // barrier (registered above); only supervisor-style leads launch inline here.
+  if (useLead && lead && !combinerDeferred) {
+    try {
+      const leadSession = await startTaskCliSessionEx(taskId, {
+        framework,
+        personaId: lead.personaId,
+        focusComment: lead.focusComment,
+        skipPermissions,
+        effortOverride,
+        role: lead.role,
+        pattern: def.pattern,
+        patternPosition: 'lead',
+        groupId,
+        groupType: def.pattern,
+        groupVariant: def.variant,
+      });
+      sessions.unshift(leadSession);
+    } catch (err: any) {
+      errors.push(`${lead.label}: ${err?.message || 'failed to launch'}`);
+    }
+  }
+
+  return { sessions, errors };
+}
+
+const personaToParticipant = (p: ReviewPersona): OrchestrationParticipant => ({
+  role: `reviewer:${p.id}`,
+  label: p.label,
+  personaId: p.id,
+});
+
+/**
+ * Launch multiple review sessions in parallel (headless scatter-gather / swarm).
+ * Thin preset over {@link launchOrchestration} for the code-review use case.
+ */
+export async function runParallelReviews(opts: {
+  taskId: string;
+  framework: CliFramework;
+  personas: ReviewPersona[];
+  currentUser: string;
+  skipPermissions?: boolean;
+  preStatus?: string;
+}): Promise<MultiReviewResult> {
+  return launchOrchestration({
+    taskId: opts.taskId,
+    framework: opts.framework,
+    mode: 'parallel',
+    participants: opts.personas.map(personaToParticipant),
+    currentUser: opts.currentUser,
+    skipPermissions: opts.skipPermissions,
+    preStatus: opts.preStatus,
+  });
+}
+
+/**
+ * Launch an orchestrated review: parallel reviewers + a combiner that synthesizes
+ * and decides status. Thin preset over {@link launchOrchestration}.
+ */
+export async function launchOrchestratedReview(opts: {
+  taskId: string;
+  framework: CliFramework;
+  personas: ReviewPersona[];
+  currentUser: string;
+  skipPermissions?: boolean;
+  preStatus?: string;
+}): Promise<MultiReviewResult> {
+  return launchOrchestration({
+    taskId: opts.taskId,
+    framework: opts.framework,
+    mode: 'scatter-gather',
+    participants: opts.personas.map(personaToParticipant),
+    lead: { role: 'orchestrator', label: 'Orchestrator', personaId: 'orchestrator' },
+    currentUser: opts.currentUser,
+    skipPermissions: opts.skipPermissions,
+    preStatus: opts.preStatus,
+  });
 }

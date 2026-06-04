@@ -18,6 +18,9 @@ export interface AgentSessionEntry {
   id?: string;
   replyTo?: string;
   comment?: string;
+  role?: string;
+  groupId?: string;
+  pattern?: ExecutionPattern;
 }
 
 export interface BasicHistoryEntry {
@@ -72,12 +75,17 @@ export interface Task {
   releasedAt?: string;
   releaseDocPath?: string;
   cliSession?: CliSessionSummary | null;
+  cliSessions?: CliSessionSummary[];
   tokenMetadata?: { inputTokens: number; outputTokens: number; costUSD: number; costIsEstimated?: boolean; cacheReadTokens?: number; cacheCreationTokens?: number };
   sessionHistoryEntry?: AgentSessionEntry;
 }
 
 export type CliFramework = 'claude' | 'copilot' | 'gemini';
 export type CliSessionStatus = 'pending' | 'running' | 'waiting-input' | 'completed' | 'failed' | 'cancelled';
+
+export type ExecutionPattern = 'relay' | 'scatter-gather' | 'supervisor';
+export type PatternPosition = 'lead' | 'assistant' | 'combiner' | 'step' | 'standalone';
+export type GroupVariant = 'combiner' | 'headless';
 
 export interface CliSessionSummary {
   id: string;
@@ -102,6 +110,14 @@ export interface CliSessionSummary {
   costIsEstimated?: boolean;
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
+  role?: string;
+  pattern?: ExecutionPattern;
+  patternPosition?: PatternPosition;
+  groupId?: string;
+  groupSeq?: number;
+  groupTotal?: number;
+  groupType?: ExecutionPattern;
+  groupVariant?: GroupVariant;
 }
 
 export interface TaskLiveEvent {
@@ -192,6 +208,10 @@ export interface Config {
     };
   };
   defaultAgent?: CliFramework | 'auto';
+  /** Workflow template the launcher pre-selects by default (empty = none). */
+  defaultWorkflowId?: string;
+  /** Per-phase default templates for one-click single / multi agent launches. */
+  phaseDefaults?: Partial<Record<'grooming' | 'implementation' | 'review' | 'finalize', { single?: string; multi?: string }>>;
   enableFireworks?: boolean;
   tokenDisplayMode?: 'cost' | 'tokens';
   tokenCostThresholds?: { green: number; yellow: number };

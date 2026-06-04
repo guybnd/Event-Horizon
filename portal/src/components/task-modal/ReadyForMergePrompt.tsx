@@ -1,7 +1,6 @@
 import { memo } from 'react';
 import { AlertCircle, Bot, Maximize2, RotateCcw, SendHorizontal, X } from 'lucide-react';
 import { CodeReviewButton } from '../CodeReviewButton';
-import type { ReviewPersona } from '../CodeReviewButton';
 
 export interface ReadyForMergePromptProps {
   taskId: string;
@@ -18,7 +17,7 @@ export interface ReadyForMergePromptProps {
   onReturnToWork: () => void;
   onReturnToWorkAndLaunch: () => void;
   onFinish: () => void;
-  onCodeReview: (persona: ReviewPersona) => void;
+  onOpenReviewModal: () => void;
   onSetReturnToWorkOpen: (open: boolean) => void;
   onSetIsFullView: (v: boolean) => void;
   onSetIsPromptModalOpen: (open: boolean) => void;
@@ -39,7 +38,7 @@ export const ReadyForMergePrompt = memo(function ReadyForMergePrompt({
   onReturnToWork,
   onReturnToWorkAndLaunch,
   onFinish,
-  onCodeReview,
+  onOpenReviewModal,
   onSetReturnToWorkOpen,
   onSetIsFullView,
   onSetIsPromptModalOpen,
@@ -132,7 +131,7 @@ export const ReadyForMergePrompt = memo(function ReadyForMergePrompt({
             <CodeReviewButton
               busy={reviewBusy}
               disabled={saving || cliSessionActive}
-              onReview={onCodeReview}
+              onClick={onOpenReviewModal}
             />
             {reviewError && (
               <p className="text-xs text-red-600 dark:text-red-400">{reviewError}</p>

@@ -43,6 +43,13 @@ export let configCache: any = {
     releaseNotesPath: 'release-notes'
   },
   defaultAgent: 'claude',
+  defaultWorkflowId: '',
+  phaseDefaults: {
+    grooming: { single: 'builtin-grooming-single', multi: 'builtin-grooming-multi' },
+    implementation: { single: 'builtin-implementation-single', multi: 'builtin-implementation-multi' },
+    review: { single: 'builtin-review-single', multi: 'builtin-review-multi' },
+    finalize: { single: 'builtin-finalize-single', multi: 'builtin-finalize-multi' },
+  },
   integrations: {
     claudeCode: {
       groomingModel: '',

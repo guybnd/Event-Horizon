@@ -8,7 +8,7 @@ export interface AgentDefinition {
   name: string;
   systemPrompt: string;
   skills: string[];
-  phase: 'grooming' | 'implementation' | 'review' | 'release';
+  phase: 'grooming' | 'implementation' | 'review' | 'finalize';
   toolRestrictions: string[];
   outputSchema?: object;
   createdAt: string;
@@ -65,7 +65,7 @@ export async function deleteAgent(id: string): Promise<boolean> {
 export function validateAgent(agent: Partial<AgentDefinition>): string | null {
   if (!agent.name?.trim()) return 'Name is required';
   if (!agent.phase) return 'Phase is required';
-  const validPhases = ['grooming', 'implementation', 'review', 'release'];
+  const validPhases = ['grooming', 'implementation', 'review', 'finalize'];
   if (!validPhases.includes(agent.phase)) return `Invalid phase: ${agent.phase}`;
   return null;
 }
