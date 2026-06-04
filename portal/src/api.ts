@@ -338,13 +338,14 @@ export interface StartSessionOptions {
   patternPosition?: string;
   groupId?: string;
   groupSeq?: number;
+  groupTotal?: number;
   groupType?: string;
   groupVariant?: string;
   lockedPaths?: string[];
 }
 
 export async function startTaskCliSessionEx(taskId: string, opts: StartSessionOptions): Promise<CliSessionSummary> {
-  const { framework, appendPrompt, personaId, focusComment, skipPermissions = true, effortOverride, role, pattern, patternPosition, groupId, groupSeq, groupType, groupVariant, lockedPaths } = opts;
+  const { framework, appendPrompt, personaId, focusComment, skipPermissions = true, effortOverride, role, pattern, patternPosition, groupId, groupSeq, groupTotal, groupType, groupVariant, lockedPaths } = opts;
   const body: Record<string, unknown> = { framework, skipPermissions };
   if (appendPrompt) body.appendPrompt = appendPrompt;
   if (personaId) body.personaId = personaId;
@@ -355,6 +356,7 @@ export async function startTaskCliSessionEx(taskId: string, opts: StartSessionOp
   if (patternPosition) body.patternPosition = patternPosition;
   if (groupId) body.groupId = groupId;
   if (groupSeq != null) body.groupSeq = groupSeq;
+  if (groupTotal != null) body.groupTotal = groupTotal;
   if (groupType) body.groupType = groupType;
   if (groupVariant) body.groupVariant = groupVariant;
   if (lockedPaths?.length) body.lockedPaths = lockedPaths;

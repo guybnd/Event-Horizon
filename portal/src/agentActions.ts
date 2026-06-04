@@ -319,6 +319,7 @@ export async function launchOrchestration(opts: {
         patternPosition: 'step',
         groupId,
         groupSeq: 0,
+        groupTotal: participants.length,
         groupType: 'relay',
       });
       return { sessions: [session], errors: [] };

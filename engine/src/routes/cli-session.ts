@@ -43,6 +43,7 @@ interface SpawnOptions {
   patternPosition?: PatternPosition;
   groupId?: string;
   groupSeq?: number;
+  groupTotal?: number;
   groupType?: ExecutionPattern;
   groupVariant?: GroupVariant;
   lockedPaths?: string[];
@@ -83,6 +84,7 @@ async function spawnSession(task: any, opts: SpawnOptions): Promise<CliSessionRe
   if (opts.patternPosition && opts.patternPosition !== 'standalone') session.patternPosition = opts.patternPosition;
   if (opts.groupId) session.groupId = opts.groupId;
   if (opts.groupSeq != null) session.groupSeq = opts.groupSeq;
+  if (opts.groupTotal != null) session.groupTotal = opts.groupTotal;
   if (opts.groupType) session.groupType = opts.groupType;
   if (opts.groupVariant) session.groupVariant = opts.groupVariant;
   if (opts.lockedPaths && opts.lockedPaths.length > 0) session.lockedPaths = opts.lockedPaths;
@@ -158,6 +160,7 @@ setRelayStepLauncher(async (spec: PendingRelaySpec, previousOutput: string, prev
     patternPosition: 'step',
     groupId: spec.groupId,
     groupSeq: spec.currentStep,
+    groupTotal: spec.steps.length,
     groupType: spec.groupType,
   });
 });
@@ -212,6 +215,7 @@ router.post('/:id/cli-session/start', async (req, res) => {
   // Run-group fields: shared identity + topology classification for one orchestration run
   const groupId = typeof req.body?.groupId === 'string' ? req.body.groupId.trim() : undefined;
   const groupSeq = typeof req.body?.groupSeq === 'number' ? req.body.groupSeq : undefined;
+  const groupTotal = typeof req.body?.groupTotal === 'number' ? req.body.groupTotal : undefined;
   const groupType = typeof req.body?.groupType === 'string' ? req.body.groupType.trim() as ExecutionPattern : undefined;
   const groupVariant = typeof req.body?.groupVariant === 'string' ? req.body.groupVariant.trim() as GroupVariant : undefined;
 
@@ -264,6 +268,7 @@ router.post('/:id/cli-session/start', async (req, res) => {
       patternPosition,
       groupId,
       groupSeq,
+      groupTotal,
       groupType,
       groupVariant,
       lockedPaths,
@@ -408,9 +413,15 @@ router.post('/:id/cli-session/delegate', async (req, res) => {
     ? Math.min(req.body.timeout, 600_000)
     : 300_000; // Default 5 minutes
 
-  // Parent session context (for grouping and topology rendering)
-  const parentSessionId = typeof req.body?.parentSessionId === 'string' ? req.body.parentSessionId.trim() : undefined;
-  const groupId = typeof req.body?.groupId === 'string' ? req.body.groupId.trim() : undefined;
+  // Parent session context (for grouping and topology rendering).
+  // Auto-discover: if not explicitly passed, find the active supervisor lead for this task.
+  let groupId = typeof req.body?.groupId === 'string' ? req.body.groupId.trim() : undefined;
+  if (!groupId) {
+    const activeLead = getActiveSessionsForTask(id).find(
+      s => s.patternPosition === 'lead' && s.pattern === 'supervisor'
+    );
+    if (activeLead?.groupId) groupId = activeLead.groupId;
+  }
 
   if (!personaId && !taskPrompt) {
     return res.status(400).json({ error: 'personaId or task is required' });

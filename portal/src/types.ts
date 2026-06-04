@@ -115,6 +115,7 @@ export interface CliSessionSummary {
   patternPosition?: PatternPosition;
   groupId?: string;
   groupSeq?: number;
+  groupTotal?: number;
   groupType?: ExecutionPattern;
   groupVariant?: GroupVariant;
 }

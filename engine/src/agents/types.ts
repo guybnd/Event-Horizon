@@ -67,6 +67,9 @@ export interface CliSessionSummary {
   groupId?: string;
   /** Order within a relay pipeline (0,1,2...). */
   groupSeq?: number;
+  /** Total expected sessions in the group (for relay: total steps). Lets the UI
+   *  render placeholder slots before all sessions have spawned. */
+  groupTotal?: number;
   /** Authoritative orchestration type of the whole group. */
   groupType?: ExecutionPattern;
   /** Disambiguates the two scatter-gather visuals: fan-in vs swarm of peers. */

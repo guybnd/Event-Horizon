@@ -45,12 +45,15 @@ export function groupSessions(sessions: CliSessionSummary[] | undefined | null):
       return a.startedAt.localeCompare(b.startedAt);
     });
     const head = ordered[0];
+    // A relay pipeline may only have 1 session spawned so far but groupTotal
+    // tells us how many are expected — treat it as multi from the start.
+    const expectedTotal = head.groupTotal ?? ordered.length;
     groups.push({
       groupId: head.groupId || key,
       groupType: head.groupType,
       groupVariant: head.groupVariant,
       sessions: ordered,
-      isMulti: ordered.length > 1,
+      isMulti: expectedTotal > 1,
     });
   }
 
@@ -133,23 +136,31 @@ export function isCombinerPending(group: SessionGroup, agg: GroupAggregate): boo
 }
 
 /**
- * True while a run is still unfolding: any session active, or a combiner is
- * still owed. Used to keep a run's cluster on the board through the combiner
- * phase instead of hiding it the moment the last worker finishes.
+ * True while a run is still unfolding: any session active, a combiner is
+ * still owed, or a relay pipeline has more steps to spawn. Used to keep a
+ * run's cluster on the board through all phases of execution.
  */
 export function isGroupLive(group: SessionGroup, agg: GroupAggregate): boolean {
-  return agg.active > 0 || isCombinerPending(group, agg);
+  if (agg.active > 0) return true;
+  if (isCombinerPending(group, agg)) return true;
+  // Relay: still live while the engine will spawn more steps.
+  const expectedTotal = group.sessions[0]?.groupTotal;
+  if (expectedTotal && group.sessions.length < expectedTotal) return true;
+  return false;
 }
 
 /** Pattern-aware one-line summary of group progress for cards/popover. */
 export function groupAggregateLine(group: SessionGroup, agg: GroupAggregate): string {
   const shape = topologyShape(group.groupType, group.groupVariant);
   if (shape === 'pipeline') {
+    const pipelineTotal = group.sessions[0]?.groupTotal ?? agg.total;
     const idx = group.sessions.findIndex(isActiveSession);
-    const stepNum = idx >= 0 ? idx + 1 : agg.total;
+    const stepNum = idx >= 0 ? idx + 1 : group.sessions.length;
     const active = group.sessions[idx];
     const activity = active?.currentActivity ? `: ${active.currentActivity}` : '';
-    return agg.done ? `Pipeline complete (${agg.total} steps)` : `Step ${stepNum} of ${agg.total}${activity}`;
+    return agg.done && group.sessions.length >= pipelineTotal
+      ? `Pipeline complete (${pipelineTotal} steps)`
+      : `Step ${stepNum} of ${pipelineTotal}${activity}`;
   }
   if (shape === 'fan') {
     const workersDone = agg.steps.filter(s => !isActiveSession(s)).length;

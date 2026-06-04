@@ -69,6 +69,7 @@ function toSummary(session: CliSessionRecord): CliSessionSummary {
   if (session.patternPosition) summary.patternPosition = session.patternPosition;
   if (session.groupId) summary.groupId = session.groupId;
   if (session.groupSeq != null) summary.groupSeq = session.groupSeq;
+  if (session.groupTotal != null) summary.groupTotal = session.groupTotal;
   if (session.groupType) summary.groupType = session.groupType;
   if (session.groupVariant) summary.groupVariant = session.groupVariant;
   if (session.lockedPaths) summary.lockedPaths = session.lockedPaths;
