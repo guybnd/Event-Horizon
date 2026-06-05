@@ -537,7 +537,11 @@ export function WorkflowBuilder() {
   const [loading, setLoading] = useState(true);
   const [skillSaving, setSkillSaving] = useState(false);
 
-  // Active state
+  // Explorer (top zone) state — independent of canvas
+  const [explorerPhase, setExplorerPhase] = useState<WorkflowPhase>('grooming');
+  const [explorerCollapsed, setExplorerCollapsed] = useState(false);
+
+  // Canvas editor state
   const [activeTemplate, setActiveTemplate] = useState<WorkflowTemplate | null>(null);
   const [activePhase, setActivePhase] = useState<WorkflowPhase>('grooming');
   const [dockSection, setDockSection] = useState<DockSection>('personas');
@@ -583,6 +587,8 @@ export function WorkflowBuilder() {
     setTemplateCliTarget((t.cliTarget as CliTarget) ?? 'claude');
     setTemplatePhases(t.phases ?? {});
     setCreatingTemplate(false);
+    const primaryPhase = PHASES.find(p => phaseMembers(t.phases[p.key]).length > 0)?.key ?? 'grooming';
+    setActivePhase(primaryPhase);
   }, []);
 
   const startNewTemplate = useCallback(() => {
@@ -591,7 +597,8 @@ export function WorkflowBuilder() {
     setTemplateCliTarget('claude');
     setTemplatePhases({});
     setCreatingTemplate(true);
-  }, []);
+    setActivePhase(explorerPhase);
+  }, [explorerPhase]);
 
   const handleSaveTemplate = useCallback(async () => {
     setTemplateSaving(true);
@@ -697,7 +704,7 @@ export function WorkflowBuilder() {
   const handleDeleteSkill = useCallback(async (skill: SkillDef) => { if (!window.confirm(`Delete "${skill.name}"?`)) return; try { await deleteDoc(skill.path); setSkills(prev => prev.filter(s => s.id !== skill.id)); setEditingSkill(null); } catch {} }, []);
   const handleDuplicateSkill = useCallback(async (skill: SkillDef) => { try { const slug = `${skill.path.replace(/^skills\//, '').replace(/\.md$/, '')}-copy`; const doc = await createDoc({ path: `skills/${slug}.md`, title: `${skill.name} (Copy)`, body: skill.body }); const copy = docToSkill(doc); setSkills(prev => [...prev, copy]); setEditingSkill(copy); } catch {} }, []);
 
-  // Compute whether current template is a default for this phase
+  // Compute whether current template is a default for the canvas phase
   const currentVariant: 'single' | 'multi' = currentMembers.length <= 1 ? 'single' : 'multi';
   const isCurrentDefault = activeTemplate && (
     config?.phaseDefaults?.[activePhase]?.[currentVariant] === activeTemplate.id
@@ -707,58 +714,126 @@ export function WorkflowBuilder() {
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
-      {/* ═══ TOP: Phase tabs + preset selector ═══ */}
-      <div className="shrink-0 flex items-center gap-1 px-1 py-1.5 border-b border-gray-200/40 dark:border-white/[0.04]">
-        {PHASES.map(({ key, label }) => {
-          const cfg = templatePhases[key];
-          const members = phaseMembers(cfg);
-          const isActive = activePhase === key;
-          return (
-            <button
-              key={key}
-              onClick={() => setActivePhase(key)}
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[11px] font-semibold transition-all duration-200 ${
-                isActive
-                  ? `bg-white dark:bg-white/[0.06] shadow-sm ring-1 ${PHASE_RING[key]} text-gray-800 dark:text-gray-100`
-                  : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-white/[0.03]'
-              }`}
-            >
-              <div className={`w-2 h-2 rounded-full ${PHASE_DOT[key]} ${isActive ? 'scale-125' : ''} transition-transform`} />
-              {label}
-              {members.length > 0 && (
-                <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold ${isActive ? 'bg-primary/10 text-primary' : 'bg-gray-100 dark:bg-white/[0.06] text-gray-400'}`}>
-                  {members.length}
-                </span>
-              )}
-            </button>
-          );
-        })}
-        {/* Preset selector — right side */}
-        <div className="ml-auto flex items-center gap-1.5 pl-3 border-l border-gray-200/40 dark:border-white/[0.04]">
-          {templates.filter(t => phaseMembers(t.phases[activePhase]).length > 0).map(t => {
-            const isSelected = activeTemplate?.id === t.id && !creatingTemplate;
-            const singleDefaultId = config?.phaseDefaults?.[activePhase]?.single;
-            const multiDefaultId = config?.phaseDefaults?.[activePhase]?.multi;
-            const isDefault = singleDefaultId === t.id || multiDefaultId === t.id;
-            return (
-              <button key={t.id} onClick={() => selectTemplate(t)} className={`shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-medium transition-all duration-200 border ${isSelected ? 'border-primary/40 bg-primary/[0.05] text-primary' : isDefault ? 'border-amber-400/30 bg-amber-400/[0.03] text-gray-600 dark:text-gray-300' : 'border-transparent text-gray-500 hover:bg-gray-50 dark:hover:bg-white/[0.03]'}`}>
-                {isDefault && <span className="text-amber-500 text-[9px]">★</span>}
-                {t.name}
-              </button>
-            );
-          })}
-          {creatingTemplate && (
-            <span className="shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[10px] font-medium border border-primary/40 bg-primary/[0.05] text-primary">
-              <Zap className="w-3 h-3" />{templateName.trim() || 'Untitled'}
-            </span>
-          )}
-          <button onClick={startNewTemplate} className="shrink-0 p-1.5 rounded-lg text-gray-400 hover:text-primary hover:bg-gray-50 dark:hover:bg-white/[0.04] transition-all">
-            <Plus className="w-3.5 h-3.5" />
+
+      {/* ═══ ZONE 1: PHASE EXPLORER (collapsible) ═══ */}
+      <div className="shrink-0 border-b border-gray-200/60 dark:border-white/[0.06]">
+        {explorerCollapsed ? (
+          /* Collapsed: thin breadcrumb strip */
+          <button
+            onClick={() => setExplorerCollapsed(false)}
+            className="w-full flex items-center gap-3 px-4 py-2 text-left hover:bg-gray-50 dark:hover:bg-white/[0.02] transition-all"
+          >
+            <div className={`w-2 h-2 rounded-full ${PHASE_DOT[explorerPhase]}`} />
+            <span className="text-[11px] font-semibold text-gray-600 dark:text-gray-300">{PHASES.find(p => p.key === explorerPhase)?.label}</span>
+            <span className="text-[10px] text-gray-400">— {templates.filter(t => phaseMembers(t.phases[explorerPhase]).length > 0).length} templates</span>
+            <span className="ml-auto text-[10px] text-gray-400">Click to expand ▾</span>
           </button>
-        </div>
+        ) : (
+          /* Expanded: full explorer */
+          <div className="px-4 pb-3 pt-2">
+            {/* Phase tabs — clicking active phase collapses */}
+            <div className="flex items-center gap-1 mb-3">
+              {PHASES.map(({ key, label }) => {
+                const isActive = explorerPhase === key;
+                const phaseTemplateCount = templates.filter(t => phaseMembers(t.phases[key]).length > 0).length;
+                return (
+                  <button
+                    key={key}
+                    onClick={() => {
+                      if (isActive) setExplorerCollapsed(true);
+                      else setExplorerPhase(key);
+                    }}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-xl text-[11px] font-semibold transition-all duration-200 ${
+                      isActive
+                        ? `bg-white dark:bg-white/[0.06] shadow-sm ring-1 ${PHASE_RING[key]} text-gray-800 dark:text-gray-100`
+                        : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-white/[0.03]'
+                    }`}
+                  >
+                    <div className={`w-2 h-2 rounded-full ${PHASE_DOT[key]} ${isActive ? 'scale-125' : ''} transition-transform`} />
+                    {label}
+                    {phaseTemplateCount > 0 && (
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold ${isActive ? 'bg-primary/10 text-primary' : 'bg-gray-100 dark:bg-white/[0.06] text-gray-400'}`}>
+                        {phaseTemplateCount}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Template cards — defaults first, then others, then + New */}
+            <div className="flex gap-2 overflow-x-auto pb-2">
+              {(() => {
+                const phaseTemplates = templates.filter(t => phaseMembers(t.phases[explorerPhase]).length > 0);
+                const singleDefaultId = config?.phaseDefaults?.[explorerPhase]?.single;
+                const multiDefaultId = config?.phaseDefaults?.[explorerPhase]?.multi;
+
+                const defaults = phaseTemplates.filter(t => singleDefaultId === t.id || multiDefaultId === t.id);
+                const nonDefaults = phaseTemplates.filter(t => singleDefaultId !== t.id && multiDefaultId !== t.id);
+                const sorted = [...defaults, ...nonDefaults];
+
+                return sorted.map(t => {
+                  const isLoaded = activeTemplate?.id === t.id && !creatingTemplate;
+                  const isSingleDefault = singleDefaultId === t.id;
+                  const isMultiDefault = multiDefaultId === t.id;
+                  const isDefault = isSingleDefault || isMultiDefault;
+                  const memberCount = phaseMembers(t.phases[explorerPhase]).length;
+                  return (
+                    <div key={t.id} className="shrink-0 relative group overflow-visible">
+                      <button
+                        onClick={() => selectTemplate(t)}
+                        className={`flex flex-col items-start gap-1.5 px-4 py-3 rounded-xl border-2 transition-all duration-200 min-w-[160px] text-left ${
+                          isLoaded
+                            ? 'border-primary/50 bg-primary/[0.04]'
+                            : isDefault
+                              ? 'border-amber-400/40 bg-amber-400/[0.03]'
+                              : 'border-gray-200/60 dark:border-white/[0.06] hover:border-gray-300 dark:hover:border-white/[0.1] bg-white/50 dark:bg-white/[0.02]'
+                        }`}
+                      >
+                        <span className="text-[12px] font-semibold text-gray-800 dark:text-gray-100 truncate w-full">{t.name}</span>
+                        <div className="flex items-center gap-2 w-full">
+                          <span className="text-[10px] text-gray-400">{memberCount} agent{memberCount !== 1 ? 's' : ''}</span>
+                          <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${CLI_COLORS[t.cliTarget as CliTarget] ?? 'bg-gray-100 text-gray-500'}`}>{t.cliTarget}</span>
+                        </div>
+                        {isLoaded && <span className="text-[9px] text-primary font-medium">● Editing</span>}
+                      </button>
+                      {/* Default badge — floating on bottom border */}
+                      {isDefault && (
+                        <span className="absolute -bottom-2 left-1/2 -translate-x-1/2 flex items-center gap-1 text-[8px] font-bold text-amber-700 dark:text-amber-300 bg-amber-400/20 dark:bg-amber-500/20 border border-amber-400/40 px-2 py-0.5 rounded-full whitespace-nowrap backdrop-blur-sm">
+                          {isSingleDefault && <><Users className="w-2.5 h-2.5" /> Single</>}
+                          {isMultiDefault && <><Layers className="w-2.5 h-2.5" /> Multi</>}
+                        </span>
+                      )}
+                      {/* Delete button on hover */}
+                      {!t.builtIn && (
+                        <button
+                          onClick={e => { e.stopPropagation(); handleDeleteTemplate(t); }}
+                          className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  );
+                });
+              })()}
+              {/* + New Template card */}
+              <button
+                onClick={startNewTemplate}
+                className="shrink-0 flex flex-col items-center justify-center gap-1.5 px-4 py-3 rounded-xl border-2 border-dashed border-gray-300 dark:border-white/[0.08] hover:border-primary/40 hover:bg-primary/[0.02] transition-all min-w-[120px] min-h-[80px]"
+              >
+                <Plus className="w-4 h-4 text-gray-400" />
+                <span className="text-[10px] font-medium text-gray-400">New</span>
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* ═══ MAIN: Dock | Canvas | Skill editor ═══ */}
+      {/* ═══════════════════════════════════════════════════════════════════
+          ZONE 2: CANVAS EDITOR (fills remaining space)
+          Self-contained: shows full template identity + node graph
+      ═══════════════════════════════════════════════════════════════════ */}
       <div className="flex-1 flex overflow-hidden min-h-0">
         {/* LEFT DOCK */}
         <div className="w-[220px] shrink-0 flex flex-col border-r border-gray-200/60 dark:border-white/[0.05] overflow-hidden">
@@ -829,93 +904,82 @@ export function WorkflowBuilder() {
           </div>
         </div>
 
-        {/* CENTER: Canvas with template controls inside */}
+        {/* CENTER — either Template Canvas or Skill Editor */}
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-          {/* Canvas header: template name, mode, CLI, default, save */}
-          <div className="shrink-0 px-4 pt-3 pb-2 flex flex-col gap-2">
-            {/* Row 1: Name + CLI + Save */}
-            <div className="flex items-center gap-3">
-              <Workflow className="w-4 h-4 text-primary shrink-0" />
-              <input
-                value={templateName}
-                onChange={e => setTemplateName(e.target.value)}
-                placeholder="Untitled template…"
-                className="flex-1 min-w-0 bg-transparent text-base font-bold text-gray-800 dark:text-gray-100 outline-none border-b border-transparent hover:border-gray-300 dark:hover:border-white/[0.1] focus:border-primary/50 transition-colors placeholder:text-gray-300 dark:placeholder:text-gray-600 pb-0.5"
-              />
-              {/* CLI target */}
-              <div className="flex gap-0.5 p-0.5 rounded-lg bg-gray-100/60 dark:bg-white/[0.04] ring-1 ring-black/[0.03] dark:ring-white/[0.05] shrink-0">
-                {(['claude', 'gemini', 'copilot'] as CliTarget[]).map(cli => (
-                  <button key={cli} onClick={() => setTemplateCliTarget(cli)} className={`px-2 py-1 rounded-md text-[9px] font-bold uppercase transition-all duration-200 ${templateCliTarget === cli ? CLI_COLORS[cli] + ' ring-1' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'}`}>
-                    {cli}
-                  </button>
-                ))}
-              </div>
-              {/* Set as default button */}
-              {activeTemplate && !creatingTemplate && (
-                <button
-                  onClick={() => handleSetPhaseDefault(activePhase, currentVariant, activeTemplate.id)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-semibold transition-all duration-200 shrink-0 ${
-                    isCurrentDefault
-                      ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 ring-1 ring-amber-500/20'
-                      : 'text-gray-400 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-500/5 border border-gray-200/60 dark:border-white/[0.06]'
-                  }`}
-                >
-                  <span className="text-[12px]">{isCurrentDefault ? '★' : '☆'}</span>
-                  {isCurrentDefault ? 'Default' : 'Set Default'}
-                </button>
-              )}
-              {/* Save */}
-              <button
-                onClick={handleSaveTemplate}
-                disabled={templateSaving || !templateName.trim() || !hasChanges}
-                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[11px] font-semibold transition-all duration-300 active:scale-[0.97] shrink-0 ${hasChanges ? 'bg-primary text-white hover:bg-primary-hover shadow-[0_2px_8px_rgba(var(--eh-accent),0.2)]' : 'bg-gray-100 dark:bg-white/[0.04] text-gray-400 cursor-default'} disabled:opacity-50`}
-              >
-                {templateSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
-                {creatingTemplate ? 'Create' : 'Save'}
-              </button>
-            </div>
-            {/* Row 2: Mode picker */}
-            <div className="flex items-center gap-1.5">
-              <span className="text-[9px] font-bold uppercase tracking-[0.06em] text-gray-400 mr-1">Mode</span>
-              {PATTERNS.map(p => {
-                const Icon = p.icon;
-                const supported = supportedPatterns.includes(p.key);
-                const active = currentPattern === p.key;
-                return (
-                  <button
-                    key={p.key}
-                    disabled={!supported}
-                    onClick={() => handleSetPattern(p.key)}
-                    title={p.description}
-                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-semibold transition-all duration-200 ${active ? 'bg-primary/10 text-primary ring-1 ring-primary/20' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/[0.04]'} disabled:opacity-25 disabled:cursor-not-allowed`}
-                  >
-                    <Icon className="w-3 h-3" />
-                    {p.label}
-                  </button>
-                );
-              })}
-              {creatingTemplate && <span className="ml-2 text-[9px] text-primary font-medium">New template — configure and save</span>}
-            </div>
-          </div>
-          {/* Canvas */}
-          <div className="flex-1 flex p-4 pt-2 overflow-auto">
-            <NodeGraph
-              pattern={currentPattern}
-              members={currentMembers}
-              personaLabels={personaLabels}
-              onRemoveMember={handleRemoveFromPhase}
-              onReorderMember={handleReorder}
-              onDrop={handleAddToPhase}
-            />
-          </div>
-        </div>
-
-        {/* RIGHT PANEL: Skill editor */}
-        {editingSkill && (
-          <div className="w-[300px] shrink-0 border-l border-gray-200/60 dark:border-white/[0.05] overflow-hidden">
+          {editingSkill ? (
+            /* Skill editor replaces the canvas */
             <SkillInlineEditor skill={editingSkill} onClose={() => setEditingSkill(null)} onSave={handleSaveSkill} onDelete={editingSkill.path ? () => handleDeleteSkill(editingSkill) : undefined} isSaving={skillSaving} />
-          </div>
-        )}
+          ) : (
+            /* Template canvas */
+            <>
+              {/* Canvas header — full template identity */}
+              <div className="shrink-0 px-5 pt-3 pb-2 border-b border-gray-200/40 dark:border-white/[0.04]">
+                <div className="flex items-center gap-3 mb-2">
+                  <Workflow className="w-4 h-4 text-primary shrink-0" />
+                  <input
+                    value={templateName}
+                    onChange={e => setTemplateName(e.target.value)}
+                    placeholder="Untitled template…"
+                    className="flex-1 min-w-0 bg-transparent text-base font-bold text-gray-800 dark:text-gray-100 outline-none border-b border-transparent hover:border-gray-300 dark:hover:border-white/[0.1] focus:border-primary/50 transition-colors placeholder:text-gray-300 dark:placeholder:text-gray-600 pb-0.5"
+                  />
+                  <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-semibold shrink-0 ring-1 ${PHASE_RING[activePhase]} bg-white/50 dark:bg-white/[0.03]`}>
+                    <div className={`w-2 h-2 rounded-full ${PHASE_DOT[activePhase]}`} />
+                    {PHASES.find(p => p.key === activePhase)?.label}
+                  </div>
+                  <div className="flex gap-0.5 p-0.5 rounded-lg bg-gray-100/60 dark:bg-white/[0.04] ring-1 ring-black/[0.03] dark:ring-white/[0.05] shrink-0">
+                    {(['claude', 'gemini', 'copilot'] as CliTarget[]).map(cli => (
+                      <button key={cli} onClick={() => setTemplateCliTarget(cli)} className={`px-2 py-1 rounded-md text-[9px] font-bold uppercase transition-all duration-200 ${templateCliTarget === cli ? CLI_COLORS[cli] + ' ring-1' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'}`}>
+                        {cli}
+                      </button>
+                    ))}
+                  </div>
+                  {activeTemplate && !creatingTemplate && (
+                    <button
+                      onClick={() => handleSetPhaseDefault(activePhase, currentVariant, activeTemplate.id)}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-semibold transition-all duration-200 shrink-0 ${isCurrentDefault ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 ring-1 ring-amber-500/20' : 'text-gray-400 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-500/5 border border-gray-200/60 dark:border-white/[0.06]'}`}
+                    >
+                      <span className="text-[12px]">{isCurrentDefault ? '★' : '☆'}</span>
+                      {isCurrentDefault ? `${currentVariant === 'single' ? 'Single' : 'Multi'} Default` : 'Set as Default'}
+                    </button>
+                  )}
+                  <button
+                    onClick={handleSaveTemplate}
+                    disabled={templateSaving || !templateName.trim() || !hasChanges}
+                    className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[11px] font-semibold transition-all duration-300 active:scale-[0.97] shrink-0 ${hasChanges ? 'bg-primary text-white hover:bg-primary-hover shadow-[0_2px_8px_rgba(var(--eh-accent),0.2)]' : 'bg-gray-100 dark:bg-white/[0.04] text-gray-400 cursor-default'} disabled:opacity-50`}
+                  >
+                    {templateSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                    {creatingTemplate ? 'Create' : 'Save'}
+                  </button>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[9px] font-bold uppercase tracking-[0.06em] text-gray-400 mr-1">Mode</span>
+                  {PATTERNS.map(p => {
+                    const Icon = p.icon;
+                    const supported = supportedPatterns.includes(p.key);
+                    const active = currentPattern === p.key;
+                    return (
+                      <button key={p.key} disabled={!supported} onClick={() => handleSetPattern(p.key)} title={p.description} className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-semibold transition-all duration-200 ${active ? 'bg-primary/10 text-primary ring-1 ring-primary/20' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/[0.04]'} disabled:opacity-25 disabled:cursor-not-allowed`}>
+                        <Icon className="w-3 h-3" /> {p.label}
+                      </button>
+                    );
+                  })}
+                  {creatingTemplate && <span className="ml-2 text-[9px] text-primary font-medium">New — configure and save</span>}
+                </div>
+              </div>
+              {/* Node graph */}
+              <div className="flex-1 flex p-4 overflow-auto">
+                <NodeGraph
+                  pattern={currentPattern}
+                  members={currentMembers}
+                  personaLabels={personaLabels}
+                  onRemoveMember={handleRemoveFromPhase}
+                  onReorderMember={handleReorder}
+                  onDrop={handleAddToPhase}
+                />
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Persona modal */}
