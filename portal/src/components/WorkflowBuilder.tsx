@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import {
   Workflow, Plus, X, Pencil, Loader2, BookOpen, Check, Users, Lock, Copy, Eye,
   GitBranch, Layers, GitMerge, Zap, GripVertical,
@@ -8,7 +8,6 @@ import {
   fetchEditablePersona,
   createPersona,
   updatePersona,
-  deletePersona,
   fetchWorkflows,
   createWorkflow,
   updateWorkflow,
@@ -20,7 +19,6 @@ import {
   createDoc,
   deleteDoc,
   type OrchestrationPersonaMeta,
-  type PersonaInput,
   type WorkflowTemplate,
   type WorkflowPhaseConfig,
   type WorkflowPhase,
@@ -754,8 +752,6 @@ export function WorkflowBuilder() {
   const supportedPatterns = CLI_PATTERN_SUPPORT[templateCliTarget];
 
   // Handlers
-  const handleDeletePersona = useCallback(async (p: OrchestrationPersonaMeta) => { if (!window.confirm(`Delete persona "${p.label}"?`)) return; try { await deletePersona(p.id); await reloadPersonas(); } catch {} }, [reloadPersonas]);
-  const handleDuplicatePersona = useCallback(async (p: OrchestrationPersonaMeta) => { try { const full = await fetchEditablePersona(p.id); const copy = await createPersona({ label: `${p.label} (Copy)`, description: p.description, role: p.role, phases: p.phases ?? [], requiredCapabilities: [], prompt: full.prompt }); await reloadPersonas(); setEditingPersona(copy); } catch {} }, [reloadPersonas]);
   const handleDeleteTemplate = useCallback(async (t: WorkflowTemplate) => { if (!window.confirm(`Delete "${t.name}"?`)) return; try { await deleteWorkflow(t.id); await reloadTemplates(); if (activeTemplate?.id === t.id) { setActiveTemplate(null); setTemplateName(''); setTemplatePhases({}); } if (config) { let next: Config = config; if (config.defaultWorkflowId === t.id) next = { ...next, defaultWorkflowId: '' }; if (next !== config) { await saveConfig(next); setConfigState(next); } } } catch {} }, [reloadTemplates, config, activeTemplate]);
   const handleSetPhaseDefault = useCallback(async (phase: WorkflowPhase, variant: 'single' | 'multi', templateId: string) => {
     if (!config) return;
@@ -767,7 +763,6 @@ export function WorkflowBuilder() {
   }, [config]);
   const handleSaveSkill = useCallback(async (updated: SkillDef) => { setSkillSaving(true); try { if (updated.path) { await updateDoc(updated.path, { title: updated.name, body: updated.body }); setSkills(prev => prev.map(s => (s.id === updated.id ? updated : s))); } else { const slug = updated.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, ''); const doc = await createDoc({ path: `skills/${slug}.md`, title: updated.name, body: updated.body }); setSkills(prev => [...prev, docToSkill(doc)]); } setEditingSkill(null); } catch {} finally { setSkillSaving(false); } }, []);
   const handleDeleteSkill = useCallback(async (skill: SkillDef) => { if (!window.confirm(`Delete "${skill.name}"?`)) return; try { await deleteDoc(skill.path); setSkills(prev => prev.filter(s => s.id !== skill.id)); setEditingSkill(null); } catch {} }, []);
-  const handleDuplicateSkill = useCallback(async (skill: SkillDef) => { try { const slug = `${skill.path.replace(/^skills\//, '').replace(/\.md$/, '')}-copy`; const doc = await createDoc({ path: `skills/${slug}.md`, title: `${skill.name} (Copy)`, body: skill.body }); const copy = docToSkill(doc); setSkills(prev => [...prev, copy]); setEditingSkill(copy); } catch {} }, []);
 
   // Compute whether current template is a default for the canvas phase
   const currentVariant: 'single' | 'multi' = currentMembers.length <= 1 ? 'single' : 'multi';
