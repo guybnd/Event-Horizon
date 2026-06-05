@@ -37,7 +37,7 @@ export function LaunchAgentSplitButton({ onLaunch, disabled, busy, size = 'md', 
       type="button"
       disabled={isDisabled}
       onClick={() => onLaunch()}
-      className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-white transition-colors cursor-pointer hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
+      className="matrix-accent-button eh-btn-accent flex flex-1 items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
     >
       <Icon className="h-4 w-4" />
       {busy ? 'Starting…' : 'Launch'}

@@ -332,7 +332,7 @@ export function Board() {
               <p className="text-sm text-gray-500 dark:text-gray-400">No tickets yet.</p>
               <button
                 onClick={() => setShowBootstrap(true)}
-                className="flex items-center gap-2 rounded-2xl bg-primary px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:bg-primary-hover"
+                className="board-accent-button flex items-center gap-2 rounded-2xl bg-primary px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:bg-primary-hover"
               >
                 <Upload className="h-4 w-4" />
                 Import from project
@@ -385,7 +385,7 @@ export function Board() {
               >Cancel</button>
               <button
                 onClick={() => applyStatusChange(pendingStatusChange.taskId, pendingStatusChange.newStatus, pendingStatusChange.oldStatus, commentText)}
-                className="px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium cursor-pointer transition-colors"
+                className="board-accent-button px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium cursor-pointer transition-colors"
               >Save Update</button>
             </div>
           </div>

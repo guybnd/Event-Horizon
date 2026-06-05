@@ -39,7 +39,7 @@ export const WorkspaceSwitcher = memo(function WorkspaceSwitcher() {
       <button
         onClick={() => setOpen(prev => !prev)}
         disabled={switching}
-        className={`group flex shrink-0 cursor-pointer items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-left transition-all duration-200 overflow-hidden border-gray-200 bg-white/60 text-gray-700 dark:border-white/10 dark:bg-white/5 dark:text-gray-200 hover:border-primary/30 hover:bg-primary/5 dark:hover:border-primary/30 dark:hover:bg-primary/10 ${open ? 'ring-2 ring-primary/30' : ''}`}
+        className={`matrix-accent-toggle group flex shrink-0 cursor-pointer items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-left transition-all duration-200 overflow-hidden border-gray-200 bg-white/60 text-gray-700 dark:border-white/10 dark:bg-white/5 dark:text-gray-200 hover:border-primary/30 hover:bg-primary/5 dark:hover:border-primary/30 dark:hover:bg-primary/10 ${open ? 'ring-2 ring-primary/30' : ''}`}
       >
         {switching ? (
           <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />

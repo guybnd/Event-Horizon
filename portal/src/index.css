@@ -403,14 +403,126 @@ body::before {
 }
 
 /* Matrix — "Tell agent to finish" and other bg-primary buttons get the gradient */
-:root[data-theme="matrix"] button[class*="bg-primary"]:not(.eh-btn-accent) {
+:root[data-theme="matrix"] button.bg-primary:not(.eh-btn-accent):not(.wb-no-matrix-primary) {
   background: linear-gradient(180deg, #00e0a0 0%, #00b880 100%) !important;
   border-top: 1px solid rgba(0, 255, 180, 0.4);
   color: #0a0d08 !important;
   font-weight: 700;
 }
-:root[data-theme="matrix"] button[class*="bg-primary"]:not(.eh-btn-accent):hover {
+:root[data-theme="matrix"] button.bg-primary:not(.eh-btn-accent):not(.wb-no-matrix-primary):hover {
   background: linear-gradient(180deg, #00f0b0 0%, #00c890 100%) !important;
+}
+
+/* Matrix workflow builder highlight clarity */
+:root[data-theme="matrix"] .workflow-builder .wb-template-card {
+  border-color: rgba(68, 160, 146, 0.34);
+  background: rgba(5, 25, 20, 0.72);
+}
+
+:root[data-theme="matrix"] .workflow-builder .wb-template-card:hover {
+  border-color: rgba(46, 198, 165, 0.56);
+  background: rgba(8, 38, 30, 0.78);
+}
+
+:root[data-theme="matrix"] .workflow-builder .wb-template-card[class*="bg-primary"] {
+  border-color: rgba(0, 255, 185, 0.84) !important;
+  background: linear-gradient(180deg, rgba(0, 255, 185, 0.2) 0%, rgba(0, 160, 120, 0.17) 100%) !important;
+  box-shadow: 0 0 0 1px rgba(0, 245, 190, 0.42), 0 0 20px rgba(0, 245, 190, 0.18) !important;
+}
+
+:root[data-theme="matrix"] .workflow-builder .wb-template-new,
+:root[data-theme="matrix"] .workflow-builder .wb-new-persona {
+  border-color: rgba(0, 255, 185, 0.58) !important;
+  background: rgba(7, 30, 23, 0.78) !important;
+  color: #c6fff0 !important;
+  box-shadow: 0 0 0 1px rgba(0, 245, 190, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+:root[data-theme="matrix"] .workflow-builder .wb-template-new:hover,
+:root[data-theme="matrix"] .workflow-builder .wb-new-persona:hover {
+  border-color: rgba(0, 255, 185, 0.8) !important;
+  background: rgba(0, 255, 185, 0.14) !important;
+  box-shadow: 0 0 0 1px rgba(0, 245, 190, 0.4), 0 0 18px rgba(0, 245, 190, 0.16);
+}
+
+:root[data-theme="matrix"] .workflow-builder .wb-template-new .text-gray-400,
+:root[data-theme="matrix"] .workflow-builder .wb-new-persona .text-primary {
+  color: #c6fff0 !important;
+}
+
+:root[data-theme="matrix"] .workflow-builder .wb-default-chip {
+  border-color: rgba(255, 212, 102, 0.78) !important;
+  background: linear-gradient(180deg, rgba(255, 212, 102, 0.34) 0%, rgba(196, 138, 22, 0.24) 100%) !important;
+  color: #ffe6b0 !important;
+  box-shadow: 0 0 0 1px rgba(255, 212, 102, 0.3), 0 2px 10px rgba(160, 110, 0, 0.28);
+  position: relative;
+  z-index: 40;
+}
+
+:root[data-theme="matrix"] .workflow-builder .wb-editing-chip {
+  border-color: rgba(0, 255, 185, 0.64) !important;
+  background: rgba(0, 255, 185, 0.2) !important;
+  color: #c8ffef !important;
+}
+
+:root[data-theme="matrix"] .workflow-builder .wb-mode-pill[class*="bg-primary"] {
+  background: rgba(0, 255, 185, 0.22) !important;
+  border: 1px solid rgba(0, 255, 185, 0.56) !important;
+  color: #c9ffef !important;
+}
+
+:root[data-theme="matrix"] .workflow-builder .wb-cli-pill[class*="bg-orange"] {
+  border-color: rgba(255, 166, 77, 0.58) !important;
+  background: rgba(255, 145, 0, 0.24) !important;
+  color: #ffd8a8 !important;
+}
+
+:root[data-theme="matrix"] .workflow-builder .wb-cli-pill[class*="bg-blue"] {
+  border-color: rgba(121, 173, 255, 0.58) !important;
+  background: rgba(62, 133, 255, 0.24) !important;
+  color: #d2e6ff !important;
+}
+
+:root[data-theme="matrix"] .workflow-builder .wb-cli-pill[class*="bg-emerald"] {
+  border-color: rgba(46, 198, 165, 0.58) !important;
+  background: rgba(0, 190, 135, 0.24) !important;
+  color: #ccfff1 !important;
+}
+
+/* Shared matrix accent controls: theme picker, token pill, workspace picker */
+:root[data-theme="matrix"] .matrix-accent-toggle {
+  border-color: rgba(0, 255, 185, 0.56) !important;
+  background: rgba(7, 28, 22, 0.78) !important;
+  color: #ccfff2 !important;
+  box-shadow: 0 0 0 1px rgba(0, 245, 190, 0.22), 0 0 10px rgba(0, 245, 190, 0.08);
+}
+
+:root[data-theme="matrix"] .matrix-accent-toggle:hover {
+  border-color: rgba(0, 255, 185, 0.78) !important;
+  background: rgba(0, 255, 185, 0.12) !important;
+  color: #e1fff7 !important;
+  box-shadow: 0 0 0 1px rgba(0, 245, 190, 0.36), 0 0 16px rgba(0, 245, 190, 0.16);
+}
+
+:root[data-theme="matrix"] .matrix-accent-toggle.ring-2 {
+  box-shadow: 0 0 0 2px rgba(0, 255, 185, 0.34), 0 0 16px rgba(0, 255, 185, 0.16);
+}
+
+/* Shared matrix accent buttons: launch and board primary actions */
+:root[data-theme="matrix"] .matrix-accent-button,
+:root[data-theme="matrix"] .board-accent-button {
+  border: 1px solid rgba(0, 255, 185, 0.72) !important;
+  background: rgba(8, 34, 26, 0.88) !important;
+  color: #d5fff4 !important;
+  box-shadow: 0 0 0 1px rgba(0, 245, 190, 0.3), 0 6px 16px rgba(0, 95, 66, 0.2);
+}
+
+:root[data-theme="matrix"] .matrix-accent-button:hover,
+:root[data-theme="matrix"] .board-accent-button:hover {
+  border-color: rgba(0, 255, 185, 0.9) !important;
+  background: rgba(0, 255, 185, 0.16) !important;
+  color: #ecfff9 !important;
+  box-shadow: 0 0 0 1px rgba(0, 245, 190, 0.44), 0 8px 22px rgba(0, 115, 81, 0.36), 0 0 20px rgba(0, 245, 190, 0.18);
 }
 
 /* Matrix — board filter bar blends with theme */

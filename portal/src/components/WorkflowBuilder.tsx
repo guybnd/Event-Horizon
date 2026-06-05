@@ -52,9 +52,15 @@ const CLI_PATTERN_SUPPORT: Record<CliTarget, Pattern[]> = {
 };
 
 const CLI_COLORS: Record<CliTarget, string> = {
-  claude: 'bg-orange-500/15 text-orange-400 ring-orange-500/20',
-  gemini: 'bg-blue-500/15 text-blue-400 ring-blue-500/20',
-  copilot: 'bg-emerald-500/15 text-emerald-400 ring-emerald-500/20',
+  claude: 'bg-orange-500/12 text-orange-300 ring-orange-500/25',
+  gemini: 'bg-blue-500/12 text-blue-300 ring-blue-500/25',
+  copilot: 'bg-emerald-500/12 text-emerald-300 ring-emerald-500/25',
+};
+
+const CLI_SEGMENT_ACTIVE: Record<CliTarget, string> = {
+  claude: 'bg-orange-500/28 text-orange-100 ring-orange-300/45',
+  gemini: 'bg-blue-500/28 text-blue-100 ring-blue-300/45',
+  copilot: 'bg-emerald-500/28 text-emerald-100 ring-emerald-300/45',
 };
 
 const PHASE_DOT: Record<WorkflowPhase, string> = {
@@ -493,7 +499,7 @@ function PersonaEditPanel({
                 </button>
               ))}
             </div>
-            <p className="mt-1.5 text-[10px] text-gray-400 dark:text-gray-500">Suggestion filter — persona shows in these phases. Empty = all phases.</p>
+            <p className="mt-1.5 text-[10px] text-gray-400 dark:text-gray-500">Suggestion filter - persona shows in these phases. Empty = all phases.</p>
           </div>
           <div>
             <label className="text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-[0.08em]">Prompt</label>
@@ -772,7 +778,7 @@ export function WorkflowBuilder() {
   if (loading) return <div className="h-full flex items-center justify-center"><Loader2 className="w-6 h-6 animate-spin text-gray-400" /></div>;
 
   return (
-    <div className="h-full flex flex-col overflow-hidden">
+    <div className="workflow-builder h-full flex flex-col overflow-hidden">
 
       {/* ═══ ZONE 1: PHASE EXPLORER (collapsible) ═══ */}
       <div className="shrink-0 border-b border-gray-200/60 dark:border-white/[0.06]">
@@ -784,7 +790,7 @@ export function WorkflowBuilder() {
           >
             <div className={`w-2 h-2 rounded-full ${PHASE_DOT[explorerPhase]}`} />
             <span className="text-[11px] font-semibold text-gray-600 dark:text-gray-300">{PHASES.find(p => p.key === explorerPhase)?.label}</span>
-            <span className="text-[10px] text-gray-400">— {templates.filter(t => phaseMembers(t.phases[explorerPhase]).length > 0).length} templates</span>
+            <span className="text-[10px] text-gray-400">- {templates.filter(t => phaseMembers(t.phases[explorerPhase]).length > 0).length} templates</span>
             <span className="ml-auto text-[10px] text-gray-400">Click to expand ▾</span>
           </button>
         ) : (
@@ -841,28 +847,37 @@ export function WorkflowBuilder() {
                     <div key={t.id} className="shrink-0 relative group overflow-visible">
                       <button
                         onClick={() => selectTemplate(t)}
-                        className={`flex flex-col items-start gap-1.5 px-4 py-3 rounded-xl border-2 transition-all duration-200 min-w-[160px] text-left ${
+                        className={`wb-template-card wb-no-matrix-primary relative flex flex-col items-start gap-1.5 px-4 py-3 rounded-xl border transition-all duration-200 min-w-[168px] text-left ${
                           isLoaded
-                            ? 'border-primary/50 bg-primary/[0.04]'
+                            ? 'border-primary/80 bg-primary/[0.16] shadow-[0_0_0_1px_rgba(var(--eh-accent),0.28),inset_0_1px_0_rgba(255,255,255,0.09)]'
                             : isDefault
-                              ? 'border-amber-400/40 bg-amber-400/[0.03]'
+                              ? 'border-amber-300/70 bg-amber-400/[0.14]'
                               : 'border-gray-200/60 dark:border-white/[0.06] hover:border-gray-300 dark:hover:border-white/[0.1] bg-white/50 dark:bg-white/[0.02]'
                         }`}
                       >
-                        <span className="text-[12px] font-semibold text-gray-800 dark:text-gray-100 truncate w-full">{t.name}</span>
+                        <div className="flex items-start justify-between w-full gap-2">
+                          <span className="text-[12px] font-semibold text-gray-800 dark:text-gray-100 truncate">{t.name}</span>
+                        </div>
                         <div className="flex items-center gap-2 w-full">
                           <span className="text-[10px] text-gray-400">{memberCount} agent{memberCount !== 1 ? 's' : ''}</span>
-                          <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${CLI_COLORS[t.cliTarget as CliTarget] ?? 'bg-gray-100 text-gray-500'}`}>{t.cliTarget}</span>
+                          <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ring-1 ${CLI_COLORS[t.cliTarget as CliTarget] ?? 'bg-gray-100 text-gray-500 ring-gray-300/40'}`}>{t.cliTarget}</span>
+                          {isLoaded && <span className="wb-editing-chip text-[8px] uppercase tracking-wide font-bold text-primary bg-primary/15 border border-primary/35 px-1.5 py-0.5 rounded-full">Editing</span>}
                         </div>
-                        {isLoaded && <span className="text-[9px] text-primary font-medium">● Editing</span>}
+                        {isDefault && (
+                          <div className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 z-30 flex items-center gap-1 whitespace-nowrap pointer-events-none">
+                            {isSingleDefault && (
+                              <span className="wb-default-chip inline-flex items-center gap-1 text-[8px] font-bold uppercase text-amber-800 dark:text-amber-200 bg-amber-400/30 border border-amber-300/60 px-1.5 py-0.5 rounded-full">
+                                <Users className="w-2.5 h-2.5" /> Single
+                              </span>
+                            )}
+                            {isMultiDefault && (
+                              <span className="wb-default-chip inline-flex items-center gap-1 text-[8px] font-bold uppercase text-amber-800 dark:text-amber-200 bg-amber-400/30 border border-amber-300/60 px-1.5 py-0.5 rounded-full">
+                                <Layers className="w-2.5 h-2.5" /> Multi
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </button>
-                      {/* Default badge — floating on bottom border */}
-                      {isDefault && (
-                        <span className="absolute -bottom-2 left-1/2 -translate-x-1/2 flex items-center gap-1 text-[8px] font-bold text-amber-700 dark:text-amber-300 bg-amber-400/20 dark:bg-amber-500/20 border border-amber-400/40 px-2 py-0.5 rounded-full whitespace-nowrap backdrop-blur-sm">
-                          {isSingleDefault && <><Users className="w-2.5 h-2.5" /> Single</>}
-                          {isMultiDefault && <><Layers className="w-2.5 h-2.5" /> Multi</>}
-                        </span>
-                      )}
                       {/* Delete button on hover */}
                       {!t.builtIn && (
                         <button
@@ -879,7 +894,7 @@ export function WorkflowBuilder() {
               {/* + New Template card */}
               <button
                 onClick={startNewTemplate}
-                className="shrink-0 flex flex-col items-center justify-center gap-1.5 px-4 py-3 rounded-xl border-2 border-dashed border-gray-300 dark:border-white/[0.08] hover:border-primary/40 hover:bg-primary/[0.02] transition-all min-w-[120px] min-h-[80px]"
+                className="wb-template-new shrink-0 flex flex-col items-center justify-center gap-1.5 px-4 py-3 rounded-xl border-2 border-dashed border-gray-300 dark:border-white/[0.08] hover:border-primary/40 hover:bg-primary/[0.02] transition-all min-w-[120px] min-h-[80px]"
               >
                 <Plus className="w-4 h-4 text-gray-400" />
                 <span className="text-[10px] font-medium text-gray-400">New</span>
@@ -916,7 +931,7 @@ export function WorkflowBuilder() {
                   <span className="text-[9px] font-bold uppercase w-3.5 h-3.5 flex items-center justify-center rounded bg-gray-500/15 text-gray-400">F</span>
                   <span className="text-[9px] text-gray-400">Flex</span>
                 </div>
-                <button onClick={() => setCreatingPersona(true)} className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg text-[10px] font-semibold text-primary border border-dashed border-primary/30 hover:bg-primary/[0.04] transition-all">
+                <button onClick={() => setCreatingPersona(true)} className="wb-new-persona w-full flex items-center justify-center gap-1.5 py-2 rounded-lg text-[10px] font-semibold text-primary border border-dashed border-primary/30 hover:bg-primary/[0.04] transition-all">
                   <Plus className="w-3 h-3" /> New Persona
                 </button>
                 {/* Flat persona list — sorted by role (leads first) */}
@@ -994,13 +1009,13 @@ export function WorkflowBuilder() {
                     placeholder="Untitled template…"
                     className="flex-1 min-w-0 bg-transparent text-base font-bold text-gray-800 dark:text-gray-100 outline-none border-b border-transparent hover:border-gray-300 dark:hover:border-white/[0.1] focus:border-primary/50 transition-colors placeholder:text-gray-300 dark:placeholder:text-gray-600 pb-0.5"
                   />
-                  <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-semibold shrink-0 ring-1 ${PHASE_RING[activePhase]} bg-white/50 dark:bg-white/[0.03]`}>
+                  <div className={`wb-phase-pill flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-semibold shrink-0 ring-1 ${PHASE_RING[activePhase]} bg-white/50 dark:bg-white/[0.03]`}>
                     <div className={`w-2 h-2 rounded-full ${PHASE_DOT[activePhase]}`} />
                     {PHASES.find(p => p.key === activePhase)?.label}
                   </div>
                   <div className="flex gap-0.5 p-0.5 rounded-lg bg-gray-100/60 dark:bg-white/[0.04] ring-1 ring-black/[0.03] dark:ring-white/[0.05] shrink-0">
                     {(['claude', 'gemini', 'copilot'] as CliTarget[]).map(cli => (
-                      <button key={cli} onClick={() => setTemplateCliTarget(cli)} className={`px-2 py-1 rounded-md text-[9px] font-bold uppercase transition-all duration-200 ${templateCliTarget === cli ? CLI_COLORS[cli] + ' ring-1' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'}`}>
+                      <button key={cli} onClick={() => setTemplateCliTarget(cli)} className={`wb-cli-pill px-2 py-1 rounded-md text-[9px] font-bold uppercase transition-all duration-200 ${templateCliTarget === cli ? CLI_SEGMENT_ACTIVE[cli] + ' ring-1' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'}`}>
                         {cli}
                       </button>
                     ))}
@@ -1030,12 +1045,12 @@ export function WorkflowBuilder() {
                     const supported = supportedPatterns.includes(p.key);
                     const active = currentPattern === p.key;
                     return (
-                      <button key={p.key} disabled={!supported} onClick={() => handleSetPattern(p.key)} title={p.description} className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-semibold transition-all duration-200 ${active ? 'bg-primary/10 text-primary ring-1 ring-primary/20' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/[0.04]'} disabled:opacity-25 disabled:cursor-not-allowed`}>
+                      <button key={p.key} disabled={!supported} onClick={() => handleSetPattern(p.key)} title={p.description} className={`wb-mode-pill wb-no-matrix-primary flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-semibold transition-all duration-200 ${active ? 'bg-primary/20 text-primary ring-1 ring-primary/45 shadow-[inset_0_1px_0_rgba(255,255,255,0.07)]' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-50 dark:hover:bg-white/[0.04]'} disabled:opacity-25 disabled:cursor-not-allowed`}>
                         <Icon className="w-3 h-3" /> {p.label}
                       </button>
                     );
                   })}
-                  {creatingTemplate && <span className="ml-2 text-[9px] text-primary font-medium">New — configure and save</span>}
+                  {creatingTemplate && <span className="ml-2 text-[9px] text-primary font-medium">New template, configure and save</span>}
                 </div>
               </div>
               {/* Node graph */}

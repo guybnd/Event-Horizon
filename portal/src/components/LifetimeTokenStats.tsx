@@ -35,7 +35,7 @@ export function LifetimeTokenStats() {
     <button
       type="button"
       onClick={config ? () => void saveConfig({ ...config, tokenDisplayMode: config.tokenDisplayMode === 'tokens' ? 'cost' : 'tokens' }) : undefined}
-      className="group flex shrink-0 items-center gap-1.5 rounded-xl border border-gray-200 bg-white/60 px-2.5 py-1.5 text-gray-500 transition-all duration-200 overflow-hidden dark:border-white/10 dark:bg-white/5 dark:text-gray-400 hover:border-primary/40 hover:bg-primary/5 dark:hover:border-primary/30 dark:hover:bg-primary/10 cursor-pointer tabular-nums"
+      className="matrix-accent-toggle group flex shrink-0 items-center gap-1.5 rounded-xl border border-gray-200 bg-white/60 px-2.5 py-1.5 text-gray-500 transition-all duration-200 overflow-hidden dark:border-white/10 dark:bg-white/5 dark:text-gray-400 hover:border-primary/40 hover:bg-primary/5 dark:hover:border-primary/30 dark:hover:bg-primary/10 cursor-pointer tabular-nums"
       title={config?.tokenDisplayMode === 'tokens'
         ? `Lifetime tokens · ↑ ${(lifetimeTokens?.input ?? 0).toLocaleString()} / ↓ ${(lifetimeTokens?.output ?? 0).toLocaleString()} · Click to switch to cost`
         : `Lifetime Claude API cost across all tickets${lifetimeTokens ? ` · ↑ ${lifetimeTokens.input.toLocaleString()} / ↓ ${lifetimeTokens.output.toLocaleString()} tokens` : ''}${lifetimeTokens?.estimated ? ' (estimated)' : ''} · Click to switch to tokens`}

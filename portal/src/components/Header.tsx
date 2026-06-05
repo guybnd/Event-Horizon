@@ -152,7 +152,7 @@ export function Header() {
           {/* New ticket */}
           <button
             onClick={handleOpenNewTicket}
-            className="eh-btn-accent flex h-[34px] items-center justify-center gap-1.5 rounded-xl px-3.5 text-[13px] font-semibold shadow-sm transition-all focus:outline-none cursor-pointer shrink-0"
+            className="matrix-accent-button eh-btn-accent flex h-[34px] items-center justify-center gap-1.5 rounded-xl px-3.5 text-[13px] font-semibold shadow-sm transition-all focus:outline-none cursor-pointer shrink-0"
           >
             <Plus className="h-4 w-4" />
             <span className="hidden sm:inline">New ticket</span>
@@ -258,7 +258,7 @@ export function Header() {
               <button
                 onClick={() => setIsThemePickerOpen(prev => !prev)}
                 title={`Theme: ${theme}`}
-                className={`flex items-center justify-center rounded-xl border border-gray-200 bg-white/60 p-1.5 text-gray-400 transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-primary dark:border-white/10 dark:bg-white/5 dark:text-gray-500 dark:hover:border-primary/30 dark:hover:bg-primary/10 dark:hover:text-primary cursor-pointer ${isThemePickerOpen ? 'ring-2 ring-primary/30' : ''}`}
+                className={`matrix-accent-toggle flex items-center justify-center rounded-xl border border-gray-200 bg-white/60 p-1.5 text-gray-400 transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-primary dark:border-white/10 dark:bg-white/5 dark:text-gray-500 dark:hover:border-primary/30 dark:hover:bg-primary/10 dark:hover:text-primary cursor-pointer ${isThemePickerOpen ? 'ring-2 ring-primary/30' : ''}`}
               >
                 {theme === 'light' ? <Sun className="h-3.5 w-3.5" /> : theme === 'dark' ? <Moon className="h-3.5 w-3.5" /> : <Palette className="h-3.5 w-3.5" />}
               </button>
