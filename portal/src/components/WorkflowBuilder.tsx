@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useMemo } from 'react';
 import {
   Workflow, Plus, X, Pencil, Loader2, BookOpen, Check, Users, Lock, Copy, Eye,
-  GitBranch, Layers, GitMerge, Zap, GripVertical,
+  GitBranch, Layers, GitMerge, Zap, GripVertical, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import {
   fetchOrchestrationPersonas,
@@ -565,6 +565,7 @@ function SkillInlineEditor({ skill, onClose, onSave, onDelete, isSaving }: {
 // ============================================================================
 
 type DockSection = 'personas' | 'skills';
+const WORKFLOW_GUIDE_COLLAPSED_KEY = 'eh-workflows-guide-collapsed';
 
 export function WorkflowBuilder() {
   const [personas, setPersonas] = useState<OrchestrationPersonaMeta[]>([]);
@@ -573,6 +574,13 @@ export function WorkflowBuilder() {
   const [skills, setSkills] = useState<SkillDef[]>([]);
   const [loading, setLoading] = useState(true);
   const [skillSaving, setSkillSaving] = useState(false);
+  const [guideCollapsed, setGuideCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(WORKFLOW_GUIDE_COLLAPSED_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
 
   // Explorer (top zone) state — independent of canvas
   const [explorerPhase, setExplorerPhase] = useState<WorkflowPhase>('grooming');
@@ -763,6 +771,17 @@ export function WorkflowBuilder() {
   }, [config]);
   const handleSaveSkill = useCallback(async (updated: SkillDef) => { setSkillSaving(true); try { if (updated.path) { await updateDoc(updated.path, { title: updated.name, body: updated.body }); setSkills(prev => prev.map(s => (s.id === updated.id ? updated : s))); } else { const slug = updated.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, ''); const doc = await createDoc({ path: `skills/${slug}.md`, title: updated.name, body: updated.body }); setSkills(prev => [...prev, docToSkill(doc)]); } setEditingSkill(null); } catch {} finally { setSkillSaving(false); } }, []);
   const handleDeleteSkill = useCallback(async (skill: SkillDef) => { if (!window.confirm(`Delete "${skill.name}"?`)) return; try { await deleteDoc(skill.path); setSkills(prev => prev.filter(s => s.id !== skill.id)); setEditingSkill(null); } catch {} }, []);
+  const toggleGuide = useCallback(() => {
+    setGuideCollapsed(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem(WORKFLOW_GUIDE_COLLAPSED_KEY, next ? '1' : '0');
+      } catch {
+        // ignore storage errors
+      }
+      return next;
+    });
+  }, []);
 
   // Compute whether current template is a default for the canvas phase
   const currentVariant: 'single' | 'multi' = currentMembers.length <= 1 ? 'single' : 'multi';
@@ -774,6 +793,39 @@ export function WorkflowBuilder() {
 
   return (
     <div className="workflow-builder h-full flex flex-col overflow-hidden">
+
+      {/* Top explainer */}
+      <div className="shrink-0 border-b border-gray-200/60 dark:border-white/[0.06]">
+        {guideCollapsed ? (
+          <button
+            onClick={toggleGuide}
+            className="w-full flex items-center gap-2 px-4 py-2 text-left hover:bg-gray-50 dark:hover:bg-white/[0.02] transition-all"
+          >
+            <BookOpen className="w-3.5 h-3.5 text-primary/80" />
+            <span className="text-[11px] font-semibold text-gray-600 dark:text-gray-300">Show workflow quick guide</span>
+            <ChevronDown className="ml-auto w-3.5 h-3.5 text-gray-400" />
+          </button>
+        ) : (
+          <div className="px-4 py-2.5 bg-gray-50/50 dark:bg-white/[0.015]">
+            <div className="flex items-start gap-3">
+              <BookOpen className="w-4 h-4 mt-0.5 text-primary/80 shrink-0" />
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] font-semibold text-gray-700 dark:text-gray-200">Workflow guide</p>
+                <p className="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5">
+                  Pick a phase tab, choose a template, then edit its mode and agents on the canvas. Star-marked chips on cards indicate phase defaults.
+                </p>
+              </div>
+              <button
+                onClick={toggleGuide}
+                className="p-1.5 rounded-md text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-white/70 dark:hover:bg-white/10 transition-all"
+                title="Collapse guide"
+              >
+                <ChevronUp className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* ═══ ZONE 1: PHASE EXPLORER (collapsible) ═══ */}
       <div className="shrink-0 border-b border-gray-200/60 dark:border-white/[0.06]">
@@ -862,12 +914,12 @@ export function WorkflowBuilder() {
                           <div className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 z-30 flex items-center gap-1 whitespace-nowrap pointer-events-none">
                             {isSingleDefault && (
                               <span className="wb-default-chip inline-flex items-center gap-1 text-[8px] font-bold uppercase text-amber-800 dark:text-amber-200 bg-amber-400/30 border border-amber-300/60 px-1.5 py-0.5 rounded-full">
-                                <Users className="w-2.5 h-2.5" /> Single
+                                <Users className="w-2.5 h-2.5" /> Single Default ★
                               </span>
                             )}
                             {isMultiDefault && (
                               <span className="wb-default-chip inline-flex items-center gap-1 text-[8px] font-bold uppercase text-amber-800 dark:text-amber-200 bg-amber-400/30 border border-amber-300/60 px-1.5 py-0.5 rounded-full">
-                                <Layers className="w-2.5 h-2.5" /> Multi
+                                <Layers className="w-2.5 h-2.5" /> Multi Default ★
                               </span>
                             )}
                           </div>
