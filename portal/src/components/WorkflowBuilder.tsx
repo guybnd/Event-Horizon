@@ -956,6 +956,15 @@ export function WorkflowBuilder() {
                 <button onClick={() => setEditingSkill({ id: '', name: 'New Skill', body: '', path: '' })} className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg text-[10px] font-semibold text-primary border border-dashed border-primary/30 hover:bg-primary/[0.04] transition-all mb-2">
                   <Plus className="w-3 h-3" /> New Skill
                 </button>
+                {skills.length === 0 && (
+                  <div className="text-center py-6 px-3">
+                    <BookOpen className="w-8 h-8 mx-auto mb-2 text-gray-300 dark:text-gray-600" />
+                    <p className="text-[11px] text-gray-500 dark:text-gray-400 font-medium mb-1">No skills yet</p>
+                    <p className="text-[10px] text-gray-400 dark:text-gray-500 leading-relaxed">
+                      Skills are reusable prompt templates that agents can reference. Create one above to get started.
+                    </p>
+                  </div>
+                )}
                 {skills.map(skill => (
                   <div key={skill.id} onClick={() => setEditingSkill(skill)} className={`group flex items-center gap-2 px-2 py-2 rounded-lg cursor-pointer transition-all ${editingSkill?.id === skill.id ? 'bg-primary/[0.06] text-primary' : 'hover:bg-gray-50 dark:hover:bg-white/[0.03] text-gray-700 dark:text-gray-200'}`}>
                     <BookOpen className="w-3 h-3 shrink-0 opacity-50" />
