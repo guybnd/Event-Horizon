@@ -894,7 +894,7 @@ export function WorkflowBuilder() {
               {/* + New Template card */}
               <button
                 onClick={startNewTemplate}
-                className="wb-template-new shrink-0 flex flex-col items-center justify-center gap-1.5 px-4 py-3 rounded-xl border-2 border-dashed border-gray-300 dark:border-white/[0.08] hover:border-primary/40 hover:bg-primary/[0.02] transition-all min-w-[120px] min-h-[80px]"
+                className="wb-template-new shrink-0 flex flex-col items-center justify-center gap-1.5 px-4 py-3 rounded-xl border-2 border-dashed border-gray-300 dark:border-white/[0.08] hover:border-primary/40 hover:bg-primary/[0.02] transition-all min-w-[132px] min-h-[72px]"
               >
                 <Plus className="w-4 h-4 text-gray-400" />
                 <span className="text-[10px] font-medium text-gray-400">New</span>
