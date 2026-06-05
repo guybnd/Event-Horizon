@@ -480,14 +480,17 @@ export async function unregisterRelayChain(taskId: string, groupId: string): Pro
   }
 }
 
+export type PersonaRole = 'lead' | 'worker' | 'flex';
+
 /** Orchestration persona metadata (no prompt text — the engine owns prompts). */
 export interface OrchestrationPersonaMeta {
   id: string;
   label: string;
   description: string;
-  /** Ticket phase this persona belongs to (grooming | implementation | review | release). */
-  phase: string;
-  compatiblePatterns: string[];
+  /** Role determines which workflow slots this persona can fill. */
+  role: PersonaRole;
+  /** Relevant phases (suggestion filter, not a hard gate). Empty = all phases. */
+  phases: string[];
   requiredCapabilities: string[];
   /** True for code-defined personas (read-only — cannot be edited or deleted). */
   builtIn?: boolean;
@@ -525,8 +528,8 @@ export interface PersonaInput {
   id?: string;
   label: string;
   description?: string;
-  phase: string;
-  compatiblePatterns?: string[];
+  role: PersonaRole;
+  phases?: string[];
   requiredCapabilities?: string[];
   prompt: string;
 }
@@ -594,12 +597,14 @@ export interface WorkflowTemplate {
 
 export type WorkflowInput = Pick<WorkflowTemplate, 'name' | 'cliTarget' | 'phases'>;
 
-/** Persona ids configured for a phase, regardless of how the pattern stores them. */
+/** All persona ids configured for a phase (lead + workers), regardless of how the pattern stores them. */
 export function workflowPhaseMembers(cfg: WorkflowPhaseConfig | undefined): string[] {
   if (!cfg) return [];
-  if (cfg.pattern === 'relay') return cfg.steps ?? [];
-  if (cfg.pattern === 'supervisor') return cfg.assistants ?? [];
-  return cfg.parallel ?? [];
+  const lead = cfg.pattern === 'supervisor' ? cfg.lead : cfg.pattern === 'scatter' ? cfg.combiner : undefined;
+  const workers = cfg.pattern === 'relay' ? (cfg.steps ?? [])
+    : cfg.pattern === 'supervisor' ? (cfg.assistants ?? [])
+    : (cfg.parallel ?? []);
+  return lead ? [lead, ...workers] : workers;
 }
 
 /** List all workflow templates. */

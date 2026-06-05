@@ -1,4 +1,4 @@
-import type { ExecutionPattern, CliCapabilities } from './agents/types.js';
+import type { CliCapabilities } from './agents/types.js';
 import type { Phase } from './models/workflow.js';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
@@ -16,32 +16,41 @@ import { getActiveFluxDir } from './workspace.js';
  * Built-in personas are defined in code (read-only). User-authored personas are
  * persisted under `<fluxDir>/personas/*.json` and merged in at read time.
  */
+
+export type PersonaRole = 'lead' | 'worker' | 'flex';
+
 export interface OrchestrationPersona {
   id: string;
   label: string;
   description: string;
-  /** Ticket phase this persona belongs to (drives phase-aware launch filtering). */
-  phase: Phase;
-  /** Orchestration modes this persona can participate in. Empty = any mode. */
-  compatiblePatterns: ExecutionPattern[];
+  /** Role determines which slots the persona can fill in the workflow canvas. */
+  role: PersonaRole;
+  /** Relevant phases (suggestion filter, not a hard gate). Empty = all phases. */
+  phases: Phase[];
   /** CLI capabilities the persona needs. Empty = runnable on any framework. */
   requiredCapabilities: (keyof CliCapabilities)[];
   /** Full prompt the agent session launches with. Never sent to the client for built-ins. */
   prompt: string;
   /** True for code-defined personas (cannot be edited or deleted). */
   builtIn?: boolean;
+
+  // ── Deprecated fields (read on load for backward compat, never written) ──
+  /** @deprecated Use `phases` (multi-select) instead. */
+  phase?: Phase;
+  /** @deprecated Removed — role determines valid slots now. */
+  compatiblePatterns?: string[];
 }
 
 /** Persona metadata with the prompt stripped — the shape exposed over the API. */
-export type OrchestrationPersonaMeta = Omit<OrchestrationPersona, 'prompt'>;
+export type OrchestrationPersonaMeta = Omit<OrchestrationPersona, 'prompt' | 'phase' | 'compatiblePatterns'>;
 
 export const ORCHESTRATION_PERSONAS: OrchestrationPersona[] = [
   {
     id: 'senior-dev',
-    label: 'Senior Friendly Dev',
-    description: 'Broad single reviewer — correctness, quality, readability & obvious risks',
-    phase: 'review',
-    compatiblePatterns: [],
+    label: 'Senior Dev',
+    description: 'Versatile all-rounder — can solo any phase or assist in a team',
+    role: 'flex',
+    phases: [],
     requiredCapabilities: [],
     prompt: `You are acting as a senior friendly developer performing a thorough, broad code review of this ticket's implementation. When you are the ONLY reviewer, you are responsible for the whole picture — correctness, quality, and obvious security/performance issues — so cast a wide net.
 
@@ -67,8 +76,8 @@ Keep your tone warm but precise. Lead with the most important feedback.`,
     id: 'qa-correctness',
     label: 'Correctness / QA Verifier',
     description: 'Does it actually do what the ticket asked? edge cases, error states, regressions',
-    phase: 'review',
-    compatiblePatterns: [],
+    role: 'worker',
+    phases: ['review'],
     requiredCapabilities: [],
     prompt: `You are acting as a correctness and QA verifier reviewing this ticket's implementation. You own the single most important question: DOES IT ACTUALLY WORK and do what the ticket asked? You are not here for style — you are here to find where it breaks.
 
@@ -94,8 +103,8 @@ IMPORTANT: Do NOT use \`change_status\`. An orchestrator synthesizes all reviews
     id: 'security-auditor',
     label: 'Security Auditor',
     description: 'OWASP-minded — injection, authz, secrets, unsafe input, data exposure',
-    phase: 'review',
-    compatiblePatterns: [],
+    role: 'worker',
+    phases: ['review'],
     requiredCapabilities: [],
     prompt: `You are acting as a security auditor reviewing this ticket's implementation. Your job is to find vulnerabilities before they ship. You think like an attacker and reason in terms of the OWASP Top 10.
 
@@ -123,8 +132,8 @@ IMPORTANT: Do NOT use \`change_status\`. An orchestrator synthesizes all reviews
     id: 'angry-linus',
     label: 'Angry Linus',
     description: 'Brutally honest — no softening, no hand-holding',
-    phase: 'review',
-    compatiblePatterns: [],
+    role: 'worker',
+    phases: ['review'],
     requiredCapabilities: [],
     prompt: `You are acting as an angry Linus Torvalds performing a code review of this ticket's implementation.
 
@@ -147,8 +156,8 @@ Do not pad your response. Be direct.`,
     id: 'architect',
     label: 'Architect Genius',
     description: 'System design, patterns, separation of concerns, scalability',
-    phase: 'review',
-    compatiblePatterns: [],
+    role: 'worker',
+    phases: ['review'],
     requiredCapabilities: [],
     prompt: `You are acting as an elite software architect performing a code review of this ticket's implementation.
 
@@ -169,8 +178,8 @@ IMPORTANT: Do NOT use \`change_status\`. You are one of potentially multiple rev
     id: 'perf-expert',
     label: 'Performance Expert',
     description: 'Complexity, hot paths, bundle size, memory, re-renders',
-    phase: 'review',
-    compatiblePatterns: [],
+    role: 'worker',
+    phases: ['review'],
     requiredCapabilities: [],
     prompt: `You are acting as a performance engineering expert performing a code review of this ticket's implementation.
 
@@ -191,8 +200,8 @@ IMPORTANT: Do NOT use \`change_status\`. You are one of potentially multiple rev
     id: 'ux-expert',
     label: 'UX/UI Expert',
     description: 'Usability, accessibility, interaction design, visual consistency',
-    phase: 'review',
-    compatiblePatterns: [],
+    role: 'worker',
+    phases: ['review'],
     requiredCapabilities: [],
     prompt: `You are acting as a senior UX/UI expert performing a code review of this ticket's implementation.
 
@@ -213,8 +222,8 @@ IMPORTANT: Do NOT use \`change_status\`. You are one of potentially multiple rev
     id: 'context-scout',
     label: 'Context Scout',
     description: 'Codebase recon — smallest owning surface, existing patterns, exact files, risks',
-    phase: 'grooming',
-    compatiblePatterns: [],
+    role: 'worker',
+    phases: ['grooming'],
     requiredCapabilities: [],
     prompt: `You are acting as a context scout grooming this ticket. Your job is to ground the upcoming plan in how the codebase ACTUALLY works today — not to plan or write code. You are the antidote to ungrounded plans.
 
@@ -239,8 +248,8 @@ IMPORTANT: Do NOT use \`change_status\` or \`update_ticket\`. You are one input 
     id: 'requirements-interrogator',
     label: 'Requirements Interrogator',
     description: 'Hunts ambiguity, proposes defaults, frames scope, writes acceptance criteria',
-    phase: 'grooming',
-    compatiblePatterns: [],
+    role: 'worker',
+    phases: ['grooming'],
     requiredCapabilities: [],
     prompt: `You are acting as a requirements interrogator grooming this ticket. Your job is to REDUCE UNCERTAINTY before any code is planned — surface what's ambiguous, frame the real problem, and define what "done" means. You do not plan implementation or write code.
 
@@ -269,8 +278,8 @@ IMPORTANT: Do NOT use \`update_ticket\`. Do NOT use \`change_status\` to move to
     id: 'planner',
     label: 'Planner',
     description: 'Synthesizes context + requirements into a concrete, sequenced plan',
-    phase: 'grooming',
-    compatiblePatterns: [],
+    role: 'lead',
+    phases: ['grooming'],
     requiredCapabilities: [],
     prompt: `You are acting as the planning agent grooming this ticket. Your job is to turn the requirements into a concrete, actionable implementation plan — not to write code. When run alongside a Context Scout and Requirements Interrogator, you are the COMBINER: synthesize their findings into the final plan.
 
@@ -292,8 +301,8 @@ Keep the plan tight and specific. Prefer the smallest change that satisfies the 
     id: 'test-engineer',
     label: 'Test Engineer',
     description: 'TDD: writes failing tests / pass-conditions first — no implementation',
-    phase: 'implementation',
-    compatiblePatterns: [],
+    role: 'worker',
+    phases: ['implementation'],
     requiredCapabilities: [],
     prompt: `You are acting as a test engineer in a test-driven development flow for this ticket. Your job is to define EXACTLY what "working" means by writing the tests/conditions the implementation must satisfy — BEFORE any implementation exists. You do NOT implement the feature.
 
@@ -313,8 +322,8 @@ IMPORTANT: Do NOT implement the feature itself. Do NOT use \`change_status\` to 
     id: 'implementer',
     label: 'Implementer',
     description: 'Implements the ticket plan in the smallest correct change',
-    phase: 'implementation',
-    compatiblePatterns: [],
+    role: 'worker',
+    phases: ['implementation'],
     requiredCapabilities: [],
     prompt: `You are acting as an implementation agent building this ticket. Your job is to implement the planned change correctly in the smallest reasonable surface.
 
@@ -331,8 +340,8 @@ Prefer correctness and minimal footprint over cleverness. Do not add features, r
     id: 'finalizer',
     label: 'Finalizer',
     description: 'End-to-end ticket finalize: docs check, commit, ticket tidy, merge PR',
-    phase: 'finalize',
-    compatiblePatterns: [],
+    role: 'flex',
+    phases: ['finalize'],
     requiredCapabilities: [],
     prompt: `You are acting as a finalizer for a single ticket that is Ready. Your job is to take the implemented work across the finish line cleanly. Work through every step; do not skip any.
 
@@ -347,8 +356,8 @@ Be precise and honest. If a step genuinely cannot be completed, stop and explain
     id: 'docs-auditor',
     label: 'Docs Auditor',
     description: 'Verifies .docs and README reflect the shipped changes; fixes drift',
-    phase: 'finalize',
-    compatiblePatterns: [],
+    role: 'worker',
+    phases: ['finalize'],
     requiredCapabilities: [],
     prompt: `You are acting as a documentation auditor for a single ticket that is Ready. Your only job is to make sure documentation matches the shipped code before the ticket is finalized.
 
@@ -367,8 +376,8 @@ Do not commit or change ticket status — a later step handles that.`,
     id: 'committer',
     label: 'Committer',
     description: 'Stages the work and creates one clean, well-described commit',
-    phase: 'finalize',
-    compatiblePatterns: [],
+    role: 'worker',
+    phases: ['finalize'],
     requiredCapabilities: [],
     prompt: `You are acting as a committer for a single ticket that is Ready. Your job is to turn the working-tree changes into one clean commit.
 
@@ -384,8 +393,8 @@ Do not push, open a PR, or change ticket status — later steps handle those.`,
     id: 'ticket-curator',
     label: 'Ticket Curator',
     description: 'Tidies the ticket title and posts a clear resolution comment',
-    phase: 'finalize',
-    compatiblePatterns: [],
+    role: 'worker',
+    phases: ['finalize'],
     requiredCapabilities: [],
     prompt: `You are acting as a ticket curator for a single ticket that is Ready. Your job is to make sure the ticket is well-organized and clearly records how it was resolved.
 
@@ -401,8 +410,8 @@ Do not commit or move the ticket to Done — a later step handles that.`,
     id: 'pr-merger',
     label: 'PR Merger',
     description: 'Closes and merges the ticket PR when one exists',
-    phase: 'finalize',
-    compatiblePatterns: [],
+    role: 'worker',
+    phases: ['finalize'],
     requiredCapabilities: [],
     prompt: `You are acting as a PR merger for a single ticket that is Ready. Your job is to land the ticket's pull request when it is safe to do so.
 
@@ -423,10 +432,10 @@ Do not force-merge over failing checks or unresolved conflicts.`,
  */
 export const ORCHESTRATOR_PERSONA: OrchestrationPersona = {
   id: 'orchestrator',
-  label: 'Orchestrator',
-  description: 'Synthesizes reviewer findings and decides the next status',
-  phase: 'review',
-  compatiblePatterns: ['scatter-gather', 'supervisor'],
+  label: 'Review Lead',
+  description: 'Synthesizes review findings, deduplicates, decides next status',
+  role: 'lead',
+  phases: ['review'],
   requiredCapabilities: [],
   prompt: `You are a code review orchestrator. Your job is to wait for all reviewer sessions to complete, then synthesize their findings into an actionable summary.
 
@@ -457,8 +466,8 @@ export const SUPERVISOR_PERSONA: OrchestrationPersona = {
   id: 'supervisor',
   label: 'Supervisor',
   description: 'Dynamically delegates to specialist agents using MCP tools',
-  phase: 'review',
-  compatiblePatterns: ['supervisor'],
+  role: 'lead',
+  phases: [],
   requiredCapabilities: [],
   prompt: `You are a supervisor agent coordinating specialist delegates. Your job is to analyze the task, decide which specialists to involve, delegate work to them, and synthesize the results into a final decision.
 
@@ -492,18 +501,77 @@ You have three delegation MCP tools available:
 You have full authority to change the ticket status based on the synthesized verdict.`,
 };
 
+/**
+ * Generic coordinator — phase-agnostic lead that can combine or orchestrate
+ * any multi-agent run. Use when no phase-specific lead exists.
+ */
+export const COORDINATOR_PERSONA: OrchestrationPersona = {
+  id: 'coordinator',
+  label: 'Coordinator',
+  description: 'Generic lead — coordinates any multi-agent run, synthesizes outputs',
+  role: 'lead',
+  phases: [],
+  requiredCapabilities: [],
+  prompt: `You are a coordinator agent. Your job is to orchestrate a group of specialist agents working on a ticket, synthesize their outputs, and decide the next step.
+
+Steps:
+1. Read the ticket with \`get_ticket\` to understand the full context and what phase you are in.
+2. Review all comments from specialist agents in the ticket history.
+3. Synthesize their findings:
+   - Merge overlapping items and remove duplicates.
+   - Normalize into a priority order: blockers first, then improvements, then nits.
+   - Produce a clear, actionable summary.
+4. Post your synthesis using \`add_comment\`.
+5. Make the status decision based on the findings:
+   - If blockers exist: \`change_status\` to "In Progress" with required changes.
+   - If clean or only minor items: \`change_status\` to "Ready" with a summary.
+
+Be concise and decisive. You have full authority to change the ticket status.`,
+};
+
+/**
+ * Implementation lead — coordinates implementation work, breaks down tasks,
+ * verifies workers' output aligns with the plan.
+ */
+export const DEV_LEAD_PERSONA: OrchestrationPersona = {
+  id: 'dev-lead',
+  label: 'Dev Lead',
+  description: 'Implementation lead — coordinates impl work, verifies against the plan',
+  role: 'lead',
+  phases: ['implementation'],
+  requiredCapabilities: [],
+  prompt: `You are a dev lead coordinating implementation work on a ticket. Your job is to break down the plan into concrete tasks, assign them to specialists, and verify the output matches the acceptance criteria.
+
+Steps:
+1. Read the ticket with \`get_ticket\` — pay close attention to the implementation plan and acceptance criteria from grooming.
+2. If you have delegation tools available (\`delegate_to_agent\`, \`delegate_parallel\`), use them to spawn specialists for distinct sub-tasks. Otherwise, coordinate by reviewing history comments from workers.
+3. After workers complete their tasks, verify:
+   - Does the code satisfy each acceptance criterion?
+   - Are there gaps, inconsistencies, or integration issues between workers' outputs?
+   - Are tests passing?
+4. Post a synthesis comment via \`add_comment\` with status of each criterion.
+5. Status decision:
+   - All criteria met: \`change_status\` to "Ready" with summary.
+   - Gaps remain: \`change_status\` to "In Progress" with specific items to fix.
+
+Focus on correctness against the plan. Don't redesign — implement what was planned.`,
+};
+
 // Stamp built-in personas so the client can tell them apart from custom ones.
 for (const p of ORCHESTRATION_PERSONAS) p.builtIn = true;
 ORCHESTRATOR_PERSONA.builtIn = true;
 SUPERVISOR_PERSONA.builtIn = true;
+COORDINATOR_PERSONA.builtIn = true;
+DEV_LEAD_PERSONA.builtIn = true;
 
-const ALL_BUILT_IN: OrchestrationPersona[] = [...ORCHESTRATION_PERSONAS, ORCHESTRATOR_PERSONA, SUPERVISOR_PERSONA];
+const ALL_BUILT_IN: OrchestrationPersona[] = [...ORCHESTRATION_PERSONAS, ORCHESTRATOR_PERSONA, SUPERVISOR_PERSONA, COORDINATOR_PERSONA, DEV_LEAD_PERSONA];
 
 // ── Custom persona persistence ───────────────────────────────────────────────
 // User-authored personas live as JSON files under <fluxDir>/personas/ and are
 // merged with the built-ins at read time. Built-ins are never written to disk.
 
 const VALID_PHASES: Phase[] = ['grooming', 'implementation', 'review', 'finalize'];
+const VALID_ROLES: PersonaRole[] = ['lead', 'worker', 'flex'];
 
 let customPersonaCache: OrchestrationPersona[] = [];
 
@@ -526,6 +594,15 @@ export async function loadCustomPersonas(): Promise<OrchestrationPersona[]> {
       const raw = await fs.readFile(path.join(dir, file), 'utf-8');
       const parsed = JSON.parse(raw) as OrchestrationPersona;
       parsed.builtIn = false;
+      // Migrate legacy fields: single `phase` → `phases[]`, missing `role` → 'flex'
+      if (!parsed.role) {
+        parsed.role = 'flex';
+      }
+      if (!Array.isArray(parsed.phases)) {
+        parsed.phases = parsed.phase && VALID_PHASES.includes(parsed.phase) ? [parsed.phase] : [];
+      }
+      delete parsed.phase;
+      delete parsed.compatiblePatterns;
       personas.push(parsed);
     } catch {
       // Skip malformed persona files rather than failing the whole load.
@@ -535,9 +612,9 @@ export async function loadCustomPersonas(): Promise<OrchestrationPersona[]> {
   return personas;
 }
 
-/** All personas (built-in + custom), excluding the non-selectable orchestrator. */
+/** All personas (built-in + custom), including lead personas. */
 function getSelectablePersonas(): OrchestrationPersona[] {
-  return [...ORCHESTRATION_PERSONAS, ...customPersonaCache];
+  return [...ORCHESTRATION_PERSONAS, ORCHESTRATOR_PERSONA, SUPERVISOR_PERSONA, COORDINATOR_PERSONA, DEV_LEAD_PERSONA, ...customPersonaCache];
 }
 
 /** Validate a custom persona payload. Returns an error string or null if valid. */
@@ -546,8 +623,14 @@ export function validatePersona(p: Partial<OrchestrationPersona>): string | null
     return 'id is required and must be a slug (lowercase letters, numbers, hyphens)';
   }
   if (!p.label?.trim()) return 'label is required';
-  if (!p.phase || !VALID_PHASES.includes(p.phase)) {
-    return `phase must be one of: ${VALID_PHASES.join(', ')}`;
+  if (!p.role || !VALID_ROLES.includes(p.role)) {
+    return `role must be one of: ${VALID_ROLES.join(', ')}`;
+  }
+  if (p.phases && !Array.isArray(p.phases)) {
+    return 'phases must be an array';
+  }
+  if (p.phases?.some(ph => !VALID_PHASES.includes(ph))) {
+    return `phases must only contain: ${VALID_PHASES.join(', ')}`;
   }
   if (!p.prompt?.trim()) return 'prompt is required';
   return null;
@@ -568,8 +651,8 @@ export async function saveCustomPersona(input: Partial<OrchestrationPersona>): P
     id,
     label: input.label!.trim(),
     description: input.description?.trim() ?? '',
-    phase: input.phase!,
-    compatiblePatterns: Array.isArray(input.compatiblePatterns) ? input.compatiblePatterns : [],
+    role: input.role!,
+    phases: Array.isArray(input.phases) ? input.phases.filter(ph => VALID_PHASES.includes(ph)) : [],
     requiredCapabilities: Array.isArray(input.requiredCapabilities) ? input.requiredCapabilities : [],
     prompt: input.prompt!,
     builtIn: false,
@@ -611,20 +694,22 @@ export function getEditablePersona(id: string): OrchestrationPersona | undefined
   return persona ? { ...persona } : undefined;
 }
 
-/** Strip the prompt — the only shape that should ever reach the client. */
+/** Strip the prompt and deprecated fields — the clean shape exposed over the API. */
 export function toPersonaMeta(p: OrchestrationPersona): OrchestrationPersonaMeta {
-  const { prompt: _prompt, ...meta } = p;
+  const { prompt: _prompt, phase: _phase, compatiblePatterns: _compat, ...meta } = p;
   return meta;
 }
 
 /**
  * Metadata for user-selectable personas (no prompts, no orchestrator). Pass a
- * `phase` to return only the personas configured for that ticket phase. Includes
- * both built-in and custom personas.
+ * `phase` to return only personas relevant to that phase (empty phases = all).
+ * Includes both built-in and custom personas.
  */
 export function listSelectablePersonaMeta(phase?: Phase): OrchestrationPersonaMeta[] {
   const all = getSelectablePersonas();
-  const personas = phase ? all.filter((p) => p.phase === phase) : all;
+  const personas = phase
+    ? all.filter((p) => p.phases.length === 0 || p.phases.includes(phase))
+    : all;
   return personas.map(toPersonaMeta);
 }
 

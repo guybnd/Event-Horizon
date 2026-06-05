@@ -18,6 +18,17 @@ export interface WorkflowPhaseConfig {
   combinerPersonaId?: string;
 }
 
+export type PersonaRole = 'lead' | 'worker' | 'flex';
+
+/**
+ * Validate that a persona's role is compatible with a workflow slot.
+ * Lead/combiner slots accept 'lead' or 'flex'. Worker slots accept 'worker' or 'flex'.
+ */
+export function isRoleValidForSlot(role: PersonaRole, slot: 'lead' | 'worker'): boolean {
+  if (slot === 'lead') return role === 'lead' || role === 'flex';
+  return role === 'worker' || role === 'flex';
+}
+
 export interface WorkflowTemplate {
   id: string;
   name: string;
@@ -69,7 +80,7 @@ export const BUILTIN_WORKFLOWS: WorkflowTemplate[] = [
   },
   {
     id: 'builtin-implementation-supervisor', name: 'Implementation · Supervisor', cliTarget: 'claude',
-    phases: { implementation: { pattern: 'supervisor', lead: 'supervisor', assistants: ['implementer', 'test-engineer'] } },
+    phases: { implementation: { pattern: 'supervisor', lead: 'dev-lead', assistants: ['implementer', 'test-engineer'] } },
     createdAt: BUILTIN_TS, updatedAt: BUILTIN_TS, builtIn: true,
   },
   // ── Review ──────────────────────────────────────────────────────────────────
@@ -85,7 +96,7 @@ export const BUILTIN_WORKFLOWS: WorkflowTemplate[] = [
   },
   {
     id: 'builtin-review-supervisor', name: 'Review · Supervisor', cliTarget: 'claude',
-    phases: { review: { pattern: 'supervisor', lead: 'supervisor', assistants: ['qa-correctness', 'architect', 'security-auditor', 'perf-expert', 'ux-expert'] } },
+    phases: { review: { pattern: 'supervisor', lead: 'orchestrator', assistants: ['qa-correctness', 'architect', 'security-auditor', 'perf-expert', 'ux-expert'] } },
     createdAt: BUILTIN_TS, updatedAt: BUILTIN_TS, builtIn: true,
   },
   // ── Finalize ────────────────────────────────────────────────────────────────

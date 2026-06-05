@@ -480,7 +480,7 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
                 const order = selectedIds.indexOf(persona.id);
                 const isSelected = order >= 0;
                 const incompatible =
-                  persona.compatiblePatterns.length > 0 && !persona.compatiblePatterns.includes(def.pattern);
+                  persona.role === 'lead' && def.pattern !== 'supervisor';
                 return (
                   <button
                     key={persona.id}

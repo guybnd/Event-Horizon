@@ -78,17 +78,32 @@ function docToSkill(doc: Doc): SkillDef {
   return { id: doc.path, name: doc.title, body: doc.body, path: doc.path };
 }
 
-function phaseMembers(cfg: WorkflowPhaseConfig | undefined): string[] {
+function phaseLead(cfg: WorkflowPhaseConfig | undefined): string | undefined {
+  if (!cfg) return undefined;
+  if (cfg.pattern === 'supervisor') return cfg.lead;
+  if (cfg.pattern === 'scatter') return cfg.combiner;
+  return undefined;
+}
+
+function phaseWorkers(cfg: WorkflowPhaseConfig | undefined): string[] {
   if (!cfg) return [];
   if (cfg.pattern === 'relay') return cfg.steps ?? [];
   if (cfg.pattern === 'supervisor') return cfg.assistants ?? [];
-  return cfg.parallel ?? [];
+  if (cfg.pattern === 'scatter') return cfg.parallel ?? [];
+  return [];
 }
 
-function buildPhaseConfig(pattern: Pattern, memberIds: string[]): WorkflowPhaseConfig {
-  if (pattern === 'relay') return { pattern, steps: memberIds };
-  if (pattern === 'supervisor') return { pattern, assistants: memberIds };
-  return { pattern, parallel: memberIds };
+function buildPhaseConfig(pattern: Pattern, lead: string | undefined, workers: string[]): WorkflowPhaseConfig {
+  if (pattern === 'relay') return { pattern, steps: workers };
+  if (pattern === 'supervisor') return { pattern, lead, assistants: workers };
+  return { pattern, parallel: workers, combiner: lead };
+}
+
+/** All member IDs in a phase config (lead + workers). Used for counting/membership checks. */
+function phaseMembers(cfg: WorkflowPhaseConfig | undefined): string[] {
+  const lead = phaseLead(cfg);
+  const workers = phaseWorkers(cfg);
+  return lead ? [lead, ...workers] : workers;
 }
 
 // ============================================================================
@@ -97,36 +112,69 @@ function buildPhaseConfig(pattern: Pattern, memberIds: string[]): WorkflowPhaseC
 
 function NodeGraph({
   pattern,
-  members,
+  lead,
+  workers,
   personaLabels,
-  onRemoveMember,
-  onReorderMember,
-  onDrop,
+  personaRoles,
+  onRemoveLead,
+  onRemoveWorker,
+  onReorderWorker,
+  onDropLead,
+  onDropWorker,
 }: {
   pattern: Pattern;
-  members: string[];
+  lead: string | undefined;
+  workers: string[];
   personaLabels: Record<string, string>;
-  onRemoveMember: (id: string) => void;
-  onReorderMember: (from: number, to: number) => void;
-  onDrop: (personaId: string) => void;
+  personaRoles: Record<string, string>;
+  onRemoveLead: () => void;
+  onRemoveWorker: (id: string) => void;
+  onReorderWorker: (from: number, to: number) => void;
+  onDropLead: (personaId: string) => void;
+  onDropWorker: (personaId: string) => void;
 }) {
-  const canvasRef = useRef<HTMLDivElement>(null);
-  const [dragOver, setDragOver] = useState(false);
+  const [workerDragOver, setWorkerDragOver] = useState(false);
+  const [leadDragOver, setLeadDragOver] = useState(false);
+  const [rejectShake, setRejectShake] = useState<'lead' | 'worker' | null>(null);
   const [draggingIdx, setDraggingIdx] = useState<number | null>(null);
 
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'copy';
-    setDragOver(true);
+  const triggerShake = (zone: 'lead' | 'worker') => {
+    setRejectShake(zone);
+    setTimeout(() => setRejectShake(null), 500);
   };
 
-  const handleDrop = (e: React.DragEvent) => {
+  const canDropAsLead = (personaId: string) => {
+    const role = personaRoles[personaId];
+    return role === 'lead' || role === 'flex';
+  };
+
+  const canDropAsWorker = (personaId: string) => {
+    const role = personaRoles[personaId];
+    return role === 'worker' || role === 'flex';
+  };
+
+  const handleLeadDrop = (e: React.DragEvent) => {
     e.preventDefault();
-    setDragOver(false);
+    e.stopPropagation();
+    setLeadDragOver(false);
     const personaId = e.dataTransfer.getData('persona-id');
-    if (personaId && !members.includes(personaId)) {
-      onDrop(personaId);
+    if (!personaId) return;
+    if (!canDropAsLead(personaId)) { triggerShake('lead'); return; }
+    onDropLead(personaId);
+  };
+
+  const handleWorkerDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setWorkerDragOver(false);
+    const reorderIdx = e.dataTransfer.getData('reorder-idx');
+    if (reorderIdx) return; // internal reorder handled separately
+    const personaId = e.dataTransfer.getData('persona-id');
+    if (!personaId || workers.includes(personaId)) return;
+    if ((pattern === 'supervisor' || pattern === 'scatter') && !canDropAsWorker(personaId)) {
+      triggerShake('worker');
+      return;
     }
+    onDropWorker(personaId);
   };
 
   const handleInternalDragStart = (e: React.DragEvent, idx: number) => {
@@ -139,22 +187,23 @@ function NodeGraph({
     e.stopPropagation();
     const fromIdx = parseInt(e.dataTransfer.getData('reorder-idx'));
     if (!isNaN(fromIdx) && fromIdx !== targetIdx) {
-      onReorderMember(fromIdx, targetIdx);
+      onReorderWorker(fromIdx, targetIdx);
     }
     setDraggingIdx(null);
   };
 
-  if (members.length === 0) {
+  const shakeClass = 'animate-[shake_0.3s_ease-in-out]';
+
+  // Empty state
+  const hasContent = lead || workers.length > 0;
+  if (!hasContent && pattern === 'relay') {
     return (
       <div
-        ref={canvasRef}
-        onDragOver={handleDragOver}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={handleDrop}
+        onDragOver={e => { e.preventDefault(); setWorkerDragOver(true); }}
+        onDragLeave={() => setWorkerDragOver(false)}
+        onDrop={handleWorkerDrop}
         className={`flex-1 flex items-center justify-center rounded-2xl border-2 border-dashed transition-all duration-300 ${
-          dragOver
-            ? 'border-primary/50 bg-primary/[0.04] scale-[1.01]'
-            : 'border-gray-200/60 dark:border-white/[0.06]'
+          workerDragOver ? 'border-primary/50 bg-primary/[0.04] scale-[1.01]' : 'border-gray-200/60 dark:border-white/[0.06]'
         }`}
       >
         <div className="text-center py-16 px-8 max-w-sm">
@@ -163,42 +212,34 @@ function NodeGraph({
           </div>
           <p className="text-base text-gray-500 dark:text-gray-400 font-semibold mb-1">Drop agents here</p>
           <p className="text-[12px] text-gray-400 dark:text-gray-500 leading-relaxed">
-            Drag personas from the left panel into this canvas to build the pipeline for this phase.
-            Choose a mode above to set how they coordinate.
+            Drag agents from the left panel to build the pipeline.
           </p>
         </div>
       </div>
     );
   }
 
-  // Relay: linear chain with arrows
+  // ── Relay: linear chain ──────────────────────────────────────────────────
   if (pattern === 'relay') {
     return (
       <div
-        ref={canvasRef}
-        onDragOver={handleDragOver}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={handleDrop}
+        onDragOver={e => { e.preventDefault(); setWorkerDragOver(true); }}
+        onDragLeave={() => setWorkerDragOver(false)}
+        onDrop={handleWorkerDrop}
         className={`flex-1 flex items-center justify-center px-8 py-6 rounded-2xl border transition-all duration-300 ${
-          dragOver ? 'border-primary/50 bg-primary/[0.03]' : 'border-gray-200/40 dark:border-white/[0.04] bg-gray-50/30 dark:bg-white/[0.01]'
+          workerDragOver ? 'border-primary/50 bg-primary/[0.03]' : 'border-gray-200/40 dark:border-white/[0.04] bg-gray-50/30 dark:bg-white/[0.01]'
         }`}
       >
         <div className="flex items-center gap-0 flex-wrap justify-center">
-          {/* Start node */}
           <div className="w-10 h-10 rounded-full bg-primary/10 ring-1 ring-primary/20 flex items-center justify-center shrink-0">
             <Zap className="w-4 h-4 text-primary" />
           </div>
-          {members.map((id, i) => (
+          {workers.map((id, i) => (
             <div key={`${id}-${i}`} className="flex items-center">
-              {/* Connector arrow */}
               <svg width="40" height="20" viewBox="0 0 40 20" className="shrink-0 mx-0.5">
                 <line x1="0" y1="10" x2="32" y2="10" stroke="var(--eh-accent)" strokeWidth="1.5" strokeOpacity="0.4" />
                 <polygon points="30,6 38,10 30,14" fill="var(--eh-accent)" fillOpacity="0.5" />
-                <circle r="2" fill="var(--eh-accent)" opacity="0.7">
-                  <animateMotion dur="1.5s" repeatCount="indefinite" path="M0,10 H32" />
-                </circle>
               </svg>
-              {/* Agent node */}
               <div
                 draggable
                 onDragStart={e => handleInternalDragStart(e, i)}
@@ -213,21 +254,16 @@ function NodeGraph({
                   <span className="text-[11px] font-semibold text-gray-800 dark:text-gray-100 truncate">{personaLabels[id] ?? id}</span>
                   <span className="text-[9px] text-gray-400 font-mono">Step {i + 1}</span>
                 </div>
-                <button
-                  onClick={() => onRemoveMember(id)}
-                  className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"
-                >
+                <button onClick={() => onRemoveWorker(id)} className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm">
                   <X className="w-2.5 h-2.5" />
                 </button>
               </div>
             </div>
           ))}
-          {/* End connector */}
           <svg width="40" height="20" viewBox="0 0 40 20" className="shrink-0 mx-0.5">
             <line x1="0" y1="10" x2="32" y2="10" stroke="var(--eh-accent)" strokeWidth="1.5" strokeOpacity="0.4" />
             <polygon points="30,6 38,10 30,14" fill="var(--eh-accent)" fillOpacity="0.5" />
           </svg>
-          {/* End node */}
           <div className="w-10 h-10 rounded-full bg-emerald-500/10 ring-1 ring-emerald-500/20 flex items-center justify-center shrink-0">
             <Check className="w-4 h-4 text-emerald-500" />
           </div>
@@ -236,65 +272,35 @@ function NodeGraph({
     );
   }
 
-  // Scatter: fan-out from start, fan-in to end
+  // ── Scatter-Gather: parallel workers + combiner drop zone ────────────────
   if (pattern === 'scatter') {
     return (
-      <div
-        ref={canvasRef}
-        onDragOver={handleDragOver}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={handleDrop}
-        className={`flex-1 flex items-center justify-center px-8 py-6 rounded-2xl border transition-all duration-300 ${
-          dragOver ? 'border-primary/50 bg-primary/[0.03]' : 'border-gray-200/40 dark:border-white/[0.04] bg-gray-50/30 dark:bg-white/[0.01]'
-        }`}
-      >
+      <div className="flex-1 flex items-center justify-center px-8 py-6 rounded-2xl border border-gray-200/40 dark:border-white/[0.04] bg-gray-50/30 dark:bg-white/[0.01]">
         <div className="flex items-center">
-          {/* Start node */}
+          {/* Start */}
           <div className="w-10 h-10 rounded-full bg-primary/10 ring-1 ring-primary/20 flex items-center justify-center shrink-0">
             <Zap className="w-4 h-4 text-primary" />
           </div>
 
-          {/* Fan-out lines + parallel nodes */}
-          <div className="relative mx-4">
-            {/* SVG connections */}
-            <svg className="absolute inset-0 w-full h-full pointer-events-none overflow-visible" preserveAspectRatio="none">
-              {members.map((_, i) => {
-                const totalH = members.length * 56;
-                const y = (i * 56) + 28;
-                const startY = totalH / 2;
-                return (
-                  <g key={i}>
-                    <path
-                      d={`M-20,${startY} C0,${startY} 0,${y} 20,${y}`}
-                      stroke="var(--eh-accent)"
-                      strokeWidth="1.5"
-                      strokeOpacity="0.3"
-                      fill="none"
-                    />
-                    <path
-                      d={`M${220},${y} C${240},${y} ${240},${startY} ${260},${startY}`}
-                      stroke="var(--eh-accent)"
-                      strokeWidth="1.5"
-                      strokeOpacity="0.3"
-                      fill="none"
-                    />
-                  </g>
-                );
-              })}
-            </svg>
-            {/* Nodes */}
-            <div className="flex flex-col gap-2 relative z-10 mx-6">
-              {members.map((id, i) => (
-                <div
-                  key={`${id}-${i}`}
-                  className="group relative flex items-center gap-2 px-4 py-2.5 rounded-xl border border-gray-200/60 dark:border-white/[0.08] bg-white dark:bg-[#1c1c1a] shadow-[0_2px_8px_rgba(0,0,0,0.04)] dark:shadow-[0_2px_8px_rgba(0,0,0,0.2)] hover:border-primary/30 transition-all duration-200"
-                >
+          {/* Worker drop area */}
+          <div
+            onDragOver={e => { e.preventDefault(); setWorkerDragOver(true); }}
+            onDragLeave={() => setWorkerDragOver(false)}
+            onDrop={handleWorkerDrop}
+            className={`relative mx-4 min-w-[200px] min-h-[80px] rounded-xl border-2 border-dashed p-3 transition-all duration-200 ${
+              rejectShake === 'worker' ? shakeClass : ''
+            } ${workerDragOver ? 'border-primary/50 bg-primary/[0.03]' : 'border-gray-200/40 dark:border-white/[0.06]'}`}
+          >
+            <span className="text-[9px] font-bold uppercase text-gray-400 tracking-wide absolute top-1.5 left-3">Workers</span>
+            <div className="flex flex-col gap-1.5 mt-4">
+              {workers.length === 0 && (
+                <p className="text-[11px] text-gray-400 text-center py-3">Drop worker agents here</p>
+              )}
+              {workers.map((id, i) => (
+                <div key={`${id}-${i}`} className="group relative flex items-center gap-2 px-3 py-2 rounded-lg border border-gray-200/60 dark:border-white/[0.08] bg-white dark:bg-[#1c1c1a] shadow-sm">
                   <Layers className="w-3 h-3 text-gray-300 shrink-0" />
                   <span className="text-[11px] font-semibold text-gray-800 dark:text-gray-100 truncate">{personaLabels[id] ?? id}</span>
-                  <button
-                    onClick={() => onRemoveMember(id)}
-                    className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"
-                  >
+                  <button onClick={() => onRemoveWorker(id)} className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm">
                     <X className="w-2.5 h-2.5" />
                   </button>
                 </div>
@@ -302,62 +308,87 @@ function NodeGraph({
             </div>
           </div>
 
-          {/* End node */}
-          <div className="w-10 h-10 rounded-full bg-emerald-500/10 ring-1 ring-emerald-500/20 flex items-center justify-center shrink-0">
-            <GitMerge className="w-4 h-4 text-emerald-500" />
+          {/* Combiner/Lead drop zone */}
+          <div
+            onDragOver={e => { e.preventDefault(); e.stopPropagation(); setLeadDragOver(true); }}
+            onDragLeave={() => setLeadDragOver(false)}
+            onDrop={handleLeadDrop}
+            className={`flex flex-col items-center gap-2 px-4 py-3 rounded-2xl border-2 transition-all duration-200 min-w-[100px] ${
+              rejectShake === 'lead' ? shakeClass : ''
+            } ${leadDragOver ? 'border-amber-400/60 bg-amber-500/[0.06]' : lead ? 'border-amber-500/30 bg-amber-500/[0.04]' : 'border-dashed border-amber-400/30 bg-amber-500/[0.02]'}`}
+          >
+            <GitMerge className="w-4 h-4 text-amber-500" />
+            <span className="text-[9px] font-bold text-amber-500 uppercase tracking-wide">Combiner</span>
+            {lead ? (
+              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-[#1c1c1a] border border-gray-200/60 dark:border-white/[0.08]">
+                <span className="text-[11px] font-semibold text-gray-800 dark:text-gray-100">{personaLabels[lead] ?? lead}</span>
+                <button onClick={onRemoveLead} className="text-gray-400 hover:text-red-500 transition-colors">
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            ) : (
+              <span className="text-[10px] text-amber-400/70 italic">Drop lead here</span>
+            )}
           </div>
         </div>
       </div>
     );
   }
 
-  // Supervisor: hub-and-spoke
+  // ── Supervisor: lead hub + assistant spoke area ──────────────────────────
   return (
-    <div
-      ref={canvasRef}
-      onDragOver={handleDragOver}
-      onDragLeave={() => setDragOver(false)}
-      onDrop={handleDrop}
-      className={`flex-1 flex items-center justify-center px-8 py-6 rounded-2xl border transition-all duration-300 ${
-        dragOver ? 'border-primary/50 bg-primary/[0.03]' : 'border-gray-200/40 dark:border-white/[0.04] bg-gray-50/30 dark:bg-white/[0.01]'
-      }`}
-    >
-      <div className="relative flex items-center justify-center" style={{ minHeight: Math.max(200, members.length * 52) }}>
-        {/* Supervisor hub (first member or labeled) */}
-        <div className="relative z-10 flex flex-col items-center gap-2 px-5 py-4 rounded-2xl border-2 border-primary/30 bg-primary/[0.04] dark:bg-primary/[0.06]">
+    <div className="flex-1 flex items-center justify-center px-8 py-6 rounded-2xl border border-gray-200/40 dark:border-white/[0.04] bg-gray-50/30 dark:bg-white/[0.01]">
+      <div className="relative flex items-center justify-center" style={{ minHeight: Math.max(180, (workers.length + 1) * 52) }}>
+        {/* Lead hub — explicit drop zone */}
+        <div
+          onDragOver={e => { e.preventDefault(); e.stopPropagation(); setLeadDragOver(true); }}
+          onDragLeave={() => setLeadDragOver(false)}
+          onDrop={handleLeadDrop}
+          className={`relative z-10 flex flex-col items-center gap-2 px-5 py-4 rounded-2xl border-2 transition-all duration-200 min-w-[120px] ${
+            rejectShake === 'lead' ? shakeClass : ''
+          } ${leadDragOver ? 'border-amber-400/60 bg-amber-500/[0.06]' : lead ? 'border-primary/30 bg-primary/[0.04] dark:bg-primary/[0.06]' : 'border-dashed border-primary/30 bg-primary/[0.02]'}`}
+        >
           <GitMerge className="w-5 h-5 text-primary" />
-          <span className="text-[10px] font-bold text-primary uppercase tracking-wide">Supervisor</span>
-          {members[0] && (
+          <span className="text-[10px] font-bold text-primary uppercase tracking-wide">Lead</span>
+          {lead ? (
             <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-[#1c1c1a] border border-gray-200/60 dark:border-white/[0.08]">
-              <span className="text-[11px] font-semibold text-gray-800 dark:text-gray-100">{personaLabels[members[0]] ?? members[0]}</span>
-              <button onClick={() => onRemoveMember(members[0])} className="text-gray-400 hover:text-red-500 transition-colors">
+              <span className="text-[11px] font-semibold text-gray-800 dark:text-gray-100">{personaLabels[lead] ?? lead}</span>
+              <button onClick={onRemoveLead} className="text-gray-400 hover:text-red-500 transition-colors">
                 <X className="w-3 h-3" />
               </button>
             </div>
+          ) : (
+            <span className="text-[10px] text-primary/50 italic">Drop lead here</span>
           )}
         </div>
 
-        {/* Assistant spokes */}
-        {members.length > 1 && (
-          <div className="ml-8 flex flex-col gap-2">
-            {members.slice(1).map((id, i) => (
-              <div key={`${id}-${i}`} className="flex items-center gap-2">
-                <svg width="32" height="2" className="shrink-0">
-                  <line x1="0" y1="1" x2="32" y2="1" stroke="var(--eh-accent)" strokeWidth="1" strokeOpacity="0.3" strokeDasharray="4 2" />
-                </svg>
-                <div className="group relative flex items-center gap-2 px-3 py-2 rounded-xl border border-gray-200/60 dark:border-white/[0.08] bg-white dark:bg-[#1c1c1a] shadow-sm hover:border-primary/30 transition-all duration-200">
-                  <span className="text-[11px] font-medium text-gray-700 dark:text-gray-200 truncate">{personaLabels[id] ?? id}</span>
-                  <button
-                    onClick={() => onRemoveMember(id)}
-                    className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm"
-                  >
-                    <X className="w-2.5 h-2.5" />
-                  </button>
-                </div>
+        {/* Assistant drop area */}
+        <div
+          onDragOver={e => { e.preventDefault(); setWorkerDragOver(true); }}
+          onDragLeave={() => setWorkerDragOver(false)}
+          onDrop={handleWorkerDrop}
+          className={`ml-6 flex flex-col gap-2 min-w-[140px] rounded-xl border-2 border-dashed p-3 transition-all duration-200 ${
+            rejectShake === 'worker' ? shakeClass : ''
+          } ${workerDragOver ? 'border-blue-400/50 bg-blue-500/[0.03]' : 'border-gray-200/40 dark:border-white/[0.06]'}`}
+        >
+          <span className="text-[9px] font-bold uppercase text-gray-400 tracking-wide">Assistants</span>
+          {workers.length === 0 && (
+            <p className="text-[10px] text-gray-400 italic py-2">Drop workers here</p>
+          )}
+          {workers.map((id, i) => (
+            <div key={`${id}-${i}`} className="flex items-center gap-2">
+              <svg width="24" height="2" className="shrink-0">
+                <line x1="0" y1="1" x2="24" y2="1" stroke="var(--eh-accent)" strokeWidth="1" strokeOpacity="0.3" strokeDasharray="4 2" />
+              </svg>
+              <div className="group relative flex items-center gap-2 px-3 py-2 rounded-xl border border-gray-200/60 dark:border-white/[0.08] bg-white dark:bg-[#1c1c1a] shadow-sm hover:border-primary/30 transition-all duration-200">
+                <span className="text-[11px] font-medium text-gray-700 dark:text-gray-200 truncate">{personaLabels[id] ?? id}</span>
+                <button onClick={() => onRemoveWorker(id)} className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow-sm">
+                  <X className="w-2.5 h-2.5" />
+                </button>
               </div>
-            ))}
-          </div>
-        )}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -383,8 +414,8 @@ function PersonaEditPanel({
   const [label, setLabel] = useState(initial?.label ?? '');
   const [id, setId] = useState(initial?.id ?? '');
   const [description, setDescription] = useState(initial?.description ?? '');
-  const [phase, setPhase] = useState<WorkflowPhase>((initial?.phase as WorkflowPhase) ?? 'review');
-  const [patterns, setPatterns] = useState<string[]>(initial?.compatiblePatterns ?? []);
+  const [role, setRole] = useState<'lead' | 'worker' | 'flex'>(initial?.role ?? 'worker');
+  const [phases, setPhases] = useState<WorkflowPhase[]>((initial?.phases as WorkflowPhase[] ?? ['review']));
   const [prompt, setPrompt] = useState('');
   const [loadingPrompt, setLoadingPrompt] = useState(!!initial);
   const [saving, setSaving] = useState(false);
@@ -408,14 +439,14 @@ function PersonaEditPanel({
   }, [label, creating]);
 
   const handleFork = () => { setLabel(prev => `${prev} (Copy)`); setForked(true); setError(null); };
-  const togglePattern = (p: string) => setPatterns(prev => (prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p]));
+  const togglePhase = (p: WorkflowPhase) => setPhases(prev => (prev.includes(p) ? prev.filter(x => x !== p) : [...prev, p]));
 
   const handleSave = async () => {
     setSaving(true);
     setError(null);
     try {
-      if (creating) await createPersona({ id, label: label.trim(), description: description.trim(), phase, compatiblePatterns: patterns, requiredCapabilities: [], prompt });
-      else await updatePersona(initial!.id, { id, label: label.trim(), description: description.trim(), phase, compatiblePatterns: patterns, requiredCapabilities: [], prompt });
+      if (creating) await createPersona({ id, label: label.trim(), description: description.trim(), role, phases, requiredCapabilities: [], prompt });
+      else await updatePersona(initial!.id, { id, label: label.trim(), description: description.trim(), role, phases, requiredCapabilities: [], prompt });
       onSaved();
     } catch (err: any) { setError(err?.message || 'Failed to save'); }
     finally { setSaving(false); }
@@ -443,24 +474,26 @@ function PersonaEditPanel({
             <input value={description} onChange={e => setDescription(e.target.value)} disabled={readOnly} placeholder="Short summary" className="mt-1.5 w-full px-3.5 py-2.5 rounded-xl border border-gray-200/60 dark:border-white/[0.08] bg-gray-50/50 dark:bg-black/20 text-sm text-gray-800 dark:text-gray-100 outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/10 disabled:opacity-60 disabled:cursor-not-allowed transition-all duration-200" />
           </div>
           <div>
-            <label className="text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-[0.08em]">Phase</label>
+            <label className="text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-[0.08em]">Role</label>
             <div className="mt-1.5 flex gap-1.5 flex-wrap">
-              {PHASES.map(p => (
-                <button key={p.key} onClick={() => setPhase(p.key)} disabled={readOnly} className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed ${phase === p.key ? 'bg-primary text-white' : 'bg-gray-100 dark:bg-white/10 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-white/20'}`}>
-                  {p.label}
+              {(['lead', 'worker', 'flex'] as const).map(r => (
+                <button key={r} onClick={() => setRole(r)} disabled={readOnly} className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed ${role === r ? 'bg-primary text-white' : 'bg-gray-100 dark:bg-white/10 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-white/20'}`}>
+                  {r.charAt(0).toUpperCase() + r.slice(1)}
                 </button>
               ))}
             </div>
+            <p className="mt-1.5 text-[10px] text-gray-400 dark:text-gray-500">Lead = supervisor/combiner slots. Worker = assistant/step slots. Flex = any slot.</p>
           </div>
           <div>
-            <label className="text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-[0.08em]">Compatible Patterns</label>
+            <label className="text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-[0.08em]">Phases</label>
             <div className="mt-1.5 flex gap-1.5 flex-wrap">
-              {PATTERNS.map(p => (
-                <button key={p.key} onClick={() => togglePattern(p.key)} disabled={readOnly} title={p.description} className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed ${patterns.includes(p.key) ? 'bg-primary/10 text-primary ring-1 ring-primary/20' : 'bg-gray-100 dark:bg-white/10 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-white/20'}`}>
+              {PHASES.map(p => (
+                <button key={p.key} onClick={() => togglePhase(p.key)} disabled={readOnly} className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed ${phases.includes(p.key) ? 'bg-primary/10 text-primary ring-1 ring-primary/20' : 'bg-gray-100 dark:bg-white/10 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-white/20'}`}>
                   {p.label}
                 </button>
               ))}
             </div>
+            <p className="mt-1.5 text-[10px] text-gray-400 dark:text-gray-500">Suggestion filter — persona shows in these phases. Empty = all phases.</p>
           </div>
           <div>
             <label className="text-[10px] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-[0.08em]">Prompt</label>
@@ -608,7 +641,7 @@ export function WorkflowBuilder() {
       const cfg = templatePhases[key];
       if (!cfg || phaseMembers(cfg).length === 0) continue;
       const pattern = supportedPatterns.includes(cfg.pattern as Pattern) ? (cfg.pattern as Pattern) : 'relay';
-      cleaned[key] = buildPhaseConfig(pattern, phaseMembers(cfg));
+      cleaned[key] = buildPhaseConfig(pattern, phaseLead(cfg), phaseWorkers(cfg));
     }
     try {
       if (creatingTemplate) {
@@ -624,55 +657,79 @@ export function WorkflowBuilder() {
     finally { setTemplateSaving(false); }
   }, [templateName, templateCliTarget, templatePhases, creatingTemplate, activeTemplate, reloadTemplates, selectTemplate]);
 
-  // Phase-level actions
-  const handleAddToPhase = useCallback((personaId: string) => {
+  // Phase-level actions — separate lead and worker handlers
+  const handleDropLead = useCallback((personaId: string) => {
     setTemplatePhases(prev => {
       const cfg = prev[activePhase];
       const pattern = (cfg?.pattern as Pattern) ?? 'relay';
-      const members = phaseMembers(cfg);
-      if (members.includes(personaId)) return prev;
-      return { ...prev, [activePhase]: buildPhaseConfig(pattern, [...members, personaId]) };
+      const workers = phaseWorkers(cfg);
+      return { ...prev, [activePhase]: buildPhaseConfig(pattern, personaId, workers) };
     });
   }, [activePhase]);
 
-  const handleRemoveFromPhase = useCallback((personaId: string) => {
+  const handleRemoveLead = useCallback(() => {
     setTemplatePhases(prev => {
       const cfg = prev[activePhase];
       const pattern = (cfg?.pattern as Pattern) ?? 'relay';
-      const members = phaseMembers(cfg).filter(m => m !== personaId);
-      if (members.length === 0) { const next = { ...prev }; delete next[activePhase]; return next; }
-      return { ...prev, [activePhase]: buildPhaseConfig(pattern, members) };
+      const workers = phaseWorkers(cfg);
+      if (workers.length === 0) { const next = { ...prev }; delete next[activePhase]; return next; }
+      return { ...prev, [activePhase]: buildPhaseConfig(pattern, undefined, workers) };
     });
   }, [activePhase]);
 
-  const handleReorder = useCallback((from: number, to: number) => {
+  const handleDropWorker = useCallback((personaId: string) => {
     setTemplatePhases(prev => {
       const cfg = prev[activePhase];
       const pattern = (cfg?.pattern as Pattern) ?? 'relay';
-      const members = [...phaseMembers(cfg)];
-      const [moved] = members.splice(from, 1);
-      members.splice(to, 0, moved);
-      return { ...prev, [activePhase]: buildPhaseConfig(pattern, members) };
+      const lead = phaseLead(cfg);
+      const workers = phaseWorkers(cfg);
+      if (workers.includes(personaId)) return prev;
+      return { ...prev, [activePhase]: buildPhaseConfig(pattern, lead, [...workers, personaId]) };
+    });
+  }, [activePhase]);
+
+  const handleRemoveWorker = useCallback((personaId: string) => {
+    setTemplatePhases(prev => {
+      const cfg = prev[activePhase];
+      const pattern = (cfg?.pattern as Pattern) ?? 'relay';
+      const lead = phaseLead(cfg);
+      const workers = phaseWorkers(cfg).filter(m => m !== personaId);
+      if (!lead && workers.length === 0) { const next = { ...prev }; delete next[activePhase]; return next; }
+      return { ...prev, [activePhase]: buildPhaseConfig(pattern, lead, workers) };
+    });
+  }, [activePhase]);
+
+  const handleReorderWorker = useCallback((from: number, to: number) => {
+    setTemplatePhases(prev => {
+      const cfg = prev[activePhase];
+      const pattern = (cfg?.pattern as Pattern) ?? 'relay';
+      const lead = phaseLead(cfg);
+      const workers = [...phaseWorkers(cfg)];
+      const [moved] = workers.splice(from, 1);
+      workers.splice(to, 0, moved);
+      return { ...prev, [activePhase]: buildPhaseConfig(pattern, lead, workers) };
     });
   }, [activePhase]);
 
   const handleSetPattern = useCallback((pattern: Pattern) => {
     setTemplatePhases(prev => {
       const cfg = prev[activePhase];
-      const members = phaseMembers(cfg);
-      return { ...prev, [activePhase]: buildPhaseConfig(pattern, members) };
+      const lead = phaseLead(cfg);
+      const workers = phaseWorkers(cfg);
+      return { ...prev, [activePhase]: buildPhaseConfig(pattern, lead, workers) };
     });
   }, [activePhase]);
 
-  const personasByPhase = useMemo(() => {
-    const map: Record<WorkflowPhase, OrchestrationPersonaMeta[]> = { grooming: [], implementation: [], review: [], finalize: [] };
-    for (const p of personas) { if (map[p.phase as WorkflowPhase]) map[p.phase as WorkflowPhase].push(p); }
-    return map;
-  }, [personas]);
 
   const personaLabels = useMemo(() => {
     const map: Record<string, string> = {};
     for (const p of personas) map[p.id] = p.label;
+    return map;
+  }, [personas]);
+
+  const personaRoles = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const p of personas) map[p.id] = p.role;
     return map;
   }, [personas]);
 
@@ -685,12 +742,14 @@ export function WorkflowBuilder() {
   // Current phase state
   const currentPhaseCfg = templatePhases[activePhase];
   const currentPattern = (currentPhaseCfg?.pattern as Pattern) ?? 'relay';
+  const currentLead = phaseLead(currentPhaseCfg);
+  const currentWorkers = phaseWorkers(currentPhaseCfg);
   const currentMembers = phaseMembers(currentPhaseCfg);
   const supportedPatterns = CLI_PATTERN_SUPPORT[templateCliTarget];
 
   // Handlers
   const handleDeletePersona = useCallback(async (p: OrchestrationPersonaMeta) => { if (!window.confirm(`Delete persona "${p.label}"?`)) return; try { await deletePersona(p.id); await reloadPersonas(); } catch {} }, [reloadPersonas]);
-  const handleDuplicatePersona = useCallback(async (p: OrchestrationPersonaMeta) => { try { const full = await fetchEditablePersona(p.id); const copy = await createPersona({ label: `${p.label} (Copy)`, description: p.description, phase: p.phase, compatiblePatterns: p.compatiblePatterns ?? [], requiredCapabilities: [], prompt: full.prompt }); await reloadPersonas(); setEditingPersona(copy); } catch {} }, [reloadPersonas]);
+  const handleDuplicatePersona = useCallback(async (p: OrchestrationPersonaMeta) => { try { const full = await fetchEditablePersona(p.id); const copy = await createPersona({ label: `${p.label} (Copy)`, description: p.description, role: p.role, phases: p.phases ?? [], requiredCapabilities: [], prompt: full.prompt }); await reloadPersonas(); setEditingPersona(copy); } catch {} }, [reloadPersonas]);
   const handleDeleteTemplate = useCallback(async (t: WorkflowTemplate) => { if (!window.confirm(`Delete "${t.name}"?`)) return; try { await deleteWorkflow(t.id); await reloadTemplates(); if (activeTemplate?.id === t.id) { setActiveTemplate(null); setTemplateName(''); setTemplatePhases({}); } if (config) { let next: Config = config; if (config.defaultWorkflowId === t.id) next = { ...next, defaultWorkflowId: '' }; if (next !== config) { await saveConfig(next); setConfigState(next); } } } catch {} }, [reloadTemplates, config, activeTemplate]);
   const handleSetPhaseDefault = useCallback(async (phase: WorkflowPhase, variant: 'single' | 'multi', templateId: string) => {
     if (!config) return;
@@ -847,45 +906,49 @@ export function WorkflowBuilder() {
           </div>
           <div className="flex-1 overflow-y-auto px-2 py-2">
             {dockSection === 'personas' && (
-              <div className="space-y-3">
+              <div className="space-y-2">
+                {/* Legend */}
+                <div className="flex items-center gap-2 px-1 py-1.5 rounded-lg bg-gray-50/50 dark:bg-white/[0.02]">
+                  <span className="text-[9px] font-bold uppercase w-3.5 h-3.5 flex items-center justify-center rounded bg-amber-500/15 text-amber-500">L</span>
+                  <span className="text-[9px] text-gray-400">Lead</span>
+                  <span className="text-[9px] font-bold uppercase w-3.5 h-3.5 flex items-center justify-center rounded bg-blue-500/15 text-blue-500">W</span>
+                  <span className="text-[9px] text-gray-400">Worker</span>
+                  <span className="text-[9px] font-bold uppercase w-3.5 h-3.5 flex items-center justify-center rounded bg-gray-500/15 text-gray-400">F</span>
+                  <span className="text-[9px] text-gray-400">Flex</span>
+                </div>
                 <button onClick={() => setCreatingPersona(true)} className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg text-[10px] font-semibold text-primary border border-dashed border-primary/30 hover:bg-primary/[0.04] transition-all">
                   <Plus className="w-3 h-3" /> New Persona
                 </button>
-                {PHASES.map(({ key, label }) => {
-                  const phasePersonas = personasByPhase[key];
-                  if (phasePersonas.length === 0) return null;
-                  const isActivePhase = key === activePhase;
-                  return (
-                    <div key={key}>
-                      <div className="flex items-center gap-1.5 mb-1 px-1">
-                        <div className={`w-1.5 h-1.5 rounded-full ${PHASE_DOT[key]}`} />
-                        <span className="text-[9px] font-bold uppercase tracking-[0.08em] text-gray-400">{label}</span>
-                      </div>
-                      <div className="space-y-0.5">
-                        {phasePersonas.map(p => {
-                          const inCurrentPhase = currentMembers.includes(p.id);
-                          return (
-                            <div
-                              key={p.id}
-                              draggable={isActivePhase}
-                              onDragStart={e => { e.dataTransfer.setData('persona-id', p.id); e.dataTransfer.effectAllowed = 'copy'; }}
-                              className={`group flex items-center gap-2 px-2 py-1.5 rounded-lg transition-all duration-150 ${isActivePhase ? inCurrentPhase ? 'bg-primary/[0.06] border border-primary/20 cursor-default' : 'hover:bg-gray-50 dark:hover:bg-white/[0.03] cursor-grab active:cursor-grabbing border border-transparent' : 'opacity-50 cursor-default border border-transparent'}`}
-                            >
-                              {isActivePhase && !inCurrentPhase && <GripVertical className="w-3 h-3 text-gray-300 shrink-0" />}
-                              {inCurrentPhase && <Check className="w-3 h-3 text-primary shrink-0" />}
-                              <span className={`text-[11px] font-medium flex-1 truncate ${inCurrentPhase ? 'text-primary' : 'text-gray-700 dark:text-gray-200'}`}>{p.label}</span>
-                              <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                                <button onClick={() => setEditingPersona(p)} title={p.builtIn ? 'View' : 'Edit'} className="p-0.5 rounded text-gray-400 hover:text-primary">
-                                  {p.builtIn ? <Eye className="w-3 h-3" /> : <Pencil className="w-3 h-3" />}
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })}
+                {/* Flat persona list — sorted by role (leads first) */}
+                <div className="space-y-0.5">
+                  {personas
+                    .slice()
+                    .sort((a, b) => {
+                      const roleOrder = { lead: 0, flex: 1, worker: 2 };
+                      return (roleOrder[a.role] ?? 1) - (roleOrder[b.role] ?? 1);
+                    })
+                    .map(p => {
+                      const inCurrentPhase = currentMembers.includes(p.id);
+                      return (
+                        <div
+                          key={p.id}
+                          draggable={!inCurrentPhase}
+                          onDragStart={e => { e.dataTransfer.setData('persona-id', p.id); e.dataTransfer.effectAllowed = 'copy'; }}
+                          className={`group flex items-center gap-2 px-2 py-1.5 rounded-lg transition-all duration-150 ${inCurrentPhase ? 'bg-primary/[0.06] border border-primary/20 cursor-default' : 'hover:bg-gray-50 dark:hover:bg-white/[0.03] cursor-grab active:cursor-grabbing border border-transparent'}`}
+                        >
+                          {!inCurrentPhase && <GripVertical className="w-3 h-3 text-gray-300 shrink-0" />}
+                          {inCurrentPhase && <Check className="w-3 h-3 text-primary shrink-0" />}
+                          <span className={`text-[10px] font-bold uppercase w-3.5 h-3.5 flex items-center justify-center rounded shrink-0 ${p.role === 'lead' ? 'bg-amber-500/15 text-amber-500' : p.role === 'worker' ? 'bg-blue-500/15 text-blue-500' : 'bg-gray-500/15 text-gray-400'}`}>{p.role[0].toUpperCase()}</span>
+                          <span className={`text-[11px] font-medium flex-1 truncate ${inCurrentPhase ? 'text-primary' : 'text-gray-700 dark:text-gray-200'}`}>{p.label}</span>
+                          <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button onClick={() => setEditingPersona(p)} title={p.builtIn ? 'View' : 'Edit'} className="p-0.5 rounded text-gray-400 hover:text-primary">
+                              {p.builtIn ? <Eye className="w-3 h-3" /> : <Pencil className="w-3 h-3" />}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
               </div>
             )}
             {dockSection === 'skills' && (
@@ -970,11 +1033,15 @@ export function WorkflowBuilder() {
               <div className="flex-1 flex p-4 overflow-auto">
                 <NodeGraph
                   pattern={currentPattern}
-                  members={currentMembers}
+                  lead={currentLead}
+                  workers={currentWorkers}
                   personaLabels={personaLabels}
-                  onRemoveMember={handleRemoveFromPhase}
-                  onReorderMember={handleReorder}
-                  onDrop={handleAddToPhase}
+                  personaRoles={personaRoles}
+                  onRemoveLead={handleRemoveLead}
+                  onRemoveWorker={handleRemoveWorker}
+                  onReorderWorker={handleReorderWorker}
+                  onDropLead={handleDropLead}
+                  onDropWorker={handleDropWorker}
                 />
               </div>
             </>

@@ -165,16 +165,20 @@ export function resolvePhaseDefaultId(
   return phaseDefaults?.[phase]?.[variant] || `builtin-${phase}-${variant}`;
 }
 
-/** Combiner/lead persona for a phase. Supervisor pattern uses a delegation-aware lead. */
-export function phaseCombiner(phase: LaunchPhase, mode?: OrchestrationMode): { personaId: string; label: string } | undefined {
+/**
+ * Combiner/lead persona for a phase. If a workflow template configures an explicit
+ * lead, that takes priority. Otherwise falls back to built-in defaults.
+ */
+export function phaseCombiner(phase: LaunchPhase, mode?: OrchestrationMode, configuredLead?: { personaId: string; label: string }): { personaId: string; label: string } | undefined {
+  if (configuredLead) return configuredLead;
   if (mode === 'handoff') {
     return { personaId: 'supervisor', label: 'Supervisor' };
   }
   switch (phase) {
     case 'grooming': return { personaId: 'planner', label: 'Planner' };
-    case 'implementation': return { personaId: 'orchestrator', label: 'Orchestrator' };
-    case 'review': return { personaId: 'orchestrator', label: 'Orchestrator' };
-    default: return undefined;
+    case 'implementation': return { personaId: 'dev-lead', label: 'Dev Lead' };
+    case 'review': return { personaId: 'orchestrator', label: 'Review Lead' };
+    default: return { personaId: 'coordinator', label: 'Coordinator' };
   }
 }
 

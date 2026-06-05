@@ -147,13 +147,13 @@ describe('buildInitialPrompt — Step 2: diff block injection', () => {
 describe('orchestration-personas — Step 4: reviewer prompts updated', () => {
   it('has at least 7 review-phase personas', async () => {
     const { ORCHESTRATION_PERSONAS } = await import('./orchestration-personas.js');
-    const reviewPersonas = ORCHESTRATION_PERSONAS.filter(p => p.phase === 'review');
+    const reviewPersonas = ORCHESTRATION_PERSONAS.filter(p => p.phases.includes('review'));
     expect(reviewPersonas.length).toBeGreaterThanOrEqual(7);
   });
 
   it('review-phase personas do NOT instruct "Run `git diff HEAD~1`"', async () => {
     const { ORCHESTRATION_PERSONAS } = await import('./orchestration-personas.js');
-    const reviewPersonas = ORCHESTRATION_PERSONAS.filter(p => p.phase === 'review');
+    const reviewPersonas = ORCHESTRATION_PERSONAS.filter(p => p.phases.includes('review'));
 
     for (const persona of reviewPersonas) {
       // The exact old instruction was:
@@ -166,7 +166,7 @@ describe('orchestration-personas — Step 4: reviewer prompts updated', () => {
 
   it('review-phase personas reference the provided/scoped diff', async () => {
     const { ORCHESTRATION_PERSONAS } = await import('./orchestration-personas.js');
-    const reviewPersonas = ORCHESTRATION_PERSONAS.filter(p => p.phase === 'review');
+    const reviewPersonas = ORCHESTRATION_PERSONAS.filter(p => p.phases.includes('review'));
 
     for (const persona of reviewPersonas) {
       const referencesProvidedDiff =
@@ -185,7 +185,7 @@ describe('orchestration-personas — Step 4: reviewer prompts updated', () => {
 
   it('non-review personas (grooming, implementation, finalize) are unaffected', async () => {
     const { ORCHESTRATION_PERSONAS } = await import('./orchestration-personas.js');
-    const nonReviewPersonas = ORCHESTRATION_PERSONAS.filter(p => p.phase !== 'review');
+    const nonReviewPersonas = ORCHESTRATION_PERSONAS.filter(p => !p.phases.includes('review'));
 
     for (const persona of nonReviewPersonas) {
       // Non-review personas should NOT reference "scoped diff provided" since

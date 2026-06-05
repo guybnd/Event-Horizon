@@ -574,7 +574,7 @@ export async function startMcpServer(): Promise<void> {
 
   server.tool(
     'list_available_agents',
-    'List available agent personas that can be delegated to. Returns id, label, description, and phase for each.',
+    'List available agent personas that can be delegated to. Returns id, label, description, role (lead/worker/flex), and phases for each.',
     {
       phase: z.string().optional().describe('Filter by phase (grooming, implementation, review, release). Omit to see all.'),
     },
@@ -585,12 +585,14 @@ export async function startMcpServer(): Promise<void> {
           : `${ENGINE_URL}/api/orchestration/personas`;
         const res = await fetch(url);
         if (!res.ok) return errorResult('Failed to fetch agent roster');
-        const personas = await res.json();
-        const summary = personas.map((p: any) => ({
+        const data = await res.json();
+        const list = Array.isArray(data) ? data : data.personas ?? [];
+        const summary = list.map((p: any) => ({
           id: p.id,
           label: p.label,
           description: p.description,
-          phase: p.phase,
+          role: p.role,
+          phases: p.phases,
         }));
         return jsonResult(summary);
       } catch (err: any) {
