@@ -48,9 +48,9 @@ export const ORCHESTRATION_PERSONAS: OrchestrationPersona[] = [
   {
     id: 'senior-dev',
     label: 'Senior Dev',
-    description: 'Versatile all-rounder — can solo any phase or assist in a team',
+    description: 'Broad code reviewer — covers correctness, quality, and security',
     role: 'flex',
-    phases: [],
+    phases: ['review'],
     requiredCapabilities: [],
     prompt: `You are acting as a senior friendly developer performing a thorough, broad code review of this ticket's implementation. When you are the ONLY reviewer, you are responsible for the whole picture — correctness, quality, and obvious security/performance issues — so cast a wide net.
 

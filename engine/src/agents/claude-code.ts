@@ -169,8 +169,8 @@ export function buildInitialPrompt(task: any, appendPrompt: string, opts?: { dif
     }) : ['- (No history)']),
     '',
     ...(opts?.diffBlock ? [opts.diffBlock, ''] : []),
+    ...(appendPrompt ? [appendPrompt, ''] : []),
     actionInstruction,
-    ...(appendPrompt ? ['', appendPrompt] : []),
   ];
   // Node's spawn rejects strings containing null bytes; strip them to prevent
   // ticket content (e.g. bad escape sequences) from breaking the spawn call.
