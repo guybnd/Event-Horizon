@@ -149,6 +149,9 @@ This is the contract that lets edits originate in any repo without breaking sing
 
 If a member's branch is ever found *ahead* of canonical (e.g. someone committed by hand), that is an **error state**, not a merge to resolve: the parent is canonical and the member is reset to it. The engine should detect and surface this rather than attempt a 3-way merge.
 
+**Shipped (FLUX-397).** The parent-side intake is [`group-edit.ts`](../../../engine/src/group-edit.ts) (`submitGroupEdit`, surfaced via `POST /api/group/submit-edit`). It applies the submitted edit into the canonical store and re-fans-out via [`syncGroup`](../../../engine/src/group-sync.ts), **serialized** at the parent (sole writer) so concurrent submissions apply in order without interleaving — satisfying step 5. The security-critical apply core (`applyEditsToStore`) validates every edit `path` up front (rejects absolute paths, `..` traversal, and writes into the worktree `.git`), so a bad edit aborts before any write. Because no member advances the branch, every re-fan-out push stays fast-forward (steps 2/3). **Step 4** — the member fast-forwarding its local `.flux-group/` mirror to the new tip — depends on member-side worktree attach, deferred as **decision C2**; until then a member refreshes by re-fetching the branch. The diff *capture* on the member side (step 1→2) is plain `git diff`, not engine code.
+
+
 ## Sibling-source scope (FLUX-398)
 
 Docs fan-out gives a sub-repo task cross-project *docs* awareness. Sibling *source* awareness is separate: agent sessions spawn with `cwd` at the parent root, so member repos — which live outside `cwd` (siblings at `../<name>`) — are invisible to native grep/glob/read.

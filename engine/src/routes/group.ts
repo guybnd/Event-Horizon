@@ -2,6 +2,7 @@ import express from 'express';
 import { workspaceRoot } from '../workspace.js';
 import { planGroupSetup, applyGroupSetup, type GroupSetupInput } from '../group-setup.js';
 import { syncGroup } from '../group-sync.js';
+import { submitGroupEdit, type GroupEditFile } from '../group-edit.js';
 import { summarizeGroup, getGroupContext, type GroupMember } from '../group.js';
 
 const router = express.Router();
@@ -78,6 +79,41 @@ router.post('/sync', async (_req, res) => {
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+function parseEdits(body: any): GroupEditFile[] | { error: string } {
+  if (!body || typeof body !== 'object') return { error: 'Request body must be an object' };
+  const { files } = body;
+  if (!Array.isArray(files) || files.length === 0) {
+    return { error: 'files must be a non-empty array' };
+  }
+  const parsed: GroupEditFile[] = [];
+  for (const f of files) {
+    if (!f || typeof f !== 'object' || typeof f.path !== 'string') {
+      return { error: 'each file needs a path string' };
+    }
+    const del = Boolean(f.delete);
+    if (!del && typeof f.content !== 'string') {
+      return { error: `file ${f.path} needs string content (or delete: true)` };
+    }
+    parsed.push({ path: f.path, ...(del ? { delete: true } : { content: f.content }) });
+  }
+  return parsed;
+}
+
+/** Apply a sub-repo doc edit through the parent, commit, and re-fan-out. */
+router.post('/submit-edit', async (req, res) => {
+  if (!workspaceRoot) return res.status(400).json({ error: 'No workspace active' });
+  const group = getGroupContext();
+  if (!group) return res.status(400).json({ error: 'No multi-repo group is configured' });
+  const edits = parseEdits(req.body);
+  if ('error' in edits) return res.status(400).json({ error: edits.error });
+  try {
+    const result = await submitGroupEdit(group, edits);
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
   }
 });
 
