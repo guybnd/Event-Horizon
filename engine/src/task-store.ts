@@ -19,6 +19,7 @@ import { isTopLevelTaskFile, getDocsDir, isDocFile, getDocPathFromFile, titleFro
 import type { StoredDoc } from './file-utils.js';
 import { resolveEmbeddedDocsRoot, copyDir, buildStarterProjectOverview } from './docs-seeder.js';
 import { bootstrapNewWorkspace, installSkillsForWorkspace } from './bootstrap.js';
+import { activateGroup } from './group.js';
 
 export let tasksCache: Record<string, any> = {};
 export let docsCache: Record<string, StoredDoc> = {};
@@ -898,6 +899,7 @@ export async function activateWorkspace(newRoot: string) {
     await installSkillsForWorkspace();
     await startWatchers();
     startSyncWatcher();
+    await activateGroup(newRoot);
     seedPromptNotifications();
   } finally {
     workspaceActivating = false;

@@ -12,7 +12,7 @@ Scope: Route the agent to the correct phase-specific skill based on ticket statu
 
 # Event Horizon Agent — Orchestrator
 
-Version: 2.3.0
+Version: 2.4.0
 
 ## Overview
 
@@ -25,6 +25,7 @@ Event Horizon is a local-first ticket board backed by markdown files. Tickets ar
 | `Grooming`, `Require Input` | grooming skill |
 | `Todo`, `In Progress` | implementation skill |
 | Release orchestration | release skill |
+| Cross-project mapping (multi-repo group) | mapping skill |
 
 Read-only tasks (explanation, search, discussion) need no phase skill.
 

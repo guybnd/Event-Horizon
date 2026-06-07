@@ -27,7 +27,7 @@ The auto-installed MCP config (placed by the workflow installer) does this for y
 | [`get_ticket`](#get_ticket) | Read | — |
 | [`list_tickets`](#list_tickets) | Read | — |
 | [`get_board_config`](#get_board_config) | Read | — |
-| [`create_ticket`](#create_ticket) | Mutation | yes |
+| [`get_project_group`](#get_project_group) | Read | — |
 | [`update_ticket`](#update_ticket) | Mutation | yes |
 | [`change_status`](#change_status) | Mutation | yes (enforced) |
 | [`add_comment`](#add_comment) | Mutation | yes |
@@ -79,6 +79,35 @@ Read board configuration.
 **Input:** none.
 
 **Output:** `{ statuses, projects, tags, priorities, users, requireInputStatus, readyForMergeStatus }`. `statuses` merges visible columns and hidden statuses.
+
+### `get_project_group`
+
+Read the multi-repo group when one is configured (a committed `group.json` in the workspace root — see [Multi-Repo Groups](../architecture/multi-repo-groups.md)).
+
+**Input:** none.
+
+**Output (group configured):**
+
+```jsonc
+{
+  "configured": true,
+  "name": "my-product",
+  "members": [
+    {
+      "name": "frontend",        // stable, immutable key + doc path prefix
+      "role": "app",
+      "remote": "https://…/frontend.git", // canonical machine-independent identity
+      "path": "C:/…/frontend",     // resolved local checkout (default ../<name>, or group.local.json override)
+      "pathExists": true,
+      "testCommand": "npm test"   // omitted when not set
+    }
+  ]
+}
+```
+
+**Output (no group):** `{ "configured": false, "message": "No multi-repo group is configured …" }`. This is a normal result, not an error — single-repo workspaces always get `configured: false`.
+
+Read-only and side-effect-free: it reflects the group context loaded by `activateWorkspace` ([`group.ts`](../../../engine/src/group.ts)); it does not re-scan repos. `pathExists` is re-checked live on each call (a single stat per member), so it reflects whether a member is checked out *now* — not a stale load-time snapshot.
 
 ---
 

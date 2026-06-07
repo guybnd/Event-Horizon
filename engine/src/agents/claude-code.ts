@@ -7,6 +7,7 @@ import { updateTaskWithHistory, updateAgentSession, tasksCache, estimateCostUSD 
 import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
+import { buildMemberScopeArgs } from '../group.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
 
 function checkBinaryInstalled(binaryName: string): void {
@@ -333,6 +334,8 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     '--output-format', 'stream-json',
     '--verbose',
     ...(session.skipPermissions ? ['--dangerously-skip-permissions'] : []),
+    // Multi-repo group: put every checked-out member repo in scope (no-op single-repo).
+    ...buildMemberScopeArgs(),
   ];
 
   const caps = PROVIDER_CAPABILITIES[framework] ?? PROVIDER_CAPABILITIES['copilot'];
@@ -598,9 +601,10 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   });
 
   const safeMessage = message.replace(/\0/g, '');
+  const memberScopeArgs = buildMemberScopeArgs();
   const resumeArgs = session.claudeSessionId
-    ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions']
-    : ['-p', safeMessage, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'];
+    ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions', ...memberScopeArgs]
+    : ['-p', safeMessage, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions', ...memberScopeArgs];
 
   let replyProc: ReturnType<typeof spawn>;
   if (process.platform === 'win32') {

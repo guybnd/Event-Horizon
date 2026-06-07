@@ -14,6 +14,7 @@ import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry } f
 import { getCliWorkspace, getActiveFluxDir } from './workspace.js';
 import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, checkGhAuth, captureDiff, getCurrentCommit } from './branch-manager.js';
 import { getActiveSessionsForTask } from './session-store.js';
+import { getGroupContext, summarizeGroup } from './group.js';
 
 function textResult(text: string) {
   return { content: [{ type: 'text' as const, text }] };
@@ -94,6 +95,13 @@ export async function startMcpServer(): Promise<void> {
       const { projects, tags, priorities, users, requireInputStatus, readyForMergeStatus } = configCache;
       return jsonResult({ statuses, projects, tags, priorities, users, requireInputStatus, readyForMergeStatus });
     },
+  );
+
+  server.tool(
+    'get_project_group',
+    'Read the multi-repo group (if configured): group name + member repos (name, role, git remote, resolved local path, test command). Returns a clear notice when no group is configured.',
+    {},
+    async () => jsonResult(summarizeGroup(getGroupContext())),
   );
 
   // ─── Mutation Tools ─────────────────────────────────────────────────────────

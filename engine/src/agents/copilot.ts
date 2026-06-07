@@ -7,6 +7,7 @@ import { updateTaskWithHistory, updateAgentSession, tasksCache, estimateCostUSD 
 import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal, checkAutoRestart } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
+import { buildMemberScopeArgs } from '../group.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
 
 function checkBinaryInstalled(binaryName: string): void {
@@ -486,6 +487,8 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     '-p', initialPrompt,
     '--output-format', 'json',
     ...(session.skipPermissions ? ['--yolo'] : ['--allow-all-tools']),
+    // Multi-repo group: put every checked-out member repo in scope (no-op single-repo).
+    ...buildMemberScopeArgs(),
   ];
 
   const caps = PROVIDER_CAPABILITIES['copilot'];

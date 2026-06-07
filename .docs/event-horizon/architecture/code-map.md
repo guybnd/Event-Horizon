@@ -16,6 +16,8 @@ This page is the quick orientation guide for where behavior lives today — file
 
 -   `engine/src/branch-manager.ts` owns all git plumbing for per-ticket branches: create, status, delete (local + remote), PR creation via `gh`, and the `finish_ticket` diff capture (numstat summary + unified-diff sidecar at `<flux-dir>/<ID>.diff`).
     
+-   `engine/src/group.ts` is the **land-here-first** module for multi-repo groups. It loads the committed `group.json` (machine-independent member identity) plus an optional gitignored `group.local.json` (per-machine paths), resolves member checkout paths (default `../<name>`), validates the config, and scaffolds the canonical `.flux-group` docs store. It also projects the group for agents/portal (`summarizeGroup`, with live `pathExists`) and builds the always-on sibling-source scope args (`buildMemberScopeArgs` → `--add-dir`, consumed by both agent adapters). Purely additive — inert when no `group.json` is present (single-repo mode unchanged). Activated from `activateWorkspace` in `task-store.ts`. See [Multi-Repo Groups](multi-repo-groups.md).
+    
 -   `engine/src/session-store.ts` is the **land-here-first** module for CLI-session
 	state and orchestration sequencing. Besides the session registries, it owns the
 	**scatter-gather fan-in barrier**: a deferred combiner is registered against a

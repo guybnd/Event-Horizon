@@ -12,7 +12,7 @@ export const EVENT_HORIZON_INSTRUCTIONS_END = '<!-- EVENT_HORIZON_MANAGED_INSTRU
 const MODULAR_FRAMEWORKS: ResolvedFramework[] = ['copilot', 'cline'];
 
 /** Ordered skill module names sourced from .docs/skills/. */
-const SKILL_MODULES = ['orchestrator', 'grooming', 'implementation', 'release'] as const;
+const SKILL_MODULES = ['orchestrator', 'grooming', 'implementation', 'release', 'mapping'] as const;
 type SkillModule = typeof SKILL_MODULES[number];
 
 interface WorkflowInstallerOptions {

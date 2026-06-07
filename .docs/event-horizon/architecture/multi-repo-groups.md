@@ -1,0 +1,215 @@
+---
+title: Multi-Repo Groups
+order: 5
+---
+# Multi-Repo Groups — Design Spec
+
+> **Status: design spec (not yet implemented).** This is the authoritative design for the multi-repo product knowledge base tracked under FLUX-391 and its subtasks (FLUX-392 … FLUX-400). Implementation tickets build against the schema, layout, and naming defined here. Once the feature ships, this page becomes a normal reference doc kept in sync with code.
+
+## Problem
+
+Event Horizon assumes a single workspace. Real products span several repos (frontend + backend + shared libs + infra). A person or agent working in one sub-repo has no shared understanding of how the whole system fits together. This feature gives a **group** of repos a living cross-project knowledge base — feature maps, system topology, shared contracts — built by EH "mapping" tickets and kept in sync across every member repo.
+
+## Model at a glance
+
+```
+group.json            parent repo root, committed to main      (config — who is in the group)
+canonical group docs  parent orphan branch `flux-group-docs`   (the knowledge base — never on a repo main)
+member mirrors        each member's `flux-group-docs` branch   (fan-out copy — self-contained, offline-readable)
+write authority       the parent group engine                  (single writer; members never write canonical)
+```
+
+- **Single-writer fan-out.** Mapping tickets run in the parent and write the canonical docs. The parent is the only thing that ever commits to `flux-group-docs`. It pushes that branch to every member's remote. Members are **read mirrors** — they never commit to their copy of the branch (see [Edit round-trip](#edit-round-trip) for how sub-repo edits work without violating this).
+- **Edits can originate anywhere, but are applied by one writer.** A sub-repo dev edits docs in their local worktree; the change is captured as a **diff and submitted to the parent** (see FLUX-397). The parent applies it to the canonical store, commits, and re-fans-out. Because members never commit locally, every fan-out push stays a clean fast-forward. Git-like: anyone proposes, one branch is canonical.
+- **Repo main branches stay clean; member remotes do get a new branch.** Docs are never committed to any repo's *main* branch — only to the `flux-group-docs` orphan branch. Be explicit, though: fan-out **pushes a `flux-group-docs` branch to every member's remote**. The feature writes to member remotes (a new orphan branch), just never to their mains. `group.json` is the one new file on the parent's main.
+
+## `group.json` schema
+
+Location: **parent repo root**, committed to the parent's main branch. It is configuration (who is in the group + how to reach them), not knowledge — so it lives in-repo, not on the orphan branch.
+
+### Member identity: remote URL, not local path
+
+A subtle but important rule: `group.json` is **committed and shared**, so it must not contain machine-specific data. Different developers check out repos into different folder layouts. Therefore:
+
+- **Canonical member identity is the git `remote` URL** (stable across machines), plus a stable short `name`.
+- **Local checkout paths are resolved per-machine, not stored in the committed file.** By default the engine assumes members are **siblings of the parent repo** (i.e. `../<name>`). For non-standard layouts, a developer provides paths in a **gitignored** `group.local.json` next to `group.json`. The committed `group.json` never pins an absolute or machine-specific path.
+
+```jsonc
+// group.json — committed to the parent repo main (shared, machine-independent)
+{
+  // Display name of the product / group.
+  "name": "my-product",
+
+  // Member repos in the group.
+  "members": [
+    {
+      "name": "engine",                          // stable short key; immutable once used (it is a doc path prefix)
+      "role": "api",                             // free-form label; see suggested roles below
+      "remote": "git@github.com:acme/engine.git" // canonical identity + fan-out target
+    },
+    {
+      "name": "portal",
+      "role": "frontend",
+      "remote": "git@github.com:acme/portal.git"
+    },
+    {
+      "name": "homeup",
+      "role": "app",
+      "remote": "git@github.com:acme/homeup.git",
+      "testCommand": "npm run e2e"               // optional; surfaced by get_project_group
+    }
+  ]
+}
+```
+
+```jsonc
+// group.local.json — GITIGNORED, per-machine path overrides (optional)
+// Only needed when members are NOT siblings of the parent (../<name>).
+{
+  "paths": {
+    "engine": "/abs/or/relative/path/to/engine",
+    "homeup": "../../apps/homeup"
+  }
+}
+```
+
+### Field reference
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `name` | string | yes | Product / group display name. |
+| `members` | object[] | yes | Member repos. Must be non-empty for group features to activate. |
+| `members[].name` | string | yes | Stable short key. **Immutable once used** — it is the doc path prefix; renaming orphans `members/<name>` paths. Must be unique. |
+| `members[].role` | string | yes | Free-form role label. Suggested values below. |
+| `members[].remote` | string | yes | Git remote **URL** — the canonical, machine-independent identity and the fan-out push target. |
+| `members[].testCommand` | string | no | Surfaced by `get_project_group` so agents know how to validate that repo. |
+
+The fan-out branch name is fixed at **`flux-group-docs`** for the whole group (not per-member configurable — YAGNI until a real need appears). Per-machine checkout paths live in the gitignored `group.local.json`, defaulting to `../<name>`.
+
+**Suggested roles** (labels only, not enforced): `frontend`, `api`, `backend`, `shared-lib`, `infra`, `app`, `service`, `docs`.
+
+### Activation rule
+
+When `group.json` is **absent**, the engine behaves exactly as today (single root, single board). When present with a non-empty `members` array, group features activate. This must be non-breaking for existing single-repo users (see [Multi-root engine](#multi-root-engine) and FLUX-393).
+
+## Multi-root engine
+
+Today the engine is single-rooted: `tasksCache` / `docsCache` (`task-store.ts`), `configCache` (`config.ts`), and `workspaceRoot` (`workspace.ts`) are process-global singletons, and `activateWorkspace()` resets them wholesale on every switch. A group needs the parent **and** awareness of its members.
+
+> **Implemented (FLUX-393) as an additive `group` module, not a singleton rewrite.** Because members are read-only and there is **one active board** (no per-member tickets), the MVP does not need per-member board caches. Rather than replace the global singletons (imported directly across ~20 files — a high-regression refactor), FLUX-393 adds [`engine/src/group.ts`](../../../engine/src/group.ts) which holds the loaded group **alongside** the untouched singletons. Single-repo behavior is therefore byte-for-byte identical, and the non-breaking guarantee is automatic (no `group.json` ⇒ the module is inert). The full per-root cache (`RootContext` with its own `tasksCache`/`configCache`) is only needed if cross-repo *ticketing* is ever added — explicitly out of scope.
+
+The active group context:
+
+```
+GroupContext
+  parentRoot      the repo holding group.json — single writer + active board
+  config          { name, members[] }
+  members[]       ResolvedMember = { name, role, remote, path, pathExists, testCommand? }
+  groupStoreDir   the canonical .flux-group store (docs), owned by the parent
+  docsBranch      flux-group-docs
+```
+
+Rules honored:
+
+- **Back-compat is mandatory.** No `group.json` ⇒ `group.ts` returns null and the engine behaves byte-for-byte like today. This is the non-breaking guarantee for existing single-repo users.
+- **One active board.** Tickets remain single-board for the MVP — the parent's board is authoritative. Members are loaded **read-only for source + docs awareness**, not as additional boards (cross-repo ticketing is explicitly out of scope; see FLUX-391).
+- **`activateWorkspace()` activates the group.** It calls `activateGroup(parentRoot)` after the existing single-repo setup, so switching workspaces re-derives the group from the new root rather than leaking state.
+
+> **Single active context (consequence of the additive design).** `getGroupContext()` is a module-level singleton, mirroring the existing `tasksCache`/`configCache` singletons. The engine therefore assumes **one active workspace per process** — the same assumption single-repo mode already makes. Member-derived data that can change on disk after load (e.g. whether a member is checked out) must be re-evaluated at read time rather than trusted from the load-time snapshot; `summarizeGroup` does this for `pathExists`. If true per-workspace isolation is ever needed, this singleton is the thing to replace.
+
+Every other group feature consumes the context: `get_project_group` (FLUX-394) reads its membership, fan-out (FLUX-396) iterates members, sibling-source scope (FLUX-398) exposes member `path`s to the agent, and the portal view (FLUX-399) reads the group store.
+
+## Group store layout
+
+The canonical knowledge base lives on the parent's `flux-group-docs` orphan branch, attached as a git worktree at `.flux-group/` in the parent repo (mirroring how `flux-data` is attached at `.flux-store/`; see [`storage-sync.ts`](../../../engine/src/storage-sync.ts) `attachWorktreeIfPresent` / `migrateToOrphan`).
+
+```
+.flux-group/                       worktree of the `flux-group-docs` orphan branch
+  index.md                         feature index — entry point, links into features/
+  topology.md                      system topology across the group
+  features/
+    <slug>.md                      one cross-project feature map per file (e.g. auth.md)
+  contracts/
+    <name>.md                      shared contracts (types, API shapes) spanning repos
+```
+
+- `features/`, `topology.md`, `contracts/` are **cross-project** docs authored by mapping tickets (FLUX-395).
+- The entire tree is fanned out to each member's `flux-group-docs` branch, so every member ends up with the full set.
+
+> **Why no per-member `members/<name>/` subtree?** An earlier draft proposed one. It is cut from the MVP: a doc that is "scoped to one repo but shared with the group" is just a cross-project doc, which `features/` / `contracts/` already cover. A repo's *own*, non-shared docs belong in that repo's own `.docs/`. Adding a third location created an ambiguous overlap with no distinct job. Reintroduce only if a concrete need appears.
+
+## Edit round-trip
+
+This is the contract that lets edits originate in any repo without breaking single-writer fan-out. It must be honored by FLUX-396 (fan-out) and FLUX-397 (push-through-parent).
+
+1. **Members never commit to `flux-group-docs` locally.** Their `.flux-group/` worktree is a read mirror. A sub-repo dev editing a doc produces **uncommitted working-tree changes** only.
+2. **Submit as a diff to the parent.** The edit is captured as a diff and sent to the parent group engine (FLUX-397), not pushed.
+3. **Parent applies + commits + fans out.** The parent writes the change into the canonical store, commits it on `flux-group-docs`, and pushes to every member. Because no member ever advanced the branch, **every push is a fast-forward** — no force-push, no merge resolution.
+4. **Member fast-forwards and discards its local proposal.** After the parent's commit lands, the member resets its `.flux-group/` worktree to the new branch tip; the now-canonical content replaces the transient local edit.
+
+If a member's branch is ever found *ahead* of canonical (e.g. someone committed by hand), that is an **error state**, not a merge to resolve: the parent is canonical and the member is reset to it. The engine should detect and surface this rather than attempt a 3-way merge.
+
+## Sibling-source scope (FLUX-398)
+
+Docs fan-out gives a sub-repo task cross-project *docs* awareness. Sibling *source* awareness is separate: agent sessions spawn with `cwd` at the parent root, so member repos — which live outside `cwd` (siblings at `../<name>`) — are invisible to native grep/glob/read.
+
+**Mechanism (always-on, additive).** [`buildMemberScopeArgs()`](../../../engine/src/group.ts) emits `--add-dir <path>` for every member whose checkout currently exists on disk. Both adapters spread it into their spawn args ([`copilot.ts`](../../../engine/src/agents/copilot.ts) `copilotArgs`, [`claude-code.ts`](../../../engine/src/agents/claude-code.ts) `claudeArgs` + resume args). It returns `[]` in single-repo mode, so the call is unconditional and a no-op when no group is active. The `existsSync` check is live and per-member: a member cloned after activation is picked up on the next session, and a not-yet-checked-out member is silently skipped rather than passed as a missing path.
+
+**Read-only is convention-enforced, not sandboxed.** Neither CLI supports per-directory read-only mounts, so an added member dir is technically writable by the agent. Sibling repos are kept read-only by the **single-writer model** (sub-repo edits route through the parent per [Edit round-trip](#edit-round-trip)) plus skill/prompt guidance — not by a hard sandbox. Hard write-interception is an explicit, deferred follow-up; it would require wrapping the agent file-write tools in both adapters.
+
+## Lifecycle: add / remove / rename
+
+- **Add a member.** Append to `group.json.members`; the engine registers the new root and the next fan-out seeds its `flux-group-docs` branch with the full doc set.
+- **Remove a member.** Delete its entry from `group.json`. The engine stops fanning out to it. Its existing `flux-group-docs` branch is left in place (cleanup is manual — EH does not delete branches on member remotes automatically). Docs that referenced it become stale until a re-map.
+- **`name` is immutable once used.** Because `name` is the doc path prefix and the registry key, renaming a member silently orphans references. To rename, treat it as remove + add and re-run mapping. The engine should reject a `group.json` whose `members[].name` set collides or changes underneath existing group-store paths where detectable.
+- **Staleness is manual, by design.** Docs refresh when a mapping ticket re-runs (FLUX-395). There are no file watchers re-scanning member repos (cut deliberately — a staleness/maintenance liability). The portal view (FLUX-399) may show last-mapped timestamps so humans can judge freshness.
+
+## Credentials / auth
+
+Fan-out pushes to **N member remotes**. This multiplies the auth surface that `finish_ticket` already depends on (`gh` / git credentials). The implementer (FLUX-396) must:
+
+- Assume each member `remote` is independently authenticated; a push failure to one member must not abort fan-out to the others (report per-member success/failure).
+- Surface auth/push failures clearly rather than leaving members silently out of sync.
+
+## Orphan-branch naming
+
+| Branch | Holds | Worktree | Convention basis |
+|---|---|---|---|
+| `flux-data` | ticket store (existing orphan mode) | `.flux-store/` | existing |
+| `flux-group-docs` | canonical group docs (new) | `.flux-group/` | mirrors `flux-data` naming |
+
+The group docs branch is **separate** from `flux-data` so ticket storage and group knowledge never entangle. On each member repo, the fanned-out branch uses the same name (`flux-group-docs`) and is attached at `.flux-group/` for local/offline reading.
+
+## Path-prefixing rule (portal rendering)
+
+[`DocsSidebar`](../../../portal/src/components/DocsSidebar.tsx) builds a flat tree from a path-keyed `docsCache`. Group docs must be disambiguated from a repo's own `.docs/` so they don't collide. Rule:
+
+- **Cross-project group docs** (`features/`, `topology.md`, `contracts/`) render under a synthetic top-level **`Product`** group in the sidebar. (This requires `DocsSidebar` to support a synthetic top-level grouping; FLUX-399 confirms or adds it.)
+- **A repo's own local `.docs/`** continue to render unprefixed, as today.
+
+Member `name` is still used as a stable key in the root registry and for any future per-repo grouping, which is why it must be unique and immutable.
+
+## How the pieces map to subtasks
+
+| Concern | Ticket |
+|---|---|
+| This spec | FLUX-392 |
+| Multi-root engine + load `group.json` + stand up canonical store | FLUX-393 |
+| `get_project_group` MCP tool | FLUX-394 |
+| Mapping skill (authors the docs) | FLUX-395 |
+| Group setup: plan/apply engine routine + `init-group` CLI (recreatable parent) | FLUX-401 |
+| Portal `GroupSetupPreview` (plan → confirm → apply UI) | FLUX-402 |
+| Fan-out sync to member branches via git remotes | FLUX-396 |
+| Push-through-parent edits from sub-repos | FLUX-397 |
+| Always-on sibling-source scope for sub-repo tasks | FLUX-398 |
+| Portal cross-project docs / feature view | FLUX-399 |
+| Integration test (EventHorizon + second member) | FLUX-400 |
+
+## Creating a group (recreatability)
+
+A group must be **creatable from scratch by any project**, not hand-assembled — otherwise the feature doesn't really ship. Because group creation mutates the user's git aggressively (writes `group.json`, patches `.gitignore`, creates the `flux-group-docs` orphan branch, optionally clones members, and later pushes to member remotes), it is **preview-first, never silent** — the same scan → preview → confirm-apply pattern the existing bootstrap import already uses ([`BootstrapPreview`](../../../portal/src/components/BootstrapPreview.tsx)).
+
+- **Engine (FLUX-401).** `planGroupSetup()` computes every intrusive action with **zero git mutation** and returns a structured plan; `applyGroupSetup()` performs the writes only when asked, with per-member isolation (one member failure never aborts the rest) and git-URL validation on every `remote`. Exposed headless via an `init-group` CLI (scriptable + the basis for the integration-test harness) and via `POST /api/group/plan` + `/api/group/apply`.
+- **Portal (FLUX-402).** `GroupSetupPreview` renders the plan, distinguishes outbound/destructive actions (clone, push) and lets the user opt members out, then applies on explicit confirm.
+
+The CLI is the automation path; the portal preview is the safe default for humans. Both call the same engine routine.
