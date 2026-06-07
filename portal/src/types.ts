@@ -171,6 +171,10 @@ export interface Doc {
   slug: string;
   directory: string;
   order?: number;
+  /** Read-only cross-project group doc (surfaced under the Product prefix). */
+  readOnly?: boolean;
+  /** True for group docs (vs the repo's own .docs/). */
+  group?: boolean;
 }
 
 export interface Config {

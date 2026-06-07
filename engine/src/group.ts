@@ -24,6 +24,13 @@ export const GROUP_LOCAL_FILENAME = 'group.local.json';
 export const GROUP_STORE_DIRNAME = '.flux-group';
 export const GROUP_DOCS_BRANCH = 'flux-group-docs';
 
+/**
+ * Synthetic top-level prefix under which cross-project group docs (`.flux-group`)
+ * are surfaced in the portal docs tree, keeping them from colliding with a
+ * repo's own `.docs/` (which render unprefixed). See the spec's path-prefixing rule.
+ */
+export const GROUP_DOCS_PREFIX = 'Product';
+
 export interface GroupMember {
   /** Stable short key. Immutable once used — it is the doc path prefix + registry key. */
   name: string;

@@ -31,6 +31,8 @@ interface DocsSidebarProps {
   onCreateDoc: () => void;
   onReorderDocs: (directory: string, orderedPaths: string[]) => void;
   creating: boolean;
+  /** Top-level folder name whose subtree is read-only (no create, no drag). */
+  readOnlyPrefix?: string;
 }
 
 function sortDocsForSidebar(docs: Doc[]) {
@@ -157,6 +159,7 @@ export function DocsSidebar({
   onCreateDoc,
   onReorderDocs,
   creating,
+  readOnlyPrefix,
 }: DocsSidebarProps) {
   const normalizedSearch = searchQuery.trim().toLowerCase();
   const filteredDocs = normalizedSearch
@@ -167,6 +170,9 @@ export function DocsSidebar({
   const dragEnabled = normalizedSearch.length === 0 && canCreate;
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
   const docsByPath = new Map(docs.map((doc) => [doc.path, doc]));
+
+  const isReadOnlyFolder = (folderPath: string) =>
+    Boolean(readOnlyPrefix) && (folderPath === readOnlyPrefix || folderPath.startsWith(`${readOnlyPrefix}/`));
 
   const handleDragEnd = (event: DragEndEvent) => {
     if (!dragEnabled || !event.over || event.active.id === event.over.id) {
@@ -260,7 +266,7 @@ export function DocsSidebar({
       depth={depth}
       isSelected={selectedPath === doc.path}
       onSelect={() => onSelectDoc(doc.path)}
-      dragEnabled={dragEnabled}
+      dragEnabled={dragEnabled && !doc.readOnly}
     />
   );
 
@@ -281,7 +287,7 @@ export function DocsSidebar({
             <span className="truncate">{folder.name}</span>
           </button>
 
-          {canCreate && (
+          {canCreate && !isReadOnlyFolder(folder.path) && (
             <button
               type="button"
               onClick={(event) => {

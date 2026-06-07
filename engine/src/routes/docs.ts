@@ -6,6 +6,7 @@ import {
   parseDocOrder, titleFromDocPath,
 } from '../file-utils.js';
 import { docsCache, loadDoc } from '../task-store.js';
+import { GROUP_DOCS_PREFIX } from '../group.js';
 
 const router = express.Router();
 
@@ -23,6 +24,9 @@ router.post('/', async (req, res) => {
   const docPath = normalizeDocPathInput(req.body?.path);
 
   if (!docPath) return res.status(400).json({ error: 'Invalid doc path' });
+  if (docPath.split('/')[0] === GROUP_DOCS_PREFIX) {
+    return res.status(403).json({ error: `The '${GROUP_DOCS_PREFIX}' namespace holds read-only cross-project group docs; edits go through the group's parent repo.` });
+  }
   if (docsCache[docPath]) return res.status(409).json({ error: 'Doc already exists' });
 
   const title = typeof req.body?.title === 'string' && req.body.title.trim()
@@ -64,6 +68,9 @@ router.put(/^\/.+$/, async (req, res) => {
 
   const existingDoc = docsCache[docPath];
   if (!existingDoc) return res.status(404).json({ error: 'Doc not found' });
+  if (existingDoc.readOnly) {
+    return res.status(403).json({ error: 'This is a read-only cross-project group doc; edit it through the parent repo.' });
+  }
 
   const title = typeof req.body?.title === 'string' && req.body.title.trim()
     ? req.body.title.trim()
@@ -92,6 +99,9 @@ router.delete(/^\/.+$/, async (req, res) => {
 
   const doc = docsCache[docPath];
   if (!doc) return res.status(404).json({ error: 'Doc not found' });
+  if (doc.readOnly) {
+    return res.status(403).json({ error: 'This is a read-only cross-project group doc; it cannot be deleted from here.' });
+  }
 
   try {
     await fs.unlink(doc._path);

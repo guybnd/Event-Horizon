@@ -9,10 +9,11 @@ import { TableCell } from '@tiptap/extension-table-cell';
 import TurndownService from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
 import { marked } from 'marked';
-import { AlertCircle, Bold, Code, FileText, Heading1, Heading2, Info, Italic, Link as LinkIcon, List, ListOrdered, Save, Trash2 } from 'lucide-react';
-import { createDoc, deleteDoc, fetchDoc, fetchDocs, updateDoc } from '../api';
+import { AlertCircle, Bold, Code, FileText, Heading1, Heading2, Info, Italic, Link as LinkIcon, List, ListOrdered, Lock, Network, Save, Trash2 } from 'lucide-react';
+import { createDoc, deleteDoc, fetchDoc, fetchDocs, fetchGroupStatus, updateDoc } from '../api';
 import { useApp } from '../AppContext';
 import type { Doc } from '../types';
+import type { GroupStatus } from '../api';
 import { DocsSidebar } from './DocsSidebar';
 
 marked.setOptions({ gfm: true, breaks: false });
@@ -229,6 +230,7 @@ export function DocsScreen() {
   const isApplyingEditorContentRef = useRef(false);
   const lastSyncedDocSignatureRef = useRef<string | null>(null);
   const loadedDocsRef = useRef<Doc[]>([]);
+  const [groupStatus, setGroupStatus] = useState<GroupStatus | null>(null);
 
   if (!turndownServiceRef.current) {
     turndownServiceRef.current = createTurndownService();
@@ -236,6 +238,8 @@ export function DocsScreen() {
 
   const canEditDocs = (config?.docsEditPermissions ?? 'all') === 'all'
     || (config?.docsAllowedUsers ?? []).includes(currentUser);
+  const isSelectedDocReadOnly = selectedDoc?.readOnly === true;
+  const canEditSelectedDoc = canEditDocs && !isSelectedDocReadOnly;
   const brokenWikiLinks = selectedDoc ? getBrokenWikiLinks(draftBody, docs) : [];
   const breadcrumbs = selectedDoc ? getBreadcrumbs(selectedDoc.path) : [];
   const showToolbarActiveState = isEditorFocused && hasTextSelection;
@@ -456,7 +460,7 @@ export function DocsScreen() {
       return;
     }
 
-    editor.setEditable(Boolean(selectedDoc) && canEditDocs);
+    editor.setEditable(Boolean(selectedDoc) && canEditSelectedDoc);
 
     if (!selectedDoc) {
       if (lastSyncedDocSignatureRef.current !== '__empty__') {
@@ -475,7 +479,15 @@ export function DocsScreen() {
 
     lastSyncedDocSignatureRef.current = docSignature;
     baselineEditorSnapshotRef.current = setEditorContentSafely(renderMarkdownToHtml(normalizedBody, docs));
-  }, [editor, selectedDoc?.path, selectedDoc?.body, canEditDocs, docs]);
+  }, [editor, selectedDoc?.path, selectedDoc?.body, canEditSelectedDoc, docs]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchGroupStatus()
+      .then((status) => { if (!cancelled) setGroupStatus(status); })
+      .catch(() => { if (!cancelled) setGroupStatus(null); });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -606,7 +618,7 @@ export function DocsScreen() {
   };
 
   const handleSave = async () => {
-    if (!selectedDoc || !canEditDocs) {
+    if (!selectedDoc || !canEditSelectedDoc) {
       return;
     }
 
@@ -636,7 +648,7 @@ export function DocsScreen() {
   };
 
   const handleDelete = async () => {
-    if (!selectedDoc || !canEditDocs) {
+    if (!selectedDoc || !canEditSelectedDoc) {
       return;
     }
 
@@ -718,7 +730,7 @@ export function DocsScreen() {
   };
 
   const handleInsertWikiLink = () => {
-    if (!editor || !canEditDocs) {
+    if (!editor || !canEditSelectedDoc) {
       return;
     }
 
@@ -768,7 +780,7 @@ export function DocsScreen() {
   };
 
   const handleSetLink = () => {
-    if (!editor || !canEditDocs) {
+    if (!editor || !canEditSelectedDoc) {
       return;
     }
 
@@ -788,26 +800,53 @@ export function DocsScreen() {
 
   return (
     <div className="grid gap-6 xl:grid-cols-[minmax(18rem,20%)_minmax(0,1fr)]">
-      <DocsSidebar
-        docs={docs}
-        selectedPath={selectedPath}
-        onSelectDoc={handleOpenDoc}
-        searchQuery={searchQuery}
-        onSearchQueryChange={setSearchQuery}
-        expandedFolders={expandedFolders}
-        onToggleFolder={handleToggleFolder}
-        canCreate={canEditDocs}
-        createTargetFolder={createTargetFolder}
-        newDocPath={newDocPath}
-        onNewDocPathChange={setNewDocPath}
-        newDocTitle={newDocTitle}
-        onNewDocTitleChange={setNewDocTitle}
-        onOpenCreateForm={handleOpenCreateForm}
-        onCancelCreate={handleCancelCreateForm}
-        onCreateDoc={handleCreateDoc}
-        onReorderDocs={handleReorderDocs}
-        creating={creating}
-      />
+      <div className="space-y-4">
+        {groupStatus?.configured && (
+          <div className="rounded-[28px] border border-gray-200 bg-white/80 p-4 shadow-xl shadow-gray-200/60 dark:border-white/10 dark:bg-[#161720] dark:shadow-none">
+            <div className="flex items-center gap-3 border-b border-gray-200 pb-3 dark:border-white/10">
+              <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-sky-100 text-sky-700 dark:bg-sky-500/10 dark:text-sky-300">
+                <Network className="h-5 w-5" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="truncate text-sm font-bold text-gray-900 dark:text-gray-100">{groupStatus.name}</h2>
+                <p className="text-[11px] text-gray-500">Multi-repo group · {groupStatus.members?.length ?? 0} member(s)</p>
+              </div>
+            </div>
+            <ul className="mt-3 space-y-2">
+              {(groupStatus.members ?? []).map((member) => (
+                <li key={member.name} className="flex items-center justify-between gap-2 text-xs">
+                  <span className="flex items-center gap-2 min-w-0">
+                    <span className={`h-2 w-2 shrink-0 rounded-full ${member.pathExists ? 'bg-emerald-500' : 'bg-gray-300 dark:bg-white/20'}`} title={member.pathExists ? 'Checked out' : 'Not checked out'} />
+                    <span className="truncate font-semibold text-gray-800 dark:text-gray-200">{member.name}</span>
+                  </span>
+                  <span className="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-600 dark:bg-white/10 dark:text-gray-300">{member.role}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        <DocsSidebar
+          docs={docs}
+          selectedPath={selectedPath}
+          onSelectDoc={handleOpenDoc}
+          searchQuery={searchQuery}
+          onSearchQueryChange={setSearchQuery}
+          expandedFolders={expandedFolders}
+          onToggleFolder={handleToggleFolder}
+          canCreate={canEditDocs}
+          createTargetFolder={createTargetFolder}
+          newDocPath={newDocPath}
+          onNewDocPathChange={setNewDocPath}
+          newDocTitle={newDocTitle}
+          onNewDocTitleChange={setNewDocTitle}
+          onOpenCreateForm={handleOpenCreateForm}
+          onCancelCreate={handleCancelCreateForm}
+          onCreateDoc={handleCreateDoc}
+          onReorderDocs={handleReorderDocs}
+          creating={creating}
+          readOnlyPrefix="Product"
+        />
+      </div>
 
       <section className="rounded-[32px] border border-gray-200 bg-white/80 p-6 shadow-xl shadow-gray-200/60 dark:border-white/10 dark:bg-[#161720] dark:shadow-none">
         <div className="flex flex-wrap items-start justify-between gap-4 border-b border-gray-200 pb-5 dark:border-white/10">
@@ -817,7 +856,7 @@ export function DocsScreen() {
               Documentation
             </div>
             {selectedDoc ? (
-              isEditingTitle && canEditDocs ? (
+              isEditingTitle && canEditSelectedDoc ? (
                 <input
                   ref={titleInputRef}
                   value={draftTitle}
@@ -828,7 +867,7 @@ export function DocsScreen() {
                 />
               ) : (
                 <h1 className="truncate text-3xl font-bold tracking-tight text-gray-900 dark:text-gray-100">
-                  {canEditDocs ? (
+                  {canEditSelectedDoc ? (
                     <button
                       type="button"
                       onClick={() => setIsEditingTitle(true)}
@@ -864,8 +903,8 @@ export function DocsScreen() {
             <button
               type="button"
               onClick={handleSave}
-              disabled={!selectedDoc || !canEditDocs || !isDirty || saving}
-              className={`flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-semibold transition-colors ${selectedDoc && canEditDocs && isDirty ? 'bg-primary text-white hover:bg-primary-hover' : 'bg-gray-200 text-gray-400 dark:bg-white/10 dark:text-gray-500'}`}
+              disabled={!selectedDoc || !canEditSelectedDoc || !isDirty || saving}
+              className={`flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-semibold transition-colors ${selectedDoc && canEditSelectedDoc && isDirty ? 'bg-primary text-white hover:bg-primary-hover' : 'bg-gray-200 text-gray-400 dark:bg-white/10 dark:text-gray-500'}`}
             >
               <Save className="h-4 w-4" />
               {saving ? 'Saving...' : 'Save'}
@@ -873,8 +912,8 @@ export function DocsScreen() {
             <button
               type="button"
               onClick={handleDelete}
-              disabled={!selectedDoc || !canEditDocs || deleting}
-              className={`flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-semibold transition-colors ${selectedDoc && canEditDocs ? 'border border-rose-200 text-rose-700 hover:bg-rose-50 dark:border-rose-500/20 dark:text-rose-300 dark:hover:bg-rose-500/10' : 'bg-gray-200 text-gray-400 dark:bg-white/10 dark:text-gray-500'}`}
+              disabled={!selectedDoc || !canEditSelectedDoc || deleting}
+              className={`flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-semibold transition-colors ${selectedDoc && canEditSelectedDoc ? 'border border-rose-200 text-rose-700 hover:bg-rose-50 dark:border-rose-500/20 dark:text-rose-300 dark:hover:bg-rose-500/10' : 'bg-gray-200 text-gray-400 dark:bg-white/10 dark:text-gray-500'}`}
             >
               <Trash2 className="h-4 w-4" />
               {deleting ? 'Deleting...' : 'Delete'}
@@ -889,6 +928,13 @@ export function DocsScreen() {
             </div>
           )}
 
+          {selectedDoc && isSelectedDocReadOnly && (
+            <div className="flex items-start gap-3 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800 dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-200">
+              <Lock className="mt-0.5 h-4 w-4 shrink-0" />
+              This is a read-only cross-project group doc. Edits are authored in the group's parent repo and fanned out to members.
+            </div>
+          )}
+
           {!canEditDocs && (
             <div className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-200">
               <Info className="mt-0.5 h-4 w-4 shrink-0" />
@@ -896,7 +942,7 @@ export function DocsScreen() {
             </div>
           )}
 
-          {selectedDoc && canEditDocs && (
+          {selectedDoc && canEditSelectedDoc && (
             <div className="sticky top-4 z-20 flex flex-wrap items-center gap-2 rounded-[24px] border border-gray-200 bg-gray-50/90 px-4 py-3 shadow-sm backdrop-blur dark:border-white/10 dark:bg-[#161720]/90">
               <ToolbarButton label="Bold" active={showToolbarActiveState && Boolean(editor?.isActive('bold'))} disabled={!editor} onClick={() => editor?.chain().focus().toggleBold().run()}>
                 <Bold className="h-4 w-4" />

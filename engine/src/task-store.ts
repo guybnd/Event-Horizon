@@ -19,7 +19,7 @@ import { isTopLevelTaskFile, getDocsDir, isDocFile, getDocPathFromFile, titleFro
 import type { StoredDoc } from './file-utils.js';
 import { resolveEmbeddedDocsRoot, copyDir, buildStarterProjectOverview } from './docs-seeder.js';
 import { bootstrapNewWorkspace, installSkillsForWorkspace } from './bootstrap.js';
-import { activateGroup } from './group.js';
+import { activateGroup, getGroupContext, GROUP_DOCS_PREFIX } from './group.js';
 
 export let tasksCache: Record<string, any> = {};
 export let docsCache: Record<string, StoredDoc> = {};
@@ -689,6 +689,75 @@ export async function loadDocsDirectory(directoryPath: string) {
   }
 }
 
+// ─── Group docs (.flux-group) surfaced read-only under the Product prefix ──────
+
+/** Map a `.flux-group` markdown file to its synthetic `Product/...` doc path. */
+function groupDocPathFromFile(storeDir: string, filePath: string): string | null {
+  const relative = path.relative(storeDir, filePath).split(path.sep).join('/');
+  if (!relative || relative.startsWith('..') || !relative.toLowerCase().endsWith('.md')) return null;
+  const withoutExt = relative.slice(0, -3);
+  const segments = withoutExt.split('/').filter(Boolean);
+  if (segments.length === 0 || segments.some((s) => s === '.' || s === '..')) return null;
+  return [GROUP_DOCS_PREFIX, ...segments].join('/');
+}
+
+/** Load a single group doc into the cache as a read-only Product entry. */
+export async function loadGroupDoc(storeDir: string, filePath: string) {
+  const docPath = groupDocPathFromFile(storeDir, filePath);
+  if (!docPath) return;
+  try {
+    const content = await fs.readFile(filePath, 'utf-8');
+    const parsed = matter(content);
+    const title = typeof parsed.data.title === 'string' && parsed.data.title.trim()
+      ? parsed.data.title.trim()
+      : titleFromDocPath(docPath);
+    const order = parseDocOrder(parsed.data.order);
+    const directory = docPath.slice(0, docPath.lastIndexOf('/'));
+    const slugSource = docPath.split('/').filter(Boolean).pop() || docPath;
+
+    docsCache[docPath] = {
+      path: docPath,
+      title,
+      body: parsed.content.replace(/\r\n/g, '\n'),
+      slug: slugifyDocValue(slugSource),
+      directory,
+      ...(order !== undefined ? { order } : {}),
+      readOnly: true,
+      group: true,
+      _path: filePath,
+    };
+  } catch (error) {
+    console.error(`Failed to load group doc ${filePath}:`, error);
+  }
+}
+
+/** Walk the `.flux-group` store and load every markdown file read-only. */
+async function loadGroupDocsDirectory(storeDir: string, directoryPath: string) {
+  try {
+    const entries = await fs.readdir(directoryPath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name.startsWith('.')) continue; // skip .git and dotfiles
+      const entryPath = path.join(directoryPath, entry.name);
+      if (entry.isDirectory()) {
+        await loadGroupDocsDirectory(storeDir, entryPath);
+      } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
+        await loadGroupDoc(storeDir, entryPath);
+      }
+    }
+  } catch (error: any) {
+    if (error.code !== 'ENOENT') {
+      console.error(`Failed to read group docs directory ${directoryPath}:`, error);
+    }
+  }
+}
+
+/** Load all group docs for the active group. No-op in single-repo mode. */
+export async function loadGroupDocs() {
+  const group = getGroupContext();
+  if (!group) return;
+  await loadGroupDocsDirectory(group.groupStoreDir, group.groupStoreDir);
+}
+
 export async function reconcileOrphanedSessions() {
   const now = new Date().toISOString();
   let recoveredCount = 0;
@@ -829,10 +898,12 @@ export async function initDir() {
 
 let activeFluxWatcher: ReturnType<typeof chokidar.watch> | null = null;
 let activeDocsWatcher: ReturnType<typeof chokidar.watch> | null = null;
+let activeGroupDocsWatcher: ReturnType<typeof chokidar.watch> | null = null;
 
 export async function startWatchers() {
   if (activeFluxWatcher) { await activeFluxWatcher.close(); activeFluxWatcher = null; }
   if (activeDocsWatcher) { await activeDocsWatcher.close(); activeDocsWatcher = null; }
+  if (activeGroupDocsWatcher) { await activeGroupDocsWatcher.close(); activeGroupDocsWatcher = null; }
 
   const fluxDir = getActiveFluxDir();
   const configFile = path.join(fluxDir, 'config.json');
@@ -882,6 +953,34 @@ export async function startWatchers() {
     });
 }
 
+/**
+ * Watch the active group's `.flux-group` store so Product docs refresh after a
+ * fan-out / mapping run. No-op in single-repo mode. Called after activateGroup.
+ */
+export async function startGroupDocsWatcher() {
+  if (activeGroupDocsWatcher) { await activeGroupDocsWatcher.close(); activeGroupDocsWatcher = null; }
+  const group = getGroupContext();
+  if (!group) return;
+  const storeDir = group.groupStoreDir;
+
+  activeGroupDocsWatcher = chokidar.watch(storeDir, {
+    ignored: (filePath: string) => path.basename(filePath) === '.git',
+    ignoreInitial: true,
+    persistent: true,
+  });
+
+  const reload = (filePath: string) => {
+    if (filePath.toLowerCase().endsWith('.md')) void loadGroupDoc(storeDir, filePath);
+  };
+  activeGroupDocsWatcher
+    .on('add', reload)
+    .on('change', reload)
+    .on('unlink', (filePath) => {
+      const docPath = groupDocPathFromFile(storeDir, filePath);
+      if (docPath) { delete docsCache[docPath]; console.log(`Removed group doc: ${docPath}`); }
+    });
+}
+
 
 export async function activateWorkspace(newRoot: string) {
   workspaceActivating = true;
@@ -900,6 +999,8 @@ export async function activateWorkspace(newRoot: string) {
     await startWatchers();
     startSyncWatcher();
     await activateGroup(newRoot);
+    await loadGroupDocs();
+    await startGroupDocsWatcher();
     seedPromptNotifications();
   } finally {
     workspaceActivating = false;

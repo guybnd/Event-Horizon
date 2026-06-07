@@ -19,6 +19,10 @@ export interface DocRecord {
   slug: string;
   directory: string;
   order?: number;
+  /** Group docs (`.flux-group`) surfaced under the synthetic Product prefix are read-only. */
+  readOnly?: boolean;
+  /** True for cross-project group docs (vs the repo's own `.docs/`). */
+  group?: boolean;
 }
 
 export interface StoredDoc extends DocRecord {

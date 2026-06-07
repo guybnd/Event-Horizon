@@ -77,10 +77,12 @@ From [`routes/docs.ts`](../../../engine/src/routes/docs.ts). Docs paths use a re
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/docs` | Docs tree (folders + files with frontmatter). |
-| POST | `/api/docs` | Create a doc. Body: `{ path, title?, body?, order? }`. |
+| POST | `/api/docs` | Create a doc. Body: `{ path, title?, body?, order? }`. Returns **403** when `path` is under the read-only group subtree (`Product/…`). |
 | GET | `/api/docs/<any/path>` | Read a doc by path. |
-| PUT | `/api/docs/<any/path>` | Update a doc body / frontmatter. Body: `{ title?, body?, order? }`. |
-| DELETE | `/api/docs/<any/path>` | Delete a doc. |
+| PUT | `/api/docs/<any/path>` | Update a doc body / frontmatter. Body: `{ title?, body?, order? }`. Returns **403** when the target doc is `readOnly` (cross-project group docs). |
+| DELETE | `/api/docs/<any/path>` | Delete a doc. Returns **403** when the target doc is `readOnly` (cross-project group docs). |
+
+> Cross-project group docs (multi-repo groups) surface in the tree under the synthetic `Product/` prefix with `readOnly: true` and `group: true`. They are loaded from the canonical group store and are not editable in-place — edits route through the parent repo (see [multi-repo groups](../architecture/multi-repo-groups.md)).
 
 ## Config (`/api/config`) — workspace-scoped
 

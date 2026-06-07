@@ -187,10 +187,13 @@ The group docs branch is **separate** from `flux-data` so ticket storage and gro
 
 [`DocsSidebar`](../../../portal/src/components/DocsSidebar.tsx) builds a flat tree from a path-keyed `docsCache`. Group docs must be disambiguated from a repo's own `.docs/` so they don't collide. Rule:
 
-- **Cross-project group docs** (`features/`, `topology.md`, `contracts/`) render under a synthetic top-level **`Product`** group in the sidebar. (This requires `DocsSidebar` to support a synthetic top-level grouping; FLUX-399 confirms or adds it.)
+- **Cross-project group docs** (`features/`, `topology.md`, `contracts/`) render under a synthetic top-level **`Product`** group in the sidebar.
 - **A repo's own local `.docs/`** continue to render unprefixed, as today.
 
 Member `name` is still used as a stable key in the root registry and for any future per-repo grouping, which is why it must be unique and immutable.
+
+**Shipped (FLUX-399).** The engine maps the canonical group store into the docs cache under the `Product/` prefix as **read-only** entries: [`task-store.ts`](../../../engine/src/task-store.ts) exposes `loadGroupDocs()` / `loadGroupDoc()` (each `DocRecord` carries `readOnly: true` and `group: true`) and a chokidar watcher (`startGroupDocsWatcher`) that reloads `Product/*` on change. A no-group repo is unaffected — `loadGroupDocs()` no-ops when no group is active. The docs REST routes ([`routes/docs.ts`](../../../engine/src/routes/docs.ts)) hard-reject mutation of this subtree: `POST` returns 403 for any path under `Product/`, and `PUT`/`DELETE` return 403 when the target doc is `readOnly`. In the portal, [`DocsScreen`](../../../portal/src/components/DocsScreen.tsx) renders the subtree read-only (no inline title edit, Save/Delete/toolbar suppressed, a read-only banner) and shows a **membership panel** (group name + members with role and checkout status) sourced from `fetchGroupStatus()`; [`DocsSidebar`](../../../portal/src/components/DocsSidebar.tsx) accepts a `readOnlyPrefix` prop that suppresses the create (+) control inside the subtree and disables drag-reorder for read-only docs. Editing a group doc still routes through the parent via the push-through-parent flow (FLUX-397); the richer feature-index / map view is tracked as a follow-up (FLUX-403).
+
 
 ## How the pieces map to subtasks
 
