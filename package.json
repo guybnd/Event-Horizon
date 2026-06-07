@@ -11,6 +11,7 @@
     "dev": "node scripts/dev.mjs",
     "build": "npm run build -w portal && npm run build -w engine",
     "init": "npm run init -w engine --",
+    "init-group": "npm run init-group -w engine --",
     "package": "npm run build && npm run package -w engine",
     "package:win": "npm run build && npm run package:win -w engine",
     "package:mac": "npm run build && npm run package:mac -w engine",

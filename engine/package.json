@@ -9,6 +9,7 @@
     "dev:no-watch": "tsx src/index.ts --workspace ..",
     "build": "node scripts/build.js",
     "init": "tsx src/init.ts",
+    "init-group": "tsx src/init-group.ts",
     "install-skill": "tsx src/skill-installer.ts",
     "flux:release": "tsx src/release.ts",
     "patch-ticket": "tsx src/patch-ticket.ts",

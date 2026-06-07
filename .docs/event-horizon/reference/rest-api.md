@@ -153,6 +153,20 @@ From [`routes/storage.ts`](../../../engine/src/routes/storage.ts) and [`routes/s
 | POST | `/api/sync-status/test-error` | Inject a fake error state — UI development only. |
 | GET | `/api/sync-status/stream` | SSE stream of sync status changes. |
 
+## Group (`/api/group`) — workspace-scoped
+
+From [`routes/group.ts`](../../../engine/src/routes/group.ts). Multi-repo group setup (recreatability). `plan` is a read-only dry run; `apply` performs the writes.
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/group` | Current group status (mirrors the `get_project_group` MCP tool — `{ configured, … }`). |
+| POST | `/api/group/plan` | Compute the intrusive actions (write `group.json`, patch `.gitignore`, scaffold store, register/clone members) with **zero git mutation**. Body: `{ name, members: [{ name, role, remote, testCommand? }], force?, allowLocalRemotes? }`. Returns a `GroupSetupPlan`. |
+| POST | `/api/group/apply` | Perform the planned writes. Same body as `plan`. Per-member isolation; returns a `GroupSetupResult` with a per-member `{ ok, error? }` aggregate. Refuses to overwrite an existing `group.json` without `force`. |
+| POST | `/api/group/sync` | Fan out the canonical group docs to every member. Promotes `.flux-group` to a worktree on the `flux-group-docs` orphan branch, commits any pending doc changes, then pushes that branch **by declared remote URL** to each member (fast-forward only — never `--force`). No body. Returns a `GroupSyncResult`: `{ committed, pushed, failed, members: [{ name, remote, ok, diverged?, error? }] }`. Per-member isolation; a diverged member is reported (`diverged: true`) without aborting the others. |
+
+
+Every member `remote` is validated before it reaches git (rejects shell metacharacters, `ext::`/`fd::` transports, and embedded `--upload-pack`/`--receive-pack`). The `init-group` CLI (`npm run init-group`) calls the same engine routine headlessly.
+
 ## Skill installer (`/api/skill`) — workspace-scoped
 
 From [`routes/skill.ts`](../../../engine/src/routes/skill.ts).

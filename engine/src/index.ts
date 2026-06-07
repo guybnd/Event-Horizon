@@ -48,6 +48,7 @@ import orchestrationRouter from './routes/orchestration.js';
 import workflowsRouter from './routes/workflows.js';
 import agentsRouter from './routes/agents.js';
 import bootstrapRouter from './routes/bootstrap.js';
+import groupRouter from './routes/group.js';
 import { checkForUpdate, getCachedUpdateInfo, getLocalVersion } from './update-check.js';
 import { checkGhAuth } from './branch-manager.js';
 
@@ -88,6 +89,7 @@ app.use('/api/orchestration', requireWorkspace, orchestrationRouter);
 app.use('/api/workflows', requireWorkspace, workflowsRouter);
 app.use('/api/agents', requireWorkspace, agentsRouter);
 app.use('/api/bootstrap', requireWorkspace, bootstrapRouter);
+app.use('/api/group', requireWorkspace, groupRouter);
 
 let ghAuthAvailable: boolean | null = null;
 

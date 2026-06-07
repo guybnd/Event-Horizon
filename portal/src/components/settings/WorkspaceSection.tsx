@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { UserDef, DocsEditPermissions } from '../../types';
 import { SimpleEditor } from './shared';
-import { setWorkspace as apiSetWorkspace, pickWorkspaceFolder, fetchStorageMode, migrateStorage, restoreStorage, fetchWorkspaces, addWorkspace, removeWorkspace, updateWorkspaceLabel as apiUpdateLabel, switchWorkspace as apiSwitchWorkspace, type WorkspaceInfo } from '../../api';
+import { GroupSetupPreview } from '../GroupSetupPreview';
+import { setWorkspace as apiSetWorkspace, pickWorkspaceFolder, fetchStorageMode, migrateStorage, restoreStorage, fetchWorkspaces, addWorkspace, removeWorkspace, updateWorkspaceLabel as apiUpdateLabel, switchWorkspace as apiSwitchWorkspace, fetchGroupStatus, type WorkspaceInfo, type GroupStatus } from '../../api';
 
 interface WorkspaceSectionProps {
   users: UserDef[];
@@ -57,6 +58,13 @@ export function WorkspaceSection({
   const [storageBusy, setStorageBusy] = useState(false);
   const [storageError, setStorageError] = useState<string | null>(null);
 
+  const [groupStatus, setGroupStatus] = useState<GroupStatus | null>(null);
+  const [showGroupSetup, setShowGroupSetup] = useState(false);
+
+  const loadGroupStatus = useCallback(() => {
+    fetchGroupStatus().then(setGroupStatus).catch(() => setGroupStatus(null));
+  }, []);
+
   const [configuredWorkspaces, setConfiguredWorkspaces] = useState<WorkspaceInfo[]>([]);
   const [addingWorkspace, setAddingWorkspace] = useState(false);
   const [addWorkspacePath, setAddWorkspacePath] = useState('');
@@ -74,6 +82,11 @@ export function WorkspaceSection({
     if (!workspacePath) return;
     fetchStorageMode().then((r) => setStorageMode(r.mode)).catch(() => setStorageMode('in-repo'));
   }, [workspacePath]);
+
+  useEffect(() => {
+    if (!workspacePath) return;
+    loadGroupStatus();
+  }, [workspacePath, loadGroupStatus]);
 
   const handleBrowseWorkspace = async () => {
     setAddingWorkspace(true);
@@ -400,6 +413,50 @@ export function WorkspaceSection({
               </div>
             </div>
           </div>}
+        </div>
+      )}
+
+      {workspacePath && (
+        <div className="col-span-2 rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
+          <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Multi-repo group</h3>
+          <p className="text-xs text-gray-500 mb-4">
+            Link several repositories into a product group with a shared, fanned-out knowledge base.
+            Creating a group writes <code className="font-mono bg-gray-100 dark:bg-white/10 px-1 rounded">group.json</code>,
+            patches <code className="font-mono bg-gray-100 dark:bg-white/10 px-1 rounded">.gitignore</code>, and scaffolds the
+            canonical store — so it always runs as a reviewable plan you confirm before anything is written.
+          </p>
+          <div className="flex items-center gap-4 flex-wrap">
+            <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${
+              groupStatus?.configured
+                ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                : 'bg-gray-100 text-gray-600 dark:bg-white/10 dark:text-gray-300'
+            }`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${groupStatus?.configured ? 'bg-green-500' : 'bg-gray-400'}`} />
+              {groupStatus === null
+                ? 'Loading…'
+                : groupStatus.configured
+                ? `Group “${groupStatus.name}” (${groupStatus.members?.length ?? 0} member${groupStatus.members?.length === 1 ? '' : 's'})`
+                : 'No group configured'}
+            </span>
+            <button
+              onClick={() => setShowGroupSetup(true)}
+              className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary-hover"
+            >
+              {groupStatus?.configured ? 'Reconfigure group…' : 'Set up group…'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {showGroupSetup && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm pointer-events-auto">
+          <div className="eh-surface-overlay p-6 rounded-xl shadow-2xl w-[560px] max-h-[85vh] overflow-y-auto border eh-border">
+            <h3 className="text-lg font-bold mb-4 text-gray-900 dark:text-white">Multi-repo group setup</h3>
+            <GroupSetupPreview
+              onComplete={() => { setShowGroupSetup(false); loadGroupStatus(); }}
+              onCancel={() => setShowGroupSetup(false)}
+            />
+          </div>
         </div>
       )}
 

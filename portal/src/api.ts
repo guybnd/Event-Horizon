@@ -994,3 +994,114 @@ export async function importBootstrap(selections: BootstrapImportSelections): Pr
   }
   return res.json();
 }
+
+// ─── Multi-repo group setup (FLUX-401 contract) ──────────────────────────────
+
+export interface GroupMemberInput {
+  name: string;
+  role: string;
+  remote: string;
+  testCommand?: string;
+}
+
+export interface GroupSetupRequest {
+  name: string;
+  members: GroupMemberInput[];
+  force?: boolean;
+  allowLocalRemotes?: boolean;
+}
+
+export type GroupFileAction = 'create' | 'patch' | 'exists';
+export type GroupMemberAction = 'register' | 'clone' | 'skip';
+
+export interface GroupPlannedFile {
+  path: string;
+  action: GroupFileAction;
+  detail?: string;
+}
+
+export interface GroupPlannedMember {
+  name: string;
+  role: string;
+  remote: string;
+  resolvedPath: string;
+  action: GroupMemberAction;
+  detail?: string;
+}
+
+export interface GroupSetupPlan {
+  parentRoot: string;
+  groupName: string;
+  alreadyConfigured: boolean;
+  files: GroupPlannedFile[];
+  gitignore: string[];
+  orphanBranch: { name: string; action: 'create' | 'exists' };
+  members: GroupPlannedMember[];
+  warnings: string[];
+}
+
+export interface GroupMemberResult {
+  name: string;
+  action: GroupMemberAction;
+  ok: boolean;
+  error?: string;
+}
+
+export interface GroupSetupResult {
+  parentRoot: string;
+  groupName: string;
+  wroteConfig: boolean;
+  patchedGitignore: boolean;
+  scaffoldedStore: boolean;
+  members: GroupMemberResult[];
+}
+
+export interface GroupMemberSummary {
+  name: string;
+  role: string;
+  remote: string;
+  path: string;
+  pathExists: boolean;
+  testCommand?: string;
+}
+
+export interface GroupStatus {
+  configured: boolean;
+  name?: string;
+  members?: GroupMemberSummary[];
+  message?: string;
+}
+
+/** Current multi-repo group status (mirrors the get_project_group MCP tool). */
+export async function fetchGroupStatus(): Promise<GroupStatus> {
+  const res = await fetch(`${API_URL}/group`);
+  if (!res.ok) throw new Error('Failed to fetch group status');
+  return res.json();
+}
+
+async function groupSetupRequest<T>(path: string, body: GroupSetupRequest): Promise<T> {
+  const res = await fetch(`${API_URL}/group/${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let message = `Failed to ${path} group setup`;
+    try {
+      const payload = await res.json();
+      if (payload.error) message = payload.error;
+    } catch {}
+    throw new Error(message);
+  }
+  return res.json();
+}
+
+/** Dry-run: compute the intrusive actions without writing anything. */
+export async function planGroupSetup(body: GroupSetupRequest): Promise<GroupSetupPlan> {
+  return groupSetupRequest<GroupSetupPlan>('plan', body);
+}
+
+/** Apply: perform the planned writes (group.json, .gitignore, store, members). */
+export async function applyGroupSetup(body: GroupSetupRequest): Promise<GroupSetupResult> {
+  return groupSetupRequest<GroupSetupResult>('apply', body);
+}
