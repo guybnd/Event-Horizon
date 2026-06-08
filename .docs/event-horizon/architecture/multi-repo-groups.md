@@ -4,7 +4,8 @@ order: 5
 ---
 # Multi-Repo Groups — Design Spec
 
-> **Status: design spec (not yet implemented).** This is the authoritative design for the multi-repo product knowledge base tracked under FLUX-391 and its subtasks (FLUX-392 … FLUX-400). Implementation tickets build against the schema, layout, and naming defined here. Once the feature ships, this page becomes a normal reference doc kept in sync with code.
+> **Status: MVP shipped, with post-MVP follow-ups.** The parent-authoritative knowledge base is implemented end-to-end — group config + canonical store (FLUX-393), `get_project_group` (FLUX-394), mapping skill (FLUX-395), fan-out (FLUX-396), parent-side edit intake (FLUX-397), sibling-source scope (FLUX-398), portal read-only docs + feature map (FLUX-399/403), group setup plan/apply + CLI/UI (FLUX-401/402), and a real-git integration test (FLUX-400). **Member-originated flows are not wired yet** and are tracked as follow-ups: member-side worktree attach (FLUX-405), member→parent submit transport (FLUX-406), and promoting existing `.docs/` into the store (FLUX-404). Sections below are kept in sync with code; each major area notes what shipped vs. what's deferred.
+
 
 ## Problem
 
@@ -149,7 +150,10 @@ This is the contract that lets edits originate in any repo without breaking sing
 
 If a member's branch is ever found *ahead* of canonical (e.g. someone committed by hand), that is an **error state**, not a merge to resolve: the parent is canonical and the member is reset to it. The engine should detect and surface this rather than attempt a 3-way merge.
 
-**Shipped (FLUX-397).** The parent-side intake is [`group-edit.ts`](../../../engine/src/group-edit.ts) (`submitGroupEdit`, surfaced via `POST /api/group/submit-edit`). It applies the submitted edit into the canonical store and re-fans-out via [`syncGroup`](../../../engine/src/group-sync.ts), **serialized** at the parent (sole writer) so concurrent submissions apply in order without interleaving — satisfying step 5. The security-critical apply core (`applyEditsToStore`) validates every edit `path` up front (rejects absolute paths, `..` traversal, and writes into the worktree `.git`), so a bad edit aborts before any write. Because no member advances the branch, every re-fan-out push stays fast-forward (steps 2/3). **Step 4** — the member fast-forwarding its local `.flux-group/` mirror to the new tip — depends on member-side worktree attach, deferred as **decision C2**; until then a member refreshes by re-fetching the branch. The diff *capture* on the member side (step 1→2) is plain `git diff`, not engine code.
+**Shipped (FLUX-397).** The parent-side intake is [`group-edit.ts`](../../../engine/src/group-edit.ts) (`submitGroupEdit`, surfaced via `POST /api/group/submit-edit`). It applies the submitted edit into the canonical store and re-fans-out via [`syncGroup`](../../../engine/src/group-sync.ts), **serialized** at the parent (sole writer) so concurrent submissions apply in order without interleaving — satisfying step 5. The security-critical apply core (`applyEditsToStore`) validates every edit `path` up front (rejects absolute paths, `..` traversal, and writes into the worktree `.git`), so a bad edit aborts before any write. Because no member advances the branch, every re-fan-out push stays fast-forward (steps 2/3).
+
+> **Not yet usable from a member (post-MVP gap).** Only the parent-side intake exists. There is no member-side transport feeding it, and a member checkout runs in single-repo mode (`group.json` lives only in the parent), so `submit-edit` is unreachable from a member today. The working authoring paths are all **at/through the parent** (parent-portal edits, or a mapping agent running in the parent). Two follow-ups close the loop: **step 4** (a member fast-forwarding its local `.flux-group/` mirror) needs member-side worktree attach — **FLUX-405** (decision C2); and the member→parent **submit transport** (steps 1→2, including how a member discovers its parent) — **FLUX-406**.
+
 
 
 ## Sibling-source scope (FLUX-398)
@@ -166,6 +170,14 @@ Docs fan-out gives a sub-repo task cross-project *docs* awareness. Sibling *sour
 - **Remove a member.** Delete its entry from `group.json`. The engine stops fanning out to it. Its existing `flux-group-docs` branch is left in place (cleanup is manual — EH does not delete branches on member remotes automatically). Docs that referenced it become stale until a re-map.
 - **`name` is immutable once used.** Because `name` is the doc path prefix and the registry key, renaming a member silently orphans references. To rename, treat it as remove + add and re-run mapping. The engine should reject a `group.json` whose `members[].name` set collides or changes underneath existing group-store paths where detectable.
 - **Staleness is manual, by design.** Docs refresh when a mapping ticket re-runs (FLUX-395). There are no file watchers re-scanning member repos (cut deliberately — a staleness/maintenance liability). The portal view (FLUX-399) may show last-mapped timestamps so humans can judge freshness.
+
+## Migrating existing docs into the store
+
+A repo that adopts the group system usually already has docs in its own in-repo `.docs/` (on the repo main branch), while the canonical knowledge base lives on the `flux-group-docs` orphan branch. Promoting the genuinely cross-project subset of `.docs/` into the store is a **separate, opt-in step** — tracked as **FLUX-404** — not part of group setup:
+
+- **Move semantics (decided).** A promoted doc is *moved* (removed from the repo main branch and committed into the canonical store), mirroring the ticket-migration precedent [`migrateToOrphan`](../../../engine/src/storage-sync.ts). Consequence: a promoted doc is no longer visible via plain GitHub/IDE browsing of main — only through EH group mode / fan-out. The repo's own non-shared docs stay in `.docs/`.
+- **Per-file selection, not bulk.** `.docs/` mixes repo-local and cross-project content, so promotion is a `plan → preview → apply` flow (same shape as group setup) that maps selected files onto the curated store layout (`features/`, `contracts/`, `topology.md`). Parent-only; member-origin promotion waits on the member→parent submit transport (FLUX-406).
+
 
 ## Credentials / auth
 
