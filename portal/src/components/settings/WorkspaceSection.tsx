@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback } from 'react';
 import type { UserDef, DocsEditPermissions } from '../../types';
 import { SimpleEditor } from './shared';
 import { GroupSetupPreview } from '../GroupSetupPreview';
-import { setWorkspace as apiSetWorkspace, pickWorkspaceFolder, fetchStorageMode, migrateStorage, restoreStorage, fetchWorkspaces, addWorkspace, removeWorkspace, updateWorkspaceLabel as apiUpdateLabel, switchWorkspace as apiSwitchWorkspace, fetchGroupStatus, type WorkspaceInfo, type GroupStatus } from '../../api';
+import { groupRegistrationGaps } from '../../utils';
+import { setWorkspace as apiSetWorkspace, pickWorkspaceFolder, fetchStorageMode, migrateStorage, restoreStorage, fetchWorkspaces, addWorkspace, removeWorkspace, updateWorkspaceLabel as apiUpdateLabel, switchWorkspace as apiSwitchWorkspace, fetchGroupStatus, ensureGroupRegistered, type WorkspaceInfo, type GroupStatus } from '../../api';
 
 interface WorkspaceSectionProps {
   users: UserDef[];
@@ -60,10 +61,8 @@ export function WorkspaceSection({
 
   const [groupStatus, setGroupStatus] = useState<GroupStatus | null>(null);
   const [showGroupSetup, setShowGroupSetup] = useState(false);
-
-  const loadGroupStatus = useCallback(() => {
-    fetchGroupStatus().then(setGroupStatus).catch(() => setGroupStatus(null));
-  }, []);
+  const [registering, setRegistering] = useState(false);
+  const [registerError, setRegisterError] = useState<string | null>(null);
 
   const [configuredWorkspaces, setConfiguredWorkspaces] = useState<WorkspaceInfo[]>([]);
   const [addingWorkspace, setAddingWorkspace] = useState(false);
@@ -75,6 +74,24 @@ export function WorkspaceSection({
   const loadWorkspaces = useCallback(() => {
     fetchWorkspaces().then(setConfiguredWorkspaces).catch(() => {});
   }, []);
+
+  const loadGroupStatus = useCallback(() => {
+    fetchGroupStatus().then(setGroupStatus).catch(() => setGroupStatus(null));
+  }, []);
+
+  const handleEnsureRegistered = useCallback(async () => {
+    setRegisterError(null);
+    setRegistering(true);
+    try {
+      await ensureGroupRegistered();
+      loadGroupStatus();
+      loadWorkspaces();
+    } catch (err: any) {
+      setRegisterError(err.message);
+    } finally {
+      setRegistering(false);
+    }
+  }, [loadGroupStatus, loadWorkspaces]);
 
   useEffect(() => { loadWorkspaces(); }, [loadWorkspaces]);
 
@@ -445,6 +462,51 @@ export function WorkspaceSection({
               {groupStatus?.configured ? 'Reconfigure group…' : 'Set up group…'}
             </button>
           </div>
+
+          {groupStatus?.configured && groupStatus.registrationComplete === false && (() => {
+            const { parentMissing, missingMembers, hasGap } = groupRegistrationGaps(groupStatus);
+            if (!hasGap) return null;
+            return (
+              <div className="mt-4 rounded-xl border border-amber-300/60 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-900/20">
+                <div className="flex items-start gap-3">
+                  <span className="mt-0.5 text-amber-500">⚠</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">Group not fully linked</p>
+                    <p className="mt-1 text-xs text-amber-700/90 dark:text-amber-200/80">
+                      For the shared knowledge base to surface inside each member repo, the parent and every checked-out
+                      member must be registered as workspaces. The following aren’t registered yet:
+                    </p>
+                    <ul className="mt-2 space-y-1 text-xs text-amber-800 dark:text-amber-200">
+                      {parentMissing && (
+                        <li className="flex items-center gap-2">
+                          <span className="rounded bg-amber-200/70 px-1.5 py-0.5 text-[10px] font-bold uppercase dark:bg-amber-500/20">Parent</span>
+                          <span className="font-mono truncate">{groupStatus.parentRoot}</span>
+                        </li>
+                      )}
+                      {missingMembers.map((m) => (
+                        <li key={m.path} className="flex items-center gap-2">
+                          <span className="rounded bg-amber-200/70 px-1.5 py-0.5 text-[10px] font-bold uppercase dark:bg-amber-500/20">Member</span>
+                          <span className="font-medium">{m.name}</span>
+                          <span className="font-mono text-amber-700/70 dark:text-amber-200/60 truncate">{m.path}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="mt-2 text-[11px] text-amber-700/70 dark:text-amber-200/60">
+                      Nothing is written until you confirm. This only adds the repos to your workspace list — it does not touch git.
+                    </p>
+                    {registerError && <p className="mt-2 text-xs text-red-600 dark:text-red-400">{registerError}</p>}
+                    <button
+                      onClick={handleEnsureRegistered}
+                      disabled={registering}
+                      className="mt-3 rounded-lg bg-amber-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-amber-700 disabled:opacity-60"
+                    >
+                      {registering ? 'Registering…' : 'Register missing workspaces'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
 

@@ -1062,6 +1062,8 @@ export interface GroupMemberSummary {
   remote: string;
   path: string;
   pathExists: boolean;
+  /** Whether this member's checkout is a registered EH workspace (Case 1). Present only on the parent workspace. */
+  registered?: boolean;
   testCommand?: string;
 }
 
@@ -1069,13 +1071,53 @@ export interface GroupStatus {
   configured: boolean;
   name?: string;
   members?: GroupMemberSummary[];
+  /** Parent repo root that owns the group. Present only when registration state is computed. */
+  parentRoot?: string;
+  /** Whether the dedicated parent is a registered EH workspace. */
+  parentRegistered?: boolean;
+  /** True when parent + every present member is registered (Case 1 holds). */
+  registrationComplete?: boolean;
   message?: string;
+}
+
+/** Outcome of registering one workspace (parent or member) during backfill. */
+export interface RegistrationResult {
+  path: string;
+  name: string;
+  kind: 'parent' | 'member';
+  ok: boolean;
+  alreadyRegistered: boolean;
+  error?: string;
+}
+
+export interface EnsureRegisteredResult {
+  parentRoot: string;
+  groupName: string;
+  registrations: RegistrationResult[];
+  complete: boolean;
 }
 
 /** Current multi-repo group status (mirrors the get_project_group MCP tool). */
 export async function fetchGroupStatus(): Promise<GroupStatus> {
   const res = await fetch(`${API_URL}/group`);
   if (!res.ok) throw new Error('Failed to fetch group status');
+  return res.json();
+}
+
+/**
+ * Backfill: register the dedicated parent + present members as workspaces so the
+ * Case-1 member binding can resolve. Runs only on explicit user consent.
+ */
+export async function ensureGroupRegistered(): Promise<EnsureRegisteredResult> {
+  const res = await fetch(`${API_URL}/group/ensure-registered`, { method: 'POST' });
+  if (!res.ok) {
+    let message = 'Failed to register group workspaces';
+    try {
+      const payload = await res.json();
+      if (payload.error) message = payload.error;
+    } catch {}
+    throw new Error(message);
+  }
   return res.json();
 }
 

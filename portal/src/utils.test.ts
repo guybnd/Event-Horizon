@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { truncateMiddle } from './utils';
+import { truncateMiddle, groupRegistrationGaps } from './utils';
+import type { GroupStatus, GroupMemberSummary } from './api';
 
 describe('truncateMiddle', () => {
   it('returns the string unchanged when shorter than maxLen', () => {
@@ -58,5 +59,67 @@ describe('truncateMiddle', () => {
     const result = truncateMiddle('abcdefghij', 7);
     expect(result.startsWith('abc')).toBe(true);
     expect(result.endsWith('hij')).toBe(true);
+  });
+});
+
+describe('groupRegistrationGaps', () => {
+  const member = (over: Partial<GroupMemberSummary>): GroupMemberSummary => ({
+    name: 'engine', role: 'api', remote: 'r', path: '/p/engine', pathExists: true, ...over,
+  });
+
+  it('reports no gap for a null or unconfigured status', () => {
+    expect(groupRegistrationGaps(null).hasGap).toBe(false);
+    expect(groupRegistrationGaps({ configured: false }).hasGap).toBe(false);
+  });
+
+  it('reports no gap when registration state was not computed', () => {
+    // registrationComplete undefined → legacy summary, no registry was supplied.
+    const status: GroupStatus = { configured: true, name: 'p', members: [member({ registered: undefined })] };
+    expect(groupRegistrationGaps(status).hasGap).toBe(false);
+  });
+
+  it('reports no gap when registration is complete', () => {
+    const status: GroupStatus = {
+      configured: true, name: 'p', registrationComplete: true, parentRegistered: true,
+      members: [member({ registered: true })],
+    };
+    expect(groupRegistrationGaps(status).hasGap).toBe(false);
+  });
+
+  it('flags an unregistered parent', () => {
+    const status: GroupStatus = {
+      configured: true, name: 'p', registrationComplete: false,
+      parentRoot: '/p', parentRegistered: false,
+      members: [member({ registered: true })],
+    };
+    const gaps = groupRegistrationGaps(status);
+    expect(gaps.parentMissing).toBe(true);
+    expect(gaps.missingMembers).toHaveLength(0);
+    expect(gaps.hasGap).toBe(true);
+  });
+
+  it('flags only present, unregistered members (skips absent ones)', () => {
+    const status: GroupStatus = {
+      configured: true, name: 'p', registrationComplete: false, parentRegistered: true,
+      members: [
+        member({ name: 'engine', registered: false, pathExists: true }),  // gap
+        member({ name: 'portal', registered: false, pathExists: false }), // absent → not actionable
+        member({ name: 'docs', registered: true, pathExists: true }),     // already registered
+      ],
+    };
+    const gaps = groupRegistrationGaps(status);
+    expect(gaps.parentMissing).toBe(false);
+    expect(gaps.missingMembers.map((m) => m.name)).toEqual(['engine']);
+    expect(gaps.hasGap).toBe(true);
+  });
+
+  it('reports no actionable gap when only absent members are unregistered', () => {
+    const status: GroupStatus = {
+      configured: true, name: 'p', registrationComplete: false, parentRegistered: true,
+      members: [member({ registered: false, pathExists: false })],
+    };
+    // registrationComplete is false (engine counts only present members), but there's
+    // nothing the user can register here, so the banner must not appear.
+    expect(groupRegistrationGaps(status).hasGap).toBe(false);
   });
 });
