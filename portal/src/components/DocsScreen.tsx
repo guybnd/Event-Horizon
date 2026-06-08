@@ -254,7 +254,8 @@ export function DocsScreen() {
     [docs],
   );
   const groupMembers = groupStatus?.members ?? [];
-  const showFeatureMap = groupStatus?.configured === true && featureDocs.length > 0;
+  const isInGroup = groupStatus?.configured === true || groupStatus?.membership != null;
+  const showFeatureMap = isInGroup && featureDocs.length > 0;
   const participatingMembers = (doc: Doc) => {
     const haystack = `${doc.title}\n${doc.body ?? ''}`.toLowerCase();
     return groupMembers.filter((member) => haystack.includes(member.name.toLowerCase()));
@@ -824,6 +825,24 @@ export function DocsScreen() {
   return (
     <div className="grid gap-6 xl:grid-cols-[minmax(18rem,20%)_minmax(0,1fr)]">
       <div className="space-y-4">
+        {groupStatus?.membership?.role === 'member' && (
+          <div className="rounded-[28px] border border-sky-200 bg-sky-50/60 p-4 dark:border-sky-500/20 dark:bg-sky-500/5">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-sky-100 text-sky-700 dark:bg-sky-500/10 dark:text-sky-300">
+                <Network className="h-5 w-5" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="truncate text-sm font-bold text-gray-900 dark:text-gray-100">Part of “{groupStatus.membership.groupName}”</h2>
+                <p className="text-[11px] text-gray-500">
+                  This repo is the
+                  <span className="font-semibold text-gray-700 dark:text-gray-300"> {groupStatus.membership.memberName}</span>
+                  {groupStatus.membership.memberRole ? ` (${groupStatus.membership.memberRole})` : ''} member.
+                  The <code className="font-mono">Product/</code> tree below is the shared group knowledge base.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
         {groupStatus?.configured && (
           <div className="rounded-[28px] border border-gray-200 bg-white/80 p-4 shadow-xl shadow-gray-200/60 dark:border-white/10 dark:bg-[#161720] dark:shadow-none">
             <div className="flex items-center gap-3 border-b border-gray-200 pb-3 dark:border-white/10">

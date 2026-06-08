@@ -12,7 +12,30 @@ const router = express.Router();
 /** Current group status (mirrors the get_project_group MCP tool). */
 router.get('/', async (_req, res) => {
   const registeredPaths = (await getWorkspacesList()).map((w) => w.path);
-  res.json(summarizeGroup(getGroupContext(), registeredPaths));
+  const ctx = getGroupContext();
+  if (ctx) {
+    // Parent workspace: full summary plus a parent membership marker.
+    const summary = summarizeGroup(ctx, registeredPaths);
+    summary.membership = { role: 'parent', groupName: ctx.config.name, parentRoot: ctx.parentRoot };
+    return res.json(summary);
+  }
+  // Member workspace (Case 1): no parent context, but a reverse-lookup binding.
+  // Keep `configured: false` (parent-only operations stay parent-only) and just
+  // surface that this repo belongs to a group so the UI can show it (FLUX-412).
+  const binding = getMemberBinding();
+  if (binding) {
+    const summary = summarizeGroup(null, registeredPaths);
+    const self = binding.parentGroup.config.members.find((m) => m.name === binding.memberName);
+    summary.membership = {
+      role: 'member',
+      groupName: binding.parentGroup.config.name,
+      parentRoot: binding.parentRoot,
+      memberName: binding.memberName,
+      ...(self?.role ? { memberRole: self.role } : {}),
+    };
+    return res.json(summary);
+  }
+  res.json(summarizeGroup(null, registeredPaths));
 });
 
 function parseBody(body: any): GroupSetupInput | { error: string } {

@@ -1077,7 +1077,18 @@ export interface GroupStatus {
   parentRegistered?: boolean;
   /** True when parent + every present member is registered (Case 1 holds). */
   registrationComplete?: boolean;
+  /** How the current workspace sits in a group (parent or bound member), independent of `configured`. */
+  membership?: GroupMembership;
   message?: string;
+}
+
+/** The current workspace's place in a multi-repo group (FLUX-412). */
+export interface GroupMembership {
+  role: 'parent' | 'member';
+  groupName: string;
+  parentRoot: string;
+  memberName?: string;
+  memberRole?: string;
 }
 
 /** Outcome of registering one workspace (parent or member) during backfill. */

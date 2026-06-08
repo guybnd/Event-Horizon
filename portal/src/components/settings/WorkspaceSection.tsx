@@ -472,7 +472,7 @@ export function WorkspaceSection({
           </p>
 
           {(() => {
-            const nudge = multiRepoNudge({ groupConfigured: groupStatus?.configured, siblingRepoCount, dismissed: nudgeDismissed });
+            const nudge = multiRepoNudge({ groupConfigured: groupStatus?.configured || groupStatus?.membership != null, siblingRepoCount, dismissed: nudgeDismissed });
             if (nudge === null) return null;
             return (
               <div className="mb-4 flex items-start gap-3 rounded-xl border border-primary/30 bg-primary/5 p-4">
@@ -493,6 +493,25 @@ export function WorkspaceSection({
             );
           })()}
 
+          {groupStatus?.membership?.role === 'member' ? (
+            <div className="flex items-start gap-3 rounded-xl border border-sky-200 bg-sky-50/60 p-4 dark:border-sky-500/20 dark:bg-sky-500/5">
+              <span className="mt-0.5 h-2 w-2 shrink-0 rounded-full bg-sky-500" />
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+                  Part of group “{groupStatus.membership.groupName}”
+                </p>
+                <p className="mt-1 text-xs text-gray-500">
+                  This repo is the <span className="font-semibold">{groupStatus.membership.memberName}</span>
+                  {groupStatus.membership.memberRole ? ` (${groupStatus.membership.memberRole})` : ''} member. The shared
+                  knowledge base surfaces under its <code className="font-mono bg-gray-100 dark:bg-white/10 px-1 rounded">Product/</code> docs tree.
+                  Group settings are managed from the parent workspace.
+                </p>
+                {groupStatus.membership.parentRoot && (
+                  <p className="mt-1 font-mono text-[11px] text-gray-400 truncate">Parent: {groupStatus.membership.parentRoot}</p>
+                )}
+              </div>
+            </div>
+          ) : (
           <div className="flex items-center gap-4 flex-wrap">
             <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${
               groupStatus?.configured
@@ -521,6 +540,7 @@ export function WorkspaceSection({
               </button>
             )}
           </div>
+          )}
 
           {groupStatus?.configured && groupStatus.registrationComplete === false && (() => {
             const { parentMissing, missingMembers, hasGap } = groupRegistrationGaps(groupStatus);

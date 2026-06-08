@@ -14,7 +14,7 @@ import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry } f
 import { getCliWorkspace, getActiveFluxDir, getWorkspacesList } from './workspace.js';
 import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, checkGhAuth, captureDiff, getCurrentCommit } from './branch-manager.js';
 import { getActiveSessionsForTask } from './session-store.js';
-import { getGroupContext, summarizeGroup } from './group.js';
+import { getGroupContext, getMemberBinding, summarizeGroup } from './group.js';
 
 function textResult(text: string) {
   return { content: [{ type: 'text' as const, text }] };
@@ -99,9 +99,31 @@ export async function startMcpServer(): Promise<void> {
 
   server.tool(
     'get_project_group',
-    'Read the multi-repo group (if configured): group name + member repos (name, role, git remote, resolved local path, test command, registration state). Returns a clear notice when no group is configured.',
+    'Read the multi-repo group (if configured): group name + member repos (name, role, git remote, resolved local path, test command, registration state). Also reports `membership` when the current workspace is the parent or a bound member of a group. Returns a clear notice when no group is configured.',
     {},
-    async () => jsonResult(summarizeGroup(getGroupContext(), (await getWorkspacesList()).map((w) => w.path))),
+    async () => {
+      const registeredPaths = (await getWorkspacesList()).map((w) => w.path);
+      const ctx = getGroupContext();
+      if (ctx) {
+        const summary = summarizeGroup(ctx, registeredPaths);
+        summary.membership = { role: 'parent', groupName: ctx.config.name, parentRoot: ctx.parentRoot };
+        return jsonResult(summary);
+      }
+      const binding = getMemberBinding();
+      if (binding) {
+        const summary = summarizeGroup(null, registeredPaths);
+        const self = binding.parentGroup.config.members.find((m) => m.name === binding.memberName);
+        summary.membership = {
+          role: 'member',
+          groupName: binding.parentGroup.config.name,
+          parentRoot: binding.parentRoot,
+          memberName: binding.memberName,
+          ...(self?.role ? { memberRole: self.role } : {}),
+        };
+        return jsonResult(summary);
+      }
+      return jsonResult(summarizeGroup(null, registeredPaths));
+    },
   );
 
   // ─── Mutation Tools ─────────────────────────────────────────────────────────

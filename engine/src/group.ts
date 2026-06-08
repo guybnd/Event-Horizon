@@ -293,7 +293,27 @@ export interface GroupSummary {
   parentRegistered?: boolean;
   /** True when parent + every present member is registered (Case 1 holds). Present only when registry is supplied. */
   registrationComplete?: boolean;
+  /**
+   * How the *current* workspace sits in a group, independent of `configured`
+   * (which is parent-context only). Set on both the parent (`role: 'parent'`)
+   * and a bound member (`role: 'member'`), so a member workspace can show it
+   * belongs to a group without inheriting parent-only operations.
+   */
+  membership?: GroupMembershipInfo;
   message?: string;
+}
+
+/** The current workspace's place in a multi-repo group (FLUX-412). */
+export interface GroupMembershipInfo {
+  role: 'parent' | 'member';
+  /** Name of the group this workspace belongs to. */
+  groupName: string;
+  /** Parent repo root that owns the group. */
+  parentRoot: string;
+  /** This workspace's member name (only when `role === 'member'`). */
+  memberName?: string;
+  /** This workspace's member role label (only when `role === 'member'`). */
+  memberRole?: string;
 }
 
 /**
