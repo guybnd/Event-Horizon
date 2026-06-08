@@ -1,6 +1,8 @@
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 
 /**
  * Multi-repo groups — additive group module.
@@ -369,4 +371,134 @@ export async function activateGroup(parentRoot: string): Promise<GroupContext | 
     console.log(`[group] Active group '${currentGroup.config.name}' with ${currentGroup.members.length} member(s)`);
   }
   return currentGroup;
+}
+
+// ─── Member binding (reverse-lookup of a member's parent group) ──────────────
+
+const execFileAsync = promisify(execFile);
+
+export interface MemberGroupBinding {
+  /** Parent repo root that owns the group this workspace belongs to. */
+  parentRoot: string;
+  /** The parent's fully-resolved group context (provides groupStoreDir). */
+  parentGroup: GroupContext;
+  /** This workspace's member name within the parent's group.json. */
+  memberName: string;
+  /** This workspace's own origin remote, in normalized comparison form. */
+  selfRemote: string;
+}
+
+let currentMemberBinding: MemberGroupBinding | null = null;
+
+/** Get the active member→parent binding, or null when not a bound member. */
+export function getMemberBinding(): MemberGroupBinding | null {
+  return currentMemberBinding;
+}
+
+/**
+ * Read + validate a workspace's `group.json` and return its members' identity
+ * (name + remote) WITHOUT scaffolding the store. Light enough to run across
+ * every registered workspace during discovery. Returns null when absent or
+ * malformed (a malformed parent is simply skipped during the scan).
+ */
+export async function peekGroupMembers(root: string): Promise<{ name: string; remote: string }[] | null> {
+  const raw = await readJsonIfPresent(getGroupConfigFile(root)).catch(() => null);
+  if (raw == null) return null;
+  if (validateGroupConfig(raw).length > 0) return null;
+  return (raw.members as any[])
+    .filter((m) => isNonEmptyString(m?.name) && isNonEmptyString(m?.remote))
+    .map((m) => ({ name: m.name as string, remote: m.remote as string }));
+}
+
+/** Read a checkout's `origin` remote URL, or null if it isn't a git repo / has no origin. */
+export async function getOriginRemote(root: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', root, 'remote', 'get-url', 'origin'], { windowsHide: true });
+    const url = stdout.trim();
+    return url.length > 0 ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Canonicalize a git remote URL for identity comparison. Collapses the common
+ * equivalent spellings of the same repo (https / ssh / scp-like, with or
+ * without a trailing `.git` or slash, with or without a `user@`) to a lowercase
+ * `host/path` key. Returns '' for unusable input.
+ */
+export function normalizeRemoteForCompare(remote: string): string {
+  let url = (remote || '').trim();
+  if (!url) return '';
+  // scp-like: user@host:path  →  host/path
+  const scp = /^[A-Za-z0-9._-]+@([A-Za-z0-9._-]+):(.+)$/.exec(url);
+  if (scp) {
+    url = `${scp[1]}/${scp[2]}`;
+  } else {
+    url = url.replace(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, ''); // strip scheme://
+    url = url.replace(/^[^@/]+@/, ''); // strip leading user@
+  }
+  url = url.replace(/\.git$/i, '');
+  url = url.replace(/\/+$/, '');
+  return url.toLowerCase();
+}
+
+/**
+ * Reverse-lookup discovery (Case 1 — same machine, one engine). When the active
+ * workspace is NOT itself a parent (no `group.json`), scan the registered
+ * workspaces for a parent whose `group.json` lists this workspace's `origin`
+ * remote as a member. On a match, bind to that parent's group context so its
+ * `.flux-group/` store can be surfaced read-only in this member's portal.
+ * Never throws; clears the binding when no parent matches.
+ */
+export async function activateMemberBinding(selfRoot: string, registeredRoots: string[]): Promise<MemberGroupBinding | null> {
+  currentMemberBinding = null;
+  try {
+    // If this workspace is itself a parent, the direct group context handles it.
+    if (await peekGroupMembers(selfRoot)) return null;
+
+    const selfRemoteRaw = await getOriginRemote(selfRoot);
+    if (!selfRemoteRaw) return null;
+    const selfKey = normalizeRemoteForCompare(selfRemoteRaw);
+    if (!selfKey) return null;
+
+    const selfResolved = path.resolve(selfRoot);
+    for (const root of registeredRoots) {
+      if (path.resolve(root) === selfResolved) continue;
+      const members = await peekGroupMembers(root);
+      if (!members) continue;
+      const match = members.find((m) => normalizeRemoteForCompare(m.remote) === selfKey);
+      if (!match) continue;
+
+      const parentGroup = await loadGroupContext(root).catch(() => null);
+      if (!parentGroup) continue;
+
+      currentMemberBinding = {
+        parentRoot: path.resolve(root),
+        parentGroup,
+        memberName: match.name,
+        selfRemote: selfKey,
+      };
+      console.log(`[group] Workspace bound as member '${match.name}' of group '${parentGroup.config.name}' (parent: ${root})`);
+      return currentMemberBinding;
+    }
+  } catch (err) {
+    console.error(`[group] Member binding discovery failed for ${selfRoot}:`, err);
+    currentMemberBinding = null;
+  }
+  return null;
+}
+
+/**
+ * Reverse of the file→`Product/...` mapping: turn a `Product/<...>` doc path
+ * back into its store-relative markdown file path (`<...>.md`). Used to route a
+ * member's edit of a group doc to the parent's canonical store. Returns null
+ * when the path is not under the group prefix or contains unsafe segments.
+ */
+export function groupDocPathToStoreRelative(docPath: string): string | null {
+  const segments = (docPath || '').split('/').filter(Boolean);
+  if (segments.length < 2 || segments[0] !== GROUP_DOCS_PREFIX) return null;
+  const rest = segments.slice(1);
+  if (rest.some((s) => s === '.' || s === '..')) return null;
+  return rest.join('/') + '.md';
 }

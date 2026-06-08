@@ -5,7 +5,7 @@ import matter from 'gray-matter';
 import chokidar from 'chokidar';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { getActiveFluxDir, getTaskAssetsDir, getFluxStoreDir, isOrphanMode, setWorkspaceRoot, workspaceRoot } from './workspace.js';
+import { getActiveFluxDir, getTaskAssetsDir, getFluxStoreDir, isOrphanMode, setWorkspaceRoot, workspaceRoot, getWorkspacesList } from './workspace.js';
 import { attachWorktreeIfPresent, migrateStrandedFluxTickets } from './storage-sync.js';
 import { startSyncWatcher } from './sync-watcher.js';
 import { configCache, loadConfig, autoRegisterUnknownTags } from './config.js';
@@ -19,7 +19,7 @@ import { isTopLevelTaskFile, getDocsDir, isDocFile, getDocPathFromFile, titleFro
 import type { StoredDoc } from './file-utils.js';
 import { resolveEmbeddedDocsRoot, copyDir, buildStarterProjectOverview } from './docs-seeder.js';
 import { bootstrapNewWorkspace, installSkillsForWorkspace } from './bootstrap.js';
-import { activateGroup, getGroupContext, GROUP_DOCS_PREFIX } from './group.js';
+import { activateGroup, activateMemberBinding, getGroupContext, getMemberBinding, GROUP_DOCS_PREFIX } from './group.js';
 
 export let tasksCache: Record<string, any> = {};
 export let docsCache: Record<string, StoredDoc> = {};
@@ -751,11 +751,20 @@ async function loadGroupDocsDirectory(storeDir: string, directoryPath: string) {
   }
 }
 
+/**
+ * The `.flux-group` store dir to surface read-only `Product/` docs from, or null
+ * when neither a direct group (parent) nor a member binding is active. A parent
+ * reads its own store; a bound member (Case 1) reads the parent's store in place.
+ */
+function activeGroupStoreDir(): string | null {
+  return getGroupContext()?.groupStoreDir ?? getMemberBinding()?.parentGroup.groupStoreDir ?? null;
+}
+
 /** Load all group docs for the active group. No-op in single-repo mode. */
 export async function loadGroupDocs() {
-  const group = getGroupContext();
-  if (!group) return;
-  await loadGroupDocsDirectory(group.groupStoreDir, group.groupStoreDir);
+  const storeDir = activeGroupStoreDir();
+  if (!storeDir) return;
+  await loadGroupDocsDirectory(storeDir, storeDir);
 }
 
 export async function reconcileOrphanedSessions() {
@@ -959,9 +968,8 @@ export async function startWatchers() {
  */
 export async function startGroupDocsWatcher() {
   if (activeGroupDocsWatcher) { await activeGroupDocsWatcher.close(); activeGroupDocsWatcher = null; }
-  const group = getGroupContext();
-  if (!group) return;
-  const storeDir = group.groupStoreDir;
+  const storeDir = activeGroupStoreDir();
+  if (!storeDir) return;
 
   activeGroupDocsWatcher = chokidar.watch(storeDir, {
     ignored: (filePath: string) => path.basename(filePath) === '.git',
@@ -999,6 +1007,7 @@ export async function activateWorkspace(newRoot: string) {
     await startWatchers();
     startSyncWatcher();
     await activateGroup(newRoot);
+    await activateMemberBinding(newRoot, (await getWorkspacesList()).map((w) => w.path));
     await loadGroupDocs();
     await startGroupDocsWatcher();
     seedPromptNotifications();

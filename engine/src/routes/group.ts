@@ -3,7 +3,7 @@ import { workspaceRoot } from '../workspace.js';
 import { planGroupSetup, applyGroupSetup, type GroupSetupInput } from '../group-setup.js';
 import { syncGroup } from '../group-sync.js';
 import { submitGroupEdit, type GroupEditFile } from '../group-edit.js';
-import { summarizeGroup, getGroupContext, type GroupMember } from '../group.js';
+import { summarizeGroup, getGroupContext, getMemberBinding, type GroupMember } from '../group.js';
 
 const router = express.Router();
 
@@ -105,8 +105,11 @@ function parseEdits(body: any): GroupEditFile[] | { error: string } {
 /** Apply a sub-repo doc edit through the parent, commit, and re-fan-out. */
 router.post('/submit-edit', async (req, res) => {
   if (!workspaceRoot) return res.status(400).json({ error: 'No workspace active' });
-  const group = getGroupContext();
-  if (!group) return res.status(400).json({ error: 'No multi-repo group is configured' });
+  // The parent edits its own group; a bound member (Case 1) routes through the parent's context.
+  const group = getGroupContext() ?? getMemberBinding()?.parentGroup;
+  if (!group) {
+    return res.status(400).json({ error: "These docs are owned by a multi-repo group. Open the group's parent workspace to edit them." });
+  }
   const edits = parseEdits(req.body);
   if ('error' in edits) return res.status(400).json({ error: edits.error });
   try {

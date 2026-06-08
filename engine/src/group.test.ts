@@ -3,14 +3,23 @@ import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
 import os from 'os';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import {
   validateGroupConfig,
   loadGroupContext,
   summarizeGroup,
   buildMemberScopeArgs,
+  normalizeRemoteForCompare,
+  peekGroupMembers,
+  activateMemberBinding,
+  getMemberBinding,
+  groupDocPathToStoreRelative,
   GROUP_STORE_DIRNAME,
   GROUP_DOCS_BRANCH,
 } from './group.js';
+
+const execFileAsync = promisify(execFile);
 
 async function makeTempRoot(): Promise<string> {
   return await fs.mkdtemp(path.join(os.tmpdir(), 'eh-group-test-'));
@@ -269,5 +278,175 @@ describe('buildMemberScopeArgs', () => {
     );
     const ctx = await loadGroupContext(root);
     expect(buildMemberScopeArgs(ctx)).toEqual([]);
+  });
+});
+
+describe('normalizeRemoteForCompare', () => {
+  it('collapses equivalent spellings of the same repo to one key', () => {
+    const variants = [
+      'https://github.com/acme/engine.git',
+      'https://github.com/acme/engine',
+      'https://github.com/acme/engine/',
+      'git@github.com:acme/engine.git',
+      'ssh://git@github.com/acme/engine.git',
+      'HTTPS://GitHub.com/ACME/Engine.git',
+    ];
+    const keys = variants.map(normalizeRemoteForCompare);
+    expect(new Set(keys).size).toBe(1);
+    expect(keys[0]).toBe('github.com/acme/engine');
+  });
+
+  it('distinguishes different repos', () => {
+    expect(normalizeRemoteForCompare('git@github.com:acme/engine.git')).not.toBe(
+      normalizeRemoteForCompare('git@github.com:acme/portal.git'),
+    );
+  });
+
+  it('returns empty string for unusable input', () => {
+    expect(normalizeRemoteForCompare('')).toBe('');
+    expect(normalizeRemoteForCompare('   ')).toBe('');
+  });
+});
+
+describe('peekGroupMembers', () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await makeTempRoot();
+  });
+
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it('returns member identities without scaffolding the store', async () => {
+    await fs.writeFile(
+      path.join(root, 'group.json'),
+      JSON.stringify({
+        name: 'prod',
+        members: [{ name: 'engine', role: 'api', remote: 'git@github.com:acme/engine.git' }],
+      }),
+      'utf-8',
+    );
+    const members = await peekGroupMembers(root);
+    expect(members).toEqual([{ name: 'engine', remote: 'git@github.com:acme/engine.git' }]);
+    // A peek must NOT create the .flux-group scaffold (unlike loadGroupContext).
+    expect(existsSync(path.join(root, GROUP_STORE_DIRNAME))).toBe(false);
+  });
+
+  it('returns null when group.json is absent or malformed', async () => {
+    expect(await peekGroupMembers(root)).toBeNull();
+    await fs.writeFile(path.join(root, 'group.json'), '{ not valid json', 'utf-8');
+    expect(await peekGroupMembers(root)).toBeNull();
+  });
+});
+
+describe('activateMemberBinding (reverse-lookup discovery, Case 1)', () => {
+  let parent: string;
+  let member: string;
+
+  async function gitInitWithRemote(repoRoot: string, remote: string): Promise<void> {
+    await execFileAsync('git', ['-C', repoRoot, 'init'], { windowsHide: true });
+    await execFileAsync('git', ['-C', repoRoot, 'remote', 'add', 'origin', remote], { windowsHide: true });
+  }
+
+  beforeEach(async () => {
+    parent = await makeTempRoot();
+    member = await makeTempRoot();
+  });
+
+  afterEach(async () => {
+    await activateMemberBinding('___none___', []); // reset module state
+    await fs.rm(parent, { recursive: true, force: true });
+    await fs.rm(member, { recursive: true, force: true });
+  });
+
+  it('binds a member to a registered parent that lists its remote', async () => {
+    const remote = 'git@github.com:acme/engine.git';
+    await gitInitWithRemote(member, remote);
+    await fs.writeFile(
+      path.join(parent, 'group.json'),
+      JSON.stringify({ name: 'prod', members: [{ name: 'engine', role: 'api', remote }] }),
+      'utf-8',
+    );
+
+    const binding = await activateMemberBinding(member, [parent, member]);
+    expect(binding).not.toBeNull();
+    expect(binding!.memberName).toBe('engine');
+    expect(binding!.parentRoot).toBe(path.resolve(parent));
+    expect(binding!.parentGroup.groupStoreDir).toBe(path.join(path.resolve(parent), GROUP_STORE_DIRNAME));
+    expect(getMemberBinding()).toBe(binding);
+  });
+
+  it('matches across equivalent remote spellings (member https vs parent scp)', async () => {
+    await gitInitWithRemote(member, 'https://github.com/acme/engine.git');
+    await fs.writeFile(
+      path.join(parent, 'group.json'),
+      JSON.stringify({
+        name: 'prod',
+        members: [{ name: 'engine', role: 'api', remote: 'git@github.com:acme/engine.git' }],
+      }),
+      'utf-8',
+    );
+
+    const binding = await activateMemberBinding(member, [parent, member]);
+    expect(binding?.memberName).toBe('engine');
+  });
+
+  it('returns null when the workspace is itself a parent', async () => {
+    await fs.writeFile(
+      path.join(parent, 'group.json'),
+      JSON.stringify({
+        name: 'prod',
+        members: [{ name: 'engine', role: 'api', remote: 'git@github.com:acme/engine.git' }],
+      }),
+      'utf-8',
+    );
+    expect(await activateMemberBinding(parent, [parent])).toBeNull();
+    expect(getMemberBinding()).toBeNull();
+  });
+
+  it('returns null when no registered parent lists this remote', async () => {
+    await gitInitWithRemote(member, 'git@github.com:acme/orphan.git');
+    await fs.writeFile(
+      path.join(parent, 'group.json'),
+      JSON.stringify({
+        name: 'prod',
+        members: [{ name: 'engine', role: 'api', remote: 'git@github.com:acme/engine.git' }],
+      }),
+      'utf-8',
+    );
+    expect(await activateMemberBinding(member, [parent, member])).toBeNull();
+    expect(getMemberBinding()).toBeNull();
+  });
+
+  it('returns null when the member checkout has no origin remote', async () => {
+    await fs.writeFile(
+      path.join(parent, 'group.json'),
+      JSON.stringify({
+        name: 'prod',
+        members: [{ name: 'engine', role: 'api', remote: 'git@github.com:acme/engine.git' }],
+      }),
+      'utf-8',
+    );
+    // member has no git repo / no origin → cannot be identified.
+    expect(await activateMemberBinding(member, [parent, member])).toBeNull();
+  });
+});
+
+describe('groupDocPathToStoreRelative', () => {
+  it('maps a Product/ doc path back to its store-relative markdown file', () => {
+    expect(groupDocPathToStoreRelative('Product/index')).toBe('index.md');
+    expect(groupDocPathToStoreRelative('Product/features/checkout')).toBe('features/checkout.md');
+    expect(groupDocPathToStoreRelative('Product/contracts/orders-api')).toBe('contracts/orders-api.md');
+  });
+
+  it('rejects non-group paths and unsafe segments', () => {
+    expect(groupDocPathToStoreRelative('index')).toBeNull();
+    expect(groupDocPathToStoreRelative('Other/foo')).toBeNull();
+    expect(groupDocPathToStoreRelative('Product')).toBeNull(); // prefix only, no doc
+    expect(groupDocPathToStoreRelative('Product/..')).toBeNull();
+    expect(groupDocPathToStoreRelative('Product/features/..')).toBeNull();
+    expect(groupDocPathToStoreRelative('')).toBeNull();
   });
 });

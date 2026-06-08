@@ -213,14 +213,18 @@ export function buildDocFrontmatter(title: string, order: number | undefined) {
   };
 }
 
+/** Serialize a doc to its on-disk markdown form (frontmatter + body). */
+export function buildDocMarkdown(title: string, order: number | undefined, body: string): string {
+  return matter.stringify(body, buildDocFrontmatter(title, order));
+}
+
 export function sortDocs(docs: DocRecord[]) {
   return [...docs].sort((left, right) => left.path.localeCompare(right.path, undefined, { sensitivity: 'base' }));
 }
 
 export async function writeDocFile(filePath: string, title: string, order: number | undefined, body: string) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const fileContent = matter.stringify(body, buildDocFrontmatter(title, order));
-  await fs.writeFile(filePath, fileContent, 'utf-8');
+  await fs.writeFile(filePath, buildDocMarkdown(title, order, body), 'utf-8');
 }
 
 export async function removeEmptyDocDirectories(startingFilePath: string) {
