@@ -1,5 +1,6 @@
 import type { CliFramework } from './types';
 import type { GroupStatus, GroupMemberSummary } from './api';
+import type { WorkspaceInfo } from './api';
 
 /**
  * Resolves the effective agent framework to use, following the 'auto' -> 'claude' logic.
@@ -68,4 +69,64 @@ export function multiRepoNudge(opts: {
   if (opts.groupConfigured) return null;
   if (opts.siblingRepoCount < 2) return null;
   return opts.siblingRepoCount;
+}
+
+/** A workspace entry paired with its original index in the registry list. */
+export interface WorkspaceListItem {
+  ws: WorkspaceInfo;
+  /** Index into the original `fetchWorkspaces()` array — rename/remove operate by index. */
+  index: number;
+}
+
+/** One multi-repo group section: the group's name and its workspaces (parent first). */
+export interface WorkspaceGroupSection {
+  groupName: string;
+  /** Stable group identity (the parent repo path). */
+  parentPath: string;
+  items: WorkspaceListItem[];
+}
+
+/** Grouped view of the workspace list (FLUX-415). */
+export interface GroupedWorkspaces {
+  groups: WorkspaceGroupSection[];
+  ungrouped: WorkspaceListItem[];
+}
+
+/**
+ * Partition the workspace list into multi-repo group sections + ungrouped
+ * entries for nested rendering (FLUX-415). Groups are keyed by the parent repo
+ * path (stable even if two groups share a display name); within a group the
+ * parent renders first, then members, each preserving original registry order.
+ * Every item keeps its original index so index-based rename/remove still work.
+ */
+export function groupWorkspaces(workspaces: WorkspaceInfo[]): GroupedWorkspaces {
+  const byGroup = new Map<string, WorkspaceListItem[]>();
+  const order: string[] = [];
+  const ungrouped: WorkspaceListItem[] = [];
+
+  workspaces.forEach((ws, index) => {
+    const group = ws.group;
+    if (group) {
+      const key = group.parentPath;
+      if (!byGroup.has(key)) {
+        byGroup.set(key, []);
+        order.push(key);
+      }
+      byGroup.get(key)!.push({ ws, index });
+    } else {
+      ungrouped.push({ ws, index });
+    }
+  });
+
+  const groups: WorkspaceGroupSection[] = order.map((key) => {
+    const items = byGroup.get(key)!.slice().sort((a, b) => {
+      const ra = a.ws.group?.role === 'parent' ? 0 : 1;
+      const rb = b.ws.group?.role === 'parent' ? 0 : 1;
+      return ra - rb;
+    });
+    const groupName = items.find((i) => i.ws.group)?.ws.group?.groupName ?? 'Group';
+    return { groupName, parentPath: key, items };
+  });
+
+  return { groups, ungrouped };
 }

@@ -4,7 +4,7 @@ import { SimpleEditor } from './shared';
 import { GroupSetupPreview } from '../GroupSetupPreview';
 import { GroupWizard } from '../GroupWizard';
 import { DocsPromotionPanel } from '../DocsPromotionPanel';
-import { groupRegistrationGaps, parentDirOf, multiRepoNudge } from '../../utils';
+import { groupRegistrationGaps, parentDirOf, multiRepoNudge, groupWorkspaces } from '../../utils';
 import { setWorkspace as apiSetWorkspace, pickWorkspaceFolder, fetchStorageMode, migrateStorage, restoreStorage, fetchWorkspaces, addWorkspace, removeWorkspace, updateWorkspaceLabel as apiUpdateLabel, switchWorkspace as apiSwitchWorkspace, fetchGroupStatus, ensureGroupRegistered, discoverGroupFolder, type WorkspaceInfo, type GroupStatus } from '../../api';
 
 interface WorkspaceSectionProps {
@@ -204,6 +204,70 @@ export function WorkspaceSection({
     setEditingLabelIndex(null);
   };
 
+  const renderWorkspaceRow = (ws: WorkspaceInfo, idx: number) => (
+    <div key={ws.path} className={`flex items-center gap-3 rounded-lg border px-3 py-2 ${ws.active ? 'border-primary/30 bg-primary/5' : 'border-gray-200 dark:border-white/10'}`}>
+      <div className="flex-1 min-w-0">
+        {editingLabelIndex === idx ? (
+          <div className="flex items-center gap-2">
+            <input
+              autoFocus
+              value={editLabelValue}
+              onChange={e => setEditLabelValue(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') handleSaveLabel(idx); if (e.key === 'Escape') setEditingLabelIndex(null); }}
+              className="min-w-0 flex-1 rounded border border-gray-200 dark:border-white/10 bg-white dark:bg-black/20 px-2 py-1 text-xs outline-none focus:border-primary"
+              placeholder="Display label (optional)"
+            />
+            <button onClick={() => handleSaveLabel(idx)} className="text-xs font-medium text-primary hover:underline">Save</button>
+            <button onClick={() => setEditingLabelIndex(null)} className="text-xs text-gray-400 hover:underline">Cancel</button>
+          </div>
+        ) : (
+          <>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate">{ws.displayName}</span>
+              {ws.group?.role === 'parent' && <span className="text-[10px] font-bold uppercase text-gray-400">Parent</span>}
+              {ws.group?.role === 'member' && <span className="text-[10px] font-bold uppercase text-gray-400">Member</span>}
+              {ws.active && <span className="text-[10px] font-bold uppercase text-primary">Active</span>}
+              {!ws.available && <span className="text-[10px] font-bold uppercase text-red-400">Unavailable</span>}
+            </div>
+            <p className="text-[10px] font-mono text-gray-400 truncate">{ws.path}</p>
+          </>
+        )}
+      </div>
+      {editingLabelIndex !== idx && (
+        <div className="flex items-center gap-1.5 shrink-0">
+          {!ws.active && ws.available && (
+            <button
+              onClick={() => handleSwitchWorkspace(ws)}
+              disabled={switchingPath === ws.path}
+              className="rounded-md bg-primary/10 px-2 py-1 text-[10px] font-semibold text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
+              title="Switch to this workspace"
+            >
+              {switchingPath === ws.path ? 'Switching…' : 'Switch'}
+            </button>
+          )}
+          <button
+            onClick={() => { setEditingLabelIndex(idx); setEditLabelValue(ws.label || ''); }}
+            className="text-[10px] text-gray-400 hover:text-primary transition-colors"
+            title="Edit label"
+          >
+            Rename
+          </button>
+          {!ws.active && (
+            <button
+              onClick={() => handleRemoveWorkspace(idx)}
+              className="text-[10px] text-gray-400 hover:text-red-500 transition-colors"
+              title="Remove from list"
+            >
+              Remove
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
+  const workspaceGroups = groupWorkspaces(configuredWorkspaces);
+
   return (
     <div className="grid grid-cols-2 gap-10">
       {/* Configured Workspaces */}
@@ -215,65 +279,17 @@ export function WorkspaceSection({
           <p className="text-xs text-gray-400 italic mb-3">No workspaces registered yet. Your current workspace will be auto-registered on next startup.</p>
         ) : (
           <div className="space-y-2 mb-4">
-            {configuredWorkspaces.map((ws, idx) => (
-              <div key={ws.path} className={`flex items-center gap-3 rounded-lg border px-3 py-2 ${ws.active ? 'border-primary/30 bg-primary/5' : 'border-gray-200 dark:border-white/10'}`}>
-                <div className="flex-1 min-w-0">
-                  {editingLabelIndex === idx ? (
-                    <div className="flex items-center gap-2">
-                      <input
-                        autoFocus
-                        value={editLabelValue}
-                        onChange={e => setEditLabelValue(e.target.value)}
-                        onKeyDown={e => { if (e.key === 'Enter') handleSaveLabel(idx); if (e.key === 'Escape') setEditingLabelIndex(null); }}
-                        className="min-w-0 flex-1 rounded border border-gray-200 dark:border-white/10 bg-white dark:bg-black/20 px-2 py-1 text-xs outline-none focus:border-primary"
-                        placeholder="Display label (optional)"
-                      />
-                      <button onClick={() => handleSaveLabel(idx)} className="text-xs font-medium text-primary hover:underline">Save</button>
-                      <button onClick={() => setEditingLabelIndex(null)} className="text-xs text-gray-400 hover:underline">Cancel</button>
-                    </div>
-                  ) : (
-                    <>
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate">{ws.displayName}</span>
-                        {ws.active && <span className="text-[10px] font-bold uppercase text-primary">Active</span>}
-                        {!ws.available && <span className="text-[10px] font-bold uppercase text-red-400">Unavailable</span>}
-                      </div>
-                      <p className="text-[10px] font-mono text-gray-400 truncate">{ws.path}</p>
-                    </>
-                  )}
+            {workspaceGroups.groups.map((group) => (
+              <div key={group.parentPath} className="rounded-lg border border-gray-200/70 dark:border-white/10 bg-white/40 dark:bg-white/[0.02] p-2">
+                <div className="flex items-center gap-1.5 px-1 pb-1.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wide text-gray-400">Group · {group.groupName}</span>
                 </div>
-                {editingLabelIndex !== idx && (
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    {!ws.active && ws.available && (
-                      <button
-                        onClick={() => handleSwitchWorkspace(ws)}
-                        disabled={switchingPath === ws.path}
-                        className="rounded-md bg-primary/10 px-2 py-1 text-[10px] font-semibold text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
-                        title="Switch to this workspace"
-                      >
-                        {switchingPath === ws.path ? 'Switching…' : 'Switch'}
-                      </button>
-                    )}
-                    <button
-                      onClick={() => { setEditingLabelIndex(idx); setEditLabelValue(ws.label || ''); }}
-                      className="text-[10px] text-gray-400 hover:text-primary transition-colors"
-                      title="Edit label"
-                    >
-                      Rename
-                    </button>
-                    {!ws.active && (
-                      <button
-                        onClick={() => handleRemoveWorkspace(idx)}
-                        className="text-[10px] text-gray-400 hover:text-red-500 transition-colors"
-                        title="Remove from list"
-                      >
-                        Remove
-                      </button>
-                    )}
-                  </div>
-                )}
+                <div className="space-y-2">
+                  {group.items.map((item) => renderWorkspaceRow(item.ws, item.index))}
+                </div>
               </div>
             ))}
+            {workspaceGroups.ungrouped.map((item) => renderWorkspaceRow(item.ws, item.index))}
           </div>
         )}
 

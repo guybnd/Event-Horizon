@@ -14,6 +14,7 @@ import {
   peekGroupMembers,
   activateMemberBinding,
   getMemberBinding,
+  resolveWorkspaceGroups,
   groupDocPathToStoreRelative,
   groupDocsLabel,
   GROUP_STORE_DIRNAME,
@@ -494,6 +495,79 @@ describe('activateMemberBinding (reverse-lookup discovery, Case 1)', () => {
     );
     // member has no git repo / no origin → cannot be identified.
     expect(await activateMemberBinding(member, [parent, member])).toBeNull();
+  });
+});
+
+describe('resolveWorkspaceGroups (FLUX-415)', () => {
+  let parent: string;
+  let member: string;
+  let other: string;
+
+  async function gitInitWithRemote(repoRoot: string, remote: string): Promise<void> {
+    await execFileAsync('git', ['-C', repoRoot, 'init'], { windowsHide: true });
+    await execFileAsync('git', ['-C', repoRoot, 'remote', 'add', 'origin', remote], { windowsHide: true });
+  }
+
+  beforeEach(async () => {
+    parent = await makeTempRoot();
+    member = await makeTempRoot();
+    other = await makeTempRoot();
+  });
+
+  afterEach(async () => {
+    await fs.rm(parent, { recursive: true, force: true });
+    await fs.rm(member, { recursive: true, force: true });
+    await fs.rm(other, { recursive: true, force: true });
+  });
+
+  it('returns an empty map when no workspace declares a group', async () => {
+    const map = await resolveWorkspaceGroups([member, other]);
+    expect(map.size).toBe(0);
+  });
+
+  it('classifies a parent and its members, leaving unrelated repos ungrouped', async () => {
+    const remote = 'git@github.com:acme/engine.git';
+    await gitInitWithRemote(member, remote);
+    await gitInitWithRemote(other, 'git@github.com:acme/orphan.git');
+    await fs.writeFile(
+      path.join(parent, 'group.json'),
+      JSON.stringify({ name: 'prod', members: [{ name: 'engine', role: 'api', remote }] }),
+      'utf-8',
+    );
+
+    const map = await resolveWorkspaceGroups([parent, member, other]);
+
+    const parentInfo = map.get(path.resolve(parent));
+    expect(parentInfo).toEqual({ groupName: 'prod', role: 'parent', parentPath: path.resolve(parent) });
+
+    const memberInfo = map.get(path.resolve(member));
+    expect(memberInfo).toEqual({
+      groupName: 'prod',
+      role: 'member',
+      parentPath: path.resolve(parent),
+      memberName: 'engine',
+    });
+
+    expect(map.has(path.resolve(other))).toBe(false);
+  });
+
+  it('matches members across equivalent remote spellings', async () => {
+    await gitInitWithRemote(member, 'https://github.com/acme/engine.git');
+    await fs.writeFile(
+      path.join(parent, 'group.json'),
+      JSON.stringify({ name: 'prod', members: [{ name: 'engine', role: 'api', remote: 'git@github.com:acme/engine.git' }] }),
+      'utf-8',
+    );
+
+    const map = await resolveWorkspaceGroups([parent, member]);
+    expect(map.get(path.resolve(member))?.role).toBe('member');
+    expect(map.get(path.resolve(member))?.memberName).toBe('engine');
+  });
+
+  it('skips a malformed parent group.json without throwing', async () => {
+    await fs.writeFile(path.join(parent, 'group.json'), '{ not json', 'utf-8');
+    const map = await resolveWorkspaceGroups([parent, member]);
+    expect(map.size).toBe(0);
   });
 });
 

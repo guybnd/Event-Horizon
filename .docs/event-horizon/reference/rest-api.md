@@ -101,7 +101,7 @@ From [`routes/config.ts`](../../../engine/src/routes/config.ts).
 | GET | `/api/workspace` | no | Current active workspace info `{ root, name, mode, … }`. |
 | POST | `/api/workspace` | no | Activate a workspace by absolute path. |
 | GET | `/api/workspace/health` | no | Validation: does the path exist, is it a real workspace, etc. |
-| GET | `/api/workspaces` | no | Registered workspaces list (from global settings). |
+| GET | `/api/workspaces` | no | Registered workspaces list (from global settings). Each entry carries an optional `group` descriptor (`{ groupName, role: 'parent' \| 'member', parentPath, memberName? }`, FLUX-415) so the portal can render multi-repo groups nested together. |
 | POST | `/api/workspaces` | no | Add a new workspace to the registry. |
 | DELETE | `/api/workspaces/:index` | no | Remove a workspace by index. |
 | PUT | `/api/workspaces/:index` | no | Rename a workspace. |

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { truncateMiddle, groupRegistrationGaps, parentDirOf, multiRepoNudge } from './utils';
-import type { GroupStatus, GroupMemberSummary } from './api';
+import { truncateMiddle, groupRegistrationGaps, parentDirOf, multiRepoNudge, groupWorkspaces } from './utils';
+import type { GroupStatus, GroupMemberSummary, WorkspaceInfo } from './api';
 
 describe('truncateMiddle', () => {
   it('returns the string unchanged when shorter than maxLen', () => {
@@ -160,5 +160,56 @@ describe('multiRepoNudge', () => {
   it('does not nudge below the 2-repo threshold', () => {
     expect(multiRepoNudge({ groupConfigured: false, siblingRepoCount: 1, dismissed: false })).toBeNull();
     expect(multiRepoNudge({ groupConfigured: undefined, siblingRepoCount: 0, dismissed: false })).toBeNull();
+  });
+});
+
+describe('groupWorkspaces', () => {
+  const ws = (path: string, group?: WorkspaceInfo['group']): WorkspaceInfo => ({
+    path,
+    displayName: path.split('/').pop()!,
+    active: false,
+    available: true,
+    ...(group ? { group } : {}),
+  });
+
+  it('returns no groups and all entries ungrouped when none belong to a group', () => {
+    const result = groupWorkspaces([ws('/a'), ws('/b')]);
+    expect(result.groups).toEqual([]);
+    expect(result.ungrouped.map((i) => i.ws.path)).toEqual(['/a', '/b']);
+  });
+
+  it('groups parent + members under the parent path, parent first', () => {
+    const list = [
+      ws('/member', { groupName: 'prod', role: 'member', parentPath: '/parent', memberName: 'engine' }),
+      ws('/loose'),
+      ws('/parent', { groupName: 'prod', role: 'parent', parentPath: '/parent' }),
+    ];
+    const result = groupWorkspaces(list);
+
+    expect(result.groups).toHaveLength(1);
+    expect(result.groups[0].groupName).toBe('prod');
+    expect(result.groups[0].parentPath).toBe('/parent');
+    expect(result.groups[0].items.map((i) => i.ws.path)).toEqual(['/parent', '/member']);
+    expect(result.ungrouped.map((i) => i.ws.path)).toEqual(['/loose']);
+  });
+
+  it('preserves the original registry index on every item', () => {
+    const list = [
+      ws('/member', { groupName: 'prod', role: 'member', parentPath: '/parent', memberName: 'engine' }),
+      ws('/parent', { groupName: 'prod', role: 'parent', parentPath: '/parent' }),
+    ];
+    const result = groupWorkspaces(list);
+    const indexByPath = new Map(result.groups[0].items.map((i) => [i.ws.path, i.index]));
+    expect(indexByPath.get('/member')).toBe(0);
+    expect(indexByPath.get('/parent')).toBe(1);
+  });
+
+  it('keeps distinct groups separate even when names collide', () => {
+    const list = [
+      ws('/p1', { groupName: 'prod', role: 'parent', parentPath: '/p1' }),
+      ws('/p2', { groupName: 'prod', role: 'parent', parentPath: '/p2' }),
+    ];
+    const result = groupWorkspaces(list);
+    expect(result.groups.map((g) => g.parentPath)).toEqual(['/p1', '/p2']);
   });
 });

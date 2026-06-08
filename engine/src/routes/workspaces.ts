@@ -13,6 +13,7 @@ import {
 } from '../workspace.js';
 import { activateWorkspace } from '../task-store.js';
 import { getActiveSessionCount, stopAllCliSessions } from '../session-store.js';
+import { resolveWorkspaceGroups, type WorkspaceGroupInfo } from '../group.js';
 
 const router = express.Router();
 
@@ -22,6 +23,8 @@ export interface WorkspaceInfo {
   displayName: string;
   active: boolean;
   available: boolean;
+  /** Multi-repo group this workspace belongs to, if any (FLUX-415). Presentation-only. */
+  group?: WorkspaceGroupInfo;
 }
 
 function isValidWorkspaceRoot(dir: string): boolean {
@@ -35,7 +38,7 @@ function pathsEqual(a: string, b: string): boolean {
   return na === nb;
 }
 
-function enrichEntry(entry: { path: string; label?: string }): WorkspaceInfo {
+function enrichEntry(entry: { path: string; label?: string }, groups: Map<string, WorkspaceGroupInfo>): WorkspaceInfo {
   const normalized = path.resolve(entry.path);
   const info: WorkspaceInfo = {
     path: normalized,
@@ -44,12 +47,15 @@ function enrichEntry(entry: { path: string; label?: string }): WorkspaceInfo {
     available: existsSync(normalized),
   };
   if (entry.label) info.label = entry.label;
+  const group = groups.get(normalized);
+  if (group) info.group = group;
   return info;
 }
 
 router.get('/', async (_req, res) => {
   const list = await getWorkspacesList();
-  res.json(list.map(enrichEntry));
+  const groups = await resolveWorkspaceGroups(list.map((w) => w.path));
+  res.json(list.map((entry) => enrichEntry(entry, groups)));
 });
 
 router.post('/', async (req, res) => {

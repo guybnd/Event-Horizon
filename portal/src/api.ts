@@ -123,12 +123,20 @@ export async function pickWorkspaceFolder(): Promise<string | null> {
 
 // ─── Workspaces (multi-project) ─────────────────────────────────────────────
 
+export interface WorkspaceGroupInfo {
+  groupName: string;
+  role: 'parent' | 'member';
+  parentPath: string;
+  memberName?: string;
+}
+
 export interface WorkspaceInfo {
   path: string;
   label?: string;
   displayName: string;
   active: boolean;
   available: boolean;
+  group?: WorkspaceGroupInfo;
 }
 
 export async function fetchWorkspaces(): Promise<WorkspaceInfo[]> {

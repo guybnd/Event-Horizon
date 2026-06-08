@@ -581,6 +581,67 @@ export async function activateMemberBinding(selfRoot: string, registeredRoots: s
   return null;
 }
 
+export interface WorkspaceGroupInfo {
+  /** Display name of the group (the parent's `group.json` `name`). */
+  groupName: string;
+  /** Whether this workspace is the group's parent or one of its members. */
+  role: 'parent' | 'member';
+  /** Absolute path of the parent repo that owns the group.json. */
+  parentPath: string;
+  /** This workspace's member name within the parent's group.json (member only). */
+  memberName?: string;
+}
+
+/**
+ * Associate each registered workspace root with its multi-repo group, for
+ * visually grouping the workspace list (FLUX-415). A root with a valid
+ * `group.json` is a **parent**; a root whose `origin` remote matches a member
+ * entry in some registered parent's `group.json` is a **member** of that group
+ * (same reverse-lookup as `activateMemberBinding`, applied across the whole
+ * list). Presentation-only and best-effort — unreadable repos / repos without
+ * an origin are simply left ungrouped. Returns an empty map when no registered
+ * workspace declares a group (single-repo mode — the list renders flat).
+ */
+export async function resolveWorkspaceGroups(roots: string[]): Promise<Map<string, WorkspaceGroupInfo>> {
+  const result = new Map<string, WorkspaceGroupInfo>();
+  const normalizedRoots = roots.map((r) => path.resolve(r));
+
+  // Pass 1: identify parents (roots with a valid group.json) and index members by remote key.
+  interface ParentEntry { parentPath: string; groupName: string; members: { name: string; key: string }[]; }
+  const parents: ParentEntry[] = [];
+  for (const root of normalizedRoots) {
+    const raw = await readJsonIfPresent(getGroupConfigFile(root)).catch(() => null);
+    if (raw == null || validateGroupConfig(raw).length > 0) continue;
+    const groupName = raw.name as string;
+    result.set(root, { groupName, role: 'parent', parentPath: root });
+    parents.push({
+      parentPath: root,
+      groupName,
+      members: (raw.members as any[])
+        .filter((m) => isNonEmptyString(m?.name) && isNonEmptyString(m?.remote))
+        .map((m) => ({ name: m.name as string, key: normalizeRemoteForCompare(m.remote) }))
+        .filter((m) => m.key.length > 0),
+    });
+  }
+  if (parents.length === 0) return result;
+
+  // Pass 2: bind each non-parent root to a parent group via its origin remote.
+  for (const root of normalizedRoots) {
+    if (result.has(root)) continue; // already classified as a parent
+    const selfRemote = await getOriginRemote(root);
+    if (!selfRemote) continue;
+    const selfKey = normalizeRemoteForCompare(selfRemote);
+    if (!selfKey) continue;
+    for (const parent of parents) {
+      const match = parent.members.find((m) => m.key === selfKey);
+      if (!match) continue;
+      result.set(root, { groupName: parent.groupName, role: 'member', parentPath: parent.parentPath, memberName: match.name });
+      break;
+    }
+  }
+  return result;
+}
+
 /**
  * Reverse of the file→`Product/...` mapping: turn a `Product/<...>` doc path
  * back into its store-relative markdown file path (`<...>.md`). Used to route a
