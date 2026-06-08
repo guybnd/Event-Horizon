@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
@@ -243,6 +243,29 @@ export function DocsScreen() {
   const brokenWikiLinks = selectedDoc ? getBrokenWikiLinks(draftBody, docs) : [];
   const breadcrumbs = selectedDoc ? getBreadcrumbs(selectedDoc.path) : [];
   const showToolbarActiveState = isEditorFocused && hasTextSelection;
+
+  // Cross-project feature map (FLUX-403): the read-only group feature docs live
+  // under `Product/features/*`. Surface them as cards on the docs landing view.
+  const featureDocs = useMemo(
+    () =>
+      docs
+        .filter((doc) => doc.path.startsWith('Product/features/'))
+        .sort((left, right) => left.title.localeCompare(right.title, undefined, { sensitivity: 'base' })),
+    [docs],
+  );
+  const groupMembers = groupStatus?.members ?? [];
+  const showFeatureMap = groupStatus?.configured === true && featureDocs.length > 0;
+  const participatingMembers = (doc: Doc) => {
+    const haystack = `${doc.title}\n${doc.body ?? ''}`.toLowerCase();
+    return groupMembers.filter((member) => haystack.includes(member.name.toLowerCase()));
+  };
+  const featureSummary = (doc: Doc) => {
+    const line = (doc.body ?? '')
+      .split('\n')
+      .map((entry) => entry.trim())
+      .find((entry) => entry.length > 0 && !entry.startsWith('#'));
+    return line ? line.replace(/[*_`>[\]]/g, '').slice(0, 160) : 'No description yet.';
+  };
 
   const syncEditorSelectionState = (activeEditor: NonNullable<typeof editor>) => {
     const { from, to } = activeEditor.state.selection;
@@ -823,6 +846,16 @@ export function DocsScreen() {
                 </li>
               ))}
             </ul>
+            {showFeatureMap && selectedPath && (
+              <button
+                type="button"
+                onClick={() => { if (confirmDiscardChanges()) setSelectedPath(null); }}
+                className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl border border-sky-200 px-3 py-2 text-xs font-semibold text-sky-700 transition-colors hover:bg-sky-50 dark:border-sky-500/20 dark:text-sky-300 dark:hover:bg-sky-500/10"
+              >
+                <Network className="h-3.5 w-3.5" />
+                View feature map
+              </button>
+            )}
           </div>
         )}
         <DocsSidebar
@@ -988,9 +1021,58 @@ export function DocsScreen() {
               Loading docs...
             </div>
           ) : !selectedDoc ? (
-            <div className="rounded-[28px] border border-dashed border-gray-200 px-6 py-12 text-center text-sm text-gray-500 dark:border-white/10">
-              Select a document from the sidebar or create a new one.
-            </div>
+            showFeatureMap ? (
+              <div className="space-y-5">
+                <div className="flex items-start gap-3">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-sky-100 text-sky-700 dark:bg-sky-500/10 dark:text-sky-300">
+                    <Network className="h-5 w-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <h2 className="text-lg font-bold tracking-tight text-gray-900 dark:text-gray-100">Feature map</h2>
+                    <p className="text-sm text-gray-500">
+                      {featureDocs.length} cross-project feature{featureDocs.length === 1 ? '' : 's'} mapped across {groupStatus?.name}. Select a card to open its doc.
+                    </p>
+                  </div>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                  {featureDocs.map((doc) => {
+                    const members = participatingMembers(doc);
+                    return (
+                      <button
+                        key={doc.path}
+                        type="button"
+                        onClick={() => handleOpenDoc(doc.path)}
+                        className="group flex flex-col gap-3 rounded-[24px] border border-gray-200 bg-white/70 p-5 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:border-sky-300 hover:shadow-md dark:border-white/10 dark:bg-[#161720] dark:hover:border-sky-500/40"
+                      >
+                        <div className="flex items-center gap-2">
+                          <FileText className="h-4 w-4 shrink-0 text-sky-600 dark:text-sky-300" />
+                          <span className="truncate font-semibold text-gray-900 dark:text-gray-100">{doc.title}</span>
+                        </div>
+                        <p className="line-clamp-2 text-xs text-gray-500">{featureSummary(doc)}</p>
+                        <div className="mt-auto flex flex-wrap gap-1.5 pt-1">
+                          {members.length > 0 ? (
+                            members.map((member) => (
+                              <span
+                                key={member.name}
+                                className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-medium text-sky-700 dark:bg-sky-500/10 dark:text-sky-300"
+                              >
+                                {member.name} · {member.role}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-[10px] text-gray-400">No member repos detected</span>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-[28px] border border-dashed border-gray-200 px-6 py-12 text-center text-sm text-gray-500 dark:border-white/10">
+                Select a document from the sidebar or create a new one.
+              </div>
+            )
           ) : (
             <div className="space-y-3">
               <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800 dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-200">
