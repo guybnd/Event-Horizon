@@ -11,7 +11,7 @@ import { configCache, autoRegisterUnknownTags } from './config.js';
 import { broadcastEvent } from './events.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
 import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry } from './history.js';
-import { getCliWorkspace, getActiveFluxDir } from './workspace.js';
+import { getCliWorkspace, getActiveFluxDir, getWorkspacesList } from './workspace.js';
 import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, checkGhAuth, captureDiff, getCurrentCommit } from './branch-manager.js';
 import { getActiveSessionsForTask } from './session-store.js';
 import { getGroupContext, summarizeGroup } from './group.js';
@@ -99,9 +99,9 @@ export async function startMcpServer(): Promise<void> {
 
   server.tool(
     'get_project_group',
-    'Read the multi-repo group (if configured): group name + member repos (name, role, git remote, resolved local path, test command). Returns a clear notice when no group is configured.',
+    'Read the multi-repo group (if configured): group name + member repos (name, role, git remote, resolved local path, test command, registration state). Returns a clear notice when no group is configured.',
     {},
-    async () => jsonResult(summarizeGroup(getGroupContext())),
+    async () => jsonResult(summarizeGroup(getGroupContext(), (await getWorkspacesList()).map((w) => w.path))),
   );
 
   // ─── Mutation Tools ─────────────────────────────────────────────────────────

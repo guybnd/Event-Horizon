@@ -13,10 +13,28 @@ import {
   validateGroupConfig,
   formatGroupValidationErrors,
   ensureGroupStoreScaffold,
+  loadGroupContext,
   type GroupMember,
 } from './group.js';
+import { getWorkspacesList, addWorkspaceEntry, pathsEqual } from './workspace.js';
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Inject the workspace registry so setup can be unit-tested without touching
+ * the real global settings file. Defaults wrap the live registry.
+ */
+export type WorkspaceLister = () => Promise<Array<{ path: string }>>;
+export type WorkspaceRegistrar = (path: string, label?: string) => Promise<void>;
+
+const defaultLister: WorkspaceLister = () => getWorkspacesList();
+const defaultRegistrar: WorkspaceRegistrar = async (p, label) => {
+  await addWorkspaceEntry({ path: p, ...(label ? { label } : {}) });
+};
+
+function isPathRegistered(target: string, registered: Array<{ path: string }>): boolean {
+  return registered.some((w) => pathsEqual(w.path, target));
+}
 
 /**
  * Group setup — make a multi-repo group recreatable from scratch, preview-first.
@@ -121,6 +139,17 @@ export interface PlannedMember {
   detail?: string;
 }
 
+/** A workspace the setup will register so the Case-1 member binding can resolve it. */
+export interface PlannedRegistration {
+  /** Absolute path to register as an EH workspace. */
+  path: string;
+  /** Display name (group name for the parent, member name otherwise). */
+  name: string;
+  kind: 'parent' | 'member';
+  /** True when this path is already in the workspace registry (apply is a no-op). */
+  alreadyRegistered: boolean;
+}
+
 export interface GroupSetupPlan {
   parentRoot: string;
   groupName: string;
@@ -130,6 +159,8 @@ export interface GroupSetupPlan {
   gitignore: string[];
   orphanBranch: { name: string; action: 'create' | 'exists' };
   members: PlannedMember[];
+  /** Workspaces to register (dedicated parent + each present member) so Case-1 binding works. */
+  registrations: PlannedRegistration[];
   warnings: string[];
 }
 
@@ -156,7 +187,10 @@ function resolveMemberPath(parentRoot: string, member: GroupMember): string {
  * without writing anything. Validates the requested config and every member
  * remote, and classifies each member as register / clone / skip.
  */
-export async function planGroupSetup(input: GroupSetupInput): Promise<GroupSetupPlan> {
+export async function planGroupSetup(
+  input: GroupSetupInput,
+  opts: { listWorkspaces?: WorkspaceLister } = {},
+): Promise<GroupSetupPlan> {
   const parentRoot = path.resolve(input.parentRoot);
   const warnings: string[] = [];
 
@@ -227,6 +261,25 @@ export async function planGroupSetup(input: GroupSetupInput): Promise<GroupSetup
     warnings.push('Some members have no local checkout. This slice registers existing checkouts; a clone is reported but not performed automatically.');
   }
 
+  // Workspaces to register for Case-1: the dedicated parent (always) + every
+  // member with a present checkout. A registered parent is what lets a member
+  // discover its group via reverse-lookup (FLUX-405); without it the member
+  // silently shows no Product/ tree.
+  const registered = await (opts.listWorkspaces ?? defaultLister)();
+  const registrations: PlannedRegistration[] = [
+    { path: parentRoot, name: input.groupName, kind: 'parent', alreadyRegistered: isPathRegistered(parentRoot, registered) },
+  ];
+  for (const member of members) {
+    if (member.action === 'register') {
+      registrations.push({
+        path: member.resolvedPath,
+        name: member.name,
+        kind: 'member',
+        alreadyRegistered: isPathRegistered(member.resolvedPath, registered),
+      });
+    }
+  }
+
   return {
     parentRoot,
     groupName: input.groupName,
@@ -235,6 +288,7 @@ export async function planGroupSetup(input: GroupSetupInput): Promise<GroupSetup
     gitignore: missingGitignore,
     orphanBranch: { name: GROUP_DOCS_BRANCH, action: storeExists ? 'exists' : 'create' },
     members,
+    registrations,
     warnings,
   };
 }
@@ -248,6 +302,17 @@ export interface MemberResult {
   error?: string;
 }
 
+/** Outcome of registering one workspace (parent or member) during setup/backfill. */
+export interface RegistrationResult {
+  path: string;
+  name: string;
+  kind: 'parent' | 'member';
+  ok: boolean;
+  /** True when the path was already registered (no write performed). */
+  alreadyRegistered: boolean;
+  error?: string;
+}
+
 export interface GroupSetupResult {
   parentRoot: string;
   groupName: string;
@@ -255,6 +320,36 @@ export interface GroupSetupResult {
   patchedGitignore: boolean;
   scaffoldedStore: boolean;
   members: MemberResult[];
+  /** Workspaces registered (dedicated parent + verified present members). */
+  registrations: RegistrationResult[];
+}
+
+/**
+ * Register one workspace path idempotently, classifying the outcome. Never
+ * throws — a registry failure for one path is isolated and reported.
+ */
+async function registerOne(
+  target: string,
+  name: string,
+  kind: 'parent' | 'member',
+  registeredBefore: Array<{ path: string }>,
+  registerWorkspace: WorkspaceRegistrar,
+  dryRun: boolean,
+): Promise<RegistrationResult> {
+  if (isPathRegistered(target, registeredBefore)) {
+    return { path: target, name, kind, ok: true, alreadyRegistered: true };
+  }
+  if (dryRun) {
+    return { path: target, name, kind, ok: true, alreadyRegistered: false };
+  }
+  try {
+    // Label the entry with the group/member name so the workspace switcher
+    // shows something meaningful instead of the bare folder basename.
+    await registerWorkspace(target, name);
+    return { path: target, name, kind, ok: true, alreadyRegistered: false };
+  } catch (err: any) {
+    return { path: target, name, kind, ok: false, alreadyRegistered: false, error: err?.message ? String(err.message) : String(err) };
+  }
 }
 
 /** Injectable git runner so apply can be unit-tested without real repos. */
@@ -273,9 +368,9 @@ const defaultGitRunner: GitRunner = (cwd, args) =>
  */
 export async function applyGroupSetup(
   input: GroupSetupInput,
-  opts: { gitRunner?: GitRunner } = {},
+  opts: { gitRunner?: GitRunner; listWorkspaces?: WorkspaceLister; registerWorkspace?: WorkspaceRegistrar } = {},
 ): Promise<GroupSetupResult> {
-  const plan = await planGroupSetup(input);
+  const plan = await planGroupSetup(input, { listWorkspaces: opts.listWorkspaces });
   const parentRoot = plan.parentRoot;
 
   if (plan.alreadyConfigured && !input.force) {
@@ -345,5 +440,81 @@ export async function applyGroupSetup(
   await fs.writeFile(getGroupConfigFile(parentRoot), JSON.stringify(config, null, 2) + '\n', 'utf-8');
   const wroteConfig = true;
 
-  return { parentRoot, groupName: input.groupName, wroteConfig, patchedGitignore, scaffoldedStore, members };
+  // 5. Register the dedicated parent + every verified present member as EH
+  //    workspaces so the Case-1 member binding (FLUX-405) can resolve the
+  //    parent by reverse-lookup. Done after group.json is written so the
+  //    registry never points at a not-yet-configured parent. Idempotent and
+  //    isolated — a registry failure never undoes the setup.
+  const listWorkspaces = opts.listWorkspaces ?? defaultLister;
+  const registerWorkspace = opts.registerWorkspace ?? defaultRegistrar;
+  const registeredBefore = await listWorkspaces();
+  const registrations: RegistrationResult[] = [
+    await registerOne(parentRoot, input.groupName, 'parent', registeredBefore, registerWorkspace, false),
+  ];
+  for (const planned of plan.members) {
+    const memberResult = members.find((m) => m.name === planned.name);
+    if (planned.action === 'register' && memberResult?.ok) {
+      registrations.push(
+        await registerOne(planned.resolvedPath, planned.name, 'member', registeredBefore, registerWorkspace, false),
+      );
+    }
+  }
+
+  return { parentRoot, groupName: input.groupName, wroteConfig, patchedGitignore, scaffoldedStore, members, registrations };
+}
+
+// ─── backfill / repair (existing groups → Case 1) ────────────────────────────
+
+export interface EnsureRegisteredResult {
+  parentRoot: string;
+  groupName: string;
+  /** Per-target outcome for the parent + each present member. */
+  registrations: RegistrationResult[];
+  /** True when parent + all present members are registered after this call. */
+  complete: boolean;
+}
+
+/**
+ * Bring an already-configured group's workspace registry up to Case 1 without
+ * re-running setup or touching group.json. Registers the dedicated parent and
+ * every member with a present checkout that isn't registered yet. Idempotent.
+ *
+ * `dryRun` reports the gap without writing — used by the detect-on-activation
+ * check so nothing is mutated until the user consents.
+ *
+ * Note: when invoked from a *member* workspace this is reached via the member
+ * binding, which only resolves once the parent is already registered. An
+ * orphaned parent therefore self-heals only when the parent itself is activated
+ * (or through the folder-scan wizard, FLUX-407), not from a member.
+ */
+export async function ensureGroupRegistered(
+  parentRoot: string,
+  opts: { listWorkspaces?: WorkspaceLister; registerWorkspace?: WorkspaceRegistrar; dryRun?: boolean } = {},
+): Promise<EnsureRegisteredResult> {
+  const group = await loadGroupContext(parentRoot);
+  if (!group) {
+    throw new Error('No multi-repo group is configured at this workspace (no group.json).');
+  }
+  const listWorkspaces = opts.listWorkspaces ?? defaultLister;
+  const registerWorkspace = opts.registerWorkspace ?? defaultRegistrar;
+  const dryRun = Boolean(opts.dryRun);
+  const registeredBefore = await listWorkspaces();
+
+  const registrations: RegistrationResult[] = [
+    await registerOne(group.parentRoot, group.config.name, 'parent', registeredBefore, registerWorkspace, dryRun),
+  ];
+  for (const member of group.members) {
+    if (member.pathExists) {
+      registrations.push(
+        await registerOne(member.path, member.name, 'member', registeredBefore, registerWorkspace, dryRun),
+      );
+    }
+  }
+
+  // In dryRun nothing was written, so "complete" means everything was already
+  // registered (no gap to fix). In apply mode a successful (ok) register counts.
+  const complete = dryRun
+    ? registrations.every((r) => r.alreadyRegistered)
+    : registrations.every((r) => r.ok);
+  return { parentRoot: group.parentRoot, groupName: group.config.name, registrations, complete };
 }

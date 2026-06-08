@@ -1,6 +1,6 @@
 import express from 'express';
-import { workspaceRoot } from '../workspace.js';
-import { planGroupSetup, applyGroupSetup, type GroupSetupInput } from '../group-setup.js';
+import { workspaceRoot, getWorkspacesList } from '../workspace.js';
+import { planGroupSetup, applyGroupSetup, ensureGroupRegistered, type GroupSetupInput } from '../group-setup.js';
 import { syncGroup } from '../group-sync.js';
 import { submitGroupEdit, type GroupEditFile } from '../group-edit.js';
 import { summarizeGroup, getGroupContext, getMemberBinding, type GroupMember } from '../group.js';
@@ -8,8 +8,9 @@ import { summarizeGroup, getGroupContext, getMemberBinding, type GroupMember } f
 const router = express.Router();
 
 /** Current group status (mirrors the get_project_group MCP tool). */
-router.get('/', (_req, res) => {
-  res.json(summarizeGroup(getGroupContext()));
+router.get('/', async (_req, res) => {
+  const registeredPaths = (await getWorkspacesList()).map((w) => w.path);
+  res.json(summarizeGroup(getGroupContext(), registeredPaths));
 });
 
 function parseBody(body: any): GroupSetupInput | { error: string } {
@@ -63,6 +64,33 @@ router.post('/apply', async (req, res) => {
   if ('error' in input) return res.status(400).json({ error: input.error });
   try {
     const result = await applyGroupSetup(input);
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+/**
+ * Backfill: register the dedicated parent + present members as workspaces so the
+ * Case-1 member binding can resolve, without re-running setup. Runs only on
+ * explicit consent (the detect-on-activation prompt drives this). Resolves the
+ * group from the active parent context or a bound member's parent.
+ *
+ * Limitation: a member can only reach `getMemberBinding()` once the parent is
+ * ALREADY registered (the binding is discovered by reverse-lookup over the
+ * registry). So from a member workspace this can backfill missing *sibling*
+ * members but never an unregistered parent — an orphaned parent self-heals only
+ * when the parent workspace itself is activated (`getGroupContext()`), or via
+ * the folder-scan wizard (FLUX-407).
+ */
+router.post('/ensure-registered', async (_req, res) => {
+  if (!workspaceRoot) return res.status(400).json({ error: 'No workspace active' });
+  const group = getGroupContext() ?? getMemberBinding()?.parentGroup;
+  if (!group) {
+    return res.status(400).json({ error: 'No multi-repo group is configured for this workspace.' });
+  }
+  try {
+    const result = await ensureGroupRegistered(group.parentRoot);
     res.json(result);
   } catch (err: any) {
     res.status(400).json({ error: err.message });

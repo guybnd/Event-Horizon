@@ -223,6 +223,34 @@ describe('summarizeGroup', () => {
       await fs.rm(lateDir, { recursive: true, force: true });
     }
   });
+
+  it('reports registration state when a registry is supplied', async () => {
+    await fs.writeFile(
+      path.join(root, 'group.json'),
+      JSON.stringify({ name: 'p', members: [{ name: 'engine', role: 'api', remote: 'r' }] }),
+      'utf-8',
+    );
+    const ctx = await loadGroupContext(root);
+    const memberPath = ctx!.members[0].path;
+    await fs.mkdir(memberPath, { recursive: true }); // present checkout
+
+    // Parent registered, member not → incomplete.
+    const partial = summarizeGroup(ctx, [root]);
+    expect(partial.parentRegistered).toBe(true);
+    expect(partial.members![0].registered).toBe(false);
+    expect(partial.registrationComplete).toBe(false);
+
+    // Parent + member registered → complete.
+    const full = summarizeGroup(ctx, [root, memberPath]);
+    expect(full.registrationComplete).toBe(true);
+
+    // No registry supplied → legacy shape, no registration fields.
+    const legacy = summarizeGroup(ctx);
+    expect(legacy.parentRegistered).toBeUndefined();
+    expect('registered' in legacy.members![0]).toBe(false);
+
+    await fs.rm(memberPath, { recursive: true, force: true });
+  });
 });
 
 describe('buildMemberScopeArgs', () => {

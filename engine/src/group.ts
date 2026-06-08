@@ -264,6 +264,13 @@ export async function ensureGroupStoreScaffold(groupStoreDir: string): Promise<v
 
 // ─── Summary projection (for get_project_group / portal) ─────────────────────
 
+/** Path equality for registry comparison (case-insensitive on Windows). Local to avoid a workspace.ts import cycle. */
+function samePath(a: string, b: string): boolean {
+  const na = path.resolve(a);
+  const nb = path.resolve(b);
+  return process.platform === 'win32' ? na.toLowerCase() === nb.toLowerCase() : na === nb;
+}
+
 export interface GroupMemberSummary {
   name: string;
   role: string;
@@ -271,6 +278,8 @@ export interface GroupMemberSummary {
   path: string;
   /** Re-checked live at projection time, not the snapshot taken at load. */
   pathExists: boolean;
+  /** Whether this member's checkout is a registered EH workspace (Case 1). Present only when registry is supplied. */
+  registered?: boolean;
   testCommand?: string;
 }
 
@@ -278,6 +287,12 @@ export interface GroupSummary {
   configured: boolean;
   name?: string;
   members?: GroupMemberSummary[];
+  /** Parent repo root that owns the group. Present only when registry is supplied. */
+  parentRoot?: string;
+  /** Whether the dedicated parent is a registered EH workspace. Present only when registry is supplied. */
+  parentRegistered?: boolean;
+  /** True when parent + every present member is registered (Case 1 holds). Present only when registry is supplied. */
+  registrationComplete?: boolean;
   message?: string;
 }
 
@@ -286,26 +301,46 @@ export interface GroupSummary {
  * re-evaluated here (a single stat per member) rather than reused from the
  * load-time snapshot, so callers see whether each member is checked out *now*.
  * Returns a `configured: false` summary when no group is active.
+ *
+ * When `registeredPaths` (the current workspace registry) is supplied, the
+ * summary also reports Case-1 registration state: which members + the parent
+ * are registered, and whether registration is complete. Omitting it keeps the
+ * legacy shape unchanged.
  */
-export function summarizeGroup(group: GroupContext | null): GroupSummary {
+export function summarizeGroup(group: GroupContext | null, registeredPaths?: string[]): GroupSummary {
   if (!group) {
     return {
       configured: false,
       message: 'No multi-repo group is configured (no group.json in the workspace root).',
     };
   }
-  return {
-    configured: true,
-    name: group.config.name,
-    members: group.members.map((m) => ({
+  const isRegistered = (target: string): boolean =>
+    !!registeredPaths && registeredPaths.some((p) => samePath(p, target));
+  const members = group.members.map((m) => {
+    const present = existsSync(m.path);
+    return {
       name: m.name,
       role: m.role,
       remote: m.remote,
       path: m.path,
-      pathExists: existsSync(m.path),
+      pathExists: present,
+      ...(registeredPaths ? { registered: isRegistered(m.path) } : {}),
       ...(m.testCommand ? { testCommand: m.testCommand } : {}),
-    })),
+    };
+  });
+  const summary: GroupSummary = {
+    configured: true,
+    name: group.config.name,
+    members,
   };
+  if (registeredPaths) {
+    summary.parentRoot = group.parentRoot;
+    summary.parentRegistered = isRegistered(group.parentRoot);
+    // Complete = parent registered AND every present member registered.
+    summary.registrationComplete =
+      summary.parentRegistered && members.every((m) => !m.pathExists || m.registered);
+  }
+  return summary;
 }
 
 // ─── Agent scope (sibling-source scouring) ───────────────────────────────────
