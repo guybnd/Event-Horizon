@@ -1077,6 +1077,8 @@ export interface GroupStatus {
   parentRegistered?: boolean;
   /** True when parent + every present member is registered (Case 1 holds). */
   registrationComplete?: boolean;
+  /** Display label for the surfaced group docs tree (`group.json` docsLabel or the default `Product`). */
+  docsLabel?: string;
   /** How the current workspace sits in a group (parent or bound member), independent of `configured`. */
   membership?: GroupMembership;
   message?: string;

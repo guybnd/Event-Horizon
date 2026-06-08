@@ -7,7 +7,13 @@ import {
   parseDocOrder, titleFromDocPath, buildDocMarkdown,
 } from '../file-utils.js';
 import { docsCache, loadDoc, loadGroupDoc } from '../task-store.js';
-import { GROUP_DOCS_PREFIX, getGroupContext, getMemberBinding, groupDocPathToStoreRelative } from '../group.js';
+import {
+  activeGroupDocsLabel,
+  getGroupContext,
+  getMemberBinding,
+  groupDocPathToStoreRelative,
+  type GroupContext,
+} from '../group.js';
 import { submitGroupEdit } from '../group-edit.js';
 
 const router = express.Router();
@@ -19,14 +25,23 @@ function docPathFromReq(req: express.Request) {
 }
 
 /**
- * Human-readable reason a `Product/` group doc can't be edited from the current
- * workspace, tailored to whether we're the parent or an unbound member.
+ * Human-readable reason a group doc can't be edited from the current
+ * workspace. With FLUX-414 the parent edits its own group docs inline, so this
+ * only fires for a workspace that surfaces a group doc but owns no writer
+ * (neither parent context nor a member binding) — effectively unreachable.
  */
 function groupReadOnlyMessage(): string {
-  if (getGroupContext()) {
-    return `This is a cross-project group doc. Edit it from the group tools in this parent workspace, not the wiki editor.`;
-  }
   return `This is a read-only cross-project group doc. Open the owning group's parent workspace to edit it.`;
+}
+
+/**
+ * The group context that owns this workspace's surfaced group docs: the parent's
+ * own context, or a bound member's parent group. `submitGroupEdit` writes into
+ * this context's canonical store, commits, and fans out — so both the parent
+ * (editing in place) and a member (push-through-parent) use the same path.
+ */
+function groupWriterContext(): GroupContext | null {
+  return getGroupContext() ?? getMemberBinding()?.parentGroup ?? null;
 }
 
 /**
@@ -45,11 +60,12 @@ router.post('/', async (req, res) => {
   const docPath = normalizeDocPathInput(req.body?.path);
 
   if (!docPath) return res.status(400).json({ error: 'Invalid doc path' });
-  if (docPath.split('/')[0] === GROUP_DOCS_PREFIX) {
-    // Member workspace (Case 1): route a new group doc to the parent's writer.
-    const binding = getMemberBinding();
-    const storeRel = binding ? groupDocPathToStoreRelative(docPath) : null;
-    if (binding && storeRel) {
+  if (docPath.split('/')[0] === activeGroupDocsLabel()) {
+    // Group doc: route the create to the canonical store writer — the parent's
+    // own context, or a bound member's parent (Case 1). Both commit + fan out.
+    const writer = groupWriterContext();
+    const storeRel = writer ? groupDocPathToStoreRelative(docPath) : null;
+    if (writer && storeRel) {
       if (docsCache[docPath]) return res.status(409).json({ error: 'Doc already exists' });
       const title = typeof req.body?.title === 'string' && req.body.title.trim()
         ? req.body.title.trim()
@@ -57,17 +73,17 @@ router.post('/', async (req, res) => {
       const order = parseDocOrder(req.body?.order);
       const body = typeof req.body?.body === 'string' ? req.body.body.replace(/\r\n/g, '\n') : '';
       try {
-        const storeDir = binding.parentGroup.groupStoreDir;
-        await submitGroupEdit(binding.parentGroup, [{ path: storeRel, content: buildDocMarkdown(title, order, body) }]);
+        const storeDir = writer.groupStoreDir;
+        await submitGroupEdit(writer, [{ path: storeRel, content: buildDocMarkdown(title, order, body) }]);
         await loadGroupDoc(storeDir, parentStorePath(storeDir, storeRel));
         const created = docsCache[docPath];
         return res.status(201).json(created ? serializeDoc(created) : { success: true });
       } catch (error: any) {
-        console.error(`Failed to submit new group doc ${docPath} to parent:`, error);
-        return res.status(500).json({ error: `Failed to submit the new doc to the group parent: ${error.message}` });
+        console.error(`Failed to write new group doc ${docPath}:`, error);
+        return res.status(500).json({ error: `Failed to write the new group doc: ${error.message}` });
       }
     }
-    return res.status(403).json({ error: `The '${GROUP_DOCS_PREFIX}' namespace holds read-only cross-project group docs; edits go through the group's parent repo.` });
+    return res.status(403).json({ error: groupReadOnlyMessage() });
   }
   if (docsCache[docPath]) return res.status(409).json({ error: 'Doc already exists' });
 
@@ -110,25 +126,26 @@ router.put(/^\/.+$/, async (req, res) => {
 
   const existingDoc = docsCache[docPath];
   if (!existingDoc) return res.status(404).json({ error: 'Doc not found' });
-  if (existingDoc.readOnly) {
-    // Member workspace (Case 1): route the edit to the parent's writer in-process.
-    const binding = getMemberBinding();
-    const storeRel = existingDoc.group && binding ? groupDocPathToStoreRelative(docPath) : null;
-    if (binding && storeRel) {
+  if (existingDoc.group) {
+    // Group doc: route the edit to the canonical store writer — the parent edits
+    // in place (FLUX-414); a bound member pushes through the parent (Case 1).
+    const writer = groupWriterContext();
+    const storeRel = writer ? groupDocPathToStoreRelative(docPath) : null;
+    if (writer && storeRel) {
       const title = typeof req.body?.title === 'string' && req.body.title.trim()
         ? req.body.title.trim()
         : existingDoc.title;
       const order = req.body?.order === null ? undefined : parseDocOrder(req.body?.order) ?? existingDoc.order;
       const body = typeof req.body?.body === 'string' ? req.body.body.replace(/\r\n/g, '\n') : existingDoc.body;
       try {
-        const storeDir = binding.parentGroup.groupStoreDir;
-        await submitGroupEdit(binding.parentGroup, [{ path: storeRel, content: buildDocMarkdown(title, order, body) }]);
+        const storeDir = writer.groupStoreDir;
+        await submitGroupEdit(writer, [{ path: storeRel, content: buildDocMarkdown(title, order, body) }]);
         await loadGroupDoc(storeDir, parentStorePath(storeDir, storeRel));
         const updated = docsCache[docPath];
         return res.json(updated ? serializeDoc(updated) : { success: true });
       } catch (error: any) {
-        console.error(`Failed to submit group edit for ${docPath} to parent:`, error);
-        return res.status(500).json({ error: `Failed to submit the edit to the group parent: ${error.message}` });
+        console.error(`Failed to write group edit for ${docPath}:`, error);
+        return res.status(500).json({ error: `Failed to write the group doc edit: ${error.message}` });
       }
     }
     return res.status(403).json({ error: groupReadOnlyMessage() });
@@ -161,18 +178,19 @@ router.delete(/^\/.+$/, async (req, res) => {
 
   const doc = docsCache[docPath];
   if (!doc) return res.status(404).json({ error: 'Doc not found' });
-  if (doc.readOnly) {
-    // Member workspace (Case 1): route the delete to the parent's writer.
-    const binding = getMemberBinding();
-    const storeRel = doc.group && binding ? groupDocPathToStoreRelative(docPath) : null;
-    if (binding && storeRel) {
+  if (doc.group) {
+    // Group doc: route the delete to the canonical store writer — the parent
+    // deletes in place (FLUX-414); a bound member pushes through the parent.
+    const writer = groupWriterContext();
+    const storeRel = writer ? groupDocPathToStoreRelative(docPath) : null;
+    if (writer && storeRel) {
       try {
-        await submitGroupEdit(binding.parentGroup, [{ path: storeRel, delete: true }]);
+        await submitGroupEdit(writer, [{ path: storeRel, delete: true }]);
         delete docsCache[docPath];
         return res.json({ success: true });
       } catch (error: any) {
-        console.error(`Failed to submit group delete for ${docPath} to parent:`, error);
-        return res.status(500).json({ error: `Failed to submit the delete to the group parent: ${error.message}` });
+        console.error(`Failed to write group delete for ${docPath}:`, error);
+        return res.status(500).json({ error: `Failed to delete the group doc: ${error.message}` });
       }
     }
     return res.status(403).json({ error: groupReadOnlyMessage() });

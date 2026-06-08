@@ -15,6 +15,7 @@ import {
   activateMemberBinding,
   getMemberBinding,
   groupDocPathToStoreRelative,
+  groupDocsLabel,
   GROUP_STORE_DIRNAME,
   GROUP_DOCS_BRANCH,
 } from './group.js';
@@ -85,6 +86,26 @@ describe('validateGroupConfig', () => {
       expect(errors).toHaveLength(0);
     }
   });
+
+  it('accepts an optional safe docsLabel', () => {
+    const errors = validateGroupConfig({
+      name: 'x',
+      members: [{ name: 'a', role: 'api', remote: 'r' }],
+      docsLabel: 'Platform',
+    });
+    expect(errors).toHaveLength(0);
+  });
+
+  it('rejects an unsafe docsLabel (path traversal / separators)', () => {
+    for (const docsLabel of ['..', 'a/b', 'a\\b', '../evil']) {
+      const errors = validateGroupConfig({
+        name: 'x',
+        members: [{ name: 'a', role: 'api', remote: 'r' }],
+        docsLabel,
+      });
+      expect(errors.some((e) => e.path === 'docsLabel')).toBe(true);
+    }
+  });
 });
 
 describe('loadGroupContext', () => {
@@ -129,6 +150,20 @@ describe('loadGroupContext', () => {
     const engine = ctx!.members[0];
     expect(engine.path).toBe(path.resolve(root, '..', 'engine'));
     expect(engine.testCommand).toBe('npm test');
+  });
+
+  it('loads an optional docsLabel and surfaces it (default Product otherwise)', async () => {
+    await fs.writeFile(
+      path.join(root, 'group.json'),
+      JSON.stringify({ name: 'p', members: [{ name: 'engine', role: 'api', remote: 'r' }], docsLabel: 'Platform' }),
+      'utf-8',
+    );
+    const ctx = await loadGroupContext(root);
+    expect(ctx!.config.docsLabel).toBe('Platform');
+    expect(groupDocsLabel(ctx)).toBe('Platform');
+    expect(summarizeGroup(ctx).docsLabel).toBe('Platform');
+    // No docsLabel → default.
+    expect(groupDocsLabel(null)).toBe('Product');
   });
 
   it('honors per-machine path overrides from group.local.json', async () => {
@@ -476,5 +511,12 @@ describe('groupDocPathToStoreRelative', () => {
     expect(groupDocPathToStoreRelative('Product/..')).toBeNull();
     expect(groupDocPathToStoreRelative('Product/features/..')).toBeNull();
     expect(groupDocPathToStoreRelative('')).toBeNull();
+  });
+
+  it('honors a custom docs label prefix (FLUX-414)', () => {
+    expect(groupDocPathToStoreRelative('Platform/features/checkout', 'Platform')).toBe('features/checkout.md');
+    // The default 'Product' prefix no longer matches once a custom label is used.
+    expect(groupDocPathToStoreRelative('Product/features/checkout', 'Platform')).toBeNull();
+    expect(groupDocPathToStoreRelative('Platform/..', 'Platform')).toBeNull();
   });
 });

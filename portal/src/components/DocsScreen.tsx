@@ -245,13 +245,14 @@ export function DocsScreen() {
   const showToolbarActiveState = isEditorFocused && hasTextSelection;
 
   // Cross-project feature map (FLUX-403): the read-only group feature docs live
-  // under `Product/features/*`. Surface them as cards on the docs landing view.
+  // under `<docsLabel>/features/*`. Surface them as cards on the docs landing view.
+  const groupDocsLabel = groupStatus?.docsLabel ?? 'Product';
   const featureDocs = useMemo(
     () =>
       docs
-        .filter((doc) => doc.path.startsWith('Product/features/'))
+        .filter((doc) => doc.path.startsWith(`${groupDocsLabel}/features/`))
         .sort((left, right) => left.title.localeCompare(right.title, undefined, { sensitivity: 'base' })),
-    [docs],
+    [docs, groupDocsLabel],
   );
   const groupMembers = groupStatus?.members ?? [];
   const isInGroup = groupStatus?.configured === true || groupStatus?.membership != null;
@@ -837,7 +838,7 @@ export function DocsScreen() {
                   This repo is the
                   <span className="font-semibold text-gray-700 dark:text-gray-300"> {groupStatus.membership.memberName}</span>
                   {groupStatus.membership.memberRole ? ` (${groupStatus.membership.memberRole})` : ''} member.
-                  The <code className="font-mono">Product/</code> tree below is the shared group knowledge base.
+                  The <code className="font-mono">{groupDocsLabel}/</code> tree below is the shared cross-project knowledge base. Edits route to the group parent.
                 </p>
               </div>
             </div>
@@ -854,6 +855,9 @@ export function DocsScreen() {
                 <p className="text-[11px] text-gray-500">Multi-repo group · {groupStatus.members?.length ?? 0} member(s)</p>
               </div>
             </div>
+            <p className="mt-3 text-[11px] leading-relaxed text-gray-500">
+              The <code className="font-mono">{groupDocsLabel}/</code> tree is this group’s shared cross-project knowledge base (the canonical <code className="font-mono">.flux-group</code> store). As the parent you can edit it inline here; saving fans the change out to every member.
+            </p>
             <ul className="mt-3 space-y-2">
               {(groupStatus.members ?? []).map((member) => (
                 <li key={member.name} className="flex items-center justify-between gap-2 text-xs">
@@ -896,7 +900,7 @@ export function DocsScreen() {
           onCreateDoc={handleCreateDoc}
           onReorderDocs={handleReorderDocs}
           creating={creating}
-          readOnlyPrefix="Product"
+          readOnlyPrefix={groupStatus?.membership?.role === 'member' ? groupDocsLabel : undefined}
         />
       </div>
 

@@ -5,7 +5,7 @@ import { scanFolderForRepos, discoverFromRegistry, createDedicatedParent, type C
 import { syncGroup } from '../group-sync.js';
 import { submitGroupEdit, type GroupEditFile } from '../group-edit.js';
 import { planDocsPromotion, applyDocsPromotion, type PromotionSelection } from '../group-promote.js';
-import { summarizeGroup, getGroupContext, getMemberBinding, type GroupMember } from '../group.js';
+import { summarizeGroup, getGroupContext, getMemberBinding, groupDocsLabel, type GroupMember } from '../group.js';
 
 const router = express.Router();
 
@@ -25,6 +25,7 @@ router.get('/', async (_req, res) => {
   const binding = getMemberBinding();
   if (binding) {
     const summary = summarizeGroup(null, registeredPaths);
+    summary.docsLabel = groupDocsLabel(binding.parentGroup);
     const self = binding.parentGroup.config.members.find((m) => m.name === binding.memberName);
     summary.membership = {
       role: 'member',

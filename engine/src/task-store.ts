@@ -19,7 +19,7 @@ import { isTopLevelTaskFile, getDocsDir, isDocFile, getDocPathFromFile, titleFro
 import type { StoredDoc } from './file-utils.js';
 import { resolveEmbeddedDocsRoot, copyDir, buildStarterProjectOverview } from './docs-seeder.js';
 import { bootstrapNewWorkspace, installSkillsForWorkspace } from './bootstrap.js';
-import { activateGroup, activateMemberBinding, getGroupContext, getMemberBinding, GROUP_DOCS_PREFIX } from './group.js';
+import { activateGroup, activateMemberBinding, getGroupContext, getMemberBinding, activeGroupDocsLabel } from './group.js';
 
 export let tasksCache: Record<string, any> = {};
 export let docsCache: Record<string, StoredDoc> = {};
@@ -698,7 +698,7 @@ function groupDocPathFromFile(storeDir: string, filePath: string): string | null
   const withoutExt = relative.slice(0, -3);
   const segments = withoutExt.split('/').filter(Boolean);
   if (segments.length === 0 || segments.some((s) => s === '.' || s === '..')) return null;
-  return [GROUP_DOCS_PREFIX, ...segments].join('/');
+  return [activeGroupDocsLabel(), ...segments].join('/');
 }
 
 /** Load a single group doc into the cache as a read-only Product entry. */
@@ -722,7 +722,10 @@ export async function loadGroupDoc(storeDir: string, filePath: string) {
       slug: slugifyDocValue(slugSource),
       directory,
       ...(order !== undefined ? { order } : {}),
-      readOnly: true,
+      // The parent owns the canonical store, so it edits its own group docs
+      // inline (FLUX-414); a bound member keeps them read-only and routes edits
+      // to the parent's writer.
+      readOnly: getGroupContext() == null,
       group: true,
       _path: filePath,
     };

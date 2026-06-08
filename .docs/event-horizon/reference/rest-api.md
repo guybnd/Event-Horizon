@@ -77,10 +77,10 @@ From [`routes/docs.ts`](../../../engine/src/routes/docs.ts). Docs paths use a re
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/docs` | Docs tree (folders + files with frontmatter). |
-| POST | `/api/docs` | Create a doc. Body: `{ path, title?, body?, order? }`. Returns **403** when `path` is under the read-only group subtree (`Product/…`). |
+| POST | `/api/docs` | Create a doc. Body: `{ path, title?, body?, order? }`. A path under the group docs label (`Product/…`, or the group's `docsLabel`) is routed to the canonical `.flux-group` store: the **parent** writes in place and the **member** pushes through the parent — both commit + fan out. Returns **403** only when no group writer is resolvable. |
 | GET | `/api/docs/<any/path>` | Read a doc by path. |
-| PUT | `/api/docs/<any/path>` | Update a doc body / frontmatter. Body: `{ title?, body?, order? }`. Returns **403** when the target doc is `readOnly` (cross-project group docs). |
-| DELETE | `/api/docs/<any/path>` | Delete a doc. Returns **403** when the target doc is `readOnly` (cross-project group docs). |
+| PUT | `/api/docs/<any/path>` | Update a doc body / frontmatter. Body: `{ title?, body?, order? }`. A **group** doc (`doc.group`) is written through the canonical store writer — the parent edits its own group docs inline (FLUX-414), a member pushes through the parent — then fans out. Returns **403** only when no group writer is resolvable. |
+| DELETE | `/api/docs/<any/path>` | Delete a doc. A **group** doc is deleted through the canonical store writer (parent in place, member push-through-parent) and fanned out. Returns **403** only when no group writer is resolvable. |
 
 > Cross-project group docs (multi-repo groups) surface in the tree under the synthetic `Product/` prefix with `readOnly: true` and `group: true`. They are loaded from the canonical group store and are not editable in-place — edits route through the parent repo (see [multi-repo groups](../architecture/multi-repo-groups.md)).
 
@@ -161,7 +161,7 @@ From [`routes/group.ts`](../../../engine/src/routes/group.ts). Multi-repo group 
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/group` | Current group status (mirrors the `get_project_group` MCP tool — `{ configured, … }`). When the workspace is the parent or a reverse-lookup-bound member, the response also carries `membership: { role: 'parent' \| 'member', groupName, parentRoot, memberName?, memberRole? }`. A bound **member** still reports `configured: false` (parent-only operations stay parent-only) — `membership` is the signal that the repo belongs to a group. |
+| GET | `/api/group` | Current group status (mirrors the `get_project_group` MCP tool — `{ configured, … }`). Includes `docsLabel` (the surfaced group docs prefix — `group.json`'s `docsLabel` or the default `Product`). When the workspace is the parent or a reverse-lookup-bound member, the response also carries `membership: { role: 'parent' \| 'member', groupName, parentRoot, memberName?, memberRole? }`. A bound **member** still reports `configured: false` (parent-only operations stay parent-only) — `membership` is the signal that the repo belongs to a group. |
 | POST | `/api/group/plan` | Compute the intrusive actions (write `group.json`, patch `.gitignore`, scaffold store, register/clone members) with **zero git mutation**. Body: `{ name, members: [{ name, role, remote, testCommand? }], force?, allowLocalRemotes? }`. Returns a `GroupSetupPlan`. |
 | POST | `/api/group/apply` | Perform the planned writes. Same body as `plan`. Per-member isolation; returns a `GroupSetupResult` with a per-member `{ ok, error? }` aggregate. Refuses to overwrite an existing `group.json` without `force`. |
 | POST | `/api/group/ensure-registered` | Idempotent **backfill**: register the dedicated parent + present members as workspaces so the Case-1 member binding can resolve, without re-running setup or rewriting `group.json`. No body. Resolves the group from the active parent context or a bound member's parent. Returns an `EnsureRegisteredResult` (`{ complete, registrations: [{ kind, path, alreadyRegistered, ok }] }`). |

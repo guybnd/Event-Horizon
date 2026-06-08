@@ -30,6 +30,9 @@ export const GROUP_DOCS_BRANCH = 'flux-group-docs';
  * Synthetic top-level prefix under which cross-project group docs (`.flux-group`)
  * are surfaced in the portal docs tree, keeping them from colliding with a
  * repo's own `.docs/` (which render unprefixed). See the spec's path-prefixing rule.
+ * This is the **default** label; a group may override it via `group.json`'s
+ * optional `docsLabel` (FLUX-414) — it's a display prefix only, not a folder, so
+ * changing it re-surfaces the same store docs under a new name without moving files.
  */
 export const GROUP_DOCS_PREFIX = 'Product';
 
@@ -47,6 +50,11 @@ export interface GroupMember {
 export interface GroupConfig {
   name: string;
   members: GroupMember[];
+  /**
+   * Optional display label for the surfaced group docs tree (default `Product`).
+   * Display prefix only — changing it does not move any files (FLUX-414).
+   */
+  docsLabel?: string;
 }
 
 export interface ResolvedMember extends GroupMember {
@@ -124,6 +132,17 @@ export function validateGroupConfig(raw: any): GroupValidationError[] {
   }
   if (raw.members.length === 0) {
     errors.push({ path: 'members', message: 'members must be a non-empty array' });
+  }
+
+  if (raw.docsLabel != null) {
+    if (!isNonEmptyString(raw.docsLabel)) {
+      errors.push({ path: 'docsLabel', message: 'docsLabel must be a non-empty string when present' });
+    } else if (!isSafeName(raw.docsLabel.trim())) {
+      errors.push({
+        path: 'docsLabel',
+        message: `unsafe docsLabel '${raw.docsLabel}' (must be a single path segment: letters, digits, '.', '_', '-')`,
+      });
+    }
   }
 
   const seenNames = new Set<string>();
@@ -206,6 +225,7 @@ export async function loadGroupContext(parentRoot: string): Promise<GroupContext
       remote: m.remote,
       ...(isNonEmptyString(m.testCommand) ? { testCommand: m.testCommand } : {}),
     })),
+    ...(isNonEmptyString(raw.docsLabel) ? { docsLabel: raw.docsLabel.trim() } : {}),
   };
 
   let local: GroupLocalConfig | null = null;
@@ -293,6 +313,8 @@ export interface GroupSummary {
   parentRegistered?: boolean;
   /** True when parent + every present member is registered (Case 1 holds). Present only when registry is supplied. */
   registrationComplete?: boolean;
+  /** Display label for the surfaced group docs tree (`config.docsLabel` or the default `Product`). */
+  docsLabel?: string;
   /**
    * How the *current* workspace sits in a group, independent of `configured`
    * (which is parent-context only). Set on both the parent (`role: 'parent'`)
@@ -351,6 +373,7 @@ export function summarizeGroup(group: GroupContext | null, registeredPaths?: str
   const summary: GroupSummary = {
     configured: true,
     name: group.config.name,
+    docsLabel: groupDocsLabel(group),
     members,
   };
   if (registeredPaths) {
@@ -448,6 +471,20 @@ let currentMemberBinding: MemberGroupBinding | null = null;
 /** Get the active member→parent binding, or null when not a bound member. */
 export function getMemberBinding(): MemberGroupBinding | null {
   return currentMemberBinding;
+}
+
+/** The display label for a group's surfaced docs tree (`config.docsLabel` or the default). */
+export function groupDocsLabel(group: GroupContext | null | undefined): string {
+  const label = group?.config.docsLabel;
+  return isNonEmptyString(label) ? label.trim() : GROUP_DOCS_PREFIX;
+}
+
+/**
+ * Resolve the docs label for the *active* workspace — the parent's own group, or
+ * a bound member's parent group. Falls back to the default in single-repo mode.
+ */
+export function activeGroupDocsLabel(): string {
+  return groupDocsLabel(currentGroup ?? currentMemberBinding?.parentGroup ?? null);
 }
 
 /**
@@ -550,9 +587,9 @@ export async function activateMemberBinding(selfRoot: string, registeredRoots: s
  * member's edit of a group doc to the parent's canonical store. Returns null
  * when the path is not under the group prefix or contains unsafe segments.
  */
-export function groupDocPathToStoreRelative(docPath: string): string | null {
+export function groupDocPathToStoreRelative(docPath: string, prefix: string = activeGroupDocsLabel()): string | null {
   const segments = (docPath || '').split('/').filter(Boolean);
-  if (segments.length < 2 || segments[0] !== GROUP_DOCS_PREFIX) return null;
+  if (segments.length < 2 || segments[0] !== prefix) return null;
   const rest = segments.slice(1);
   if (rest.some((s) => s === '.' || s === '..')) return null;
   return rest.join('/') + '.md';

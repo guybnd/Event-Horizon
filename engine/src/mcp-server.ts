@@ -14,7 +14,7 @@ import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry } f
 import { getCliWorkspace, getActiveFluxDir, getWorkspacesList } from './workspace.js';
 import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, checkGhAuth, captureDiff, getCurrentCommit } from './branch-manager.js';
 import { getActiveSessionsForTask } from './session-store.js';
-import { getGroupContext, getMemberBinding, summarizeGroup } from './group.js';
+import { getGroupContext, getMemberBinding, groupDocsLabel, summarizeGroup } from './group.js';
 
 function textResult(text: string) {
   return { content: [{ type: 'text' as const, text }] };
@@ -112,6 +112,7 @@ export async function startMcpServer(): Promise<void> {
       const binding = getMemberBinding();
       if (binding) {
         const summary = summarizeGroup(null, registeredPaths);
+        summary.docsLabel = groupDocsLabel(binding.parentGroup);
         const self = binding.parentGroup.config.members.find((m) => m.name === binding.memberName);
         summary.membership = {
           role: 'member',
