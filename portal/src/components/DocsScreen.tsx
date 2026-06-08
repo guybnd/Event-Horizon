@@ -9,7 +9,7 @@ import { TableCell } from '@tiptap/extension-table-cell';
 import TurndownService from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
 import { marked } from 'marked';
-import { AlertCircle, Bold, Code, FileText, Heading1, Heading2, Info, Italic, Link as LinkIcon, List, ListOrdered, Lock, Network, Save, Trash2 } from 'lucide-react';
+import { AlertCircle, Bold, Code, FileText, Heading1, Heading2, Info, Italic, Link as LinkIcon, List, ListOrdered, Lock, Network, Save, Share2, Trash2 } from 'lucide-react';
 import { createDoc, deleteDoc, fetchDoc, fetchDocs, fetchGroupStatus, updateDoc } from '../api';
 import { useApp } from '../AppContext';
 import type { Doc } from '../types';
@@ -200,7 +200,7 @@ function ToolbarButton({
 }
 
 export function DocsScreen() {
-  const { currentUser, config, workspacePath } = useApp();
+  const { currentUser, config, workspacePath, setView } = useApp();
   const [docs, setDocs] = useState<Doc[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(
     () => new URLSearchParams(window.location.search).get('doc')
@@ -257,6 +257,13 @@ export function DocsScreen() {
   const groupMembers = groupStatus?.members ?? [];
   const isInGroup = groupStatus?.configured === true || groupStatus?.membership != null;
   const showFeatureMap = isInGroup && featureDocs.length > 0;
+  // Promotion discoverability (FLUX-416): on a group parent, a repo-local `.docs/`
+  // doc (anything outside the `<docsLabel>/` group tree) is NOT shared with members
+  // until it's promoted. Nudge toward the promotion panel so this isn't mistaken
+  // for a sync bug.
+  const isGroupParent = groupStatus?.configured === true;
+  const selectedDocIsGroupDoc = selectedDoc != null && selectedDoc.path.startsWith(`${groupDocsLabel}/`);
+  const showPromoteHint = isGroupParent && selectedDoc != null && !selectedDocIsGroupDoc && !isSelectedDocReadOnly;
   const participatingMembers = (doc: Doc) => {
     const haystack = `${doc.title}\n${doc.body ?? ''}`.toLowerCase();
     return groupMembers.filter((member) => haystack.includes(member.name.toLowerCase()));
@@ -988,6 +995,22 @@ export function DocsScreen() {
             <div className="flex items-start gap-3 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800 dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-200">
               <Lock className="mt-0.5 h-4 w-4 shrink-0" />
               This is a read-only cross-project group doc. Edits are authored in the group's parent repo and fanned out to members.
+            </div>
+          )}
+
+          {showPromoteHint && (
+            <div className="flex flex-wrap items-start gap-3 rounded-2xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-800 dark:border-indigo-500/20 dark:bg-indigo-500/10 dark:text-indigo-200">
+              <Share2 className="mt-0.5 h-4 w-4 shrink-0" />
+              <div className="flex-1 min-w-0">
+                This doc is local to this repo — it isn't shared with the group. Only docs under <code className="font-mono">{groupDocsLabel}/</code> fan out to members. Promote it to share it across the group.
+              </div>
+              <button
+                type="button"
+                onClick={() => setView('settings')}
+                className="shrink-0 rounded-xl border border-indigo-300 bg-white/60 px-3 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-white dark:border-indigo-500/30 dark:bg-white/5 dark:text-indigo-200 dark:hover:bg-white/10"
+              >
+                Promote doc…
+              </button>
             </div>
           )}
 
