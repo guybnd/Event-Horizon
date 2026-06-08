@@ -200,7 +200,7 @@ function ToolbarButton({
 }
 
 export function DocsScreen() {
-  const { currentUser, config } = useApp();
+  const { currentUser, config, workspacePath } = useApp();
   const [docs, setDocs] = useState<Doc[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(
     () => new URLSearchParams(window.location.search).get('doc')
@@ -426,7 +426,7 @@ export function DocsScreen() {
     return () => {
       cancelled = true;
     };
-  }, [docsRefreshKey]);
+  }, [docsRefreshKey, workspacePath]);
 
   useEffect(() => {
     if (!selectedPath) {
@@ -476,7 +476,7 @@ export function DocsScreen() {
     return () => {
       cancelled = true;
     };
-  }, [selectedPath]);
+  }, [selectedPath, workspacePath]);
 
   useEffect(() => {
     if (!editor) {
@@ -510,7 +510,7 @@ export function DocsScreen() {
       .then((status) => { if (!cancelled) setGroupStatus(status); })
       .catch(() => { if (!cancelled) setGroupStatus(null); });
     return () => { cancelled = true; };
-  }, []);
+  }, [workspacePath]);
 
   useEffect(() => {
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
