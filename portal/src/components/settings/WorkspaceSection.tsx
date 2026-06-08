@@ -594,8 +594,16 @@ export function WorkspaceSection({
       {showGroupSetup && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm pointer-events-auto">
           <div className="eh-surface-overlay p-6 rounded-xl shadow-2xl w-[560px] max-h-[85vh] overflow-y-auto border eh-border">
-            <h3 className="text-lg font-bold mb-4 text-gray-900 dark:text-white">Multi-repo group setup</h3>
+            <h3 className="text-lg font-bold mb-4 text-gray-900 dark:text-white">{groupStatus?.configured ? 'Reconfigure multi-repo group' : 'Multi-repo group setup'}</h3>
             <GroupSetupPreview
+              initial={
+                groupStatus?.configured
+                  ? {
+                      name: groupStatus.name ?? '',
+                      members: (groupStatus.members ?? []).map((m) => ({ name: m.name, role: m.role, remote: m.remote })),
+                    }
+                  : undefined
+              }
               onComplete={() => { setShowGroupSetup(false); loadGroupStatus(); }}
               onCancel={() => setShowGroupSetup(false)}
             />

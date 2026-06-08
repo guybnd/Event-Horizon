@@ -22,6 +22,8 @@ import {
 interface GroupSetupPreviewProps {
   onComplete: () => void;
   onCancel: () => void;
+  /** Existing group config to prefill when reconfiguring an already-configured parent (FLUX-413). */
+  initial?: { name: string; members: MemberDraft[] };
 }
 
 interface MemberDraft {
@@ -34,11 +36,15 @@ type Step = 'input' | 'plan' | 'result';
 
 const emptyMember = (): MemberDraft => ({ name: '', role: '', remote: '' });
 
-export function GroupSetupPreview({ onComplete, onCancel }: GroupSetupPreviewProps) {
+export function GroupSetupPreview({ onComplete, onCancel, initial }: GroupSetupPreviewProps) {
+  const isReconfigure = initial != null;
   const [step, setStep] = useState<Step>('input');
-  const [groupName, setGroupName] = useState('');
-  const [members, setMembers] = useState<MemberDraft[]>([emptyMember()]);
-  const [force, setForce] = useState(false);
+  const [groupName, setGroupName] = useState(initial?.name ?? '');
+  const [members, setMembers] = useState<MemberDraft[]>(
+    initial && initial.members.length > 0 ? initial.members.map((m) => ({ ...m })) : [emptyMember()],
+  );
+  // Reconfiguring overwrites the existing group.json, which apply refuses without force.
+  const [force, setForce] = useState(isReconfigure);
   const [allowLocal, setAllowLocal] = useState(false);
 
   const [plan, setPlan] = useState<GroupSetupPlan | null>(null);
@@ -275,8 +281,9 @@ export function GroupSetupPreview({ onComplete, onCancel }: GroupSetupPreviewPro
   return (
     <div className="flex flex-col gap-4">
       <p className="text-sm text-gray-500 dark:text-gray-400">
-        Create a multi-repo group. Nothing is written until you review the plan and confirm — this mirrors the bootstrap
-        import flow.
+        {isReconfigure
+          ? 'Edit this group\u2019s name and members. The form is prefilled with the current group.json — nothing is written until you review the plan and confirm.'
+          : 'Create a multi-repo group. Nothing is written until you review the plan and confirm — this mirrors the bootstrap import flow.'}
       </p>
 
       {error && (
