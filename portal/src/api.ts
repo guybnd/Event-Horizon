@@ -1147,3 +1147,80 @@ export async function planGroupSetup(body: GroupSetupRequest): Promise<GroupSetu
 export async function applyGroupSetup(body: GroupSetupRequest): Promise<GroupSetupResult> {
   return groupSetupRequest<GroupSetupResult>('apply', body);
 }
+
+// ─── Group onboarding/migration wizard (FLUX-407) ────────────────────────────
+
+/** A git repo discovered as a candidate group member. */
+export interface DiscoveredRepo {
+  path: string;
+  name: string;
+  remote: string | null;
+  registered: boolean;
+  /** Whether this repo already holds a group.json (it's a parent, not a member). */
+  isGroupParent: boolean;
+}
+
+export interface FolderScanResult {
+  folder: string;
+  repos: DiscoveredRepo[];
+}
+
+export interface CreateParentResult {
+  parentRoot: string;
+  groupName: string;
+  gitInitialized: boolean;
+  wroteConfig: boolean;
+  scaffoldedStore: boolean;
+  registered: boolean;
+}
+
+/** Discovery source: repos EH already knows (workspace registry). */
+export async function discoverGroupRegistry(): Promise<DiscoveredRepo[]> {
+  const res = await fetch(`${API_URL}/group/discover/registry`);
+  if (!res.ok) throw new Error('Failed to read workspace registry');
+  const data = await res.json();
+  return data.repos as DiscoveredRepo[];
+}
+
+/** Discovery source: scan a folder for immediate-child git repos. */
+export async function discoverGroupFolder(folder: string): Promise<FolderScanResult> {
+  const res = await fetch(`${API_URL}/group/discover/folder`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ folder }),
+  });
+  if (!res.ok) {
+    let message = 'Failed to scan folder';
+    try {
+      const payload = await res.json();
+      if (payload.error) message = payload.error;
+    } catch {}
+    throw new Error(message);
+  }
+  return res.json();
+}
+
+/**
+ * Create a brand-new dedicated parent repo to host a group. The dedicated-parent
+ * model forbids reusing a member repo, so this is how the wizard lands a new group.
+ */
+export async function createGroupParent(body: {
+  parentPath: string;
+  name: string;
+  members: GroupMemberInput[];
+}): Promise<CreateParentResult> {
+  const res = await fetch(`${API_URL}/group/create-parent`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let message = 'Failed to create dedicated parent';
+    try {
+      const payload = await res.json();
+      if (payload.error) message = payload.error;
+    } catch {}
+    throw new Error(message);
+  }
+  return res.json();
+}

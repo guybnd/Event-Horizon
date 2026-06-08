@@ -2,8 +2,9 @@ import { useState, useEffect, useCallback } from 'react';
 import type { UserDef, DocsEditPermissions } from '../../types';
 import { SimpleEditor } from './shared';
 import { GroupSetupPreview } from '../GroupSetupPreview';
-import { groupRegistrationGaps } from '../../utils';
-import { setWorkspace as apiSetWorkspace, pickWorkspaceFolder, fetchStorageMode, migrateStorage, restoreStorage, fetchWorkspaces, addWorkspace, removeWorkspace, updateWorkspaceLabel as apiUpdateLabel, switchWorkspace as apiSwitchWorkspace, fetchGroupStatus, ensureGroupRegistered, type WorkspaceInfo, type GroupStatus } from '../../api';
+import { GroupWizard } from '../GroupWizard';
+import { groupRegistrationGaps, parentDirOf, multiRepoNudge } from '../../utils';
+import { setWorkspace as apiSetWorkspace, pickWorkspaceFolder, fetchStorageMode, migrateStorage, restoreStorage, fetchWorkspaces, addWorkspace, removeWorkspace, updateWorkspaceLabel as apiUpdateLabel, switchWorkspace as apiSwitchWorkspace, fetchGroupStatus, ensureGroupRegistered, discoverGroupFolder, type WorkspaceInfo, type GroupStatus } from '../../api';
 
 interface WorkspaceSectionProps {
   users: UserDef[];
@@ -61,8 +62,11 @@ export function WorkspaceSection({
 
   const [groupStatus, setGroupStatus] = useState<GroupStatus | null>(null);
   const [showGroupSetup, setShowGroupSetup] = useState(false);
+  const [showGroupWizard, setShowGroupWizard] = useState(false);
   const [registering, setRegistering] = useState(false);
   const [registerError, setRegisterError] = useState<string | null>(null);
+  const [siblingRepoCount, setSiblingRepoCount] = useState(0);
+  const [nudgeDismissed, setNudgeDismissed] = useState(false);
 
   const [configuredWorkspaces, setConfiguredWorkspaces] = useState<WorkspaceInfo[]>([]);
   const [addingWorkspace, setAddingWorkspace] = useState(false);
@@ -104,6 +108,29 @@ export function WorkspaceSection({
     if (!workspacePath) return;
     loadGroupStatus();
   }, [workspacePath, loadGroupStatus]);
+
+  // Optional multi-repo nudge: if the active workspace's parent folder holds
+  // sibling git repos and no group is configured, offer the wizard — once,
+  // dismissible, never blocking. Detection is read-only.
+  useEffect(() => {
+    if (!workspacePath || groupStatus === null) return;
+    if (groupStatus.configured) { setSiblingRepoCount(0); return; }
+    const parent = parentDirOf(workspacePath);
+    if (!parent) return;
+    const dismissKey = `eh-group-nudge-dismissed:${parent}`;
+    setNudgeDismissed(localStorage.getItem(dismissKey) === '1');
+    let cancelled = false;
+    discoverGroupFolder(parent)
+      .then((r) => { if (!cancelled) setSiblingRepoCount(r.repos.length); })
+      .catch(() => { if (!cancelled) setSiblingRepoCount(0); });
+    return () => { cancelled = true; };
+  }, [workspacePath, groupStatus]);
+
+  const dismissNudge = useCallback(() => {
+    const parent = workspacePath ? parentDirOf(workspacePath) : null;
+    if (parent) localStorage.setItem(`eh-group-nudge-dismissed:${parent}`, '1');
+    setNudgeDismissed(true);
+  }, [workspacePath]);
 
   const handleBrowseWorkspace = async () => {
     setAddingWorkspace(true);
@@ -442,6 +469,29 @@ export function WorkspaceSection({
             patches <code className="font-mono bg-gray-100 dark:bg-white/10 px-1 rounded">.gitignore</code>, and scaffolds the
             canonical store — so it always runs as a reviewable plan you confirm before anything is written.
           </p>
+
+          {(() => {
+            const nudge = multiRepoNudge({ groupConfigured: groupStatus?.configured, siblingRepoCount, dismissed: nudgeDismissed });
+            if (nudge === null) return null;
+            return (
+              <div className="mb-4 flex items-start gap-3 rounded-xl border border-primary/30 bg-primary/5 p-4">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-gray-800 dark:text-gray-200">Found {nudge} repos next to this one</p>
+                  <p className="mt-1 text-xs text-gray-500">
+                    If some of these form one product, you can link them into a group with a shared knowledge base. This is optional.
+                  </p>
+                  <button
+                    onClick={() => setShowGroupWizard(true)}
+                    className="mt-3 rounded-lg bg-primary px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-primary-hover"
+                  >
+                    Create group from repos…
+                  </button>
+                </div>
+                <button onClick={dismissNudge} className="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">Dismiss</button>
+              </div>
+            );
+          })()}
+
           <div className="flex items-center gap-4 flex-wrap">
             <span className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${
               groupStatus?.configured
@@ -461,6 +511,14 @@ export function WorkspaceSection({
             >
               {groupStatus?.configured ? 'Reconfigure group…' : 'Set up group…'}
             </button>
+            {!groupStatus?.configured && (
+              <button
+                onClick={() => setShowGroupWizard(true)}
+                className="rounded-lg border border-primary/40 px-4 py-2 text-sm font-semibold text-primary hover:bg-primary/5"
+              >
+                Create group from repos…
+              </button>
+            )}
           </div>
 
           {groupStatus?.configured && groupStatus.registrationComplete === false && (() => {
@@ -517,6 +575,18 @@ export function WorkspaceSection({
             <GroupSetupPreview
               onComplete={() => { setShowGroupSetup(false); loadGroupStatus(); }}
               onCancel={() => setShowGroupSetup(false)}
+            />
+          </div>
+        </div>
+      )}
+
+      {showGroupWizard && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm pointer-events-auto">
+          <div className="eh-surface-overlay p-6 rounded-xl shadow-2xl w-[620px] max-h-[88vh] overflow-y-auto border eh-border">
+            <h3 className="text-lg font-bold mb-4 text-gray-900 dark:text-white">Create a product group</h3>
+            <GroupWizard
+              onComplete={() => { setShowGroupWizard(false); loadGroupStatus(); loadWorkspaces(); notifyWorkspaceSet(); }}
+              onCancel={() => setShowGroupWizard(false)}
             />
           </div>
         </div>

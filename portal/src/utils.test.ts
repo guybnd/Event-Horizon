@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { truncateMiddle, groupRegistrationGaps } from './utils';
+import { truncateMiddle, groupRegistrationGaps, parentDirOf, multiRepoNudge } from './utils';
 import type { GroupStatus, GroupMemberSummary } from './api';
 
 describe('truncateMiddle', () => {
@@ -121,5 +121,44 @@ describe('groupRegistrationGaps', () => {
     // registrationComplete is false (engine counts only present members), but there's
     // nothing the user can register here, so the banner must not appear.
     expect(groupRegistrationGaps(status).hasGap).toBe(false);
+  });
+});
+
+describe('parentDirOf', () => {
+  it('returns the parent of a posix path', () => {
+    expect(parentDirOf('/home/me/repos/engine')).toBe('/home/me/repos');
+  });
+
+  it('returns the parent of a windows path', () => {
+    expect(parentDirOf('C:\\GitHub\\engine')).toBe('C:\\GitHub');
+  });
+
+  it('strips a trailing separator first', () => {
+    expect(parentDirOf('/a/b/c/')).toBe('/a/b');
+  });
+
+  it('returns null when there is no meaningful parent', () => {
+    expect(parentDirOf('')).toBeNull();
+    expect(parentDirOf('/')).toBeNull();
+    expect(parentDirOf('engine')).toBeNull();
+  });
+});
+
+describe('multiRepoNudge', () => {
+  it('nudges when not configured, dismissed=false, and >=2 siblings', () => {
+    expect(multiRepoNudge({ groupConfigured: false, siblingRepoCount: 3, dismissed: false })).toBe(3);
+  });
+
+  it('does not nudge when dismissed', () => {
+    expect(multiRepoNudge({ groupConfigured: false, siblingRepoCount: 5, dismissed: true })).toBeNull();
+  });
+
+  it('does not nudge when a group is already configured', () => {
+    expect(multiRepoNudge({ groupConfigured: true, siblingRepoCount: 5, dismissed: false })).toBeNull();
+  });
+
+  it('does not nudge below the 2-repo threshold', () => {
+    expect(multiRepoNudge({ groupConfigured: false, siblingRepoCount: 1, dismissed: false })).toBeNull();
+    expect(multiRepoNudge({ groupConfigured: undefined, siblingRepoCount: 0, dismissed: false })).toBeNull();
   });
 });

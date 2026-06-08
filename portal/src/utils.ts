@@ -43,3 +43,29 @@ export function groupRegistrationGaps(status: GroupStatus | null): GroupRegistra
   const missingMembers = (status.members ?? []).filter((m) => m.pathExists && m.registered === false);
   return { parentMissing, missingMembers, hasGap: parentMissing || missingMembers.length > 0 };
 }
+
+/** The parent directory of a workspace path (handles both / and \ separators). */
+export function parentDirOf(p: string): string | null {
+  if (!p) return null;
+  const trimmed = p.replace(/[\\/]+$/, '');
+  const idx = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+  if (idx <= 0) return null;
+  return trimmed.slice(0, idx);
+}
+
+/**
+ * Decide whether to nudge the user toward the group wizard. The nudge is
+ * OPTIONAL: only when no group is configured, the active workspace's parent
+ * folder holds at least two sibling git repos, and the user hasn't dismissed it.
+ * Returns the count of sibling repos when a nudge is warranted, else null.
+ */
+export function multiRepoNudge(opts: {
+  groupConfigured: boolean | undefined;
+  siblingRepoCount: number;
+  dismissed: boolean;
+}): number | null {
+  if (opts.dismissed) return null;
+  if (opts.groupConfigured) return null;
+  if (opts.siblingRepoCount < 2) return null;
+  return opts.siblingRepoCount;
+}

@@ -1,6 +1,7 @@
 import express from 'express';
 import { workspaceRoot, getWorkspacesList } from '../workspace.js';
 import { planGroupSetup, applyGroupSetup, ensureGroupRegistered, type GroupSetupInput } from '../group-setup.js';
+import { scanFolderForRepos, discoverFromRegistry, createDedicatedParent, type CreateParentInput } from '../group-discovery.js';
 import { syncGroup } from '../group-sync.js';
 import { submitGroupEdit, type GroupEditFile } from '../group-edit.js';
 import { summarizeGroup, getGroupContext, getMemberBinding, type GroupMember } from '../group.js';
@@ -97,7 +98,84 @@ router.post('/ensure-registered', async (_req, res) => {
   }
 });
 
-/** Fan out canonical group docs to every member's flux-group-docs branch. */
+// ─── onboarding/migration wizard (FLUX-407) ──────────────────────────────────
+
+/**
+ * Discovery source: the repos EH already knows (workspace registry), each with
+ * its origin remote and whether it already hosts a group.json. Read-only.
+ */
+router.get('/discover/registry', async (_req, res) => {
+  try {
+    const repos = await discoverFromRegistry();
+    res.json({ repos });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Discovery source: scan a folder for immediate-child git repos (the "folder of
+ * repos" layout), each with its origin remote + registration state. Read-only.
+ */
+router.post('/discover/folder', async (req, res) => {
+  const folder = req.body?.folder;
+  if (typeof folder !== 'string' || folder.trim().length === 0) {
+    return res.status(400).json({ error: 'folder must be a non-empty string' });
+  }
+  try {
+    const result = await scanFolderForRepos(folder);
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+function parseCreateParent(body: any): CreateParentInput | { error: string } {
+  if (!body || typeof body !== 'object') return { error: 'Request body must be an object' };
+  const { parentPath, name, members } = body;
+  if (typeof parentPath !== 'string' || parentPath.trim().length === 0) {
+    return { error: 'parentPath must be a non-empty string' };
+  }
+  if (typeof name !== 'string' || name.trim().length === 0) {
+    return { error: 'name must be a non-empty string' };
+  }
+  if (!Array.isArray(members) || members.length === 0) {
+    return { error: 'members must be a non-empty array' };
+  }
+  const parsed: GroupMember[] = [];
+  for (const m of members) {
+    if (!m || typeof m !== 'object') return { error: 'each member must be an object' };
+    if (typeof m.name !== 'string' || typeof m.role !== 'string' || typeof m.remote !== 'string') {
+      return { error: 'each member needs name, role, and remote strings' };
+    }
+    parsed.push({
+      name: m.name,
+      role: m.role,
+      remote: m.remote,
+      ...(typeof m.testCommand === 'string' ? { testCommand: m.testCommand } : {}),
+    });
+  }
+  return { parentPath, groupName: name, members: parsed };
+}
+
+/**
+ * Create a brand-new dedicated parent repo to host a group (git init + scaffold
+ * store + group.json + register). The dedicated-parent model forbids reusing a
+ * member repo, so this is how the wizard lands a new group. Refuses to clobber
+ * an existing group.json (caller routes to repair instead).
+ */
+router.post('/create-parent', async (req, res) => {
+  const input = parseCreateParent(req.body);
+  if ('error' in input) return res.status(400).json({ error: input.error });
+  try {
+    const result = await createDedicatedParent(input);
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+
 router.post('/sync', async (_req, res) => {
   if (!workspaceRoot) return res.status(400).json({ error: 'No workspace active' });
   const group = getGroupContext();

@@ -662,6 +662,17 @@ export function OnboardingWizard() {
               <Rocket className="h-4 w-4" />
               Try your first ticket
             </button>
+
+            <p className="mt-4 text-center text-xs text-gray-400 dark:text-gray-500">
+              Working across several repos that form one product? You can link them into a
+              <button
+                onClick={() => { localStorage.setItem(COMPLETE_KEY, '1'); setView('settings'); }}
+                className="ml-1 font-medium text-primary hover:underline"
+              >
+                multi-repo group
+              </button>
+              {' '}later from Settings — entirely optional.
+            </p>
           </div>
         )}
 
