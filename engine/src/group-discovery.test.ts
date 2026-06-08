@@ -192,4 +192,79 @@ describe('createDedicatedParent', () => {
       await fs.rm(folder, { recursive: true, force: true });
     }
   });
+
+  it('registers members with known paths and pins them in group.local.json', async () => {
+    const folder = await makeFolder();
+    const parentPath = path.join(folder, 'product-group');
+    const memberA = path.join(folder, 'payments');
+    const memberB = path.join(folder, 'web');
+    const reg = fakeRegistry();
+    try {
+      await fakeGitRepo(memberA);
+      await fakeGitRepo(memberB);
+      const result = await createDedicatedParent(
+        {
+          parentPath,
+          groupName: 'Prod',
+          members: [
+            { name: 'payments', role: 'api', remote: 'https://h/p.git', path: memberA },
+            { name: 'web', role: 'app', remote: 'https://h/w.git', path: memberB },
+          ],
+        },
+        { gitRunner: noopGit, registerWorkspace: reg.registerWorkspace },
+      );
+
+      // Parent + both members registered (member label is the member name).
+      expect(reg.entries).toContain(path.resolve(parentPath));
+      expect(reg.entries).toContain(path.resolve(memberA));
+      expect(reg.entries).toContain(path.resolve(memberB));
+      expect(reg.labels.get(path.resolve(memberA))).toBe('payments');
+
+      expect(result.memberRegistrations.every((m) => m.registered)).toBe(true);
+      expect(result.wroteLocalConfig).toBe(true);
+
+      // group.local.json pins each member's real checkout path.
+      const local = JSON.parse(await fs.readFile(path.join(parentPath, 'group.local.json'), 'utf-8'));
+      expect(local.paths.payments).toBe(path.resolve(memberA));
+      expect(local.paths.web).toBe(path.resolve(memberB));
+    } finally {
+      await fs.rm(folder, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a gap for a member whose path is missing or not supplied', async () => {
+    const folder = await makeFolder();
+    const parentPath = path.join(folder, 'product-group');
+    const reg = fakeRegistry();
+    try {
+      const result = await createDedicatedParent(
+        {
+          parentPath,
+          groupName: 'Prod',
+          members: [
+            // path points at a directory that doesn't exist on disk
+            { name: 'ghost', role: 'api', remote: 'https://h/g.git', path: path.join(folder, 'nope') },
+            // no path supplied at all
+            { name: 'pathless', role: 'app', remote: 'https://h/p.git' },
+          ],
+        },
+        { gitRunner: noopGit, registerWorkspace: reg.registerWorkspace },
+      );
+
+      const ghost = result.memberRegistrations.find((m) => m.name === 'ghost');
+      const pathless = result.memberRegistrations.find((m) => m.name === 'pathless');
+      expect(ghost?.registered).toBe(false);
+      expect(ghost?.reason).toMatch(/not found/i);
+      expect(pathless?.registered).toBe(false);
+      expect(pathless?.reason).toMatch(/no local path/i);
+
+      // Neither member was registered; only the parent is in the registry.
+      expect(reg.entries).toContain(path.resolve(parentPath));
+      expect(reg.entries).not.toContain(path.join(folder, 'nope'));
+      // group.local.json still pins the supplied (even if missing) path for ghost.
+      expect(result.wroteLocalConfig).toBe(true);
+    } finally {
+      await fs.rm(folder, { recursive: true, force: true });
+    }
+  });
 });

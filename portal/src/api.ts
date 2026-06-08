@@ -1170,8 +1170,18 @@ export interface CreateParentResult {
   groupName: string;
   gitInitialized: boolean;
   wroteConfig: boolean;
+  wroteLocalConfig: boolean;
   scaffoldedStore: boolean;
   registered: boolean;
+  memberRegistrations: MemberRegistration[];
+}
+
+/** Outcome of registering one member workspace during parent creation. */
+export interface MemberRegistration {
+  name: string;
+  path: string | null;
+  registered: boolean;
+  reason?: string;
 }
 
 /** Discovery source: repos EH already knows (workspace registry). */
@@ -1207,7 +1217,7 @@ export async function discoverGroupFolder(folder: string): Promise<FolderScanRes
 export async function createGroupParent(body: {
   parentPath: string;
   name: string;
-  members: GroupMemberInput[];
+  members: (GroupMemberInput & { path?: string })[];
 }): Promise<CreateParentResult> {
   const res = await fetch(`${API_URL}/group/create-parent`, {
     method: 'POST',

@@ -13,9 +13,9 @@ import {
   discoverGroupRegistry,
   discoverGroupFolder,
   createGroupParent,
-  ensureGroupRegistered,
   pickWorkspaceFolder,
   type DiscoveredRepo,
+  type MemberRegistration,
 } from '../api';
 
 interface GroupWizardProps {
@@ -56,6 +56,7 @@ export function GroupWizard({ onComplete, onCancel }: GroupWizardProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [createdParent, setCreatedParent] = useState<string | null>(null);
+  const [memberResults, setMemberResults] = useState<MemberRegistration[]>([]);
 
   // Default the parent path next to the discovered repos once a group name is
   // set, until the user edits it explicitly.
@@ -139,17 +140,17 @@ export function GroupWizard({ onComplete, onCancel }: GroupWizardProps) {
         name: c.name,
         role: c.role.trim(),
         remote: c.remote as string,
+        path: c.path,
       }));
       const created = await createGroupParent({
         parentPath: parentPath.trim(),
         name: groupName.trim(),
         members,
       });
-      // The parent is registered by create; now register the present members so
-      // Case 1 holds (the binding can resolve and Product/ surfaces in members).
-      await ensureGroupRegistered().catch(() => {
-        // Non-fatal: the parent exists; the consent prompt can finish registration.
-      });
+      // create-parent registers the parent AND every member it has a local path
+      // for, and pins those paths in group.local.json — so the group is fully
+      // linked here, not just the parent. Surface the per-member outcome.
+      setMemberResults(created.memberRegistrations ?? []);
       setCreatedParent(created.parentRoot);
       setStep('result');
     } catch (err: any) {
@@ -161,6 +162,8 @@ export function GroupWizard({ onComplete, onCancel }: GroupWizardProps) {
 
   // ─── Result step ─────────────────────────────────────────────────────────
   if (step === 'result') {
+    const registeredCount = memberResults.filter((m) => m.registered).length;
+    const gaps = memberResults.filter((m) => !m.registered);
     return (
       <div className="space-y-4">
         <div className="flex items-center gap-2 text-green-600 dark:text-green-400">
@@ -172,15 +175,45 @@ export function GroupWizard({ onComplete, onCancel }: GroupWizardProps) {
           “{groupName.trim()}” with {selected.length} member{selected.length === 1 ? '' : 's'}. Each member’s
           shared knowledge base will surface under its <code className="font-mono bg-gray-100 dark:bg-white/10 px-1 rounded">Product/</code> tree.
         </p>
-        <div className="rounded-lg border border-gray-200 dark:border-white/10 divide-y divide-gray-100 dark:divide-white/5">
-          {selected.map((m) => (
-            <div key={m.path} className="flex items-center gap-2 px-3 py-2 text-sm">
-              <FolderGit2 className="w-4 h-4 text-gray-400" />
-              <span className="font-medium">{m.name}</span>
-              <span className="text-xs text-gray-400">{m.role.trim()}</span>
-              <span className="ml-auto font-mono text-[11px] text-gray-400 truncate">{m.path}</span>
+        <p className="text-sm text-gray-600 dark:text-gray-300">
+          Registered the parent and <span className="font-semibold">{registeredCount}</span> of{' '}
+          {memberResults.length} member{memberResults.length === 1 ? '' : 's'} as Event Horizon workspaces —
+          the group is linked, no extra consent step needed.
+        </p>
+        {gaps.length > 0 && (
+          <div className="flex items-start gap-2 rounded-lg border border-amber-300/60 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-900/20 dark:text-amber-300">
+            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+            <div>
+              <div className="font-medium">Some members weren’t registered automatically:</div>
+              <ul className="mt-1 list-disc pl-4">
+                {gaps.map((m) => (
+                  <li key={m.name}>
+                    <span className="font-medium">{m.name}</span> — {m.reason ?? 'unknown reason'}
+                  </li>
+                ))}
+              </ul>
             </div>
-          ))}
+          </div>
+        )}
+        <div className="rounded-lg border border-gray-200 dark:border-white/10 divide-y divide-gray-100 dark:divide-white/5">
+          {selected.map((m) => {
+            const result = memberResults.find((r) => r.name === m.name);
+            return (
+              <div key={m.path} className="flex items-center gap-2 px-3 py-2 text-sm">
+                <FolderGit2 className="w-4 h-4 text-gray-400" />
+                <span className="font-medium">{m.name}</span>
+                <span className="text-xs text-gray-400">{m.role.trim()}</span>
+                {result && (
+                  <span
+                    className={`text-[11px] ${result.registered ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'}`}
+                  >
+                    {result.registered ? 'registered' : 'not registered'}
+                  </span>
+                )}
+                <span className="ml-auto font-mono text-[11px] text-gray-400 truncate">{m.path}</span>
+              </div>
+            );
+          })}
         </div>
         <div className="flex justify-end">
           <button

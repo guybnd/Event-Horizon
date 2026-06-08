@@ -1,7 +1,7 @@
 import express from 'express';
 import { workspaceRoot, getWorkspacesList } from '../workspace.js';
 import { planGroupSetup, applyGroupSetup, ensureGroupRegistered, type GroupSetupInput } from '../group-setup.js';
-import { scanFolderForRepos, discoverFromRegistry, createDedicatedParent, type CreateParentInput } from '../group-discovery.js';
+import { scanFolderForRepos, discoverFromRegistry, createDedicatedParent, type CreateParentInput, type CreateParentMember } from '../group-discovery.js';
 import { syncGroup } from '../group-sync.js';
 import { submitGroupEdit, type GroupEditFile } from '../group-edit.js';
 import { planDocsPromotion, applyDocsPromotion, type PromotionSelection } from '../group-promote.js';
@@ -143,7 +143,7 @@ function parseCreateParent(body: any): CreateParentInput | { error: string } {
   if (!Array.isArray(members) || members.length === 0) {
     return { error: 'members must be a non-empty array' };
   }
-  const parsed: GroupMember[] = [];
+  const parsed: CreateParentMember[] = [];
   for (const m of members) {
     if (!m || typeof m !== 'object') return { error: 'each member must be an object' };
     if (typeof m.name !== 'string' || typeof m.role !== 'string' || typeof m.remote !== 'string') {
@@ -154,6 +154,7 @@ function parseCreateParent(body: any): CreateParentInput | { error: string } {
       role: m.role,
       remote: m.remote,
       ...(typeof m.testCommand === 'string' ? { testCommand: m.testCommand } : {}),
+      ...(typeof m.path === 'string' && m.path.trim().length > 0 ? { path: m.path } : {}),
     });
   }
   return { parentPath, groupName: name, members: parsed };

@@ -7,6 +7,7 @@ import {
   GROUP_CONFIG_FILENAME,
   GROUP_DOCS_BRANCH,
   getGroupConfigFile,
+  getGroupLocalFile,
   getGroupStoreDir,
   ensureGroupStoreScaffold,
   getOriginRemote,
@@ -146,13 +147,34 @@ const defaultRegistrar: WorkspaceRegistrar = async (p, label) => {
   await addWorkspaceEntry({ path: p, ...(label ? { label } : {}) });
 };
 
+/**
+ * A member for parent creation. Carries the optional local checkout `path` the
+ * wizard learned during discovery so we can register the member workspace and
+ * pin its per-machine path — without it the parent could only guess member
+ * locations via the sibling-layout fallback (`../<name>`).
+ */
+export interface CreateParentMember extends GroupMember {
+  /** Absolute local checkout path of this member, if known from discovery. */
+  path?: string;
+}
+
 export interface CreateParentInput {
   /** Absolute path of the NEW parent directory to create/scaffold. */
   parentPath: string;
   /** Group name written into group.json. */
   groupName: string;
   /** Initial members (validated; their remotes are screened). */
-  members: GroupMember[];
+  members: CreateParentMember[];
+}
+
+/** Outcome of trying to register one member workspace during parent creation. */
+export interface MemberRegistration {
+  name: string;
+  /** The resolved local path, or null when none was supplied. */
+  path: string | null;
+  registered: boolean;
+  /** Why the member wasn't registered (no path supplied, or path missing). */
+  reason?: string;
 }
 
 export interface CreateParentResult {
@@ -162,10 +184,14 @@ export interface CreateParentResult {
   gitInitialized: boolean;
   /** True when group.json was written. */
   wroteConfig: boolean;
+  /** True when group.local.json was written to pin member checkout paths. */
+  wroteLocalConfig: boolean;
   /** True when the canonical store was scaffolded. */
   scaffoldedStore: boolean;
   /** True when the parent was registered as an EH workspace. */
   registered: boolean;
+  /** Per-member registration outcome (so the wizard can report gaps). */
+  memberRegistrations: MemberRegistration[];
 }
 
 /**
@@ -235,7 +261,28 @@ export async function createDedicatedParent(
   await fs.writeFile(getGroupConfigFile(parentRoot), JSON.stringify(config, null, 2) + '\n', 'utf-8');
   const wroteConfig = true;
 
-  // 5. Register the parent as a workspace (labeled with the group name) so the
+  // 5. Pin per-machine member checkout paths in group.local.json so the parent
+  //    resolves members by their real location instead of the sibling-layout
+  //    fallback (`../<name>`), which only holds when the parent happens to sit
+  //    beside its members. Without this, a parent created at an arbitrary path
+  //    can't find its members and the group reads as "not fully linked".
+  let wroteLocalConfig = false;
+  const memberPaths: Record<string, string> = {};
+  for (const m of input.members) {
+    if (typeof m.path === 'string' && m.path.trim().length > 0) {
+      memberPaths[m.name] = path.resolve(m.path);
+    }
+  }
+  if (Object.keys(memberPaths).length > 0) {
+    await fs.writeFile(
+      getGroupLocalFile(parentRoot),
+      JSON.stringify({ paths: memberPaths }, null, 2) + '\n',
+      'utf-8',
+    );
+    wroteLocalConfig = true;
+  }
+
+  // 6. Register the parent as a workspace (labeled with the group name) so the
   //    Case-1 member binding can reverse-look-up the parent.
   let registered = false;
   try {
@@ -247,7 +294,39 @@ export async function createDedicatedParent(
     registered = false;
   }
 
-  return { parentRoot, groupName: input.groupName, gitInitialized, wroteConfig, scaffoldedStore, registered };
+  // 7. Register each member workspace directly using the path the wizard already
+  //    knows, so the group is fully linked on create (not only the parent). A
+  //    member with no supplied path or a path that isn't checked out is reported
+  //    as a gap rather than failing the whole create.
+  const memberRegistrations: MemberRegistration[] = [];
+  for (const m of input.members) {
+    const memberPath = memberPaths[m.name] ?? null;
+    if (!memberPath) {
+      memberRegistrations.push({ name: m.name, path: null, registered: false, reason: 'no local path supplied' });
+      continue;
+    }
+    if (!existsSync(memberPath)) {
+      memberRegistrations.push({ name: m.name, path: memberPath, registered: false, reason: 'path not found on disk' });
+      continue;
+    }
+    try {
+      await registerWorkspace(memberPath, m.name);
+      memberRegistrations.push({ name: m.name, path: memberPath, registered: true });
+    } catch (err: any) {
+      memberRegistrations.push({ name: m.name, path: memberPath, registered: false, reason: err?.message ?? 'registration failed' });
+    }
+  }
+
+  return {
+    parentRoot,
+    groupName: input.groupName,
+    gitInitialized,
+    wroteConfig,
+    wroteLocalConfig,
+    scaffoldedStore,
+    registered,
+    memberRegistrations,
+  };
 }
 
 export { GROUP_DOCS_BRANCH };
