@@ -1224,3 +1224,69 @@ export async function createGroupParent(body: {
   }
   return res.json();
 }
+
+// ─── Promote existing .docs/ into the group store (FLUX-404) ─────────────────
+
+/** Fan-out outcome returned by a group sync (one entry per member + totals). */
+export interface GroupSyncResult {
+  pushed: number;
+  failed: number;
+  committed: boolean;
+  members: { name: string; remote: string; ok: boolean; diverged?: boolean; error?: string }[];
+}
+
+/** A `.docs/` file that can be promoted, with a proposed (retargetable) store path. */
+export interface PromotionCandidate {
+  source: string;
+  target: string;
+}
+
+export interface DocsPromotionPlan {
+  parentRoot: string;
+  candidates: PromotionCandidate[];
+}
+
+export interface PromotionOutcome {
+  source: string;
+  target: string;
+  ok: boolean;
+  error?: string;
+}
+
+export interface DocsPromotionResult {
+  promoted: string[];
+  failed: PromotionOutcome[];
+  sync: GroupSyncResult;
+}
+
+/** Dry-run: list promotable `.docs/` files with proposed store targets. No mutation. */
+export async function planDocsPromotion(): Promise<DocsPromotionPlan> {
+  const res = await fetch(`${API_URL}/group/promote-docs/plan`, { method: 'POST' });
+  if (!res.ok) {
+    let message = 'Failed to plan doc promotion';
+    try {
+      const payload = await res.json();
+      if (payload.error) message = payload.error;
+    } catch {}
+    throw new Error(message);
+  }
+  return res.json();
+}
+
+/** Apply: move selected docs into the store, remove from main, commit, and fan out. */
+export async function applyDocsPromotion(selections: PromotionCandidate[]): Promise<DocsPromotionResult> {
+  const res = await fetch(`${API_URL}/group/promote-docs/apply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ selections }),
+  });
+  if (!res.ok) {
+    let message = 'Failed to promote docs';
+    try {
+      const payload = await res.json();
+      if (payload.error) message = payload.error;
+    } catch {}
+    throw new Error(message);
+  }
+  return res.json();
+}

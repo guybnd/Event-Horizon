@@ -3,6 +3,7 @@ import type { UserDef, DocsEditPermissions } from '../../types';
 import { SimpleEditor } from './shared';
 import { GroupSetupPreview } from '../GroupSetupPreview';
 import { GroupWizard } from '../GroupWizard';
+import { DocsPromotionPanel } from '../DocsPromotionPanel';
 import { groupRegistrationGaps, parentDirOf, multiRepoNudge } from '../../utils';
 import { setWorkspace as apiSetWorkspace, pickWorkspaceFolder, fetchStorageMode, migrateStorage, restoreStorage, fetchWorkspaces, addWorkspace, removeWorkspace, updateWorkspaceLabel as apiUpdateLabel, switchWorkspace as apiSwitchWorkspace, fetchGroupStatus, ensureGroupRegistered, discoverGroupFolder, type WorkspaceInfo, type GroupStatus } from '../../api';
 
@@ -565,6 +566,8 @@ export function WorkspaceSection({
               </div>
             );
           })()}
+
+          {groupStatus?.configured && <DocsPromotionPanel onPromoted={loadGroupStatus} />}
         </div>
       )}
 
