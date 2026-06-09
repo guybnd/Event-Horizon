@@ -200,6 +200,28 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* ─── Native control color-scheme ────────────────────────────────────
+   Without this the browser renders native <select> popups, date pickers
+   and scrollbars in the OS light scheme, so dropdown option lists flash
+   white on the dark themes. Bind the scheme to the active theme and tint
+   <option>s with the dropdown token so popups follow the theme. */
+:root,
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+:root[data-theme="dark"],
+:root[data-theme="matrix"],
+:root[data-theme="cyber"],
+:root[data-theme="midnight"] {
+  color-scheme: dark;
+}
+
+select option,
+select optgroup {
+  background-color: var(--eh-dropdown-bg);
+  color: var(--eh-text-primary);
+}
+
 /* Subtle noise overlay for depth */
 body::before {
   content: '';
