@@ -33,6 +33,8 @@ interface DocsSidebarProps {
   creating: boolean;
   /** Top-level folder name whose subtree is read-only (no create, no drag). */
   readOnlyPrefix?: string;
+  /** Top-level folder names that are tool-provided (pinned to bottom, starts collapsed, labelled). */
+  systemFolders?: string[];
 }
 
 function sortDocsForSidebar(docs: Doc[]) {
@@ -160,6 +162,7 @@ export function DocsSidebar({
   onReorderDocs,
   creating,
   readOnlyPrefix,
+  systemFolders = [],
 }: DocsSidebarProps) {
   const normalizedSearch = searchQuery.trim().toLowerCase();
   const filteredDocs = normalizedSearch
@@ -173,6 +176,8 @@ export function DocsSidebar({
 
   const isReadOnlyFolder = (folderPath: string) =>
     Boolean(readOnlyPrefix) && (folderPath === readOnlyPrefix || folderPath.startsWith(`${readOnlyPrefix}/`));
+
+  const isSystemFolder = (folderPath: string) => systemFolders.includes(folderPath);
 
   const handleDragEnd = (event: DragEndEvent) => {
     if (!dragEnabled || !event.over || event.active.id === event.over.id) {
@@ -271,7 +276,11 @@ export function DocsSidebar({
   );
 
   const renderFolder = (folder: FolderNode, depth: number) => {
-    const isExpanded = forceExpanded || expandedFolders[folder.path] !== false || createTargetFolder === folder.path;
+    const system = isSystemFolder(folder.path);
+    // System folders start collapsed by default; regular folders start expanded.
+    const isExpanded = forceExpanded
+      || (system ? expandedFolders[folder.path] === true : expandedFolders[folder.path] !== false)
+      || createTargetFolder === folder.path;
 
     return (
       <div key={folder.path} className="space-y-1">
@@ -285,6 +294,9 @@ export function DocsSidebar({
             {isExpanded ? <ChevronDown className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-4 w-4 shrink-0" />}
             {isExpanded ? <FolderOpen className="h-4 w-4 shrink-0 text-amber-500" /> : <Folder className="h-4 w-4 shrink-0 text-amber-500" />}
             <span className="truncate">{folder.name}</span>
+            {isSystemFolder(folder.path) && (
+              <span className="ml-1 shrink-0 rounded-full bg-gray-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-gray-400 dark:bg-white/10 dark:text-gray-500">tool</span>
+            )}
           </button>
 
           {canCreate && !isReadOnlyFolder(folder.path) && (
@@ -372,7 +384,12 @@ export function DocsSidebar({
               <SortableContext items={tree.docs.map((doc) => doc.path)} strategy={verticalListSortingStrategy}>
                 {tree.docs.map((doc) => renderDocButton(doc, 0))}
               </SortableContext>
-              {tree.folders.map((folder) => renderFolder(folder, 0))}
+              {tree.folders.filter((f) => !isSystemFolder(f.path)).map((folder) => renderFolder(folder, 0))}
+              {tree.folders.filter((f) => isSystemFolder(f.path)).length > 0 && (
+                <div className="mt-3 border-t border-gray-100 pt-3 dark:border-white/5">
+                  {tree.folders.filter((f) => isSystemFolder(f.path)).map((folder) => renderFolder(folder, 0))}
+                </div>
+              )}
             </>
           )}
         </div>

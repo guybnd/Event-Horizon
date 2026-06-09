@@ -1321,3 +1321,17 @@ export async function applyDocsPromotion(selections: PromotionCandidate[]): Prom
   }
   return res.json();
 }
+
+/** Update the docs label for the active group (the prefix shown for group docs in the wiki). Parent workspace only. */
+export async function updateGroupDocsLabel(label: string): Promise<void> {
+  const res = await fetch(`${API_URL}/group/docs-label`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label }),
+  });
+  if (!res.ok) {
+    let message = 'Failed to update docs label';
+    try { const payload = await res.json(); if (payload.error) message = payload.error; } catch {}
+    throw new Error(message);
+  }
+}

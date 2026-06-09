@@ -9,8 +9,8 @@ import { TableCell } from '@tiptap/extension-table-cell';
 import TurndownService from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
 import { marked } from 'marked';
-import { AlertCircle, Bold, Code, FileText, Heading1, Heading2, Info, Italic, Link as LinkIcon, List, ListOrdered, Lock, Network, Save, Share2, Trash2 } from 'lucide-react';
-import { createDoc, deleteDoc, fetchDoc, fetchDocs, fetchGroupStatus, updateDoc } from '../api';
+import { AlertCircle, Bold, ChevronDown, ChevronRight, Code, FileText, Heading1, Heading2, Info, Italic, Link as LinkIcon, List, ListOrdered, Lock, Network, Save, Share2, Trash2, X } from 'lucide-react';
+import { applyDocsPromotion, createDoc, deleteDoc, fetchDoc, fetchDocs, fetchGroupStatus, updateDoc } from '../api';
 import { useApp } from '../AppContext';
 import type { Doc } from '../types';
 import type { GroupStatus } from '../api';
@@ -190,6 +190,7 @@ function ToolbarButton({
   return (
     <button
       type="button"
+      onMouseDown={(e) => e.preventDefault()}
       onClick={onClick}
       disabled={disabled}
       className={`flex h-10 w-10 items-center justify-center rounded-xl border transition-colors ${active ? 'border-primary bg-primary/10 text-primary' : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-100 dark:border-white/10 dark:bg-black/20 dark:text-gray-300 dark:hover:bg-white/5'} ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
@@ -201,7 +202,7 @@ function ToolbarButton({
 }
 
 export function DocsScreen() {
-  const { currentUser, config, workspacePath, setView } = useApp();
+  const { currentUser, config, workspacePath } = useApp();
   const [docs, setDocs] = useState<Doc[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(
     () => new URLSearchParams(window.location.search).get('doc')
@@ -225,6 +226,15 @@ export function DocsScreen() {
   const [editorSnapshot, setEditorSnapshot] = useState('');
   const [isEditorFocused, setIsEditorFocused] = useState(false);
   const [hasTextSelection, setHasTextSelection] = useState(false);
+  const [editorHintDismissed, setEditorHintDismissed] = useState(
+    () => localStorage.getItem('docs-editor-hint') === 'dismissed',
+  );
+  const [groupPanelCollapsed, setGroupPanelCollapsed] = useState(false);
+  const [showPromoteModal, setShowPromoteModal] = useState(false);
+  const [promoteTarget, setPromoteTarget] = useState('');
+  const [promoteApplying, setPromoteApplying] = useState(false);
+  const [promoteError, setPromoteError] = useState<string | null>(null);
+  const [promoteResult, setPromoteResult] = useState<{ count: number } | null>(null);
   const turndownServiceRef = useRef<TurndownService | null>(null);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
   const baselineEditorSnapshotRef = useRef('');
@@ -834,38 +844,54 @@ export function DocsScreen() {
   };
 
   return (
+    <>
     <div className="grid gap-6 xl:grid-cols-[minmax(18rem,20%)_minmax(0,1fr)]">
       <div className="space-y-4">
         {groupStatus?.membership?.role === 'member' && (
           <div className="rounded-[28px] border border-sky-200 bg-sky-50/60 p-4 dark:border-sky-500/20 dark:bg-sky-500/5">
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-sky-100 text-sky-700 dark:bg-sky-500/10 dark:text-sky-300">
+            <button
+              type="button"
+              onClick={() => setGroupPanelCollapsed((c) => !c)}
+              className="flex w-full items-center gap-3 text-left"
+            >
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-sky-100 text-sky-700 dark:bg-sky-500/10 dark:text-sky-300">
                 <Network className="h-5 w-5" />
               </div>
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <h2 className="truncate text-sm font-bold text-gray-900 dark:text-gray-100">Part of “{groupStatus.membership.groupName}”</h2>
-                <p className="text-[11px] text-gray-500">
-                  This repo is the
-                  <span className="font-semibold text-gray-700 dark:text-gray-300"> {groupStatus.membership.memberName}</span>
-                  {groupStatus.membership.memberRole ? ` (${groupStatus.membership.memberRole})` : ''} member.
-                  The <code className="font-mono">{groupDocsLabel}/</code> tree below is the shared cross-project knowledge base. Edits route to the group parent.
-                </p>
+                {groupPanelCollapsed && <p className="text-[11px] text-gray-400">{groupStatus.membership.memberName} member &middot; click to expand</p>}
               </div>
-            </div>
+              {groupPanelCollapsed ? <ChevronRight className="h-4 w-4 shrink-0 text-gray-400" /> : <ChevronDown className="h-4 w-4 shrink-0 text-gray-400" />}
+            </button>
+            {!groupPanelCollapsed && (
+              <p className="mt-3 text-[11px] text-gray-500">
+                This repo is the
+                <span className="font-semibold text-gray-700 dark:text-gray-300"> {groupStatus.membership.memberName}</span>
+                {groupStatus.membership.memberRole ? ` (${groupStatus.membership.memberRole})` : ''} member.
+                The <code className="font-mono">{groupDocsLabel}/</code> tree below is the shared cross-project knowledge base. Edits route to the group parent.
+              </p>
+            )}
           </div>
         )}
         {groupStatus?.configured && (
           <div className="rounded-[28px] border border-gray-200 bg-white/80 p-4 shadow-xl shadow-gray-200/60 dark:border-white/10 dark:bg-[#161720] dark:shadow-none">
-            <div className="flex items-center gap-3 border-b border-gray-200 pb-3 dark:border-white/10">
-              <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-sky-100 text-sky-700 dark:bg-sky-500/10 dark:text-sky-300">
+            <button
+              type="button"
+              onClick={() => setGroupPanelCollapsed((c) => !c)}
+              className="flex w-full items-center gap-3 border-b border-gray-200 pb-3 text-left dark:border-white/10"
+            >
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-sky-100 text-sky-700 dark:bg-sky-500/10 dark:text-sky-300">
                 <Network className="h-5 w-5" />
               </div>
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <h2 className="truncate text-sm font-bold text-gray-900 dark:text-gray-100">{groupStatus.name}</h2>
                 <p className="text-[11px] text-gray-500">Multi-repo group · {groupStatus.members?.length ?? 0} member(s)</p>
+                {groupPanelCollapsed ? <ChevronRight className="h-4 w-4 shrink-0 text-gray-400" /> : <ChevronDown className="h-4 w-4 shrink-0 text-gray-400" />}
               </div>
-            </div>
-            <p className="mt-3 text-[11px] leading-relaxed text-gray-500">
+            </button>
+            {!groupPanelCollapsed && (
+              <>
+                <p className="mt-3 text-[11px] leading-relaxed text-gray-500">
               The <code className="font-mono">{groupDocsLabel}/</code> tree is this group’s shared cross-project knowledge base (the canonical <code className="font-mono">.flux-group</code> store). As the parent you can edit it inline here; saving fans the change out to every member.
             </p>
             <ul className="mt-3 space-y-2">
@@ -889,6 +915,8 @@ export function DocsScreen() {
                 View feature map
               </button>
             )}
+              </>
+            )}
           </div>
         )}
         <DocsSidebar
@@ -910,6 +938,7 @@ export function DocsScreen() {
           onCreateDoc={handleCreateDoc}
           onReorderDocs={handleReorderDocs}
           creating={creating}
+          systemFolders={['event-horizon']}
         />
       </div>
 
@@ -1015,7 +1044,14 @@ export function DocsScreen() {
               </div>
               <button
                 type="button"
-                onClick={() => setView('settings')}
+                onClick={() => {
+                  const docPath = selectedDoc?.path;
+                  const basename = docPath?.split('/').pop() ?? 'doc';
+                  setPromoteTarget(`${groupDocsLabel}/${basename}`);
+                  setPromoteError(null);
+                  setPromoteResult(null);
+                  setShowPromoteModal(true);
+                }}
                 className="shrink-0 rounded-xl border border-indigo-300 bg-white/60 px-3 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-white dark:border-indigo-500/30 dark:bg-white/5 dark:text-indigo-200 dark:hover:bg-white/10"
               >
                 Promote doc…
@@ -1030,7 +1066,7 @@ export function DocsScreen() {
             </div>
           )}
 
-          {selectedDoc && canEditSelectedDoc && (
+          {selectedDoc && canEditSelectedDoc && isEditorFocused && (
             <div className="sticky top-4 z-20 flex flex-wrap items-center gap-2 rounded-[24px] border border-gray-200 bg-gray-50/90 px-4 py-3 shadow-sm backdrop-blur dark:border-white/10 dark:bg-[#161720]/90">
               <ToolbarButton label="Bold" active={showToolbarActiveState && Boolean(editor?.isActive('bold'))} disabled={!editor} onClick={() => editor?.chain().focus().toggleBold().run()}>
                 <Bold className="h-4 w-4" />
@@ -1130,9 +1166,17 @@ export function DocsScreen() {
             )
           ) : (
             <div className="space-y-3">
-              <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800 dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-200">
-                This editor is always live. Use the wiki-link button or type `[[doc-name]]` to reference other docs, then click the rendered link to navigate.
-              </div>
+              {!editorHintDismissed && (
+                <div className="flex items-start gap-3 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800 dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-200">
+                  <span className="flex-1">This editor is always live. Use the wiki-link button or type `[[doc-name]]` to reference other docs, then click the rendered link to navigate.</span>
+                  <button
+                    type="button"
+                    onClick={() => { setEditorHintDismissed(true); localStorage.setItem('docs-editor-hint', 'dismissed'); }}
+                    className="shrink-0 rounded-lg p-1 text-sky-600 hover:bg-sky-100 dark:text-sky-300 dark:hover:bg-sky-500/10"
+                    title="Dismiss"
+                  ><X className="h-3.5 w-3.5" /></button>
+                </div>
+              )}
               {brokenWikiLinks.length > 0 && (
                 <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:border-rose-500/20 dark:bg-rose-500/10 dark:text-rose-200">
                   <div className="flex items-start gap-2">
@@ -1149,5 +1193,77 @@ export function DocsScreen() {
         </div>
       </section>
     </div>
+
+    {/* Promote-doc inline modal */}
+    {showPromoteModal && selectedDoc && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setShowPromoteModal(false)}>
+        <div className="relative w-full max-w-md rounded-[28px] border border-gray-200 bg-white p-6 shadow-2xl dark:border-white/10 dark:bg-[#161720]" onClick={(e) => e.stopPropagation()}>
+          <button type="button" onClick={() => setShowPromoteModal(false)} className="absolute right-4 top-4 rounded-full p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200">
+            <X className="h-4 w-4" />
+          </button>
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-indigo-100 dark:bg-indigo-500/20">
+              <Share2 className="h-5 w-5 text-indigo-600 dark:text-indigo-400" />
+            </div>
+            <div>
+              <h2 className="text-sm font-semibold text-gray-900 dark:text-white">Promote doc to group store</h2>
+              <p className="text-xs text-gray-500">This is a move — the doc leaves this repo</p>
+            </div>
+          </div>
+          <div className="mt-4 space-y-3">
+            <div>
+              <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Source</label>
+              <p className="mt-1 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-xs text-gray-700 dark:border-white/10 dark:bg-white/5 dark:text-gray-300">.docs/{selectedDoc.path}.md</p>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Target in group store</label>
+              <input
+                type="text"
+                value={promoteTarget}
+                onChange={(e) => setPromoteTarget(e.target.value)}
+                className="mt-1 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 font-mono text-xs text-gray-900 focus:border-indigo-400 focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white"
+              />
+            </div>
+          </div>
+          {promoteError && <p className="mt-3 text-xs text-red-600 dark:text-red-400">{promoteError}</p>}
+          {promoteResult && (
+            <div className="mt-3 rounded-xl border border-green-300/60 bg-green-50 px-3 py-2 text-xs text-green-800 dark:border-green-500/30 dark:bg-green-900/20 dark:text-green-300">
+              Promoted successfully — doc moved to group store.
+            </div>
+          )}
+          <div className="mt-5 flex justify-end gap-2">
+            <button type="button" onClick={() => setShowPromoteModal(false)} className="rounded-xl border border-gray-200 px-4 py-2 text-xs font-semibold text-gray-600 hover:bg-gray-50 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5">
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={promoteApplying || !promoteTarget.trim() || !!promoteResult}
+              onClick={async () => {
+                setPromoteError(null);
+                setPromoteApplying(true);
+                try {
+                  await applyDocsPromotion([{ source: `.docs/${selectedDoc.path}.md`, target: promoteTarget.trim() }]);
+                  setPromoteResult({ count: 1 });
+                  // close modal + deselect + refresh docs list after short delay
+                  setTimeout(() => {
+                    setShowPromoteModal(false);
+                    setSelectedDoc(null);
+                    setDocsRefreshKey((c) => c + 1);
+                  }, 1200);
+                } catch (e: any) {
+                  setPromoteError(e.message ?? 'Promotion failed');
+                } finally {
+                  setPromoteApplying(false);
+                }
+              }}
+              className="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-60"
+            >
+              {promoteApplying ? 'Promoting…' : 'Promote & move'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }

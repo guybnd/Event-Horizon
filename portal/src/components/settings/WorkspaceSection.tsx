@@ -5,7 +5,7 @@ import { GroupSetupPreview } from '../GroupSetupPreview';
 import { GroupWizard } from '../GroupWizard';
 import { DocsPromotionPanel } from '../DocsPromotionPanel';
 import { groupRegistrationGaps, parentDirOf, multiRepoNudge, groupWorkspaces } from '../../utils';
-import { setWorkspace as apiSetWorkspace, pickWorkspaceFolder, fetchStorageMode, migrateStorage, restoreStorage, fetchWorkspaces, addWorkspace, removeWorkspace, updateWorkspaceLabel as apiUpdateLabel, switchWorkspace as apiSwitchWorkspace, fetchGroupStatus, ensureGroupRegistered, discoverGroupFolder, type WorkspaceInfo, type GroupStatus } from '../../api';
+import { setWorkspace as apiSetWorkspace, pickWorkspaceFolder, fetchStorageMode, migrateStorage, restoreStorage, fetchWorkspaces, addWorkspace, removeWorkspace, updateWorkspaceLabel as apiUpdateLabel, switchWorkspace as apiSwitchWorkspace, fetchGroupStatus, ensureGroupRegistered, discoverGroupFolder, updateGroupDocsLabel, type WorkspaceInfo, type GroupStatus } from '../../api';
 
 interface WorkspaceSectionProps {
   users: UserDef[];
@@ -69,6 +69,11 @@ export function WorkspaceSection({
   const [siblingRepoCount, setSiblingRepoCount] = useState(0);
   const [nudgeDismissed, setNudgeDismissed] = useState(false);
 
+  const [docsLabelEditing, setDocsLabelEditing] = useState(false);
+  const [docsLabelValue, setDocsLabelValue] = useState('');
+  const [docsLabelSaving, setDocsLabelSaving] = useState(false);
+  const [docsLabelError, setDocsLabelError] = useState<string | null>(null);
+
   const [configuredWorkspaces, setConfiguredWorkspaces] = useState<WorkspaceInfo[]>([]);
   const [addingWorkspace, setAddingWorkspace] = useState(false);
   const [addWorkspacePath, setAddWorkspacePath] = useState('');
@@ -97,6 +102,21 @@ export function WorkspaceSection({
       setRegistering(false);
     }
   }, [loadGroupStatus, loadWorkspaces]);
+
+  const saveDocsLabel = useCallback(async () => {
+    if (!docsLabelValue.trim()) return;
+    setDocsLabelError(null);
+    setDocsLabelSaving(true);
+    try {
+      await updateGroupDocsLabel(docsLabelValue.trim());
+      setDocsLabelEditing(false);
+      loadGroupStatus();
+    } catch (err: any) {
+      setDocsLabelError(err.message ?? 'Failed to update docs label');
+    } finally {
+      setDocsLabelSaving(false);
+    }
+  }, [docsLabelValue, loadGroupStatus]);
 
   useEffect(() => { loadWorkspaces(); }, [loadWorkspaces]);
 
@@ -604,6 +624,40 @@ export function WorkspaceSection({
           })()}
 
           {groupStatus?.configured && <DocsPromotionPanel onPromoted={loadGroupStatus} />}
+
+          {groupStatus?.configured && (
+            <div className="mt-4 rounded-xl border border-gray-200 bg-white/60 p-4 dark:border-white/10 dark:bg-black/20">
+              <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Shared docs label</p>
+              <p className="mt-1 text-[11px] text-gray-500">The folder name under which group docs appear in the wiki and MCP tools. Changing it is instant — no files are moved.</p>
+              {docsLabelEditing ? (
+                <div className="mt-3 flex items-center gap-2">
+                  <input
+                    value={docsLabelValue}
+                    onChange={(e) => setDocsLabelValue(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') saveDocsLabel(); if (e.key === 'Escape') setDocsLabelEditing(false); }}
+                    className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-mono outline-none focus:border-primary dark:border-white/15 dark:bg-black/20 dark:text-gray-100"
+                    placeholder="e.g. Product"
+                    autoFocus
+                  />
+                  <button
+                    onClick={saveDocsLabel}
+                    disabled={docsLabelSaving || !docsLabelValue.trim()}
+                    className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:bg-primary-hover disabled:opacity-60"
+                  >{docsLabelSaving ? 'Saving…' : 'Save'}</button>
+                  <button onClick={() => { setDocsLabelEditing(false); setDocsLabelError(null); }} className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50 dark:border-white/15 dark:text-gray-300">Cancel</button>
+                </div>
+              ) : (
+                <div className="mt-3 flex items-center gap-3">
+                  <code className="rounded bg-gray-100 px-2 py-1 text-sm font-mono text-gray-800 dark:bg-white/10 dark:text-gray-200">{groupStatus.docsLabel ?? 'Product'}/</code>
+                  <button
+                    onClick={() => { setDocsLabelValue(groupStatus.docsLabel ?? 'Product'); setDocsLabelError(null); setDocsLabelEditing(true); }}
+                    className="rounded-lg border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:bg-gray-50 dark:border-white/15 dark:text-gray-300 dark:hover:bg-white/5"
+                  >Rename…</button>
+                </div>
+              )}
+              {docsLabelError && <p className="mt-2 text-xs text-red-600 dark:text-red-400">{docsLabelError}</p>}
+            </div>
+          )}
         </div>
       )}
 

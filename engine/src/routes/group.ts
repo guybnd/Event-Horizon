@@ -1,3 +1,4 @@
+import fs from 'fs/promises';
 import express from 'express';
 import { workspaceRoot, getWorkspacesList } from '../workspace.js';
 import { planGroupSetup, applyGroupSetup, ensureGroupRegistered, type GroupSetupInput } from '../group-setup.js';
@@ -5,7 +6,7 @@ import { scanFolderForRepos, discoverFromRegistry, createDedicatedParent, type C
 import { syncGroup } from '../group-sync.js';
 import { submitGroupEdit, type GroupEditFile } from '../group-edit.js';
 import { planDocsPromotion, applyDocsPromotion, type PromotionSelection } from '../group-promote.js';
-import { summarizeGroup, getGroupContext, getMemberBinding, groupDocsLabel, type GroupMember } from '../group.js';
+import { summarizeGroup, getGroupContext, getMemberBinding, groupDocsLabel, activateGroup, getGroupConfigFile, validateGroupConfig, type GroupMember } from '../group.js';
 
 const router = express.Router();
 
@@ -312,6 +313,30 @@ router.post('/promote-docs/apply', async (req, res) => {
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
+});
+
+/**
+ * Update the docs label (the prefix under which group docs surface in the wiki
+ * and MCP tools). Parent workspace only — changes group.json and reloads the
+ * group context so the new label takes effect immediately.
+ */
+router.patch('/docs-label', async (req, res) => {
+  if (!workspaceRoot) return res.status(400).json({ error: 'No workspace active' });
+  const ctx = getGroupContext();
+  if (!ctx) return res.status(400).json({ error: 'No group configured — only the parent workspace can update the docs label.' });
+  const { label } = req.body ?? {};
+  if (typeof label !== 'string' || !label.trim()) {
+    return res.status(400).json({ error: 'label must be a non-empty string' });
+  }
+  const trimmed = label.trim();
+  const errors = validateGroupConfig({ ...ctx.config, docsLabel: trimmed });
+  const labelError = errors.find((e) => e.path === 'docsLabel');
+  if (labelError) return res.status(400).json({ error: labelError.message });
+  const configPath = getGroupConfigFile(workspaceRoot);
+  const updated = { ...ctx.config, docsLabel: trimmed };
+  await fs.writeFile(configPath, JSON.stringify(updated, null, 2) + '\n', 'utf-8');
+  await activateGroup(workspaceRoot);
+  res.json({ ok: true, docsLabel: trimmed });
 });
 
 export default router;
