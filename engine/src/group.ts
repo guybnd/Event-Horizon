@@ -480,6 +480,21 @@ export function groupDocsLabel(group: GroupContext | null | undefined): string {
 }
 
 /**
+ * Derive a safe docs-label from a free-form group name. The label is used as a
+ * single doc-path segment, so it must satisfy `isSafeName`: collapse runs of
+ * unsafe characters to '-', trim leading/trailing separators, and fall back to
+ * the default when nothing usable remains.
+ */
+export function deriveDocsLabel(groupName: string): string {
+  const cleaned = (groupName ?? '')
+    .trim()
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^[._-]+/, '')
+    .replace(/[._-]+$/, '');
+  return cleaned.length > 0 && isSafeName(cleaned) ? cleaned : GROUP_DOCS_PREFIX;
+}
+
+/**
  * Resolve the docs label for the *active* workspace — the parent's own group, or
  * a bound member's parent group. Falls back to the default in single-repo mode.
  */

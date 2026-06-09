@@ -14,6 +14,7 @@ import {
   formatGroupValidationErrors,
   ensureGroupStoreScaffold,
   loadGroupContext,
+  deriveDocsLabel,
   type GroupMember,
 } from './group.js';
 import { getWorkspacesList, addWorkspaceEntry, pathsEqual } from './workspace.js';
@@ -430,6 +431,7 @@ export async function applyGroupSetup(
   // 4. Write group.json LAST — this is the file that activates group mode.
   const config = {
     name: input.groupName,
+    docsLabel: deriveDocsLabel(input.groupName),
     members: input.members.map((m) => ({
       name: m.name,
       role: m.role,

@@ -1,8 +1,9 @@
+import { useState } from 'react';
 import { DndContext, PointerSensor, closestCenter, useSensor, useSensors } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { ChevronDown, ChevronRight, FileText, Folder, FolderOpen, GripVertical, Plus, Search, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, FileText, Folder, FolderOpen, GripVertical, Pencil, Plus, Search, X } from 'lucide-react';
 import type { Doc } from '../types';
 
 interface FolderNode {
@@ -35,6 +36,10 @@ interface DocsSidebarProps {
   readOnlyPrefix?: string;
   /** Top-level folder names that are tool-provided (pinned to bottom, starts collapsed, labelled). */
   systemFolders?: string[];
+  /** Rename a folder: move every local doc under `fromPath/` to `<parent>/<newName>`. */
+  onRenameFolder?: (fromPath: string, newName: string) => Promise<void> | void;
+  /** Gate which folders expose the rename affordance. Defaults to canCreate + not read-only/system. */
+  canRenameFolder?: (folderPath: string) => boolean;
 }
 
 function sortDocsForSidebar(docs: Doc[]) {
@@ -163,6 +168,8 @@ export function DocsSidebar({
   creating,
   readOnlyPrefix,
   systemFolders = [],
+  onRenameFolder,
+  canRenameFolder,
 }: DocsSidebarProps) {
   const normalizedSearch = searchQuery.trim().toLowerCase();
   const filteredDocs = normalizedSearch
@@ -178,6 +185,46 @@ export function DocsSidebar({
     Boolean(readOnlyPrefix) && (folderPath === readOnlyPrefix || folderPath.startsWith(`${readOnlyPrefix}/`));
 
   const isSystemFolder = (folderPath: string) => systemFolders.includes(folderPath);
+
+  const [renamingFolderPath, setRenamingFolderPath] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const [renameBusy, setRenameBusy] = useState(false);
+
+  const folderRenamable = (folderPath: string) => {
+    if (!onRenameFolder || folderPath.length === 0 || isSystemFolder(folderPath)) return false;
+    if (canRenameFolder) return canRenameFolder(folderPath);
+    return canCreate && !isReadOnlyFolder(folderPath);
+  };
+
+  const beginRename = (folder: FolderNode) => {
+    setRenamingFolderPath(folder.path);
+    setRenameDraft(folder.name);
+    setRenameError(null);
+  };
+
+  const cancelRename = () => {
+    setRenamingFolderPath(null);
+    setRenameDraft('');
+    setRenameError(null);
+    setRenameBusy(false);
+  };
+
+  const submitRename = async (fromPath: string) => {
+    const next = renameDraft.trim();
+    const current = fromPath.split('/').pop() ?? '';
+    if (!next || next === current) { cancelRename(); return; }
+    if (/[\\/]/.test(next)) { setRenameError('Use a single folder name (no slashes).'); return; }
+    setRenameBusy(true);
+    setRenameError(null);
+    try {
+      await onRenameFolder?.(fromPath, next);
+      cancelRename();
+    } catch (err: any) {
+      setRenameError(err?.message ?? 'Rename failed');
+      setRenameBusy(false);
+    }
+  };
 
   const handleDragEnd = (event: DragEndEvent) => {
     if (!dragEnabled || !event.over || event.active.id === event.over.id) {
@@ -285,21 +332,72 @@ export function DocsSidebar({
     return (
       <div key={folder.path} className="space-y-1">
         <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={() => onToggleFolder(folder.path)}
-            className="flex min-w-0 flex-1 items-center gap-2 rounded-xl px-3 py-2 text-left text-sm font-semibold text-gray-700 transition-colors hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-white/5"
-            style={{ paddingLeft: `${depth * 16 + 12}px` }}
-          >
-            {isExpanded ? <ChevronDown className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-4 w-4 shrink-0" />}
-            {isExpanded ? <FolderOpen className="h-4 w-4 shrink-0 text-amber-500" /> : <Folder className="h-4 w-4 shrink-0 text-amber-500" />}
-            <span className="truncate">{folder.name}</span>
-            {isSystemFolder(folder.path) && (
-              <span className="ml-1 shrink-0 rounded-full bg-gray-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-gray-400 dark:bg-white/10 dark:text-gray-500">tool</span>
-            )}
-          </button>
+          {renamingFolderPath === folder.path ? (
+            <div className="flex min-w-0 flex-1 flex-col gap-1 px-1" style={{ paddingLeft: `${depth * 16 + 4}px` }}>
+              <div className="flex items-center gap-1">
+                <input
+                  autoFocus
+                  value={renameDraft}
+                  onChange={(event) => setRenameDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') { event.preventDefault(); void submitRename(folder.path); }
+                    if (event.key === 'Escape') { event.preventDefault(); cancelRename(); }
+                  }}
+                  disabled={renameBusy}
+                  className="min-w-0 flex-1 rounded-lg border border-primary/50 bg-white px-2 py-1 text-sm outline-none focus:border-primary dark:bg-black/30"
+                />
+                <button
+                  type="button"
+                  onClick={() => void submitRename(folder.path)}
+                  disabled={renameBusy}
+                  className="shrink-0 rounded-lg bg-primary px-2 py-1 text-xs font-semibold text-white hover:bg-primary-hover disabled:opacity-60"
+                  title="Save name"
+                >
+                  {renameBusy ? '…' : 'Save'}
+                </button>
+                <button
+                  type="button"
+                  onClick={cancelRename}
+                  disabled={renameBusy}
+                  className="shrink-0 rounded-lg p-1 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+                  title="Cancel"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              {renameError && <p className="text-[11px] text-rose-500">{renameError}</p>}
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => onToggleFolder(folder.path)}
+              className="flex min-w-0 flex-1 items-center gap-2 rounded-xl px-3 py-2 text-left text-sm font-semibold text-gray-700 transition-colors hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-white/5"
+              style={{ paddingLeft: `${depth * 16 + 12}px` }}
+            >
+              {isExpanded ? <ChevronDown className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-4 w-4 shrink-0" />}
+              {isExpanded ? <FolderOpen className="h-4 w-4 shrink-0 text-amber-500" /> : <Folder className="h-4 w-4 shrink-0 text-amber-500" />}
+              <span className="truncate">{folder.name}</span>
+              {isSystemFolder(folder.path) && (
+                <span className="ml-1 shrink-0 rounded-full bg-gray-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-gray-400 dark:bg-white/10 dark:text-gray-500">tool</span>
+              )}
+            </button>
+          )}
 
-          {canCreate && !isReadOnlyFolder(folder.path) && (
+          {renamingFolderPath !== folder.path && folderRenamable(folder.path) && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                beginRename(folder);
+              }}
+              className="rounded-xl p-2 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-white/5 dark:hover:text-gray-200"
+              title={`Rename ${folder.name}`}
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+          )}
+
+          {renamingFolderPath !== folder.path && canCreate && !isReadOnlyFolder(folder.path) && (
             <button
               type="button"
               onClick={(event) => {

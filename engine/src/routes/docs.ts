@@ -207,4 +207,68 @@ router.delete(/^\/.+$/, async (req, res) => {
   }
 });
 
+/**
+ * Rename a docs folder by rewriting the path prefix of every local doc beneath
+ * it (`from/...` → `to/...`). Group docs are excluded — the surfaced group tree
+ * is virtual (its root is `docsLabel`), so renaming it is a `docsLabel` change
+ * handled by `PATCH /api/group/docs-label`, not a file move. Refuses collisions
+ * so an existing doc is never silently overwritten.
+ */
+router.post('/rename-folder', async (req, res) => {
+  const from = normalizeDocPathInput(req.body?.from);
+  const to = normalizeDocPathInput(req.body?.to);
+  if (!from || !to) return res.status(400).json({ error: 'Both "from" and "to" must be valid folder paths' });
+  if (from === to) return res.status(400).json({ error: 'New folder name is unchanged' });
+  if (to === from + '/' || to.startsWith(from + '/')) {
+    return res.status(400).json({ error: 'Cannot move a folder into itself' });
+  }
+
+  const groupLabel = activeGroupDocsLabel();
+  const fromRoot = from.split('/')[0];
+  const toRoot = to.split('/')[0];
+  if (fromRoot === groupLabel || toRoot === groupLabel) {
+    return res.status(400).json({
+      error: `The ${groupLabel}/ tree is the shared group folder. Rename it from Settings (group docs label), not as a file move.`,
+    });
+  }
+
+  // Collect every local doc at the folder or beneath it.
+  const prefix = from + '/';
+  const affected = Object.values(docsCache).filter(
+    (doc) => !doc.group && (doc.path === from || doc.path.startsWith(prefix)),
+  );
+  if (affected.length === 0) {
+    return res.status(404).json({ error: `No docs found under "${from}"` });
+  }
+
+  // Pre-flight: every destination path must be free (ignoring the docs we move).
+  const movingPaths = new Set(affected.map((doc) => doc.path));
+  for (const doc of affected) {
+    const suffix = doc.path.slice(from.length); // '' or '/rest...'
+    const targetPath = to + suffix;
+    if (docsCache[targetPath] && !movingPaths.has(targetPath)) {
+      return res.status(409).json({ error: `A doc already exists at "${targetPath}"` });
+    }
+  }
+
+  try {
+    const moved: { from: string; to: string }[] = [];
+    for (const doc of affected) {
+      const suffix = doc.path.slice(from.length);
+      const targetPath = to + suffix;
+      const targetFile = getDocFilePath(targetPath);
+      await writeDocFile(targetFile, doc.title, doc.order, doc.body ?? '');
+      await fs.unlink(doc._path);
+      delete docsCache[doc.path];
+      await removeEmptyDocDirectories(doc._path);
+      await loadDoc(targetFile);
+      moved.push({ from: doc.path, to: targetPath });
+    }
+    res.json({ success: true, moved });
+  } catch (error: any) {
+    console.error(`Failed to rename folder ${from} → ${to}:`, error);
+    res.status(500).json({ error: `Failed to rename folder: ${error.message}` });
+  }
+});
+
 export default router;

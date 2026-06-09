@@ -17,6 +17,7 @@ import {
   resolveWorkspaceGroups,
   groupDocPathToStoreRelative,
   groupDocsLabel,
+  deriveDocsLabel,
   GROUP_STORE_DIRNAME,
   GROUP_DOCS_BRANCH,
 } from './group.js';
@@ -26,6 +27,23 @@ const execFileAsync = promisify(execFile);
 async function makeTempRoot(): Promise<string> {
   return await fs.mkdtemp(path.join(os.tmpdir(), 'eh-group-test-'));
 }
+
+describe('deriveDocsLabel', () => {
+  it('keeps an already-safe name', () => {
+    expect(deriveDocsLabel('paytester')).toBe('paytester');
+  });
+  it('collapses spaces and unsafe runs to a single dash', () => {
+    expect(deriveDocsLabel('Acme Pay Suite')).toBe('Acme-Pay-Suite');
+    expect(deriveDocsLabel('my  product!!name')).toBe('my-product-name');
+  });
+  it('trims leading/trailing separators', () => {
+    expect(deriveDocsLabel('  --weird--  ')).toBe('weird');
+  });
+  it('falls back to the default when nothing usable remains', () => {
+    expect(deriveDocsLabel('   ')).toBe('Product');
+    expect(deriveDocsLabel('!!!')).toBe('Product');
+  });
+});
 
 describe('validateGroupConfig', () => {
   it('accepts a minimal valid config', () => {

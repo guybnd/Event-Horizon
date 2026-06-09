@@ -10,7 +10,7 @@ import TurndownService from 'turndown';
 import { gfm } from 'turndown-plugin-gfm';
 import { marked } from 'marked';
 import { AlertCircle, Bold, ChevronDown, ChevronRight, Code, FileText, Heading1, Heading2, Info, Italic, Link as LinkIcon, List, ListOrdered, Lock, Network, Save, Share2, Trash2, X } from 'lucide-react';
-import { applyDocsPromotion, createDoc, deleteDoc, fetchDoc, fetchDocs, fetchGroupStatus, updateDoc } from '../api';
+import { applyDocsPromotion, createDoc, deleteDoc, fetchDoc, fetchDocs, fetchGroupStatus, renameDocsFolder, updateDoc, updateGroupDocsLabel } from '../api';
 import { useApp } from '../AppContext';
 import type { Doc } from '../types';
 import type { GroupStatus } from '../api';
@@ -662,6 +662,37 @@ export function DocsScreen() {
     }
   };
 
+  // Which folders expose an inline rename affordance. The group-label root is a
+  // config change (parent-only); its store subfolders are virtual and not movable.
+  const canRenameFolder = (folderPath: string) => {
+    if (!canEditDocs) return false;
+    if (folderPath === groupDocsLabel) return isGroupParent;
+    if (folderPath.startsWith(`${groupDocsLabel}/`)) return false;
+    return true;
+  };
+
+  // Rename a docs folder. The group-label root reroutes to the group docs-label
+  // config (parent-only); every other folder is a file move via the docs API.
+  const handleRenameFolder = async (fromPath: string, newName: string) => {
+    if (fromPath === groupDocsLabel) {
+      await updateGroupDocsLabel(newName);
+      const status = await fetchGroupStatus().catch(() => null);
+      setGroupStatus(status);
+      setDocsRefreshKey((current) => current + 1);
+      setNotice({ tone: 'success', message: `Group docs folder renamed to “${newName}”.` });
+      return;
+    }
+    const parentPrefix = fromPath.split('/').slice(0, -1).join('/');
+    const toPath = parentPrefix ? `${parentPrefix}/${newName}` : newName;
+    await renameDocsFolder(fromPath, toPath);
+    // Keep the open doc selected if it lived under the renamed folder.
+    if (selectedPath && (selectedPath === fromPath || selectedPath.startsWith(`${fromPath}/`))) {
+      setSelectedPath(toPath + selectedPath.slice(fromPath.length));
+    }
+    setDocsRefreshKey((current) => current + 1);
+    setNotice({ tone: 'success', message: `Folder renamed to “${newName}”.` });
+  };
+
   const handleSave = async () => {
     if (!selectedDoc || !canEditSelectedDoc) {
       return;
@@ -939,6 +970,8 @@ export function DocsScreen() {
           onReorderDocs={handleReorderDocs}
           creating={creating}
           systemFolders={['event-horizon']}
+          onRenameFolder={handleRenameFolder}
+          canRenameFolder={canRenameFolder}
         />
       </div>
 

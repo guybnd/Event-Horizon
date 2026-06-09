@@ -247,6 +247,20 @@ export async function deleteDoc(docPath: string): Promise<void> {
   if (!res.ok) throw new Error('Failed to delete doc');
 }
 
+/** Rename a docs folder, moving every local doc under `from/` to `to/`. */
+export async function renameDocsFolder(from: string, to: string): Promise<void> {
+  const res = await fetch(`${API_URL}/docs/rename-folder`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from, to }),
+  });
+  if (!res.ok) {
+    let message = 'Failed to rename folder';
+    try { const payload = await res.json(); if (payload.error) message = payload.error; } catch {}
+    throw new Error(message);
+  }
+}
+
 export interface SkillStatus {
   framework: 'copilot' | 'antigravity' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'generic';
   skillSourcePath: string;
