@@ -3,6 +3,7 @@ import { existsSync } from 'fs';
 import path from 'path';
 import { getGroupStoreDir, type GroupContext } from './group.js';
 import { syncGroup, type GitRunner, type GroupSyncResult } from './group-sync.js';
+import { submitGroupEdit } from './group-edit.js';
 
 /**
  * Promote existing `.docs/` into the group store (FLUX-404).
@@ -16,9 +17,15 @@ import { syncGroup, type GitRunner, type GroupSyncResult } from './group-sync.js
  * GitHub/IDE browsing of main — only through EH group mode / fan-out.
  *
  * Selection is **per-file opt-in**: `.docs/` holds both repo-local docs (stay put)
- * and cross-project docs (promote), so nothing is moved in bulk. Promotion is
- * **parent-only** — only the parent owns the canonical store; the route enforces
- * this by resolving `getGroupContext()` (unset on a member workspace).
+ * and cross-project docs (promote), so nothing is moved in bulk.
+ *
+ * Promotion runs from either side of the group:
+ * - **Parent** (`applyDocsPromotion`): writes its own `.docs/` straight into the
+ *   canonical store worktree, `git rm`s from its main, then `syncGroup` fans out.
+ * - **Member** (`applyMemberDocsPromotion`): reads its own `.docs/`, pushes the
+ *   content into the store **through the parent** (`submitGroupEdit`, the same
+ *   push-through-parent path member doc edits use), then `git rm`s from the
+ *   member's own main. The doc returns to the member as a read-only group doc.
  */
 
 const DOCS_DIRNAME = '.docs';
@@ -131,16 +138,21 @@ interface CollectedPromotion {
  * Validate every selection and read its content — pure filesystem work, no git,
  * so it's unit-testable on its own. Validates all paths up front so a single bad
  * selection aborts the batch before anything is written or removed.
+ *
+ * `sourceRoot` is the repo whose `.docs/` holds the sources (the parent for a
+ * parent-origin promotion, the member for a member-origin one). `storeDir`
+ * defaults to that repo's store, but a member passes the **parent's** store so
+ * targets validate against the real canonical layout.
  */
 export async function collectPromotions(
-  parentRoot: string,
+  sourceRoot: string,
   selections: PromotionSelection[],
+  storeDir: string = getGroupStoreDir(sourceRoot),
 ): Promise<CollectedPromotion[]> {
   if (!Array.isArray(selections) || selections.length === 0) {
     throw new Error('at least one selection is required');
   }
-  const docsDir = path.join(parentRoot, DOCS_DIRNAME);
-  const storeDir = getGroupStoreDir(parentRoot);
+  const docsDir = path.join(sourceRoot, DOCS_DIRNAME);
 
   // Validate every path first (source under .docs/, target under the store).
   const targets = selections.map((sel) => {
@@ -174,6 +186,31 @@ const defaultGitRunner: GitRunner = async (cwd, args) => {
 };
 
 /**
+ * Remove a promoted source from its repo's working tree. `git rm` stages the
+ * deletion; an untracked file (no pathspec match) is removed from disk directly
+ * so an as-yet-uncommitted doc still moves.
+ */
+async function removeSourceFromMain(runner: GitRunner, repoRoot: string, sourceRel: string): Promise<void> {
+  const sourceAbs = path.join(repoRoot, sourceRel);
+  await runner(repoRoot, ['rm', '--quiet', '--', sourceRel]).catch(async (err: any) => {
+    if (/did not match any files|pathspec/i.test(String(err?.message ?? err))) {
+      await fs.rm(sourceAbs, { force: true });
+      return;
+    }
+    throw err;
+  });
+}
+
+/** Commit staged `.docs/` removals on a repo's main (best-effort, idempotent). */
+async function commitDocsRemovals(runner: GitRunner, repoRoot: string, count: number): Promise<void> {
+  if (count <= 0) return;
+  const { stdout } = await runner(repoRoot, ['status', '--porcelain']).catch(() => ({ stdout: '' }));
+  if (!stdout.trim()) return;
+  await runner(repoRoot, ['add', '-A', '--', DOCS_DIRNAME]).catch(() => undefined);
+  await runner(repoRoot, ['commit', '-m', `docs: promote ${count} doc(s) into group store`]).catch(() => undefined);
+}
+
+/**
  * Promote selected `.docs/` files into the canonical store with move semantics:
  * write each into the `.flux-group` worktree, `git rm` it from main, commit the
  * removals on main, then `syncGroup` to commit the store additions on
@@ -203,15 +240,7 @@ export async function applyDocsPromotion(
 
       // 2. Remove from main (git rm stages the deletion; the commit follows).
       const sourceRel = item.source.split('/').join(path.sep);
-      const sourceAbs = path.join(parentRoot, sourceRel);
-      await runner(parentRoot, ['rm', '--quiet', '--', sourceRel]).catch(async (err: any) => {
-        // Untracked file: git rm won't match it, so remove it from disk directly.
-        if (/did not match any files|pathspec/i.test(String(err?.message ?? err))) {
-          await fs.rm(sourceAbs, { force: true });
-          return;
-        }
-        throw err;
-      });
+      await removeSourceFromMain(runner, parentRoot, sourceRel);
 
       promoted.push(item.target);
     } catch (err: any) {
@@ -220,13 +249,7 @@ export async function applyDocsPromotion(
   }
 
   // 3. Commit the removals on main (best-effort — nothing to commit is fine).
-  if (promoted.length > 0) {
-    const { stdout } = await runner(parentRoot, ['status', '--porcelain']).catch(() => ({ stdout: '' }));
-    if (stdout.trim()) {
-      await runner(parentRoot, ['add', '-A', '--', DOCS_DIRNAME]).catch(() => undefined);
-      await runner(parentRoot, ['commit', '-m', `docs: promote ${promoted.length} doc(s) into group store`]).catch(() => undefined);
-    }
-  }
+  await commitDocsRemovals(runner, parentRoot, promoted.length);
 
   // 4. Commit the store additions on flux-group-docs and fan out to members.
   const sync = await syncGroup(group, {
@@ -236,4 +259,59 @@ export async function applyDocsPromotion(
   });
 
   return { promoted, failed, sync };
+}
+
+/**
+ * Member-origin promotion (push-through-parent). Reads the **member's** own
+ * `.docs/`, writes the content into the canonical store **through the parent**
+ * (`submitGroupEdit` — the same serialized intake member doc edits use, which
+ * commits on `flux-group-docs` and fans out), then `git rm`s each source from
+ * the member's own main. After fan-out the doc returns to the member as a
+ * read-only group doc, completing the move.
+ *
+ * Targets are validated against the parent's real store layout; sources are read
+ * from `memberRoot/.docs/`. Unlike the parent path the store write is a single
+ * atomic `submitGroupEdit` batch — if any target path is invalid nothing is
+ * written — after which the local `git rm`s are per-file isolated.
+ */
+export async function applyMemberDocsPromotion(
+  memberRoot: string,
+  parentGroup: GroupContext,
+  selections: PromotionSelection[],
+  opts: { gitRunner?: GitRunner; allowLocalRemotes?: boolean } = {},
+): Promise<DocsPromotionResult> {
+  const runner = opts.gitRunner ?? defaultGitRunner;
+  const parentStoreDir = getGroupStoreDir(parentGroup.parentRoot);
+
+  // Read + validate the member's sources against the parent's store layout.
+  const collected = await collectPromotions(memberRoot, selections, parentStoreDir);
+
+  // 1. Write every source into the canonical store through the parent (commits
+  //    on flux-group-docs + fans out). Atomic: a bad path aborts before writes.
+  const edit = await submitGroupEdit(
+    parentGroup,
+    collected.map((item) => ({ path: item.target, content: item.content })),
+    {
+      gitRunner: opts.gitRunner,
+      allowLocalRemotes: opts.allowLocalRemotes,
+      message: `group: promote member docs (${collected.map((c) => c.target).join(', ')})`,
+    },
+  );
+
+  // 2. Remove each promoted source from the member's own main (per-file isolated).
+  const promoted: string[] = [];
+  const failed: PromotionOutcome[] = [];
+  for (const item of collected) {
+    try {
+      await removeSourceFromMain(runner, memberRoot, item.source.split('/').join(path.sep));
+      promoted.push(item.target);
+    } catch (err: any) {
+      failed.push({ source: item.source, target: item.target, ok: false, error: String(err?.message ?? err) });
+    }
+  }
+
+  // 3. Commit the removals on the member's main (best-effort).
+  await commitDocsRemovals(runner, memberRoot, promoted.length);
+
+  return { promoted, failed, sync: edit.sync };
 }

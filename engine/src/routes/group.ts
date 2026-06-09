@@ -5,8 +5,8 @@ import { planGroupSetup, applyGroupSetup, ensureGroupRegistered, type GroupSetup
 import { scanFolderForRepos, discoverFromRegistry, createDedicatedParent, type CreateParentInput, type CreateParentMember } from '../group-discovery.js';
 import { syncGroup } from '../group-sync.js';
 import { submitGroupEdit, type GroupEditFile } from '../group-edit.js';
-import { planDocsPromotion, applyDocsPromotion, type PromotionSelection } from '../group-promote.js';
-import { summarizeGroup, getGroupContext, getMemberBinding, groupDocsLabel, activateGroup, getGroupConfigFile, validateGroupConfig, type GroupMember } from '../group.js';
+import { planDocsPromotion, applyDocsPromotion, applyMemberDocsPromotion, type PromotionSelection } from '../group-promote.js';
+import { summarizeGroup, getGroupContext, getMemberBinding, groupDocsLabel, activateGroup, getGroupConfigFile, validateGroupConfig, type GroupContext, type GroupMember } from '../group.js';
 
 const router = express.Router();
 
@@ -256,29 +256,36 @@ router.post('/submit-edit', async (req, res) => {
 // ─── promote existing .docs/ into the group store (FLUX-404) ─────────────────
 
 /**
- * Promotion is **parent-only** — only the parent owns the canonical store.
- * Resolving `getGroupContext()` (unset on a member workspace) enforces this:
- * a member-origin promotion gets "no group" instead of a special-cased branch.
+ * Resolve where a promotion runs from. Both sides of a group can promote:
+ * - **parent** owns the canonical store and writes into it directly;
+ * - **member** reads its own `.docs/` and pushes into the store *through the
+ *   parent* (`applyMemberDocsPromotion`).
+ *
+ * A standalone workspace (neither parent nor bound member) gets `null` + a 400.
  */
-function requireParentGroup(res: express.Response) {
+type PromotionOrigin =
+  | { kind: 'parent'; group: GroupContext }
+  | { kind: 'member'; memberRoot: string; parentGroup: GroupContext };
+
+function resolvePromotionOrigin(res: express.Response): PromotionOrigin | null {
   if (!workspaceRoot) {
     res.status(400).json({ error: 'No workspace active' });
     return null;
   }
   const group = getGroupContext();
-  if (!group) {
-    res.status(400).json({ error: 'Doc promotion runs at the group parent. Open the parent workspace.' });
-    return null;
-  }
-  return group;
+  if (group) return { kind: 'parent', group };
+  const binding = getMemberBinding();
+  if (binding) return { kind: 'member', memberRoot: workspaceRoot, parentGroup: binding.parentGroup };
+  res.status(400).json({ error: 'Doc promotion needs a group — open a group parent or a bound member workspace.' });
+  return null;
 }
 
-/** Dry-run: walk `.docs/` and propose a store target per file. No mutation. */
+/** Dry-run: walk the local `.docs/` and propose a store target per file. No mutation. */
 router.post('/promote-docs/plan', async (_req, res) => {
-  const group = requireParentGroup(res);
-  if (!group) return;
+  const origin = resolvePromotionOrigin(res);
+  if (!origin) return;
   try {
-    const plan = await planDocsPromotion(group.parentRoot);
+    const plan = await planDocsPromotion(workspaceRoot!);
     res.json(plan);
   } catch (err: any) {
     res.status(400).json({ error: err.message });
@@ -301,14 +308,21 @@ function parseSelections(body: any): PromotionSelection[] | { error: string } {
   return parsed;
 }
 
-/** Apply: move selected docs into the store, remove from main, commit, fan out. */
+/**
+ * Apply: move selected docs into the store, remove from the originating repo's
+ * main, commit, fan out. Parent writes the store directly; member routes through
+ * the parent (`applyMemberDocsPromotion`).
+ */
 router.post('/promote-docs/apply', async (req, res) => {
-  const group = requireParentGroup(res);
-  if (!group) return;
+  const origin = resolvePromotionOrigin(res);
+  if (!origin) return;
   const selections = parseSelections(req.body);
   if ('error' in selections) return res.status(400).json({ error: selections.error });
   try {
-    const result = await applyDocsPromotion(group, selections);
+    const result =
+      origin.kind === 'parent'
+        ? await applyDocsPromotion(origin.group, selections)
+        : await applyMemberDocsPromotion(origin.memberRoot, origin.parentGroup, selections);
     res.json(result);
   } catch (err: any) {
     res.status(400).json({ error: err.message });

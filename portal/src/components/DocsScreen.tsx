@@ -270,13 +270,16 @@ export function DocsScreen() {
   const groupMembers = groupStatus?.members ?? [];
   const isInGroup = groupStatus?.configured === true || groupStatus?.membership != null;
   const showFeatureMap = isInGroup && featureDocs.length > 0;
-  // Promotion discoverability (FLUX-416): on a group parent, a repo-local `.docs/`
-  // doc (anything outside the `<docsLabel>/` group tree) is NOT shared with members
-  // until it's promoted. Nudge toward the promotion panel so this isn't mistaken
-  // for a sync bug.
+  // Promotion discoverability (FLUX-416): a repo-local `.docs/` doc (anything
+  // outside the `<docsLabel>/` group tree) is NOT shared with the group until it's
+  // promoted. Both sides of a group can promote — the parent owns the store, a
+  // bound member pushes through the parent — so nudge toward the promotion panel
+  // for either so this isn't mistaken for a sync bug.
   const isGroupParent = groupStatus?.configured === true;
+  const isGroupMember = groupStatus?.membership != null;
+  const canPromoteHere = isGroupParent || isGroupMember;
   const selectedDocIsGroupDoc = selectedDoc != null && selectedDoc.path.startsWith(`${groupDocsLabel}/`);
-  const showPromoteHint = isGroupParent && selectedDoc != null && !selectedDocIsGroupDoc && !isSelectedDocReadOnly;
+  const showPromoteHint = canPromoteHere && selectedDoc != null && !selectedDocIsGroupDoc && !isSelectedDocReadOnly;
   const participatingMembers = (doc: Doc) => {
     const haystack = `${doc.title}\n${doc.body ?? ''}`.toLowerCase();
     return groupMembers.filter((member) => haystack.includes(member.name.toLowerCase()));
