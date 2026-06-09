@@ -14,6 +14,7 @@ import { createDoc, deleteDoc, fetchDoc, fetchDocs, fetchGroupStatus, updateDoc 
 import { useApp } from '../AppContext';
 import type { Doc } from '../types';
 import type { GroupStatus } from '../api';
+import { resolveDocEditability } from '../utils';
 import { DocsSidebar } from './DocsSidebar';
 
 marked.setOptions({ gfm: true, breaks: false });
@@ -239,7 +240,9 @@ export function DocsScreen() {
   const canEditDocs = (config?.docsEditPermissions ?? 'all') === 'all'
     || (config?.docsAllowedUsers ?? []).includes(currentUser);
   const isSelectedDocReadOnly = selectedDoc?.readOnly === true;
-  const canEditSelectedDoc = canEditDocs && !isSelectedDocReadOnly;
+  const docEditability = resolveDocEditability(selectedDoc ?? null, canEditDocs);
+  const canEditSelectedDoc = docEditability.editable;
+  const editsRouteViaParent = docEditability.viaParent;
   const brokenWikiLinks = selectedDoc ? getBrokenWikiLinks(draftBody, docs) : [];
   const breadcrumbs = selectedDoc ? getBreadcrumbs(selectedDoc.path) : [];
   const showToolbarActiveState = isEditorFocused && hasTextSelection;
@@ -907,7 +910,6 @@ export function DocsScreen() {
           onCreateDoc={handleCreateDoc}
           onReorderDocs={handleReorderDocs}
           creating={creating}
-          readOnlyPrefix={groupStatus?.membership?.role === 'member' ? groupDocsLabel : undefined}
         />
       </div>
 
@@ -995,6 +997,13 @@ export function DocsScreen() {
             <div className="flex items-start gap-3 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800 dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-200">
               <Lock className="mt-0.5 h-4 w-4 shrink-0" />
               This is a read-only cross-project group doc. Edits are authored in the group's parent repo and fanned out to members.
+            </div>
+          )}
+
+          {selectedDoc && editsRouteViaParent && (
+            <div className="flex items-start gap-3 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800 dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-200">
+              <Share2 className="mt-0.5 h-4 w-4 shrink-0" />
+              This is a shared {groupDocsLabel} doc. Your edits are saved through the group's parent repo and fanned out to every member.
             </div>
           )}
 

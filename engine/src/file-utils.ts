@@ -23,6 +23,8 @@ export interface DocRecord {
   readOnly?: boolean;
   /** True for cross-project group docs (vs the repo's own `.docs/`). */
   group?: boolean;
+  /** True when this group doc is editable but its writes route through the group parent (bound member, FLUX-419). */
+  viaParent?: boolean;
 }
 
 export interface StoredDoc extends DocRecord {

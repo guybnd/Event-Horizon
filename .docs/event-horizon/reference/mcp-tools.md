@@ -28,6 +28,10 @@ The auto-installed MCP config (placed by the workflow installer) does this for y
 | [`list_tickets`](#list_tickets) | Read | — |
 | [`get_board_config`](#get_board_config) | Read | — |
 | [`get_project_group`](#get_project_group) | Read | — |
+| [`list_group_docs`](#list_group_docs) | Group docs — Read | — |
+| [`read_group_doc`](#read_group_doc) | Group docs — Read | — |
+| [`submit_group_doc`](#submit_group_doc) | Group docs — Write | yes |
+| [`delete_group_doc`](#delete_group_doc) | Group docs — Write | yes |
 | [`update_ticket`](#update_ticket) | Mutation | yes |
 | [`change_status`](#change_status) | Mutation | yes (enforced) |
 | [`add_comment`](#add_comment) | Mutation | yes |
@@ -108,6 +112,60 @@ Read the multi-repo group when one is configured (a committed `group.json` in th
 **Output (no group):** `{ "configured": false, "message": "No multi-repo group is configured …" }`. This is a normal result, not an error — single-repo workspaces always get `configured: false`.
 
 Read-only and side-effect-free: it reflects the group context loaded by `activateWorkspace` ([`group.ts`](../../../engine/src/group.ts)); it does not re-scan repos. `pathExists` is re-checked live on each call (a single stat per member), so it reflects whether a member is checked out *now* — not a stale load-time snapshot.
+
+### `list_group_docs`
+
+List the shared group docs (the cross-project knowledge base) by path and title. Works from any workspace — **parent or bound member** — because both resolve the store via `activeGroupStoreDir()` ([`task-store.ts`](../../../engine/src/task-store.ts)).
+
+**Input:** none.
+
+**Output (docs present):**
+```jsonc
+{ "docs": [{ "path": "Product/features/payments-api", "title": "Payments API", "directory": "Product/features" }], "label": "Product" }
+```
+
+**Output (empty store):** `{ "docs": [], "message": "No group docs found — the shared store may be empty." }`
+
+**Output (no group):** `{ "docs": [], "message": "No group configured …" }` — not an error; single-repo returns this.
+
+### `read_group_doc`
+
+Read the full body of a shared group doc.
+
+| Input | Type | Required | Notes |
+|-------|------|----------|-------|
+| `path` | string | yes | As returned by `list_group_docs`, e.g. `"Product/features/payments-api"` |
+
+**Output:** `{ path, title, body, directory }`.
+
+**Errors:** `Group doc '<path>' not found. Use list_group_docs to see available paths.`
+
+### `submit_group_doc`
+
+Create or update a shared group doc. Commits on `flux-group-docs` in the parent's canonical store and fans out to all members. Works from any workspace — **parent or bound member**.
+
+| Input | Type | Required | Notes |
+|-------|------|----------|-------|
+| `path` | string | yes | Store-relative path **without** the group prefix and **without** `.md`: e.g. `"features/payments-api"`, `"architecture/overview"`. No `..`, no absolute paths. |
+| `title` | string | yes | Document title (prepended as H1). |
+| `body` | string | yes | Full markdown body (title heading not included). |
+| `message` | string | no | Git commit message. Auto-generated when omitted. |
+
+**Output:** `{ applied, committed, pushed, failed, members: [{ name, ok, diverged?, error? }] }`. The `members` array reports per-member fan-out outcomes so the agent knows which repos received the change.
+
+**Errors:** `No group writer is available …` when the workspace is neither a parent nor a bound member.
+
+### `delete_group_doc`
+
+Delete a shared group doc. Commits the deletion on `flux-group-docs` and fans out.
+
+| Input | Type | Required | Notes |
+|-------|------|----------|-------|
+| `path` | string | yes | Full doc path including the group prefix, as returned by `list_group_docs` (e.g. `"Product/features/payments-api"`). |
+
+**Output:** `{ deleted, committed, pushed, failed, members }`.
+
+**Errors:** `'<path>' is not a valid group doc path …` when the path doesn't start with the group prefix.
 
 ---
 

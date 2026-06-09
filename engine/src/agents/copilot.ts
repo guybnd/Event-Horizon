@@ -8,6 +8,7 @@ import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal, chec
 import { broadcastEvent } from '../events.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
 import { buildMemberScopeArgs } from '../group.js';
+import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
 
 function checkBinaryInstalled(binaryName: string): void {
@@ -489,6 +490,8 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     ...(session.skipPermissions ? ['--yolo'] : ['--allow-all-tools']),
     // Multi-repo group: put every checked-out member repo in scope (no-op single-repo).
     ...buildMemberScopeArgs(),
+    // Member worktree: add local .flux-group/ so the agent reads shared group docs (FLUX-422).
+    ...buildGroupDocsScopeArg(workspaceRoot),
   ];
 
   const caps = PROVIDER_CAPABILITIES['copilot'];

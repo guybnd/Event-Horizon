@@ -5,6 +5,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { GROUP_DOCS_BRANCH, getGroupStoreDir, type GroupContext, type ResolvedMember } from './group.js';
 import { validateGitRemote } from './group-setup.js';
+import { refreshMemberWorktrees } from './group-member-worktree.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -217,6 +218,12 @@ export async function syncGroup(
     opts,
   );
   const members = await fanOutGroupDocs(group, opts);
+
+  // Refresh local member worktrees from the parent's latest canonical data
+  // (Case 1: same-machine fetch — no internet required).
+  await refreshMemberWorktrees(group, opts).catch((err) =>
+    console.error('[group-sync] member worktree refresh failed:', err),
+  );
 
   return {
     committed,

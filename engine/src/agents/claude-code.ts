@@ -8,6 +8,7 @@ import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal, noti
 import { broadcastEvent } from '../events.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
 import { buildMemberScopeArgs } from '../group.js';
+import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
 
 function checkBinaryInstalled(binaryName: string): void {
@@ -336,6 +337,8 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     ...(session.skipPermissions ? ['--dangerously-skip-permissions'] : []),
     // Multi-repo group: put every checked-out member repo in scope (no-op single-repo).
     ...buildMemberScopeArgs(),
+    // Member worktree: add local .flux-group/ so the agent reads shared group docs (FLUX-422).
+    ...buildGroupDocsScopeArg(workspaceRoot),
   ];
 
   const caps = PROVIDER_CAPABILITIES[framework] ?? PROVIDER_CAPABILITIES['copilot'];
@@ -601,7 +604,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   });
 
   const safeMessage = message.replace(/\0/g, '');
-  const memberScopeArgs = buildMemberScopeArgs();
+  const memberScopeArgs = [...buildMemberScopeArgs(), ...buildGroupDocsScopeArg(workspaceRoot)];
   const resumeArgs = session.claudeSessionId
     ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions', ...memberScopeArgs]
     : ['-p', safeMessage, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions', ...memberScopeArgs];

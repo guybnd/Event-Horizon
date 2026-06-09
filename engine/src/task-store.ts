@@ -20,6 +20,7 @@ import type { StoredDoc } from './file-utils.js';
 import { resolveEmbeddedDocsRoot, copyDir, buildStarterProjectOverview } from './docs-seeder.js';
 import { bootstrapNewWorkspace, installSkillsForWorkspace } from './bootstrap.js';
 import { activateGroup, activateMemberBinding, getGroupContext, getMemberBinding, activeGroupDocsLabel } from './group.js';
+import { attachMemberWorktree } from './group-member-worktree.js';
 
 export let tasksCache: Record<string, any> = {};
 export let docsCache: Record<string, StoredDoc> = {};
@@ -722,10 +723,13 @@ export async function loadGroupDoc(storeDir: string, filePath: string) {
       slug: slugifyDocValue(slugSource),
       directory,
       ...(order !== undefined ? { order } : {}),
-      // The parent owns the canonical store, so it edits its own group docs
-      // inline (FLUX-414); a bound member keeps them read-only and routes edits
-      // to the parent's writer.
-      readOnly: getGroupContext() == null,
+      // A group doc is genuinely read-only only when no writer resolves. The
+      // parent owns the canonical store and edits inline (FLUX-414); a bound
+      // member also edits — its writes route through the parent via
+      // `submitGroupEdit` (FLUX-419) — so it is editable, flagged `viaParent`
+      // so the UI can explain the routed save.
+      readOnly: getGroupContext() == null && getMemberBinding() == null,
+      ...(getGroupContext() == null && getMemberBinding() != null ? { viaParent: true } : {}),
       group: true,
       _path: filePath,
     };
@@ -1010,7 +1014,14 @@ export async function activateWorkspace(newRoot: string) {
     await startWatchers();
     startSyncWatcher();
     await activateGroup(newRoot);
-    await activateMemberBinding(newRoot, (await getWorkspacesList()).map((w) => w.path));
+    const memberBinding = await activateMemberBinding(newRoot, (await getWorkspacesList()).map((w) => w.path));
+    if (memberBinding) {
+      // Attach (or refresh) the local group docs worktree for this member workspace
+      // so non-EH tools and agents see real files on disk (FLUX-422).
+      attachMemberWorktree(newRoot, memberBinding.parentRoot).catch((err) =>
+        console.error('[group-worktree] attach failed during workspace activation:', err),
+      );
+    }
     await loadGroupDocs();
     await startGroupDocsWatcher();
     seedPromptNotifications();

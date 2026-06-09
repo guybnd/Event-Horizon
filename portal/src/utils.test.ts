@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { truncateMiddle, groupRegistrationGaps, parentDirOf, multiRepoNudge, groupWorkspaces } from './utils';
+import { truncateMiddle, groupRegistrationGaps, parentDirOf, multiRepoNudge, groupWorkspaces, resolveDocEditability } from './utils';
 import type { GroupStatus, GroupMemberSummary, WorkspaceInfo } from './api';
+import type { Doc } from './types';
 
 describe('truncateMiddle', () => {
   it('returns the string unchanged when shorter than maxLen', () => {
@@ -211,5 +212,59 @@ describe('groupWorkspaces', () => {
     ];
     const result = groupWorkspaces(list);
     expect(result.groups.map((g) => g.parentPath)).toEqual(['/p1', '/p2']);
+  });
+});
+
+describe('resolveDocEditability', () => {
+  const doc = (over: Partial<Doc> = {}): Doc => ({
+    path: 'Product/features/x',
+    title: 'X',
+    body: '',
+    slug: 'x',
+    directory: 'Product/features',
+    ...over,
+  });
+
+  it('is not editable with no doc selected', () => {
+    expect(resolveDocEditability(null, true)).toEqual({ editable: false, viaParent: false });
+  });
+
+  it('is not editable when the user lacks docs-edit permission', () => {
+    expect(resolveDocEditability(doc(), false)).toEqual({ editable: false, viaParent: false });
+  });
+
+  it('edits a normal repo doc in place (no group routing)', () => {
+    expect(resolveDocEditability(doc({ path: 'guide', group: undefined }), true)).toEqual({
+      editable: true,
+      viaParent: false,
+    });
+  });
+
+  it("edits a parent's own group doc in place (group, not readOnly, not viaParent)", () => {
+    expect(resolveDocEditability(doc({ group: true, readOnly: false }), true)).toEqual({
+      editable: true,
+      viaParent: false,
+    });
+  });
+
+  it('edits a bound member group doc but routes through the parent (viaParent)', () => {
+    expect(resolveDocEditability(doc({ group: true, readOnly: false, viaParent: true }), true)).toEqual({
+      editable: true,
+      viaParent: true,
+    });
+  });
+
+  it('treats a viaParent doc as editable even if it is also flagged readOnly', () => {
+    expect(resolveDocEditability(doc({ group: true, readOnly: true, viaParent: true }), true)).toEqual({
+      editable: true,
+      viaParent: true,
+    });
+  });
+
+  it('is not editable for a genuinely read-only doc with no writer', () => {
+    expect(resolveDocEditability(doc({ group: true, readOnly: true }), true)).toEqual({
+      editable: false,
+      viaParent: false,
+    });
   });
 });

@@ -6,7 +6,7 @@ import path from 'path';
 import matter from 'gray-matter';
 import { fileURLToPath } from 'url';
 
-import { tasksCache, serializeTaskForApi, updateTaskWithHistory, activateWorkspace, workspaceActivating, readTaskFromDisk } from './task-store.js';
+import { tasksCache, serializeTaskForApi, updateTaskWithHistory, activateWorkspace, workspaceActivating, readTaskFromDisk, docsCache } from './task-store.js';
 import { configCache, autoRegisterUnknownTags } from './config.js';
 import { broadcastEvent } from './events.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
@@ -14,7 +14,8 @@ import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry } f
 import { getCliWorkspace, getActiveFluxDir, getWorkspacesList } from './workspace.js';
 import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, checkGhAuth, captureDiff, getCurrentCommit } from './branch-manager.js';
 import { getActiveSessionsForTask } from './session-store.js';
-import { getGroupContext, getMemberBinding, groupDocsLabel, summarizeGroup } from './group.js';
+import { getGroupContext, getMemberBinding, groupDocsLabel, summarizeGroup, groupDocPathToStoreRelative, activeGroupDocsLabel } from './group.js';
+import { submitGroupEdit } from './group-edit.js';
 
 function textResult(text: string) {
   return { content: [{ type: 'text' as const, text }] };
@@ -718,6 +719,135 @@ export async function startMcpServer(): Promise<void> {
         return { persona, succeeded: false, status: 'error', output: reason?.message || 'unknown error' };
       });
       return jsonResult(output);
+    },
+  );
+
+  // ─── Group Docs Tools (FLUX-421 / FLUX-420) ─────────────────────────────────
+
+  server.tool(
+    'list_group_docs',
+    'List the shared group docs (the cross-project knowledge base) by path and title. Works from any workspace — parent or bound member. Returns an empty list in single-repo mode.',
+    {},
+    async () => {
+      const label = activeGroupDocsLabel();
+      const docs = Object.values(docsCache)
+        .filter((d) => d.group === true)
+        .sort((a, b) => a.path.localeCompare(b.path))
+        .map((d) => ({ path: d.path, title: d.title, directory: d.directory }));
+      if (docs.length === 0) {
+        const inGroup = getGroupContext() != null || getMemberBinding() != null;
+        return jsonResult({
+          docs: [],
+          message: inGroup
+            ? 'No group docs found — the shared store may be empty.'
+            : `No group configured. This is a single-repo workspace. Group docs appear under the '${label}/' prefix once a group is set up.`,
+        });
+      }
+      return jsonResult({ docs, label });
+    },
+  );
+
+  server.tool(
+    'read_group_doc',
+    'Read the full body of a shared group doc by its path (e.g. "Product/features/payments"). Works from any workspace — parent or bound member.',
+    {
+      path: z.string().describe('Doc path as returned by list_group_docs (e.g. "Product/features/payments")'),
+    },
+    async ({ path: docPath }) => {
+      const doc = docsCache[docPath];
+      if (!doc || !doc.group) {
+        return errorResult(
+          `Group doc '${docPath}' not found. Use list_group_docs to see available paths.`,
+        );
+      }
+      return jsonResult({ path: doc.path, title: doc.title, body: doc.body, directory: doc.directory });
+    },
+  );
+
+  server.tool(
+    'submit_group_doc',
+    'Create or update a shared group doc through the parent repo, committing to flux-group-docs and fanning out to all members. Works from any workspace — parent or bound member. Returns the per-member fan-out result so you know which members received the change.',
+    {
+      path: z.string().describe(
+        'Store-relative path for the doc, without the group prefix and without .md extension. Use forward slashes. Examples: "features/payments-api", "architecture/overview". Must be a single safe path segment (no .., no absolute paths).',
+      ),
+      title: z.string().describe('Document title (written as the first H1 heading).'),
+      body: z.string().describe('Full markdown body content (not including the title heading — that is prepended automatically).'),
+      message: z.string().optional().describe('Optional git commit message. Defaults to an auto-generated message.'),
+    },
+    async ({ path: storeRel, title, body, message }) => {
+      const writer = getGroupContext() ?? getMemberBinding()?.parentGroup ?? null;
+      if (!writer) {
+        return errorResult(
+          'No group writer is available. This workspace is not a group parent and is not bound to one. Set up a multi-repo group first (see get_project_group).',
+        );
+      }
+      // Prepend the H1 title so the doc is self-contained.
+      const content = `# ${title}\n\n${body.replace(/^\s+/, '')}`;
+      try {
+        const result = await submitGroupEdit(
+          writer,
+          [{ path: storeRel.endsWith('.md') ? storeRel : `${storeRel}.md`, content }],
+          { message: message ?? `group: agent doc update (${storeRel})` },
+        );
+        const fanOut = result.sync.members.map((m) => ({
+          name: m.name,
+          ok: m.ok,
+          ...(m.diverged ? { diverged: true } : {}),
+          ...(m.error ? { error: m.error } : {}),
+        }));
+        return jsonResult({
+          applied: result.applied,
+          committed: result.sync.committed,
+          pushed: result.sync.pushed,
+          failed: result.sync.failed,
+          members: fanOut,
+        });
+      } catch (err: any) {
+        return errorResult(`Failed to submit group doc: ${err.message}`);
+      }
+    },
+  );
+
+  server.tool(
+    'delete_group_doc',
+    'Delete a shared group doc through the parent repo. Works from any workspace — parent or bound member. Returns the per-member fan-out result.',
+    {
+      path: z.string().describe(
+        'Doc path as returned by list_group_docs (e.g. "Product/features/payments"). The group prefix is required here.',
+      ),
+    },
+    async ({ path: docPath }) => {
+      const writer = getGroupContext() ?? getMemberBinding()?.parentGroup ?? null;
+      if (!writer) {
+        return errorResult(
+          'No group writer is available. This workspace is not a group parent and is not bound to one.',
+        );
+      }
+      const storeRel = groupDocPathToStoreRelative(docPath);
+      if (!storeRel) {
+        return errorResult(
+          `'${docPath}' is not a valid group doc path. It must start with the group docs prefix (e.g. 'Product/…').`,
+        );
+      }
+      try {
+        const result = await submitGroupEdit(writer, [{ path: storeRel, delete: true }]);
+        const fanOut = result.sync.members.map((m) => ({
+          name: m.name,
+          ok: m.ok,
+          ...(m.diverged ? { diverged: true } : {}),
+          ...(m.error ? { error: m.error } : {}),
+        }));
+        return jsonResult({
+          deleted: storeRel,
+          committed: result.sync.committed,
+          pushed: result.sync.pushed,
+          failed: result.sync.failed,
+          members: fanOut,
+        });
+      } catch (err: any) {
+        return errorResult(`Failed to delete group doc: ${err.message}`);
+      }
     },
   );
 

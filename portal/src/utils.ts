@@ -1,6 +1,7 @@
 import type { CliFramework } from './types';
 import type { GroupStatus, GroupMemberSummary } from './api';
 import type { WorkspaceInfo } from './api';
+import type { Doc } from './types';
 
 /**
  * Resolves the effective agent framework to use, following the 'auto' -> 'claude' logic.
@@ -43,6 +44,31 @@ export function groupRegistrationGaps(status: GroupStatus | null): GroupRegistra
   const parentMissing = status.parentRegistered === false;
   const missingMembers = (status.members ?? []).filter((m) => m.pathExists && m.registered === false);
   return { parentMissing, missingMembers, hasGap: parentMissing || missingMembers.length > 0 };
+}
+
+/** How the selected doc may be edited in the docs editor (FLUX-419). */
+export interface DocEditability {
+  /** The editor should be writable (save/title/delete enabled). */
+  editable: boolean;
+  /** Edits are routed through the group parent and fanned out to members (bound member). */
+  viaParent: boolean;
+}
+
+/**
+ * Decide whether the docs editor is writable for a doc, and whether its writes
+ * route through the group parent. A genuinely read-only doc (`readOnly`, no
+ * resolvable writer) is never editable. A bound member's group doc is editable
+ * but routed (`viaParent`): the engine accepts the write and pushes it through
+ * the parent via `submitGroupEdit`. Editing also requires the user to hold the
+ * docs-edit permission (`canEditDocs`).
+ */
+export function resolveDocEditability(doc: Doc | null, canEditDocs: boolean): DocEditability {
+  if (!doc || !canEditDocs) return { editable: false, viaParent: false };
+  const viaParent = doc.viaParent === true;
+  // `viaParent` docs surface with `readOnly: false` from the engine, but guard
+  // explicitly so the routed-write path is editable even if that ever changes.
+  const editable = viaParent || doc.readOnly !== true;
+  return { editable, viaParent };
 }
 
 /** The parent directory of a workspace path (handles both / and \ separators). */
