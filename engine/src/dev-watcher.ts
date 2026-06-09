@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'child_process';
+import { spawn, execSync, type ChildProcess } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -11,6 +11,25 @@ let restartPending = false;
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 const isWin = process.platform === 'win32';
+const PORTAL_PORT = 5167;
+
+function killPort(port: number): void {
+  try {
+    if (isWin) {
+      const output = execSync(`netstat -ano | findstr ":${port}" | findstr "LISTENING"`, { encoding: 'utf-8' });
+      const pids = new Set(
+        output.split('\n')
+          .map(line => line.trim().split(/\s+/).pop())
+          .filter((pid): pid is string => !!pid && /^\d+$/.test(pid))
+      );
+      for (const pid of pids) {
+        try { execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' }); } catch {}
+      }
+    } else {
+      execSync(`lsof -ti:${port} | xargs -r kill -9`, { stdio: 'ignore' });
+    }
+  } catch {}
+}
 
 function spawnEngine() {
   child = spawn('tsx', [ENGINE_ENTRY, ...args], {
@@ -75,6 +94,8 @@ async function handleFileChange() {
 }
 
 async function startWatcher() {
+  killPort(PORTAL_PORT);
+
   const { watch } = await import('chokidar');
   const watcher = watch(path.join(__dir, '**/*.ts'), {
     ignored: [/node_modules/, /\.git/, /dev-watcher\.ts$/],
