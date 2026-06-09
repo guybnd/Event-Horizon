@@ -215,6 +215,7 @@ export function DocsScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
   const [createTargetFolder, setCreateTargetFolder] = useState<string | null>(null);
+  const [createDestFolder, setCreateDestFolder] = useState('');
   const [newDocPath, setNewDocPath] = useState('');
   const [newDocTitle, setNewDocTitle] = useState('');
   const [creating, setCreating] = useState(false);
@@ -231,7 +232,8 @@ export function DocsScreen() {
   );
   const [groupPanelCollapsed, setGroupPanelCollapsed] = useState(false);
   const [showPromoteModal, setShowPromoteModal] = useState(false);
-  const [promoteTarget, setPromoteTarget] = useState('');
+  const [promoteFolder, setPromoteFolder] = useState('features');
+  const [promoteFilename, setPromoteFilename] = useState('');
   const [promoteApplying, setPromoteApplying] = useState(false);
   const [promoteError, setPromoteError] = useState<string | null>(null);
   const [promoteResult, setPromoteResult] = useState<{ count: number } | null>(null);
@@ -392,6 +394,18 @@ export function DocsScreen() {
     return () => window.removeEventListener('flux:navigate', handleCustomNavigation);
   }, []);
 
+  // Strip the `?doc=` deep-link param when leaving the Docs screen, so it never
+  // lingers (and points at a now-invalid doc) on other screens.
+  useEffect(() => {
+    return () => {
+      const url = new URL(window.location.href);
+      if (url.searchParams.has('doc')) {
+        url.searchParams.delete('doc');
+        window.history.replaceState({}, '', url);
+      }
+    };
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -488,6 +502,9 @@ export function DocsScreen() {
         console.error(error);
         if (!cancelled) {
           setNotice({ tone: 'error', message: `Failed to load ${selectedPath}.` });
+          // The path is stale (e.g. after a rename/move) — drop the selection so
+          // the URL's `?doc=` param doesn't keep pointing at a doc that's gone.
+          setSelectedPath(null);
         }
       } finally {
         if (!cancelled) {
@@ -580,6 +597,7 @@ export function DocsScreen() {
     }
 
     setCreateTargetFolder(folderPath);
+    setCreateDestFolder('');
     setNewDocPath('');
     setNewDocTitle('');
     setNotice(null);
@@ -592,9 +610,12 @@ export function DocsScreen() {
 
     const requestedPath = newDocPath.trim() || slugify(newDocTitle);
     const normalizedRelativePath = normalizeDocPathInput(requestedPath);
+    // The "+" on a specific folder pins that folder; the root "New Doc" form
+    // lets the user pick a destination folder from the dropdown instead.
+    const baseFolder = createTargetFolder || createDestFolder;
     const normalizedPath = normalizeDocPathInput(
-      createTargetFolder && createTargetFolder.length > 0
-        ? `${createTargetFolder}/${normalizedRelativePath || ''}`
+      baseFolder && baseFolder.length > 0
+        ? `${baseFolder}/${normalizedRelativePath || ''}`
         : requestedPath,
     );
 
@@ -614,6 +635,7 @@ export function DocsScreen() {
       });
 
       setCreateTargetFolder(null);
+      setCreateDestFolder('');
       setNewDocPath('');
       setNewDocTitle('');
       setSelectedPath(createdDoc.path);
@@ -674,6 +696,22 @@ export function DocsScreen() {
     return true;
   };
 
+  // Remap the open-doc selection + folder expand/collapse state when a folder
+  // path prefix changes, so a rename reflects instantly instead of leaving the
+  // UI pointing at the now-stale old path until a page reload.
+  const remapFolderPrefix = (fromPrefix: string, toPrefix: string) => {
+    const under = (value: string) => value === fromPrefix || value.startsWith(`${fromPrefix}/`);
+    const remap = (value: string) => (under(value) ? toPrefix + value.slice(fromPrefix.length) : value);
+    setSelectedPath((current) => (current ? remap(current) : current));
+    setExpandedFolders((current) => {
+      const next: Record<string, boolean> = {};
+      for (const [key, value] of Object.entries(current)) {
+        next[remap(key)] = value;
+      }
+      return next;
+    });
+  };
+
   // Rename a docs folder. The group-label root reroutes to the group docs-label
   // config (parent-only); every other folder is a file move via the docs API.
   const handleRenameFolder = async (fromPath: string, newName: string) => {
@@ -681,6 +719,7 @@ export function DocsScreen() {
       await updateGroupDocsLabel(newName);
       const status = await fetchGroupStatus().catch(() => null);
       setGroupStatus(status);
+      remapFolderPrefix(groupDocsLabel, newName);
       setDocsRefreshKey((current) => current + 1);
       setNotice({ tone: 'success', message: `Group docs folder renamed to “${newName}”.` });
       return;
@@ -688,10 +727,7 @@ export function DocsScreen() {
     const parentPrefix = fromPath.split('/').slice(0, -1).join('/');
     const toPath = parentPrefix ? `${parentPrefix}/${newName}` : newName;
     await renameDocsFolder(fromPath, toPath);
-    // Keep the open doc selected if it lived under the renamed folder.
-    if (selectedPath && (selectedPath === fromPath || selectedPath.startsWith(`${fromPath}/`))) {
-      setSelectedPath(toPath + selectedPath.slice(fromPath.length));
-    }
+    remapFolderPrefix(fromPath, toPath);
     setDocsRefreshKey((current) => current + 1);
     setNotice({ tone: 'success', message: `Folder renamed to “${newName}”.` });
   };
@@ -772,6 +808,7 @@ export function DocsScreen() {
 
   const handleCancelCreateForm = () => {
     setCreateTargetFolder(null);
+    setCreateDestFolder('');
     setNewDocPath('');
     setNewDocTitle('');
   };
@@ -963,6 +1000,8 @@ export function DocsScreen() {
           onToggleFolder={handleToggleFolder}
           canCreate={canEditDocs}
           createTargetFolder={createTargetFolder}
+          createDestFolder={createDestFolder}
+          onCreateDestFolderChange={setCreateDestFolder}
           newDocPath={newDocPath}
           onNewDocPathChange={setNewDocPath}
           newDocTitle={newDocTitle}
@@ -1083,7 +1122,8 @@ export function DocsScreen() {
                 onClick={() => {
                   const docPath = selectedDoc?.path;
                   const basename = docPath?.split('/').pop() ?? 'doc';
-                  setPromoteTarget(`${groupDocsLabel}/${basename}`);
+                  setPromoteFolder('features');
+                  setPromoteFilename(basename.toLowerCase().endsWith('.md') ? basename : `${basename}.md`);
                   setPromoteError(null);
                   setPromoteResult(null);
                   setShowPromoteModal(true);
@@ -1252,13 +1292,28 @@ export function DocsScreen() {
               <p className="mt-1 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-xs text-gray-700 dark:border-white/10 dark:bg-white/5 dark:text-gray-300">.docs/{selectedDoc.path}.md</p>
             </div>
             <div>
-              <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Target in group store</label>
-              <input
-                type="text"
-                value={promoteTarget}
-                onChange={(e) => setPromoteTarget(e.target.value)}
-                className="mt-1 w-full rounded-xl border border-gray-200 bg-white px-3 py-2 font-mono text-xs text-gray-900 focus:border-indigo-400 focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white"
-              />
+              <label className="text-xs font-medium text-gray-600 dark:text-gray-400">Destination in group store</label>
+              <div className="mt-1 flex items-center gap-2">
+                <select
+                  value={promoteFolder}
+                  onChange={(e) => setPromoteFolder(e.target.value)}
+                  className="shrink-0 rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-900 focus:border-indigo-400 focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white"
+                >
+                  <option value="features">features/</option>
+                  <option value="contracts">contracts/</option>
+                  <option value="">store root</option>
+                </select>
+                <input
+                  type="text"
+                  value={promoteFilename}
+                  onChange={(e) => setPromoteFilename(e.target.value)}
+                  placeholder="overview.md"
+                  className="min-w-0 flex-1 rounded-xl border border-gray-200 bg-white px-3 py-2 font-mono text-xs text-gray-900 focus:border-indigo-400 focus:outline-none dark:border-white/10 dark:bg-white/5 dark:text-white"
+                />
+              </div>
+              <p className="mt-1 font-mono text-[11px] text-gray-400">
+                → {promoteFolder ? `${promoteFolder}/` : ''}{promoteFilename.trim() || '…'}
+              </p>
             </div>
           </div>
           {promoteError && <p className="mt-3 text-xs text-red-600 dark:text-red-400">{promoteError}</p>}
@@ -1273,12 +1328,14 @@ export function DocsScreen() {
             </button>
             <button
               type="button"
-              disabled={promoteApplying || !promoteTarget.trim() || !!promoteResult}
+              disabled={promoteApplying || !promoteFilename.trim() || !!promoteResult}
               onClick={async () => {
                 setPromoteError(null);
                 setPromoteApplying(true);
                 try {
-                  await applyDocsPromotion([{ source: `.docs/${selectedDoc.path}.md`, target: promoteTarget.trim() }]);
+                  const filename = promoteFilename.trim();
+                  const target = promoteFolder ? `${promoteFolder}/${filename}` : filename;
+                  await applyDocsPromotion([{ source: `.docs/${selectedDoc.path}.md`, target }]);
                   setPromoteResult({ count: 1 });
                   // close modal + deselect + refresh docs list after short delay
                   setTimeout(() => {

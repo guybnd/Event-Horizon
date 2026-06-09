@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { DndContext, PointerSensor, closestCenter, useSensor, useSensors } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
@@ -23,6 +23,9 @@ interface DocsSidebarProps {
   onToggleFolder: (folderPath: string) => void;
   canCreate: boolean;
   createTargetFolder: string | null;
+  /** Destination folder chosen in the root "New Doc" form (the folder picker). */
+  createDestFolder?: string;
+  onCreateDestFolderChange?: (value: string) => void;
   newDocPath: string;
   onNewDocPathChange: (value: string) => void;
   newDocTitle: string;
@@ -157,6 +160,8 @@ export function DocsSidebar({
   onToggleFolder,
   canCreate,
   createTargetFolder,
+  createDestFolder = '',
+  onCreateDestFolderChange,
   newDocPath,
   onNewDocPathChange,
   newDocTitle,
@@ -185,6 +190,21 @@ export function DocsSidebar({
     Boolean(readOnlyPrefix) && (folderPath === readOnlyPrefix || folderPath.startsWith(`${readOnlyPrefix}/`));
 
   const isSystemFolder = (folderPath: string) => systemFolders.includes(folderPath);
+
+  // Writable folders the root "New Doc" picker can target: every folder that
+  // holds (or nests) docs, minus the read-only group tree and tool folders.
+  const writableFolderPaths = useMemo(() => {
+    const paths = new Set<string>();
+    docs.forEach((doc) => {
+      const segments = doc.path.split('/').filter(Boolean);
+      for (let index = 1; index < segments.length; index += 1) {
+        paths.add(segments.slice(0, index).join('/'));
+      }
+    });
+    return Array.from(paths)
+      .filter((folderPath) => !isReadOnlyFolder(folderPath) && !isSystemFolder(folderPath))
+      .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' }));
+  }, [docs, readOnlyPrefix, systemFolders]);
 
   const [renamingFolderPath, setRenamingFolderPath] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
@@ -266,17 +286,34 @@ export function DocsSidebar({
       >
         <div>
           <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500">{getCreateTargetLabel(folderPath)}</div>
-          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Doc Path</label>
+          {isRootTarget && writableFolderPaths.length > 0 && (
+            <div className="mb-3">
+              <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">Folder</label>
+              <select
+                value={createDestFolder}
+                onChange={(event) => onCreateDestFolderChange?.(event.target.value)}
+                className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-primary dark:border-white/10 dark:bg-black/20"
+              >
+                <option value="">Docs root</option>
+                {writableFolderPaths.map((path) => (
+                  <option key={path} value={path}>{path}/</option>
+                ))}
+              </select>
+            </div>
+          )}
+          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-gray-500">{createDestFolder ? 'Page name' : 'Doc Path'}</label>
           <input
             value={newDocPath}
             onChange={(event) => onNewDocPathChange(event.target.value)}
-            placeholder={isRootTarget ? 'architecture/overview' : 'new-page'}
+            placeholder={createDestFolder ? 'new-page' : (isRootTarget ? 'architecture/overview' : 'new-page')}
             className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-primary dark:border-white/10 dark:bg-black/20"
           />
           <p className="mt-1 text-[11px] text-gray-500">
-            {isRootTarget
-              ? 'Use `/` to create nested folders. The `.md` extension is added automatically.'
-              : 'Enter the child doc name or a nested path relative to this folder.'}
+            {createDestFolder
+              ? `Creates ${createDestFolder}/<name>. Use \`/\` for deeper nesting.`
+              : isRootTarget
+                ? 'Pick a folder above, or use `/` to create nested folders. The `.md` extension is added automatically.'
+                : 'Enter the child doc name or a nested path relative to this folder.'}
           </p>
         </div>
 
