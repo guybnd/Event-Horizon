@@ -1,0 +1,28 @@
+node_modules/
+dist/
+build/
+.env
+.DS_Store
+*.log
+.npm-cache/
+.claude/
+.clauderc
+releases/
+
+# TypeScript build output (emitted in-place by tsc)
+engine/src/**/*.js
+engine/src/**/*.js.map
+engine/src/**/*.d.ts
+engine/src/**/*.d.ts.map
+engine/vitest.config.js
+engine/vitest.config.js.map
+engine/vitest.config.d.ts
+engine/vitest.config.d.ts.map
+
+# flux-data orphan mode
+.flux/*.md
+.flux/config.json
+.flux/assets/
+
+# orphan worktree directory (managed by git worktree, not committed to master)
+.flux-store/

@@ -1,0 +1,28 @@
+{
+  "name": "event-horizon",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "engine",
+    "portal"
+  ],
+  "scripts": {
+    "predev": "node scripts/predev.mjs",
+    "dev": "node scripts/dev.mjs",
+    "build": "npm run build -w portal && npm run build -w engine",
+    "init": "npm run init -w engine --",
+    "init-group": "npm run init-group -w engine --",
+    "package": "npm run build && npm run package -w engine",
+    "package:win": "npm run build && npm run package:win -w engine",
+    "package:mac": "npm run build && npm run package:mac -w engine",
+    "dist:mac": "npm run package:mac",
+    "dist:win": "npm run package:win",
+    "dist:all": "npm run dist:source && npm run dist:mac && npm run dist:win",
+    "dist:source": "node engine/scripts/dist-source.js",
+    "install-skill": "npm run install-skill -w engine --",
+    "publish-public": "node scripts/publish-public.mjs"
+  },
+  "overrides": {
+    "react-draggable": "4.4.6"
+  }
+}

@@ -1,0 +1,1024 @@
+@import "tailwindcss";
+@custom-variant dark (&:is(.dark *));
+
+@theme {
+  --font-sans: 'Geist', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --color-primary: var(--eh-accent);
+  --color-primary-hover: var(--eh-accent-hover);
+  --color-bg-dark: var(--eh-base);
+  --color-bg-panel: var(--eh-surface);
+}
+
+/* ─── Theme Token System ─────────────────────────────────────────────── */
+:root {
+  --eh-accent: #e05a00;
+  --eh-accent-hover: #c24d00;
+  --eh-accent-glow: rgba(224, 90, 0, 0.12);
+  --eh-base: #fafaf9;
+  --eh-surface: #ffffff;
+  --eh-surface-raised: #ffffff;
+  --eh-surface-overlay: rgba(255, 255, 255, 0.85);
+  --eh-border: rgba(214, 211, 209, 1);
+  --eh-border-subtle: rgba(214, 211, 209, 0.5);
+  --eh-border-accent: rgba(224, 90, 0, 0.25);
+  --eh-text-primary: #1c1917;
+  --eh-text-secondary: #44403c;
+  --eh-text-muted: #a8a29e;
+  --eh-card-bg: rgba(255, 255, 255, 0.85);
+  --eh-card-border: rgba(214, 211, 209, 0.5);
+  --eh-card-hover-border: rgba(224, 90, 0, 0.4);
+  --eh-header-bg: rgba(255, 255, 255, 0.72);
+  --eh-column-bg: rgba(245, 245, 244, 0.6);
+  --eh-input-bg: #fafaf9;
+  --eh-input-border: rgba(214, 211, 209, 1);
+  --eh-dropdown-bg: #ffffff;
+  --eh-glow-color: rgba(224, 90, 0, 0.06);
+  --eh-shadow-color: rgba(28, 25, 23, 0.06);
+  --eh-texture: none;
+}
+
+/* ─── Light (explicit, same as :root defaults) ───────────────────── */
+:root[data-theme="light"] {
+  --eh-accent: #e05a00;
+  --eh-accent-hover: #c24d00;
+  --eh-accent-glow: rgba(224, 90, 0, 0.12);
+  --eh-base: #fafaf9;
+  --eh-surface: #ffffff;
+  --eh-surface-raised: #ffffff;
+  --eh-surface-overlay: rgba(255, 255, 255, 0.85);
+  --eh-border: rgba(214, 211, 209, 1);
+  --eh-border-subtle: rgba(214, 211, 209, 0.5);
+  --eh-border-accent: rgba(224, 90, 0, 0.25);
+  --eh-text-primary: #1c1917;
+  --eh-text-secondary: #44403c;
+  --eh-text-muted: #a8a29e;
+  --eh-card-bg: rgba(255, 255, 255, 0.85);
+  --eh-card-border: rgba(214, 211, 209, 0.5);
+  --eh-card-hover-border: rgba(224, 90, 0, 0.4);
+  --eh-header-bg: rgba(255, 255, 255, 0.72);
+  --eh-column-bg: rgba(245, 245, 244, 0.6);
+  --eh-input-bg: #fafaf9;
+  --eh-input-border: rgba(214, 211, 209, 1);
+  --eh-dropdown-bg: #ffffff;
+  --eh-glow-color: rgba(224, 90, 0, 0.06);
+  --eh-shadow-color: rgba(28, 25, 23, 0.06);
+  --eh-texture: none;
+}
+
+/* ─── Dark ───────────────────────────────────────────────────────── */
+:root[data-theme="dark"] {
+  --eh-accent: #f97316;
+  --eh-accent-hover: #ea580c;
+  --eh-accent-glow: rgba(249, 115, 22, 0.15);
+  --eh-base: #141413;
+  --eh-surface: #1c1c1a;
+  --eh-surface-raised: #242422;
+  --eh-surface-overlay: rgba(20, 20, 19, 0.88);
+  --eh-border: rgba(255, 255, 255, 0.08);
+  --eh-border-subtle: rgba(255, 255, 255, 0.04);
+  --eh-border-accent: rgba(249, 115, 22, 0.25);
+  --eh-text-primary: #fafaf9;
+  --eh-text-secondary: #d6d3d1;
+  --eh-text-muted: #78716c;
+  --eh-card-bg: rgba(28, 28, 26, 0.85);
+  --eh-card-border: rgba(255, 255, 255, 0.06);
+  --eh-card-hover-border: rgba(249, 115, 22, 0.4);
+  --eh-header-bg: rgba(14, 14, 13, 0.72);
+  --eh-column-bg: rgba(0, 0, 0, 0.2);
+  --eh-input-bg: rgba(0, 0, 0, 0.25);
+  --eh-input-border: rgba(255, 255, 255, 0.08);
+  --eh-dropdown-bg: #1c1c1a;
+  --eh-glow-color: rgba(249, 115, 22, 0.06);
+  --eh-shadow-color: rgba(0, 0, 0, 0.3);
+  --eh-texture: none;
+}
+
+/* ─── Matrix ─────────────────────────────────────────────────────── */
+:root[data-theme="matrix"] {
+  /* #1 Secondary accent — cooler teal for interactive, bright green for live/status */
+  --eh-accent: #00d4aa;
+  --eh-accent-hover: #00b894;
+  --eh-accent-glow: rgba(0, 212, 170, 0.12);
+  --eh-accent-live: #00ff41;
+  /* #2 Warmed blacks — hint of green warmth, not sterile */
+  --eh-base: #0a0d08;
+  --eh-surface: #0e1610;
+  --eh-surface-raised: #141e14;
+  --eh-surface-overlay: rgba(10, 13, 8, 0.94);
+  --eh-border: rgba(0, 212, 170, 0.1);
+  --eh-border-subtle: rgba(0, 212, 170, 0.05);
+  --eh-border-accent: rgba(0, 255, 65, 0.3);
+  /* #7 Typography contrast boost */
+  --eh-text-primary: #e0ffe0;
+  --eh-text-secondary: #8fdb8f;
+  --eh-text-muted: #4a8f4a;
+  /* #3 Card elevation with inner highlight */
+  --eh-card-bg: rgba(14, 22, 16, 0.85);
+  --eh-card-border: rgba(0, 212, 170, 0.08);
+  --eh-card-hover-border: rgba(0, 255, 65, 0.3);
+  --eh-header-bg: rgba(6, 9, 6, 0.8);
+  --eh-column-bg: rgba(0, 212, 170, 0.02);
+  --eh-input-bg: rgba(0, 18, 6, 0.5);
+  --eh-input-border: rgba(0, 212, 170, 0.14);
+  --eh-dropdown-bg: #0e1610;
+  --eh-glow-color: rgba(0, 255, 65, 0.04);
+  --eh-shadow-color: rgba(0, 12, 4, 0.5);
+  /* #4 Grid texture — subtle but present */
+  --eh-texture:
+    linear-gradient(rgba(0, 212, 170, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 212, 170, 0.025) 1px, transparent 1px);
+  --eh-texture-size: 28px 28px, 28px 28px;
+}
+
+/* ─── Cyber ──────────────────────────────────────────────────────── */
+:root[data-theme="cyber"] {
+  --eh-accent: #a78bfa;
+  --eh-accent-hover: #8b5cf6;
+  --eh-accent-glow: rgba(167, 139, 250, 0.18);
+  --eh-base: #0c0a18;
+  --eh-surface: #14112a;
+  --eh-surface-raised: #1c1736;
+  --eh-surface-overlay: rgba(12, 10, 24, 0.92);
+  --eh-border: rgba(139, 92, 246, 0.12);
+  --eh-border-subtle: rgba(139, 92, 246, 0.06);
+  --eh-border-accent: rgba(167, 139, 250, 0.4);
+  --eh-text-primary: #e8e0ff;
+  --eh-text-secondary: #b8a8e8;
+  --eh-text-muted: #6b5a9e;
+  --eh-card-bg: rgba(28, 23, 54, 0.8);
+  --eh-card-border: rgba(139, 92, 246, 0.08);
+  --eh-card-hover-border: rgba(167, 139, 250, 0.4);
+  --eh-header-bg: rgba(8, 6, 18, 0.75);
+  --eh-column-bg: rgba(139, 92, 246, 0.03);
+  --eh-input-bg: rgba(20, 15, 40, 0.5);
+  --eh-input-border: rgba(139, 92, 246, 0.15);
+  --eh-dropdown-bg: #14112a;
+  --eh-glow-color: rgba(139, 92, 246, 0.06);
+  --eh-shadow-color: rgba(10, 5, 30, 0.5);
+  --eh-texture:
+    linear-gradient(135deg, rgba(139, 92, 246, 0.03) 25%, transparent 25%),
+    linear-gradient(225deg, rgba(139, 92, 246, 0.03) 25%, transparent 25%);
+  --eh-texture-size: 32px 32px, 32px 32px;
+}
+
+/* ─── Midnight ───────────────────────────────────────────────────── */
+:root[data-theme="midnight"] {
+  --eh-accent: #38bdf8;
+  --eh-accent-hover: #0ea5e9;
+  --eh-accent-glow: rgba(56, 189, 248, 0.15);
+  --eh-base: #0a1019;
+  --eh-surface: #0f1926;
+  --eh-surface-raised: #152030;
+  --eh-surface-overlay: rgba(10, 16, 25, 0.92);
+  --eh-border: rgba(56, 189, 248, 0.1);
+  --eh-border-subtle: rgba(56, 189, 248, 0.05);
+  --eh-border-accent: rgba(56, 189, 248, 0.35);
+  --eh-text-primary: #e0f2fe;
+  --eh-text-secondary: #7dd3fc;
+  --eh-text-muted: #3b6d8a;
+  --eh-card-bg: rgba(15, 25, 38, 0.8);
+  --eh-card-border: rgba(56, 189, 248, 0.06);
+  --eh-card-hover-border: rgba(56, 189, 248, 0.35);
+  --eh-header-bg: rgba(6, 10, 18, 0.75);
+  --eh-column-bg: rgba(56, 189, 248, 0.025);
+  --eh-input-bg: rgba(10, 20, 40, 0.5);
+  --eh-input-border: rgba(56, 189, 248, 0.12);
+  --eh-dropdown-bg: #0f1926;
+  --eh-glow-color: rgba(56, 189, 248, 0.05);
+  --eh-shadow-color: rgba(0, 10, 30, 0.5);
+  --eh-texture:
+    radial-gradient(circle, rgba(148, 163, 184, 0.04) 1px, transparent 1px);
+  --eh-texture-size: 20px 20px;
+}
+
+/* ─── Apply Theme ────────────────────────────────────────────────── */
+body {
+  background-color: var(--eh-base);
+  color: var(--eh-text-primary);
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ─── Native control color-scheme ────────────────────────────────────
+   Without this the browser renders native <select> popups, date pickers
+   and scrollbars in the OS light scheme, so dropdown option lists flash
+   white on the dark themes. Bind the scheme to the active theme and tint
+   <option>s with the dropdown token so popups follow the theme. */
+:root,
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+:root[data-theme="dark"],
+:root[data-theme="matrix"],
+:root[data-theme="cyber"],
+:root[data-theme="midnight"] {
+  color-scheme: dark;
+}
+
+select option,
+select optgroup {
+  background-color: var(--eh-dropdown-bg);
+  color: var(--eh-text-primary);
+}
+
+/* Subtle noise overlay for depth */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  opacity: 0.025;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Textured themes: body texture + transparent shell */
+:root[data-theme="matrix"] .app-shell,
+:root[data-theme="cyber"] .app-shell,
+:root[data-theme="midnight"] .app-shell {
+  background: transparent !important;
+  position: relative;
+}
+
+:root[data-theme="cyber"] body,
+:root[data-theme="midnight"] body {
+  background-image: var(--eh-texture);
+  background-size: var(--eh-texture-size);
+  background-attachment: fixed;
+}
+
+/* Stronger noise on dark themes for texture */
+:root[data-theme="dark"] body::before,
+:root[data-theme="matrix"] body::before,
+:root[data-theme="cyber"] body::before,
+:root[data-theme="midnight"] body::before {
+  opacity: 0.035;
+}
+
+/* ─── Matrix Theme Specifics ─────────────────────────────────────── */
+
+/* Full-screen CRT effect — scanlines + vignette + flicker */
+:root[data-theme="matrix"] body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9998;
+  background:
+    /* Scanlines — 2px alternating bands */
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 0, 0, 0.06) 2px,
+      rgba(0, 0, 0, 0.06) 4px
+    ),
+    /* Vignette — dark edges, clear center */
+    radial-gradient(
+      ellipse at 50% 50%,
+      transparent 60%,
+      rgba(0, 0, 0, 0.3) 100%
+    );
+  animation: crt-flicker 8s ease-in-out infinite;
+}
+
+/* Phosphor glow — a faint green ambient light bleeding from the center */
+:root[data-theme="matrix"] body {
+  background-image:
+    var(--eh-texture),
+    radial-gradient(ellipse at 50% 30%, rgba(0, 212, 170, 0.04) 0%, transparent 60%);
+  background-size: var(--eh-texture-size), 100% 100%;
+  background-attachment: fixed, fixed;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-4px); }
+  40% { transform: translateX(4px); }
+  60% { transform: translateX(-2px); }
+  80% { transform: translateX(2px); }
+}
+
+@keyframes crt-flicker {
+  0%, 100% { opacity: 1; }
+  3% { opacity: 0.97; }
+  6% { opacity: 1; }
+  48% { opacity: 1; }
+  50% { opacity: 0.985; }
+  52% { opacity: 1; }
+  92% { opacity: 1; }
+  94% { opacity: 0.975; }
+  96% { opacity: 1; }
+}
+
+/* Scrolling highlight band — simulates CRT beam refresh */
+:root[data-theme="matrix"] .app-shell::before {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 120px;
+  pointer-events: none;
+  z-index: 9997;
+  background: linear-gradient(
+    180deg,
+    rgba(0, 212, 170, 0.015) 0%,
+    transparent 100%
+  );
+  animation: crt-beam 6s linear infinite;
+}
+
+@keyframes crt-beam {
+  0% { transform: translateY(-120px); }
+  100% { transform: translateY(100vh); }
+}
+
+/* #3 Card inner top-edge highlight for elevation */
+:root[data-theme="matrix"] .eh-card {
+  box-shadow:
+    inset 0 1px 0 0 rgba(0, 212, 170, 0.08),
+    0 2px 8px rgba(0, 12, 4, 0.4);
+}
+:root[data-theme="matrix"] .eh-card:hover {
+  box-shadow:
+    inset 0 1px 0 0 rgba(0, 255, 65, 0.12),
+    0 4px 16px rgba(0, 12, 4, 0.5),
+    0 0 0 1px rgba(0, 255, 65, 0.2);
+}
+
+/* #9 Accent button — gradient with lit top edge */
+:root[data-theme="matrix"] .eh-btn-accent {
+  background: linear-gradient(180deg, #00e0a0 0%, #00b880 100%);
+  border-top: 1px solid rgba(0, 255, 180, 0.5);
+  color: #0a0d08;
+  font-weight: 700;
+}
+:root[data-theme="matrix"] .eh-btn-accent:hover {
+  background: linear-gradient(180deg, #00f0b0 0%, #00c890 100%);
+  border-top-color: rgba(0, 255, 200, 0.6);
+}
+:root[data-theme="matrix"] .eh-btn-accent:active {
+  background: linear-gradient(180deg, #00a870 0%, #008860 100%);
+  border-top-color: rgba(0, 200, 150, 0.3);
+  filter: brightness(0.85);
+}
+
+
+/* #6 Glow hierarchy — bright green (#00ff41) ONLY for live agent states.
+   Interactive hovers use the teal accent. This creates visual priority. */
+:root[data-theme="matrix"] .bot-border-breathe {
+  animation-name: matrix-bot-breathe;
+}
+@keyframes matrix-bot-breathe {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(0, 255, 65, 0), 0 0 4px 0 rgba(0, 255, 65, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 2px rgba(0, 255, 65, 0.3), 0 0 20px 3px rgba(0, 255, 65, 0.15);
+  }
+}
+:root[data-theme="matrix"] .bot-assignee-glow {
+  animation-name: matrix-bot-assignee;
+}
+@keyframes matrix-bot-assignee {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(0, 255, 65, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 3px rgba(0, 255, 65, 0.45), 0 0 12px 2px rgba(0, 255, 65, 0.25);
+  }
+}
+
+/* Live event accents in matrix use the bright green, not the teal */
+:root[data-theme="matrix"] .task-live-created {
+  --ring-color: rgba(0, 255, 65, 0.2);
+}
+:root[data-theme="matrix"] .task-live-moved {
+  --ring-color: rgba(0, 255, 65, 0.2);
+}
+
+/* Agent session pulse uses bright green in matrix */
+:root[data-theme="matrix"] .agent-session-active {
+  animation-name: matrix-session-pulse;
+}
+@keyframes matrix-session-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(0, 255, 65, 0.4); }
+  70% { box-shadow: 0 0 0 8px rgba(0, 255, 65, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(0, 255, 65, 0); }
+}
+
+/* #4 Texture brightens on card hover — interactive grid */
+:root[data-theme="matrix"] .eh-card:hover::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background:
+    linear-gradient(rgba(0, 212, 170, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 212, 170, 0.04) 1px, transparent 1px);
+  background-size: 28px 28px;
+  opacity: 1;
+  z-index: 0;
+}
+
+/* Matrix — "Tell agent to finish" and other bg-primary buttons get the gradient */
+:root[data-theme="matrix"] button.bg-primary:not(.eh-btn-accent):not(.wb-no-matrix-primary) {
+  background: linear-gradient(180deg, #00e0a0 0%, #00b880 100%) !important;
+  border-top: 1px solid rgba(0, 255, 180, 0.4);
+  color: #0a0d08 !important;
+  font-weight: 700;
+}
+:root[data-theme="matrix"] button.bg-primary:not(.eh-btn-accent):not(.wb-no-matrix-primary):hover {
+  background: linear-gradient(180deg, #00f0b0 0%, #00c890 100%) !important;
+}
+
+/* Matrix workflow builder highlight clarity */
+:root[data-theme="matrix"] .workflow-builder .wb-template-card {
+  border-color: rgba(68, 160, 146, 0.34);
+  background: rgba(5, 25, 20, 0.72);
+}
+
+:root[data-theme="matrix"] .workflow-builder .wb-template-card:hover {
+  border-color: rgba(46, 198, 165, 0.56);
+  background: rgba(8, 38, 30, 0.78);
+}
+
+:root[data-theme="matrix"] .workflow-builder .wb-template-card[class*="bg-primary"] {
+  border-color: rgba(0, 255, 185, 0.84) !important;
+  background: linear-gradient(180deg, rgba(0, 255, 185, 0.2) 0%, rgba(0, 160, 120, 0.17) 100%) !important;
+  box-shadow: 0 0 0 1px rgba(0, 245, 190, 0.42), 0 0 20px rgba(0, 245, 190, 0.18) !important;
+}
+
+:root[data-theme="matrix"] .workflow-builder .wb-template-new,
+:root[data-theme="matrix"] .workflow-builder .wb-new-persona {
+  border-color: rgba(0, 255, 185, 0.58) !important;
+  background: rgba(7, 30, 23, 0.78) !important;
+  color: #c6fff0 !important;
+  box-shadow: 0 0 0 1px rgba(0, 245, 190, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+:root[data-theme="matrix"] .workflow-builder .wb-template-new:hover,
+:root[data-theme="matrix"] .workflow-builder .wb-new-persona:hover {
+  border-color: rgba(0, 255, 185, 0.8) !important;
+  background: rgba(0, 255, 185, 0.14) !important;
+  box-shadow: 0 0 0 1px rgba(0, 245, 190, 0.4), 0 0 18px rgba(0, 245, 190, 0.16);
+}
+
+:root[data-theme="matrix"] .workflow-builder .wb-template-new .text-gray-400,
+:root[data-theme="matrix"] .workflow-builder .wb-new-persona .text-primary {
+  color: #c6fff0 !important;
+}
+
+:root[data-theme="matrix"] .workflow-builder .wb-default-chip {
+  border-color: rgba(255, 212, 102, 0.88) !important;
+  background: linear-gradient(180deg, rgba(78, 56, 10, 0.96) 0%, rgba(58, 40, 6, 0.94) 100%) !important;
+  color: #ffd98c !important;
+  box-shadow: 0 0 0 1px rgba(255, 212, 102, 0.3), 0 2px 10px rgba(160, 110, 0, 0.28);
+  position: relative;
+  z-index: 40;
+  backdrop-filter: blur(2px);
+}
+
+:root[data-theme="matrix"] .workflow-builder .wb-editing-chip {
+  border-color: rgba(0, 255, 185, 0.64) !important;
+  background: rgba(0, 255, 185, 0.2) !important;
+  color: #c8ffef !important;
+}
+
+:root[data-theme="matrix"] .workflow-builder .wb-mode-pill[class*="bg-primary"] {
+  background: rgba(0, 255, 185, 0.22) !important;
+  border: 1px solid rgba(0, 255, 185, 0.56) !important;
+  color: #c9ffef !important;
+}
+
+:root[data-theme="matrix"] .workflow-builder .wb-cli-pill[class*="bg-orange"] {
+  border-color: rgba(255, 166, 77, 0.58) !important;
+  background: rgba(255, 145, 0, 0.24) !important;
+  color: #ffd8a8 !important;
+}
+
+:root[data-theme="matrix"] .workflow-builder .wb-cli-pill[class*="bg-blue"] {
+  border-color: rgba(121, 173, 255, 0.58) !important;
+  background: rgba(62, 133, 255, 0.24) !important;
+  color: #d2e6ff !important;
+}
+
+:root[data-theme="matrix"] .workflow-builder .wb-cli-pill[class*="bg-emerald"] {
+  border-color: rgba(46, 198, 165, 0.58) !important;
+  background: rgba(0, 190, 135, 0.24) !important;
+  color: #ccfff1 !important;
+}
+
+/* Shared matrix accent controls: theme picker, token pill, workspace picker */
+:root[data-theme="matrix"] .matrix-accent-toggle {
+  border-color: rgba(0, 255, 185, 0.56) !important;
+  background: rgba(7, 28, 22, 0.78) !important;
+  color: #ccfff2 !important;
+  box-shadow: 0 0 0 1px rgba(0, 245, 190, 0.22), 0 0 10px rgba(0, 245, 190, 0.08);
+}
+
+:root[data-theme="matrix"] .matrix-accent-toggle:hover {
+  border-color: rgba(0, 255, 185, 0.78) !important;
+  background: rgba(0, 255, 185, 0.12) !important;
+  color: #e1fff7 !important;
+  box-shadow: 0 0 0 1px rgba(0, 245, 190, 0.36), 0 0 16px rgba(0, 245, 190, 0.16);
+}
+
+:root[data-theme="matrix"] .matrix-accent-toggle.ring-2 {
+  box-shadow: 0 0 0 2px rgba(0, 255, 185, 0.34), 0 0 16px rgba(0, 255, 185, 0.16);
+}
+
+/* Shared matrix accent buttons: launch and board primary actions */
+:root[data-theme="matrix"] .matrix-accent-button,
+:root[data-theme="matrix"] .board-accent-button {
+  border: 1px solid rgba(0, 255, 185, 0.72) !important;
+  background: rgba(8, 34, 26, 0.88) !important;
+  color: #d5fff4 !important;
+  box-shadow: 0 0 0 1px rgba(0, 245, 190, 0.3), 0 6px 16px rgba(0, 95, 66, 0.2);
+}
+
+:root[data-theme="matrix"] .matrix-accent-button:hover,
+:root[data-theme="matrix"] .board-accent-button:hover {
+  border-color: rgba(0, 255, 185, 0.9) !important;
+  background: rgba(0, 255, 185, 0.16) !important;
+  color: #ecfff9 !important;
+  box-shadow: 0 0 0 1px rgba(0, 245, 190, 0.44), 0 8px 22px rgba(0, 115, 81, 0.36), 0 0 20px rgba(0, 245, 190, 0.18);
+}
+
+/* Matrix — board filter bar blends with theme */
+:root[data-theme="matrix"] section[class*="rounded-2xl"][class*="border"] {
+  background: var(--eh-surface) !important;
+  border-color: var(--eh-border) !important;
+  box-shadow: inset 0 1px 0 0 rgba(0, 212, 170, 0.06);
+}
+
+/* Matrix — comment badge always visible (not hidden until hover) */
+:root[data-theme="matrix"] .eh-card .group-hover\:opacity-100[class*="opacity-0"] {
+  opacity: 0.4 !important;
+}
+:root[data-theme="matrix"] .eh-card:hover .group-hover\:opacity-100[class*="opacity-0"] {
+  opacity: 1 !important;
+}
+
+/* Matrix scrollbar */
+:root[data-theme="matrix"] ::-webkit-scrollbar-thumb {
+  background: rgba(0, 212, 170, 0.2) !important;
+}
+:root[data-theme="matrix"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 212, 170, 0.35) !important;
+}
+
+/* Matrix dropdown shadow */
+:root[data-theme="matrix"] .eh-dropdown {
+  box-shadow: 0 8px 32px rgba(0, 12, 4, 0.6), 0 0 0 1px rgba(0, 212, 170, 0.1);
+}
+
+:root[data-theme="matrix"] .eh-header {
+  position: relative;
+}
+
+/* Matrix activity badges — green-family gradient shimmer */
+:root[data-theme="matrix"] .activity-badge {
+  background-image: linear-gradient(90deg, #064e3b, #047857, #064e3b, #022c22, #064e3b) !important;
+  color: #00ff41 !important;
+}
+:root[data-theme="matrix"] .activity-badge--thinking {
+  background-image: linear-gradient(90deg, #022c22, #065f46, #022c22, #064e3b, #022c22) !important;
+}
+:root[data-theme="matrix"] .activity-badge--running-command {
+  background-image: linear-gradient(90deg, #052e16, #166534, #052e16, #14532d, #052e16) !important;
+}
+:root[data-theme="matrix"] .activity-badge--editing {
+  background-image: linear-gradient(90deg, #064e3b, #059669, #064e3b, #047857, #064e3b) !important;
+}
+
+/* ─── Bulk Override for Textured Themes ───────────────────────────── */
+:root:is([data-theme="matrix"], [data-theme="cyber"], [data-theme="midnight"]) {
+  & [class*="dark:bg-[#1a1b23]"] { background-color: var(--eh-surface) !important; }
+  & [class*="dark:bg-[#252630]"] { background-color: var(--eh-surface-raised) !important; }
+  & [class*="dark:bg-[#1f2028]"] { background-color: var(--eh-surface) !important; }
+  & [class*="dark:bg-[#15161d]"] { background-color: var(--eh-surface) !important; }
+  & [class*="dark:bg-[#161720]"] { background-color: var(--eh-surface) !important; }
+  & [class*="dark:bg-[#1e1f2a]"] { background-color: var(--eh-surface-raised) !important; }
+  & [class*="dark:bg-black/20"] { background-color: var(--eh-input-bg) !important; }
+  & [class*="dark:bg-black/40"] { background-color: var(--eh-input-bg) !important; }
+  & [class*="dark:bg-black/10"] { background-color: var(--eh-column-bg) !important; }
+  & [class*="dark:bg-black/60"] { background-color: var(--eh-surface) !important; }
+  & [class*="dark:bg-white/5"] { background-color: var(--eh-column-bg) !important; }
+  & [class*="dark:bg-white/10"] { background-color: var(--eh-input-bg) !important; }
+  & [class*="dark:border-white/10"] { border-color: var(--eh-border) !important; }
+  & [class*="dark:border-white/5"] { border-color: var(--eh-border-subtle) !important; }
+  & [class*="dark:text-gray-100"] { color: var(--eh-text-primary) !important; }
+  & [class*="dark:text-gray-200"] { color: var(--eh-text-primary) !important; }
+  & [class*="dark:text-gray-300"] { color: var(--eh-text-secondary) !important; }
+  & [class*="dark:text-gray-400"] { color: var(--eh-text-muted) !important; }
+  & [class*="dark:text-gray-500"] { color: var(--eh-text-muted) !important; }
+}
+
+/* ─── Themed Component Overrides ─────────────────────────────────── */
+
+/* Cards */
+.eh-card {
+  background: var(--eh-card-bg);
+  border-color: var(--eh-card-border);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 1px 3px var(--eh-shadow-color), 0 1px 2px var(--eh-shadow-color);
+}
+.eh-card:hover {
+  border-color: var(--eh-card-hover-border);
+  box-shadow: 0 4px 12px var(--eh-shadow-color), 0 0 0 1px var(--eh-card-hover-border);
+}
+
+/* Surfaces */
+.eh-surface {
+  background: var(--eh-surface);
+}
+.eh-surface-raised {
+  background: var(--eh-surface-raised);
+}
+.eh-surface-overlay {
+  background: var(--eh-surface-overlay);
+  backdrop-filter: blur(16px);
+}
+
+/* Header */
+.eh-header {
+  background: var(--eh-header-bg);
+  border-color: var(--eh-border-subtle);
+  backdrop-filter: blur(16px);
+}
+
+/* Columns */
+.eh-column {
+  background: var(--eh-column-bg);
+}
+
+/* Inputs */
+.eh-input {
+  background: var(--eh-input-bg);
+  border-color: var(--eh-input-border);
+}
+.eh-input:focus {
+  border-color: var(--eh-accent);
+  box-shadow: 0 0 0 2px var(--eh-accent-glow);
+}
+
+/* Dropdowns */
+.eh-dropdown {
+  background: var(--eh-dropdown-bg);
+  border-color: var(--eh-border);
+  box-shadow: 0 8px 24px var(--eh-shadow-color), 0 2px 8px var(--eh-shadow-color);
+}
+
+/* Borders */
+.eh-border {
+  border-color: var(--eh-border);
+}
+.eh-border-subtle {
+  border-color: var(--eh-border-subtle);
+}
+
+/* Accent button */
+.eh-btn-accent {
+  background: var(--eh-accent);
+  color: white;
+  transition: background 200ms, transform 150ms;
+}
+.eh-btn-accent:hover {
+  background: var(--eh-accent-hover);
+}
+.eh-btn-accent:active {
+  transform: scale(0.97) translateY(1px);
+}
+
+/* Glow effects — toned down */
+.eh-glow {
+  box-shadow: 0 0 16px var(--eh-accent-glow);
+}
+
+/* ─── Interactive Feedback ───────────────────────────────────────── */
+button:not(:disabled):active {
+  transform: scale(0.98);
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-gray-300 dark:bg-white/10 rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-gray-400 dark:bg-white/20;
+}
+
+/* ─── Animations ─────────────────────────────────────────────────── */
+@keyframes task-materialize {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, -28px, 0) scale(0.92);
+    filter: blur(10px);
+  }
+  55% {
+    opacity: 1;
+    transform: translate3d(0, 8px, 0) scale(1.03);
+    filter: blur(0);
+  }
+  78% {
+    transform: translate3d(0, -4px, 0) scale(0.995);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes task-column-jump {
+  0% {
+    opacity: 0.32;
+    transform: translate3d(var(--task-shift-x, 0px), -18px, 0) scale(0.95);
+  }
+  48% {
+    opacity: 1;
+    transform: translate3d(calc(var(--task-shift-x, 0px) * -0.14), 10px, 0) scale(1.035);
+  }
+  72% {
+    transform: translate3d(0, -5px, 0) scale(0.99);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes task-updated-pulse {
+  0% {
+    box-shadow: 0 0 0 0 var(--eh-accent-glow);
+  }
+  100% {
+    box-shadow: 0 0 0 14px transparent;
+  }
+}
+
+@keyframes column-arrival-glow {
+  0% {
+    box-shadow: inset 0 0 0 1px var(--eh-accent-glow), 0 0 0 0 var(--eh-accent-glow);
+    transform: translateY(-2px);
+  }
+  60% {
+    box-shadow: inset 0 0 0 1px transparent, 0 8px 20px -14px var(--eh-accent-glow);
+    transform: translateY(0);
+  }
+  100% {
+    box-shadow: inset 0 0 0 1px transparent, 0 0 0 0 transparent;
+    transform: translateY(0);
+  }
+}
+
+@keyframes live-pill-pulse {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.05); }
+  70% { transform: scale(0.98); }
+}
+
+@keyframes agent-session-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.35); }
+  70% { box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+
+.agent-session-active {
+  animation: agent-session-pulse 2s infinite;
+}
+
+.task-live-created {
+  animation: task-materialize 780ms cubic-bezier(0.22, 1, 0.32, 1);
+  transform-origin: top center;
+  will-change: transform, opacity, filter;
+}
+
+.task-live-moved {
+  animation: task-column-jump 760ms cubic-bezier(0.2, 0.95, 0.18, 1.02);
+  transform-origin: center center;
+  will-change: transform, opacity;
+}
+
+.task-live-updated {
+  animation: task-updated-pulse 900ms ease-out;
+}
+
+.column-live-receiving {
+  animation: column-arrival-glow 1100ms ease-out;
+}
+
+@keyframes bot-border-breathe {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(52, 211, 153, 0), 0 0 6px 0 rgba(52, 211, 153, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.2), 0 0 12px 1px rgba(52, 211, 153, 0.1);
+  }
+}
+
+@keyframes bot-assignee-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(52, 211, 153, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.35), 0 0 8px 1px rgba(52, 211, 153, 0.2);
+  }
+}
+
+.bot-border-breathe {
+  animation: bot-border-breathe 3s ease-in-out infinite;
+}
+
+.bot-assignee-glow {
+  animation: bot-assignee-glow 2s ease-in-out infinite;
+}
+
+@keyframes activity-shimmer {
+  0% { background-position: 200% center; }
+  100% { background-position: -200% center; }
+}
+
+.activity-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 7px;
+  border-radius: 9999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  background-size: 200% auto;
+  background-image: linear-gradient(90deg, #334155, #475569, #334155, #1e293b, #334155);
+  animation: activity-shimmer 2.5s linear infinite;
+  color: white;
+  white-space: nowrap;
+  flex-shrink: 0;
+  /* Dedicated, fixed-width slot so the changing activity text never reflows the card. */
+  width: 7rem;
+}
+
+.activity-badge__label {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-badge--thinking {
+  background-image: linear-gradient(90deg, #6d28d9, #9333ea, #6d28d9, #581c87, #6d28d9);
+}
+.activity-badge--running-command {
+  background-image: linear-gradient(90deg, #92400e, #b45309, #92400e, #78350f, #92400e);
+}
+.activity-badge--editing {
+  background-image: linear-gradient(90deg, #7c3aed, #8b5cf6, #7c3aed, #6d28d9, #7c3aed);
+}
+.activity-badge--reading {
+  background-image: linear-gradient(90deg, #0369a1, #0284c7, #0369a1, #075985, #0369a1);
+}
+.activity-badge--researching {
+  background-image: linear-gradient(90deg, #0f766e, #0d9488, #0f766e, #115e59, #0f766e);
+}
+.activity-badge--delegating {
+  background-image: linear-gradient(90deg, #4338ca, #4f46e5, #4338ca, #3730a3, #4338ca);
+}
+.activity-badge--planning {
+  background-image: linear-gradient(90deg, #047857, #059669, #047857, #064e3b, #047857);
+}
+
+.column-live-badge,
+.header-live-prompts {
+  animation: live-pill-pulse 900ms cubic-bezier(0.22, 1, 0.32, 1);
+}
+
+.docs-editor-shell {
+  @apply overflow-hidden;
+}
+
+.task-description-editor-shell {
+  /* removed overscroll-behavior to fix backlog scroll chaining */
+}
+
+.task-description-readonly-surface {
+  pointer-events: none;
+}
+
+.task-description-readonly-surface a,
+.task-description-readonly-surface img {
+  pointer-events: auto;
+}
+
+.docs-editor-content > *:first-child {
+  margin-top: 0;
+}
+
+.docs-editor-content > *:last-child {
+  margin-bottom: 0;
+}
+
+.docs-editor-content p {
+  @apply my-3;
+}
+
+.docs-editor-content strong {
+  @apply font-bold;
+}
+
+.docs-editor-content em {
+  @apply italic;
+}
+
+.docs-editor-content h1 {
+  @apply mt-6 mb-3 text-3xl font-bold tracking-tight text-gray-950 dark:text-white;
+}
+
+.docs-editor-content h2 {
+  @apply mt-6 mb-3 text-2xl font-semibold text-gray-900 dark:text-gray-50;
+}
+
+.docs-editor-content h3 {
+  @apply mt-5 mb-2 text-xl font-semibold text-gray-900 dark:text-gray-100;
+}
+
+.docs-editor-content ul {
+  @apply my-4 list-disc pl-6;
+}
+
+.docs-editor-content ol {
+  @apply my-4 list-decimal pl-6;
+}
+
+.docs-editor-content li {
+  @apply my-1;
+}
+
+.docs-editor-content blockquote {
+  @apply my-4 rounded-r-2xl border-l-4 border-primary/40 bg-gray-50 px-4 py-3 italic text-gray-700 dark:bg-white/5 dark:text-gray-200;
+}
+
+.docs-editor-content pre {
+  @apply my-4 overflow-x-auto rounded-2xl bg-gray-950 px-4 py-3 text-sm text-gray-100;
+}
+
+.docs-editor-content pre code {
+  @apply bg-transparent p-0 text-inherit;
+}
+
+.docs-editor-content :not(pre) > code {
+  @apply rounded-md bg-gray-100 px-1.5 py-0.5 text-[0.9em] text-gray-800 dark:bg-white/10 dark:text-gray-100;
+}
+
+.docs-editor-content a {
+  @apply cursor-pointer font-semibold underline underline-offset-2;
+}
+
+.docs-editor-content a[href^='wiki:'] {
+  @apply rounded-full bg-primary/10 px-2 py-0.5 text-primary no-underline;
+}
+
+.docs-editor-content a[href^='wiki:']:hover {
+  @apply bg-primary/15;
+}
+
+.docs-editor-content a[href^='broken:'] {
+  @apply rounded-full bg-rose-100 px-2 py-0.5 text-rose-700 no-underline dark:bg-rose-500/10 dark:text-rose-300;
+}
+
+.docs-editor-content img {
+  @apply my-4 max-h-[32rem] w-full rounded-2xl border border-gray-200 bg-white object-contain dark:border-white/10 dark:bg-black/20;
+}
+
+.docs-editor-content table {
+  @apply my-4 w-full border-collapse overflow-hidden rounded-2xl;
+}
+
+.docs-editor-content th {
+  @apply border border-gray-200 bg-gray-100 px-3 py-2 text-left font-semibold dark:border-white/10 dark:bg-white/5;
+}
+
+.docs-editor-content td {
+  @apply border border-gray-200 px-3 py-2 align-top dark:border-white/10;
+}
+
+.docs-editor-content table p {
+  @apply m-0;
+}
+
+.docs-editor-content p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  @apply pointer-events-none float-left h-0 text-gray-400;
+}

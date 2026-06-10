@@ -1,0 +1,40 @@
+{
+  "mcpServers": {
+    "event-horizon": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "tsx",
+        "engine/src/mcp-server.ts",
+        "--workspace",
+        "."
+      ]
+    },
+    "context7": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@upstash/context7-mcp"
+      ]
+    },
+    "basic-memory": {
+      "command": "uvx",
+      "args": [
+        "basic-memory",
+        "mcp"
+      ],
+      "env": {
+        "BASIC_MEMORY_HOME": "C:\\GitHub\\EventHorizon\\.flux-store/memory"
+      }
+    },
+    "serena": {
+      "command": "serena",
+      "args": [
+        "start-mcp-server",
+        "--context",
+        "claude-code",
+        "--project-from-cwd"
+      ]
+    }
+  }
+}
