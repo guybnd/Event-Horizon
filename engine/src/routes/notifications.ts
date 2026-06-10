@@ -9,7 +9,7 @@ import {
   checkFrameworkHealth,
   checkSkillStaleness,
 } from '../notifications.js';
-import { installWorkspaceWorkflow, type Framework } from '../workflow-installer.js';
+import { installWorkspaceWorkflow, checkSkillVersionStaleness, type Framework } from '../workflow-installer.js';
 import { workspaceRoot, resolveSkillSourceRoot } from '../workspace.js';
 import { broadcastEvent } from '../events.js';
 
@@ -61,11 +61,16 @@ router.post('/:id/action', async (req, res) => {
 
   if (actionId === 'reinstall' && notification.framework && workspaceRoot) {
     try {
+      const sourceRoot = resolveSkillSourceRoot();
       const result = await installWorkspaceWorkflow({
-        sourceRoot: resolveSkillSourceRoot(),
+        sourceRoot,
         targetDir: workspaceRoot,
         framework: notification.framework as Framework,
       });
+      const verify = await checkSkillVersionStaleness({ sourceRoot, targetDir: workspaceRoot, framework: notification.framework as Framework });
+      if (verify?.isStale) {
+        return res.status(500).json({ error: `Reinstall wrote files but skills are still stale (installed: v${verify.installedVersion}, source: v${verify.sourceVersion}). Check path resolution.` });
+      }
       dismissNotification(notification.id);
       return res.json({ ok: true, action: 'reinstalled', result });
     } catch (err: any) {

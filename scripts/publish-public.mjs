@@ -2,9 +2,9 @@
 /**
  * publish-public.mjs
  *
- * Squash all commits since the last public release into one and push to the
- * public remote. Keeps the public repo's history clean — each release is a
- * single commit parented to the previous public tip.
+ * Squash all dev commits since the last public release into one commit and
+ * push it to the public remote. The public repo grows one commit per release:
+ *   v0.23.0 → v0.24.0 → v0.25.0 …
  *
  * Usage:
  *   node scripts/publish-public.mjs <version>   e.g.  node scripts/publish-public.mjs v0.24.0
@@ -12,11 +12,13 @@
  *
  * What it does:
  *   1. Fetch public/master to get the latest public tip.
- *   2. Build a commit message from the release notes (or git log as fallback).
- *   3. Create a squashed commit via `git commit-tree` (tree = current HEAD,
+ *   2. Guard against double-runs: if public/master already has the same tree
+ *      as local HEAD, there is nothing new to squash — exit cleanly.
+ *   3. Build a commit message from the release notes (or git log as fallback).
+ *   4. Create a squashed commit via `git commit-tree` (tree = current HEAD,
  *      parent = current public/master tip) — no branch switching, no rebasing.
- *   4. Force-push that single commit to public/master.
- *   5. Create (or move) the version tag locally and push it to public.
+ *   5. Force-push that single commit to public/master.
+ *   6. Create (or move) the version tag locally and push it to public.
  */
 
 import { execSync } from 'child_process';
@@ -44,18 +46,22 @@ console.log(`\n→ Publishing ${tag} to public remote…\n`);
 console.log('Fetching public remote…');
 run('git fetch public');
 
-const publicTip = run('git rev-parse public/master');
-const localTip  = run('git rev-parse HEAD');
+const publicTip  = run('git rev-parse public/master');
+const localTip   = run('git rev-parse HEAD');
+const headTree   = run('git rev-parse "HEAD^{tree}"');
 
 console.log(`  public/master : ${publicTip.slice(0, 10)}`);
 console.log(`  local HEAD    : ${localTip.slice(0, 10)}`);
 
-if (publicTip === localTip) {
-  console.log('\nNothing to publish — public/master is already at HEAD.');
+// 2. Guard: if the public tip already carries our tree, nothing to do.
+//    This prevents double-squash if the script is accidentally run twice.
+const publicTree = run(`git rev-parse ${publicTip}^{tree}`);
+if (publicTree === headTree) {
+  console.log('\nNothing to publish — public/master already has the current tree.');
   process.exit(0);
 }
 
-// 2. Build commit message — prefer release notes, fall back to git log.
+// 3. Build commit message — prefer release notes, fall back to git log.
 const releaseNotesPath = path.join(root, '.docs', 'release-notes', `${tag}.md`);
 let commitMsg;
 if (existsSync(releaseNotesPath)) {
@@ -63,14 +69,21 @@ if (existsSync(releaseNotesPath)) {
   const body = raw.replace(/^---[\s\S]*?---\n/, '').trim();
   commitMsg = `Release ${tag}\n\n${body}`;
 } else {
-  const logLines = run(`git log --oneline ${publicTip}..${localTip}`);
+  // Fall back to one-line log of everything not yet on public.
+  // Note: this log is from dev history and won't exist as a common ancestor,
+  // so we diff against the merge-base if one exists, otherwise all of HEAD.
+  let logLines;
+  try {
+    const base = run(`git merge-base HEAD ${publicTip}`);
+    logLines = run(`git log --oneline ${base}..${localTip}`);
+  } catch {
+    logLines = run(`git log --oneline -20 ${localTip}`);
+  }
   commitMsg = `Release ${tag}\n\n${logLines}`;
 }
 
-// 3. Create squashed commit: tree = HEAD, parent = current public/master.
+// 4. Create squashed commit: tree = HEAD, parent = current public/master.
 console.log('\nCreating squashed commit…');
-const headTree = run('git rev-parse "HEAD^{tree}"');
-
 const tmpMsg = path.join(root, '.git', 'PUBLIC_SQUASH_MSG');
 writeFileSync(tmpMsg, commitMsg, 'utf-8');
 
@@ -82,11 +95,11 @@ try {
 }
 console.log(`  squashed SHA  : ${squashedSha.slice(0, 10)}`);
 
-// 4. Force-push squashed commit to public/master.
+// 5. Force-push squashed commit to public/master.
 console.log('\nForce-pushing to public/master…');
 run(`git push public ${squashedSha}:refs/heads/master --force`);
 
-// 5. Create/move local tag and push to public.
+// 6. Create/move local tag and push to public.
 console.log(`\nTagging ${tag}…`);
 try { run(`git tag -d ${tag}`); } catch {}
 run(`git tag ${tag} ${squashedSha}`);

@@ -82,7 +82,7 @@ npm run publish-public -- v0.X.Y
 
 Script: `scripts/publish-public.mjs`
 
-This squashes every commit since the last public release into **one commit** parented to the current `public/master` tip, then force-pushes it to `guybnd/event-horizon`. The version tag push triggers the GitHub Actions release workflow (`.github/workflows/release.yml`) which builds mac/win/source zips and publishes them as release assets.
+This squashes all dev commits since the last public release into **one commit** parented to the current `public/master` tip, then force-pushes it to `guybnd/event-horizon`. The public repo grows one commit per release: `v0.23.0 → v0.24.0 → v0.25.0 …`. Running the script twice is safe — it compares trees and exits cleanly if nothing changed. The version tag push triggers the GitHub Actions release workflow (`.github/workflows/release.yml`) which builds mac/win/source zips and publishes them as release assets.
 
 **Never** run `git push public master` directly — that exposes the full private commit history.
 

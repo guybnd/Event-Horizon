@@ -184,7 +184,7 @@ export async function checkSkillVersionStaleness(options: {
   sourceRoot: string;
   targetDir: string;
   framework?: Framework;
-}): Promise<{ sourceVersion: string; installedVersion: string | null; isStale: boolean } | null> {
+}): Promise<{ sourceVersion: string; installedVersion: string | null; isStale: boolean; resolvedFramework: ResolvedFramework } | null> {
   const resolvedFramework = resolveFramework(options.targetDir, options.framework || 'auto');
   const { skillSourcePaths } = getSourcePaths(options.sourceRoot);
 
@@ -197,7 +197,7 @@ export async function checkSkillVersionStaleness(options: {
 
   // Read version from installed file
   const installedPath = skillDestinationFor(options.targetDir, resolvedFramework);
-  if (!await pathExists(installedPath)) return { sourceVersion, installedVersion: null, isStale: true };
+  if (!await pathExists(installedPath)) return { sourceVersion, installedVersion: null, isStale: true, resolvedFramework };
   const installedContent = await fs.readFile(installedPath, 'utf-8');
   const installedVersion = extractSkillVersion(installedContent);
 
@@ -205,6 +205,7 @@ export async function checkSkillVersionStaleness(options: {
     sourceVersion,
     installedVersion,
     isStale: installedVersion !== sourceVersion,
+    resolvedFramework,
   };
 }
 

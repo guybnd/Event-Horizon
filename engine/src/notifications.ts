@@ -177,7 +177,7 @@ export async function checkSkillStaleness(framework: Framework): Promise<void> {
     if (existing) return;
 
     const installedLabel = result.installedVersion || 'unknown';
-    const resolvedFramework = framework === 'auto' ? 'claude' : framework;
+    const resolvedFramework = result.resolvedFramework;
     addNotification({
       type: 'error',
       title: 'Agent skills outdated',

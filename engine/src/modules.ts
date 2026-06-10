@@ -108,7 +108,7 @@ export const BUILTIN_MODULES: ModuleDeclaration[] = [
     enabled: false,
     mcpServer: {
       command: 'serena',
-      args: ['start-mcp-server', '--context', 'claude-code', '--project-from-cwd', '--open-web-dashboard', 'False'],
+      args: ['start-mcp-server', '--context', 'claude-code', '--project-from-cwd', '--open-web-dashboard', 'False', '--enable-gui-log-window', 'False'],
     },
     installDocs: {
       requires: 'uv (Python package manager)',
