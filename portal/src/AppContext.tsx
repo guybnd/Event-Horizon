@@ -805,7 +805,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             if (entry.type === 'agent_session' && entry.sessionId === sessionId && entry.status === 'active') {
               return {
                 ...entry,
-                progress: [...entry.progress, { timestamp, message }]
+                progress: [...(entry.progress ?? []), { timestamp, message }]
               };
             }
             return entry;

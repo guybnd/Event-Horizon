@@ -55,7 +55,7 @@ console.log(`  local HEAD    : ${localTip.slice(0, 10)}`);
 
 // 2. Guard: if the public tip already carries our tree, nothing to do.
 //    This prevents double-squash if the script is accidentally run twice.
-const publicTree = run(`git rev-parse ${publicTip}^{tree}`);
+const publicTree = run(`git rev-parse "${publicTip}^{tree}"`);
 if (publicTree === headTree) {
   console.log('\nNothing to publish — public/master already has the current tree.');
   process.exit(0);

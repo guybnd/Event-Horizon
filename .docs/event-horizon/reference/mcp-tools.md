@@ -25,6 +25,7 @@ The auto-installed MCP config (placed by the workflow installer) does this for y
 | Tool | Category | Mutates? |
 |------|----------|----------|
 | [`get_ticket`](#get_ticket) | Read | — |
+| [`get_session_log`](#get_session_log) | Read | — |
 | [`list_tickets`](#list_tickets) | Read | — |
 | [`get_board_config`](#get_board_config) | Read | — |
 | [`get_project_group`](#get_project_group) | Read | — |
@@ -48,13 +49,21 @@ The auto-installed MCP config (placed by the workflow installer) does this for y
 
 ### `get_ticket`
 
-Read a ticket by ID.
+Read a ticket by ID. Returns an **agent digest**, not the raw file: history is digested and windowed so heavily-worked tickets stay a few KB instead of 100k+ chars.
 
 | Input | Type | Required | Notes |
 |-------|------|----------|-------|
 | `ticketId` | string | yes | e.g. `FLUX-42` |
+| `historyLimit` | number | no | Max history entries returned (default 20) |
 
-**Output:** JSON — full frontmatter + `body` + `history`. The internal `_path` field is stripped.
+**Output:** JSON — full frontmatter + `body` + digested `history`. The internal `_path` field is stripped. Digest rules (`serializeTaskForAgent` in [`task-store.ts`](../../../engine/src/task-store.ts), `digestHistoryForAgent` in [`history.ts`](../../../engine/src/history.ts)):
+
+- `agent_session` entries lose their `progress[]` array and gain a `progressCount` instead — fetch the raw log via [`get_session_log`](#get_session_log) when needed. All other fields (`sessionId`, `status`, `outcome`, `startedAt`, `endedAt`, …) are preserved.
+- `comment`, `status_change`, and `activity` entries pass through intact.
+- Only the most recent `historyLimit` entries are returned; when older ones are omitted, the response includes `olderHistoryEntries: <count>`.
+- Attached `cliSession`/`cliSessions` summaries are the list-scoped set with `liveOutput` truncated to a short tail, and slimmed for agents: `args` (which embeds the full launch prompt — i.e. the ticket body again), `command`, and `pid` are dropped; `argsChars` preserves a size hint.
+
+The REST detail endpoint (`GET /api/tasks/:id`) is unaffected and still returns the full history for the portal.
 
 **Errors:** `Ticket <id> not found`.
 
@@ -62,6 +71,20 @@ Read a ticket by ID.
 // example call
 { "tool": "get_ticket", "input": { "ticketId": "FLUX-42" } }
 ```
+
+### `get_session_log`
+
+Read the full progress log of **one** past agent session on a ticket. This is the escape hatch for the session digest in `get_ticket` — use it only when investigating what a specific prior session did, not as routine context.
+
+| Input | Type | Required | Notes |
+|-------|------|----------|-------|
+| `ticketId` | string | yes | |
+| `sessionId` | string | yes | From a `get_ticket` `agent_session` history entry |
+| `tail` | number | no | Return only the last N progress entries |
+
+**Output:** the full `agent_session` history entry including `progress[]`. With `tail`, `progress` holds the last N entries and `omittedProgressEntries` reports how many were skipped. Sessions finished after progress compaction shipped store milestones + a `finalMessage` field rather than raw output chunks (`originalProgressCount` shows the pre-compaction length) — see [Ticket Schema](ticket-schema.md).
+
+**Errors:** `Ticket <id> not found`; `Session <sessionId> not found on <id>. Known sessions: …` (lists valid session IDs).
 
 ### `list_tickets`
 
@@ -193,7 +216,7 @@ Create a new ticket.
 | `body` | string | no | `''` |
 | `author` | string | no | `Agent` |
 
-**Output:** `{ id, title, status }`.
+**Output:** `{ id, title, status }`. When `body` exceeds 10,000 chars the output also carries a `warning` field — the write is accepted, but the agent is nudged to keep bodies a concise plan and move bulk material to `.docs/`.
 
 **Side effects:** assigns the next `<projectKey>-N` id, writes `.flux/<id>.md`, seeds a creation activity entry in history.
 
@@ -209,7 +232,7 @@ Update metadata. Does **not** change status — use `change_status` for that.
 | `title`, `priority`, `effort`, `assignee`, `body`, `implementationLink` | string | omit to leave unchanged |
 | `tags` | string[] | replaces the array (not a merge) |
 
-**Output:** `Updated <id>`.
+**Output:** `Updated <id>`. When a provided `body` exceeds 10,000 chars, a soft warning is appended to the output (the write still succeeds).
 
 **Side effects:** appends a single `activity` history entry summarizing the field changes (e.g. *"Updated title. Changed priority to High."*).
 

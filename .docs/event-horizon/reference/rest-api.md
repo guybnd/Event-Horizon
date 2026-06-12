@@ -30,9 +30,9 @@ Sourced from [`engine/src/routes/tasks.ts`](../../../engine/src/routes/tasks.ts)
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/tasks` | All tickets (array). The portal polls this. Each ticket carries a **capped** `cliSessions[]`: only active sessions plus the most-recent completed run group, with each `liveOutput` truncated to a short tail (~2KB) — so the poll payload doesn't grow with session history. Use `GET /api/tasks/:id` for the full set. |
+| GET | `/api/tasks` | All tickets (array). The portal polls this. Each ticket carries a **capped** `cliSessions[]`: only active sessions plus the most-recent completed run group, with each `liveOutput` truncated to a short tail (~2KB). History is also slimmed: **terminal** `agent_session` entries lose their `progress[]` array (kept as `progressCount`) — active sessions keep it so SSE progress appends and the card's inline progress line keep working. Use `GET /api/tasks/:id` for the full set. |
 | GET | `/api/tasks/errors` | Parse errors keyed by file path — for the ParseError banner. |
-| GET | `/api/tasks/:id` | Single ticket. Returns the **full** `cliSessions[]` (all sessions, full `liveOutput`). |
+| GET | `/api/tasks/:id` | Single ticket. Returns the **full** `cliSessions[]` (all sessions, full `liveOutput`). Append `?view=agent` (optional `&historyLimit=N`) for the digested agent surface instead — same shape as MCP `get_ticket`: agent_session entries without `progress[]`, windowed history, slimmed session summaries. Agents using REST as the MCP fallback should always pass `?view=agent`. |
 | POST | `/api/tasks` | Create a ticket. Body: `{ author, title, status?, priority?, effort?, tags?, body?, assignee?, history?, projectKey?, ... }`. Allocates next id from `projectKey` (or first configured project), checks remote ids in orphan mode to avoid collisions, validates schema, writes atomically. Returns the created ticket. |
 | POST | `/api/tasks/:parentId/subtasks` | Create a child ticket and link it from the parent. Body mirrors POST `/api/tasks` plus parent linkage. |
 | PUT | `/api/tasks/:id` | Update a ticket. Body: any subset of metadata fields, optional `body`, optional `status`, optional `appendHistory: HistoryEntry[]` to append comments / activity entries. Used by the portal and as the REST fallback for agents when MCP is unavailable. |

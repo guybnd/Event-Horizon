@@ -10,11 +10,11 @@ import { attachWorktreeIfPresent, migrateStrandedFluxTickets } from './storage-s
 import { startSyncWatcher } from './sync-watcher.js';
 import { configCache, loadConfig, autoRegisterUnknownTags } from './config.js';
 import { loadCustomPersonas } from './orchestration-personas.js';
-import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate, getHistoryTimestamp } from './history.js';
+import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate, getHistoryTimestamp, digestHistoryForAgent, digestTerminalSessionProgress, compactSessionProgress } from './history.js';
 import { generatePromptNotification, generateCompletionNotification, clearNotifications, checkSkillStaleness } from './notifications.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
 import { broadcastEvent } from './events.js';
-import { getCliSessionSummaryForTask, getAllSessionSummariesForTask, getListSessionSummariesForTask, cliSessionsById, cliSessionIdByTaskId } from './session-store.js';
+import { getCliSessionSummaryForTask, getAllSessionSummariesForTask, getListSessionSummariesForTask, slimSessionSummaryForAgent, cliSessionsById, cliSessionIdByTaskId } from './session-store.js';
 import { isTopLevelTaskFile, getDocsDir, isDocFile, getDocPathFromFile, titleFromDocPath, slugifyDocValue, parseDocOrder } from './file-utils.js';
 import type { StoredDoc } from './file-utils.js';
 import { resolveEmbeddedDocsRoot, copyDir, buildStarterProjectOverview } from './docs-seeder.js';
@@ -56,6 +56,36 @@ export function serializeTaskForApi(task: any) {
   };
 }
 
+// Default history window for the agent-facing serializer. Agents need the
+// recent conversation, not the full archaeology — older entries stay on disk
+// and are reported via `olderHistoryEntries`.
+const AGENT_HISTORY_LIMIT = 20;
+
+/**
+ * Agent-facing serializer for the MCP `get_ticket` tool. Unlike
+ * {@link serializeTaskForApi} it digests `agent_session` history entries to
+ * one-line summaries (dropping `progress[]`, which is per-second output noise
+ * from prior sessions and the dominant weight on heavily-worked tickets) and
+ * windows history to the most recent entries. REST detail stays full-fat for
+ * the portal. Use `get_session_log` semantics (fetch by sessionId) for raw
+ * progress when an agent genuinely needs it.
+ */
+export function serializeTaskForAgent(task: any, historyLimit?: number) {
+  const { history, olderHistoryEntries } = digestHistoryForAgent(
+    Array.isArray(task.history) ? task.history : [],
+    historyLimit ?? AGENT_HISTORY_LIMIT,
+  );
+  const cliSession = getCliSessionSummaryForTask(task.id);
+  const cliSessions = getListSessionSummariesForTask(task.id).map(slimSessionSummaryForAgent);
+  return {
+    ...task,
+    history,
+    ...(olderHistoryEntries > 0 ? { olderHistoryEntries } : {}),
+    cliSession: cliSession ? slimSessionSummaryForAgent(cliSession) : undefined,
+    cliSessions: cliSessions.length > 0 ? cliSessions : undefined,
+  };
+}
+
 /**
  * List-endpoint serializer. Like {@link serializeTaskForApi} but attaches a
  * capped `cliSessions[]` (active sessions + most-recent completed group, with
@@ -66,6 +96,7 @@ export function serializeTaskForList(task: any) {
   const cliSessions = getListSessionSummariesForTask(task.id);
   return {
     ...task,
+    history: digestTerminalSessionProgress(Array.isArray(task.history) ? task.history : []),
     cliSession: getCliSessionSummaryForTask(task.id),
     cliSessions: cliSessions.length > 0 ? cliSessions : undefined,
   };
@@ -132,6 +163,9 @@ export async function updateAgentSession(taskId: string, sessionId: string, upda
   }
 
   updater(history[sessionIndex]);
+  // Every adapter persists its terminal state through here — compact the
+  // per-second progress chunks once the session leaves 'active'.
+  compactSessionProgress(history[sessionIndex]);
   frontmatter.history = history;
   frontmatter.updatedBy = 'Agent';
 

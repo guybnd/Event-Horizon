@@ -6,7 +6,7 @@ import path from 'path';
 import matter from 'gray-matter';
 import { fileURLToPath } from 'url';
 
-import { tasksCache, serializeTaskForApi, updateTaskWithHistory, activateWorkspace, workspaceActivating, readTaskFromDisk, docsCache, createTask, atomicWriteFile, type CreateTaskOptions } from './task-store.js';
+import { tasksCache, serializeTaskForAgent, updateTaskWithHistory, activateWorkspace, workspaceActivating, readTaskFromDisk, docsCache, createTask, atomicWriteFile, type CreateTaskOptions } from './task-store.js';
 import { configCache, autoRegisterUnknownTags } from './config.js';
 import { broadcastEvent } from './events.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
@@ -28,6 +28,16 @@ function errorResult(text: string) {
 
 function jsonResult(data: unknown) {
   return textResult(JSON.stringify(data, null, 2));
+}
+
+// Soft ceiling for ticket bodies written by agents. The body is injected in
+// full into every future agent session, so oversized bodies tax every session
+// on the ticket. The write is accepted either way — this only nudges.
+const BODY_WARN_CHARS = 10_000;
+
+function bodySizeWarning(body: string | undefined | null): string | undefined {
+  if (!body || body.length <= BODY_WARN_CHARS) return undefined;
+  return `Body is ${body.length} chars (soft limit ${BODY_WARN_CHARS}). Large bodies bloat every agent session on this ticket — keep the body a concise plan and move bulk material (logs, dumps, research) to .docs/ with a link.`;
 }
 
 export async function startMcpServer(): Promise<void> {
@@ -52,13 +62,46 @@ export async function startMcpServer(): Promise<void> {
 
   server.tool(
     'get_ticket',
-    'Read a ticket by ID — returns full frontmatter, body, and history',
-    { ticketId: z.string().describe('Ticket ID, e.g. FLUX-42') },
-    async ({ ticketId }) => {
+    'Read a ticket by ID — returns frontmatter, body, and recent history. agent_session entries are digested to one-line summaries (progress dropped, progressCount kept); history is windowed to the most recent entries, with the count of omitted older ones in olderHistoryEntries.',
+    {
+      ticketId: z.string().describe('Ticket ID, e.g. FLUX-42'),
+      historyLimit: z.number().int().positive().optional().describe('Max history entries to return (default 20)'),
+    },
+    async ({ ticketId, historyLimit }) => {
       const task = tasksCache[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`);
-      const { _path, ...output } = serializeTaskForApi(task);
+      const { _path, ...output } = serializeTaskForAgent(task, historyLimit);
       return jsonResult(output);
+    },
+  );
+
+  server.tool(
+    'get_session_log',
+    'Read the full progress log of one past agent session on a ticket. Use only when investigating what a specific prior session did — get_ticket already returns a digest of every session (sessionId + progressCount). Pass tail to fetch just the last N progress entries.',
+    {
+      ticketId: z.string().describe('Ticket ID, e.g. FLUX-42'),
+      sessionId: z.string().describe('Session ID from a get_ticket agent_session history entry'),
+      tail: z.number().int().positive().optional().describe('Return only the last N progress entries'),
+    },
+    async ({ ticketId, sessionId, tail }) => {
+      const task = tasksCache[ticketId];
+      if (!task) return errorResult(`Ticket ${ticketId} not found`);
+      const history: any[] = Array.isArray(task.history) ? task.history : [];
+      const entry = history.find((e: any) => e?.type === 'agent_session' && e?.sessionId === sessionId);
+      if (!entry) {
+        const known = history
+          .filter((e: any) => e?.type === 'agent_session' && e?.sessionId)
+          .map((e: any) => e.sessionId);
+        return errorResult(
+          `Session ${sessionId} not found on ${ticketId}.` +
+          (known.length > 0 ? ` Known sessions: ${known.join(', ')}` : ' This ticket has no agent sessions.'),
+        );
+      }
+      const progress: any[] = Array.isArray(entry.progress) ? entry.progress : [];
+      if (tail != null && progress.length > tail) {
+        return jsonResult({ ...entry, progress: progress.slice(-tail), omittedProgressEntries: progress.length - tail });
+      }
+      return jsonResult(entry);
     },
   );
 
@@ -156,7 +199,8 @@ export async function startMcpServer(): Promise<void> {
         if (tags) opts.tags = tags;
         if (body) opts.body = body;
         const { id, task } = await createTask(opts);
-        return jsonResult({ id, title: task.title, status: task.status });
+        const warning = bodySizeWarning(body);
+        return jsonResult({ id, title: task.title, status: task.status, ...(warning ? { warning } : {}) });
       } catch (err: any) {
         return errorResult(err.message || 'Failed to create ticket');
       }
@@ -222,7 +266,8 @@ export async function startMcpServer(): Promise<void> {
       await fs.writeFile(_path, fileContent, 'utf-8');
       tasksCache[ticketId] = { ...frontmatter, body: nextBody, id: ticketId, _path };
       broadcastEvent('taskUpdated', { id: ticketId });
-      return textResult(`Updated ${ticketId}`);
+      const warning = body !== undefined ? bodySizeWarning(body) : undefined;
+      return textResult(`Updated ${ticketId}${warning ? `\nWarning: ${warning}` : ''}`);
     },
   );
 

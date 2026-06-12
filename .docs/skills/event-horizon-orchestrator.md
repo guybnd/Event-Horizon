@@ -49,6 +49,8 @@ Tickets have these fields (relevant when calling `update_ticket` or reading `get
 
 History is an append-only event log (types: `comment`, `status_change`, `activity`, `agent_session`). You read it via `get_ticket` and append to it via `add_comment`, `change_status`, `log_progress`. Never construct history entries manually.
 
+`get_ticket` returns a digest: `agent_session` entries come back without their `progress[]` array (a `progressCount` is kept), and history is windowed to the most recent ~20 entries (`olderHistoryEntries` reports how many were omitted; pass `historyLimit` for more). Use `get_session_log` only when you need a specific prior session's raw progress.
+
 ## Working Surfaces
 
 - Ticket storage: `.flux/` (in-repo) or `.flux-store/` (orphan mode) — agents NEVER access these directly
@@ -103,7 +105,8 @@ The MCP tools handle schema validation, timestamps, history normalization, and p
 
 | Tool | Use When |
 |---|---|
-| `get_ticket` | Reading a ticket's full state (frontmatter + body + history) |
+| `get_ticket` | Reading a ticket (frontmatter + body + digested recent history) |
+| `get_session_log` | Reading one prior agent session's full progress log (rare — debugging only) |
 | `list_tickets` | Finding tickets by status, assignee, tag, or priority |
 | `get_board_config` | Checking valid statuses, tags, project key |
 | `create_ticket` | Creating a new ticket |
@@ -132,6 +135,7 @@ REST base: `http://localhost:3067`
 
 | Method | Endpoint | Purpose |
 |---|---|---|
+| `GET` | `/api/tasks/:id?view=agent` | Read a ticket — ALWAYS pass `view=agent` (digested surface; omitting it returns the full portal payload incl. raw session logs) |
 | `POST` | `/api/tasks` | Create a ticket |
 | `PUT` | `/api/tasks/:id` | Update a ticket (use `appendHistory` for comments) |
 | `POST` | `/api/tasks/:parentId/subtasks` | Create a linked subtask |

@@ -44,7 +44,8 @@ For the full per-tool reference (inputs, outputs, enforcement, examples), see [R
 
 | Tool | Purpose | Required Params |
 |------|---------|----------------|
-| `get_ticket` | Read ticket by ID (full frontmatter + body + history) | `ticketId` |
+| `get_ticket` | Read ticket by ID (frontmatter + body + digested recent history) | `ticketId` |
+| `get_session_log` | Read one prior agent session's full progress log | `ticketId`, `sessionId` |
 | `list_tickets` | List/filter tickets | `status?`, `assignee?`, `tag?`, `priority?` |
 | `get_board_config` | Read board config (statuses, tags, project key) | — |
 | `create_ticket` | Create a new ticket | `title` |
@@ -62,6 +63,8 @@ For the full per-tool reference (inputs, outputs, enforcement, examples), see [R
 - `finish_ticket` is atomic — sets implementationLink, adds completion comment, and moves to Done in one operation.
 - All mutation tools validate the ticket schema before writing.
 - All mutation tools broadcast SSE events for real-time portal updates.
+- `get_ticket` digests history for agents: `agent_session` entries lose `progress[]` (kept as `progressCount`; fetch via `get_session_log`), and history is windowed to the most recent ~20 entries (`historyLimit` to override, `olderHistoryEntries` reports omissions). REST keeps the full payload for the portal.
+- `create_ticket` / `update_ticket` attach a soft warning when a body exceeds 10k chars (write still succeeds).
 
 ## Configuration per CLI
 

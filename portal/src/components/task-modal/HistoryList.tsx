@@ -163,9 +163,15 @@ function SessionHistoryEntry({ session }: { session: AgentSessionEntry }) {
           </div>
         )}
 
-        {isExpanded && session.progress.length > 0 && (
+        {isExpanded && session.finalMessage && (
+          <div className="mt-3 text-xs text-gray-700 dark:text-gray-300 bg-white/50 dark:bg-black/20 p-2.5 rounded-lg border border-emerald-100 dark:border-emerald-500/10 whitespace-pre-wrap">
+            {session.finalMessage}
+          </div>
+        )}
+
+        {isExpanded && (session.progress?.length ?? 0) > 0 && (
           <div className="mt-4 space-y-1 pl-1 border-l-2 border-emerald-200/50 dark:border-emerald-500/20 ml-2.5">
-            {session.progress.map((prog, idx) => (
+            {session.progress!.map((prog, idx) => (
               <ProgressItem key={idx} prog={prog} />
             ))}
           </div>

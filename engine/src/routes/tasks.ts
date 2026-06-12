@@ -8,7 +8,7 @@ import {
   normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry,
   summarizeFieldChanges, hasAppendedStatusChange, findEarliestHistoryDate,
 } from '../history.js';
-import { tasksCache, serializeTaskForApi, serializeTaskForList, updateTaskWithHistory, workspaceActivating, parseErrors, atomicWriteFile, createTask } from '../task-store.js';
+import { tasksCache, serializeTaskForApi, serializeTaskForAgent, serializeTaskForList, updateTaskWithHistory, workspaceActivating, parseErrors, atomicWriteFile, createTask } from '../task-store.js';
 import { generatePromptNotification, generateCompletionNotification } from '../notifications.js';
 import { validateTicketFrontmatter, formatValidationErrors } from '../schema.js';
 import {
@@ -32,6 +32,12 @@ router.get('/:id', (req, res) => {
   const { id } = req.params;
   const task = tasksCache[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
+  // ?view=agent serves the digested surface (same as MCP get_ticket) for
+  // agents reading via the REST fallback; the portal default stays full.
+  if (req.query.view === 'agent') {
+    const historyLimit = Number.parseInt(String(req.query.historyLimit ?? ''), 10);
+    return res.json(serializeTaskForAgent(task, Number.isFinite(historyLimit) && historyLimit > 0 ? historyLimit : undefined));
+  }
   res.json(serializeTaskForApi(task));
 });
 

@@ -117,6 +117,19 @@ function truncateLiveOutput(summary: CliSessionSummary): CliSessionSummary {
 }
 
 /**
+ * Slim a session summary for agent consumption (MCP `get_ticket`). Drops
+ * `args` — `args[1]` is the full launch prompt, which embeds the entire ticket
+ * body plus mission boilerplate, so shipping it returns the ticket body twice —
+ * along with `command` and `pid`, which only matter to the engine/portal.
+ * `argsChars` preserves a size hint. Also truncates `liveOutput`.
+ */
+export function slimSessionSummaryForAgent(summary: CliSessionSummary): Omit<CliSessionSummary, 'args' | 'command' | 'pid'> & { argsChars?: number } {
+  const { args, command, pid, ...rest } = truncateLiveOutput(summary);
+  const argsChars = args.reduce((total, arg) => total + arg.length, 0);
+  return { ...rest, ...(argsChars > 0 ? { argsChars } : {}) };
+}
+
+/**
  * List-scoped session summaries: bounds the payload of `GET /api/tasks` so it
  * doesn't grow with completed-session history. Returns every **active** session
  * plus only the **most-recent completed group** (or solo session), with each

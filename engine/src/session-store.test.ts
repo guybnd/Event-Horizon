@@ -33,6 +33,7 @@ import {
   getAllSessionSummariesForTask,
   getListSessionSummariesForTask,
   getActiveSessionsForTask,
+  slimSessionSummaryForAgent,
   checkPathConflicts,
   validatePatternSupport,
   stopAllSessionsForTask,
@@ -431,6 +432,38 @@ describe('session-store', () => {
       sess.endedAt = new Date().toISOString();
       const activeAfter = getActiveSessionsForTask('FLUX-1');
       expect(activeAfter).toHaveLength(0);
+    });
+  });
+
+  describe('slimSessionSummaryForAgent', () => {
+    it('drops args, command, and pid but keeps an argsChars size hint', () => {
+      const launchPrompt = 'You are working on ticket FLUX-1. '.repeat(200);
+      const session = createMockSession({ id: 'sess-slim', args: ['-p', launchPrompt], pid: 4242 });
+      cliSessionsById.set(session.id, session);
+      registerSession('FLUX-1', session.id);
+
+      const summary = getCliSessionSummaryForTask('FLUX-1')!;
+      const slim = slimSessionSummaryForAgent(summary) as any;
+
+      expect(slim.args).toBeUndefined();
+      expect(slim.command).toBeUndefined();
+      expect(slim.pid).toBeUndefined();
+      expect(slim.argsChars).toBe(2 + launchPrompt.length);
+      expect(JSON.stringify(slim)).not.toContain('You are working on ticket');
+      expect(slim.id).toBe('sess-slim');
+      expect(slim.framework).toBe('claude');
+      expect(slim.status).toBe('running');
+    });
+
+    it('omits argsChars when there are no args and truncates liveOutput', () => {
+      const session = createMockSession({ id: 'sess-empty', args: [], liveOutputBuffer: 'x'.repeat(5000) });
+      cliSessionsById.set(session.id, session);
+      registerSession('FLUX-2', session.id);
+
+      const slim = slimSessionSummaryForAgent(getCliSessionSummaryForTask('FLUX-2')!) as any;
+
+      expect(slim.argsChars).toBeUndefined();
+      expect(slim.liveOutput.length).toBe(2048);
     });
   });
 });

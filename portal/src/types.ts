@@ -12,7 +12,14 @@ export interface AgentSessionEntry {
   endedAt?: string;
   status: 'active' | 'completed' | 'failed' | 'cancelled';
   outcome?: string;
-  progress: AgentSessionProgress[];
+  /** Absent on terminal entries in the list payload; compacted after session end. */
+  progress?: AgentSessionProgress[];
+  /** Agent's final text output — set when the engine compacts a finished session. */
+  finalMessage?: string;
+  /** Progress length before compaction. */
+  originalProgressCount?: number;
+  /** Progress length hint when the array itself was stripped (list payload). */
+  progressCount?: number;
   user: string;
   date: string;
   id?: string;
