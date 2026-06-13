@@ -6,6 +6,7 @@ import {
   saveGlobalSettings,
   type WorkspaceEntry,
 } from './global-settings.js';
+import { isPkg, isSea, getSeaExtractDir } from './packaged-mode.js';
 
 // In CJS bundles (esbuild output / pkg executable), __dirname is provided by Node.
 // In ESM dev mode (tsx / Node 20+), use import.meta for the source directory.
@@ -133,8 +134,8 @@ export function getCliWorkspace(): string | null {
 }
 
 export function resolveSkillSourceRoot(): string {
-  const isPkg = (process as any).pkg !== undefined;
   if (isPkg) return __dirname_resolved;
+  if (isSea) return getSeaExtractDir();
   return path.resolve(__dirname_resolved, '..', '..');
 }
 
@@ -143,8 +144,8 @@ export function resolvePortalDist(): string {
   const idx = args.indexOf('--portal-dist');
   const val = idx !== -1 ? args[idx + 1] : undefined;
   if (val) return path.resolve(val);
-  const isPkg = (process as any).pkg !== undefined;
   if (isPkg) return path.join(__dirname_resolved, 'portal', 'dist');
+  if (isSea) return path.join(getSeaExtractDir(), 'portal', 'dist');
   return path.resolve(__dirname_resolved, '..', '..', 'portal', 'dist');
 }
 

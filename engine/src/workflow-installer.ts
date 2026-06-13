@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getModuleMcpServers } from './modules.js';
+import { isPackaged } from './packaged-mode.js';
 
 export type Framework = 'auto' | 'copilot' | 'antigravity' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'generic';
 type ResolvedFramework = Exclude<Framework, 'auto'>;
@@ -343,8 +344,7 @@ function mcpConfigPathFor(targetDir: string, framework: ResolvedFramework): stri
 }
 
 function buildMcpServerEntry(sourceRoot: string, targetDir: string) {
-  const isPkg = (process as any).pkg !== undefined;
-  if (isPkg) {
+  if (isPackaged) {
     return {
       type: 'stdio',
       command: process.execPath,

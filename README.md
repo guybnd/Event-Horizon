@@ -46,6 +46,44 @@ The binary embeds the engine and portal into a single executable. No Node.js req
 
 The service runs as a system tray application. Closing the browser does not stop the engine.
 
+> **Windows users — if Defender flags the exe:** see [Windows Defender false positive](#windows-defender-false-positive) below.
+
+---
+
+## Windows Defender false positive
+
+Windows Defender (and some other AV products) may flag `event-horizon-win-*.exe` as `Trojan:Script/Wacatac.C!ml`. **This is a false positive.** The `!ml` suffix means it was flagged by a machine-learning heuristic, not a specific malware signature.
+
+The Windows binary is built using [Node.js Single Executable Applications](https://nodejs.org/api/single-executable-applications.html) — an official Node.js feature that injects your application bundle into the standard `node.exe` binary. Because the resulting exe is **unsigned** (code-signing certificates are expensive), AV models trained on "unsigned exe + embedded JS" patterns can mis-classify it.
+
+**Options:**
+
+- **Submit a false positive report** — fastest fix for an individual machine. Go to [microsoft.com/wdsi/filesubmission](https://www.microsoft.com/en-us/wdsi/filesubmission), upload the exe, and Microsoft typically clears the flag within 1–3 days.
+- **Run from source** — zero AV friction, Node.js required. See [Run from source (Windows)](#run-from-source-windows) below.
+- **Add a Defender exclusion** — Settings → Windows Security → Virus & threat protection → Manage settings → Add or remove exclusions → add the exe path.
+
+---
+
+## Run from source (Windows)
+
+If you want to avoid the binary entirely, the source distribution on the [releases page](../../releases) (`event-horizon-source.zip`) contains everything you need. Node.js 20+ required.
+
+```bash
+# 1. Download and extract event-horizon-source.zip, then:
+cd event-horizon
+
+# 2. Install dependencies
+npm install
+
+# 3. Build (portal + engine)
+npm run build
+
+# 4. Start the engine (opens browser automatically)
+node engine/dist/index.js --workspace /path/to/your/project
+```
+
+The engine serves the portal at `http://localhost:3067`. Set `PORT=<n>` to override the port.
+
 ---
 
 ## MCP Server — How Agents Connect

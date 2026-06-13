@@ -18,6 +18,8 @@ Event Horizon ships as a standalone binary with an embedded IDE-style workspace 
 3. **Connect**: Your default web browser will automatically open the Event Horizon portal (typically at `http://localhost:3067`).
 4. **Select Workspace**: If it's your first time, the portal will prompt you to select a workspace. Click **Browse** and select your project folder, or type the path. If the folder hasn't been initialized, the portal will guide you through setting it up.
 
+> **Windows users:** Windows Defender may flag `event-horizon-win-*.exe` as `Trojan:Script/Wacatac.C!ml`. This is a false positive — the binary is an unsigned [Node.js Single Executable Application](https://nodejs.org/api/single-executable-applications.html) and triggers AV heuristics because it's unsigned. See [Run from source](#run-from-source-windows) below for a workaround, or submit a false-positive report at [microsoft.com/wdsi/filesubmission](https://www.microsoft.com/en-us/wdsi/filesubmission).
+
 ---
 
 ## First Boot
@@ -104,6 +106,25 @@ To stop the service completely:
 - Find the Event Horizon icon in your system tray (Windows) or menu bar (macOS).
 - Right-click and select **Quit**.
 - Alternatively, you can click the Power icon in the portal header.
+
+---
+
+## Run from source (Windows)
+
+If Windows Defender blocks the binary, the source distribution (`event-horizon-source.zip` on the [releases page](https://github.com/guybnd/event-horizon/releases)) lets you run directly from TypeScript with no AV friction. Requires Node.js 20+.
+
+```bash
+# 1. Extract event-horizon-source.zip, then from the extracted directory:
+npm install
+
+# 2. Build portal + engine
+npm run build
+
+# 3. Start the engine
+node engine/dist/index.js --workspace /path/to/your/project
+```
+
+The engine serves the portal at `http://localhost:3067`. Set `PORT=<n>` to override the port.
 
 ---
 

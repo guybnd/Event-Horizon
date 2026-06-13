@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { isPkg, isSea, getSeaExtractDir } from './packaged-mode.js';
 
 const __dir = (() => {
   // @ts-ignore
@@ -10,8 +11,8 @@ const __dir = (() => {
 })();
 
 export function resolveEmbeddedDocsRoot(): string {
-  const isPkg = (process as any).pkg !== undefined;
   if (isPkg) return __dir;
+  if (isSea) return getSeaExtractDir();
   return path.resolve(__dir, '..', '..');
 }
 

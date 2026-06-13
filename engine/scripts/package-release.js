@@ -78,24 +78,93 @@ function buildMac() {
   return zipPath;
 }
 
-// ── Windows ───────────────────────────────────────────────────────────────────
+// ── Windows (Node.js SEA) ─────────────────────────────────────────────────────
+// Builds the Windows executable using Node.js Single Executable Applications
+// instead of @yao-pkg/pkg.  SEA produces a standard Node.js binary rather
+// than a custom runtime, which avoids the Wacatac.C!ml false-positive that
+// pkg-bundled executables trigger in Windows Defender.
+//
+// Steps:
+//  1. Generate the SEA blob (sea-prep.blob) from sea-config.json
+//  2. Download the official Windows node.exe for the current Node version
+//  3. Copy node.exe → event-horizon.exe
+//  4. Inject the blob with postject
+//  5. Patch the PE subsystem to suppress the console window (same as pkg path)
+//  6. Zip and place in releases/
 
 function buildWin() {
-  const tmpBase = path.join(distDir, 'event-horizon');
-  pkg('node22-win-x64', tmpBase);
+  const nodeVersion = process.version.slice(1); // e.g. '22.14.0'
+  const tmpExe = path.join(distDir, 'event-horizon.exe');
+  const blobPath = path.join(distDir, 'sea-prep.blob');
+  const nodeZipPath = path.join(distDir, 'node-win.zip');
+  const nodeExtractDir = path.join(distDir, 'node-win-extracted');
 
-  // patch-pe changes the exe subsystem to suppress the console window
-  const patchResult = spawnSync('node', [path.join(__dirname, 'patch-pe.js'), `${tmpBase}.exe`], { stdio: 'inherit' });
+  // 1. Generate SEA blob — run from engineRoot so sea-config.json paths resolve
+  console.log('Generating SEA blob …');
+  const blobResult = spawnSync(
+    'node', ['--experimental-sea-config', 'sea-config.json'],
+    { cwd: engineRoot, stdio: 'inherit' }
+  );
+  if (blobResult.status !== 0) {
+    console.error('SEA blob generation failed');
+    process.exit(blobResult.status ?? 1);
+  }
+
+  // 2. Download Windows node.exe
+  const nodeZipUrl = `https://nodejs.org/dist/v${nodeVersion}/node-v${nodeVersion}-win-x64.zip`;
+  console.log(`Downloading ${nodeZipUrl} …`);
+  const dlResult = spawnSync(
+    'curl', ['-sL', '-o', nodeZipPath, nodeZipUrl],
+    { stdio: 'inherit' }
+  );
+  if (dlResult.status !== 0) {
+    console.error('Failed to download node.exe');
+    process.exit(dlResult.status ?? 1);
+  }
+
+  // 3. Extract node.exe from the zip
+  fs.mkdirSync(nodeExtractDir, { recursive: true });
+  const unzipResult = spawnSync(
+    'unzip', ['-o', nodeZipPath, `node-v${nodeVersion}-win-x64/node.exe`, '-d', nodeExtractDir],
+    { stdio: 'inherit' }
+  );
+  if (unzipResult.status !== 0) {
+    console.error('Failed to extract node.exe');
+    process.exit(unzipResult.status ?? 1);
+  }
+  const nodeExePath = path.join(nodeExtractDir, `node-v${nodeVersion}-win-x64`, 'node.exe');
+
+  // 4. Copy node.exe → event-horizon.exe
+  fs.copyFileSync(nodeExePath, tmpExe);
+  fs.rmSync(nodeZipPath, { force: true });
+  fs.rmSync(nodeExtractDir, { recursive: true, force: true });
+
+  // 5. Inject SEA blob with postject
+  console.log('Injecting SEA blob …');
+  const injectResult = spawnSync(
+    'npx', [
+      'postject', tmpExe,
+      'NODE_SEA_BLOB', blobPath,
+      '--sentinel-fuse', 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2',
+      '--overwrite',
+    ],
+    { cwd: engineRoot, stdio: 'inherit', shell: true }
+  );
+  if (injectResult.status !== 0) {
+    console.error('postject injection failed');
+    process.exit(injectResult.status ?? 1);
+  }
+
+  // 6. Patch PE subsystem (CUI → GUI) to suppress the console window
+  const patchResult = spawnSync('node', [path.join(__dirname, 'patch-pe.js'), tmpExe], { stdio: 'inherit' });
   if (patchResult.status !== 0) process.exit(patchResult.status ?? 1);
 
-  const exeName = `event-horizon-win-${version}.exe`;
-  const exeDest = path.join(releasesDir, exeName);
-  fs.renameSync(`${tmpBase}.exe`, exeDest);
-
+  // 7. Zip
   const zipName = `event-horizon-win-${version}.zip`;
   const zipPath = path.join(releasesDir, zipName);
-  execFileSync('zip', ['-j', zipPath, exeDest], { stdio: 'inherit' });
-  fs.rmSync(exeDest, { force: true });
+  execFileSync('zip', ['-j', zipPath, tmpExe], { stdio: 'inherit' });
+  fs.rmSync(tmpExe, { force: true });
+  fs.rmSync(blobPath, { force: true });
 
   console.log(`Win artifact → releases/${zipName}`);
   return zipPath;

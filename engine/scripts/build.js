@@ -59,6 +59,8 @@ const sharedConfig = {
   external: [
     // chokidar uses native bindings; keep it external so pkg can handle it
     'fsevents',
+    // node:sea is only available at runtime inside a SEA binary — never bundle it
+    'node:sea',
   ],
 };
 
@@ -121,6 +123,72 @@ async function build() {
   }
 
   console.log('Build complete → engine/dist/');
+
+  // ── SEA manifest + config ──────────────────────────────────────────────────
+  // Scan every staged asset so the Windows SEA build can embed them all.
+  // The manifest lists the asset keys; sea-config.json maps each key to its
+  // on-disk path (relative to engineRoot, where the command is run from).
+
+  const seaAssetDirs = [
+    path.join(outDir, 'portal', 'dist'),
+    path.join(outDir, '.docs', 'skills'),
+    path.join(outDir, '.docs', 'event-horizon'),
+    path.join(outDir, '.flux', 'skills'),
+    path.join(outDir, 'traybin'),
+  ];
+
+  async function getAllFiles(dir) {
+    const entries = await fsp.readdir(dir, { withFileTypes: true });
+    const files = [];
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) files.push(...await getAllFiles(full));
+      else files.push(full);
+    }
+    return files;
+  }
+
+  const seaAssets = {};    // sea-config.json assets section
+  const manifestKeys = []; // runtime manifest
+
+  for (const dir of seaAssetDirs) {
+    if (!fs.existsSync(dir)) continue;
+    const files = await getAllFiles(dir);
+    for (const file of files) {
+      // key: relative to outDir, forward slashes (e.g. "portal/dist/index.html")
+      const key = path.relative(outDir, file).replace(/\\/g, '/');
+      // path in sea-config: relative to engineRoot, forward slashes
+      seaAssets[key] = path.relative(engineRoot, file).replace(/\\/g, '/');
+      manifestKeys.push(key);
+    }
+  }
+
+  // Include mcp-server.js so the SEA binary can start in --mcp mode.
+  // The dynamic import('./mcp-server.js') in index.ts becomes require('./mcp-server.js')
+  // in the esbuild CJS output and resolves from disk — not from the SEA blob.  We
+  // extract it to tmpdir at startup so that require() path exists at runtime.
+  const mcpServerDist = path.join(outDir, 'mcp-server.js');
+  if (fs.existsSync(mcpServerDist)) {
+    const mcpKey = 'mcp-server.js';
+    seaAssets[mcpKey] = path.relative(engineRoot, mcpServerDist).replace(/\\/g, '/');
+    manifestKeys.push(mcpKey);
+  }
+
+  const pkg = JSON.parse(fs.readFileSync(path.join(engineRoot, 'package.json'), 'utf-8'));
+  const manifest = { version: pkg.version, keys: manifestKeys };
+  const manifestPath = path.join(outDir, 'sea-manifest.json');
+  await fsp.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+  seaAssets['manifest'] = path.relative(engineRoot, manifestPath).replace(/\\/g, '/');
+
+  const seaConfig = {
+    main: path.relative(engineRoot, path.join(outDir, 'index.js')).replace(/\\/g, '/'),
+    output: path.relative(engineRoot, path.join(outDir, 'sea-prep.blob')).replace(/\\/g, '/'),
+    disableExperimentalSEAWarning: true,
+    useCodeCache: false,
+    assets: seaAssets,
+  };
+  await fsp.writeFile(path.join(engineRoot, 'sea-config.json'), JSON.stringify(seaConfig, null, 2));
+  console.log(`SEA config written → engine/sea-config.json (${manifestKeys.length} assets)`);
 }
 
 build().catch((err) => {

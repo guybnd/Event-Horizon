@@ -8,6 +8,8 @@ This page is the quick orientation guide for where behavior lives today — file
 
 ## Product surfaces
 
+-   `engine/src/packaged-mode.ts` is the **land-here-first** module for packaged-binary detection. Exports `isPkg` (true in `@yao-pkg/pkg` bundles), `isSea` (true in Node.js Single Executable Application mode), and `isPackaged` (either). In SEA mode, `ensureSeaAssetsExtracted()` reads the embedded asset manifest and writes all files (portal, skills, docs, tray binary, mcp-server.js) to a versioned directory under `os.tmpdir()` on first run; subsequent runs hit a `.extracted` marker and skip the copy. All other modules that need to distinguish "running as a binary" import from here rather than poking `process.pkg` directly.
+
 -   `engine/src/index.ts` owns the main task, docs, and config API plus the repo watchers that keep the UI in sync with `.flux/` and `.docs/`.
     
 -   `engine/src/workflow-installer.ts` owns workflow asset installation into a target repository.

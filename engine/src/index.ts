@@ -24,6 +24,7 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 import { requireWorkspace } from './middleware.js';
 import { workspaceRoot, loadAppSettings, getCliWorkspace, resolvePortalDist, autoRegisterWorkspace } from './workspace.js';
+import { isPkg, isSea, isPackaged, ensureSeaAssetsExtracted, getSeaAsset } from './packaged-mode.js';
 import { migrateFromLegacy, getBootStatus } from './global-settings.js';
 import { activateWorkspace } from './task-store.js';
 import { stopAllCliSessions, setAutoRestartCallback } from './session-store.js';
@@ -126,23 +127,12 @@ app.get('/api/update-check', (_req, res) => {
   }
 });
 
-// ─── Static portal serving ───────────────────────────────────────────────────
-
-const PORTAL_DIST = resolvePortalDist();
-const PORTAL_DIST_EXISTS = existsSync(PORTAL_DIST);
-
-if (PORTAL_DIST_EXISTS) {
-  app.use(express.static(PORTAL_DIST));
-  app.get(/^(?!\/api\/).*/, (_req, res) => {
-    res.sendFile(path.join(PORTAL_DIST, 'index.html'));
-  });
-}
+// ─── Static portal serving — registered inside startServer() after SEA extraction ─
 
 // ─── App config (port) ───────────────────────────────────────────────────────
 
 async function readPortConfig(): Promise<number> {
-  const isPkg = (process as any).pkg !== undefined;
-  if (!isPkg) return parseInt(process.env.PORT || '3067', 10);
+  if (!isPackaged) return parseInt(process.env.PORT || '3067', 10);
 
   const cfgPath = path.join(path.dirname(process.execPath), 'event-horizon.config.json');
   try {
@@ -178,7 +168,6 @@ const TRAY_BINARIES: Partial<Record<NodeJS.Platform, string>> = {
 };
 
 async function initTray(port: number): Promise<void> {
-  const isPkg = (process as any).pkg !== undefined;
   const binaryName = TRAY_BINARIES[process.platform];
   if (!binaryName) return;
 
@@ -189,6 +178,13 @@ async function initTray(port: number): Promise<void> {
     const tmpPath = path.join(os.tmpdir(), `eh-tray-${binaryName}`);
     if (!existsSync(tmpPath)) {
       const data = await fs.readFile(embeddedPath);
+      await fs.writeFile(tmpPath, data, { mode: 0o755 });
+    }
+    binaryPath = tmpPath;
+  } else if (isSea) {
+    const tmpPath = path.join(os.tmpdir(), `eh-tray-${binaryName}`);
+    if (!existsSync(tmpPath)) {
+      const data = getSeaAsset(`traybin/${binaryName}`);
       await fs.writeFile(tmpPath, data, { mode: 0o755 });
     }
     binaryPath = tmpPath;
@@ -258,14 +254,31 @@ async function initTray(port: number): Promise<void> {
 // ─── Server startup ───────────────────────────────────────────────────────────
 
 async function startServer() {
+  // In SEA mode, extract embedded assets to tmpdir before serving anything.
+  if (isSea) {
+    const extractDir = await ensureSeaAssetsExtracted();
+    const portalDist = path.join(extractDir, 'portal', 'dist');
+    if (existsSync(portalDist)) {
+      app.use(express.static(portalDist));
+      app.get(/^(?!\/api\/).*/, (_req, res) => {
+        res.sendFile(path.join(portalDist, 'index.html'));
+      });
+    }
+  } else {
+    const portalDist = resolvePortalDist();
+    if (existsSync(portalDist)) {
+      app.use(express.static(portalDist));
+      app.get(/^(?!\/api\/).*/, (_req, res) => {
+        res.sendFile(path.join(portalDist, 'index.html'));
+      });
+    }
+  }
+
   const PORT = await readPortConfig();
-  const isPkg = (process as any).pkg !== undefined;
 
   app.listen(PORT, async () => {
     console.log(`Event Horizon Engine running on port ${PORT}`);
-    if (PORTAL_DIST_EXISTS) {
-      console.log(`Portal:   http://localhost:${PORT}`);
-    }
+    console.log(`Portal:   http://localhost:${PORT}`);
 
     await migrateFromLegacy();
 
@@ -283,7 +296,7 @@ async function startServer() {
       console.log('No workspace configured. Open the portal to select your project folder.');
     }
 
-    if (isPkg) {
+    if (isPackaged) {
       setTimeout(() => openBrowser(`http://localhost:${PORT}`), 800);
       initTray(PORT).catch(e => console.warn('Tray init failed:', e.message));
     }
@@ -320,7 +333,18 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 if (MCP_MODE) {
-  import('./mcp-server.js').then(({ startMcpServer }) => startMcpServer()).catch(err => {
+  // In SEA mode the dynamic require('./mcp-server.js') would look for a file on disk
+  // that doesn't exist.  Extract it from the SEA blob first, then load from tmpdir.
+  (async () => {
+    if (isSea) {
+      const extractDir = await ensureSeaAssetsExtracted();
+      const { startMcpServer } = require(path.join(extractDir, 'mcp-server.js')) as typeof import('./mcp-server.js');
+      startMcpServer();
+    } else {
+      const { startMcpServer } = await import('./mcp-server.js');
+      startMcpServer();
+    }
+  })().catch(err => {
     console.error('MCP server failed:', err);
     process.exit(1);
   });

@@ -1,6 +1,6 @@
 {
   "name": "engine",
-  "version": "0.27.0",
+  "version": "0.27.1",
   "description": "",
   "main": "dist/index.js",
   "bin": "dist/index.js",
@@ -41,9 +41,7 @@
       "dist/traybin/**/*"
     ],
     "targets": [
-      "node18-win-x64",
-      "node18-macos-x64",
-      "node18-linux-x64"
+      "node22-macos-arm64"
     ],
     "outputPath": "dist"
   },
@@ -53,6 +51,7 @@
     "@types/node": "^25.6.0",
     "@yao-pkg/pkg": "^6.19.0",
     "esbuild": "^0.27.7",
+    "postject": "1.0.0-alpha.6",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.6"

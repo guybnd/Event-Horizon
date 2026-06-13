@@ -5,6 +5,7 @@ import os from 'os';
 import { execFile } from 'child_process';
 import { workspaceRoot, saveAppSettings, autoRegisterWorkspace } from '../workspace.js';
 import { activateWorkspace } from '../task-store.js';
+import { isPackaged } from '../packaged-mode.js';
 
 const router = express.Router();
 
@@ -86,9 +87,8 @@ router.get('/health', (_req, res) => {
 });
 
 export function handlePathInfo(_req: express.Request, res: express.Response) {
-  const isPkg = (process as any).pkg !== undefined;
-  const binaryDir = isPkg ? path.dirname(process.execPath) : null;
-  res.json({ binaryDir, isPkg, platform: process.platform });
+  const binaryDir = isPackaged ? path.dirname(process.execPath) : null;
+  res.json({ binaryDir, isPkg: isPackaged, platform: process.platform });
 }
 
 export async function handlePathSetup(req: express.Request, res: express.Response) {
@@ -97,8 +97,7 @@ export async function handlePathSetup(req: express.Request, res: express.Respons
     return res.status(400).json({ error: 'mode must be "auto" or "instructional"' });
   }
 
-  const isPkg = (process as any).pkg !== undefined;
-  if (!isPkg) {
+  if (!isPackaged) {
     return res.json({ ok: true, snippet: null, note: 'npm-global — already in PATH' });
   }
 
