@@ -22,10 +22,24 @@ export const isPackaged: boolean = isPkg || isSea;
 
 let _seaExtractDir: string | null = null;
 
-/** Returns the extracted-asset directory.  Throws if called before extraction. */
+/**
+ * Returns the extracted-asset directory.
+ *
+ * mcp-server.js is a separate esbuild bundle and therefore carries its own
+ * instance of this module — its `_seaExtractDir` is independent of the one in
+ * index.js.  In SEA mode the path is deterministic (`tmpdir/event-horizon-<v>`)
+ * and index.js always runs ensureSeaAssetsExtracted() (which writes the files to
+ * disk) before loading mcp-server, so when this module's own singleton is unset
+ * we can safely re-derive the path from the embedded manifest.
+ */
 export function getSeaExtractDir(): string {
-  if (!_seaExtractDir) throw new Error('SEA assets not yet extracted — call ensureSeaAssetsExtracted() first');
-  return _seaExtractDir;
+  if (_seaExtractDir) return _seaExtractDir;
+  if (isSea) {
+    const manifest: { version: string } = JSON.parse(Buffer.from(getSeaAsset('manifest')).toString('utf8'));
+    _seaExtractDir = path.join(os.tmpdir(), `event-horizon-${manifest.version}`);
+    return _seaExtractDir;
+  }
+  throw new Error('SEA assets not yet extracted — call ensureSeaAssetsExtracted() first');
 }
 
 /** Extracts all SEA-embedded assets to a versioned tmpdir.  Idempotent. */

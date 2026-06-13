@@ -333,12 +333,18 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 if (MCP_MODE) {
-  // In SEA mode the dynamic require('./mcp-server.js') would look for a file on disk
-  // that doesn't exist.  Extract it from the SEA blob first, then load from tmpdir.
+  // mcp-server.js is loaded lazily so its module-level code (and the MCP SDK)
+  // never runs in normal server mode.  In SEA mode it's embedded in the binary
+  // and extracted to tmpdir on first run; we then load it from disk.  The SEA
+  // global require() is Node's embedderRequire, which only resolves built-in
+  // modules — it CANNOT load a file path.  createRequire() gives us a real
+  // filesystem-capable require rooted at the extract dir.
   (async () => {
     if (isSea) {
       const extractDir = await ensureSeaAssetsExtracted();
-      const { startMcpServer } = require(path.join(extractDir, 'mcp-server.js')) as typeof import('./mcp-server.js');
+      const { createRequire } = await import('node:module');
+      const seaRequire = createRequire(path.join(extractDir, 'mcp-server.js'));
+      const { startMcpServer } = seaRequire(path.join(extractDir, 'mcp-server.js')) as typeof import('./mcp-server.js');
       startMcpServer();
     } else {
       const { startMcpServer } = await import('./mcp-server.js');
