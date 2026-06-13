@@ -17,6 +17,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const engineRoot = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(engineRoot, '..');
 const outDir = path.join(engineRoot, 'dist');
+
+// Engine version — inlined into the bundle via esbuild `define` so the runtime
+// never has to read package.json from disk (which doesn't exist next to a SEA
+// binary). Read once here so both the bundle and the SEA manifest agree.
+const appVersion = JSON.parse(fs.readFileSync(path.join(engineRoot, 'package.json'), 'utf-8')).version;
 const portalSrc = path.join(repoRoot, 'portal', 'dist');
 const portalDest = path.join(outDir, 'portal', 'dist');
 
@@ -62,6 +67,10 @@ const sharedConfig = {
     // node:sea is only available at runtime inside a SEA binary — never bundle it
     'node:sea',
   ],
+  // Inline the version so getLocalVersion() works regardless of packaging mode.
+  define: {
+    __EH_VERSION__: JSON.stringify(appVersion),
+  },
 };
 
 async function build() {
@@ -174,8 +183,7 @@ async function build() {
     manifestKeys.push(mcpKey);
   }
 
-  const pkg = JSON.parse(fs.readFileSync(path.join(engineRoot, 'package.json'), 'utf-8'));
-  const manifest = { version: pkg.version, keys: manifestKeys };
+  const manifest = { version: appVersion, keys: manifestKeys };
   const manifestPath = path.join(outDir, 'sea-manifest.json');
   await fsp.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
   seaAssets['manifest'] = path.relative(engineRoot, manifestPath).replace(/\\/g, '/');

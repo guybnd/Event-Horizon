@@ -19,7 +19,15 @@ export interface UpdateInfo {
 
 let cachedResult: UpdateInfo | null = null;
 
+// Inlined at build time by esbuild's `define` (see scripts/build.js). Undefined
+// under tsx/dev where the bundle isn't built, so we fall back to package.json.
+declare const __EH_VERSION__: string | undefined;
+
 export function getLocalVersion(): string {
+  // Bundled builds (SEA / pkg): use the inlined version — no disk read, works
+  // even when no package.json sits next to the binary.
+  if (typeof __EH_VERSION__ === 'string' && __EH_VERSION__) return __EH_VERSION__;
+  // Dev (tsx): read from package.json on disk.
   try {
     const pkgPath = resolve(__dir, '..', 'package.json');
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
