@@ -35,7 +35,7 @@ const PHASES: { key: WorkflowPhase; label: string }[] = [
 ];
 
 type Pattern = 'relay' | 'scatter' | 'supervisor';
-type CliTarget = 'claude' | 'gemini' | 'copilot';
+type CliTarget = 'claude' | 'gemini' | 'copilot' | 'all';
 
 const PATTERNS: { key: Pattern; label: string; description: string; icon: typeof GitBranch }[] = [
   { key: 'relay', label: 'Relay', description: 'Sequential pipeline A → B → C', icon: GitBranch },
@@ -45,20 +45,23 @@ const PATTERNS: { key: Pattern; label: string; description: string; icon: typeof
 
 const CLI_PATTERN_SUPPORT: Record<CliTarget, Pattern[]> = {
   claude: ['relay', 'scatter', 'supervisor'],
-  gemini: ['relay', 'scatter'],
+  gemini: ['relay', 'scatter', 'supervisor'],
   copilot: ['relay', 'scatter'],
+  all: ['relay', 'scatter', 'supervisor'],
 };
 
 const CLI_COLORS: Record<CliTarget, string> = {
   claude: 'bg-orange-500/12 text-orange-300 ring-orange-500/25',
   gemini: 'bg-blue-500/12 text-blue-300 ring-blue-500/25',
   copilot: 'bg-emerald-500/12 text-emerald-300 ring-emerald-500/25',
+  all: 'bg-purple-500/12 text-purple-300 ring-purple-500/25',
 };
 
 const CLI_SEGMENT_ACTIVE: Record<CliTarget, string> = {
   claude: 'bg-orange-500/28 text-orange-100 ring-orange-300/45',
   gemini: 'bg-blue-500/28 text-blue-100 ring-blue-300/45',
   copilot: 'bg-emerald-500/28 text-emerald-100 ring-emerald-300/45',
+  all: 'bg-purple-500/28 text-purple-100 ring-purple-300/45',
 };
 
 const PHASE_DOT: Record<WorkflowPhase, string> = {
@@ -1061,7 +1064,7 @@ export function WorkflowBuilder() {
                     {PHASES.find(p => p.key === activePhase)?.label}
                   </div>
                   <div className="flex gap-0.5 p-0.5 rounded-lg bg-gray-100/60 dark:bg-white/[0.04] ring-1 ring-black/[0.03] dark:ring-white/[0.05] shrink-0">
-                    {(['claude', 'gemini', 'copilot'] as CliTarget[]).map(cli => (
+                    {(['claude', 'gemini', 'copilot', 'all'] as CliTarget[]).map(cli => (
                       <button key={cli} onClick={() => setTemplateCliTarget(cli)} className={`wb-cli-pill px-2 py-1 rounded-md text-[9px] font-bold uppercase transition-all duration-200 ${templateCliTarget === cli ? CLI_SEGMENT_ACTIVE[cli] + ' ring-1' : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300'}`}>
                         {cli}
                       </button>

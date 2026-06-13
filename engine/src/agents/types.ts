@@ -20,7 +20,7 @@ export interface CliCapabilities {
 
 export const CLI_CAPABILITIES: Record<CliFramework, CliCapabilities> = {
   claude: { resume: true, background: true, supervisor: true, scatter: true, toolGating: true, structuredOutput: true },
-  gemini: { resume: false, background: false, supervisor: false, scatter: true, toolGating: true, structuredOutput: false },
+  gemini: { resume: true, background: true, supervisor: true, scatter: true, toolGating: true, structuredOutput: true },
   copilot: { resume: true, background: false, supervisor: false, scatter: true, toolGating: true, structuredOutput: false },
 };
 

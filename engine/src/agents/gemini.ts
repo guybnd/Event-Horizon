@@ -4,10 +4,12 @@ import * as fs from 'fs';
 import { configCache } from '../config.js';
 import { buildActivityEntry, buildCommentEntry, buildAgentMessageEntry, buildAgentSessionEntry, appendSessionProgress, closeAgentSession, type AgentSessionEntry } from '../history.js';
 import { updateTaskWithHistory, updateAgentSession, tasksCache, estimateCostUSD } from '../task-store.js';
-import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal, checkAutoRestart } from '../session-store.js';
+import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
 import { getModulePromptFragments } from '../modules.js';
+import { buildMemberScopeArgs } from '../group.js';
+import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
 
 function checkBinaryInstalled(binaryName: string): void {
@@ -27,6 +29,7 @@ function cleanChildEnv(): NodeJS.ProcessEnv {
   }
   // Do NOT set NODE_OPTIONS to empty string — pkg binaries may still parse it.
   // Fully removing it from the environment is the safest approach.
+  env.EVENT_HORIZON_FRAMEWORK = 'gemini';
   return env;
 }
 
@@ -186,6 +189,17 @@ export function buildInitialPrompt(task: any, appendPrompt: string, opts?: { pha
   // Node's spawn rejects strings containing null bytes; strip them to prevent
   // ticket content (e.g. bad escape sequences) from breaking the spawn call.
   return lines.join('\n').replace(/\0/g, '');
+}
+
+export function buildGeminiScopeArgs(workspaceRoot: string): string[] {
+  const scopeArgs = [...buildMemberScopeArgs(), ...buildGroupDocsScopeArg(workspaceRoot)];
+  const geminiScopeArgs: string[] = [];
+  for (let i = 0; i < scopeArgs.length; i += 2) {
+    if (scopeArgs[i] === '--add-dir' && scopeArgs[i + 1]) {
+      geminiScopeArgs.push('--include-directories', scopeArgs[i + 1]);
+    }
+  }
+  return geminiScopeArgs;
 }
 
 export function attachStdoutProcessing(
@@ -451,9 +465,36 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
 
   const geminiIntegration = (configCache as any).integrations?.geminiCli;
   const groomingStatuses = [(configCache as any).requireInputStatus || 'Require Input', 'Grooming'];
-  const selectedModel = geminiIntegration && framework === 'gemini'
+  const selectedModelRaw = geminiIntegration && framework === 'gemini'
     ? (groomingStatuses.includes(task.status) ? geminiIntegration.groomingModel : geminiIntegration.implementationModel)
     : null;
+
+  // Validate the model name against known Gemini CLI models
+  const KNOWN_GEMINI_MODELS = [
+    'gemini-3-pro-preview',
+    'gemini-3.1-pro-preview',
+    'gemini-3.1-pro-preview-customtools',
+    'gemini-3-flash-preview',
+    'gemini-3.1-flash-lite-preview',
+    'gemini-2.5-pro',
+    'gemini-2.5-flash',
+    'gemini-2.5-flash-lite',
+    'gemma-4-31b-it',
+    'gemma-4-26b-a4b-it',
+    'auto',
+    'pro',
+    'flash',
+    'flash-lite'
+  ];
+
+  let selectedModel = selectedModelRaw;
+  if (selectedModel) {
+    const modelLower = selectedModel.toLowerCase().trim();
+    if (!KNOWN_GEMINI_MODELS.some(m => m.toLowerCase() === modelLower)) {
+      console.warn(`[Gemini CLI] Model "${selectedModel}" is unrecognized by Gemini CLI. Falling back to default model resolving to prevent 404 errors.`);
+      selectedModel = null;
+    }
+  }
 
   const taskPhase = groomingStatuses.includes(task.status) ? 'grooming'
     : (task.status === 'In Progress' || task.status === 'Todo') ? 'implementation'
@@ -472,6 +513,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     // for commands that are already trusted/validated by the engine's internal logic
     // or when running in a non-interactive automation context.
     '--skip-trust',
+    ...buildGeminiScopeArgs(workspaceRoot),
   ];
 
   console.log(`[${id}] Args:`, geminiArgs);
@@ -741,6 +783,9 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
       checkSkillStaleness(session.framework).catch(() => {});
     }
 
+    // Notify delegation awaiters (supervisor pattern).
+    notifyDelegationComplete(session);
+
     if (session.groupId) {
       notifyGroupSessionTerminal(session.taskId, session.groupId).catch(() => {});
     }
@@ -795,9 +840,10 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   });
 
   const safeMessage = message.replace(/\0/g, '');
+  const geminiScopeArgs = buildGeminiScopeArgs(workspaceRoot);
   const resumeArgs = session.claudeSessionId
-    ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--screen-reader', '--yolo', '--skip-trust']
-    : ['-p', safeMessage, '--output-format', 'stream-json', '--screen-reader', '--yolo', '--skip-trust'];
+    ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--screen-reader', '--yolo', '--skip-trust', ...geminiScopeArgs]
+    : ['-p', safeMessage, '--output-format', 'stream-json', '--screen-reader', '--yolo', '--skip-trust', ...geminiScopeArgs];
 
   let replyProc: ReturnType<typeof spawn>;
   if (process.platform === 'win32') {

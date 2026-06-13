@@ -297,11 +297,9 @@ describe('session-store', () => {
   });
 
   describe('validatePatternSupport', () => {
-    it('rejects gemini as supervisor lead', () => {
+    it('allows gemini as supervisor lead', () => {
       const err = validatePatternSupport('gemini', 'supervisor', 'lead');
-      expect(err).toBeTruthy();
-      expect(err).toContain('gemini');
-      expect(err).toContain('supervisor');
+      expect(err).toBeNull();
     });
 
     it('allows claude as supervisor lead', () => {

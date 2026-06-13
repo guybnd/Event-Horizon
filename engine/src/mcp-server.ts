@@ -764,11 +764,12 @@ export async function startMcpServer(): Promise<void> {
     async ({ ticketId, personaId, task: delegationTask, effort, timeout }) => {
       try {
         const timeoutMs = timeout ? Math.min(timeout * 1000, 600_000) : 300_000;
+        const framework = process.env.EVENT_HORIZON_FRAMEWORK || 'claude';
         const res = await fetch(`${ENGINE_URL}/api/tasks/${ticketId}/cli-session/delegate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            framework: 'claude',
+            framework,
             personaId,
             task: delegationTask,
             effortOverride: effort || '',
@@ -807,11 +808,12 @@ export async function startMcpServer(): Promise<void> {
       const timeoutMs = timeout ? Math.min(timeout * 1000, 600_000) : 300_000;
       const results = await Promise.allSettled(
         delegations.map(async (d) => {
+          const framework = process.env.EVENT_HORIZON_FRAMEWORK || 'claude';
           const res = await fetch(`${ENGINE_URL}/api/tasks/${ticketId}/cli-session/delegate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              framework: 'claude',
+              framework,
               personaId: d.personaId,
               task: d.task,
               effortOverride: d.effort || '',

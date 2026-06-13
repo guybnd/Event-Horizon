@@ -30,6 +30,7 @@ function killPort(port) {
 }
 
 killPort(5167);
+killPort(3067);
 
 const engine = spawn(npm, ['run', 'dev', '-w', 'engine'], {
   cwd: root,

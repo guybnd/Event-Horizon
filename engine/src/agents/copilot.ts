@@ -26,6 +26,7 @@ function cleanChildEnv(): NodeJS.ProcessEnv {
   for (const key of Object.keys(env)) {
     if (key.toUpperCase() === 'NODE_OPTIONS') delete env[key];
   }
+  env.EVENT_HORIZON_FRAMEWORK = 'copilot';
   return env;
 }
 

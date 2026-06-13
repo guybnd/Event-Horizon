@@ -42,7 +42,7 @@ router.post('/', async (req, res) => {
     const workflow: WorkflowTemplate = {
       id: crypto.randomUUID(),
       name: req.body.name || 'Untitled Workflow',
-      cliTarget: req.body.cliTarget || 'claude',
+      cliTarget: req.body.cliTarget || 'all',
       phases: req.body.phases || {},
       createdAt: now,
       updatedAt: now,

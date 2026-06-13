@@ -1,6 +1,7 @@
 {
   "mcpServers": {
     "event-horizon": {
+      "type": "stdio",
       "command": "npx",
       "args": [
         "tsx",

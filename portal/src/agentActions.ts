@@ -130,7 +130,7 @@ export async function launchPhaseDefault(opts: {
   const personaId = members[0];
   if (!personaId) return null;
 
-  if (cfg?.pattern === 'supervisor' && framework === 'claude') {
+  if (cfg?.pattern === 'supervisor' && (framework === 'claude' || framework === 'gemini')) {
     const combiner = phaseCombiner(phase, 'handoff');
     const lead = { role: personaId, label: combiner?.label || personaId, personaId };
     const result = await launchOrchestration({

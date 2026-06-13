@@ -28,6 +28,7 @@ function cleanChildEnv(): NodeJS.ProcessEnv {
     if (key.toUpperCase() === 'NODE_OPTIONS') delete env[key];
   }
   env.NODE_OPTIONS = '';
+  env.EVENT_HORIZON_FRAMEWORK = 'claude';
   return env;
 }
 
