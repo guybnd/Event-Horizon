@@ -28,6 +28,7 @@ import { isPkg, isSea, isPackaged, ensureSeaAssetsExtracted, getSeaAsset } from 
 import { migrateFromLegacy, getBootStatus } from './global-settings.js';
 import { activateWorkspace } from './task-store.js';
 import { stopAllCliSessions, setAutoRestartCallback } from './session-store.js';
+import { shutdownSharedServers } from './shared-mcp-server.js';
 import { broadcastEvent } from './events.js';
 
 import tasksRouter, { bulkRenameHandler } from './routes/tasks.js';
@@ -100,6 +101,7 @@ app.get('/api/health', (_req, res) => {
 
 app.post('/api/shutdown', (_req, res) => {
   stopAllCliSessions('shutdown');
+  shutdownSharedServers();
   res.json({ ok: true });
   setTimeout(() => process.exit(0), 150);
 });
@@ -332,6 +334,7 @@ async function startServer() {
 
 async function gracefulShutdown(signal: string) {
   stopAllCliSessions(signal);
+  shutdownSharedServers();
   await new Promise(r => setTimeout(r, 400));
   process.exit(0);
 }

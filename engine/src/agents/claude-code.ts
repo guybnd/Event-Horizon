@@ -9,8 +9,9 @@ import { broadcastEvent } from '../events.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
 import { buildMemberScopeArgs } from '../group.js';
 import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
-import { getModulePromptFragments, getModuleMcpServers } from '../modules.js';
+import { getModulePromptFragments, getModuleMcpServers, getActiveModules } from '../modules.js';
 import { getProbeStatus } from '../module-probe.js';
+import { getSharedServerUrl, isSharedHttpPlatformProven } from '../shared-mcp-server.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
 
 function checkBinaryInstalled(binaryName: string): void {
@@ -33,14 +34,25 @@ function cleanChildEnv(): NodeJS.ProcessEnv {
 }
 
 // Build --mcp-config JSON string for active module MCP servers.
-// Skips modules whose probe status is 'error' to avoid cascading failures.
+// Prefers an engine-managed shared HTTP server when one is ready (so all sessions
+// reuse one language-server process); otherwise falls back to a per-session stdio
+// spawn. Skips modules whose probe status is 'error' to avoid cascading failures.
 function buildModuleMcpConfigArgs(phase?: string, tags?: string[]): string[] {
-  const servers = getModuleMcpServers(phase, tags);
+  const stdioServers = getModuleMcpServers(phase, tags);
   const filtered: Record<string, any> = {};
-  for (const [id, server] of Object.entries(servers)) {
-    const probe = getProbeStatus(id);
-    if (probe.status !== 'error') {
-      filtered[id] = { type: 'stdio', ...server };
+  for (const m of getActiveModules(phase, tags)) {
+    // Shared HTTP path: one server for all sessions, on proven platforms.
+    if (m.sharedHttp && isSharedHttpPlatformProven()) {
+      const url = getSharedServerUrl(m.id);
+      if (url) filtered[m.id] = { type: 'http', url };
+      // Not ready yet (still starting / failed) → omit; don't stdio-fallback on a
+      // proven platform, which would defeat the point and spawn N stacks.
+      continue;
+    }
+    // Stdio path (no sharedHttp, or unproven platform): keep prior behavior.
+    const server = stdioServers[m.id];
+    if (server && getProbeStatus(m.id).status !== 'error') {
+      filtered[m.id] = { type: 'stdio', ...server };
     }
   }
   if (Object.keys(filtered).length === 0) return [];

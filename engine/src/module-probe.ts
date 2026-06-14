@@ -1,6 +1,8 @@
 import { spawn } from 'child_process';
 import { broadcastEvent } from './events.js';
 import type { ModuleDeclaration } from './modules.js';
+import { ensureSharedServer, isSharedHttpPlatformProven } from './shared-mcp-server.js';
+import { workspaceRoot } from './workspace.js';
 
 export type ProbeStatus = 'ok' | 'error' | 'checking' | 'unknown';
 
@@ -26,8 +28,31 @@ function broadcast(id: string, result: ProbeResult) {
 }
 
 export async function probeModule(m: ModuleDeclaration): Promise<ProbeResult> {
-  if (!m.mcpServer) {
+  if (!m.mcpServer && !m.sharedHttp) {
     const result: ProbeResult = { status: 'unknown', message: 'No MCP server defined', checkedAt: new Date().toISOString() };
+    probeStatuses.set(m.id, result);
+    return result;
+  }
+
+  // Shared-HTTP modules on a proven platform: start (or reuse) the single shared
+  // server and report its health, instead of spawning a throwaway stdio stack.
+  if (m.sharedHttp && isSharedHttpPlatformProven()) {
+    broadcast(m.id, { status: 'checking', message: 'Starting shared HTTP server…', checkedAt: new Date().toISOString() });
+    if (!workspaceRoot) {
+      const result: ProbeResult = { status: 'error', message: 'No active workspace — cannot start shared server', checkedAt: new Date().toISOString() };
+      broadcast(m.id, result);
+      return result;
+    }
+    const srv = await ensureSharedServer(m, workspaceRoot);
+    const result: ProbeResult = srv
+      ? { status: 'ok', message: `Shared HTTP server ready at ${srv.url}`, checkedAt: new Date().toISOString() }
+      : { status: 'error', message: 'Shared HTTP server failed to start', checkedAt: new Date().toISOString() };
+    broadcast(m.id, result);
+    return result;
+  }
+
+  if (!m.mcpServer) {
+    const result: ProbeResult = { status: 'unknown', message: 'No stdio MCP server defined', checkedAt: new Date().toISOString() };
     probeStatuses.set(m.id, result);
     return result;
   }
@@ -86,6 +111,6 @@ export async function probeModule(m: ModuleDeclaration): Promise<ProbeResult> {
 }
 
 export async function probeAllEnabled(modules: ModuleDeclaration[]): Promise<void> {
-  const enabled = modules.filter(m => m.enabled && m.mcpServer);
+  const enabled = modules.filter(m => m.enabled && (m.mcpServer || m.sharedHttp));
   await Promise.all(enabled.map(m => probeModule(m).catch(() => {})));
 }

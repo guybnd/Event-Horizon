@@ -226,6 +226,25 @@ describe('BUILTIN_MODULES — serena entry', () => {
     // phases undefined means the module is not restricted to specific phases
     expect(serena!.phases).toBeUndefined();
   });
+
+  it('serena promptFragment tells agents to call initial_instructions and prefer symbol tools', () => {
+    const frag = serena!.promptFragment!;
+    expect(frag).toContain('initial_instructions');
+    expect(frag).toMatch(/find_symbol|get_symbols_overview/);
+    expect(frag.length).toBeLessThanOrEqual(2000);
+  });
+
+  it('serena declares a sharedHttp launch with PROJECT and PORT placeholders', () => {
+    expect(serena!.sharedHttp).toBeDefined();
+    expect(serena!.sharedHttp!.command).toBe('serena');
+    const args = serena!.sharedHttp!.args;
+    expect(args).toContain('--transport');
+    expect(args).toContain('streamable-http');
+    expect(args).toContain('${PROJECT}');
+    expect(args).toContain('${PORT}');
+    // Must still keep an stdio mcpServer for the fallback path.
+    expect(serena!.mcpServer).toBeDefined();
+  });
 });
 
 // ── BUILTIN_MODULES: basic-memory shape ──────────────────────────────────────

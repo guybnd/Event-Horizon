@@ -28,17 +28,8 @@
       }
     },
     "serena": {
-      "command": "serena",
-      "args": [
-        "start-mcp-server",
-        "--context",
-        "claude-code",
-        "--project-from-cwd",
-        "--open-web-dashboard",
-        "False",
-        "--enable-gui-log-window",
-        "False"
-      ]
+      "type": "http",
+      "url": "http://127.0.0.1:9122/mcp"
     }
   }
 }

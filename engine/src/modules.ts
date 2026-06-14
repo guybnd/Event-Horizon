@@ -17,6 +17,18 @@ export interface ModuleDeclaration {
     args: string[];
     env?: Record<string, string>;
   };
+  /**
+   * Opt-in: let the EH engine manage ONE shared streamable-http server for this
+   * module (on proven platforms) instead of a per-session stdio spawn, so every
+   * agent session EH launches reuses a single language-server process.
+   * `args` may contain `${PROJECT}` (workspace root) and `${PORT}` (allocated by
+   * the engine) placeholders. When unavailable (unproven platform, server failed
+   * to start), the engine falls back to the stdio `mcpServer` above.
+   */
+  sharedHttp?: {
+    command: string;
+    args: string[];
+  };
   installDocs?: ModuleInstallDocs;
   promptFragment?: string;
   phases?: string[];
@@ -110,12 +122,16 @@ export const BUILTIN_MODULES: ModuleDeclaration[] = [
       command: 'serena',
       args: ['start-mcp-server', '--context', 'claude-code', '--project-from-cwd', '--open-web-dashboard', 'False', '--enable-gui-log-window', 'False'],
     },
+    sharedHttp: {
+      command: 'serena',
+      args: ['start-mcp-server', '--context', 'claude-code', '--project', '${PROJECT}', '--transport', 'streamable-http', '--port', '${PORT}', '--enable-web-dashboard', 'False', '--enable-gui-log-window', 'False'],
+    },
     installDocs: {
       requires: 'uv (Python package manager)',
       command: 'uv tool install -p 3.13 serena-agent@latest --prerelease=allow',
       url: 'https://docs.astral.sh/uv/getting-started/installation/',
     },
-    promptFragment: 'Serena code intelligence tools are available if you need them. Use them when grep or glob won\'t give you a confident answer — e.g. finding all call sites of a function, tracing a symbol through multiple files, or verifying a refactor is safe. Don\'t use them for simple text searches or when you already know where to look.',
+    promptFragment: 'Serena gives you language-server-backed semantic code navigation that is faster and more precise than text search. PREFER it over raw Grep/Glob whenever you work with code symbols. The first time you touch code in a session, call `initial_instructions` once to load Serena\'s usage manual, then use its tools: `get_symbols_overview` (see a file\'s top-level symbols before reading it whole), `find_symbol` (jump to a function/class/method by name instead of grepping), `find_referencing_symbols` (find all call sites before changing a signature), `replace_symbol_body`/`insert_after_symbol`/`insert_before_symbol` (edit a symbol precisely without re-reading the file), and `rename_symbol` (rename across the codebase via the language server). Still use built-in Grep/Read for non-code text (markdown, configs, logs), for string-literal searches, and when you already know the exact file and line.',
   },
   {
     id: 'context7',
