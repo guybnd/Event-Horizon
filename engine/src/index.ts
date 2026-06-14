@@ -16,7 +16,7 @@ if (MCP_MODE) {
 import express from 'express';
 import cors from 'cors';
 import fs from 'fs/promises';
-import { existsSync } from 'fs';
+import { existsSync, appendFileSync } from 'fs';
 import { execFile, spawn } from 'child_process';
 import path from 'path';
 import os from 'os';
@@ -276,7 +276,7 @@ async function startServer() {
 
   const PORT = await readPortConfig();
 
-  app.listen(PORT, async () => {
+  const server = app.listen(PORT, async () => {
     console.log(`Event Horizon Engine running on port ${PORT}`);
     console.log(`Portal:   http://localhost:${PORT}`);
 
@@ -310,6 +310,22 @@ async function startServer() {
       }
     }).catch(() => { ghAuthAvailable = false; });
   });
+
+  // Without this, a listen failure (e.g. another Event Horizon instance already
+  // holding the port) surfaces as an uncaught 'error' event and crashes the
+  // process with a confusing stack. Report it clearly and exit cleanly.
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(
+        `Port ${PORT} is already in use — another Event Horizon instance is ` +
+        `likely running. Close it (or change the port in event-horizon.config.json) and try again.`
+      );
+    } else {
+      console.error('Event Horizon failed to start its HTTP server:', err.message);
+      logCrash('server-listen-error', err);
+    }
+    process.exit(1);
+  });
 }
 
 // ─── Graceful shutdown ────────────────────────────────────────────────────────
@@ -322,14 +338,44 @@ async function gracefulShutdown(signal: string) {
 process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM'); });
 process.on('SIGINT',  () => { void gracefulShutdown('SIGINT'); });
 
+// Crash logging: in packaged mode the process prints to stderr that nobody sees
+// (double-clicked .exe has no attached console), then exits — leaving no trace.
+// Persist every crash to a log file so failures are diagnosable after the fact.
+// Packaged builds write next to the executable; dev builds fall back to cwd.
+function crashLogPath(): string {
+  try {
+    const dir = isPackaged ? path.dirname(process.execPath) : process.cwd();
+    return path.join(dir, 'event-horizon-crash.log');
+  } catch {
+    return path.join(os.tmpdir(), 'event-horizon-crash.log');
+  }
+}
+
+// Append synchronously — this runs inside an uncaughtException handler moments
+// before exit, where async writes may never flush.
+function logCrash(kind: string, detail: unknown): void {
+  try {
+    const ts = new Date().toISOString();
+    const err = detail instanceof Error
+      ? (detail.stack || `${detail.name}: ${detail.message}`)
+      : String(detail);
+    appendFileSync(crashLogPath(), `\n[${ts}] ${kind} (v${getLocalVersion()})\n${err}\n`, 'utf-8');
+  } catch {
+    // Never let crash logging itself throw — we're already on the way down.
+  }
+}
+
 process.on('uncaughtException', (err) => {
   console.error('CRITICAL: Uncaught Exception:', err);
+  console.error(`A crash log was written to: ${crashLogPath()}`);
+  logCrash('uncaughtException', err);
   stopAllCliSessions('uncaught-exception');
   setTimeout(() => process.exit(1), 500);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('CRITICAL: Unhandled Rejection at:', promise, 'reason:', reason);
+  logCrash('unhandledRejection', reason);
 });
 
 if (MCP_MODE) {
