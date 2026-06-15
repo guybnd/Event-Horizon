@@ -10,6 +10,84 @@ Event Horizon stores all state in your repository — tickets, documentation, wo
 
 ---
 
+## Features
+
+### 1. 🤖 A local-first agent board
+
+Send a ticket to an agent straight from its card and watch progress stream back to the ticket in real
+time. There's no cloud service and no account — the engine runs locally and every artifact (tickets,
+docs, workflow rules) is a plain file in your repo. Because each agent gets its own branch **and its
+own git worktree** off to the side, concurrent agents never clobber each other and your working tree
+stays clean.
+
+
+> [](https://github.com/user-attachments/assets/e6b539f4-c082-4f2f-8b8b-2020c8c5c5dd)
+
+
+<!-- VIDEO: "Event Horizon.mp4" (same overview clip, optional second placement). Remove this block if the hero clip above is enough. -->
+
+### 2. 🔀 One ticket → one branch → one PR
+
+Starting a task spins up a dedicated `flux/<id>-<slug>` branch in an isolated worktree. When you're
+done reviewing, `finish` pushes the branch and opens the PR for you — the PR URL is recorded back on
+the ticket as its implementation link. No manual branch juggling, no checkout dance on your main tree.
+
+
+
+> [](https://github.com/user-attachments/assets/66b1a908-5410-458e-8593-7673c5ebd09c)
+
+
+
+### 3. 🙋 Answer the agent inline
+
+When an agent needs a decision it moves the ticket to **Require Input** and posts one focused question
+with proposed defaults. You answer right in the portal — no separate chat window — and the agent picks
+up exactly where it left off.
+
+
+> [](https://github.com/user-attachments/assets/26782532-622e-45ca-b023-023856bdd640)
+
+### 4. 🧩 Phase-aware workflows + a visual workflow editor
+
+Workflows are phase-aware — grooming, implementation, review, and finalize each get their own
+behavior, and you can scope MCP servers per phase (keep a heavy search server out of grooming, for
+example). The built-in workflow editor lets you compose multi-agent patterns (relay, scatter,
+supervisor) and customize the skill prompts for each phase — no config files to hand-edit.
+
+
+> [](https://github.com/user-attachments/assets/b0fd8184-674f-4319-a283-c88347c58fb6)
+
+
+-------
+
+> [](https://github.com/user-attachments/assets/930466b3-7395-4fed-ae5c-0013b23cf26c)
+
+### 5. 📝 Full markdown, docs and tickets synced off your code history
+
+Ticket bodies and project docs are first-class markdown, edited in-product or in any text editor. Turn
+on Git Sync and both move to an orphan `flux-data` branch — versioned, multi-machine, and restored
+automatically on clone, yet completely off your main code history.
+
+
+> [](https://github.com/user-attachments/assets/50a4d5fc-14a3-4f03-841b-4c0f7759af64)
+
+### 6. 🔌 Addon modules + a dedicated MCP for CLI & IDE agents
+
+Agents talk to Event Horizon through an MCP server whose tools appear natively in their tool list —
+works the same whether you drive Claude Code, Gemini, or Copilot from the CLI or from your IDE. Addon
+modules extend the board with extra capabilities (scoped per phase, with live health probes) without
+touching the core.
+
+### 7. ✨ And more
+
+- **Multi-workspace** — manage several projects from one running instance and switch from the header.
+- **Global fuzzy search** — jump to any ticket from anywhere.
+- **In-product docs tree** — browse and edit `.docs/` without leaving the portal.
+- **Schema-validated tickets** — invalid frontmatter surfaces as a visible error, never silent corruption.
+- **Append-only history** — every status change, comment, and agent session is recorded on the ticket.
+
+---
+
 ## Core Principles
 
 - **Filesystem as Database:** Tickets are plain Markdown files with YAML frontmatter in `.flux/`. Version-controlled alongside your code. Editable in any text editor.
@@ -50,19 +128,6 @@ The service runs as a system tray application. Closing the browser does not stop
 
 ---
 
-## Windows Defender false positive
-
-Windows Defender (and some other AV products) may flag `event-horizon-win-*.exe` as `Trojan:Script/Wacatac.C!ml`. **This is a false positive.** The `!ml` suffix means it was flagged by a machine-learning heuristic, not a specific malware signature.
-
-The Windows binary is built using [Node.js Single Executable Applications](https://nodejs.org/api/single-executable-applications.html) — an official Node.js feature that injects your application bundle into the standard `node.exe` binary. Because the resulting exe is **unsigned** (code-signing certificates are expensive), AV models trained on "unsigned exe + embedded JS" patterns can mis-classify it.
-
-**Options:**
-
-- **Submit a false positive report** — fastest fix for an individual machine. Go to [microsoft.com/wdsi/filesubmission](https://www.microsoft.com/en-us/wdsi/filesubmission), upload the exe, and Microsoft typically clears the flag within 1–3 days.
-- **Run from source** — zero AV friction, Node.js required. See [Run from source (Windows)](#run-from-source-windows) below.
-- **Add a Defender exclusion** — Settings → Windows Security → Virus & threat protection → Manage settings → Add or remove exclusions → add the exe path.
-
----
 
 ## Run from source (Windows)
 
@@ -145,9 +210,9 @@ Event Horizon drives an autonomous loop: agents work forward through tickets, su
 | Claude Code | `claude` | `.claude/rules/event-horizon.md` |
 | GitHub Copilot | `github-copilot-cli` | `.github/skills/event-horizon/` |
 | Gemini CLI | `gemini` | `.gemini/skills/event-horizon.md` |
-| Cursor | — | `.cursor/rules/event-horizon.mdc` |
-| Windsurf | — | `.windsurf/rules/event-horizon.md` |
-| Cline | — | `.cline/skills/event-horizon-*.md` |
+| Cursor | WIP | `.cursor/rules/event-horizon.mdc` |
+| Windsurf | WIP | `.windsurf/rules/event-horizon.md` |
+| Cline | WIP | `.cline/skills/event-horizon-*.md` |
 
 Install via **Settings → Agent Integration → Install Agent Workflow**, or:
 
@@ -285,4 +350,17 @@ npx tsx engine/src/patch-ticket.ts FLUX-42 --workspace . --status "Done"
 ```
 
 Works in both in-repo and Git Sync modes.
-<!-- branch-feature smoke test — safe to revert -->
+
+### seed-demo CLI
+
+Regenerate the bundled [`demo/`](demo) showcase workspace (the **Trailhead** board used for the
+showcase recordings):
+
+```bash
+npx tsx engine/src/seed-demo.ts          # writes ./demo/.flux
+npx tsx engine/src/seed-demo.ts --out path/to/dir
+```
+
+It validates every seeded ticket against the engine schema before writing, so the demo board stays
+schema-valid as the format evolves. See [`docs/media/RECORDING.md`](docs/media/RECORDING.md) for how
+the demo board feeds the showcase recordings.
