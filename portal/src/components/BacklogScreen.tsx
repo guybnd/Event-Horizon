@@ -138,6 +138,8 @@ export function BacklogScreen() {
     filterPriority,
     filterTag,
     filterUnreadOnly,
+    filterWorktree,
+    worktreeBranches,
     readComments,
     tasks: liveTasks,
     tasksLoading,
@@ -160,6 +162,8 @@ export function BacklogScreen() {
     filterPriority,
     filterTag,
     filterUnreadOnly,
+    filterWorktree,
+    worktreeBranches,
     readComments,
     requireInputStatus: getRequireInputStatus(config),
   }) : tasks;

@@ -52,10 +52,14 @@ function enrichEntry(entry: { path: string; label?: string }, groups: Map<string
   return info;
 }
 
+async function enrichList(list: { path: string; label?: string }[]): Promise<WorkspaceInfo[]> {
+  const groups = await resolveWorkspaceGroups(list.map((w) => w.path));
+  return list.map((entry) => enrichEntry(entry, groups));
+}
+
 router.get('/', async (_req, res) => {
   const list = await getWorkspacesList();
-  const groups = await resolveWorkspaceGroups(list.map((w) => w.path));
-  res.json(list.map((entry) => enrichEntry(entry, groups)));
+  res.json(await enrichList(list));
 });
 
 router.post('/', async (req, res) => {
@@ -68,7 +72,7 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: `Folder not found: ${resolved}` });
   }
   const list = await addWorkspaceEntry({ path: resolved, label });
-  res.json(list.map(enrichEntry));
+  res.json(await enrichList(list));
 });
 
 router.delete('/:index', async (req, res) => {
@@ -77,7 +81,7 @@ router.delete('/:index', async (req, res) => {
     return res.status(400).json({ error: 'Invalid index' });
   }
   const list = await removeWorkspaceEntry(index);
-  res.json(list.map(enrichEntry));
+  res.json(await enrichList(list));
 });
 
 router.put('/:index', async (req, res) => {
@@ -87,7 +91,7 @@ router.put('/:index', async (req, res) => {
   }
   const { label } = req.body ?? {};
   const list = await updateWorkspaceLabel(index, label || undefined);
-  res.json(list.map(enrichEntry));
+  res.json(await enrichList(list));
 });
 
 router.post('/switch', async (req, res) => {

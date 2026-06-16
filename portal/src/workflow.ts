@@ -24,12 +24,6 @@ export function isTaskAwaitingInput(task: Task): boolean {
   return task.swimlane === 'require-input';
 }
 
-export function isTaskPromptable(task: Task, config?: Config | null): boolean {
-  if (task.swimlane === 'require-input') return true;
-  const readyStatus = getReadyForMergeStatus(config);
-  return task.status === readyStatus;
-}
-
 export function relativeTime(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
   const mins = Math.floor(diff / 60000);

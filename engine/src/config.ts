@@ -46,6 +46,11 @@ export let configCache: any = {
     releaseNotesPath: 'release-notes'
   },
   defaultAgent: 'claude',
+  // FLUX-521: default state of the per-launch "dedicated worktree" choice. Off by
+  // default; a per-launch param (create_branch / POST /:id/branch `worktree`)
+  // overrides it. When on, creating a ticket branch also spins up a git worktree
+  // so the agent runs isolated (FLUX-516).
+  worktreeByDefault: false,
   defaultWorkflowId: '',
   phaseDefaults: {
     grooming: { single: 'builtin-grooming-single', multi: 'builtin-grooming-multi' },

@@ -29,3 +29,9 @@ engine/vitest.config.d.ts.map
 
 # orphan worktree directory (managed by git worktree, not committed to master)
 .flux-store/
+
+# Throwaway file-locking debug scratch at the repo root — keep `git add -A` from
+# sweeping it back in if the experiment is ever re-run (FLUX-508).
+/keep-open.js
+/lock-file.js
+/test-unlink.js

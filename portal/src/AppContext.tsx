@@ -1,10 +1,10 @@
 import { createContext, startTransition, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { ColumnLiveEvent, Config, Task, TaskLiveEvent } from './types';
-import { fetchConfig, fetchTasks, fetchHealth, saveConfig as apiSaveConfig, fetchReadState, saveReadState, fetchWorkspace, fetchParseErrors, fetchNotifications, fetchWorkspaces, switchWorkspace as apiSwitchWorkspace, type ParseError, type Notification, type WorkspaceInfo } from './api';
+import { fetchConfig, fetchTasks, fetchWorktrees, fetchHealth, saveConfig as apiSaveConfig, fetchReadState, saveReadState, fetchWorkspace, fetchParseErrors, fetchNotifications, fetchWorkspaces, switchWorkspace as apiSwitchWorkspace, type ParseError, type Notification, type WorkspaceInfo, type WorktreeInfo } from './api';
 import { getArchiveStatus } from './workflow';
 
-export type AppView = 'board' | 'backlog' | 'docs' | 'settings' | 'releases' | 'workflows';
+export type AppView = 'board' | 'backlog' | 'docs' | 'settings' | 'releases' | 'workflows' | 'changes';
 export type TaskSortOption = 'default' | 'priority' | 'updated' | 'assignee';
 export type AppTheme = 'light' | 'dark' | 'matrix' | 'cyber' | 'midnight';
 
@@ -39,6 +39,7 @@ function applyTheme(theme: AppTheme) {
 const VIEW_PATHS: Record<AppView, string> = {
   board: '/board',
   backlog: '/backlog',
+  changes: '/changes',
   docs: '/docs',
   settings: '/settings',
   releases: '/releases',
@@ -86,6 +87,7 @@ function removeKey<TValue>(record: Record<string, TValue>, key: string) {
 function getViewFromLocation(): AppView {
   const path = window.location.pathname.toLowerCase();
   if (path === '/backlog') return 'backlog';
+  if (path === '/changes') return 'changes';
   if (path === '/docs') return 'docs';
   if (path === '/settings') return 'settings';
   if (path === '/releases') return 'releases';
@@ -108,6 +110,8 @@ function getTaskFiltersFromLocation() {
     filterPriority: params.get('priority') || 'all',
     filterTag: params.get('tag') || 'all',
     filterUnreadOnly: params.get('unread') === '1',
+    // '' = off, 'any' = any worktree, '<branch>' = isolate to that one worktree.
+    filterWorktree: params.get('worktree') || '',
   };
 }
 
@@ -118,6 +122,7 @@ function updateTaskFilterUrl(filters: {
   filterPriority: string;
   filterTag: string;
   filterUnreadOnly: boolean;
+  filterWorktree: string;
 }) {
   const url = new URL(window.location.href);
   const entries: Array<[string, string, string]> = [
@@ -127,6 +132,7 @@ function updateTaskFilterUrl(filters: {
     ['priority', filters.filterPriority, 'all'],
     ['tag', filters.filterTag, 'all'],
     ['unread', filters.filterUnreadOnly ? '1' : '', ''],
+    ['worktree', filters.filterWorktree, ''],
   ];
 
   entries.forEach(([key, value, fallback]) => {
@@ -157,9 +163,14 @@ interface AppState {
   setFilterTag: (value: string) => void;
   filterUnreadOnly: boolean;
   setFilterUnreadOnly: (value: boolean) => void;
+  /** '' = off, 'any' = any worktree, '<branch>' = isolate the board to that one worktree. */
+  filterWorktree: string;
+  setFilterWorktree: (value: string) => void;
   clearTaskFilters: () => void;
   view: AppView;
   setView: (view: AppView) => void;
+  settingsTab: string | null;
+  setSettingsTab: (tab: string | null) => void;
   modalTask: Partial<Task> | null;
   setModalTask: (task: Partial<Task> | null) => void;
   isModalOpen: boolean;
@@ -175,6 +186,14 @@ interface AppState {
   openModalInFullView: boolean;
   tasks: Task[];
   taskById: Map<string, Task>;
+  /** Branches that currently have a live git worktree (FLUX-516) — powers badges + filter. */
+  worktreeBranches: Set<string>;
+  worktrees: WorktreeInfo[];
+  /** Re-fetch the active worktrees immediately (e.g. right after a detach). */
+  refreshWorktrees: () => void;
+  /** Pending focus for the Changes view (a branch ref) when opened via a board click-through. */
+  changesFocus: string | null;
+  setChangesFocus: (v: string | null) => void;
   tasksLoading: boolean;
   taskLiveEvents: Record<string, TaskLiveEvent>;
   columnLiveEvents: Record<string, ColumnLiveEvent>;
@@ -229,7 +248,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [filterPriority, setFilterPriority] = useState(initialFilters.filterPriority);
   const [filterTag, setFilterTag] = useState(initialFilters.filterTag);
   const [filterUnreadOnly, setFilterUnreadOnly] = useState(initialFilters.filterUnreadOnly);
+  const [filterWorktree, setFilterWorktree] = useState(initialFilters.filterWorktree);
   const [view, setCurrentView] = useState<AppView>(() => getViewFromLocation());
+  const [settingsTab, setSettingsTab] = useState<string | null>(null);
   const [modalTask, setModalTask] = useState<Partial<Task> | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [overlayCount, setOverlayCount] = useState(0);
@@ -238,6 +259,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [openModalScrollToComments, setOpenModalScrollToComments] = useState(false);
   const [openModalInFullView, setOpenModalInFullView] = useState(false);
   const [tasks, setTasks] = useState<Task[]>([]);
+  // Branches that currently hold a worktree — refreshed whenever tasks change
+  // (a worktree create/detach broadcasts taskUpdated → loadTasks → this) (FLUX-516).
+  const [worktreeBranches, setWorktreeBranches] = useState<Set<string>>(new Set());
+  // Full worktree list (path, branch, ticket, changedFiles count) — drives the
+  // card change-count badge and the worktrees panel; the Set is its branch index.
+  const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
+  const refreshWorktrees = useCallback(() => {
+    fetchWorktrees()
+      .then((ws) => {
+        setWorktrees(ws);
+        setWorktreeBranches(new Set(ws.map((w) => w.branch)));
+      })
+      .catch(() => {});
+  }, []);
+  useEffect(() => { refreshWorktrees(); }, [tasks, refreshWorktrees]);
+  // Pending focus (a branch) for the Changes view when navigated from a board click-through.
+  const [changesFocus, setChangesFocus] = useState<string | null>(null);
   const taskById = useMemo(() => {
     const map = new Map<string, Task>();
     for (const t of tasks) map.set(t.id, t);
@@ -500,6 +538,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setFilterPriority('all');
     setFilterTag('all');
     setFilterUnreadOnly(false);
+    setFilterWorktree('');
   };
 
   const openTaskModal = (task?: Partial<Task>) => {
@@ -860,6 +899,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setFilterAssignee(nextFilters.filterAssignee);
       setFilterPriority(nextFilters.filterPriority);
       setFilterTag(nextFilters.filterTag);
+      setFilterWorktree(nextFilters.filterWorktree);
     };
 
     const handleCustomNavigation = () => {
@@ -876,8 +916,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    updateTaskFilterUrl({ searchQuery, sortOption, filterAssignee, filterPriority, filterTag, filterUnreadOnly });
-  }, [searchQuery, sortOption, filterAssignee, filterPriority, filterTag, filterUnreadOnly]);
+    updateTaskFilterUrl({ searchQuery, sortOption, filterAssignee, filterPriority, filterTag, filterUnreadOnly, filterWorktree });
+  }, [searchQuery, sortOption, filterAssignee, filterPriority, filterTag, filterUnreadOnly, filterWorktree]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -943,8 +983,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       filterPriority, setFilterPriority,
       filterTag, setFilterTag,
       filterUnreadOnly, setFilterUnreadOnly,
+      filterWorktree, setFilterWorktree,
       clearTaskFilters,
       view, setView,
+      settingsTab, setSettingsTab,
       modalTask, isModalOpen,
       isOverlayOpen: overlayCount > 0,
       pushOverlay,
@@ -958,6 +1000,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setModalTask,
       tasks,
       taskById,
+      worktreeBranches,
+      worktrees,
+      refreshWorktrees,
+      changesFocus,
+      setChangesFocus,
       tasksLoading,
       taskLiveEvents,
       columnLiveEvents,

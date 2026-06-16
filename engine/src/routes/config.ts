@@ -1,6 +1,6 @@
 import express from 'express';
 import { configCache, saveConfig } from '../config.js';
-import { BUILTIN_MODULES } from '../modules.js';
+import { BUILTIN_MODULES, getWorkspaceMcpServers, getModuleMcpServers } from '../modules.js';
 import { probeModule, probeAllEnabled, getAllProbeStatuses } from '../module-probe.js';
 import { scaffoldModuleDirs } from '../storage-sync.js';
 import { isOrphanMode, getFluxStoreDir } from '../workspace.js';
@@ -9,6 +9,45 @@ const router = express.Router();
 
 router.get('/', (req, res) => {
   res.json(configCache);
+});
+
+const SCOPE_PHASES = ['grooming', 'implementation', 'review', 'release'];
+
+// Per-phase MCP server scoping (FLUX-490 UI). Lists every server the user could
+// scope (workspace .mcp.json ∪ module servers ∪ already-configured) and the
+// current mapping. Fast — no server spawning.
+router.get('/mcp-phases', (_req, res) => {
+  const ids = new Set<string>([
+    ...Object.keys(getWorkspaceMcpServers()),
+    ...Object.keys(getModuleMcpServers()),
+    ...Object.keys(((configCache as any).mcpServerPhases as Record<string, string[]>) ?? {}),
+  ]);
+  res.json({
+    servers: [...ids].sort(),
+    phases: SCOPE_PHASES,
+    mcpServerPhases: ((configCache as any).mcpServerPhases as Record<string, string[]>) ?? {},
+  });
+});
+
+// Targeted update of only `mcpServerPhases` (avoids the full-config PUT which
+// replaces everything). A server mapped to a non-empty phase list loads ONLY in
+// those phases; an empty/absent mapping loads it everywhere. Any non-empty
+// mapping flips the engine to strict mode at spawn.
+router.put('/mcp-phases', async (req, res) => {
+  const raw = req.body?.mcpServerPhases;
+  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return res.status(400).json({ error: 'Body must be { mcpServerPhases: { [serverId]: string[] } }' });
+  }
+  const clean: Record<string, string[]> = {};
+  for (const [id, phases] of Object.entries(raw)) {
+    if (Array.isArray(phases)) {
+      const valid = phases.filter((p) => typeof p === 'string' && SCOPE_PHASES.includes(p));
+      if (valid.length > 0) clean[id] = valid;
+    }
+  }
+  (configCache as any).mcpServerPhases = clean;
+  await saveConfig(configCache);
+  res.json({ mcpServerPhases: clean });
 });
 
 router.put('/', async (req, res) => {

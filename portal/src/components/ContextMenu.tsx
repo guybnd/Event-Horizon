@@ -1,40 +1,79 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Archive, Bot, ChevronRight, CircleX, ExternalLink, GitBranch, MessageCircle, Search, Trash2, X, Zap } from 'lucide-react';
+import {
+  Archive, ArrowRightLeft, Bot, ChevronRight, CircleX, Code2, ExternalLink, Filter,
+  FolderGit2, GitBranch, GitCompare, Link2, MessageCircle, Play, Search, Trash2, Undo2, X,
+} from 'lucide-react';
 import type { Task } from '../types';
+import { normalizeSubtaskId } from '../types';
 import { useApp } from '../AppContext';
-import { deleteTask, updateTask, fetchOrchestrationPersonas, type OrchestrationPersonaMeta } from '../api';
-import { runAgentAction, launchPhaseDefault, AGENT_COMMANDS, type AgentCommandVerb } from '../agentActions';
-import { getArchiveStatus, isPromptableStatus } from '../workflow';
+import {
+  deleteTask, updateTask, openWorktreeWindow, detachWorktree, joinWorktree,
+  setTicketBranch, attachParent, fetchBranches, fetchWorkflows,
+  type BranchOption, type WorkflowTemplate,
+} from '../api';
+import { launchPhaseDefault, statusToPhase, resolvePhaseDefaultId } from '../agentActions';
+import { getArchiveStatus, getReadyForMergeStatus, isPromptableStatus } from '../workflow';
+import { searchTasks } from '../taskSearch';
 import { resolveEffectiveAgent } from '../utils';
 
 interface Props {
   task: Task;
   position: { x: number; y: number };
   onClose: () => void;
-  /** Open the orchestration launcher modal for this ticket. */
-  onLaunchAgent: () => void;
+  /** Open the orchestration launcher for this ticket, optionally pre-set to a template. */
+  onLaunchAgent: (templateId?: string) => void;
 }
 
-export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
-  const { config, currentUser, triggerRefresh, readComments, markAllCommentsRead, openTaskModal, openTaskFullView } = useApp();
-  const menuRef = useRef<HTMLDivElement>(null);
-  const [activeSubmenu, setActiveSubmenu] = useState<'transition' | 'agent' | 'review' | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [personas, setPersonas] = useState<OrchestrationPersonaMeta[]>([]);
+type TopMenu = 'launch' | 'transition' | 'worktree' | 'attachParent' | null;
+type WtMenu = 'attachWorktree' | 'attachBranch' | null;
 
+const PRIMARY_LABEL: Record<string, string> = {
+  Grooming: 'Start grooming',
+  Todo: 'Implement',
+  'In Progress': 'Continue',
+};
+
+export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
+  const {
+    config, currentUser, triggerRefresh, readComments, markAllCommentsRead,
+    openTaskModal, openTaskFullView, worktrees, worktreeBranches, refreshWorktrees,
+    filterWorktree, setFilterWorktree, taskById, setView, setChangesFocus,
+  } = useApp();
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [openTop, setOpenTop] = useState<TopMenu>(null);
+  const [openWt, setOpenWt] = useState<WtMenu>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmDetach, setConfirmDetach] = useState(false);
+  const [templates, setTemplates] = useState<WorkflowTemplate[] | null>(null);
+  const [branches, setBranches] = useState<BranchOption[] | null>(null);
+
+  const effectiveAgent = resolveEffectiveAgent(undefined, config?.defaultAgent);
+  const hasWorktree = !!task.branch && worktreeBranches.has(task.branch);
+  const cardPhase = statusToPhase(task.status, { readyStatus: getReadyForMergeStatus(config) });
+
+  // Lazy-load the phase templates for the "Launch agent" flyout.
   useEffect(() => {
     let cancelled = false;
-    fetchOrchestrationPersonas()
-      .then(list => { if (!cancelled) setPersonas(list); })
-      .catch(() => { if (!cancelled) setPersonas([]); });
+    fetchWorkflows()
+      .then((t) => { if (!cancelled) setTemplates(t); })
+      .catch(() => { if (!cancelled) setTemplates([]); });
     return () => { cancelled = true; };
   }, []);
 
-  const effectiveAgent = resolveEffectiveAgent(undefined, config?.defaultAgent);
-  const ActiveIcon = effectiveAgent === 'gemini' ? Zap : Bot;
+  // Lazy-load branches when the "Attach to branch" picker first opens (guarded so
+  // the fetch can't setState after the menu closes/unmounts).
+  useEffect(() => {
+    if (openWt !== 'attachBranch' || branches !== null) return undefined;
+    let cancelled = false;
+    fetchBranches()
+      .then((b) => { if (!cancelled) setBranches(b); })
+      .catch(() => { if (!cancelled) setBranches([]); });
+    return () => { cancelled = true; };
+  }, [openWt, branches]);
 
-  // Adjust position to keep menu on screen
+  // Adjust position to keep the menu on screen; flyouts open toward the roomy side.
   const [pos, setPos] = useState(position);
   useEffect(() => {
     if (!menuRef.current) return;
@@ -45,16 +84,15 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
     setPos({ x: Math.max(8, x), y: Math.max(8, y) });
   }, [position]);
 
-  // Close on outside click or Escape
+  // Close on outside click or Escape. Flyout panels are portaled to <body> (so
+  // they can't be clipped and can clamp to the viewport), so "inside" is anything
+  // tagged data-eh-ctxmenu — the root menu OR any open flyout panel — not just menuRef.
   useEffect(() => {
     const handleDown = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        onClose();
-      }
+      const t = e.target as Element | null;
+      if (!t || !t.closest('[data-eh-ctxmenu]')) onClose();
     };
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
+    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     document.addEventListener('mousedown', handleDown);
     document.addEventListener('keydown', handleKey);
     return () => {
@@ -64,101 +102,75 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
   }, [onClose]);
 
   const allStatuses = [
-    ...(config?.columns?.map(c => c.name) ?? []),
-    ...(config?.hiddenStatuses?.map(h => h.name) ?? []),
+    ...(config?.columns?.map((c) => c.name) ?? []),
+    ...(config?.hiddenStatuses?.map((h) => h.name) ?? []),
   ].filter((s, i, arr) => arr.indexOf(s) === i && s !== task.status);
 
   const archiveStatus = getArchiveStatus(config);
-  const commentIds = (task.history ?? []).filter(e => e.type === 'comment' && e.id).map(e => e.id!);
+  const commentIds = (task.history ?? []).filter((e) => e.type === 'comment' && e.id).map((e) => e.id!);
   const readIds = new Set(readComments[task.id] ?? []);
-  const hasUnread = commentIds.some(id => !readIds.has(id));
-
+  const hasUnread = commentIds.some((id) => !readIds.has(id));
   const boardCardOpenMode = config?.boardCardOpenMode || 'full';
 
+  // ─── Phase templates (Launch agent flyout) ────────────────────────────────────
+  const phaseTemplates = useMemo(
+    () => (templates ?? []).filter((w) => w.phases?.[cardPhase as keyof typeof w.phases]),
+    [templates, cardPhase],
+  );
+  const singleId = resolvePhaseDefaultId(config?.phaseDefaults, cardPhase, 'single');
+  const multiId = resolvePhaseDefaultId(config?.phaseDefaults, cardPhase, 'multi');
+  const singleTpl = phaseTemplates.find((w) => w.id === singleId);
+  const multiTpl = phaseTemplates.find((w) => w.id === multiId);
+  const otherTpls = phaseTemplates.filter((w) => w.id !== singleId && w.id !== multiId);
+
+  const primaryLabel = PRIMARY_LABEL[task.status]
+    ?? (cardPhase === 'review' ? 'Send for review' : cardPhase === 'grooming' ? 'Start grooming' : 'Launch agent');
+
+  // ─── Parent-ticket candidates (Attach to parent picker) ───────────────────────
+  const parentCandidates = useMemo(() => {
+    const childIds = new Set((task.subtasks ?? []).map(normalizeSubtaskId));
+    return Array.from(taskById.values()).filter(
+      (t) => t.id !== task.id && !childIds.has(t.id) && t.parentId !== task.id,
+    );
+  }, [taskById, task.id, task.subtasks, task.parentId]);
+
+  // ─── Handlers ─────────────────────────────────────────────────────────────────
   const handleOpen = () => {
-    if (boardCardOpenMode === 'full') {
-      openTaskFullView(task);
-    } else {
-      openTaskModal(task);
-    }
+    if (boardCardOpenMode === 'full') openTaskFullView(task);
+    else openTaskModal(task);
     onClose();
   };
 
-  const handleLaunchAgent = () => {
+  const handlePrimary = async () => {
     onClose();
-    onLaunchAgent();
+    // A Todo with no branch needs the launcher's branch picker first.
+    if (cardPhase === 'implementation' && task.status === 'Todo' && !task.branch) {
+      onLaunchAgent();
+      return;
+    }
+    try {
+      const result = await launchPhaseDefault({
+        taskId: task.id, framework: effectiveAgent, phase: cardPhase,
+        currentUser, phaseDefaults: config?.phaseDefaults,
+      });
+      if (result === null) { onLaunchAgent(); return; } // no default persona → open launcher
+      triggerRefresh();
+    } catch (err) {
+      console.error('Failed to launch phase agent:', err instanceof Error ? err.message : err);
+    }
   };
+
+  const launchTemplate = (templateId?: string) => { onClose(); onLaunchAgent(templateId); };
 
   const handleTransition = async (status: string) => {
     onClose();
     if (isPromptableStatus(status, config)) {
-      if (config?.boardCardOpenMode === 'full') {
-        openTaskFullView(task);
-      } else {
-        openTaskModal(task);
-      }
+      if (boardCardOpenMode === 'full') openTaskFullView(task);
+      else openTaskModal(task);
       return;
     }
     await updateTask(task.id, { status, updatedBy: currentUser });
     triggerRefresh();
-  };
-
-  const handleAgentCommand = async (verb: AgentCommandVerb) => {
-    onClose();
-    try {
-      const phase = verb === 'groom' ? 'grooming' as const : verb === 'implement' ? 'implementation' as const : undefined;
-      if (phase) {
-        await launchPhaseDefault({
-          taskId: task.id,
-          framework: effectiveAgent,
-          phase,
-          currentUser,
-          phaseDefaults: config?.phaseDefaults,
-        });
-      } else {
-        await runAgentAction({
-          taskId: task.id,
-          framework: effectiveAgent,
-          action: { kind: 'command', verb },
-          currentUser,
-        });
-      }
-      triggerRefresh();
-    } catch (err: unknown) {
-      console.error('Failed to run agent command:', err instanceof Error ? err.message : err);
-    }
-  };
-
-  const handleReviewPersona = async (personaId: string) => {
-    onClose();
-    try {
-      await runAgentAction({
-        taskId: task.id,
-        framework: effectiveAgent,
-        action: { kind: 'persona', personaId },
-        currentUser,
-        preStatus: 'In Progress',
-      });
-      triggerRefresh();
-    } catch (err: unknown) {
-      console.error('Failed to start review:', err instanceof Error ? err.message : err);
-    }
-  };
-
-  const handleSendForGrooming = async () => {
-    onClose();
-    try {
-      await launchPhaseDefault({
-        taskId: task.id,
-        framework: effectiveAgent,
-        phase: 'grooming',
-        currentUser,
-        phaseDefaults: config?.phaseDefaults,
-      });
-      triggerRefresh();
-    } catch (err: unknown) {
-      console.error('Failed to send for grooming:', err instanceof Error ? err.message : err);
-    }
   };
 
   const handleArchive = async () => {
@@ -178,139 +190,238 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
     onClose();
   };
 
+  // Worktree actions — refresh board state then close.
+  const runWorktree = async (fn: () => Promise<unknown>) => {
+    try {
+      await fn();
+      refreshWorktrees();
+      triggerRefresh();
+      onClose();
+    } catch (err) {
+      console.error('Worktree action failed:', err instanceof Error ? err.message : err);
+    }
+  };
+  const handleOpenVSCode = () => runWorktree(async () => {
+    const r = await openWorktreeWindow(task.id);
+    if (!r.opened) await navigator.clipboard.writeText(r.worktree).catch(() => {});
+  });
+  const handleDetach = () => runWorktree(() => detachWorktree(task.id));
+  const handleAttachWorktree = (branch: string) => runWorktree(() => joinWorktree(task.id, branch));
+  const handleAttachBranch = (branch: string) => runWorktree(() => setTicketBranch(task.id, branch, currentUser));
+  const handleAttachParent = (parentId: string) => runWorktree(() => attachParent(task.id, parentId, currentUser));
+
+  const setFilter = (v: string) => { onClose(); setFilterWorktree(v); };
+
   return createPortal(
     <div
       ref={menuRef}
-      style={{ position: 'fixed', top: pos.y, left: pos.x, zIndex: 1000000 }}
-      className="min-w-[200px] rounded-xl border border-gray-200/80 bg-white/95 py-1 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:bg-[#1e1f2a]/95"
+      data-eh-ctxmenu
+      style={{ position: 'fixed', top: pos.y, left: pos.x, maxHeight: 'calc(100vh - 16px)', overflowY: 'auto', zIndex: 1000000 }}
+      className="min-w-[210px] rounded-xl border border-gray-200/80 bg-white/95 py-1 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:bg-[#1e1f2a]/95"
       onContextMenu={(e) => e.preventDefault()}
     >
-      {/* Open / Edit */}
-      <MenuItem icon={<ExternalLink className="h-3.5 w-3.5" />} onClick={handleOpen}>
-        Edit / Open
-      </MenuItem>
-
-      {/* Launch Agent — opens the orchestration launcher modal */}
-      <MenuItem icon={<ActiveIcon className="h-3.5 w-3.5" />} onClick={handleLaunchAgent}>
-        Launch Agent…
-      </MenuItem>
-
-      {/* Groom Ticket */}
-      {task.status !== 'Grooming' && (
-        <MenuItem icon={<Zap className="h-3.5 w-3.5" />} onClick={handleSendForGrooming}>
-          Send for Grooming
-        </MenuItem>
-      )}
-
-      {/* Mark comments as read */}
-      {hasUnread && (
-        <MenuItem icon={<MessageCircle className="h-3.5 w-3.5" />} onClick={handleMarkRead}>
-          Mark comments as read
-        </MenuItem>
-      )}
+      <MenuItem icon={<ExternalLink className="h-3.5 w-3.5" />} onClick={handleOpen}>Edit / Open</MenuItem>
 
       <Divider />
 
-      {/* Transition to → */}
-      <SubMenuItem
-        icon={<GitBranch className="h-3.5 w-3.5" />}
-        label="Transition to"
-        open={activeSubmenu === 'transition'}
-        onOpen={() => setActiveSubmenu(activeSubmenu === 'transition' ? null : 'transition')}
-      >
-        {allStatuses.map((s) => (
-          <MenuItem key={s} onClick={() => void handleTransition(s)}>
-            {s}
-          </MenuItem>
-        ))}
-      </SubMenuItem>
-
-      {/* Run agent command → */}
-      <SubMenuItem
+      {/* Phase-contextual primary action + the phase's agent templates. */}
+      <MenuItem icon={<Play className="h-3.5 w-3.5" />} onClick={() => void handlePrimary()}>{primaryLabel}</MenuItem>
+      <Flyout
         icon={<Bot className="h-3.5 w-3.5" />}
-        label="Run agent command"
-        open={activeSubmenu === 'agent'}
-        onOpen={() => setActiveSubmenu(activeSubmenu === 'agent' ? null : 'agent')}
+        label="Launch agent"
+        open={openTop === 'launch'}
+        onToggle={() => setOpenTop(openTop === 'launch' ? null : 'launch')}
       >
-        {AGENT_COMMANDS.map((item) => {
-          const cmd = `${item.verb} ${task.id}`;
-          return (
-            <MenuItem
-              key={item.verb}
-              onClick={() => void handleAgentCommand(item.verb)}
-            >
-              <span className="flex-1">{item.label}</span>
-              <span className="ml-2 truncate text-[10px] text-gray-400 dark:text-gray-500">{cmd}</span>
-            </MenuItem>
-          );
-        })}
-      </SubMenuItem>
-
-      {/* Send for Code Review → (persona picker, mirrors modal CodeReviewButton) */}
-      <SubMenuItem
-        icon={<Search className="h-3.5 w-3.5" />}
-        label="Send for Code Review"
-        open={activeSubmenu === 'review'}
-        onOpen={() => setActiveSubmenu(activeSubmenu === 'review' ? null : 'review')}
-      >
-        {personas.map((persona) => (
-          <MenuItem key={persona.id} onClick={() => void handleReviewPersona(persona.id)}>
-            <span className="flex-1">{persona.label}</span>
+        {singleTpl && (
+          <MenuItem onClick={() => launchTemplate(singleTpl.id)}>
+            <span className="flex-1 truncate">{singleTpl.name}</span>
+            <span className="ml-2 text-[10px] text-gray-400">1 agent</span>
+          </MenuItem>
+        )}
+        {multiTpl && (
+          <MenuItem onClick={() => launchTemplate(multiTpl.id)}>
+            <span className="flex-1 truncate">{multiTpl.name}</span>
+            <span className="ml-2 text-[10px] text-gray-400">team</span>
+          </MenuItem>
+        )}
+        {(singleTpl || multiTpl) && otherTpls.length > 0 && <Divider />}
+        {otherTpls.map((t) => (
+          <MenuItem key={t.id} onClick={() => launchTemplate(t.id)}>
+            <span className="flex-1 truncate">{t.name}</span>
           </MenuItem>
         ))}
-      </SubMenuItem>
+        {templates !== null && phaseTemplates.length === 0 && (
+          <div className="px-3 py-1.5 text-[11px] italic text-gray-400">No templates for this phase</div>
+        )}
+        <Divider />
+        <MenuItem onClick={() => launchTemplate()}>Open launcher…</MenuItem>
+      </Flyout>
 
-      {/* Clear swimlane */}
-      {task.swimlane && (
-        <>
-          <Divider />
-          <MenuItem icon={<CircleX className="h-3.5 w-3.5" />} onClick={async () => {
-            onClose();
-            await updateTask(task.id, { swimlane: null, updatedBy: currentUser } as any);
-            triggerRefresh();
-          }}>
-            Clear Swimlane
+      <Divider />
+
+      {/* Move to status */}
+      <Flyout
+        icon={<ArrowRightLeft className="h-3.5 w-3.5" />}
+        label="Move to"
+        open={openTop === 'transition'}
+        onToggle={() => setOpenTop(openTop === 'transition' ? null : 'transition')}
+      >
+        <div className="max-h-72 overflow-auto">
+          {allStatuses.map((s) => (
+            <MenuItem key={s} onClick={() => void handleTransition(s)}>{s}</MenuItem>
+          ))}
+        </div>
+      </Flyout>
+
+      <Divider />
+
+      {/* Quick open in VS Code (#7) — top-level for a worktreed ticket. */}
+      {hasWorktree && (
+        <MenuItem icon={<Code2 className="h-3.5 w-3.5" />} onClick={() => void handleOpenVSCode()}>
+          Open worktree in VS Code
+        </MenuItem>
+      )}
+
+      {/* View this worktree's changes in the Changes view (FLUX-531). */}
+      {hasWorktree && (
+        <MenuItem icon={<GitCompare className="h-3.5 w-3.5" />} onClick={() => { onClose(); setChangesFocus(task.branch!); setView('changes'); }}>
+          View changes
+        </MenuItem>
+      )}
+
+      {/* Worktree actions */}
+      <Flyout
+        icon={<FolderGit2 className="h-3.5 w-3.5" />}
+        label="Worktree"
+        open={openTop === 'worktree'}
+        onToggle={() => { setOpenTop(openTop === 'worktree' ? null : 'worktree'); setOpenWt(null); }}
+      >
+        {!hasWorktree && (
+          <MenuItem icon={<Code2 className="h-3.5 w-3.5" />} onClick={() => void handleOpenVSCode()}>
+            Open in VS Code (new worktree)
           </MenuItem>
-        </>
+        )}
+        {hasWorktree && (
+          confirmDetach ? (
+            <div className="flex items-center gap-1 px-3 py-1.5">
+              <span className="flex-1 text-xs font-medium text-primary">Close worktree?</span>
+              <button onClick={() => void handleDetach()} className="rounded px-2 py-0.5 text-[10px] font-semibold text-white bg-primary hover:opacity-90">Yes</button>
+              <button onClick={() => setConfirmDetach(false)} className="rounded px-2 py-0.5 text-[10px] font-semibold text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/10"><X className="h-3 w-3" /></button>
+            </div>
+          ) : (
+            <MenuItem icon={<Undo2 className="h-3.5 w-3.5" />} onClick={() => setConfirmDetach(true)}>
+              Close worktree (return work to main)
+            </MenuItem>
+          )
+        )}
+
+        <Divider />
+
+        {hasWorktree && (
+          <MenuItem icon={<Filter className="h-3.5 w-3.5" />} onClick={() => setFilter(task.branch!)}>
+            Isolate this worktree
+          </MenuItem>
+        )}
+        {filterWorktree !== '' ? (
+          <MenuItem icon={<X className="h-3.5 w-3.5" />} onClick={() => setFilter('')}>Clear worktree filter</MenuItem>
+        ) : (
+          <MenuItem icon={<FolderGit2 className="h-3.5 w-3.5" />} onClick={() => setFilter('any')}>Show all worktrees</MenuItem>
+        )}
+
+        <Divider />
+
+        {/* Attach to worktree (join) */}
+        <Flyout
+          icon={<FolderGit2 className="h-3.5 w-3.5" />}
+          label="Attach to worktree"
+          open={openWt === 'attachWorktree'}
+          onToggle={() => setOpenWt(openWt === 'attachWorktree' ? null : 'attachWorktree')}
+        >
+          {worktrees.filter((w) => w.branch !== task.branch).length === 0 ? (
+            <div className="px-3 py-1.5 text-[11px] italic text-gray-400">No other active worktrees</div>
+          ) : (
+            worktrees.filter((w) => w.branch !== task.branch).map((w) => (
+              <MenuItem key={w.path} onClick={() => void handleAttachWorktree(w.branch)}>
+                <span className="flex-1 truncate">{w.ticketId ?? w.branch}</span>
+                {w.ticketId && <span className="ml-2 truncate text-[10px] text-gray-400">{w.branch}</span>}
+              </MenuItem>
+            ))
+          )}
+        </Flyout>
+
+        {/* Attach to branch (search) */}
+        <Flyout
+          icon={<GitBranch className="h-3.5 w-3.5" />}
+          label="Attach to branch"
+          open={openWt === 'attachBranch'}
+          onToggle={() => setOpenWt(openWt === 'attachBranch' ? null : 'attachBranch')}
+        >
+          <SearchPicker
+            placeholder="Search branches…"
+            emptyText={branches === null ? 'Loading…' : 'No matching branches'}
+            getKey={(b: BranchOption) => b.name}
+            filter={(q) => (branches ?? [])
+              .filter((b) => b.name !== task.branch && b.name.toLowerCase().includes(q.toLowerCase()))
+              .slice(0, 7)}
+            renderItem={(b) => (<>
+              <span className="flex-1 truncate">{b.name}</span>
+              {b.hasWorktree && <FolderGit2 className="ml-2 h-3 w-3 flex-none text-primary" />}
+            </>)}
+            onPick={(b) => void handleAttachBranch(b.name)}
+          />
+        </Flyout>
+      </Flyout>
+
+      {/* Attach to parent ticket (fuzzy search) — top-level; hierarchy, not worktree. */}
+      <Flyout
+        icon={<Link2 className="h-3.5 w-3.5" />}
+        label="Attach to parent"
+        open={openTop === 'attachParent'}
+        onToggle={() => setOpenTop(openTop === 'attachParent' ? null : 'attachParent')}
+      >
+        <SearchPicker
+          placeholder="Search tickets…"
+          emptyText="No matching tickets"
+          getKey={(t: Task) => t.id}
+          filter={(q) => (q.trim()
+            ? searchTasks(parentCandidates, q, 7).map((r) => r.task)
+            : parentCandidates.slice(0, 7))}
+          renderItem={(t) => (<>
+            <span className="flex-none font-mono text-[10px] text-gray-400">{t.id}</span>
+            <span className="ml-1.5 flex-1 truncate">{t.title}</span>
+          </>)}
+          onPick={(t) => void handleAttachParent(t.id)}
+        />
+      </Flyout>
+
+      {(hasUnread || task.swimlane) && <Divider />}
+      {hasUnread && (
+        <MenuItem icon={<MessageCircle className="h-3.5 w-3.5" />} onClick={handleMarkRead}>Mark comments as read</MenuItem>
+      )}
+      {task.swimlane && (
+        <MenuItem icon={<CircleX className="h-3.5 w-3.5" />} onClick={async () => {
+          onClose();
+          await updateTask(task.id, { swimlane: null, updatedBy: currentUser } as any);
+          triggerRefresh();
+        }}>Clear Swimlane</MenuItem>
       )}
 
       <Divider />
 
-      {/* Archive */}
       {task.status !== archiveStatus && (
-        <MenuItem icon={<Archive className="h-3.5 w-3.5" />} onClick={() => void handleArchive()}>
-          Archive
-        </MenuItem>
+        <MenuItem icon={<Archive className="h-3.5 w-3.5" />} onClick={() => void handleArchive()}>Archive</MenuItem>
       )}
-
-      {/* Delete */}
       {confirmDelete ? (
         <div className="flex items-center gap-1 px-3 py-1.5">
           <span className="flex-1 text-xs font-medium text-red-500">Confirm delete?</span>
-          <button
-            onClick={() => void handleDelete()}
-            className="rounded px-2 py-0.5 text-[10px] font-semibold text-white bg-red-500 hover:bg-red-600 transition-colors"
-          >
-            Yes
-          </button>
-          <button
-            onClick={() => setConfirmDelete(false)}
-            className="rounded px-2 py-0.5 text-[10px] font-semibold text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/10 transition-colors"
-          >
-            <X className="h-3 w-3" />
-          </button>
+          <button onClick={() => void handleDelete()} className="rounded px-2 py-0.5 text-[10px] font-semibold text-white bg-red-500 hover:bg-red-600">Yes</button>
+          <button onClick={() => setConfirmDelete(false)} className="rounded px-2 py-0.5 text-[10px] font-semibold text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/10"><X className="h-3 w-3" /></button>
         </div>
       ) : (
-        <MenuItem
-          icon={<Trash2 className="h-3.5 w-3.5" />}
-          danger
-          onClick={() => setConfirmDelete(true)}
-        >
-          Delete
-        </MenuItem>
+        <MenuItem icon={<Trash2 className="h-3.5 w-3.5" />} danger onClick={() => setConfirmDelete(true)}>Delete</MenuItem>
       )}
     </div>,
-    document.body
+    document.body,
   );
 }
 
@@ -319,15 +430,12 @@ function Divider() {
 }
 
 function MenuItem({
-  icon,
-  danger,
-  onClick,
-  children,
+  icon, danger, onClick, children,
 }: {
-  icon?: React.ReactNode;
+  icon?: ReactNode;
   danger?: boolean;
   onClick: () => void;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <button
@@ -345,35 +453,152 @@ function MenuItem({
   );
 }
 
-function SubMenuItem({
-  icon,
-  label,
-  open,
-  onOpen,
-  children,
+/**
+ * A submenu that opens to the SIDE as a flyout. The panel is portaled to <body>
+ * and positioned with fixed coordinates derived from the trigger row, then clamped
+ * into the viewport on BOTH axes — so it never spills off-screen and isn't pinned
+ * to the click height (it shifts up/sideways as needed to fit).
+ */
+function Flyout({
+  icon, label, open, onToggle, children,
 }: {
-  icon: React.ReactNode;
+  icon: ReactNode;
   label: string;
   open: boolean;
-  onOpen: () => void;
-  children: React.ReactNode;
+  onToggle: () => void;
+  children: ReactNode;
 }) {
+  const rowRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [coords, setCoords] = useState<{ left: number; top: number; placement: 'left' | 'right' } | null>(null);
+
+  // Measure the row + panel and place the panel beside the row, clamped to the
+  // viewport. Runs before paint (no flash) and re-runs on panel resize (the search
+  // list growing/shrinking) and on scroll/resize.
+  useLayoutEffect(() => {
+    if (!open) { setCoords(null); return undefined; }
+    const compute = () => {
+      const row = rowRef.current?.getBoundingClientRect();
+      const panel = panelRef.current?.getBoundingClientRect();
+      if (!row || !panel) return;
+      const gap = 4, pad = 8;
+      const vw = window.innerWidth, vh = window.innerHeight;
+      // Horizontal: prefer the right of the row; flip left if it would overflow;
+      // if it fits on neither side, pin to whichever keeps the most on-screen.
+      let placement: 'left' | 'right' = 'right';
+      let left = row.right + gap;
+      if (left + panel.width > vw - pad) {
+        const leftSide = row.left - gap - panel.width;
+        if (leftSide >= pad) { left = leftSide; placement = 'left'; }
+        else { left = Math.max(pad, vw - panel.width - pad); }
+      }
+      // Vertical: anchor near the row top, then slide up so the whole panel fits.
+      let top = Math.min(row.top, vh - panel.height - pad);
+      top = Math.max(pad, top);
+      setCoords((prev) =>
+        prev && prev.left === left && prev.top === top && prev.placement === placement
+          ? prev
+          : { left, top, placement },
+      );
+    };
+    compute();
+    const ro = new ResizeObserver(compute);
+    if (panelRef.current) ro.observe(panelRef.current);
+    window.addEventListener('resize', compute);
+    window.addEventListener('scroll', compute, true);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', compute);
+      window.removeEventListener('scroll', compute, true);
+    };
+  }, [open]);
+
   return (
-    <div>
+    <>
       <button
+        ref={rowRef}
         type="button"
-        onClick={onOpen}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-gray-700 transition-colors hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-white/5"
+        onClick={onToggle}
+        className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors ${
+          open ? 'bg-gray-100 dark:bg-white/5' : 'hover:bg-gray-100 dark:hover:bg-white/5'
+        } text-gray-700 dark:text-gray-200`}
       >
         <span className="flex-none text-gray-400">{icon}</span>
         <span className="flex-1">{label}</span>
-        <ChevronRight className={`h-3.5 w-3.5 flex-none text-gray-400 transition-transform ${open ? 'rotate-90' : ''}`} />
+        <ChevronRight className={`h-3.5 w-3.5 flex-none text-gray-400 ${coords?.placement === 'left' ? 'rotate-180' : ''}`} />
       </button>
-      {open && (
-        <div className="border-t border-gray-100 bg-gray-50/60 dark:border-white/5 dark:bg-white/3">
+      {open && createPortal(
+        <div
+          ref={panelRef}
+          data-eh-ctxmenu
+          style={{
+            position: 'fixed',
+            left: coords?.left ?? -9999,
+            top: coords?.top ?? -9999,
+            // Cap to the viewport so an over-tall panel scrolls instead of spilling
+            // off the bottom — this also keeps measured height ≤ vh-2·pad, which makes
+            // the top-clamp provably overflow-free.
+            maxHeight: 'calc(100vh - 16px)',
+            overflowY: 'auto',
+            // Hidden (but still measurable AND focusable — unlike visibility:hidden)
+            // until positioned, so there's no first-paint flash at -9999.
+            opacity: coords ? 1 : 0,
+            pointerEvents: coords ? undefined : 'none',
+            zIndex: 1000001,
+          }}
+          className="min-w-[210px] rounded-xl border border-gray-200/80 bg-white/95 py-1 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:bg-[#1e1f2a]/95"
+        >
           {children}
-        </div>
+        </div>,
+        document.body,
       )}
+    </>
+  );
+}
+
+/** A flyout body with an auto-focused fuzzy search input and top-N results. */
+function SearchPicker<T>({
+  placeholder, emptyText, filter, getKey, renderItem, onPick,
+}: {
+  placeholder: string;
+  emptyText: string;
+  filter: (q: string) => T[];
+  getKey: (t: T) => string;
+  renderItem: (t: T) => ReactNode;
+  onPick: (t: T) => void;
+}) {
+  const [q, setQ] = useState('');
+  const results = filter(q);
+  return (
+    <div className="w-64">
+      <div className="flex items-center gap-1.5 px-2 py-1.5">
+        <Search className="h-3.5 w-3.5 flex-none text-gray-400" />
+        <input
+          autoFocus
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onClick={(e) => e.stopPropagation()}
+          placeholder={placeholder}
+          className="w-full bg-transparent text-xs text-gray-700 outline-none placeholder:text-gray-400 dark:text-gray-200"
+        />
+      </div>
+      <div className="border-t border-gray-100 dark:border-white/5" />
+      <div className="max-h-56 overflow-auto py-0.5">
+        {results.length === 0 ? (
+          <div className="px-3 py-1.5 text-[11px] italic text-gray-400">{emptyText}</div>
+        ) : (
+          results.map((t) => (
+            <button
+              key={getKey(t)}
+              type="button"
+              onClick={() => onPick(t)}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-gray-700 transition-colors hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-white/5"
+            >
+              {renderItem(t)}
+            </button>
+          ))
+        )}
+      </div>
     </div>
   );
 }

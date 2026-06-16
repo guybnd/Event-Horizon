@@ -1,0 +1,217 @@
+# CLAUDE.md Template — Event Horizon Project
+
+> Copy this file to `.claude/CLAUDE.md` in your Event Horizon project and customize the project-specific sections.
+
+---
+
+## Event Horizon Ticket Board
+
+This project uses [Event Horizon](https://github.com/guybnd/event-horizon) as its local-first ticket board, backed by markdown files. Agents interact with tickets exclusively through **MCP tools** — never edit `.flux/` or `.flux-store/` files directly.
+
+### Agent Skill Routing — REQUIRED
+
+When starting work on a FLUX ticket, **read the Event Horizon orchestrator skill first** (located at `<PROJECT_PATH>/.claude/rules/event-horizon.md`). The skill will route you to the correct phase-specific skill based on ticket status:
+
+| Ticket Status | Load This Skill | Purpose |
+|---|---|---|
+| `Grooming`, `Require Input` | `grooming` skill | Planning & requirement clarification |
+| `Todo`, `In Progress` | `implementation` skill | Code development & validation |
+| Release preparation | `release` skill | Publishing & release orchestration |
+| Cross-project mapping | `mapping` skill | Multi-repo documentation |
+
+**For read-only tasks** (explanation, search, discussion) that don't change ticket state, no skill load is required.
+
+---
+
+## Critical Rules — Agents MUST Follow
+
+### ✋ Ticket Persistence Rules
+
+- **NEVER** use `Write` or `Edit` tools on any file in `.flux/` or `.flux-store/` — these are engine-managed.
+- **NEVER** use `Bash` to write to ticket files (no `echo`, `sed`, `cat >`, etc.).
+- **ALWAYS** use the MCP tools below for ticket updates. They handle schema validation and history normalization.
+
+**Why?** Direct file writes bypass engine validation and corrupt ticket history. Changes that only exist in chat are lost — the engine is the single source of truth.
+
+### 🛠️ MCP Tools (Use These For All Ticket Work)
+
+| Tool | Use When |
+|---|---|
+| `get_ticket` | Reading a ticket (required first step — returns digested recent history) |
+| `get_session_log` | Reading one prior agent session's full progress log (debugging only) |
+| `list_tickets` | Finding tickets by status, priority, assignee, tag |
+| `update_ticket` | Changing metadata (title, priority, effort, tags, assignee, body) |
+| `change_status` | Moving to a new status (requires comment for `Require Input` / `Ready`) |
+| `add_comment` | Adding a comment to ticket history (persists to ticket) |
+| `log_progress` | Recording progress updates (appears in history) |
+| `create_ticket` | Creating a new ticket |
+| `create_subtask` | Creating a child ticket linked to a parent |
+| `finish_ticket` | Completing a ticket (atomic: sets link + adds comment + moves to Done) |
+| `create_branch` | Create a feature branch for the ticket |
+| `get_branch` | Check branch status, ahead/behind vs main |
+| `delete_branch` | Delete ticket branch (refuses unmerged unless `force: true`) |
+| `get_board_config` | Reading board configuration (statuses, tags) |
+
+**Do not use:** chat comments, `log_progress` alone for findings, or direct file edits. Ticket findings must be persisted via `add_comment` or `update_ticket`.
+
+---
+
+## Project Structure
+
+- **Ticket storage**: `.flux/` (in-repo) or `.flux-store/` (orphan mode with git worktree)
+- **Board config**: `config.json` in the active flux directory (read via `get_board_config`)
+- **Project docs**: `.docs/` — READ THESE before implementation work
+- **Skill modules**: `.claude/rules/event-horizon.md` — reference for workflows and tool details
+
+---
+
+## How to Start Work on a Ticket
+
+1. **Get the ticket.** Use `get_ticket` to read the full ticket, including title, status, and history.
+2. **Load the orchestrator skill.** Read `.claude/rules/event-horizon.md` — section "Skill Routing" to find the phase-specific skill.
+3. **Load the phase-specific skill.** Grooming, Implementation, Release, or Mapping — it contains the workflow for your ticket status.
+4. **Follow the workflow.** Each skill documents exactly when to use MCP tools, how to format comments, and when to move status.
+5. **Reference docs before implementation.** For M+ effort tickets, check `.docs/INDEX.md` or `.docs/event-horizon/` for context on the system.
+
+---
+
+## Common Patterns
+
+### Adding a Finding to a Ticket
+
+Use `add_comment`, not `log_progress` or chat:
+```
+// Read the ticket first
+const ticket = await get_ticket({id: "FLUX-42"})
+
+// Add your finding as a comment
+await add_comment({
+  ticketId: "FLUX-42",
+  comment: "Found a bug in the data validation. The null check is missing on line 47 of src/parser.ts. Suggests: add `if (!data) return error(...)` before line 48."
+})
+```
+
+### Moving a Ticket to Require Input
+
+```
+await change_status({
+  ticketId: "FLUX-42",
+  newStatus: "Require Input",
+  comment: "Need clarification: should the API return 404 or 400 when a resource is not found? Proposed default: 404."
+})
+```
+
+### Completing a Ticket
+
+```
+await finish_ticket({
+  ticketId: "FLUX-42",
+  implementationLink: "abc1234def5678", // commit hash or PR URL
+  completionComment: "Implemented input validation with schema v2. Docs updated: .docs/validation-schema.md. Validated with 12 test cases."
+})
+```
+
+---
+
+## File Access Boundaries
+
+**Read & Write Freely:**
+- `engine/src/` — backend logic
+- `portal/src/` — frontend components
+- `.docs/` — project documentation
+- Any other source code directories
+
+**Read Only:**
+- All sibling repos in multi-repo projects (never edit them — author in the parent repo's `.flux-group/`)
+
+**Never Touch:**
+- `.flux/` — ticket files (in-repo mode)
+- `.flux-store/` — ticket files (orphan mode)
+- `.flux/config.json` — use `get_board_config` MCP tool instead
+
+---
+
+## Ticket Model
+
+Tickets have these fields (used in MCP tool calls):
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | e.g. `FLUX-41` (auto-assigned, never change) |
+| `title` | string | Short description |
+| `status` | string | Board column: `Grooming`, `Todo`, `In Progress`, `Ready`, `Done`, `Released` |
+| `priority` | string | `None`, `Low`, `Medium`, `High`, `Critical` |
+| `effort` | string | `None`, `XS`, `S`, `M`, `L`, `XL` |
+| `assignee` | string | User name or `unassigned` |
+| `tags` | string[] | From board config |
+| `body` | markdown | Description & implementation plan |
+| `subtasks` | string[] | Child ticket IDs |
+| `implementationLink` | string | Commit hash or PR URL (set by `finish_ticket`) |
+| `branch` | string | Git branch name (e.g. `flux/FLUX-41-add-field`) |
+| `history` | array | Read-only append-only event log (comments, status changes, activity) |
+
+---
+
+## APIs (Fallback Only)
+
+The MCP tools are the primary interface. Use the REST API below **only if MCP tools fail to load** (never for convenience):
+
+- `GET http://localhost:3067/api/tasks` — list tickets
+- `PUT http://localhost:3067/api/tasks/:id` — update ticket (use `appendHistory` for comments)
+- `POST http://localhost:3067/api/tasks` — create ticket
+- `POST http://localhost:3067/api/tasks/:parentId/subtasks` — create subtask
+
+---
+
+## End-to-End Checklist
+
+Before marking a ticket `Ready` or `Done`:
+
+- ✅ Ticket read fully — relevant docs reviewed
+- ✅ Implementation plan posted as a comment (use `add_comment`)
+- ✅ Status moved at the right time (never skip status transitions)
+- ✅ Code changes validated (run tests, start the app, verify behavior)
+- ✅ Docs updated (`.docs/` matches new behavior; completion comment says so explicitly)
+- ✅ Questions went through `Require Input` status, not only chat
+- ✅ Findings persisted via MCP tools, not left in chat or agent memory
+
+---
+
+## Project-Specific Notes
+
+<!-- Customize the sections below for your project -->
+
+### Project Name
+**[YOUR PROJECT NAME HERE]**
+
+### Ticket Prefix & Statuses
+- **Prefix**: `FLUX` (or customize if different)
+- **Statuses**: `Grooming`, `Require Input`, `Todo`, `In Progress`, `Ready`, `Done`, `Released` (check `get_board_config` to confirm)
+- **Tags**: [List your project's tags here, e.g. `backend`, `frontend`, `docs`, `bug`, `feature`]
+
+### Key Directories
+- **Source code**: [List main directories, e.g. `src/`, `lib/`, `components/`]
+- **Docs**: `.docs/` (check `.docs/INDEX.md` for structure)
+- **Ticket board**: `.flux/` or `.flux-store/` (engine-managed — do not edit)
+
+### Tech Stack
+[Brief tech stack description, e.g. Node.js + React, Python + FastAPI, etc.]
+
+### How to Run the Project
+[Add quick start instructions for agents, e.g. `npm install && npm run dev`]
+
+### Where to Find Help
+- **Engine reference**: `.claude/rules/event-horizon.md`
+- **Project docs**: `.docs/INDEX.md` or `.docs/event-horizon/`
+- **Architecture**: `.docs/event-horizon/architecture/code-map.md`
+
+---
+
+## References
+
+- **Event Horizon on GitHub**: https://github.com/guybnd/event-horizon
+- **Orchestrator Skill**: `.claude/rules/event-horizon.md` — core ticket workflows & MCP tools
+- **Grooming Skill**: `.claude/rules/event-horizon.md` — planning & requirement clarification
+- **Implementation Skill**: `.claude/rules/event-horizon.md` — development & validation workflows
+- **Release Skill**: `.claude/rules/event-horizon.md` — release orchestration
+- **Mapping Skill**: `.claude/rules/event-horizon.md` — cross-project documentation (multi-repo groups only)

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { AlertCircle, ArrowUpDown, ChevronDown, ChevronUp, Equal, Inbox, Search, SlidersHorizontal, Tag, User } from 'lucide-react';
+import { AlertCircle, ArrowUpDown, ChevronDown, ChevronUp, Equal, FolderGit2, GitCompare, Inbox, Search, SlidersHorizontal, Tag, User, X } from 'lucide-react';
 import { useApp } from '../AppContext';
 import type { Config } from '../types';
+import type { WorktreeInfo } from '../api';
 import { BoardStatusCluster } from './BoardStatusCluster';
 
 function getTagColor(name: string, config: Config | null) {
@@ -90,6 +91,106 @@ function DropdownItem({
 }
 
 
+/**
+ * Worktree filter chip (FLUX-516) — a dropdown to isolate the board to a single
+ * active worktree's branch, "any" worktree, or off. Replaces the old binary toggle.
+ */
+function WorktreeFilterChip({
+  worktrees,
+  value,
+  onChange,
+}: {
+  worktrees: WorktreeInfo[];
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const { setView, setChangesFocus } = useApp();
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener('mousedown', handler);
+    return () => window.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  const active = value !== '';
+  const selected = value && value !== 'any' ? worktrees.find((w) => w.branch === value) : null;
+  const label =
+    value === '' ? `Worktrees (${worktrees.length})`
+    : value === 'any' ? 'Any worktree'
+    : selected ? (selected.ticketId ?? selected.branch)
+    : value; // a branch whose worktree is gone — still show what's filtered
+
+  return (
+    <div ref={ref} className="relative flex-none">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        title="Isolate the board to a specific worktree"
+        className={`inline-flex min-w-[110px] items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-sm font-medium transition-all ${
+          active
+            ? 'border-primary bg-primary text-white shadow-sm shadow-primary/30'
+            : 'border-primary/40 bg-primary/5 text-primary hover:border-primary hover:bg-primary/10 dark:border-primary/30 dark:bg-primary/10 dark:hover:bg-primary/20'
+        }`}
+      >
+        <FolderGit2 className="h-4 w-4 flex-none" />
+        <span className="max-w-[140px] truncate">{label}</span>
+        <ChevronDown className={`h-3.5 w-3.5 flex-none transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        <div className="absolute left-0 top-full z-50 mt-1 w-60 rounded-xl border border-gray-200 bg-white p-1 shadow-2xl dark:border-white/10 dark:bg-[#1e1f2a]">
+          <DropdownItem selected={value === 'any'} onClick={() => { onChange('any'); setOpen(false); }}>
+            <FolderGit2 className="h-3.5 w-3.5 flex-none text-primary" />
+            <span className="flex-1">Any worktree</span>
+            <span className="text-[10px] text-gray-400">{worktrees.length}</span>
+          </DropdownItem>
+
+          <div className="my-1 border-t border-gray-100 dark:border-white/5" />
+
+          {worktrees.length === 0 ? (
+            <div className="px-2 py-1.5 text-[11px] italic text-gray-400">No active worktrees</div>
+          ) : (
+            worktrees.map((w) => (
+              <DropdownItem key={w.path} selected={value === w.branch} onClick={() => { onChange(w.branch); setOpen(false); }}>
+                <span className="flex-1 truncate">{w.ticketId ?? w.branch}</span>
+                {typeof w.changedFiles === 'number' && w.changedFiles > 0 && (
+                  <span className="rounded-full bg-primary/15 px-1.5 text-[10px] font-semibold text-primary">{w.changedFiles}</span>
+                )}
+              </DropdownItem>
+            ))
+          )}
+
+          {active && (
+            <>
+              <div className="my-1 border-t border-gray-100 dark:border-white/5" />
+              <DropdownItem selected={false} onClick={() => { onChange(''); setOpen(false); }}>
+                <X className="h-3.5 w-3.5 flex-none text-gray-400" />
+                <span className="flex-1">Clear worktree filter</span>
+              </DropdownItem>
+            </>
+          )}
+          <div className="my-1 border-t border-gray-100 dark:border-white/5" />
+          <DropdownItem
+            selected={false}
+            onClick={() => {
+              setChangesFocus(selected ? selected.branch : null);
+              setView('changes');
+              setOpen(false);
+            }}
+          >
+            <GitCompare className="h-3.5 w-3.5 flex-none text-gray-400" />
+            <span className="flex-1">View {selected ? 'these' : 'all'} changes →</span>
+          </DropdownItem>
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface TaskViewControlsProps {
   title: string;
   searchPlaceholder: string;
@@ -118,6 +219,9 @@ export function TaskViewControls({
     setFilterTag,
     filterUnreadOnly,
     setFilterUnreadOnly,
+    filterWorktree,
+    setFilterWorktree,
+    worktrees,
     totalUnreadCount,
     clearTaskFilters,
     config,
@@ -143,6 +247,7 @@ export function TaskViewControls({
     filterPriority !== 'all',
     filterTag !== 'all',
     filterUnreadOnly,
+    filterWorktree !== '',
   ].filter(Boolean).length;
   const activeAdvancedFilterCount = [
     sortOption !== 'default',
@@ -177,6 +282,17 @@ export function TaskViewControls({
           <Inbox className="h-4 w-4" />
           {totalUnreadCount > 0 ? `Unread (${totalUnreadCount})` : 'Unread'}
         </button>
+
+        {/* Worktrees chip — a dropdown to isolate the board to a specific active
+            worktree (or "any"), FLUX-516. Shown when any worktree is active or the
+            filter is set (so it can be cleared). */}
+        {(worktrees.length > 0 || filterWorktree !== '') && (
+          <WorktreeFilterChip
+            worktrees={worktrees}
+            value={filterWorktree}
+            onChange={setFilterWorktree}
+          />
+        )}
 
         <div ref={filtersRef} className="relative flex-none">
           <button

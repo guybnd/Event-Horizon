@@ -1,7 +1,7 @@
 import os from 'os';
 import path from 'path';
 import fs from 'fs/promises';
-import { existsSync } from 'fs';
+import { existsSync, statSync } from 'fs';
 
 export const isPkg: boolean = (process as any).pkg !== undefined;
 
@@ -56,15 +56,34 @@ export async function ensureSeaAssetsExtracted(): Promise<string> {
   const extractDir = path.join(os.tmpdir(), `event-horizon-${manifest.version}`);
   const marker = path.join(extractDir, '.extracted');
 
-  if (!existsSync(marker)) {
+  // Re-extract when the marker is missing OR the running executable is newer
+  // than the marker. The dir is keyed only on version, so a same-version rebuild
+  // (common in dev) would otherwise serve stale embedded assets from a previous
+  // build until the tmp dir was manually cleared. Comparing exe vs marker mtime
+  // detects "the binary changed but the cache didn't". (FLUX-496)
+  let needsExtract = !existsSync(marker);
+  if (!needsExtract) {
+    try {
+      if (statSync(process.execPath).mtimeMs > statSync(marker).mtimeMs) needsExtract = true;
+    } catch (err) {
+      // Can't compare mtimes — favour freshness over speed. Serving stale assets
+      // is the exact failure this guard exists to prevent, so re-extract rather
+      // than trust a cache we can't validate. (FLUX-496)
+      console.warn(`Could not stat exe/marker to check asset freshness — re-extracting: ${(err as Error).message}`);
+      needsExtract = true;
+    }
+  }
+
+  if (needsExtract) {
     console.log(`Extracting embedded assets to ${extractDir} …`);
+    await fs.rm(extractDir, { recursive: true, force: true }); // drop any stale prior extract
     await fs.mkdir(extractDir, { recursive: true });
     for (const key of manifest.keys) {
       const destPath = path.join(extractDir, ...key.split('/'));
       await fs.mkdir(path.dirname(destPath), { recursive: true });
       await fs.writeFile(destPath, Buffer.from(getRawAsset(key)));
     }
-    await fs.writeFile(marker, '');
+    await fs.writeFile(marker, ''); // mtime = now (> exe mtime) so subsequent runs skip
   }
 
   _seaExtractDir = extractDir;

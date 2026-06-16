@@ -905,6 +905,48 @@ button:not(:disabled):active {
   animation: live-pill-pulse 900ms cubic-bezier(0.22, 1, 0.32, 1);
 }
 
+/* The logo doubles as the theme selector. A slow, occasional accent glow hints
+   that it is interactive without being noisy. Motivated affordance only. */
+@keyframes eh-logo-breathe {
+  0%, 86%, 100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+  90% {
+    box-shadow: 0 0 0 3px var(--eh-accent-glow), 0 0 14px var(--eh-accent-glow);
+  }
+  94% {
+    box-shadow: 0 0 0 2px var(--eh-accent-glow), 0 0 10px var(--eh-accent-glow);
+  }
+}
+
+.eh-logo-button {
+  animation: eh-logo-breathe 7s ease-in-out infinite;
+}
+
+/* Matrix theme: the card description used a flat gray that washed out against the
+   green-tinted card. Force a bright near-white green so it reads clearly.
+   !important to beat the Tailwind `dark:text-gray-400` utility on the element. */
+:root[data-theme="matrix"] .eh-card-desc {
+  color: #e3ffdd !important;
+}
+
+/* Unread-comment badge: a soft attention ring so it reads at a glance. */
+@keyframes eh-unread-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.5); }
+  50% { box-shadow: 0 0 0 5px rgba(245, 158, 11, 0); }
+}
+
+.eh-unread-badge {
+  animation: eh-unread-pulse 2.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eh-logo-button,
+  .eh-unread-badge {
+    animation: none;
+  }
+}
+
 .docs-editor-shell {
   @apply overflow-hidden;
 }

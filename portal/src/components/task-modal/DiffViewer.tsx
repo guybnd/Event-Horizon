@@ -1,20 +1,12 @@
 import { useEffect, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { fetchTaskDiff } from '../../api';
+import { DiffLines } from '../DiffLines';
 
 interface DiffViewerProps {
   taskId: string;
   file: string;
   onBack: () => void;
-}
-
-function classifyLine(line: string): string {
-  if (line.startsWith('+++') || line.startsWith('---')) return 'text-gray-400';
-  if (line.startsWith('@@')) return 'text-violet-600 dark:text-violet-400';
-  if (line.startsWith('diff --git') || line.startsWith('index ')) return 'text-gray-500';
-  if (line.startsWith('+')) return 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300';
-  if (line.startsWith('-')) return 'bg-red-500/10 text-red-700 dark:text-red-300';
-  return 'text-gray-700 dark:text-gray-300';
 }
 
 export function DiffViewer({ taskId, file, onBack }: DiffViewerProps) {
@@ -37,8 +29,6 @@ export function DiffViewer({ taskId, file, onBack }: DiffViewerProps) {
     return () => { cancelled = true; };
   }, [taskId, file]);
 
-  const lines = content ? content.split('\n') : [];
-
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-3 border-b border-gray-200 px-6 py-3 dark:border-white/10">
@@ -54,13 +44,7 @@ export function DiffViewer({ taskId, file, onBack }: DiffViewerProps) {
       <div className="flex-1 overflow-auto px-6 py-4">
         {error && <p className="text-xs text-red-500">{error}</p>}
         {!error && content === null && <p className="text-xs text-gray-400">Loading diff…</p>}
-        {!error && content !== null && lines.length > 0 && (
-          <pre className="text-[11px] leading-relaxed font-mono whitespace-pre">
-            {lines.map((line, i) => (
-              <div key={i} className={`${classifyLine(line)} px-2`}>{line || ' '}</div>
-            ))}
-          </pre>
-        )}
+        {!error && content !== null && <DiffLines content={content} />}
       </div>
     </div>
   );

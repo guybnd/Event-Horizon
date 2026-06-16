@@ -5,10 +5,10 @@ import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { Task, TaskLiveEvent } from '../types';
 import { normalizeSubtaskId } from '../types';
-import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, MessageCircle, Bot, SendHorizontal, Maximize2, Zap, Layers, MousePointerClick, Play, Undo2, GitBranch, Copy, Check, FileText } from 'lucide-react';
+import { User, GripVertical, AlertCircle, ChevronUp, ChevronDown, Equal, MessageCircle, Bot, SendHorizontal, Maximize2, Zap, Layers, MousePointerClick, Play, Undo2, GitBranch, GitCompare, FolderGit2, Copy, Check, FileText, X, Loader2 } from 'lucide-react';
 import { TokenBadge } from './TokenBadge';
 import { useApp } from '../AppContext';
-import { sendTaskCliInput, updateTask, fetchWorkflows, type WorkflowTemplate } from '../api';
+import { sendTaskCliInput, updateTask, fetchWorkflows, detachWorktree, type WorkflowTemplate } from '../api';
 import { runAgentAction, launchOrchestration, launchPhaseDefault, getOrchestrationMode, phaseCombiner, phaseLaunchStatus, resolvePhaseDefaultId, statusToPhase, type LaunchPhase } from '../agentActions';
 import { OrchestrationLauncher, type OrchestrationLaunchPlan } from './OrchestrationLauncher';
 import { getArchiveStatus, getReadyForMergeStatus, isPromptableStatus, isTaskAwaitingInput, relativeTime } from '../workflow';
@@ -21,6 +21,13 @@ import { ContextMenu } from './ContextMenu';
 import { StartTaskPrompt } from './task-modal/StartTaskPrompt';
 import { StatusBadge } from './StatusBadge';
 import { getStatusColorClass, tintFill, type StatusTint } from '../statusStyles';
+
+function reporterInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
 
 export const TaskCard = memo(function TaskCard({
   task,
@@ -42,7 +49,23 @@ export const TaskCard = memo(function TaskCard({
   hideStatusBadge?: boolean;
 }) {
   const EFFORT_OPTIONS = ['None', 'XS', 'S', 'M', 'L', 'XL'];
-  const { openTaskModal, openTaskFullView, config, saveConfig, currentUser, triggerRefresh, readComments, ensureReadStateLoaded, markCommentRead: ctxMarkCommentRead, markAllCommentsRead: ctxMarkAllCommentsRead, taskById } = useApp();
+  const { openTaskModal, openTaskFullView, config, saveConfig, currentUser, triggerRefresh, readComments, ensureReadStateLoaded, markCommentRead: ctxMarkCommentRead, markAllCommentsRead: ctxMarkAllCommentsRead, taskById, worktreeBranches, worktrees, refreshWorktrees, setView, setChangesFocus } = useApp();
+  const hasWorktree = !!task.branch && worktreeBranches.has(task.branch);
+  const worktreeChangedFiles = useMemo(
+    () => (task.branch ? worktrees.find((w) => w.branch === task.branch)?.changedFiles ?? 0 : 0),
+    [worktrees, task.branch],
+  );
+  // Which Changes-view section this card links to: its live worktree (if it has
+  // uncommitted changes) or its stored committed diff (Done/finished tickets — the
+  // "Recently merged" section, which only carries done-ish statuses).
+  const hasStoredDiff = ['Done', 'Released', 'Archived'].includes(task.status) && (task.diffSummary?.length ?? 0) > 0;
+  const diffFocusKey = hasWorktree && worktreeChangedFiles > 0 && task.branch
+    ? task.branch
+    : hasStoredDiff
+      ? `done:${task.id}`
+      : null;
+  const [detachState, setDetachState] = useState<'idle' | 'confirm' | 'busy'>('idle');
+  const [detachMsg, setDetachMsg] = useState<string | null>(null);
   const [priorityMenuOpen, setPriorityMenuOpen] = useState(false);
   const [effortMenuOpen, setEffortMenuOpen] = useState(false);
   const [assigneeMenuOpen, setAssigneeMenuOpen] = useState(false);
@@ -351,6 +374,29 @@ export const TaskCard = memo(function TaskCard({
       triggerRefresh();
     } finally {
       setActionBusy(false);
+    }
+  };
+
+  // Inline "close worktree" (detach): removes the dedicated worktree but keeps the
+  // branch, surfacing any uncommitted work back onto the main tree. Optimistic —
+  // refreshes worktrees + tasks so the badge clears without a manual page reload.
+  const handleCardDetach = async () => {
+    setDetachState('busy');
+    try {
+      const r = await detachWorktree(task.id);
+      const label = r.outcome === 'applied'
+        ? 'Work returned to main tree'
+        : r.outcome === 'stashed'
+          ? `Kept as stash ${r.stashRef?.slice(0, 8) ?? ''}`.trim()
+          : 'Worktree closed';
+      setDetachMsg(label);
+      refreshWorktrees();
+      triggerRefresh();
+      setTimeout(() => { setDetachMsg(null); setDetachState('idle'); }, 4000);
+    } catch (err) {
+      setDetachMsg(err instanceof Error ? err.message.slice(0, 80) : 'Close failed');
+      setDetachState('idle');
+      setTimeout(() => setDetachMsg(null), 5000);
     }
   };
 
@@ -973,7 +1019,7 @@ export const TaskCard = memo(function TaskCard({
             }}
             className={`absolute z-20 flex items-center gap-1 rounded-full font-semibold transition-all duration-200 ${
               hasUnread
-                ? `${isPromptStatus ? '-top-3.5 right-7' : '-top-3.5 right-3'} px-2.5 py-1 text-[10px] bg-amber-400 text-white shadow-md hover:bg-amber-500 hover:scale-110 active:scale-95`
+                ? `${isPromptStatus ? '-top-3.5 right-7' : '-top-3.5 right-3'} eh-unread-badge px-2.5 py-1 text-[11px] font-bold bg-amber-400 text-amber-950 ring-2 ring-white shadow-md hover:bg-amber-300 hover:scale-110 active:scale-95 dark:ring-[#1f2028]`
                 : comments.length > 0
                   ? 'top-2 right-2 px-2 py-0.5 text-[10px] bg-gray-100/80 text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-primary/10 hover:text-primary hover:scale-105 active:scale-95 dark:bg-black/30 dark:text-gray-500 dark:hover:bg-primary/15 dark:hover:text-primary'
                   : 'top-2 right-2 p-1 text-gray-300 opacity-0 group-hover:opacity-100 hover:text-primary hover:scale-105 active:scale-95 dark:text-gray-600 dark:hover:text-primary'
@@ -1151,7 +1197,7 @@ export const TaskCard = memo(function TaskCard({
               </div>
             </div>
             
-            <p className="mb-3 text-xs leading-relaxed text-gray-600 line-clamp-3 dark:text-gray-400">
+            <p className="eh-card-desc mb-3 text-xs leading-relaxed text-gray-600 line-clamp-3 dark:text-gray-400">
               {snippet}
             </p>
 
@@ -1191,22 +1237,77 @@ export const TaskCard = memo(function TaskCard({
             )}
 
             {task.branch && !isOverlay && (
-              <div className="mb-2 flex min-w-0 max-w-full items-center gap-1.5 overflow-hidden rounded-md border border-gray-100 bg-gray-50 px-2 py-1 text-[10px] font-mono text-gray-500 dark:border-white/5 dark:bg-black/20 dark:text-gray-400">
-                <GitBranch className="h-2.5 w-2.5 shrink-0 text-gray-400" />
-                <span className="min-w-0 truncate">{task.branch}</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void navigator.clipboard.writeText(task.branch!).then(() => {
-                      setBranchCopied(true);
-                      setTimeout(() => setBranchCopied(false), 1500);
-                    });
-                  }}
-                  title="Copy branch name"
-                  className="shrink-0 rounded p-0.5 transition-colors hover:text-gray-700 dark:hover:text-gray-200"
-                >
-                  {branchCopied ? <Check className="h-2.5 w-2.5 text-emerald-500" /> : <Copy className="h-2.5 w-2.5 opacity-50" />}
-                </button>
+              <div
+                className={`mb-2 flex min-w-0 max-w-full items-center gap-1.5 overflow-hidden rounded-md border px-2 py-1 text-[10px] font-mono ${hasWorktree ? 'border-primary/30 bg-primary/5 text-primary' : 'border-gray-100 bg-gray-50 text-gray-500 dark:border-white/5 dark:bg-black/20 dark:text-gray-400'}`}
+                title={hasWorktree ? 'Running in a dedicated worktree' : undefined}
+              >
+                {detachMsg ? (
+                  <span className="min-w-0 flex-1 truncate text-primary/80">{detachMsg}</span>
+                ) : (
+                  <>
+                    {hasWorktree
+                      ? <FolderGit2 className="h-2.5 w-2.5 shrink-0" />
+                      : <GitBranch className="h-2.5 w-2.5 shrink-0 text-gray-400" />}
+                    <span className="min-w-0 flex-1 truncate">{task.branch}</span>
+                    {hasWorktree && worktreeChangedFiles > 0 && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setChangesFocus(task.branch!);
+                          setView('changes');
+                        }}
+                        title={`${worktreeChangedFiles} file${worktreeChangedFiles === 1 ? '' : 's'} changed vs master — view diffs`}
+                        className="shrink-0 rounded-full bg-primary/15 px-1.5 py-px text-[9px] font-semibold tabular-nums transition-colors hover:bg-primary/25"
+                      >
+                        {worktreeChangedFiles}
+                      </button>
+                    )}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void navigator.clipboard.writeText(task.branch!).then(() => {
+                          setBranchCopied(true);
+                          setTimeout(() => setBranchCopied(false), 1500);
+                        });
+                      }}
+                      title="Copy branch name"
+                      className="shrink-0 rounded p-0.5 transition-colors hover:text-gray-700 dark:hover:text-gray-200"
+                    >
+                      {branchCopied ? <Check className="h-2.5 w-2.5 text-emerald-500" /> : <Copy className="h-2.5 w-2.5 opacity-50" />}
+                    </button>
+                    {hasWorktree && detachState === 'busy' && (
+                      <Loader2 className="h-2.5 w-2.5 shrink-0 animate-spin" />
+                    )}
+                    {hasWorktree && detachState === 'idle' && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setDetachState('confirm'); }}
+                        title="Close worktree — return any uncommitted work to the main tree (keeps the branch)"
+                        className="shrink-0 rounded p-0.5 transition-colors hover:bg-primary/10 hover:text-primary"
+                      >
+                        <Undo2 className="h-2.5 w-2.5 opacity-60" />
+                      </button>
+                    )}
+                    {hasWorktree && detachState === 'confirm' && (
+                      <span className="flex shrink-0 items-center gap-0.5">
+                        <span className="text-[9px] opacity-70">Close?</span>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); void handleCardDetach(); }}
+                          title="Confirm: close worktree, return work to main"
+                          className="rounded p-0.5 text-emerald-500 transition-colors hover:bg-emerald-500/10"
+                        >
+                          <Check className="h-2.5 w-2.5" />
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setDetachState('idle'); }}
+                          title="Cancel"
+                          className="rounded p-0.5 text-gray-400 transition-colors hover:bg-gray-500/10"
+                        >
+                          <X className="h-2.5 w-2.5" />
+                        </button>
+                      </span>
+                    )}
+                  </>
+                )}
               </div>
             )}
 
@@ -1339,7 +1440,32 @@ export const TaskCard = memo(function TaskCard({
                 onToggle={config ? () => void saveConfig({ ...config, tokenDisplayMode: config.tokenDisplayMode === 'tokens' ? 'cost' : 'tokens' }) : undefined}
               />
 
+              {diffFocusKey && !isOverlay && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); setChangesFocus(diffFocusKey); setView('changes'); }}
+                  title="View this ticket's diffs in the Changes viewer"
+                  className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-gray-400 transition-colors hover:bg-primary/10 hover:text-primary"
+                >
+                  <GitCompare className="h-3 w-3" />
+                  <span>Diffs</span>
+                </button>
+              )}
+
               <div ref={assigneeMenuRef} className="relative ml-auto flex items-center gap-1.5">
+                {task.createdBy && (
+                  <span
+                    title={`Reporter: ${task.createdBy}`}
+                    className="flex items-center gap-1 rounded px-1 py-0.5 text-[10px] font-medium text-gray-500 dark:text-gray-400"
+                  >
+                    <span
+                      className="flex h-4 w-4 items-center justify-center rounded-full text-[7px] font-bold uppercase leading-none text-white ring-1 ring-white/25"
+                      style={{ background: 'linear-gradient(135deg, var(--eh-accent), var(--eh-accent-hover))' }}
+                    >
+                      {reporterInitials(task.createdBy)}
+                    </span>
+                    <span className="max-w-[72px] truncate">{task.createdBy}</span>
+                  </span>
+                )}
                 {shouldShowProgress && latestProgress && (
                   <span
                     className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300"
@@ -1929,7 +2055,7 @@ export const TaskCard = memo(function TaskCard({
           task={task}
           position={contextMenuPos}
           onClose={() => setContextMenuPos(null)}
-          onLaunchAgent={() => openLauncherWithTemplate(singleDefaultId)}
+          onLaunchAgent={(templateId) => openLauncherWithTemplate(templateId ?? singleDefaultId)}
         />
       )}
 

@@ -31,6 +31,56 @@ function git(cwd: string, args: string[]): Promise<{ stdout: string; stderr: str
   return execFileAsync('git', args, { cwd, windowsHide: true });
 }
 
+/**
+ * Local-per-workspace state that must NOT travel through the shared `flux-data`
+ * branch (FLUX-532). `config.json` carries UI prefs + board structure (project
+ * keys, columns) and `read-state.json` is per-user — syncing them made settings
+ * revert on every fetch and leak between clones. They stay on disk locally; they
+ * just stop being version-controlled in the orphan store.
+ */
+const STORE_LOCAL_IGNORES = ['config.json', 'read-state.json'];
+
+/** Ensure the store-root `.gitignore` lists the local-only files. Returns true if it changed. */
+async function ensureStoreLocalGitignore(storeDir: string): Promise<boolean> {
+  const gi = path.join(storeDir, '.gitignore');
+  const existing = await fs.readFile(gi, 'utf-8').catch(() => '');
+  const present = new Set(existing.split('\n').map((l) => l.trim()).filter(Boolean));
+  const missing = STORE_LOCAL_IGNORES.filter((e) => !present.has(e));
+  if (missing.length === 0) return false;
+  const prefix = existing.length === 0
+    ? '# Local-per-workspace state — never synced through flux-data (FLUX-532)\n'
+    : existing.endsWith('\n') ? '' : '\n';
+  await fs.writeFile(gi, existing + prefix + missing.join('\n') + '\n', 'utf-8');
+  return true;
+}
+
+/**
+ * Keep `config.json` / `read-state.json` out of `flux-data` sync: seed the store
+ * `.gitignore` and untrack any copies an older engine already committed (one-time
+ * migration). The working files are preserved (`rm --cached`), so the local
+ * machine keeps its settings. Idempotent — safe to run on every startup.
+ */
+export async function excludeLocalConfigFromSync(storeDir: string): Promise<void> {
+  if (!existsSync(storeDir)) return;
+  try {
+    const seeded = await ensureStoreLocalGitignore(storeDir);
+    const { stdout: tracked } = await git(storeDir, ['ls-files', ...STORE_LOCAL_IGNORES]).catch(() => ({ stdout: '' }));
+    const hadTracked = tracked.trim().length > 0;
+    if (hadTracked) {
+      await git(storeDir, ['rm', '--cached', '--ignore-unmatch', ...STORE_LOCAL_IGNORES]).catch(() => {});
+    }
+    if (seeded || hadTracked) {
+      await git(storeDir, ['add', '.gitignore']).catch(() => {});
+      const { stdout: status } = await git(storeDir, ['status', '--porcelain']).catch(() => ({ stdout: '' }));
+      if (status.trim()) {
+        await git(storeDir, ['commit', '-m', 'flux: stop syncing local config (config.json, read-state.json)']).catch(() => {});
+      }
+    }
+  } catch (err: any) {
+    console.log(`[storage-sync] excludeLocalConfigFromSync skipped: ${err.message}`);
+  }
+}
+
 async function gitWithRetry(cwd: string, args: string[], maxRetries = 3): Promise<{ stdout: string; stderr: string }> {
   let attempts = 0;
   while (attempts < maxRetries) {
@@ -64,6 +114,8 @@ export async function attachWorktreeIfPresent(workspaceRoot: string): Promise<vo
     }
     // Scaffold dirs for all modules that declare one — idempotent, safe every startup.
     await scaffoldModuleDirs(storeDir, MEMORY_GITIGNORE_DIRS);
+    // Keep local config/read-state out of flux-data (and migrate older tracked copies).
+    await excludeLocalConfigFromSync(storeDir);
     return;
   }
 
@@ -74,6 +126,7 @@ export async function attachWorktreeIfPresent(workspaceRoot: string): Promise<vo
 
     await git(workspaceRoot, ['worktree', 'add', '-b', 'flux-data', storeDir, 'origin/flux-data']);
     await scaffoldModuleDirs(storeDir, MEMORY_GITIGNORE_DIRS);
+    await excludeLocalConfigFromSync(storeDir);
     console.log('[storage-sync] Re-attached .flux-store worktree from origin/flux-data');
   } catch (err: any) {
     console.log(`[storage-sync] attachWorktreeIfPresent skipped: ${err.message}`);
@@ -107,6 +160,7 @@ export async function migrateToOrphan(workspaceRoot: string): Promise<void> {
     }
 
     await scaffoldModuleDirs(storeDir, MEMORY_GITIGNORE_DIRS);
+    await excludeLocalConfigFromSync(storeDir);
     return;
   }
 
@@ -143,6 +197,10 @@ export async function migrateToOrphan(workspaceRoot: string): Promise<void> {
     await fs.cp(assetsSrc, path.join(storeDir, 'assets'), { recursive: true });
     await fs.rm(assetsSrc, { recursive: true, force: true });
   }
+
+  // Seed the store .gitignore FIRST so the initial commit never includes the
+  // local-only config.json / read-state.json just moved in above (FLUX-532).
+  await ensureStoreLocalGitignore(storeDir);
 
   // Initial commit in the worktree
   await gitWithRetry(storeDir, ['add', '-A']);

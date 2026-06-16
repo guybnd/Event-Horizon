@@ -33,14 +33,14 @@ describe('digestHistoryForAgent', () => {
     expect(history[0].outcome).toBe('Implemented the thing');
   });
 
-  it('keeps comments, status changes, and activity entries intact', () => {
+  it('drops status_change entries but keeps comments and activity (FLUX-499)', () => {
     const entries = [
       comment('please also handle X', '2026-06-01T09:00:00.000Z'),
       { type: 'status_change', from: 'Todo', to: 'In Progress', user: 'Agent', date: '2026-06-01T09:01:00.000Z' },
       { type: 'activity', user: 'Agent', comment: 'Validation passed', date: '2026-06-01T09:02:00.000Z' },
     ];
     const { history, olderHistoryEntries } = digestHistoryForAgent(entries, 20);
-    expect(history).toEqual(entries);
+    expect(history).toEqual([entries[0], entries[2]]); // status_change filtered out
     expect(olderHistoryEntries).toBe(0);
   });
 
@@ -81,6 +81,102 @@ describe('digestHistoryForAgent', () => {
     expect(history).toHaveLength(1);
     expect(history[0].comment).toBe('b');
     expect(olderHistoryEntries).toBe(1);
+  });
+});
+
+describe('digestHistoryForAgent — summary-gated collapse (FLUX-503)', () => {
+  const c = (text: string, date: string, extra: Record<string, any> = {}) =>
+    ({ type: 'comment', user: 'Agent', comment: text, date, id: `c-${date}`, ...extra });
+
+  it('collapses older agent comments that have a summary, keeps last keepRecent full', () => {
+    const entries = [
+      c('old long body '.repeat(20), '2026-06-01T00:00:00.000Z', { summary: 'old: did X' }),
+      c('mid long body '.repeat(20), '2026-06-02T00:00:00.000Z', { summary: 'mid: did Y' }),
+      c('r1', '2026-06-03T00:00:00.000Z'),
+      c('r2', '2026-06-04T00:00:00.000Z'),
+      c('r3', '2026-06-05T00:00:00.000Z'),
+    ];
+    const { history, collapsedCount } = digestHistoryForAgent(entries, 20, 3);
+    expect(collapsedCount).toBe(2);
+    expect(history[0]).toMatchObject({ collapsed: true, summary: 'old: did X', id: 'c-2026-06-01T00:00:00.000Z' });
+    expect(history[0].comment).toBeUndefined(); // full body dropped
+    expect(history[2].comment).toBe('r1'); // last 3 kept full
+    expect(history[4].comment).toBe('r3');
+  });
+
+  it('never collapses an entry without a summary (no forced truncation)', () => {
+    const entries = [
+      c('old, no summary', '2026-06-01T00:00:00.000Z'),
+      c('a', '2026-06-02T00:00:00.000Z'), c('b', '2026-06-03T00:00:00.000Z'), c('d', '2026-06-04T00:00:00.000Z'),
+    ];
+    const { history, collapsedCount } = digestHistoryForAgent(entries, 20, 3);
+    expect(collapsedCount).toBeUndefined();
+    expect(history[0].comment).toBe('old, no summary');
+  });
+
+  it('never collapses a pinned entry even when old', () => {
+    const entries = [
+      c('pinned old', '2026-06-01T00:00:00.000Z', { summary: 's', pin: true }),
+      c('a', '2026-06-02T00:00:00.000Z'), c('b', '2026-06-03T00:00:00.000Z'), c('d', '2026-06-04T00:00:00.000Z'),
+    ];
+    const { history, collapsedCount } = digestHistoryForAgent(entries, 20, 3);
+    expect(collapsedCount).toBeUndefined();
+    expect(history[0].comment).toBe('pinned old');
+    expect(history[0].pin).toBe(true);
+  });
+
+  it('keepRecent=0 collapses every summarized entry', () => {
+    const entries = [
+      c('x', '2026-06-01T00:00:00.000Z', { summary: 'sx' }),
+      c('y', '2026-06-02T00:00:00.000Z', { summary: 'sy' }),
+    ];
+    const { history, collapsedCount } = digestHistoryForAgent(entries, 20, 0);
+    expect(collapsedCount).toBe(2);
+    expect(history.every((e: any) => e.collapsed)).toBe(true);
+  });
+
+  it('expand un-collapses only the named ids (FLUX-504)', () => {
+    const entries = [
+      c('old A body '.repeat(20), '2026-06-01T00:00:00.000Z', { summary: 'A' }),
+      c('old B body '.repeat(20), '2026-06-02T00:00:00.000Z', { summary: 'B' }),
+      c('r1', '2026-06-03T00:00:00.000Z'), c('r2', '2026-06-04T00:00:00.000Z'), c('r3', '2026-06-05T00:00:00.000Z'),
+    ];
+    const { history } = digestHistoryForAgent(entries, 20, 3, { expand: ['c-2026-06-01T00:00:00.000Z'] });
+    expect(history[0].comment).toContain('old A body'); // expanded → full
+    expect(history[0].collapsed).toBeUndefined();
+    expect(history[1].collapsed).toBe(true); // still collapsed
+  });
+
+  it('fullHistory returns everything uncollapsed (FLUX-504)', () => {
+    const entries = [
+      c('old A body '.repeat(20), '2026-06-01T00:00:00.000Z', { summary: 'A' }),
+      c('old B body '.repeat(20), '2026-06-02T00:00:00.000Z', { summary: 'B' }),
+      c('r1', '2026-06-03T00:00:00.000Z'), c('r2', '2026-06-04T00:00:00.000Z'), c('r3', '2026-06-05T00:00:00.000Z'),
+    ];
+    const { history, collapsedCount } = digestHistoryForAgent(entries, 20, 3, { fullHistory: true });
+    expect(collapsedCount).toBeUndefined();
+    expect(history.every((e: any) => !e.collapsed)).toBe(true);
+    expect(history[0].comment).toContain('old A body');
+  });
+
+  it('does not collapse a summarized entry that has no id (FLUX-504 safety)', () => {
+    const noId = { type: 'activity', user: 'Agent', comment: 'long body '.repeat(50), date: '2026-06-01T00:00:00.000Z', summary: 'act sum' };
+    const entries = [noId, c('a', '2026-06-02T00:00:00.000Z'), c('b', '2026-06-03T00:00:00.000Z'), c('d', '2026-06-04T00:00:00.000Z')];
+    const { history, collapsedCount } = digestHistoryForAgent(entries, 20, 3);
+    expect(collapsedCount).toBeUndefined(); // id-less entry never collapses
+    expect(history[0].comment).toContain('long body'); // kept full
+    expect(history[0].collapsed).toBeUndefined();
+  });
+
+  it('collapses old agent_session entries to their outcome, keeping sessionId (FLUX-507)', () => {
+    const entries = [
+      sessionEntry('s-old', 500), // old → collapse to outcome
+      c('r1', '2026-06-03T00:00:00.000Z'), c('r2', '2026-06-04T00:00:00.000Z'), c('r3', '2026-06-05T00:00:00.000Z'),
+    ];
+    const { history, collapsedCount } = digestHistoryForAgent(entries, 20, 3);
+    expect(collapsedCount).toBe(1);
+    expect(history[0]).toMatchObject({ type: 'agent_session', sessionId: 's-old', summary: 'Implemented the thing', collapsed: true });
+    expect(history[0].progress).toBeUndefined();
   });
 });
 

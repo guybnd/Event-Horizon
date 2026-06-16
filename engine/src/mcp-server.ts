@@ -11,9 +11,11 @@ import { configCache, autoRegisterUnknownTags } from './config.js';
 import { broadcastEvent } from './events.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
 import { normalizeHistoryEntries, buildActivityEntry } from './history.js';
-import { getCliWorkspace, getActiveFluxDir, getWorkspacesList } from './workspace.js';
-import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, checkGhAuth, captureDiff, getCurrentCommit } from './branch-manager.js';
-import { getActiveSessionsForTask } from './session-store.js';
+import { getCliWorkspace, getActiveFluxDir, getWorkspacesList, workspaceRoot } from './workspace.js';
+import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, checkGhAuth, captureDiff, resolveCommit } from './branch-manager.js';
+import { createTaskWorktree, detachTaskWorktree, taskWorktreeDir } from './task-worktree.js';
+import { existsSync } from 'fs';
+import { getActiveSessionsForTask, stopAllSessionsForTask } from './session-store.js';
 import { generatePromptNotification, dismissNotificationsForTicket } from './notifications.js';
 import { getGroupContext, getMemberBinding, groupDocsLabel, summarizeGroup, groupDocPathToStoreRelative, activeGroupDocsLabel } from './group.js';
 import { submitGroupEdit } from './group-edit.js';
@@ -45,7 +47,13 @@ export async function startMcpServer(): Promise<void> {
   const originalLog = console.log;
   console.log = (...args: any[]) => console.error(...args);
 
-  const workspacePath = getCliWorkspace();
+  // Prefer the canonical workspace the engine pins via env (FLUX-516). An agent
+  // running in a git worktree has cwd = the worktree, so `.mcp.json`'s
+  // `--workspace .` would otherwise bind this server to the worktree's own (empty)
+  // store instead of the real ticket store. EH_CANONICAL_WORKSPACE is the engine's
+  // active workspace root, so worktree agents see and update their real tickets.
+  const envWorkspace = process.env.EH_CANONICAL_WORKSPACE;
+  const workspacePath = envWorkspace ? path.resolve(envWorkspace) : getCliWorkspace();
   if (!workspacePath) {
     console.error('MCP server requires --workspace <path> argument');
     process.exit(1);
@@ -62,15 +70,17 @@ export async function startMcpServer(): Promise<void> {
 
   server.tool(
     'get_ticket',
-    'Read a ticket by ID — returns frontmatter, body, and recent history. agent_session entries are digested to one-line summaries (progress dropped, progressCount kept); history is windowed to the most recent entries, with the count of omitted older ones in olderHistoryEntries.',
+    'Read a ticket by ID — returns frontmatter, body, and recent history. agent_session entries are digested to one-line summaries (progress dropped, progressCount kept); history is windowed to the most recent entries, with the count of omitted older ones in olderHistoryEntries. Older entries that carry an agent summary are shown collapsed ({summary, id, collapsed:true}); pass their ids in `expand` to get the full text (or `fullHistory:true` for everything, discouraged).',
     {
       ticketId: z.string().describe('Ticket ID, e.g. FLUX-42'),
       historyLimit: z.number().int().positive().optional().describe('Max history entries to return (default 20)'),
+      expand: z.array(z.string()).optional().describe('History entry ids to return in FULL (un-collapse). Pass the `id` shown on a collapsed entry when its summary is not enough.'),
+      fullHistory: z.boolean().optional().describe('Return all history uncollapsed. Discouraged — defeats the digest and re-inflates context; prefer expand:[ids].'),
     },
-    async ({ ticketId, historyLimit }) => {
+    async ({ ticketId, historyLimit, expand, fullHistory }) => {
       const task = tasksCache[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`);
-      const { _path, ...output } = serializeTaskForAgent(task, historyLimit);
+      const { _path, ...output } = serializeTaskForAgent(task, historyLimit, { expand, fullHistory });
       return jsonResult(output);
     },
   );
@@ -342,13 +352,7 @@ export async function startMcpServer(): Promise<void> {
         entries.push({ type: 'comment', user: 'Agent', comment, date: new Date().toISOString() });
       }
 
-      // Capture baselineCommit on first move to In Progress. This is the diff anchor
-      // for finish_ticket when the ticket doesn't have a branch.
       const extraFields: Record<string, any> = {};
-      if (newStatus === 'In Progress' && !task.baselineCommit) {
-        const head = await getCurrentCommit();
-        if (head) extraFields.baselineCommit = head;
-      }
 
       // Clear swimlane when moving out of a blocked state (e.g. user answered the question)
       if (task.swimlane && newStatus !== requireInputStatus) {
@@ -484,13 +488,19 @@ export async function startMcpServer(): Promise<void> {
       ticketId: z.string().describe('Ticket ID'),
       comment: z.string().describe('Comment text'),
       user: z.string().optional().describe('Author of the comment (default: Agent)'),
+      summary: z.string().optional().describe('Faithful one-paragraph summary of this comment. Once it ages out of the recent window, the agent digest shows the summary instead of the full text (full text still fetchable on demand). Write it for a substantial comment; preserve the decision/why/anything actionable — concise but NOT lossy. Skip for short comments.'),
+      pin: z.boolean().optional().describe('Pin this comment so it is NEVER collapsed in the agent digest (use for review handoffs / key decisions that must always stay visible in full).'),
     },
-    async ({ ticketId, comment, user }) => {
+    async ({ ticketId, comment, user, summary, pin }) => {
       const task = tasksCache[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`);
 
       const actor = user || 'Agent';
-      const entries = [{ type: 'comment', user: actor, comment, date: new Date().toISOString() }];
+      const entries = [{
+        type: 'comment', user: actor, comment, date: new Date().toISOString(),
+        ...(summary && summary.trim() ? { summary: summary.trim() } : {}),
+        ...(pin ? { pin: true } : {}),
+      }];
       const result = await updateTaskWithHistory(ticketId, { entries, updatedBy: actor });
       if (!result) return errorResult(`Failed to update ${ticketId}`);
       broadcastEvent('taskUpdated', { id: ticketId });
@@ -504,13 +514,19 @@ export async function startMcpServer(): Promise<void> {
     {
       ticketId: z.string().describe('Ticket ID'),
       message: z.string().describe('Progress message'),
+      summary: z.string().optional().describe('Faithful summary shown in the agent digest once this note ages out of the recent window (full text fetchable on demand). Write it for a long note; concise but not lossy. Skip for short ones.'),
+      pin: z.boolean().optional().describe('Pin so this note is never collapsed in the agent digest.'),
     },
-    async ({ ticketId, message }) => {
+    async ({ ticketId, message, summary, pin }) => {
       const task = tasksCache[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`);
 
       const activityTimestamp = new Date().toISOString();
-      const entries = [buildActivityEntry(message, 'Agent', activityTimestamp)];
+      const extra: Record<string, unknown> = {
+        ...(summary && summary.trim() ? { summary: summary.trim() } : {}),
+        ...(pin ? { pin: true } : {}),
+      };
+      const entries = [buildActivityEntry(message, 'Agent', activityTimestamp, extra)];
       const result = await updateTaskWithHistory(ticketId, { entries, updatedBy: 'Agent' });
       if (!result) return errorResult(`Failed to update ${ticketId}`);
       broadcastEvent('taskUpdated', { id: ticketId });
@@ -572,6 +588,22 @@ export async function startMcpServer(): Promise<void> {
 
       // Capture diff summary + sidecar file. Best-effort — failure here must not block finish.
       try {
+        // Lazy repair: if baselineCommit is missing at finish (ticket never went through the
+        // launch hook), anchor it at HEAD's parent. By finish time the ticket's commit is
+        // already HEAD, so stamping HEAD would yield an empty HEAD..HEAD range — the parent
+        // gives the plan's intended HEAD~1..HEAD fallback. If the parent is unavailable (root
+        // commit) leave it null and let captureDiff handle it.
+        if (!task.branch && !task.baselineCommit) {
+          const parent = await resolveCommit('HEAD~1');
+          if (parent) {
+            await updateTaskWithHistory(ticketId, {
+              updatedBy: 'Agent',
+              extraFields: { baselineCommit: parent },
+            });
+            task.baselineCommit = parent;
+          }
+        }
+
         const diff = await captureDiff(task.branch ?? null, task.baselineCommit ?? null);
         if (diff && diff.summary.length > 0) {
           finishExtraFields.diffSummary = diff.summary;
@@ -590,6 +622,29 @@ export async function startMcpServer(): Promise<void> {
       });
 
       if (!result) return errorResult(`Failed to finish ${ticketId}`);
+
+      // FLUX-521: the work is committed + merged — tear down the task worktree.
+      // Stop any live session first so its process doesn't hold the worktree cwd
+      // (Windows file lock). DETACH (not force-remove): if the worktree still has
+      // uncommitted changes — e.g. someone was editing it by accident — surface them
+      // onto master and note it on the ticket rather than discarding them silently.
+      // Best-effort; a failure here must not undo the finish.
+      try {
+        const wtPath = taskWorktreeDir(workspaceRoot!, ticketId);
+        if (existsSync(wtPath)) {
+          stopAllSessionsForTask(ticketId, 'Finishing ticket — tearing down worktree');
+          const detach = await detachTaskWorktree(workspaceRoot!, wtPath, { ticketId });
+          if (detach.outcome !== 'clean') {
+            await updateTaskWithHistory(ticketId, {
+              updatedBy: 'Agent',
+              entries: [buildActivityEntry(`Worktree had uncommitted changes at finish — ${detach.message}`, 'Agent', new Date().toISOString())],
+            });
+          }
+        }
+      } catch (wtErr: any) {
+        console.error(`Worktree cleanup failed for ${ticketId}:`, wtErr.message);
+      }
+
       broadcastEvent('taskUpdated', { id: ticketId });
       return textResult(`${ticketId} finished → Done (link: ${finalLink})`);
     },
@@ -599,12 +654,13 @@ export async function startMcpServer(): Promise<void> {
 
   server.tool(
     'create_branch',
-    'Create a git feature branch for a ticket and store its name on the ticket',
+    'Create a git feature branch for a ticket and store its name on the ticket. Optionally spin up a dedicated git worktree so the agent runs isolated from master (FLUX-516).',
     {
       ticketId: z.string().describe('Ticket ID'),
       baseBranch: z.string().optional().describe('Base branch (default: master)'),
+      worktree: z.boolean().optional().describe('Create a dedicated git worktree for this branch (default: the workspace `worktreeByDefault` setting). Implies a branch.'),
     },
-    async ({ ticketId, baseBranch }) => {
+    async ({ ticketId, baseBranch, worktree }) => {
       const task = tasksCache[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`);
       if (task.branch) return errorResult(`Ticket ${ticketId} already has branch: ${task.branch}`);
@@ -612,8 +668,26 @@ export async function startMcpServer(): Promise<void> {
       try {
         const branch = await createTicketBranch(ticketId, task.title || ticketId, baseBranch);
         await updateTaskWithHistory(ticketId, { updatedBy: 'Agent', extraFields: { branch } });
+
+        // FLUX-521: optionally create a dedicated worktree (worktree ⇒ branch).
+        const useWorktree = worktree ?? (configCache as any).worktreeByDefault === true;
+        let worktreePath: string | undefined;
+        let worktreeError: string | undefined;
+        if (useWorktree) {
+          try {
+            worktreePath = await createTaskWorktree(workspaceRoot!, ticketId, branch, { baseBranch });
+          } catch (wtErr: any) {
+            // Branch already created — don't fail the whole call; agent falls back to the
+            // main tree. Surface it on the ticket so the lost isolation isn't silent.
+            worktreeError = wtErr.message;
+            await updateTaskWithHistory(ticketId, {
+              updatedBy: 'Agent',
+              entries: [buildActivityEntry(`⚠️ Dedicated worktree NOT created: ${worktreeError}. The agent will run in the main tree (no isolation).`, 'Agent', new Date().toISOString())],
+            });
+          }
+        }
         broadcastEvent('taskUpdated', { id: ticketId });
-        return jsonResult({ branch });
+        return jsonResult({ branch, ...(worktreePath ? { worktree: worktreePath } : {}), ...(worktreeError ? { worktreeError } : {}) });
       } catch (err: any) {
         return errorResult(`Failed to create branch: ${err.message}`);
       }
@@ -657,6 +731,14 @@ export async function startMcpServer(): Promise<void> {
       if (!name) return errorResult(`Ticket ${ticketId} has no associated branch`);
 
       try {
+        // FLUX-521: a branch can't be deleted while a worktree holds it checked out —
+        // stop the session (release the cwd lock) and detach. This is an ABANDON, so
+        // uncommitted work is preserved as a stash ref but NOT applied onto master.
+        const wtPath = taskWorktreeDir(workspaceRoot!, ticketId);
+        if (existsSync(wtPath)) {
+          stopAllSessionsForTask(ticketId, 'Deleting branch — detaching worktree');
+          await detachTaskWorktree(workspaceRoot!, wtPath, { ticketId, applyToMain: false });
+        }
         await deleteTicketBranch(name, force ?? false);
         await updateTaskWithHistory(ticketId, { updatedBy: 'Agent', extraFields: { branch: null } });
         broadcastEvent('taskUpdated', { id: ticketId });

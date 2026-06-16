@@ -31,7 +31,7 @@ import { broadcastEvent } from '../events.js';
 import { dismissNotificationsForTicket } from '../notifications.js';
 import { resolvePersonaPrompt } from '../orchestration-personas.js';
 import { buildActivityEntry } from '../history.js';
-import { captureDiffForPrompt, type PromptDiffCapture } from '../branch-manager.js';
+import { captureDiffForPrompt, getCurrentCommit, type PromptDiffCapture } from '../branch-manager.js';
 import type { CliSessionRecord, CliFramework, ExecutionPattern, PatternPosition, GroupVariant } from '../agents/types.js';
 
 const router = express.Router();
@@ -87,6 +87,19 @@ async function spawnSession(task: any, opts: SpawnOptions): Promise<CliSessionRe
   const sessionId = randomUUID();
   const label = adapter.labelForFramework();
   const startedAt = new Date().toISOString();
+
+  // Stamp baselineCommit at first session launch if missing. This is the diff anchor
+  // for branch-less tickets.
+  if (!task.baselineCommit) {
+    const head = await getCurrentCommit();
+    if (head) {
+      await updateTaskWithHistory(task.id, {
+        updatedBy: 'Agent',
+        extraFields: { baselineCommit: head },
+      });
+      task.baselineCommit = head;
+    }
+  }
 
   const session: CliSessionRecord = {
     id: sessionId,

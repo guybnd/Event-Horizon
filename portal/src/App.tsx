@@ -3,6 +3,7 @@ import { AppProvider, useApp } from './AppContext';
 import { Header } from './components/Header';
 import { Board } from './components/Board';
 import { BacklogScreen } from './components/BacklogScreen';
+import { ChangesScreen } from './components/changes/ChangesScreen';
 import { DocsScreen } from './components/DocsScreen';
 import { TaskModal } from './components/TaskModal';
 import { Settings } from './components/Settings';
@@ -35,9 +36,10 @@ function AppContent() {
       <RestartBanner />
       <Header />
       <div className="relative flex min-h-0 flex-1 flex-col">
-        <main className="flex-1 overflow-y-auto p-8">
+        <main className="flex-1 overflow-y-auto px-8 pt-2.5 pb-5">
           {view === 'board' && <Board />}
           {view === 'backlog' && <BacklogScreen />}
+          {view === 'changes' && <ChangesScreen />}
           {view === 'docs' && <DocsScreen />}
           {view === 'settings' && <Settings />}
           {view === 'releases' && <ReleasesScreen />}

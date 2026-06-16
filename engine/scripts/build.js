@@ -73,7 +73,42 @@ const sharedConfig = {
   },
 };
 
+// Remove stray compiled JS sitting next to the .ts sources. esbuild resolves a
+// `./foo.js` import to a real sibling `foo.js` when one exists, so leftover
+// build cruft (e.g. from a stray tsc emit) silently shadows updated .ts and
+// ships stale code. Always clean before bundling. (FLUX-496)
+async function cleanStraySrcJs(dir) {
+  let removed = 0;
+  const entries = await fsp.readdir(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      removed += await cleanStraySrcJs(full);
+    } else if (entry.name.endsWith('.js') || entry.name.endsWith('.js.map')) {
+      // Do NOT swallow this error. A stray .js we fail to remove (e.g. locked by
+      // an IDE or another process) would still shadow its .ts sibling and ship
+      // stale code — the exact silent-stale-build failure this guard exists to
+      // prevent. Fail the build loudly instead. (FLUX-496)
+      try {
+        await fsp.unlink(full);
+      } catch (err) {
+        throw new Error(
+          `Failed to remove stray compiled file ${full}: ${err.message}. ` +
+          `It would shadow the .ts source and ship stale code — aborting build. ` +
+          `Close any process holding the file (IDE/tsc/stray node) and rebuild.`
+        );
+      }
+      removed++;
+    }
+  }
+  return removed;
+}
+
 async function build() {
+  const srcDir = path.join(engineRoot, 'src');
+  const removed = await cleanStraySrcJs(srcDir);
+  if (removed > 0) console.log(`Cleaned ${removed} stray compiled JS file(s) from src/`);
+
   console.log('Building engine/src/index.ts → engine/dist/index.js …');
   await esbuild.build({
     ...sharedConfig,

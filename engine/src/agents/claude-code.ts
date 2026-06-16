@@ -4,12 +4,14 @@ import * as fs from 'fs';
 import { configCache } from '../config.js';
 import { buildActivityEntry, buildCommentEntry, buildAgentMessageEntry, buildAgentSessionEntry, appendSessionProgress, closeAgentSession, type AgentSessionEntry } from '../history.js';
 import { updateTaskWithHistory, updateAgentSession, tasksCache, estimateCostUSD } from '../task-store.js';
+import { resolveTaskExecutionRoot } from '../task-worktree.js';
+import { workspaceRoot as canonicalWorkspaceRoot } from '../workspace.js';
 import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
 import { buildMemberScopeArgs } from '../group.js';
 import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
-import { getModulePromptFragments, getModuleMcpServers, getActiveModules } from '../modules.js';
+import { getModulePromptFragments, getModuleMcpServers, getActiveModules, getWorkspaceMcpServers } from '../modules.js';
 import { getProbeStatus } from '../module-probe.js';
 import { getSharedServerUrl, isSharedHttpPlatformProven } from '../shared-mcp-server.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
@@ -30,6 +32,9 @@ function cleanChildEnv(): NodeJS.ProcessEnv {
   }
   env.NODE_OPTIONS = '';
   env.EVENT_HORIZON_FRAMEWORK = 'claude';
+  // Pin the canonical ticket store so a worktree agent's event-horizon MCP binds
+  // to the real workspace, not its cwd worktree (FLUX-516).
+  if (canonicalWorkspaceRoot) env.EH_CANONICAL_WORKSPACE = canonicalWorkspaceRoot;
   return env;
 }
 
@@ -37,7 +42,7 @@ function cleanChildEnv(): NodeJS.ProcessEnv {
 // Prefers an engine-managed shared HTTP server when one is ready (so all sessions
 // reuse one language-server process); otherwise falls back to a per-session stdio
 // spawn. Skips modules whose probe status is 'error' to avoid cascading failures.
-function buildModuleMcpConfigArgs(phase?: string, tags?: string[]): string[] {
+function buildModuleServerMap(phase?: string, tags?: string[]): Record<string, any> {
   const stdioServers = getModuleMcpServers(phase, tags);
   const filtered: Record<string, any> = {};
   for (const m of getActiveModules(phase, tags)) {
@@ -55,8 +60,96 @@ function buildModuleMcpConfigArgs(phase?: string, tags?: string[]): string[] {
       filtered[m.id] = { type: 'stdio', ...server };
     }
   }
+  return filtered;
+}
+
+function buildModuleMcpConfigArgs(phase?: string, tags?: string[]): string[] {
+  const filtered = buildModuleServerMap(phase, tags);
   if (Object.keys(filtered).length === 0) return [];
   return ['--mcp-config', JSON.stringify({ mcpServers: filtered })];
+}
+
+// Build the MCP-config args for a spawn, honoring opt-in per-phase server
+// profiles (FLUX-490). Default (no `mcpServerPhases` config) is unchanged: merge
+// in module servers only, no --strict. When profiles are configured, EH takes
+// ownership of the full set — workspace .mcp.json servers ∪ module servers —
+// drops any server whose `mcpServerPhases[id]` excludes the current phase, and
+// spawns with --strict-mcp-config so Claude Code uses ONLY this set. event-horizon
+// is never filtered (agents need ticket tools).
+// Pure: drop servers whose `serverPhases[id]` excludes the current phase.
+// event-horizon is never dropped. Empty/absent serverPhases → passthrough.
+export function filterMcpServersByPhase(
+  servers: Record<string, any>,
+  serverPhases: Record<string, string[]> | undefined,
+  phase?: string,
+): Record<string, any> {
+  if (!serverPhases || Object.keys(serverPhases).length === 0) return { ...servers };
+  const out: Record<string, any> = {};
+  for (const [id, cfg] of Object.entries(servers)) {
+    const phases = serverPhases[id];
+    if (id !== 'event-horizon' && phase && Array.isArray(phases) && phases.length > 0 && !phases.includes(phase)) {
+      continue; // scoped to other phases — drop
+    }
+    out[id] = cfg;
+  }
+  return out;
+}
+
+function buildSpawnMcpConfigArgs(phase?: string, tags?: string[]): string[] {
+  const serverPhases = (configCache as any).mcpServerPhases as Record<string, string[]> | undefined;
+  const hasProfiles = !!serverPhases && typeof serverPhases === 'object' && Object.keys(serverPhases).length > 0;
+  if (!hasProfiles) return buildModuleMcpConfigArgs(phase, tags);
+
+  const merged: Record<string, any> = { ...getWorkspaceMcpServers() };
+  for (const [id, cfg] of Object.entries(buildModuleServerMap(phase, tags))) {
+    if (!(id in merged)) merged[id] = cfg;
+  }
+
+  const filtered = filterMcpServersByPhase(merged, serverPhases, phase);
+  if (!('event-horizon' in filtered)) {
+    // Strict mode would strip the agent's OWN ticket tools — e.g. the workspace
+    // .mcp.json is missing/malformed so event-horizon never made it into the set.
+    // Fail open to merge mode rather than spawn an agent that can't manage the
+    // ticket. (Review finding alongside FLUX-490.)
+    console.warn('[mcp] strict profile would omit event-horizon — falling back to merge mode');
+    return buildModuleMcpConfigArgs(phase, tags);
+  }
+  if (Object.keys(filtered).length === 0) return [];
+  return ['--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: filtered })];
+}
+
+// Debug/visibility: which MCP servers would be injected for a given phase, and
+// whether strict mode is active. In merge mode the list is only EH-injected
+// module servers (.mcp.json/user/global also load, not enumerated). In strict
+// mode the list is exactly what the agent gets.
+export function getEffectiveSpawnServers(phase?: string, tags?: string[]): { strict: boolean; servers: string[]; note: string } {
+  const serverPhases = (configCache as any).mcpServerPhases as Record<string, string[]> | undefined;
+  const hasProfiles = !!serverPhases && typeof serverPhases === 'object' && Object.keys(serverPhases).length > 0;
+  if (!hasProfiles) {
+    return {
+      strict: false,
+      servers: Object.keys(buildModuleServerMap(phase, tags)),
+      note: 'Merge mode: EH-injected module servers only; workspace .mcp.json + user/global servers also load (not listed).',
+    };
+  }
+  const merged: Record<string, any> = { ...getWorkspaceMcpServers() };
+  for (const id of Object.keys(buildModuleServerMap(phase, tags))) if (!(id in merged)) merged[id] = {};
+  const filtered = filterMcpServersByPhase(merged, serverPhases, phase);
+  if (!('event-horizon' in filtered)) {
+    // Mirror buildSpawnMcpConfigArgs: strict would strip event-horizon (e.g.
+    // .mcp.json missing/malformed) → the real spawn fails open to merge, so the
+    // visibility must report merge too, not a misleading "strict".
+    return {
+      strict: false,
+      servers: Object.keys(buildModuleServerMap(phase, tags)),
+      note: 'Merge mode (strict profile would omit event-horizon, so the spawn falls back). .mcp.json + user/global servers also load (not listed).',
+    };
+  }
+  return {
+    strict: true,
+    servers: Object.keys(filtered),
+    note: 'Strict mode: exactly the server set the agent gets for this phase (.mcp.json/user/global ignored).',
+  };
 }
 
 // Effort levels accepted by the --effort CLI flag, in ascending order.
@@ -222,8 +315,10 @@ export function buildInitialPrompt(task: any, appendPrompt: string, opts?: { dif
     `Title: ${task.title || 'Untitled ticket'}`,
     `Current status: ${taskStatus}`,
     '',
-    'Ticket description:',
-    (task.body || '').trim() || '(No description)',
+    // Body single-source (FLUX-498): don't echo the full body here — it's also
+    // returned by get_ticket, which the workflow already requires the agent to
+    // call first. Echoing both double-counts ~2.3k of fresh spawn tokens.
+    `Read the full description and plan with get_ticket("${task.id}") — that is the source of truth; it is not echoed here to save context.`,
     '',
     'Latest activity:',
     ...(Array.isArray(task.history) ? task.history.filter((e: any) => e?.type !== 'agent_message').slice(-3).map((entry: any) => {
@@ -384,6 +479,9 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   const binaryName = framework === 'claude' ? 'claude' : 'copilot';
   const label = session.label;
   const id = session.taskId;
+  // FLUX-519: run the agent in this task's worktree when one exists (else engine root).
+  const executionRoot = await resolveTaskExecutionRoot(task, workspaceRoot);
+  session.executionRoot = executionRoot;
 
   checkBinaryInstalled(binaryName);
 
@@ -406,7 +504,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     // Member worktree: add local .flux-group/ so the agent reads shared group docs (FLUX-422).
     ...buildGroupDocsScopeArg(workspaceRoot),
     // Inject enabled module MCP servers dynamically (phase+tag gated, skips errored probes).
-    ...(framework === 'claude' ? buildModuleMcpConfigArgs(session.phase, Array.isArray(task.tags) ? task.tags : undefined) : []),
+    ...(framework === 'claude' ? buildSpawnMcpConfigArgs(session.phase, Array.isArray(task.tags) ? task.tags : undefined) : []),
   ];
 
   const caps = PROVIDER_CAPABILITIES[framework] ?? PROVIDER_CAPABILITIES['copilot'];
@@ -443,14 +541,14 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     console.log(`[${id}] Windows spawn: ${exePath} with ${claudeArgs.length} args`);
     console.log(`[${id}] Prompt length: ${initialPrompt.length} chars`);
     proc = spawn(exePath, claudeArgs, {
-      cwd: workspaceRoot,
+      cwd: executionRoot,
       env: cleanChildEnv(),
       stdio: 'pipe',
       windowsHide: true,
     });
   } else {
     proc = spawn(binaryName, claudeArgs, {
-      cwd: workspaceRoot,
+      cwd: executionRoot,
       env: cleanChildEnv(),
       stdio: 'pipe',
     });
@@ -695,6 +793,12 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 export async function sendCliSessionInput(session: CliSessionRecord, message: string, user: string, workspaceRoot: string) {
   const id = session.taskId;
   const binaryName = session.command;
+  // FLUX-519 review: resume in the SAME root the session started in; refuse to fall
+  // back onto master if the worktree was removed (e.g. the ticket was finished).
+  const executionRoot = session.executionRoot ?? await resolveTaskExecutionRoot(tasksCache[id], workspaceRoot);
+  if (executionRoot !== workspaceRoot && !fs.existsSync(executionRoot)) {
+    throw new Error(`Worktree for ${id} no longer exists (ticket likely finished) — refusing to resume the agent on master.`);
+  }
 
   checkBinaryInstalled(binaryName);
 
@@ -711,7 +815,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   const safeMessage = message.replace(/\0/g, '');
   const memberScopeArgs = [...buildMemberScopeArgs(), ...buildGroupDocsScopeArg(workspaceRoot)];
   const task = tasksCache[id] as any;
-  const moduleMcpArgs = buildModuleMcpConfigArgs(session.phase, Array.isArray(task?.tags) ? task.tags : undefined);
+  const moduleMcpArgs = buildSpawnMcpConfigArgs(session.phase, Array.isArray(task?.tags) ? task.tags : undefined);
   const resumeArgs = session.claudeSessionId
     ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions', ...memberScopeArgs, ...moduleMcpArgs]
     : ['-p', safeMessage, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions', ...memberScopeArgs, ...moduleMcpArgs];
@@ -736,14 +840,14 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
 
     console.log(`[${id}] Windows reply spawn: ${exePath} --resume ${session.claudeSessionId || '(new)'}`);
     replyProc = spawn(exePath, resumeArgs, {
-      cwd: workspaceRoot,
+      cwd: executionRoot,
       env: cleanChildEnv(),
       stdio: 'pipe',
       windowsHide: true,
     });
   } else {
     replyProc = spawn(binaryName, resumeArgs, {
-      cwd: workspaceRoot,
+      cwd: executionRoot,
       env: cleanChildEnv(),
       stdio: 'pipe',
       windowsHide: true,

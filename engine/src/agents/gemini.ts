@@ -4,6 +4,8 @@ import * as fs from 'fs';
 import { configCache } from '../config.js';
 import { buildActivityEntry, buildCommentEntry, buildAgentMessageEntry, buildAgentSessionEntry, appendSessionProgress, closeAgentSession, type AgentSessionEntry } from '../history.js';
 import { updateTaskWithHistory, updateAgentSession, tasksCache, estimateCostUSD } from '../task-store.js';
+import { resolveTaskExecutionRoot } from '../task-worktree.js';
+import { workspaceRoot as canonicalWorkspaceRoot } from '../workspace.js';
 import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
@@ -30,6 +32,9 @@ function cleanChildEnv(): NodeJS.ProcessEnv {
   // Do NOT set NODE_OPTIONS to empty string — pkg binaries may still parse it.
   // Fully removing it from the environment is the safest approach.
   env.EVENT_HORIZON_FRAMEWORK = 'gemini';
+  // Pin the canonical ticket store so a worktree agent's event-horizon MCP binds
+  // to the real workspace, not its cwd worktree (FLUX-516).
+  if (canonicalWorkspaceRoot) env.EH_CANONICAL_WORKSPACE = canonicalWorkspaceRoot;
   return env;
 }
 
@@ -458,6 +463,9 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   const binaryName = 'gemini';
   const label = session.label;
   const id = session.taskId;
+  // FLUX-519: run the agent in this task's worktree when one exists (else engine root).
+  const executionRoot = await resolveTaskExecutionRoot(task, workspaceRoot);
+  session.executionRoot = executionRoot;
 
   console.log(`[${id}] Starting ${framework} session in ${workspaceRoot}`);
 
@@ -593,7 +601,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     if (entryPoint) {
       console.log(`[${id}] Windows spawn (node=${nodeCmd}): ${entryPoint}`);
       proc = spawn(nodeCmd, [entryPoint, ...geminiArgs], {
-        cwd: workspaceRoot,
+        cwd: executionRoot,
         env,
         stdio: 'pipe',
         windowsHide: true,
@@ -601,7 +609,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     } else if (exePath) {
       console.log(`[${id}] Windows spawn (exe): ${exePath}`);
       proc = spawn(exePath, geminiArgs, {
-        cwd: workspaceRoot,
+        cwd: executionRoot,
         env,
         stdio: 'pipe',
         windowsHide: true,
@@ -611,7 +619,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
       // .cmd wrappers from re-injecting it.
       console.log(`[${id}] Windows spawn (fallback): ${binaryName}`);
       proc = spawn('cmd.exe', ['/c', `set "NODE_OPTIONS=" && ${binaryName}`, ...geminiArgs], {
-        cwd: workspaceRoot,
+        cwd: executionRoot,
         env,
         stdio: 'pipe',
         windowsHide: true,
@@ -619,7 +627,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     }
   } else {
     proc = spawn(binaryName, geminiArgs, {
-      cwd: workspaceRoot,
+      cwd: executionRoot,
       env: cleanChildEnv(),
       stdio: 'pipe',
     });
@@ -827,6 +835,12 @@ export class GeminiAdapter implements AgentAdapter {
 export async function sendCliSessionInput(session: CliSessionRecord, message: string, user: string, workspaceRoot: string) {
   const id = session.taskId;
   const binaryName = session.command;
+  // FLUX-519 review: resume in the SAME root the session started in; refuse to fall
+  // back onto master if the worktree was removed (e.g. the ticket was finished).
+  const executionRoot = session.executionRoot ?? await resolveTaskExecutionRoot(tasksCache[id], workspaceRoot);
+  if (executionRoot !== workspaceRoot && !fs.existsSync(executionRoot)) {
+    throw new Error(`Worktree for ${id} no longer exists (ticket likely finished) — refusing to resume the agent on master.`);
+  }
 
   checkBinaryInstalled(binaryName);
 
@@ -897,7 +911,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     if (entryPoint) {
       console.log(`[${id}] Windows reply spawn (node=${nodeCmd}): ${entryPoint}`);
       replyProc = spawn(nodeCmd, [entryPoint, ...resumeArgs], {
-        cwd: workspaceRoot,
+        cwd: executionRoot,
         env,
         stdio: 'pipe',
         windowsHide: true,
@@ -905,7 +919,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     } else if (exePath) {
       console.log(`[${id}] Windows reply spawn (exe): ${exePath}`);
       replyProc = spawn(exePath, resumeArgs, {
-        cwd: workspaceRoot,
+        cwd: executionRoot,
         env,
         stdio: 'pipe',
         windowsHide: true,
@@ -913,7 +927,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     } else {
       console.log(`[${id}] Windows reply spawn (fallback): ${binaryName}`);
       replyProc = spawn('cmd.exe', ['/c', `set "NODE_OPTIONS=" && ${binaryName}`, ...resumeArgs], {
-        cwd: workspaceRoot,
+        cwd: executionRoot,
         env,
         stdio: 'pipe',
         windowsHide: true,
@@ -921,7 +935,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     }
   } else {
     replyProc = spawn(binaryName, resumeArgs, {
-      cwd: workspaceRoot,
+      cwd: executionRoot,
       env: cleanChildEnv(),
       stdio: 'pipe',
     });

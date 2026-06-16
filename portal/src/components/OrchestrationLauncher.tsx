@@ -12,12 +12,12 @@ import {
   type OrchestrationMode,
   type ReviewPersona,
 } from '../agentActions';
-import { fetchOrchestrationPersonas, fetchConfig, fetchWorkflows, fetchHealth, createBranch, type WorkflowPhaseConfig, type WorkflowTemplate } from '../api';
+import { fetchOrchestrationPersonas, fetchConfig, fetchWorkflows, fetchHealth, createBranch, joinWorktree, fetchWorktrees, type WorktreeInfo, type WorkflowPhaseConfig, type WorkflowTemplate } from '../api';
 import type { CliFramework, CliSessionSummary } from '../types';
 import { type SessionGroup } from '../orchestration';
 import { useApp } from '../AppContext';
 import { OrchestrationTopology, TopologyGlyph } from './OrchestrationTopology';
-import { BranchSection } from './task-modal/BranchSection';
+import { BranchSection, type StartMode } from './task-modal/BranchSection';
 
 export interface LauncherTicketInfo {
   id: string;
@@ -129,7 +129,9 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
   const [supervisorLeadId, setSupervisorLeadId] = useState<string>('');
-  const [useBranch, setUseBranch] = useState(false);
+  const [startMode, setStartMode] = useState<StartMode>('branch');
+  const [joinBranch, setJoinBranch] = useState<string | null>(null);
+  const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);
   const [ghAvailable, setGhAvailable] = useState<boolean | null>(null);
   const [branchBusy, setBranchBusy] = useState(false);
   const [branchError, setBranchError] = useState<string | null>(null);
@@ -161,7 +163,8 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
       setEffort('');
       setSelectedTemplateId('');
       setSupervisorLeadId('');
-      setUseBranch(false);
+      setStartMode('branch');
+      setJoinBranch(null);
       setGhAvailable(null);
       setBranchBusy(false);
       setBranchError(null);
@@ -177,11 +180,19 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
   // Initialise branch default and fetch gh availability when launcher opens on a Todo with no branch.
   useEffect(() => {
     if (!open || !showBranchSection) return;
-    setUseBranch(ticket?.effort !== 'XS');
+    // Default mirrors the old useBranch behavior: non-XS opts into a new branch,
+    // XS continues on the current branch. worktreeByDefault upgrades to a worktree.
+    setStartMode(ticket?.effort === 'XS' ? 'current' : 'branch');
     let cancelled = false;
     fetchHealth()
       .then((h) => { if (!cancelled) setGhAvailable(h.ghAuthAvailable); })
       .catch(() => { if (!cancelled) setGhAvailable(null); });
+    fetchConfig()
+      .then((c) => { if (!cancelled && c.worktreeByDefault && ticket?.effort !== 'XS') setStartMode('worktree'); })
+      .catch(() => {});
+    fetchWorktrees()
+      .then((ws) => { if (!cancelled) setWorktrees(ws); })
+      .catch(() => {});
     return () => { cancelled = true; };
   }, [open, showBranchSection, ticket?.effort]);
 
@@ -333,11 +344,18 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
       effort: effort || undefined,
       leadPersona: isSupervisor ? effectiveLead : undefined,
     };
-    if (showBranchSection && useBranch && ticket) {
+    if (showBranchSection && ticket && startMode !== 'current') {
       setBranchBusy(true);
       setBranchError(null);
       try {
-        const { branch } = await createBranch(ticket.id);
+        let branch: string;
+        if (startMode === 'join') {
+          if (!joinBranch) throw new Error('Pick a worktree to join.');
+          branch = (await joinWorktree(ticket.id, joinBranch)).branch;
+        } else {
+          // 'worktree' creates a dedicated worktree; 'branch' just creates the branch.
+          branch = (await createBranch(ticket.id, { worktree: startMode === 'worktree' })).branch;
+        }
         onLaunch({ ...plan, branch });
       } catch (err: any) {
         setBranchError(err.message || 'Failed to create branch');
@@ -697,9 +715,12 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
                 taskId={ticket!.id}
                 taskTitle={ticket!.title}
                 effort={ticket!.effort}
-                useBranch={useBranch}
-                setUseBranch={setUseBranch}
                 ghAvailable={ghAvailable}
+                mode={startMode}
+                setMode={setStartMode}
+                worktrees={worktrees}
+                joinBranch={joinBranch}
+                setJoinBranch={setJoinBranch}
               />
             </div>
           )}

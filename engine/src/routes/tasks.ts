@@ -2,7 +2,8 @@ import express from 'express';
 import fs from 'fs/promises';
 import path from 'path';
 import matter from 'gray-matter';
-import { getFluxDir, getActiveFluxDir, getTaskAssetsDir } from '../workspace.js';
+import { existsSync } from 'fs';
+import { getFluxDir, getActiveFluxDir, getTaskAssetsDir, workspaceRoot } from '../workspace.js';
 import { configCache, autoRegisterUnknownTags } from '../config.js';
 import {
   normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry,
@@ -17,6 +18,10 @@ import {
 } from '../file-utils.js';
 import { cliSessionIdByTaskId, cliSessionsById, stopAllSessionsForTask } from '../session-store.js';
 import { getAdapter } from '../agents/index.js';
+import { computeAgentPayloadMetrics } from '../agent-payload-metrics.js';
+import { computeContextBudget } from '../context-budget-metrics.js';
+import { probeAllMcpSchemas } from '../mcp-schema-probe.js';
+import { getEffectiveSpawnServers } from '../agents/claude-code.js';
 
 const router = express.Router();
 
@@ -28,6 +33,83 @@ router.get('/errors', (req, res) => {
   res.json(Object.values(parseErrors));
 });
 
+// List active task worktrees (FLUX-516). Registered before /:id so the literal
+// path wins. Maps each worktree to the ticket whose branch it holds (if any).
+router.get('/worktrees', async (_req, res) => {
+  try {
+    const worktrees = await listTaskWorktrees(workspaceRoot!);
+    const result = await Promise.all(
+      worktrees.map(async (w) => {
+        const ticket = Object.values(tasksCache).find((t: any) => t.branch === w.branch) as any;
+        // Changed-file count vs master — drives the board chip's "N changed" badge.
+        const changedFiles = await worktreeChangeCount(w.path).catch(() => 0);
+        return {
+          path: w.path,
+          branch: w.branch,
+          ticketId: ticket?.id ?? null,
+          ticketTitle: ticket?.title ?? null,
+          changedFiles,
+        };
+      }),
+    );
+    res.json({ worktrees: result });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Local branch names + whether each currently holds a worktree — powers the
+// "Attach to branch" picker (FLUX-516). Registered before /:id so the literal
+// path wins.
+router.get('/branches', async (_req, res) => {
+  try {
+    const [names, worktrees] = await Promise.all([
+      listLocalBranches(workspaceRoot!),
+      listTaskWorktrees(workspaceRoot!),
+    ]);
+    const worktreeBranches = new Set(worktrees.map((w) => w.branch));
+    const ticketBranches = new Set(
+      Object.values(tasksCache).map((t: any) => t.branch).filter(Boolean),
+    );
+    res.json({
+      branches: names.map((name) => ({
+        name,
+        hasWorktree: worktreeBranches.has(name),
+        isTicketBranch: ticketBranches.has(name),
+      })),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Debug-only: spawn each module MCP server EH injects (serena, context7, …),
+// list its tools, and measure per-server tool-schema cost. On-demand (slow —
+// it starts real servers). Registered before /:id so the literal path wins.
+router.get('/debug/mcp-schemas', async (req, res) => {
+  try {
+    res.json(await probeAllMcpSchemas());
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Failed to probe MCP schemas' });
+  }
+});
+
+// Debug-only: the effective MCP server set per phase (FLUX-490 visibility). Cheap
+// (config logic, no server spawning) — shows what each phase's agent would get.
+router.get('/debug/spawn-servers', (_req, res) => {
+  const phases = ['grooming', 'implementation', 'review', 'release'];
+  const byPhase: Record<string, string[]> = {};
+  let strict = false;
+  let note = '';
+  for (const p of phases) {
+    const r = getEffectiveSpawnServers(p);
+    byPhase[p] = r.servers;
+    strict = r.strict;
+    note = r.note;
+  }
+  res.json({ strict, phases: byPhase, note });
+});
+
 router.get('/:id', (req, res) => {
   const { id } = req.params;
   const task = tasksCache[id];
@@ -36,9 +118,39 @@ router.get('/:id', (req, res) => {
   // agents reading via the REST fallback; the portal default stays full.
   if (req.query.view === 'agent') {
     const historyLimit = Number.parseInt(String(req.query.historyLimit ?? ''), 10);
-    return res.json(serializeTaskForAgent(task, Number.isFinite(historyLimit) && historyLimit > 0 ? historyLimit : undefined));
+    const expand = typeof req.query.expand === 'string' && req.query.expand.trim()
+      ? req.query.expand.split(',').map((s) => s.trim()).filter(Boolean)
+      : undefined;
+    const fullHistory = req.query.fullHistory === 'true';
+    return res.json(serializeTaskForAgent(task, Number.isFinite(historyLimit) && historyLimit > 0 ? historyLimit : undefined, { expand, fullHistory }));
   }
   res.json(serializeTaskForApi(task));
+});
+
+// Debug-only: byte/token breakdown of the agent-facing get_ticket payload by
+// section. Separate from the agent surfaces, so measuring never inflates what an
+// agent reads. Powers the portal "Agent payload size" panel.
+router.get('/:id/debug/sizes', (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+  if (!task) return res.status(404).json({ error: 'Task not found' });
+  const historyLimit = Number.parseInt(String(req.query.historyLimit ?? ''), 10);
+  res.json(computeAgentPayloadMetrics(task, Number.isFinite(historyLimit) && historyLimit > 0 ? historyLimit : undefined));
+});
+
+// Debug-only: the broader "where does the agent context budget go" view —
+// get_ticket payload + the launch prompt EH builds + the fixed skill modules,
+// with explicit caveats about what the engine cannot measure (host system
+// prompt, external MCP schemas, session accumulation).
+router.get('/:id/debug/budget', async (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+  if (!task) return res.status(404).json({ error: 'Task not found' });
+  try {
+    res.json(await computeContextBudget(task));
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Failed to compute context budget' });
+  }
 });
 
 router.post('/', async (req, res) => {
@@ -474,7 +586,10 @@ router.post('/:id/assets', async (req, res) => {
 
 // ─── Branch routes ────────────────────────────────────────────────────────────
 
-import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, extractFileFromDiff } from '../branch-manager.js';
+import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, extractFileFromDiff, captureDiff } from '../branch-manager.js';
+import { createTaskWorktree, detachTaskWorktree, taskWorktreeDir, listTaskWorktrees, findWorktreeForBranch, worktreeChangeCount, listLocalBranches } from '../task-worktree.js';
+import { isEditorAvailable, openEditorWindow } from '../editor-launcher.js';
+import { broadcastEvent } from '../events.js';
 
 router.post('/:id/branch', async (req, res) => {
   const { id } = req.params;
@@ -483,11 +598,36 @@ router.post('/:id/branch', async (req, res) => {
 
   const title: string = task.title || id;
   const baseBranch: string | undefined = req.body?.baseBranch;
+  // FLUX-521: per-launch "dedicated worktree" choice; defaults to the workspace setting.
+  const useWorktree: boolean = typeof req.body?.worktree === 'boolean'
+    ? req.body.worktree
+    : (configCache as any).worktreeByDefault === true;
 
   try {
-    const branch = await createTicketBranch(id, title, baseBranch);
-    await updateTaskWithHistory(id, { updatedBy: 'Agent', extraFields: { branch } });
-    res.json({ branch });
+    // Idempotent: reuse an existing branch (e.g. one a prior worktree-open created)
+    // instead of erroring with a raw git "already exists".
+    let branch = task.branch as string | undefined;
+    if (!branch) {
+      branch = await createTicketBranch(id, title, baseBranch);
+      await updateTaskWithHistory(id, { updatedBy: 'Agent', extraFields: { branch } });
+    }
+
+    let worktreePath: string | undefined;
+    let worktreeError: string | undefined;
+    if (useWorktree) {
+      try {
+        worktreePath = await createTaskWorktree(workspaceRoot!, id, branch, baseBranch ? { baseBranch } : {});
+      } catch (wtErr: any) {
+        // Branch is created — don't fail; surface the lost isolation on the ticket.
+        worktreeError = wtErr.message;
+        await updateTaskWithHistory(id, {
+          updatedBy: 'Agent',
+          entries: [buildActivityEntry(`⚠️ Dedicated worktree NOT created: ${worktreeError}. The agent will run in the main tree (no isolation).`, 'Agent', new Date().toISOString())],
+        });
+      }
+    }
+    broadcastEvent('taskUpdated', { id });
+    res.json({ branch, ...(worktreePath ? { worktree: worktreePath } : {}), ...(worktreeError ? { worktreeError } : {}) });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -499,11 +639,14 @@ router.get('/:id/branch', async (req, res) => {
   if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
 
   const name: string | undefined = task.branch;
-  if (!name) return res.json({ name: null, exists: false, aheadCount: 0, behindCount: 0 });
+  // FLUX-521: report whether a dedicated worktree exists (drives the portal detach control).
+  const wtPath = taskWorktreeDir(workspaceRoot!, id);
+  const worktree = existsSync(wtPath) ? wtPath : null;
+  if (!name) return res.json({ name: null, exists: false, aheadCount: 0, behindCount: 0, worktree });
 
   try {
     const status = await getTicketBranchStatus(name);
-    res.json({ name, ...status });
+    res.json({ name, ...status, worktree });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -520,9 +663,99 @@ router.delete('/:id/branch', async (req, res) => {
   const force: boolean = req.body?.force === true;
 
   try {
+    // FLUX-521: a worktree holds the branch checked out — stop the session (release
+    // the cwd lock) and detach before delete. This is an ABANDON, so uncommitted work
+    // is preserved as a stash ref but NOT applied onto master.
+    const wtPath = taskWorktreeDir(workspaceRoot!, id);
+    if (existsSync(wtPath)) {
+      stopAllSessionsForTask(id, 'Deleting branch — detaching worktree');
+      await detachTaskWorktree(workspaceRoot!, wtPath, { ticketId: id, applyToMain: false });
+    }
     await deleteTicketBranch(name, force);
     await updateTaskWithHistory(id, { updatedBy: 'Agent', extraFields: { branch: null } });
     res.json({ deleted: name });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Worktree detach (manual-finish escape hatch, FLUX-521) ─────────────────────
+// Remove the task's worktree but keep the branch, so the human can merge/PR/delete
+// by hand. Uncommitted work is preserved (stashed → applied onto master, or kept as
+// a stash ref on conflict — see detachTaskWorktree).
+router.post('/:id/worktree/detach', async (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+  if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
+
+  const wtPath = taskWorktreeDir(workspaceRoot!, id);
+  if (!existsSync(wtPath)) {
+    return res.status(404).json({ error: 'No worktree for this ticket' });
+  }
+  try {
+    // Stop any live session so its process doesn't hold the worktree cwd (lock).
+    stopAllSessionsForTask(id, 'Detaching worktree');
+    const result = await detachTaskWorktree(workspaceRoot!, wtPath, { ticketId: id });
+    broadcastEvent('taskUpdated', { id });
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Open a ticket in a dedicated worktree window (FLUX-522) ─────────────────────
+// Ensure a branch + worktree exist, then open a NEW VS Code window rooted there
+// (a running session can't relocate its own cwd). Returns the worktree path, a
+// seed prompt to paste, and whether the editor actually launched.
+router.post('/:id/worktree/open', async (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+  if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
+
+  const baseBranch: string | undefined = req.body?.baseBranch;
+  try {
+    let branch: string | undefined = task.branch;
+    if (!branch) {
+      branch = await createTicketBranch(id, task.title || id, baseBranch);
+      await updateTaskWithHistory(id, { updatedBy: 'Agent', extraFields: { branch } });
+    }
+    // Reuse a worktree already checked out on this branch (e.g. a joined ticket
+    // sharing the parent's worktree); otherwise create this ticket's own.
+    let worktree = await findWorktreeForBranch(workspaceRoot!, branch);
+    if (!worktree) {
+      worktree = await createTaskWorktree(workspaceRoot!, id, branch, baseBranch ? { baseBranch } : {});
+    }
+    const opened = await isEditorAvailable();
+    if (opened) openEditorWindow(worktree);
+    broadcastEvent('taskUpdated', { id });
+    const seedPrompt = `Picking up ${id}: ${task.title || id}. Read the ticket and continue.`;
+    res.json({ worktree, branch, opened, seedPrompt });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Join an existing worktree (shared-branch work, FLUX-516) ───────────────────
+// Adopt another ticket's branch so THIS ticket runs in that branch's existing
+// worktree (e.g. fixing review-found bugs alongside the parent ticket). No new
+// branch or worktree is created — the ticket just points at the existing branch,
+// and execution-root resolution (by branch) routes it into the shared worktree.
+router.post('/:id/worktree/join', async (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+  if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
+
+  const branch: string | undefined = typeof req.body?.branch === 'string' ? req.body.branch.trim() : undefined;
+  if (!branch) return res.status(400).json({ error: 'branch is required' });
+
+  try {
+    const worktree = await findWorktreeForBranch(workspaceRoot!, branch);
+    if (!worktree) {
+      return res.status(409).json({ error: `No active worktree is checked out on '${branch}' to join.` });
+    }
+    await updateTaskWithHistory(id, { updatedBy: 'Agent', extraFields: { branch } });
+    broadcastEvent('taskUpdated', { id });
+    res.json({ branch, worktree, joined: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -535,12 +768,26 @@ router.get('/:id/diff', async (req, res) => {
   const task = tasksCache[id];
   if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
 
-  const diffPath = path.join(getActiveFluxDir(), `${id}.diff`);
+  const mode = req.query.mode === 'working' ? 'working' : 'committed';
   let fullDiff: string;
-  try {
-    fullDiff = await fs.readFile(diffPath, 'utf-8');
-  } catch {
-    return res.status(404).json({ error: 'No diff stored for this ticket' });
+
+  if (mode === 'working') {
+    // Live diff: generate it on the fly from the current working tree vs baseline
+    try {
+      const diff = await captureDiff(task.branch ?? null, task.baselineCommit ?? null, 'working');
+      if (!diff) return res.status(404).json({ error: 'Could not generate live diff' });
+      fullDiff = diff.fullDiff;
+    } catch (err: any) {
+      return res.status(500).json({ error: `Live diff failed: ${err.message}` });
+    }
+  } else {
+    // Committed diff: read the sidecar file stored at finish
+    const diffPath = path.join(getActiveFluxDir(), `${id}.diff`);
+    try {
+      fullDiff = await fs.readFile(diffPath, 'utf-8');
+    } catch {
+      return res.status(404).json({ error: 'No diff stored for this ticket' });
+    }
   }
 
   const file = typeof req.query.file === 'string' ? req.query.file : null;

@@ -32,6 +32,7 @@ Starting a task spins up a dedicated `flux/<id>-<slug>` branch in an isolated wo
 done reviewing, `finish` pushes the branch and opens the PR for you — the PR URL is recorded back on
 the ticket as its implementation link. No manual branch juggling, no checkout dance on your main tree.
 
+<img width="580" height="530" alt="image" src="https://github.com/user-attachments/assets/e1a72575-2756-441b-bdd9-64d6690c3419" />
 
 
 > [](https://github.com/user-attachments/assets/66b1a908-5410-458e-8593-7673c5ebd09c)

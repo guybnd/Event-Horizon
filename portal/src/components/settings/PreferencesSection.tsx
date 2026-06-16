@@ -1,6 +1,7 @@
 import type { BoardCardOpenMode } from '../../types';
 import { useApp, THEMES, type AppTheme } from '../../AppContext';
 import { SettingToggleCard } from './shared';
+import { WorktreesPanel } from './WorktreesPanel';
 
 interface PreferencesSectionProps {
   boardCardOpenMode: BoardCardOpenMode;
@@ -23,6 +24,8 @@ interface PreferencesSectionProps {
   setEnableBacklog: (v: boolean) => void;
   requireComment: boolean;
   setRequireComment: (v: boolean) => void;
+  worktreeByDefault: boolean;
+  setWorktreeByDefault: (v: boolean) => void;
   generateDistinctFiles: boolean;
   setGenerateDistinctFiles: (v: boolean) => void;
   releaseNotesPath: string;
@@ -50,6 +53,8 @@ export function PreferencesSection({
   setEnableBacklog,
   requireComment,
   setRequireComment,
+  worktreeByDefault,
+  setWorktreeByDefault,
   generateDistinctFiles,
   setGenerateDistinctFiles,
   releaseNotesPath,
@@ -287,6 +292,15 @@ export function PreferencesSection({
           checked={requireComment}
           onChange={setRequireComment}
         />
+
+        <SettingToggleCard
+          title="Dedicated Worktree by Default"
+          description="When starting a task with a branch, default the 'dedicated worktree' choice on — the agent runs in an isolated git worktree so master stays put and concurrent tasks never collide. Overridable per launch."
+          checked={worktreeByDefault}
+          onChange={setWorktreeByDefault}
+        />
+
+        <WorktreesPanel />
 
         <div className="rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">

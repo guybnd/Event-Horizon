@@ -32,6 +32,7 @@ import { shutdownSharedServers } from './shared-mcp-server.js';
 import { broadcastEvent } from './events.js';
 
 import tasksRouter, { bulkRenameHandler } from './routes/tasks.js';
+import diffsRouter from './routes/diffs.js';
 import cliSessionRouter from './routes/cli-session.js';
 import docsRouter from './routes/docs.js';
 import configRouter from './routes/config.js';
@@ -73,6 +74,7 @@ app.use(express.json({ limit: '10mb' }));
 
 app.use('/api/tasks', requireWorkspace, tasksRouter);
 app.use('/api/tasks', requireWorkspace, cliSessionRouter);
+app.use('/api/diffs', requireWorkspace, diffsRouter);
 app.post('/api/bulk-rename', requireWorkspace, bulkRenameHandler);
 app.use('/api/docs', requireWorkspace, docsRouter);
 app.use('/api/config', requireWorkspace, configRouter);

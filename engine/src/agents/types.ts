@@ -105,6 +105,12 @@ export interface CliSessionRecord extends CliSessionSummary {
   diffBlock?: string;
   /** Set when the session paused itself via change_status('Require Input'). */
   pausedForInput?: boolean;
+  /**
+   * The agent EXECUTION root this session spawned in (its worktree, or the engine
+   * root) — FLUX-519. Captured at start so a later reply (sendInput) resumes in the
+   * SAME tree, and so we can refuse to resume on master if the worktree was removed.
+   */
+  executionRoot?: string;
 }
 
 export interface AgentEvent {

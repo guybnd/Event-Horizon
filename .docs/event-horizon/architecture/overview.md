@@ -41,6 +41,8 @@ Ticket files can live in one of two places. The engine resolves the active mode 
 
 -   **Orphan branch (`.flux-store/` worktree on `flux-data`)**: tickets are committed to a parallel orphan branch checked out as a worktree. Keeps the main branch's history focused on code changes. Default for shared projects.
 
+**Local-per-workspace config (FLUX-532).** In orphan mode `config.json` (UI prefs + board structure like project keys/columns) and `read-state.json` (per-user unread tracking) are **not** synced through `flux-data` — a store-level `.gitignore` excludes them (seeded by `excludeLocalConfigFromSync` in `storage-sync.ts`, which also untracks any copies an older engine committed). They stay on disk locally and are read/written exactly as before; only ticket `.md` files (and assets) travel through sync. This stops settings from reverting on every fetch and from leaking between clones.
+
 The historical decision matrix is in [[ADR 0001 — Storage Modes]]; the runtime behavior is what this page describes.
 
 ### Documentation

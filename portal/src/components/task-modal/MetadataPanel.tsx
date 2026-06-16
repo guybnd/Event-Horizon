@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
-import { GitBranch, Copy, Check } from 'lucide-react';
+import { GitBranch, FolderGit2, Copy, Check, FolderX, Loader2 } from 'lucide-react';
 import type { TagDef, Task } from '../../types';
 import { TagSelector } from '../TagSelector';
-import { fetchBranchStatus, type BranchStatus } from '../../api';
+import { fetchBranchStatus, detachWorktree, type BranchStatus } from '../../api';
 import { DiffSummaryPanel } from './DiffSummaryPanel';
+import { useApp } from '../../AppContext';
 
 const EFFORT_OPTIONS = ['None', 'XS', 'S', 'M', 'L', 'XL'];
 
@@ -48,6 +49,7 @@ export function MetadataPanel({
   variant,
   isWideMode,
 }: MetadataPanelProps) {
+  const { triggerRefresh, refreshWorktrees } = useApp();
   const [branchStatus, setBranchStatus] = useState<BranchStatus | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -62,6 +64,30 @@ export function MetadataPanel({
       setTimeout(() => setCopied(false), 1500);
     });
   };
+
+  // FLUX-521: manual-finish escape hatch — remove the worktree, keep the branch.
+  const [detaching, setDetaching] = useState(false);
+  const [detachMsg, setDetachMsg] = useState<string | null>(null);
+  const handleDetach = async () => {
+    if (!task?.id) return;
+    if (!window.confirm('Detach the dedicated worktree? The branch is kept; any uncommitted work is surfaced onto master (or kept as a stash).')) return;
+    setDetaching(true);
+    setDetachMsg(null);
+    try {
+      const result = await detachWorktree(task.id);
+      setDetachMsg(result.message);
+      fetchBranchStatus(task.id).then(setBranchStatus).catch(() => {});
+      // Refresh the board too, so the card's worktree badge clears without a
+      // manual page reload (the detach no longer lingers in the UI).
+      refreshWorktrees();
+      triggerRefresh();
+    } catch (err: any) {
+      setDetachMsg(err.message || 'Failed to detach worktree');
+    } finally {
+      setDetaching(false);
+    }
+  };
+
   if (variant === 'popup') {
     return (
       <div className={isWideMode ? 'flex items-end gap-4' : 'flex flex-wrap items-end gap-3'}>
@@ -210,8 +236,10 @@ export function MetadataPanel({
       {task?.branch && (
         <div>
           <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Branch</label>
-          <div className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-mono ${branchStatus?.exists === false ? 'border-gray-100 bg-gray-50 text-gray-400 dark:border-white/5 dark:bg-black/10 dark:text-gray-500 line-through' : 'border-gray-200 bg-white dark:border-white/10 dark:bg-[#252630]'}`}>
-            <GitBranch className="h-3 w-3 shrink-0 text-gray-400" />
+          <div className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-mono ${branchStatus?.exists === false ? 'border-gray-100 bg-gray-50 text-gray-400 dark:border-white/5 dark:bg-black/10 dark:text-gray-500 line-through' : branchStatus?.worktree ? 'border-primary/30 bg-primary/5 text-primary' : 'border-gray-200 bg-white dark:border-white/10 dark:bg-[#252630]'}`}>
+            {branchStatus?.worktree
+              ? <FolderGit2 className="h-3 w-3 shrink-0" />
+              : <GitBranch className="h-3 w-3 shrink-0 text-gray-400" />}
             <span className="flex-1 truncate text-gray-700 dark:text-gray-200">{task.branch}</span>
             {branchStatus?.exists && (branchStatus.aheadCount > 0 || branchStatus.behindCount > 0) && (
               <span className="shrink-0 text-[10px] text-gray-400">
@@ -223,6 +251,21 @@ export function MetadataPanel({
               {copied ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
             </button>
           </div>
+          {branchStatus?.worktree && (
+            <div className="mt-1.5 flex items-center gap-2">
+              <span className="text-[10px] text-gray-400" title={branchStatus.worktree}>dedicated worktree active</span>
+              <button
+                onClick={() => void handleDetach()}
+                disabled={detaching}
+                title="Remove the worktree, keep the branch (uncommitted work is preserved)"
+                className="ml-auto flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-gray-500 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-50 dark:text-gray-400 dark:hover:bg-white/5 dark:hover:text-gray-200"
+              >
+                {detaching ? <Loader2 className="h-3 w-3 animate-spin" /> : <FolderX className="h-3 w-3" />}
+                Detach
+              </button>
+            </div>
+          )}
+          {detachMsg && <p className="mt-1 text-[10px] text-gray-400">{detachMsg}</p>}
         </div>
       )}
 

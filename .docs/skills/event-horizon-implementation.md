@@ -21,7 +21,7 @@ Refer to the orchestrator skill for the ticket model, APIs, and end-to-end check
 ## Implementation Workflow
 
 1. Use `get_ticket` to read the full ticket, including all history, before touching any file.
-2. **Check for a branch.** Call `get_branch` on the ticket. If `branch` is set, run `git fetch origin <branch>` then `git checkout <branch>` before making any changes (the branch is created remotely via the portal and may not exist locally yet). If no branch is set, proceed on the current branch (the user chose "start normally" at task start).
+2. **Check for a branch.** Call `get_branch` on the ticket. If `branch` is set, run `git fetch origin <branch>` then `git checkout <branch>` before making any changes (the branch is created remotely via the portal and may not exist locally yet). If no branch is set, proceed on the current branch (the user chose "start normally" at task start). **Exception — dedicated worktree:** if your working directory is already inside `.eh-worktrees/` (an Event Horizon task worktree), you are ALREADY checked out on the ticket branch in an isolated tree — do **not** `git checkout` (it's unnecessary, and you must never switch the worktree's branch). Just work in place.
 3. For M+ effort tickets, check `.docs/INDEX.md` for relevant docs. Read nearby implementation files. Prefer the smallest owning surface.
 4. Use `add_comment` to post your implementation plan before substantial work.
 5. Use `change_status` with `newStatus: 'In Progress'` before the first substantive code change.
@@ -81,3 +81,5 @@ Use MCP tools for all ticket interactions. Use Read for source code only.
 
 - Keep comments factual and short. Completion comments: behavior, key files, validation, commit hash.
 - Prefer comments that help the next agent continue without re-discovery.
+- **Substantial comments: add a faithful `summary`.** When `add_comment` / `log_progress` carries a long or verbose note, pass a `summary` — capture the decision, the why, and anything a future agent must act on. As concise as it can be WITHOUT losing substance; length scales with importance — do **not** force one line. Skip it for short, already-dense notes. Once the note ages past the recent window the agent digest shows the summary in place of the full text (the full text stays fetchable via `get_ticket` with `expand: ["<id>"]`). A too-short summary makes the next agent expand everything — err toward robust.
+- **Pin critical entries:** set `pin: true` on review handoffs and key decisions so they are NEVER collapsed in the digest.

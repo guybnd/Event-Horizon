@@ -37,6 +37,8 @@ export function Board() {
     filterPriority,
     filterTag,
     filterUnreadOnly,
+    filterWorktree,
+    worktreeBranches,
     readComments,
     parseErrors,
   } = useApp();
@@ -163,6 +165,8 @@ export function Board() {
     filterPriority,
     filterTag,
     filterUnreadOnly,
+    filterWorktree,
+    worktreeBranches,
     readComments,
     requireInputStatus: getRequireInputStatus(config),
   });
@@ -323,7 +327,7 @@ export function Board() {
 
   return (
     <>
-      <div className="flex h-full min-h-0 flex-col gap-6">
+      <div className="flex h-full min-h-0 flex-col gap-4">
         <div className="flex items-center gap-3">
           <div className="flex-1">
             <TaskViewControls

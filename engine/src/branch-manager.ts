@@ -28,11 +28,24 @@ export function branchName(ticketId: string, title: string): string {
 export async function createTicketBranch(ticketId: string, title: string, baseBranch?: string): Promise<string> {
   if (!baseBranch) baseBranch = await getDefaultBranch();
   const name = branchName(ticketId, title);
-  // Use `git branch` (not checkout) — the engine process must NOT switch HEAD to the ticket branch.
-  // The agent's CLI session checks out the branch locally; the engine only needs to create the ref.
-  await git(['branch', name, baseBranch]);
+  // Idempotent: only create the local ref if it doesn't already exist (e.g. a prior
+  // worktree-open already created it). Use `git branch` (not checkout) — the engine
+  // process must NOT switch HEAD to the ticket branch; the agent's worktree/session
+  // is what checks it out.
+  if (!(await branchRefExists(name))) {
+    await git(['branch', name, baseBranch]);
+  }
   await git(['push', '-u', 'origin', name]);
   return name;
+}
+
+async function branchRefExists(name: string): Promise<boolean> {
+  try {
+    await git(['rev-parse', '--verify', '--quiet', `refs/heads/${name}`]);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function getDefaultBranch(): Promise<string> {
@@ -114,6 +127,16 @@ export async function getCurrentCommit(): Promise<string | null> {
   }
 }
 
+// Resolve any rev (e.g. 'HEAD~1') to a full sha, or null if it doesn't exist.
+export async function resolveCommit(rev: string): Promise<string | null> {
+  try {
+    const { stdout } = await git(['rev-parse', '--verify', rev]);
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 export interface DiffFileSummary {
   file: string;
   additions: number;
@@ -131,7 +154,17 @@ export const DIFF_PROMPT_MAX_BYTES = 80 * 1024;
 
 // Resolve the range to diff: branch mode (merge-base..tip) takes precedence; otherwise
 // baseline..HEAD; otherwise the single most recent commit on HEAD.
-async function resolveDiffRange(branch?: string | null, baselineCommit?: string | null): Promise<string | null> {
+// If mode is 'working', diffs baselineCommit against the working tree.
+async function resolveDiffRange(branch?: string | null, baselineCommit?: string | null, mode?: 'committed' | 'working'): Promise<string | null> {
+  if (mode === 'working' && baselineCommit) {
+    try {
+      await git(['rev-parse', '--verify', baselineCommit]);
+      return baselineCommit;
+    } catch {
+      return null;
+    }
+  }
+
   if (branch) {
     try {
       await git(['rev-parse', '--verify', branch]);
@@ -176,8 +209,8 @@ function parseNumstat(stdout: string): DiffFileSummary[] {
   return out;
 }
 
-export async function captureDiff(branch?: string | null, baselineCommit?: string | null): Promise<DiffCapture | null> {
-  const range = await resolveDiffRange(branch, baselineCommit);
+export async function captureDiff(branch?: string | null, baselineCommit?: string | null, mode?: 'committed' | 'working'): Promise<DiffCapture | null> {
+  const range = await resolveDiffRange(branch, baselineCommit, mode);
   if (!range) return null;
 
   let summary: DiffFileSummary[] = [];

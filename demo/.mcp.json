@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "event-horizon": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "tsx",
+        "../engine/src/mcp-server.ts",
+        "--workspace",
+        "."
+      ]
+    }
+  }
+}

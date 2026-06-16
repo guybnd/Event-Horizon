@@ -55,11 +55,15 @@ Read a ticket by ID. Returns an **agent digest**, not the raw file: history is d
 |-------|------|----------|-------|
 | `ticketId` | string | yes | e.g. `FLUX-42` |
 | `historyLimit` | number | no | Max history entries returned (default 20) |
+| `expand` | string[] | no | History entry `id`s to return in FULL (un-collapse). Pass the `id` shown on a `collapsed` entry when its summary isn't enough. |
+| `fullHistory` | boolean | no | Return all history uncollapsed. Discouraged — re-inflates context; prefer `expand`. |
 
 **Output:** JSON — full frontmatter + `body` + digested `history`. The internal `_path` field is stripped. Digest rules (`serializeTaskForAgent` in [`task-store.ts`](../../../engine/src/task-store.ts), `digestHistoryForAgent` in [`history.ts`](../../../engine/src/history.ts)):
 
 - `agent_session` entries lose their `progress[]` array and gain a `progressCount` instead — fetch the raw log via [`get_session_log`](#get_session_log) when needed. All other fields (`sessionId`, `status`, `outcome`, `startedAt`, `endedAt`, …) are preserved.
-- `comment`, `status_change`, and `activity` entries pass through intact.
+- `status_change` entries are dropped from the digest (the current status is already in the frontmatter); `comment` and `activity` entries pass through.
+- **Summary-gated collapse:** older `comment`/`activity` entries that carry an agent-written `summary` **and an `id`** are returned collapsed — `{ type, user, date, summary, id, collapsed: true }` instead of the full body. Kept full: the last `commentDigest.keepRecent` (config, default 3) entries, any `pin: true` entry, any entry without a summary (never force-truncated), and any entry without an `id` (couldn't be recovered). `collapsedCount` reports how many were collapsed; fetch a collapsed entry's full text with `expand: ["<id>"]` (or `fullHistory: true`).
+- Older `agent_session` entries are likewise collapsed to their `outcome` (shown as `summary`), keeping `sessionId` — recover the full session via [`get_session_log`](#get_session_log)`(ticketId, sessionId)`, **not** `expand` (collapsed sessions carry `sessionId`, not `id`).
 - Only the most recent `historyLimit` entries are returned; when older ones are omitted, the response includes `olderHistoryEntries: <count>`.
 - Attached `cliSession`/`cliSessions` summaries are the list-scoped set with `liveOutput` truncated to a short tail, and slimmed for agents: `args` (which embeds the full launch prompt — i.e. the ticket body again), `command`, and `pid` are dropped; `argsChars` preserves a size hint.
 
@@ -267,6 +271,8 @@ Append a comment to history.
 | `ticketId` | string | yes |
 | `comment` | string | yes |
 | `user` | string | no — defaults to `Agent` |
+| `summary` | string | no — a faithful one-paragraph summary; shown in the agent digest once the comment ages past the recent window (full text via `get_ticket` `expand`). Provide for substantial comments; keep it concise but lossless. |
+| `pin` | boolean | no — never collapse this comment in the agent digest (review handoffs / key decisions). |
 
 **Output:** `Comment added to <id>`.
 
@@ -278,6 +284,8 @@ Append an `activity` entry (different from a comment — used for "agent did X" 
 |-------|------|----------|
 | `ticketId` | string | yes |
 | `message` | string | yes |
+| `summary` | string | no — faithful summary shown in the agent digest once this note ages past the recent window (full text via `get_ticket` `expand`). |
+| `pin` | boolean | no — never collapse this note in the agent digest. |
 
 **Output:** `Progress logged on <id>`.
 
@@ -315,8 +323,11 @@ These wrap git operations through [`branch-manager.ts`](../../../engine/src/bran
 |-------|------|----------|---------|
 | `ticketId` | string | yes | — |
 | `baseBranch` | string | no | `master` |
+| `worktree` | boolean | no | config `worktreeByDefault` (off) |
 
-**Output:** `{ branch: "<name>" }`.
+**Output:** `{ branch: "<name>", worktree?: "<path>", worktreeError?: "<msg>" }`.
+
+When `worktree` is `true` (or omitted with `worktreeByDefault` enabled), a dedicated git worktree is created for the branch at `<repoParent>/.eh-worktrees/<repo>-<id>` and the agent runs isolated there (FLUX-516). The branch is always created first, so a worktree failure (e.g. concurrency cap) is reported in `worktreeError` without failing the call. See [`task-worktree.ts`](../../../engine/src/task-worktree.ts).
 
 **Errors:** ticket not found; `Ticket <id> already has branch: <name>`; git failure.
 
@@ -337,7 +348,9 @@ These wrap git operations through [`branch-manager.ts`](../../../engine/src/bran
 
 **Output:** `Branch <name> deleted`.
 
-**Enforcement:** refuses to delete unmerged branches unless `force === true`.
+**Enforcement:** refuses to delete unmerged branches unless `force === true`. If the ticket has a dedicated worktree, the session is stopped and the worktree detached first (a branch can't be deleted while a worktree holds it checked out). As an **abandon**, any uncommitted work is preserved as a recoverable stash ref but NOT applied onto master.
+
+> **Worktree teardown on finish:** `finish_ticket` stops the session and tears the ticket's worktree down (via detach) after the work is committed and the PR merged (FLUX-521). If the worktree still has **uncommitted** changes — e.g. someone was editing it by accident — they are surfaced onto master and noted on the ticket, never discarded. The manual `POST /:id/worktree/detach` escape hatch behaves the same.
 
 ---
 

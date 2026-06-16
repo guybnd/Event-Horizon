@@ -45,6 +45,7 @@ import { ReadyForMergePrompt } from './task-modal/ReadyForMergePrompt';
 import { StartTaskPrompt } from './task-modal/StartTaskPrompt';
 import { TokenBadge } from './TokenBadge';
 import { HistoryList } from './task-modal/HistoryList';
+import { PayloadSizePanel } from './task-modal/PayloadSizePanel';
 const ACTIVITY_FILTER_STORAGE_KEY = 'flux.activityFilter';
 
 type ActivityFilter = 'all' | 'decisions' | 'sessions';
@@ -352,7 +353,7 @@ export function TaskModal() {
     // For swimlane-based require-input, show the question from the swimlane_change entry
     if (modalTask.swimlane === 'require-input') {
       const swimlaneEntry = [...modalTask.history].reverse().find(
-        (e) => e.type === 'swimlane_change' && (e as any).action === 'set' && (e as any).swimlane === 'require-input' && e.comment
+        (e) => e.type === 'swimlane_change' && e.action === 'set' && e.swimlane === 'require-input' && e.comment
       );
       if (swimlaneEntry) return swimlaneEntry;
     }
@@ -1632,6 +1633,7 @@ export function TaskModal() {
                   </div>
                 </div>
                 {detailsPanel}
+                {modalTask?.id && <PayloadSizePanel taskId={modalTask.id} />}
               </div>
             </aside>
           </div>

@@ -50,3 +50,4 @@ All persistence uses MCP tools — see the orchestrator skill's "Persisting Chan
 
 - Keep comments factual and short. End input requests with a concrete question and proposed default.
 - Prefer comments that help the next agent continue without re-discovery.
+- **Substantial comments: add a faithful `summary`** on `add_comment` / `log_progress` (preserve the decision / why / actionable detail; concise but not lossy; length scales with importance — don't force one line; skip for short notes). Older summarized comments show collapsed in the agent digest; the full text stays fetchable via `get_ticket` with `expand: ["<id>"]`. Set `pin: true` on entries that must never collapse.

@@ -4,6 +4,8 @@ import * as fs from 'fs';
 import { configCache } from '../config.js';
 import { buildActivityEntry, buildCommentEntry, buildAgentMessageEntry, buildAgentSessionEntry, appendSessionProgress, closeAgentSession, type AgentSessionEntry } from '../history.js';
 import { updateTaskWithHistory, updateAgentSession, tasksCache, estimateCostUSD } from '../task-store.js';
+import { resolveTaskExecutionRoot } from '../task-worktree.js';
+import { workspaceRoot as canonicalWorkspaceRoot } from '../workspace.js';
 import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal, checkAutoRestart } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
@@ -27,6 +29,9 @@ function cleanChildEnv(): NodeJS.ProcessEnv {
     if (key.toUpperCase() === 'NODE_OPTIONS') delete env[key];
   }
   env.EVENT_HORIZON_FRAMEWORK = 'copilot';
+  // Pin the canonical ticket store so a worktree agent's event-horizon MCP binds
+  // to the real workspace, not its cwd worktree (FLUX-516).
+  if (canonicalWorkspaceRoot) env.EH_CANONICAL_WORKSPACE = canonicalWorkspaceRoot;
   return env;
 }
 
@@ -451,14 +456,14 @@ function getVSCodeGlobalStoragePaths(): string[] {
 }
 
 /** Spawn the copilot process using the resolved binary info. */
-function spawnCopilot(id: string, args: string[], workspaceRoot: string) {
+function spawnCopilot(id: string, args: string[], cwdRoot: string) {
   const { nodePath, entryPoint, exePath } = resolveCopilotBinary(id);
 
   if (nodePath && entryPoint) {
     // Spawn node directly with JS entry point (avoids .cmd path-with-spaces issues on Windows)
     console.log(`[${id}] Spawning: node ${path.basename(entryPoint)} [${args.length} args]`);
     return spawn(nodePath, [entryPoint, ...args], {
-      cwd: workspaceRoot,
+      cwd: cwdRoot,
       env: cleanChildEnv(),
       stdio: 'pipe',
       windowsHide: true,
@@ -467,7 +472,7 @@ function spawnCopilot(id: string, args: string[], workspaceRoot: string) {
 
   console.log(`[${id}] Spawning: ${exePath} [${args.length} args]`);
   return spawn(exePath, args, {
-    cwd: workspaceRoot,
+    cwd: cwdRoot,
     env: cleanChildEnv(),
     stdio: 'pipe',
     windowsHide: true,
@@ -477,6 +482,9 @@ function spawnCopilot(id: string, args: string[], workspaceRoot: string) {
 export async function startCliSession(session: CliSessionRecord, task: any, appendPrompt: string, effortOverrideRaw: string, workspaceRoot: string) {
   const label = session.label;
   const id = session.taskId;
+  // FLUX-519: run the agent in this task's worktree when one exists (else engine root).
+  const executionRoot = await resolveTaskExecutionRoot(task, workspaceRoot);
+  session.executionRoot = executionRoot;
 
   console.log(`[${id}] Starting Copilot CLI session in ${workspaceRoot}`);
 
@@ -514,7 +522,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
 
   console.log(`[${id}] Args: [${copilotArgs.map((a, i) => i === copilotArgs.indexOf(initialPrompt) ? `<prompt ${initialPrompt.length} chars>` : a).join(', ')}]`);
 
-  let proc = spawnCopilot(id, copilotArgs, workspaceRoot);
+  let proc = spawnCopilot(id, copilotArgs, executionRoot);
 
   session.proc = proc;
   session.pid = proc.pid;
@@ -709,6 +717,12 @@ export class CopilotAdapter implements AgentAdapter {
 
 export async function sendCliSessionInput(session: CliSessionRecord, message: string, user: string, workspaceRoot: string) {
   const id = session.taskId;
+  // FLUX-519 review: resume in the SAME root the session started in; refuse to fall
+  // back onto master if the worktree was removed (e.g. the ticket was finished).
+  const executionRoot = session.executionRoot ?? await resolveTaskExecutionRoot(tasksCache[id], workspaceRoot);
+  if (executionRoot !== workspaceRoot && !fs.existsSync(executionRoot)) {
+    throw new Error(`Worktree for ${id} no longer exists (ticket likely finished) — refusing to resume the agent on master.`);
+  }
 
   const inputAt = new Date().toISOString();
   session.lastInputAt = inputAt;
@@ -725,7 +739,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     : ['-p', safeMessage, '--output-format', 'json', '--yolo'];
 
   console.log(`[${id}] Reply spawn, resume=${session.claudeSessionId || 'none'}`);
-  const replyProc = spawnCopilot(id, resumeArgs, workspaceRoot);
+  const replyProc = spawnCopilot(id, resumeArgs, executionRoot);
 
   session.proc = replyProc;
   session.pid = replyProc.pid;

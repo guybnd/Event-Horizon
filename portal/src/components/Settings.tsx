@@ -4,19 +4,29 @@ import { Save } from 'lucide-react';
 import { bulkRename } from '../api';
 import type { TagDef, StatusDef, UserDef, PriorityDef, DocsEditPermissions, BoardCardOpenMode } from '../types';
 import { DEFAULT_READY_FOR_MERGE_STATUS, DEFAULT_REQUIRE_INPUT_STATUS, DEFAULT_ARCHIVE_STATUS } from '../workflow';
+import { StopServiceButton } from './StopServiceButton';
 import { WorkflowSection } from './settings/WorkflowSection';
 import { AttributesSection } from './settings/AttributesSection';
 import { WorkspaceSection } from './settings/WorkspaceSection';
 import { PreferencesSection } from './settings/PreferencesSection';
 import { AgentSection } from './settings/AgentSection';
 import { ModulesSection } from './settings/ModulesSection';
+import { McpPhasesSection } from './settings/McpPhasesSection';
 import { GlobalSection } from './settings/GlobalSection';
 import type { ModuleDeclaration } from '../types';
 
 export function Settings() {
-  const { config, saveConfig, triggerRefresh, setView, workspacePath, notifyWorkspaceSet } = useApp();
+  const { config, saveConfig, triggerRefresh, setView, workspacePath, notifyWorkspaceSet, settingsTab, setSettingsTab } = useApp();
 
   const [activeTab, setActiveTab] = useState<'workflow' | 'attributes' | 'workspace' | 'preferences' | 'agent' | 'modules' | 'global'>('workflow');
+
+  // Honor a requested tab from elsewhere (e.g. the header user menu's "Manage users"),
+  // then clear it so a later manual tab change isn't overridden.
+  useEffect(() => {
+    if (!settingsTab) return;
+    setActiveTab(settingsTab as typeof activeTab);
+    setSettingsTab(null);
+  }, [settingsTab, setSettingsTab]);
   const [columns, setColumns] = useState<StatusDef[]>([]);
   const [hiddenStatuses, setHiddenStatuses] = useState<StatusDef[]>([]);
   const [users, setUsers] = useState<UserDef[]>([]);
@@ -25,6 +35,7 @@ export function Settings() {
   const [projects, setProjects] = useState('');
   const [enableBacklog, setEnableBacklog] = useState(true);
   const [requireComment, setRequireComment] = useState(true);
+  const [worktreeByDefault, setWorktreeByDefault] = useState(false);
   const [boardCardOpenMode, setBoardCardOpenMode] = useState<BoardCardOpenMode>('full');
   const [animationsEnabled, setAnimationsEnabled] = useState(true);
   const [enableFireworks, setEnableFireworks] = useState(true);
@@ -52,6 +63,7 @@ export function Settings() {
   const [agentProgressEnabled, setAgentProgressEnabled] = useState(true);
   const [agentProgressDelay, setAgentProgressDelay] = useState(2);
   const [modules, setModules] = useState<ModuleDeclaration[]>([]);
+  const [mcpServerPhases, setMcpServerPhases] = useState<Record<string, string[]>>({});
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -64,6 +76,7 @@ export function Settings() {
       setProjects(config.projects.join(', '));
       setEnableBacklog(config.enableBacklogScreen);
       setRequireComment(config.requireCommentOnStatusChange);
+      setWorktreeByDefault(config.worktreeByDefault ?? false);
       setBoardCardOpenMode(config.boardCardOpenMode || 'full');
       setAnimationsEnabled(config.animationsEnabled ?? true);
       setEnableFireworks(config.enableFireworks ?? true);
@@ -93,6 +106,7 @@ export function Settings() {
       setAgentProgressEnabled(config.agentProgress?.enabled ?? true);
       setAgentProgressDelay(config.agentProgress?.inlineDelay ?? 2);
       setModules((config as any).modules || []);
+      setMcpServerPhases((config as any).mcpServerPhases || {});
     }
   }, [config]);
 
@@ -197,6 +211,7 @@ export function Settings() {
         enableBacklogScreen: enableBacklog,
         requireCommentOnStatusChange: requireComment,
         boardCardOpenMode,
+        worktreeByDefault,
         animationsEnabled,
         enableFireworks,
         animationSpeed,
@@ -235,6 +250,7 @@ export function Settings() {
           inlineDelay: agentProgressDelay,
         },
         modules,
+        mcpServerPhases,
       } as any);
 
       triggerRefresh();
@@ -257,6 +273,7 @@ export function Settings() {
     setProjects(config.projects.join(', '));
     setEnableBacklog(config.enableBacklogScreen);
     setRequireComment(config.requireCommentOnStatusChange);
+    setWorktreeByDefault(config.worktreeByDefault ?? false);
     setBoardCardOpenMode(config.boardCardOpenMode || 'full');
     setAnimationsEnabled(config.animationsEnabled ?? true);
     setEnableFireworks(config.enableFireworks ?? true);
@@ -284,6 +301,7 @@ export function Settings() {
     setAgentProgressEnabled(config.agentProgress?.enabled ?? true);
     setAgentProgressDelay(config.agentProgress?.inlineDelay ?? 2);
     setModules((config as any).modules || []);
+    setMcpServerPhases((config as any).mcpServerPhases || {});
   };
 
   if (!config) return null;
@@ -298,6 +316,7 @@ export function Settings() {
     enableBacklogScreen: enableBacklog,
     requireCommentOnStatusChange: requireComment,
     boardCardOpenMode,
+    worktreeByDefault,
     animationsEnabled,
     enableFireworks,
     animationSpeed,
@@ -324,6 +343,7 @@ export function Settings() {
     agentProgressEnabled,
     agentProgressDelay,
     modules,
+    mcpServerPhases,
   });
 
   const originalPayload = JSON.stringify({
@@ -336,6 +356,7 @@ export function Settings() {
     enableBacklogScreen: config.enableBacklogScreen,
     requireCommentOnStatusChange: config.requireCommentOnStatusChange,
     boardCardOpenMode: config.boardCardOpenMode || 'full',
+    worktreeByDefault: config.worktreeByDefault ?? false,
     animationsEnabled: config.animationsEnabled ?? true,
     enableFireworks: config.enableFireworks ?? true,
     animationSpeed: config.animationSpeed || 'normal',
@@ -362,6 +383,7 @@ export function Settings() {
     agentProgressEnabled: config.agentProgress?.enabled ?? true,
     agentProgressDelay: config.agentProgress?.inlineDelay ?? 2,
     modules: (config as any).modules || [],
+    mcpServerPhases: (config as any).mcpServerPhases || {},
   });
 
   const isDirty = currentSavedPayload !== originalPayload;
@@ -397,7 +419,7 @@ export function Settings() {
 
         <div className="flex-1 eh-surface-overlay border eh-border rounded-2xl shadow-xl flex flex-col min-h-[600px]">
           <div className="p-8 flex-1">
-            <div className="flex items-center justify-between mb-8 pb-6 border-b border-gray-200 dark:border-white/10">
+            <div className="flex items-center justify-between gap-4 mb-8 pb-6 border-b border-gray-200 dark:border-white/10">
               <div>
                 <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
                   {activeTab === 'workflow' && 'Workflow & Statuses'}
@@ -409,6 +431,7 @@ export function Settings() {
                   {activeTab === 'global' && 'Global Settings'}
                 </h2>
               </div>
+              <StopServiceButton />
             </div>
 
             <div className="space-y-10">
@@ -488,6 +511,8 @@ export function Settings() {
                   setEnableBacklog={setEnableBacklog}
                   requireComment={requireComment}
                   setRequireComment={setRequireComment}
+                  worktreeByDefault={worktreeByDefault}
+                  setWorktreeByDefault={setWorktreeByDefault}
                   generateDistinctFiles={generateDistinctFiles}
                   setGenerateDistinctFiles={setGenerateDistinctFiles}
                   releaseNotesPath={releaseNotesPath}
@@ -515,7 +540,10 @@ export function Settings() {
               )}
 
               {activeTab === 'modules' && (
-                <ModulesSection modules={modules} setModules={setModules} />
+                <>
+                  <ModulesSection modules={modules} setModules={setModules} />
+                  <McpPhasesSection value={mcpServerPhases} setValue={setMcpServerPhases} />
+                </>
               )}
 
               {activeTab === 'global' && <GlobalSection />}

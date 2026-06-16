@@ -346,6 +346,11 @@ export const HistoryList = memo(function HistoryList({
                       {entry.id}
                     </span>
                   )}
+                  {entry.pin && (
+                    <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-500/15 dark:text-amber-300" title="Pinned — never collapsed in the agent digest">
+                      pinned
+                    </span>
+                  )}
                   {entry.type === 'comment' && entry.id && !readCommentIds.has(entry.id) && entry.user !== currentUser && (
                     <span className="flex items-center gap-1 text-[10px] text-amber-500 dark:text-amber-400">
                       <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
@@ -365,6 +370,11 @@ export const HistoryList = memo(function HistoryList({
               {entry.type === 'swimlane_change' && (
                 <div className="mb-1.5 flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400">
                   {entry.action === 'set' ? 'Swimlane set:' : 'Swimlane cleared:'} <span className="font-semibold">{entry.swimlane}</span>
+                </div>
+              )}
+              {entry.summary && (
+                <div className="mb-1.5 border-l-2 border-primary/40 pl-2 text-xs italic text-gray-500 dark:text-gray-400" title="Agent summary — shown in place of the full text in the agent digest">
+                  {entry.summary}
                 </div>
               )}
               {entry.comment && <TaskMarkdown body={entry.type === 'agent_message' ? unwrapAgentMessage(entry.comment) : entry.comment} taskId={taskId} compact imageMode={entry.type === 'comment' ? 'comment' : 'inline'} emptyMessage="" />}

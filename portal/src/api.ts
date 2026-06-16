@@ -30,6 +30,134 @@ export async function fetchTask(id: string): Promise<Task> {
   return res.json();
 }
 
+export interface PayloadSection {
+  name: string;
+  bytes: number;
+  tokensEst: number;
+  pct: number;
+}
+
+export interface AgentPayloadMetrics {
+  id: string;
+  totalBytes: number;
+  totalTokensEst: number;
+  sections: PayloadSection[];
+  historyBreakdown: Array<{ name: string; count: number; bytes: number; tokensEst: number }>;
+}
+
+/** Debug-only: byte/token breakdown of the agent-facing get_ticket payload. */
+export async function fetchTaskDebugSizes(id: string): Promise<AgentPayloadMetrics> {
+  const res = await fetch(`${API_URL}/tasks/${id}/debug/sizes`);
+  if (!res.ok) throw new Error('Failed to fetch payload sizes');
+  return res.json();
+}
+
+export interface BudgetSection {
+  name: string;
+  bytes: number;
+  tokensEst: number;
+  pct: number;
+}
+
+export interface SessionTokenTotals {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
+}
+
+export interface ContextBudget {
+  ticketId: string;
+  agentPayload: AgentPayloadMetrics;
+  launchPrompt: {
+    phase: string | null;
+    totalBytes: number;
+    totalTokensEst: number;
+    sections: BudgetSection[];
+    note: string;
+  };
+  skillModules: {
+    totalBytes: number;
+    totalTokensEst: number;
+    modules: Array<{ name: string; bytes: number; tokensEst: number; missing?: boolean }>;
+    note: string;
+  };
+  ehMeasurableTotalTokensEst: number;
+  session?: SessionTokenTotals;
+  caveats: string[];
+}
+
+/** Debug-only: full context-budget view — payload + launch prompt + skill modules. */
+export async function fetchTaskContextBudget(id: string): Promise<ContextBudget> {
+  const res = await fetch(`${API_URL}/tasks/${id}/debug/budget`);
+  if (!res.ok) throw new Error('Failed to fetch context budget');
+  return res.json();
+}
+
+export interface McpServerSchemaMetrics {
+  id: string;
+  source: string;
+  ok: boolean;
+  error?: string;
+  toolCount: number;
+  toolsBytes: number;
+  toolsTokensEst: number;
+  instructionsBytes: number;
+  instructionsTokensEst: number;
+  totalBytes: number;
+  totalTokensEst: number;
+  tools: Array<{ name: string; bytes: number; tokensEst: number }>;
+}
+
+export interface McpSchemaReport {
+  servers: McpServerSchemaMetrics[];
+  totalTokensEst: number;
+  note: string;
+}
+
+/** Debug-only: probe module MCP servers and measure per-server tool-schema cost. Slow (spawns servers). */
+export async function fetchMcpSchemas(): Promise<McpSchemaReport> {
+  const res = await fetch(`${API_URL}/tasks/debug/mcp-schemas`);
+  if (!res.ok) throw new Error('Failed to probe MCP schemas');
+  return res.json();
+}
+
+export interface SpawnServersReport {
+  strict: boolean;
+  phases: Record<string, string[]>;
+  note: string;
+}
+
+/** Debug-only: which MCP servers each phase's agent gets (per-phase profiles, FLUX-490). Cheap. */
+export async function fetchSpawnServers(): Promise<SpawnServersReport> {
+  const res = await fetch(`${API_URL}/tasks/debug/spawn-servers`);
+  if (!res.ok) throw new Error('Failed to fetch spawn servers');
+  return res.json();
+}
+
+export interface McpPhasesConfig {
+  servers: string[];
+  phases: string[];
+  mcpServerPhases: Record<string, string[]>;
+}
+
+/** Per-phase MCP server scoping config (FLUX-490 UI). */
+export async function fetchMcpPhases(): Promise<McpPhasesConfig> {
+  const res = await fetch(`${API_URL}/config/mcp-phases`);
+  if (!res.ok) throw new Error('Failed to fetch MCP phase config');
+  return res.json();
+}
+
+export async function saveMcpPhases(mcpServerPhases: Record<string, string[]>): Promise<{ mcpServerPhases: Record<string, string[]> }> {
+  const res = await fetch(`${API_URL}/config/mcp-phases`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mcpServerPhases }),
+  });
+  if (!res.ok) throw new Error('Failed to save MCP phase config');
+  return res.json();
+}
+
 export async function updateTask(id: string, updates: Partial<Task>): Promise<Task> {
   const res = await fetch(`${API_URL}/tasks/${id}`, {
     method: 'PUT',
@@ -949,6 +1077,8 @@ export interface BranchStatus {
   exists: boolean;
   aheadCount: number;
   behindCount: number;
+  /** Absolute path of the ticket's dedicated worktree, or null if none (FLUX-521). */
+  worktree?: string | null;
 }
 
 export async function fetchBranchStatus(taskId: string): Promise<BranchStatus> {
@@ -957,11 +1087,17 @@ export async function fetchBranchStatus(taskId: string): Promise<BranchStatus> {
   return res.json();
 }
 
-export async function createBranch(taskId: string, baseBranch?: string): Promise<{ branch: string }> {
+export async function createBranch(
+  taskId: string,
+  opts?: { baseBranch?: string; worktree?: boolean },
+): Promise<{ branch: string; worktree?: string; worktreeError?: string }> {
+  const body: Record<string, unknown> = {};
+  if (opts?.baseBranch) body.baseBranch = opts.baseBranch;
+  if (typeof opts?.worktree === 'boolean') body.worktree = opts.worktree;
   const res = await fetch(`${API_URL}/tasks/${taskId}/branch`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(baseBranch ? { baseBranch } : {}),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -970,13 +1106,168 @@ export async function createBranch(taskId: string, baseBranch?: string): Promise
   return res.json();
 }
 
-export async function fetchTaskDiff(taskId: string, file?: string): Promise<string | null> {
-  const url = file
-    ? `${API_URL}/tasks/${taskId}/diff?file=${encodeURIComponent(file)}`
-    : `${API_URL}/tasks/${taskId}/diff`;
+/**
+ * Detach (remove) a ticket's dedicated worktree but keep the branch — the
+ * manual-finish escape hatch (FLUX-521). Uncommitted work is preserved (surfaced
+ * onto master, or kept as a stash ref on conflict).
+ */
+export async function detachWorktree(
+  taskId: string,
+): Promise<{ outcome: 'clean' | 'applied' | 'stashed'; stashRef?: string; message: string }> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/worktree/detach`, { method: 'POST' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as any).error || 'Failed to detach worktree');
+  }
+  return res.json();
+}
+
+/**
+ * Ensure a branch + dedicated worktree exist for the ticket and open it in a NEW
+ * VS Code window (FLUX-522). `opened` is false when the `code` CLI isn't on PATH —
+ * the caller should then point the user at `worktree` to open manually.
+ */
+export async function openWorktreeWindow(
+  taskId: string,
+): Promise<{ worktree: string; branch: string; opened: boolean; seedPrompt: string }> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/worktree/open`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as any).error || 'Failed to open worktree window');
+  }
+  return res.json();
+}
+
+export interface WorktreeInfo {
+  path: string;
+  branch: string;
+  ticketId: string | null;
+  ticketTitle: string | null;
+  /** Files changed vs master (committed + uncommitted + untracked) — board chip badge. */
+  changedFiles?: number;
+}
+
+/** All active task worktrees (FLUX-516) — drives the worktree badges + Join picker. */
+export async function fetchWorktrees(): Promise<WorktreeInfo[]> {
+  const res = await fetch(`${API_URL}/tasks/worktrees`);
+  if (!res.ok) throw new Error('Failed to fetch worktrees');
+  const data = await res.json();
+  return (data.worktrees ?? []) as WorktreeInfo[];
+}
+
+export interface BranchOption {
+  name: string;
+  hasWorktree: boolean;
+  isTicketBranch: boolean;
+}
+
+/** Local branch names for the "Attach to branch" picker (FLUX-516). */
+export async function fetchBranches(): Promise<BranchOption[]> {
+  const res = await fetch(`${API_URL}/tasks/branches`);
+  if (!res.ok) throw new Error('Failed to fetch branches');
+  const data = await res.json();
+  return (data.branches ?? []) as BranchOption[];
+}
+
+/**
+ * Attach a ticket to an existing branch WITHOUT creating a worktree (FLUX-516).
+ * Execution-root resolution is by branch, so if that branch already has a
+ * worktree the ticket will run there; otherwise it runs on the main tree.
+ */
+export async function setTicketBranch(taskId: string, branch: string, updatedBy: string): Promise<Task> {
+  return updateTask(taskId, { branch, updatedBy } as Partial<Task>);
+}
+
+/**
+ * Attach a ticket as a subtask of `parentId` (FLUX-516). The engine's PUT handler
+ * keeps the parent's `subtasks` array and the child's `parentId` in sync
+ * bidirectionally, so this single update is enough.
+ */
+export async function attachParent(taskId: string, parentId: string, updatedBy: string): Promise<Task> {
+  return updateTask(taskId, { parentId, updatedBy } as Partial<Task>);
+}
+
+/**
+ * Join an existing worktree: adopt `branch` so this ticket runs in that branch's
+ * worktree (shared-branch work — e.g. fixing review bugs alongside the parent).
+ */
+export async function joinWorktree(
+  taskId: string,
+  branch: string,
+): Promise<{ branch: string; worktree: string; joined: boolean }> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/worktree/join`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ branch }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as any).error || 'Failed to join worktree');
+  }
+  return res.json();
+}
+
+export async function fetchTaskDiff(taskId: string, file?: string, mode?: 'committed' | 'working'): Promise<string | null> {
+  const params = new URLSearchParams();
+  if (file) params.set('file', file);
+  if (mode) params.set('mode', mode);
+  const qs = params.toString();
+  const url = qs ? `${API_URL}/tasks/${taskId}/diff?${qs}` : `${API_URL}/tasks/${taskId}/diff`;
   const res = await fetch(url);
   if (res.status === 404) return null;
   if (!res.ok) throw new Error('Failed to fetch diff');
+  return res.text();
+}
+
+// ─── Cross-worktree diffs (FLUX-527) ──────────────────────────────────────────
+
+export type DiffChangeStatus = 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked';
+
+export interface DiffChangedFile {
+  file: string;
+  additions: number;
+  deletions: number;
+  status: DiffChangeStatus;
+  /** Other group refs (branch names and/or 'main') that also touch this file. */
+  collidesWith?: string[];
+}
+
+export interface DiffGroup {
+  kind: 'worktree' | 'main';
+  path: string;
+  branch?: string;
+  ticketId?: string | null;
+  ticketTitle?: string | null;
+  files: DiffChangedFile[];
+}
+
+export interface DiffCollision {
+  file: string;
+  refs: string[];
+}
+
+export interface DiffOverview {
+  groups: DiffGroup[];
+  collisions: DiffCollision[];
+}
+
+/** Cross-worktree change overview: every active worktree + the main tree's loose changes (FLUX-527). */
+export async function fetchDiffOverview(): Promise<DiffOverview> {
+  const res = await fetch(`${API_URL}/diffs/overview`);
+  if (!res.ok) throw new Error('Failed to fetch diff overview');
+  return res.json();
+}
+
+/** One file's unified diff in the right root: `ref='main'` or a branch name. Null when nothing to show. */
+export async function fetchDiffFile(ref: string, path: string): Promise<string | null> {
+  const params = new URLSearchParams({ ref, path });
+  const res = await fetch(`${API_URL}/diffs/file?${params.toString()}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error('Failed to fetch file diff');
   return res.text();
 }
 

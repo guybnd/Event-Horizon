@@ -1,0 +1,158 @@
+{
+  "columns": [
+    {
+      "name": "Grooming",
+      "color": "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+    },
+    {
+      "name": "Todo",
+      "color": "bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300"
+    },
+    {
+      "name": "In Progress",
+      "color": "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
+    },
+    {
+      "name": "Ready",
+      "color": "bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300"
+    },
+    {
+      "name": "Done",
+      "color": "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+    },
+    {
+      "name": "Archived",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    }
+  ],
+  "hiddenStatuses": [
+    {
+      "name": "Backlog",
+      "color": "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+    },
+    {
+      "name": "Released",
+      "color": "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300"
+    }
+  ],
+  "users": [
+    {
+      "name": "Maya"
+    },
+    {
+      "name": "Devin"
+    },
+    {
+      "name": "Agent"
+    }
+  ],
+  "tags": [
+    {
+      "name": "bug",
+      "color": "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400"
+    },
+    {
+      "name": "feature",
+      "color": "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
+    },
+    {
+      "name": "docs",
+      "color": "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+    },
+    {
+      "name": "ui",
+      "color": "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
+    },
+    {
+      "name": "maps",
+      "color": "bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-400"
+    },
+    {
+      "name": "offline",
+      "color": "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-400"
+    },
+    {
+      "name": "perf",
+      "color": "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400"
+    },
+    {
+      "name": "onboarding",
+      "color": "bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400"
+    }
+  ],
+  "priorities": [
+    {
+      "name": "Critical",
+      "icon": "AlertCircle",
+      "color": "text-red-500"
+    },
+    {
+      "name": "High",
+      "icon": "ChevronUp",
+      "color": "text-orange-500"
+    },
+    {
+      "name": "Medium",
+      "icon": "Equal",
+      "color": "text-amber-500"
+    },
+    {
+      "name": "Low",
+      "icon": "ChevronDown",
+      "color": "text-emerald-500"
+    },
+    {
+      "name": "None",
+      "icon": "Equal",
+      "color": "text-gray-400"
+    }
+  ],
+  "projects": [
+    "TRAIL"
+  ],
+  "enableBacklogScreen": true,
+  "requireCommentOnStatusChange": true,
+  "boardCardOpenMode": "full",
+  "animationsEnabled": true,
+  "enableFireworks": true,
+  "animationSpeed": "normal",
+  "requireInputStatus": "Require Input",
+  "readyForMergeStatus": "Ready",
+  "archiveStatus": "Archived",
+  "docsEditPermissions": "all",
+  "docsAllowedUsers": [],
+  "docsRoot": ".docs",
+  "hoverPopupsEnabled": true,
+  "hoverPopupDelay": 1500,
+  "tokenDisplayMode": "cost",
+  "tokenCostThresholds": {
+    "green": 0.1,
+    "yellow": 0.5
+  },
+  "effortLevel": "high",
+  "releaseSettings": {
+    "generateDistinctFiles": true,
+    "releaseNotesPath": "release-notes"
+  },
+  "integrations": {
+    "claudeCode": {
+      "groomingModel": "",
+      "implementationModel": ""
+    },
+    "geminiCli": {
+      "groomingModel": "gemini-3.5-flash",
+      "implementationModel": "gemini-3.5-flash"
+    }
+  },
+  "defaultAgent": "claude",
+  "syncSettings": {
+    "debounceMs": 30000,
+    "maxWaitMs": 300000
+  },
+  "agentProgress": {
+    "enabled": true,
+    "inlineDelay": 2
+  },
+  "modules": [],
+  "mcpServerPhases": {}
+}

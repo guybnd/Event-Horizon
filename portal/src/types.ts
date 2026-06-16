@@ -41,6 +41,10 @@ export interface BasicHistoryEntry {
   comment?: string;
   id?: string;
   replyTo?: string;
+  /** Optional agent-written digest summary (FLUX-501) — shown collapsed in the agent digest. */
+  summary?: string;
+  /** Pinned entries are never collapsed in the agent digest. */
+  pin?: boolean;
 }
 
 export type HistoryEntry = BasicHistoryEntry | AgentSessionEntry;
@@ -238,6 +242,8 @@ export interface Config {
   enableBacklogScreen: boolean;
   requireCommentOnStatusChange: boolean;
   boardCardOpenMode?: BoardCardOpenMode;
+  /** Default state of the per-launch "dedicated worktree" choice (FLUX-521). */
+  worktreeByDefault?: boolean;
   requireInputStatus?: string;
   readyForMergeStatus?: string;
   archiveStatus?: string;

@@ -1,5 +1,18 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { configCache } from './config.js';
-import { getActiveFluxDir } from './workspace.js';
+import { getActiveFluxDir, workspaceRoot } from './workspace.js';
+
+/** Read the workspace `.mcp.json` server map (host-launched servers, incl. event-horizon). */
+export function getWorkspaceMcpServers(): Record<string, any> {
+  try {
+    const file = path.join(workspaceRoot || process.cwd(), '.mcp.json');
+    const json = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return json?.mcpServers ?? {};
+  } catch {
+    return {};
+  }
+}
 
 export interface ModuleInstallDocs {
   requires: string;

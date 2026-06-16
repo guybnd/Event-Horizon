@@ -1,10 +1,24 @@
 import { useCallback, useEffect, useRef, useState, memo } from 'react';
-import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, FileText, Tag, Plus, Power, Sun, Moon, Workflow, Palette } from 'lucide-react';
-import { useApp, THEMES, type AppView } from '../AppContext';
+import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, FileText, Tag, Plus, Workflow, Check, GitCompare } from 'lucide-react';
+import { useApp, THEMES, type AppTheme, type AppView } from '../AppContext';
 import { NotificationPanel } from './NotificationPanel';
 import { AnimatePresence } from 'framer-motion';
 import { GlobalSearch } from './GlobalSearch';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
+import { UserMenu } from './UserMenu';
+
+// Per-section accent so the nav reads as a colorful selector rather than six
+// identical muted glyphs. Tints are saturated enough to stay legible in light
+// mode and on the dark themes.
+const NAV_TINTS: Record<AppView, string> = {
+  board: '#10b981',     // emerald
+  backlog: '#0ea5e9',   // sky
+  changes: '#14b8a6',   // teal
+  releases: '#f59e0b',  // amber
+  docs: '#8b5cf6',      // violet
+  workflows: '#ec4899', // pink
+  settings: '#64748b',  // slate
+};
 
 const NavItem = memo(function NavItem({
   view,
@@ -20,11 +34,14 @@ const NavItem = memo(function NavItem({
   onClick: (v: AppView) => void
 }) {
   const isActive = view === target;
+  const tint = NAV_TINTS[target];
   return (
     <button
       onClick={() => onClick(target)}
-      className={`group flex items-center py-1.5 rounded-lg text-[13px] font-semibold transition-all duration-200 cursor-pointer overflow-hidden active:scale-95 ${isActive ? 'shadow-sm px-3' : 'px-2 hover:bg-black/[0.03] dark:hover:bg-white/[0.04]'}`}
-      style={isActive ? { background: 'var(--eh-surface-raised)', color: 'var(--eh-accent)', boxShadow: '0 1px 3px var(--eh-shadow-color)' } : { color: 'var(--eh-text-muted)' }}
+      className={`group flex items-center py-1.5 rounded-lg text-[13px] font-semibold transition-all duration-200 cursor-pointer overflow-hidden active:scale-95 ${isActive ? 'shadow-sm px-3' : 'px-2 opacity-70 hover:opacity-100 hover:bg-black/[0.03] dark:hover:bg-white/[0.04]'}`}
+      style={isActive
+        ? { background: `color-mix(in srgb, ${tint} 16%, transparent)`, color: tint, boxShadow: '0 1px 3px var(--eh-shadow-color)' }
+        : { color: tint }}
     >
       <span className="shrink-0">{icon}</span>
       <span
@@ -36,16 +53,65 @@ const NavItem = memo(function NavItem({
   );
 });
 
+const THEME_SWATCH: Record<AppTheme, string> = {
+  light: 'bg-gray-200 border border-gray-300',
+  dark: 'bg-gray-700',
+  matrix: 'bg-emerald-600',
+  cyber: 'bg-violet-600',
+  midnight: 'bg-sky-800',
+};
+
+// The logo doubles as the theme selector. It glows on a slow cadence so the
+// otherwise-non-obvious "click me to theme" affordance gets noticed.
 const Branding = memo(function Branding() {
+  const { theme, setAppTheme } = useApp();
+  const [isOpen, setIsOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setIsOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [isOpen]);
+
   return (
-    <div className="flex items-center gap-2.5">
-      <div className="bg-primary/10 p-1.5 rounded-lg">
+    <div className="relative flex items-center gap-2.5" ref={rootRef}>
+      <button
+        onClick={() => setIsOpen(prev => !prev)}
+        title={`Theme: ${theme} — click to change`}
+        aria-label="Change theme"
+        className={`eh-logo-button rounded-lg p-1.5 transition-colors cursor-pointer ${isOpen ? 'bg-primary/15' : 'bg-primary/10 hover:bg-primary/15'}`}
+      >
         <Rocket className="w-4 h-4 text-primary" />
-      </div>
+      </button>
       <div>
         <h1 className="text-[15px] font-extrabold tracking-[-0.03em] leading-none">Event Horizon</h1>
-        <p className="text-[9px] font-medium leading-none mt-1 tracking-[0.08em] uppercase" style={{ color: 'var(--eh-text-muted)' }}>Local-first tickets</p>
+        <p className="text-[9px] font-medium leading-none mt-1 tracking-[0.08em] uppercase" style={{ color: 'var(--eh-text-muted)' }}>Local-first agentic tickets</p>
       </div>
+
+      {isOpen && (
+        <div className="eh-dropdown absolute left-0 top-full z-50 mt-2 w-40 overflow-hidden rounded-xl border shadow-xl">
+          <div className="px-3 py-2 text-[10px] font-bold uppercase tracking-wider" style={{ color: 'var(--eh-text-muted)' }}>Theme</div>
+          {THEMES.map((t) => {
+            const active = theme === t.name;
+            return (
+              <button
+                key={t.name}
+                onClick={() => { setAppTheme(t.name); setIsOpen(false); }}
+                className={`flex w-full items-center gap-2.5 px-3 py-2 text-sm font-medium transition-colors ${active ? 'text-[var(--eh-accent)]' : 'hover:bg-[var(--eh-column-bg)]'}`}
+                style={active ? { background: 'var(--eh-accent-glow)' } : { color: 'var(--eh-text-secondary)' }}
+              >
+                <span className={`h-3 w-3 shrink-0 rounded-full ${THEME_SWATCH[t.name]}`} />
+                <span className="flex-1 text-left">{t.label}</span>
+                {active && <Check className="h-4 w-4 shrink-0" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 });
@@ -54,22 +120,15 @@ export function Header() {
   const {
     view,
     setView,
-    currentUser,
-    setCurrentUser,
     isConnected,
     openTaskModal,
-    theme,
-    setAppTheme,
     notifications,
     notificationUnreadCount,
     refreshNotifications,
   } = useApp();
 
   const [isPromptPulseActive, setIsPromptPulseActive] = useState(false);
-  const [isStoppingService, setIsStoppingService] = useState(false);
   const [isNotificationPanelOpen, setIsNotificationPanelOpen] = useState(false);
-  const [isThemePickerOpen, setIsThemePickerOpen] = useState(false);
-  const themePickerRef = useRef<HTMLDivElement>(null);
 
   const previousUnreadRef = useRef(notificationUnreadCount);
 
@@ -88,35 +147,14 @@ export function Header() {
     }
   }, [notificationUnreadCount]);
 
-  useEffect(() => {
-    if (!isThemePickerOpen) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      if (themePickerRef.current && !themePickerRef.current.contains(e.target as Node)) {
-        setIsThemePickerOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [isThemePickerOpen]);
-
-  const handleStopService = useCallback(async () => {
-    if (!window.confirm('Stop the Event Horizon service? The portal will disconnect.')) return;
-    setIsStoppingService(true);
-    try {
-      await fetch('/api/shutdown', { method: 'POST' });
-    } catch {
-      // Expected — the server closes the connection as it exits.
-    }
-  }, []);
-
   const handleCloseNotificationPanel = useCallback(() => setIsNotificationPanelOpen(false), []);
   const handleSetView = useCallback((v: AppView) => setView(v), [setView]);
   const handleOpenNewTicket = useCallback(() => openTaskModal({ status: 'Grooming' }), [openTaskModal]);
   const toggleNotificationPanel = useCallback(() => setIsNotificationPanelOpen(prev => !prev), []);
 
   return (
-    <header className="eh-header sticky top-0 z-10 border-b px-4 py-3">
-      <div className="flex items-center justify-between gap-3">
+    <header className="eh-header sticky top-0 z-50 border-b px-4 py-3">
+      <div className="relative flex items-center justify-between gap-3">
 
         {/* Left: branding + nav */}
         <div className="flex shrink-0 items-center gap-3">
@@ -128,6 +166,7 @@ export function Header() {
           <div className="flex items-center gap-1 p-1 rounded-lg" style={{ background: 'var(--eh-column-bg)' }}>
             <NavItem view={view} target="board" icon={<KanbanSquare className="w-4 h-4" />} label="Board" onClick={handleSetView} />
             <NavItem view={view} target="backlog" icon={<ListTodo className="w-4 h-4" />} label="Backlog" onClick={handleSetView} />
+            <NavItem view={view} target="changes" icon={<GitCompare className="w-4 h-4" />} label="Changes" onClick={handleSetView} />
             <NavItem view={view} target="releases" icon={<Tag className="w-4 h-4" />} label="Releases" onClick={handleSetView} />
             <NavItem view={view} target="docs" icon={<FileText className="w-4 h-4" />} label="Docs" onClick={handleSetView} />
             <NavItem view={view} target="workflows" icon={<Workflow className="w-4 h-4" />} label="Workflows" onClick={handleSetView} />
@@ -135,8 +174,10 @@ export function Header() {
           </div>
         </div>
 
-        {/* Right cluster */}
-        <div className="flex items-center gap-2 min-w-0 flex-1 justify-end">
+        {/* Center: search + new ticket.
+            Absolutely centered so expanding nav labels (left) never shove it. */}
+        <div className="absolute left-1/2 top-1/2 z-20 flex w-[480px] max-w-[44vw] -translate-x-1/2 -translate-y-1/2 items-center gap-2">
+          <GlobalSearch />
 
           {/* New ticket */}
           <button
@@ -146,8 +187,10 @@ export function Header() {
             <Plus className="h-4 w-4" />
             <span className="hidden sm:inline">New ticket</span>
           </button>
+        </div>
 
-          <GlobalSearch />
+        {/* Right cluster */}
+        <div className="flex shrink-0 items-center gap-2 justify-end">
 
           {/* Notifications dropdown */}
           <div className="relative">
@@ -200,55 +243,11 @@ export function Header() {
             )}
           </div>
 
-          {/* Power + theme — grouped */}
-          <div className="flex shrink-0 items-center gap-1">
-            <button
-              onClick={handleStopService}
-              disabled={isStoppingService || !isConnected}
-              title="Stop the Event Horizon service"
-              className="flex items-center justify-center rounded-xl border border-gray-200 bg-white/60 p-1.5 text-gray-400 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:bg-white/5 dark:text-gray-500 dark:hover:border-red-500/30 dark:hover:bg-red-500/10 dark:hover:text-red-400"
-            >
-              <Power className="h-3.5 w-3.5" />
-            </button>
-
-            <div className="relative" ref={themePickerRef}>
-              <button
-                onClick={() => setIsThemePickerOpen(prev => !prev)}
-                title={`Theme: ${theme}`}
-                className={`matrix-accent-toggle flex items-center justify-center rounded-xl border border-gray-200 bg-white/60 p-1.5 text-gray-400 transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-primary dark:border-white/10 dark:bg-white/5 dark:text-gray-500 dark:hover:border-primary/30 dark:hover:bg-primary/10 dark:hover:text-primary cursor-pointer ${isThemePickerOpen ? 'ring-2 ring-primary/30' : ''}`}
-              >
-                {theme === 'light' ? <Sun className="h-3.5 w-3.5" /> : theme === 'dark' ? <Moon className="h-3.5 w-3.5" /> : <Palette className="h-3.5 w-3.5" />}
-              </button>
-              {isThemePickerOpen && (
-                <div className="eh-dropdown absolute right-0 top-full mt-2 w-36 rounded-xl border shadow-xl overflow-hidden z-50">
-                  {THEMES.map((t) => (
-                    <button
-                      key={t.name}
-                      onClick={() => { setAppTheme(t.name); setIsThemePickerOpen(false); }}
-                      className={`w-full flex items-center gap-2.5 px-3 py-2 text-sm font-medium transition-colors ${theme === t.name ? 'text-[var(--eh-accent)]' : 'hover:bg-[var(--eh-column-bg)]'}`}
-                      style={theme === t.name ? { background: 'var(--eh-accent-glow)' } : { color: 'var(--eh-text-secondary)' }}
-                    >
-                      <span className={`h-3 w-3 rounded-full shrink-0 ${t.name === 'light' ? 'bg-gray-200 border border-gray-300' : t.name === 'dark' ? 'bg-gray-700' : t.name === 'matrix' ? 'bg-emerald-600' : t.name === 'cyber' ? 'bg-violet-600' : 'bg-sky-800'}`} />
-                      {t.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-
           {/* Workspace switcher */}
           <WorkspaceSwitcher />
 
           {/* User */}
-          <div className="flex shrink-0 items-center gap-1 min-w-0">
-            <label className="text-[9px] text-gray-400 font-bold uppercase tracking-wider shrink-0">User</label>
-            <input
-              value={currentUser}
-              onChange={e => setCurrentUser(e.target.value)}
-              className="bg-transparent text-xs font-semibold outline-none text-right w-20 text-gray-700 dark:text-gray-200 border-b border-transparent focus:border-primary transition-colors"
-            />
-          </div>
+          <UserMenu />
 
         </div>
       </div>

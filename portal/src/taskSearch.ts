@@ -8,6 +8,10 @@ export interface TaskFilterState {
   filterPriority: string;
   filterTag: string;
   filterUnreadOnly?: boolean;
+  /** '' = off, 'any' = any worktree, '<branch>' = isolate to that one worktree. */
+  filterWorktree?: string;
+  /** Branches that currently hold an active worktree — required when filterWorktree === 'any'. */
+  worktreeBranches?: Set<string>;
   readComments?: Record<string, string[]>;
   requireInputStatus?: string;
 }
@@ -84,6 +88,16 @@ export function filterAndSortTasks(tasks: Task[], config: Config, filters: TaskF
           ? task.status === filters.requireInputStatus
           : false);
         if (!hasUnreadComment && !isWaitingInput) return false;
+      }
+
+      if (filters.filterWorktree) {
+        if (filters.filterWorktree === 'any') {
+          const inWorktree = !!task.branch && (filters.worktreeBranches?.has(task.branch) ?? false);
+          if (!inWorktree) return false;
+        } else if (task.branch !== filters.filterWorktree) {
+          // Isolate the board to a single worktree's branch.
+          return false;
+        }
       }
 
       return matchesQuery && matchesAssignee && matchesPriority && matchesTag;

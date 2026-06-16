@@ -8,12 +8,13 @@ export function buildCommentEntry(user: string, comment: string, date: string, e
   };
 }
 
-export function buildActivityEntry(comment: string, user: string, date: string) {
+export function buildActivityEntry(comment: string, user: string, date: string, extra: Record<string, unknown> = {}) {
   return {
     type: 'activity',
     user: user || 'Unknown',
     date,
     comment,
+    ...extra,
   };
 }
 
@@ -131,15 +132,81 @@ export function closeAgentSession(
  * `progressCount`; only the most recent `limit` entries are returned, with the
  * number of omitted older entries in `olderHistoryEntries`.
  */
-export function digestHistoryForAgent(history: any[] = [], limit: number) {
-  const digested = history.map((entry) => {
+export function digestHistoryForAgent(
+  history: any[] = [],
+  limit: number,
+  keepRecent = 3,
+  opts: { expand?: string[]; fullHistory?: boolean } = {},
+) {
+  // Drop status_change entries from the agent digest — the current status is
+  // already in the frontmatter and the transition log is rarely actionable to a
+  // reading agent. Comments (incl. reviewer handoffs) and activity (incl. agent
+  // log_progress notes) are kept. (FLUX-499)
+  const material = history.filter((entry) => !entry || entry.type !== 'status_change');
+  const digested = material.map((entry) => {
     if (!entry || entry.type !== 'agent_session') return entry;
     const { progress, ...rest } = entry;
     return { ...rest, progressCount: Array.isArray(progress) ? progress.length : 0 };
   });
   const cap = Math.max(1, limit);
   const windowed = digested.length > cap ? digested.slice(-cap) : digested;
-  return { history: windowed, olderHistoryEntries: digested.length - windowed.length };
+  const olderHistoryEntries = digested.length - windowed.length;
+
+  // fullHistory escape (FLUX-504): windowed digest WITHOUT summary-collapse.
+  // Discouraged (defeats the digest) — prefer expand:[ids].
+  if (opts.fullHistory) {
+    return { history: windowed, olderHistoryEntries };
+  }
+
+  const expandSet = new Set(opts.expand ?? []);
+  // Summary-gated collapse (FLUX-501/503): within the window, replace OLDER
+  // entries that carry an agent-written `summary` AND an `id` (to expand by)
+  // with just that summary + metadata + id. Kept FULL: the last `keepRecent`,
+  // any `pin:true`, any entry WITHOUT a summary (we never force-truncate), and
+  // any entry without an `id` (it couldn't be recovered via expand). User
+  // comments are kept full implicitly — users don't write summaries.
+  const recentStart = Math.max(0, windowed.length - Math.max(0, keepRecent));
+  let collapsedCount = 0;
+  const collapsedHistory = windowed.map((entry, i) => {
+    if (!entry || typeof entry !== 'object') return entry;
+    if (i >= recentStart) return entry;                                  // recent → full
+    if (entry.pin) return entry;                                          // pinned → full
+    if (entry.id && expandSet.has(entry.id)) return entry;               // explicitly expanded → full
+
+    // agent_session: collapse old sessions to their `outcome` (keep sessionId so
+    // get_session_log still works). FLUX-507.
+    if (entry.type === 'agent_session') {
+      if (typeof entry.outcome !== 'string' || !entry.outcome.trim()) return entry; // no outcome → keep digested
+      collapsedCount++;
+      return {
+        type: 'agent_session',
+        ...(entry.sessionId ? { sessionId: entry.sessionId } : {}),
+        ...(entry.status ? { status: entry.status } : {}),
+        date: entry.date,
+        summary: entry.outcome,
+        ...(typeof entry.progressCount === 'number' ? { progressCount: entry.progressCount } : {}),
+        collapsed: true,
+      };
+    }
+
+    if (!entry.id) return entry;                                          // no expandable handle → keep full (FLUX-504 safety: never collapse what can't be recovered via expand:[id]; e.g. activity entries get no id)
+    if (typeof entry.summary !== 'string' || !entry.summary.trim()) return entry; // no summary → full
+    collapsedCount++;
+    return {
+      type: entry.type,
+      user: entry.user,
+      date: entry.date,
+      summary: entry.summary,
+      id: entry.id,
+      collapsed: true,
+    };
+  });
+
+  return {
+    history: collapsedHistory,
+    olderHistoryEntries,
+    ...(collapsedCount > 0 ? { collapsedCount } : {}),
+  };
 }
 
 /**

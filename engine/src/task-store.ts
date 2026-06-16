@@ -21,6 +21,7 @@ import { resolveEmbeddedDocsRoot, copyDir, buildStarterProjectOverview } from '.
 import { bootstrapNewWorkspace, installSkillsForWorkspace } from './bootstrap.js';
 import { activateGroup, activateMemberBinding, getGroupContext, getMemberBinding, activeGroupDocsLabel } from './group.js';
 import { attachMemberWorktree } from './group-member-worktree.js';
+import { pruneTaskWorktrees } from './task-worktree.js';
 import { probeAllEnabled } from './module-probe.js';
 
 export let tasksCache: Record<string, any> = {};
@@ -70,10 +71,13 @@ const AGENT_HISTORY_LIMIT = 20;
  * the portal. Use `get_session_log` semantics (fetch by sessionId) for raw
  * progress when an agent genuinely needs it.
  */
-export function serializeTaskForAgent(task: any, historyLimit?: number) {
-  const { history, olderHistoryEntries } = digestHistoryForAgent(
+export function serializeTaskForAgent(task: any, historyLimit?: number, opts: { expand?: string[]; fullHistory?: boolean } = {}) {
+  const keepRecent = (configCache as any)?.commentDigest?.keepRecent ?? 3;
+  const { history, olderHistoryEntries, collapsedCount } = digestHistoryForAgent(
     Array.isArray(task.history) ? task.history : [],
     historyLimit ?? AGENT_HISTORY_LIMIT,
+    keepRecent,
+    opts,
   );
   const cliSession = getCliSessionSummaryForTask(task.id);
   const cliSessions = getListSessionSummariesForTask(task.id).map(slimSessionSummaryForAgent);
@@ -81,6 +85,7 @@ export function serializeTaskForAgent(task: any, historyLimit?: number) {
     ...task,
     history,
     ...(olderHistoryEntries > 0 ? { olderHistoryEntries } : {}),
+    ...(collapsedCount ? { collapsedCount } : {}),
     cliSession: cliSession ? slimSessionSummaryForAgent(cliSession) : undefined,
     cliSessions: cliSessions.length > 0 ? cliSessions : undefined,
   };
@@ -971,6 +976,10 @@ async function migrateRequireInputToSwimlane() {
     const lastStatusChange = [...history].reverse().find(
       (e: any) => e.type === 'status_change' && e.to === requireInputStatus
     );
+    // Fall back to 'Grooming' when no status_change history records where the
+    // ticket came from (e.g. tickets created directly in Require Input, or whose
+    // history predates status-change tracking) — Grooming is the earliest normal
+    // board column, so it's the safest place to drop a ticket whose origin is unknown.
     const previousStatus = lastStatusChange?.from || 'Grooming';
 
     const migrationEntry = {
@@ -1092,6 +1101,12 @@ export async function activateWorkspace(newRoot: string) {
     console.log(`Workspace: ${newRoot}`);
     await bootstrapNewWorkspace();
     await attachWorktreeIfPresent(newRoot);
+    // Crash recovery: prune git's records of any task worktrees whose dirs were
+    // removed out of band before this workspace was last deactivated (FLUX-517).
+    // Best-effort — no-op when the repo has no task worktrees.
+    pruneTaskWorktrees(newRoot).catch((err) =>
+      console.error('[task-worktree] prune on activation failed:', err),
+    );
     await migrateStrandedFluxTickets(newRoot);
     await initDir();
     await installSkillsForWorkspace();
