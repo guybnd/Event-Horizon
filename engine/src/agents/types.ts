@@ -78,6 +78,11 @@ export interface CliSessionSummary {
   groupVariant?: GroupVariant;
   lockedPaths?: string[];
   outputData?: string;
+  /** True when this session can be continued via `claude --resume` — terminal-or-active
+   *  with a known `claudeSessionId`. Lets the chat continue a dispatched (now-completed)
+   *  phase session's thread instead of spawning a fresh, amnesiac chat (FLUX-606). The raw
+   *  `claudeSessionId` is intentionally not exposed to the client; a boolean is enough. */
+  resumable?: boolean;
 }
 
 export interface CliSessionRecord extends CliSessionSummary {
@@ -117,6 +122,11 @@ export interface CliSessionRecord extends CliSessionSummary {
   /** FLUX-605: 'gated' = route tool decisions through EH approval (--permission-prompt-tool);
    *  'skip' = --dangerously-skip-permissions. Undefined falls back to skipPermissions. */
   permissionMode?: 'gated' | 'skip';
+  /** FLUX-651: ticket status + subtask count captured at the START of the current turn,
+   *  so the turn-end backstop can tell whether the agent actually took a board action
+   *  (status moved / Require Input raised / subtask created) or just parked. */
+  statusAtTurnStart?: string;
+  subtaskCountAtTurnStart?: number;
 }
 
 export interface AgentEvent {

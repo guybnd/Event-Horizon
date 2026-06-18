@@ -270,3 +270,66 @@ export async function diffFileContent(
     return typeof err?.stdout === 'string' ? err.stdout : '';
   }
 }
+
+// ─── Single-branch summary (FLUX-615) ──────────────────────────────────────────
+
+export interface BranchDiffSummary {
+  branch: string;
+  /** Absolute worktree dir backing this branch, or null when the branch has no dedicated worktree. */
+  worktree: string | null;
+  /** The base the changes are measured against (a merge-base sha, or `<sha>..<branch>` range). */
+  base: string | null;
+  files: ChangedFile[];
+}
+
+/** Changed files for a committed range (`<base>..<branch>`) in `cwd` — no untracked (a range has none). */
+async function changedFilesForRange(runner: GitRunner, cwd: string, range: string): Promise<ChangedFile[]> {
+  const [nameStatus, numstat] = await Promise.all([
+    runner(cwd, ['diff', '--name-status', range]).then((r) => r.stdout).catch(() => ''),
+    runner(cwd, ['diff', '--numstat', range]).then((r) => r.stdout).catch(() => ''),
+  ]);
+  const counts = parseNumstat(numstat);
+  const byFile = new Map<string, ChangedFile>();
+  for (const { status, file } of parseNameStatus(nameStatus)) {
+    const c = counts.get(file) ?? { additions: 0, deletions: 0 };
+    byFile.set(file, { file, additions: c.additions, deletions: c.deletions, status });
+  }
+  return [...byFile.values()].sort((a, b) => a.file.localeCompare(b.file));
+}
+
+/**
+ * The changed-file summary for ONE ticket branch vs the default branch — the data
+ * behind the inline diff panel in the chat window (FLUX-615). Worktree-aware and
+ * consistent with `diffFileContent`: when the branch has a dedicated worktree we show
+ * its net changes vs the merge-base PLUS uncommitted/untracked work (the live picture
+ * an agent is building); otherwise we fall back to the committed range merge-base..branch
+ * in the engine root. Pure git read; never throws (a bad git call yields fewer/no files).
+ */
+export async function diffFilesForBranch(
+  workspaceRoot: string,
+  branch: string,
+  opts: DiffOverviewOptions = {},
+): Promise<BranchDiffSummary> {
+  const runner = opts.gitRunner ?? defaultGitRunner;
+  const defaultBranch = opts.baseBranch ?? await resolveBaseBranch(runner, workspaceRoot);
+
+  const wt = await findWorktreeForBranch(workspaceRoot, branch, { gitRunner: runner }).catch(() => null);
+  if (wt) {
+    const base = await mergeBaseOrBranch(runner, wt, defaultBranch);
+    const files = await changedFilesAgainst(runner, wt, base).catch(() => []);
+    return { branch, worktree: wt, base, files };
+  }
+
+  // No dedicated worktree — show the branch's committed divergence from the merge-base.
+  try {
+    await runner(workspaceRoot, ['rev-parse', '--verify', '--quiet', branch]);
+  } catch {
+    return { branch, worktree: null, base: null, files: [] };
+  }
+  const mergeBase = await runner(workspaceRoot, ['merge-base', defaultBranch, branch])
+    .then((r) => r.stdout.trim() || defaultBranch)
+    .catch(() => defaultBranch);
+  const range = `${mergeBase}..${branch}`;
+  const files = await changedFilesForRange(runner, workspaceRoot, range).catch(() => []);
+  return { branch, worktree: null, base: range, files };
+}

@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react';
-import { useApp } from '../AppContext';
+import { useAppActions } from '../store/useAppSelector';
 import {
   startTaskCliSessionEx,
   sendTaskCliInput,
   fetchTaskCliSession,
   fetchTaskTranscript,
   stopTaskCliSession,
+  clearTaskTranscript,
   type TranscriptMessage,
 } from '../api';
 
@@ -24,6 +25,8 @@ export interface UseChatSession {
   error: string | null;
   send: (text: string, opts?: { model?: string; effort?: string; permissionMode?: string }) => Promise<void>;
   stop: () => Promise<void>;
+  /** Stop any live session and wipe the durable transcript — a fresh start (orchestrator reset). */
+  reset: () => Promise<void>;
 }
 
 /**
@@ -36,7 +39,7 @@ export interface UseChatSession {
  * one core serves the modal pane, the board popup, and the orchestrator dock.
  */
 export function useChatSession(conversationId: string, enabled = true): UseChatSession {
-  const { subscribeToEvent } = useApp();
+  const { subscribeToEvent } = useAppActions();
   const [messages, setMessages] = useState<TranscriptMessage[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -84,14 +87,16 @@ export function useChatSession(conversationId: string, enabled = true): UseChatS
       let resumable = false;
       try {
         const current = await fetchTaskCliSession(conversationId);
-        resumable = !!current && (current.status === 'running' || current.status === 'waiting-input');
+        // FLUX-606: resume the most-recent session whenever the engine says it's resumable
+        // (terminal-or-active with a claudeSessionId) — this continues a dispatched grooming
+        // session's thread instead of spawning a fresh, amnesiac chat. `completed` is now
+        // included via the engine's `resumable` flag, not just running/waiting-input.
+        resumable = !!current?.resumable;
       } catch {
         /* no live session — start a fresh chat */
       }
-      if (resumable) {
-        await sendTaskCliInput(conversationId, trimmed, 'User', sendOpts);
-      } else {
-        await startTaskCliSessionEx(conversationId, {
+      const startFresh = () =>
+        startTaskCliSessionEx(conversationId, {
           framework: 'claude',
           phase: 'chat',
           appendPrompt: trimmed,
@@ -100,6 +105,17 @@ export function useChatSession(conversationId: string, enabled = true): UseChatS
           effortOverride: sendOpts?.effort || undefined,
           permissionMode: sendOpts?.permissionMode || undefined,
         });
+      if (resumable) {
+        // The engine refuses to resume when the worktree is gone (finished ticket). That's an
+        // expected fallback, not an error — fall back to a fresh chat. A genuine failure of the
+        // fresh start still propagates to the catch below and surfaces via setError.
+        try {
+          await sendTaskCliInput(conversationId, trimmed, 'User', sendOpts);
+        } catch {
+          await startFresh();
+        }
+      } else {
+        await startFresh();
       }
       // Pull immediately so the just-sent user turn shows without waiting a poll.
       try {
@@ -128,5 +144,24 @@ export function useChatSession(conversationId: string, enabled = true): UseChatS
     }
   }
 
-  return { messages: merged, busy, error, send, stop };
+  // Reset = stop the live turn (if any) then clear the transcript, so the conversation starts
+  // empty. We optimistically clear locally; the engine also broadcasts `taskUpdated`, which
+  // refetches and confirms the empty transcript.
+  async function reset() {
+    setError(null);
+    try {
+      await stopTaskCliSession(conversationId);
+    } catch {
+      /* no live session — nothing to stop */
+    }
+    try {
+      await clearTaskTranscript(conversationId);
+      setMessages([]);
+      setPendingUser(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to reset conversation');
+    }
+  }
+
+  return { messages: merged, busy, error, send, stop, reset };
 }

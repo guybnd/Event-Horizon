@@ -2,7 +2,7 @@ import { memo, useRef, useEffect, useMemo, useCallback, useState } from 'react';
 import { Bot, Square, ExternalLink, CircleDot, X, Settings2, Clock } from 'lucide-react';
 import type { Task, CliFramework } from '../types';
 import { stopTaskCliSession } from '../api';
-import { useApp } from '../AppContext';
+import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { FRAMEWORK_ICONS } from '../constants';
 import { FrameworkSelector } from './FrameworkSelector';
 
@@ -199,7 +199,8 @@ const GroupItem = memo(function GroupItem({ task, group, now, onClose, openTask,
 });
 
 export const ActiveSessionsPopover = memo(function ActiveSessionsPopover({ tasks, onClose, openTask }: Props) {
-  const { triggerRefresh, config, saveConfig } = useApp();
+  const { triggerRefresh, saveConfig } = useAppActions();
+  const config = useAppSelector((s) => s.config);
   const popoverRef = useRef<HTMLDivElement>(null);
   // Tick once a second so elapsed-time labels stay live while the popover is open.
   const [now, setNow] = useState(() => Date.now());

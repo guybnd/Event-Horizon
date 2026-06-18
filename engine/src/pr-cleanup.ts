@@ -166,23 +166,15 @@ export async function cleanupMergedBranch(workspaceRoot: string, branch: string)
 const TERMINAL_STATUSES = new Set([DONE_STATUS, 'Archived', 'Released']);
 
 /**
- * Set or clear the `open-pr` swimlane across the tickets sharing a branch — quietly
- * (no history entry), and ONLY when it actually changes, so the 90s sync never spams.
- * Turning on never clobbers the more-urgent `require-input` swimlane; turning off only
- * clears `open-pr` (leaves any other swimlane alone).
+ * Clear a stale `open-pr` swimlane across the tickets sharing a branch — quietly (no history
+ * entry) and ONLY when set. The PR-as-ticket model (FLUX-565) makes the `PR-<n>` deck card the
+ * PR surface, so normal tickets no longer glow as open PRs (FLUX-558's `open-pr` swimlane is
+ * retired — FLUX-569). This mops up any legacy swimlanes left on tickets from before migration;
+ * it only ever clears `open-pr`, leaving any other (e.g. `require-input`) swimlane alone.
  */
-async function setOpenPrSwimlane(tickets: any[], on: boolean, prUrl?: string): Promise<void> {
+async function clearOpenPrSwimlane(tickets: any[]): Promise<void> {
   for (const t of tickets) {
-    if (on) {
-      const wantSwimlane = !t.swimlane && t.swimlane !== 'open-pr'; // only flag an unflagged ticket
-      const wantLink = !!prUrl && !t.implementationLink;
-      if (!wantSwimlane && !wantLink) continue;
-      const extraFields: Record<string, any> = {};
-      if (wantSwimlane) extraFields.swimlane = 'open-pr';
-      if (wantLink) extraFields.implementationLink = prUrl;
-      await updateTaskWithHistory(t.id, { updatedBy: 'Agent', extraFields });
-      broadcastEvent('taskUpdated', { id: t.id });
-    } else if (t.swimlane === 'open-pr') {
+    if (t.swimlane === 'open-pr') {
       await updateTaskWithHistory(t.id, { updatedBy: 'Agent', extraFields: { swimlane: null } });
       broadcastEvent('taskUpdated', { id: t.id });
     }
@@ -190,13 +182,15 @@ async function setOpenPrSwimlane(tickets: any[], on: boolean, prUrl?: string): P
 }
 
 /**
- * Sync the board against gh's PR state (FLUX-557/559) — the poll-based "EH gets notified
- * about PRs" mechanism (decision #10: poll now, webhooks later). Runs on the engine's PR
- * interval. For every non-terminal ticket carrying a branch (deduped by branch):
- *  - OPEN    → light up the `open-pr` swimlane/glow + stamp the PR link (discovers PRs
- *              opened directly on GitHub, not just those raised through EH).
- *  - MERGED  → run post-merge cleanup (advance + tear down).
- *  - CLOSED  → bounce a PR-state ticket back to In Progress + detach (abandon path).
+ * Reconcile member tickets against gh's PR state (FLUX-557/559) for **out-of-band** GitHub
+ * actions (merge/close done directly on GitHub) — the poll-based mechanism (decision #10: poll
+ * now, webhooks later). The `PR-<n>` deck card itself is maintained by `syncPrTickets`; this
+ * function owns the side-effects on the PR's *member* tickets + the worktree/branch. Runs on
+ * the engine's PR interval. For every non-terminal ticket carrying a branch (deduped by branch):
+ *  - MERGED  → run post-merge cleanup (advance members → Done + tear down worktree/branch).
+ *  - CLOSED  → bounce Ready members back to In Progress + detach (abandon path).
+ *  - OPEN    → no-op for normal tickets (the PR ticket is the surface now); mop up any legacy
+ *              `open-pr` swimlane left from before the FLUX-558→PR-ticket migration (FLUX-569).
  *  - no PR   → clear a stale `open-pr` swimlane (PR was deleted).
  * Idempotent and quiet — only writes on a real change. Best-effort; never throws.
  */
@@ -218,15 +212,17 @@ export async function reconcilePullRequests(workspaceRoot: string): Promise<void
     try {
       const pr = await getPullRequestStatus(branch);
       if (!pr) {
-        await setOpenPrSwimlane(tickets, false); // PR gone — clear stale glow
+        await clearOpenPrSwimlane(tickets); // PR gone — mop up any legacy glow
         continue;
       }
       if (pr.state === 'MERGED') {
         await cleanupMergedBranch(workspaceRoot, branch);
       } else if (pr.state === 'CLOSED') {
-        // Bounce only tickets currently in a PR state (open-pr swimlane) so we don't
-        // re-comment every poll once they're back in In Progress.
-        const bounce = tickets.filter((t) => t.swimlane === 'open-pr');
+        // Bounce Ready members (work done, awaiting merge) back to In Progress — the abandon
+        // path. Gated on status===Ready (not the retired open-pr swimlane — FLUX-569): an
+        // already-In Progress member is left alone, so this is idempotent and never re-comments
+        // on the next poll. Todo/Grooming pile tickets on the branch aren't members → untouched.
+        const bounce = tickets.filter((t) => t.status === 'Ready');
         for (const t of bounce) {
           await updateTaskWithHistory(t.id, {
             updatedBy: 'Agent',
@@ -247,14 +243,26 @@ export async function reconcilePullRequests(workspaceRoot: string): Promise<void
           }
         }
       } else {
-        // OPEN — discover/refresh: light up the swimlane + glow and stamp the link.
-        await setOpenPrSwimlane(tickets, true, pr.url);
+        // OPEN — the PR's home is now its `PR-<n>` deck card (maintained by syncPrTickets), not
+        // a glow on the member tickets. Nothing to set here; just mop up any legacy `open-pr`
+        // swimlane carried over from before the migration (FLUX-569).
+        await clearOpenPrSwimlane(tickets);
       }
     } catch {
       // Best-effort per branch — a single gh hiccup must not abort the sweep.
     }
   }
 }
+
+/**
+ * Branches whose backstop delete has thrown and already raised a "couldn't clean up" notification
+ * (FLUX-599). Deduped here so a genuinely-stuck branch is surfaced ONCE per orphaned state rather
+ * than re-notified every poll. An entry is cleared when its branch finally disappears from the
+ * existing set (deleted by hand or by a later poll), so a future re-orphan can notify again.
+ * In-module ⇒ resets on engine restart, which is acceptable: re-notifying once after a restart for
+ * a still-stuck branch is fine.
+ */
+const notifiedStuckBranches = new Set<string>();
 
 /**
  * Backstop for orphaned merged branches (FLUX-599). The merge-time delete can be missed — the
@@ -291,6 +299,12 @@ export async function pruneMergedBranches(workspaceRoot: string): Promise<void> 
   let cur = '';
   try { const { stdout } = await git(workspaceRoot, ['rev-parse', '--abbrev-ref', 'HEAD']); cur = stdout.trim(); } catch { /* ignore */ }
 
+  // A previously-stuck branch that's now gone (deleted by hand / a later poll) drops its dedupe
+  // entry so a future re-orphan can notify again.
+  for (const b of [...notifiedStuckBranches]) {
+    if (!existing.has(b)) notifiedStuckBranches.delete(b);
+  }
+
   for (const branch of mergedSet) {
     if (!existing.has(branch) || branch === cur) continue;
     // A worktree still holds it → leave it for cleanupMergedBranch's worktree-aware teardown.
@@ -299,7 +313,25 @@ export async function pruneMergedBranches(workspaceRoot: string): Promise<void> 
     try {
       await deleteTicketBranch(branch, true);
       console.log(`[pr-prune] removed orphaned merged branch ${branch}`);
+      notifiedStuckBranches.delete(branch); // recovered
     } catch {
+      // The branch is gh-MERGED, not checked out, and not worktree-held — i.e. it SHOULD be
+      // deletable — yet the delete keeps throwing (gh/remote outage, a lock, perms). Retrying
+      // forever in silence orphans it with no user signal (FLUX-599 residual). Surface it ONCE
+      // (deduped above) so the user can delete it manually, instead of swallowing.
+      if (!notifiedStuckBranches.has(branch)) {
+        notifiedStuckBranches.add(branch);
+        try {
+          addNotification({
+            type: 'error',
+            title: 'Branch cleanup failed',
+            message:
+              `Couldn't clean up merged branch \`${branch}\` — delete it manually ` +
+              `(\`git branch -D ${branch}\` and \`git push origin --delete ${branch}\`).`,
+            actions: [{ label: 'Dismiss', actionId: 'dismiss' }],
+          });
+        } catch { /* notification must never break the sweep */ }
+      }
       /* best-effort — retry next poll */
     }
   }

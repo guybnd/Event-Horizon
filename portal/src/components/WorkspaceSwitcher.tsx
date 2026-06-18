@@ -1,11 +1,13 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronDown, FolderOpen, Layers, Loader2, Settings as SettingsIcon } from 'lucide-react';
-import { useApp } from '../AppContext';
+import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { groupWorkspaces } from '../utils';
 import type { WorkspaceInfo } from '../api';
 
 export const WorkspaceSwitcher = memo(function WorkspaceSwitcher() {
-  const { workspaces, workspacePath, switchWorkspace, setView } = useApp();
+  const { switchWorkspace, setView } = useAppActions();
+  const workspaces = useAppSelector(s => s.workspaces);
+  const workspacePath = useAppSelector(s => s.workspacePath);
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);

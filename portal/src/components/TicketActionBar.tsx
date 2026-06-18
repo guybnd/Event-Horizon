@@ -7,7 +7,7 @@
 import { useState } from 'react';
 import { Sparkles, ExternalLink, Loader2 } from 'lucide-react';
 import type { Task } from '../types';
-import { useApp } from '../AppContext';
+import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { mergePr } from '../api';
 import { resolveEffectiveAgent } from '../utils';
 import { getRequireInputStatus } from '../workflow';
@@ -20,7 +20,9 @@ import {
 } from '../lib/ticketActions';
 
 export function TicketActionBar({ task }: { task: Task }) {
-  const { currentUser, config, triggerRefresh } = useApp();
+  const { triggerRefresh } = useAppActions();
+  const currentUser = useAppSelector((s) => s.currentUser);
+  const config = useAppSelector((s) => s.config);
   // Track the in-flight action by key so we can spin just that button and block double-fire.
   const [running, setRunning] = useState<string | null>(null);
 

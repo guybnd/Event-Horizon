@@ -7,14 +7,14 @@ import {
 } from 'lucide-react';
 import type { Task } from '../types';
 import { normalizeSubtaskId } from '../types';
-import { useApp } from '../AppContext';
+import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import {
   deleteTask, updateTask, openWorktreeWindow, detachWorktree, joinWorktree,
   setTicketBranch, attachParent, fetchBranches, fetchWorkflows, raisePr, mergePr,
   type BranchOption, type WorkflowTemplate,
 } from '../api';
 import { launchPhaseDefault, statusToPhase, resolvePhaseDefaultId } from '../agentActions';
-import { getArchiveStatus, getReadyForMergeStatus, isPromptableStatus, hasOpenPr } from '../workflow';
+import { getArchiveStatus, getReadyForMergeStatus, isPromptableStatus } from '../workflow';
 import { searchTasks } from '../taskSearch';
 import { resolveEffectiveAgent } from '../utils';
 
@@ -37,10 +37,16 @@ const PRIMARY_LABEL: Record<string, string> = {
 
 export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
   const {
-    config, currentUser, triggerRefresh, readComments, markAllCommentsRead,
-    openTaskModal, openTaskFullView, worktrees, worktreeBranches, refreshWorktrees,
-    filterWorktree, setFilterWorktree, taskById, setView, setChangesFocus,
-  } = useApp();
+    triggerRefresh, markAllCommentsRead, openTaskModal, openTaskFullView,
+    refreshWorktrees, setFilterWorktree, setView, setChangesFocus,
+  } = useAppActions();
+  const config = useAppSelector((s) => s.config);
+  const currentUser = useAppSelector((s) => s.currentUser);
+  const readComments = useAppSelector((s) => s.readComments);
+  const worktrees = useAppSelector((s) => s.worktrees);
+  const worktreeBranches = useAppSelector((s) => s.worktreeBranches);
+  const filterWorktree = useAppSelector((s) => s.filterWorktree);
+  const taskById = useAppSelector((s) => s.taskById);
   const menuRef = useRef<HTMLDivElement>(null);
   const [openTop, setOpenTop] = useState<TopMenu>(null);
   const [openWt, setOpenWt] = useState<WtMenu>(null);
@@ -364,8 +370,9 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
         </MenuItem>
       )}
 
-      {/* Raise PR — branch/worktree tickets only, hidden once a PR is open (FLUX-558). */}
-      {!!task.branch && !hasOpenPr(task) && (
+      {/* Raise PR — branch/worktree tickets only. The PR's surface is its own PR-<n> deck card
+          once raised (FLUX-569); this just opens one for the branch. */}
+      {!!task.branch && (
         <MenuItem
           icon={prBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <GitPullRequest className="h-3.5 w-3.5" />}
           disabled={prBusy}

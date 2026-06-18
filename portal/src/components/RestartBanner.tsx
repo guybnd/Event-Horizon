@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { useApp } from '../AppContext';
+import { useAppSelector } from '../store/useAppSelector';
 import { API_URL } from '../api';
 
 export function RestartBanner() {
-  const { restartPending } = useApp();
+  const restartPending = useAppSelector(s => s.restartPending);
   const [restarting, setRestarting] = useState(false);
 
   if (!restartPending && !restarting) return null;

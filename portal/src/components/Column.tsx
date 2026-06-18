@@ -3,10 +3,10 @@ import { useDroppable } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { TaskCard } from './TaskCard';
 import type { ColumnLiveEvent, Task, TaskLiveEvent } from '../types';
-import { Plus, CirclePause, Bot, Clock, Terminal, GitPullRequest } from 'lucide-react';
-import { useApp } from '../AppContext';
+import { Plus, CirclePause, Bot, Clock, Terminal, GitPullRequest, HandHelping } from 'lucide-react';
+import { useAppSelector, useAppActions, useLiveSession } from '../store/useAppSelector';
 import { getStatusTint, tintColumnWash } from '../statusStyles';
-import { isTaskAwaitingInput, hasOpenPr } from '../workflow';
+import { isTaskAwaitingInput, needsAction } from '../workflow';
 
 /** Compact running-duration label, e.g. "4s", "3m 12s", "1h 04m". */
 function formatElapsed(startedAt: string | undefined, now: number): string {
@@ -29,6 +29,42 @@ function formatElapsed(startedAt: string | undefined, now: number): string {
  * as the live working surface. Only mounts when there are running tasks, so it
  * never affects idle columns.
  */
+const LiveFooterRow = memo(function LiveFooterRow({ task, now }: { task: Task; now: number }) {
+  // FLUX-626: the activity label reads the SSE-fed live slice (instant) and falls back to the
+  // polled cliSession summary; elapsed + last-output line stay on the polled summary.
+  const live = useLiveSession(task.id);
+  const session = task.cliSession!;
+  const currentActivity = live?.currentActivity ?? session.currentActivity;
+  const elapsed = formatElapsed(session.startedAt, now);
+  const lastLine = session.liveOutput
+    ? session.liveOutput.trim().split('\n').filter(Boolean).slice(-1)[0] ?? ''
+    : '';
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-1.5">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{task.id}</span>
+        {currentActivity && (
+          <span className="min-w-0 truncate text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
+            {currentActivity}
+          </span>
+        )}
+        {elapsed && (
+          <span className="ml-auto flex items-center gap-0.5 text-[9px] font-semibold tabular-nums text-gray-400 dark:text-gray-500">
+            <Clock className="h-2.5 w-2.5" />
+            {elapsed}
+          </span>
+        )}
+      </div>
+      {lastLine && (
+        <div className="flex items-start gap-1.5 rounded-lg bg-gray-900 p-2 font-mono text-[9px] leading-relaxed text-gray-300 dark:bg-black/40">
+          <Terminal className="mt-0.5 h-2.5 w-2.5 shrink-0 text-emerald-400" />
+          <span className="line-clamp-2">{lastLine}</span>
+        </div>
+      )}
+    </div>
+  );
+});
+
 const ColumnLiveFooter = memo(function ColumnLiveFooter({ runningTasks }: { runningTasks: Task[] }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -48,37 +84,9 @@ const ColumnLiveFooter = memo(function ColumnLiveFooter({ runningTasks }: { runn
           </span>
         </div>
         <div className="flex flex-col gap-2.5">
-          {runningTasks.map((task) => {
-            const session = task.cliSession!;
-            const elapsed = formatElapsed(session.startedAt, now);
-            const lastLine = session.liveOutput
-              ? session.liveOutput.trim().split('\n').filter(Boolean).slice(-1)[0] ?? ''
-              : '';
-            return (
-              <div key={task.id} className="flex flex-col gap-1">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{task.id}</span>
-                  {session.currentActivity && (
-                    <span className="min-w-0 truncate text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
-                      {session.currentActivity}
-                    </span>
-                  )}
-                  {elapsed && (
-                    <span className="ml-auto flex items-center gap-0.5 text-[9px] font-semibold tabular-nums text-gray-400 dark:text-gray-500">
-                      <Clock className="h-2.5 w-2.5" />
-                      {elapsed}
-                    </span>
-                  )}
-                </div>
-                {lastLine && (
-                  <div className="flex items-start gap-1.5 rounded-lg bg-gray-900 p-2 font-mono text-[9px] leading-relaxed text-gray-300 dark:bg-black/40">
-                    <Terminal className="mt-0.5 h-2.5 w-2.5 shrink-0 text-emerald-400" />
-                    <span className="line-clamp-2">{lastLine}</span>
-                  </div>
-                )}
-              </div>
-            );
-          })}
+          {runningTasks.map((task) => (
+            <LiveFooterRow key={task.id} task={task} now={now} />
+          ))}
         </div>
       </div>
     </div>
@@ -97,7 +105,10 @@ interface ColumnProps {
 
 export const Column = memo(function Column({ id, title, tasks, parentByChildId, liveEvent, taskLiveEvents, getTaskTravelDirection }: ColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id });
-  const { openTaskModal, config, readComments, markAllCommentsRead, prByBranch } = useApp();
+  const { openTaskModal, markAllCommentsRead } = useAppActions();
+  const config = useAppSelector((s) => s.config);
+  const readComments = useAppSelector((s) => s.readComments);
+  const prByBranch = useAppSelector((s) => s.prByBranch);
 
   const columnUnreadByTask = useMemo(() => tasks.map(task => {
     const readIds = new Set(readComments[task.id] ?? []);
@@ -179,12 +190,17 @@ export const Column = memo(function Column({ id, title, tasks, parentByChildId, 
           // (FLUX-567: don't show a Done PR under "Open PRs").
           const isOpenPr = (t: Task) => isPr(t) && t.status !== 'Done';
           const swimlaneTasks = tasks.filter(t => isTaskAwaitingInput(t) && !isRunning(t) && !isPr(t));
-          const openPrTasks = tasks.filter(t => (isOpenPr(t) || hasOpenPr(t)) && !isRunning(t) && !isTaskAwaitingInput(t));
-          // rest = the literal COMPLEMENT of the first three groups, so no task can ever be
-          // silently dropped by a future swimlane value (FLUX-567 QA hardening).
-          const groupedIds = new Set([...runningTasks, ...swimlaneTasks, ...openPrTasks].map(t => t.id));
+          // Only the `PR-<n>` deck cards group under "Open PRs" now — the FLUX-558 glow that
+          // pulled normal tickets in via the `open-pr` swimlane is retired (FLUX-569).
+          const openPrTasks = tasks.filter(t => isOpenPr(t) && !isRunning(t) && !isTaskAwaitingInput(t));
+          // FLUX-651: agent parked without taking an action — surfaced as its own group. Excludes
+          // running (it's working again) and awaiting-input (that's a real question, shown above).
+          const needsActionTasks = tasks.filter(t => needsAction(t) && !isRunning(t) && !isPr(t) && !isTaskAwaitingInput(t));
+          // rest = the literal COMPLEMENT of the grouped sets, so no task can ever be silently
+          // dropped by a future swimlane value (FLUX-567 QA hardening).
+          const groupedIds = new Set([...runningTasks, ...swimlaneTasks, ...needsActionTasks, ...openPrTasks].map(t => t.id));
           const restTasks = tasks.filter(t => !groupedIds.has(t.id));
-          const sortedTasks = [...runningTasks, ...swimlaneTasks, ...openPrTasks, ...restTasks];
+          const sortedTasks = [...runningTasks, ...swimlaneTasks, ...needsActionTasks, ...openPrTasks, ...restTasks];
           // Everything renders through TaskCard now — PR tickets (kind:'pr') render their
           // PR-specific body inside the same card shell (FLUX-567 pivot). A non-PR ticket whose
           // branch belongs to a PR (but isn't folded — a Todo/Grooming/Backlog "pile" ticket)
@@ -231,6 +247,18 @@ export const Column = memo(function Column({ id, title, tasks, parentByChildId, 
                   </div>
                   <div className="rounded-lg border border-amber-200 dark:border-amber-800/40 bg-amber-50/50 dark:bg-amber-900/10 p-1.5 mb-1">
                     {swimlaneTasks.map(renderTask)}
+                  </div>
+                </>
+              )}
+              {needsActionTasks.length > 0 && (
+                <>
+                  <div className="flex items-center gap-1.5 my-1 px-1 shrink-0">
+                    <HandHelping className="w-3 h-3 text-rose-500" />
+                    <span className="text-[10px] font-semibold uppercase tracking-widest text-rose-500 dark:text-rose-400">Needs Action</span>
+                    <div className="flex-1 h-px bg-rose-200 dark:bg-rose-800/40" />
+                  </div>
+                  <div className="rounded-lg border border-rose-200 dark:border-rose-800/40 bg-rose-50/50 dark:bg-rose-900/10 p-1.5 mb-1">
+                    {needsActionTasks.map(renderTask)}
                   </div>
                 </>
               )}

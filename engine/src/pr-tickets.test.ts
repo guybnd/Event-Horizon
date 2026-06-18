@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { selectMembers, prTicketFields, prTicketId } from './pr-tickets.js';
+import { selectMembers, prTicketFields, prTicketId, sharedNonDoneSiblings, membersToBounce } from './pr-tickets.js';
 
 /** FLUX-566: work-gated PR membership + gh-state→ticket-field mapping (pure logic). */
 describe('selectMembers (work-gated membership)', () => {
@@ -38,7 +38,7 @@ describe('prTicketFields (state mapping)', () => {
   const base = { number: 9, title: 'Add thing', url: 'https://gh/pr/9', state: 'OPEN', headRefName: 'feature/x', reviewDecision: null, isDraft: false };
 
   it('a NEW open PR lands in Ready with kind:pr + metadata', () => {
-    const f = prTicketFields(base, ['FLUX-1'], true);
+    const f = prTicketFields(base, ['FLUX-1'], null);
     expect(f.kind).toBe('pr');
     expect(f.status).toBe('Ready');
     expect(f.prNumber).toBe(9);
@@ -47,17 +47,98 @@ describe('prTicketFields (state mapping)', () => {
     expect(f.swimlane).toBeNull();
   });
 
-  it('does NOT set status for an existing PR ticket (send-for-review not clobbered)', () => {
-    const f = prTicketFields(base, [], false);
+  it('does NOT set status for an existing open PR ticket (send-for-review not clobbered)', () => {
+    const f = prTicketFields(base, [], { status: 'In Progress', prState: 'OPEN' });
     expect('status' in f).toBe(false);
   });
 
-  it('CHANGES_REQUESTED flags the changes-requested swimlane', () => {
-    const f = prTicketFields({ ...base, reviewDecision: 'CHANGES_REQUESTED' }, [], false);
+  it('CHANGES_REQUESTED bounces the PR ticket to In Progress + flags the tint (FLUX-569)', () => {
+    const f = prTicketFields({ ...base, reviewDecision: 'CHANGES_REQUESTED' }, [], { status: 'Ready', prState: 'OPEN' });
+    expect(f.status).toBe('In Progress');
     expect(f.swimlane).toBe('changes-requested');
+  });
+
+  it('a reopened PR (was Done/CLOSED, now OPEN again) climbs back out of Done → Ready (FLUX-569)', () => {
+    const f = prTicketFields(base, [], { status: 'Done', prState: 'CLOSED' });
+    expect(f.status).toBe('Ready');
+    expect(f.prState).toBe('OPEN'); // stale terminal state cleared
+  });
+
+  it('a reopened PR detected via prState MERGED also resets to Ready', () => {
+    const f = prTicketFields(base, [], { status: 'Done', prState: 'MERGED' });
+    expect(f.status).toBe('Ready');
   });
 
   it('prTicketId uses the gh number', () => {
     expect(prTicketId(42)).toBe('PR-42');
+  });
+});
+
+/** FLUX-569: the finish-on-shared-PR one-way-door guard (from the FLUX-556/PR#6 incident). */
+describe('sharedNonDoneSiblings (finish-on-shared-PR guard)', () => {
+  const tickets = [
+    { id: 'FLUX-1', branch: 'feature/x', status: 'Ready' },        // self (the one finishing)
+    { id: 'FLUX-2', branch: 'feature/x', status: 'In Progress' },  // non-Done sibling → swept
+    { id: 'FLUX-3', branch: 'feature/x', status: 'Todo' },         // non-Done sibling → swept
+    { id: 'FLUX-4', branch: 'feature/x', status: 'Done' },         // terminal → safe
+    { id: 'FLUX-5', branch: 'feature/x', status: 'Released' },     // terminal → safe
+    { id: 'FLUX-6', branch: 'feature/y', status: 'In Progress' },  // different branch → safe
+    { id: 'PR-9', branch: 'feature/x', status: 'Ready', kind: 'pr' }, // PR ticket → exempt
+  ];
+
+  it('refuses: returns non-Done siblings that share the branch (excluding self)', () => {
+    const blockers = sharedNonDoneSiblings(tickets, 'feature/x', 'FLUX-1');
+    expect(blockers.map((t) => t.id).sort()).toEqual(['FLUX-2', 'FLUX-3']);
+  });
+
+  it('exempts PR tickets — merging a PR ticket to advance its members is sanctioned', () => {
+    const blockers = sharedNonDoneSiblings(tickets, 'feature/x', 'FLUX-1');
+    expect(blockers.map((t) => t.id)).not.toContain('PR-9');
+  });
+
+  it('treats Done/Released/Archived siblings as safe (no live work to sweep)', () => {
+    const blockers = sharedNonDoneSiblings(tickets, 'feature/x', 'FLUX-1');
+    expect(blockers.map((t) => t.id)).not.toContain('FLUX-4');
+    expect(blockers.map((t) => t.id)).not.toContain('FLUX-5');
+  });
+
+  it('force overrides the guard — only `!force && blockers.length > 0` refuses', () => {
+    // Mirrors the guard composition at both call sites (mcp finish + REST merge).
+    const blocked = (force: boolean) => !force && sharedNonDoneSiblings(tickets, 'feature/x', 'FLUX-1').length > 0;
+    expect(blocked(false)).toBe(true);  // non-Done siblings present → refuse
+    expect(blocked(true)).toBe(false);  // force:true lands the whole shared PR anyway
+  });
+
+  it('a solo branch (no other non-Done tickets) has no blockers', () => {
+    expect(sharedNonDoneSiblings(tickets, 'feature/y', 'FLUX-6')).toEqual([]);
+  });
+});
+
+/** FLUX-569: the changes-requested unwind is Ready-only + idempotent across the 90s poll. */
+describe('membersToBounce (changes-requested unwind idempotency)', () => {
+  it('selects only Ready members; In Progress members are left alone', () => {
+    const tickets = [
+      { id: 'FLUX-1', status: 'Ready' },
+      { id: 'FLUX-2', status: 'In Progress' },
+      { id: 'FLUX-3', status: 'Ready' },
+    ];
+    expect(membersToBounce(tickets, ['FLUX-1', 'FLUX-2', 'FLUX-3'])).toEqual(['FLUX-1', 'FLUX-3']);
+  });
+
+  it('repeat-poll no-op: once bounced to In Progress, a second poll selects nothing', () => {
+    const memberIds = ['FLUX-1', 'FLUX-2'];
+    const beforeBounce = [
+      { id: 'FLUX-1', status: 'Ready' },
+      { id: 'FLUX-2', status: 'Ready' },
+    ];
+    expect(membersToBounce(beforeBounce, memberIds)).toEqual(['FLUX-1', 'FLUX-2']);
+    // The unwind moved them to In Progress; the next 90s poll must not re-comment.
+    const afterBounce = beforeBounce.map((t) => ({ ...t, status: 'In Progress' }));
+    expect(membersToBounce(afterBounce, memberIds)).toEqual([]);
+  });
+
+  it('drops unknown member ids (a resolved ticket that is no longer a member)', () => {
+    const tickets = [{ id: 'FLUX-1', status: 'Ready' }];
+    expect(membersToBounce(tickets, ['FLUX-1', 'FLUX-GONE'])).toEqual(['FLUX-1']);
   });
 });

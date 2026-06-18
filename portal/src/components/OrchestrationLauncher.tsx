@@ -15,7 +15,7 @@ import {
 import { fetchOrchestrationPersonas, fetchConfig, fetchWorkflows, fetchHealth, createBranch, joinWorktree, fetchWorktrees, type WorktreeInfo, type WorkflowPhaseConfig, type WorkflowTemplate } from '../api';
 import type { CliFramework, CliSessionSummary } from '../types';
 import { type SessionGroup } from '../orchestration';
-import { useApp } from '../AppContext';
+import { useAppActions } from '../store/useAppSelector';
 import { OrchestrationTopology, TopologyGlyph } from './OrchestrationTopology';
 import { BranchSection, type StartMode } from './task-modal/BranchSection';
 
@@ -143,7 +143,7 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
   const headingId = useId();
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
-  const { pushOverlay, popOverlay } = useApp();
+  const { pushOverlay, popOverlay } = useAppActions();
 
   const showBranchSection = ticket?.status === 'Todo' && !ticket?.branch;
 

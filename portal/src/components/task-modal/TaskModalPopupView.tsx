@@ -20,7 +20,6 @@ import { HistoryList } from './HistoryList';
 import { PrPanel } from './PrPanel';
 import { RetryBanner } from './RetryBanner';
 import { ChatPane } from './ChatPane';
-import { hasOpenPr } from '../../workflow';
 import type { Task } from '../../types';
 import type { TaskModalController } from '../../hooks/useTaskModalController';
 
@@ -227,9 +226,10 @@ export function TaskModalPopupView({
             </div>
             <div className="mb-4"><HistoryList {...historyListProps} /></div>
             {!isRequireInput && <CommentBox ref={commentBoxRef} {...commentBoxProps} />}
-            {/* PR ticket (kind:'pr') always shows its PR surface regardless of status — an
-                In-Progress / changes-requested PR would otherwise miss it (FLUX-568). */}
-            {modalTask?.id && modalTask.branch && (hasOpenPr(modalTask as Task) || isReadyForMerge || modalTask.kind === 'pr') && (
+            {/* The PR surface now lives ONLY on the PR ticket (kind:'pr') — the FLUX-558 PrPanel
+                on normal branch tickets (hasOpenPr / isReadyForMerge) is retired in favour of the
+                PR-<n> deck card (FLUX-569). It renders regardless of the PR ticket's status. */}
+            {modalTask?.id && modalTask.branch && modalTask.kind === 'pr' && (
               <div className="mb-4">
                 <PrPanel taskId={modalTask.id} branch={modalTask.branch} onSendForReview={() => openLauncher('review')} />
               </div>

@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react';
-import { AppProvider, useApp } from './AppContext';
+import { AppProvider } from './AppContext';
+import { useAppSelector } from './store/useAppSelector';
 import { Header } from './components/Header';
 import { Board } from './components/Board';
 import { BacklogScreen } from './components/BacklogScreen';
@@ -17,7 +18,9 @@ import { FirstBootDialog } from './components/FirstBootDialog';
 import { RestartBanner } from './components/RestartBanner';
 
 function AppContent() {
-  const { view, workspaceConfigured, isConnected } = useApp();
+  const view = useAppSelector(s => s.view);
+  const workspaceConfigured = useAppSelector(s => s.workspaceConfigured);
+  const isConnected = useAppSelector(s => s.isConnected);
   const [bootComplete, setBootComplete] = useState(false);
 
   const handleBootComplete = useCallback(() => setBootComplete(true), []);

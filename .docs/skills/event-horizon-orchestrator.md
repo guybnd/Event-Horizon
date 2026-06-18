@@ -117,6 +117,8 @@ The MCP tools handle schema validation, timestamps, history normalization, and p
 | `create_subtask` | Creating a child ticket linked to a parent |
 | `update_ticket` | Changing metadata (title, priority, effort, tags, assignee, body) |
 | `change_status` | Moving to a new status (comment required for Require Input/Ready) |
+| `archive_ticket` | Safely removing a ticket from the active board (moves to `Archived`; reversible — there is no hard-delete tool) |
+| `unarchive_ticket` | Restoring an archived ticket to the active board (default `Todo`) |
 | `add_comment` | Adding a comment to ticket history |
 | `log_progress` | Logging a progress update |
 | `finish_ticket` | Completing a ticket (sets implementationLink + Done atomically) |
@@ -150,6 +152,7 @@ Ticket changes that only exist in chat or agent memory are **lost**. The engine 
 
 ## Critical Rules
 
+- **End every working turn on a board action (FLUX-651).** When you finish grooming/implementing/reviewing a ticket — including in a chat/discussion session — you MUST end the turn by moving the ticket to its next status (or `Require Input`, or creating subtasks). Never finish the work and just summarize it in chat: the engine flags such a ticket "Needs Action" on the board and notifies the user. "It was only a discussion turn" is not an exception.
 - NEVER use Write, Edit, or Bash to modify files in `.flux/` or `.flux-store/`. These paths are engine-managed.
 - Treat ticket files as schema-sensitive. The engine validates and rejects malformed writes.
 - Do not delete ticket history; append only.

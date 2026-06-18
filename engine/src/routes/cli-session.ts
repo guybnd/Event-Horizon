@@ -30,11 +30,17 @@ import { getAdapter } from '../agents/index.js';
 import { BOARD_CONVERSATION_ID, startBoardSession, sendBoardInput } from '../agents/claude-code.js';
 import { updateTaskWithHistory } from '../task-store.js';
 import { broadcastEvent } from '../events.js';
-import { appendTranscriptEvent, readTranscriptMessages } from '../transcript.js';
+import { appendTranscriptEvent, readTranscriptMessages, clearTranscript } from '../transcript.js';
 import { dismissNotificationsForTicket } from '../notifications.js';
 import { resolvePersonaPrompt } from '../orchestration-personas.js';
 import { buildActivityEntry } from '../history.js';
-import { captureDiffForPrompt, getCurrentCommit, type PromptDiffCapture } from '../branch-manager.js';
+import {
+  captureDiffForPrompt,
+  getMergeBase,
+  isAncestor,
+  resolveBaselineCommit,
+  type PromptDiffCapture,
+} from '../branch-manager.js';
 import type { CliSessionRecord, CliFramework, ExecutionPattern, PatternPosition, GroupVariant, LaunchPhase } from '../agents/types.js';
 
 const router = express.Router();
@@ -111,16 +117,37 @@ async function spawnSession(task: any, opts: SpawnOptions): Promise<CliSessionRe
   const label = adapter.labelForFramework();
   const startedAt = new Date().toISOString();
 
-  // Stamp baselineCommit at first session launch if missing. This is the diff anchor
-  // for branch-less tickets.
+  // Stamp baselineCommit at first session launch if missing. This is the review-diff anchor.
+  // For a branch/PR ticket the anchor must be the branch's fork point from the default branch
+  // (merge-base), NOT the engine's HEAD at launch — HEAD can sit on an unrelated sibling commit,
+  // which made baseline..HEAD diffs surface phantom reversions (FLUX-585). resolveBaselineCommit
+  // returns the merge-base for branch tickets and current HEAD for branch-less ones.
   if (!task.baselineCommit) {
-    const head = await getCurrentCommit();
-    if (head) {
+    const baseline = await resolveBaselineCommit(task.branch ?? null);
+    if (baseline) {
       await updateTaskWithHistory(task.id, {
         updatedBy: 'Agent',
-        extraFields: { baselineCommit: head },
+        extraFields: { baselineCommit: baseline },
       });
-      task.baselineCommit = head;
+      task.baselineCommit = baseline;
+    }
+  } else if (task.branch) {
+    // Self-heal a baseline recorded before the FLUX-585 fix: a PR ticket stamped at the engine's
+    // sibling-branch HEAD. If the stored baseline isn't an ancestor of the branch tip it can only
+    // ever produce phantom-revert diffs — re-anchor it to the merge-base. Targeted: a baseline
+    // already on the branch is left untouched.
+    const onBranch =
+      (await isAncestor(task.baselineCommit, task.branch)) ||
+      (await isAncestor(task.baselineCommit, `origin/${task.branch}`));
+    if (!onBranch) {
+      const mb = await getMergeBase(task.branch);
+      if (mb && mb !== task.baselineCommit) {
+        await updateTaskWithHistory(task.id, {
+          updatedBy: 'Agent',
+          extraFields: { baselineCommit: mb },
+        });
+        task.baselineCommit = mb;
+      }
     }
   }
 
@@ -264,6 +291,21 @@ router.get('/:id/transcript', async (req, res) => {
   }
 });
 
+// Clear a conversation's transcript — the orchestrator "reset". The caller stops any live
+// session first; this just wipes the durable record. Broadcasting `taskUpdated` makes any
+// open chat window refetch (and come back empty) without a reload.
+router.delete('/:id/transcript', async (req, res) => {
+  const { id } = req.params;
+  if (id !== BOARD_CONVERSATION_ID && !tasksCache[id]) return res.status(404).json({ error: 'Task not found' });
+  try {
+    await clearTranscript(id);
+    broadcastEvent('taskUpdated', { id });
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Failed to clear transcript' });
+  }
+});
+
 router.post('/:id/cli-session/start', async (req, res) => {
   const { id } = req.params;
 
@@ -273,8 +315,17 @@ router.post('/:id/cli-session/start', async (req, res) => {
     if (!firstMessage) return res.status(400).json({ error: 'appendPrompt (first message) is required for the orchestrator chat' });
     const existingId = cliSessionIdByTaskId.get(BOARD_CONVERSATION_ID);
     const existing = existingId ? cliSessionsById.get(existingId) : undefined;
-    if (existing && (existing.status === 'running' || existing.status === 'waiting-input')) {
+    // Block only while a turn is genuinely IN FLIGHT (a live proc is running). A session parked
+    // at 'waiting-input' is idle — claude -p already exited — so a fresh start should supersede
+    // it rather than 409. The frontend prefers resume for a resumable parked session; when it
+    // falls back to start (e.g. the parked turn never captured a claudeSessionId and so isn't
+    // resumable), this lets a fresh orchestrator turn through instead of wedging forever (FLUX-667).
+    if (existing && (existing.status === 'running' || existing.status === 'pending')) {
       return res.status(409).json({ error: 'Orchestrator session already active', session: getCliSessionSummaryForTask(BOARD_CONVERSATION_ID) });
+    }
+    if (existing && existing.status === 'waiting-input') {
+      existing.status = 'cancelled';
+      existing.endedAt = new Date().toISOString();
     }
     const boardSession: CliSessionRecord = {
       id: randomUUID(),
@@ -756,6 +807,14 @@ router.post('/:id/cli-session/stop', async (req, res) => {
     if (boardSession) {
       boardSession.requestedStop = true;
       boardSession.proc?.kill('SIGTERM');
+      // A live turn's exit handler will terminalize the status. But a session parked at
+      // 'waiting-input' (or 'pending' before claude spawned) has no live proc, so nothing
+      // would ever flip it — leaving it "active" enough to 409 every future start. Terminalize
+      // it here so reset actually clears the orchestrator (FLUX-667).
+      if (boardSession.status === 'waiting-input' || boardSession.status === 'pending') {
+        boardSession.status = 'cancelled';
+        boardSession.endedAt = new Date().toISOString();
+      }
     }
     return res.json({ session: getCliSessionSummaryForTask(BOARD_CONVERSATION_ID) || null });
   }

@@ -9,7 +9,6 @@ import { ContextMenu } from './ContextMenu';
 import { StartTaskPrompt } from './task-modal/StartTaskPrompt';
 import { OrchestrationLauncher } from './OrchestrationLauncher';
 import { resolveEffectiveAgent } from '../utils';
-import { hasOpenPr } from '../workflow';
 import { createPortal } from 'react-dom';
 import type { StatusTint } from '../statusStyles';
 import { useTaskCardController } from '../hooks/useTaskCardController';
@@ -17,6 +16,7 @@ import { CardCommentBadge } from './task-card/CardCommentBadge';
 import { CardMetadataRow } from './task-card/CardMetadataRow';
 import { CardClusterPanel } from './task-card/CardClusterPanel';
 import { CardBranchRow } from './task-card/CardBranchRow';
+import { CardSessionRow } from './task-card/CardSessionRow';
 import { CardSubtaskProgress } from './task-card/CardSubtaskProgress';
 import { CardFooterRow } from './task-card/CardFooterRow';
 import { CardActionButtons } from './task-card/CardActionButtons';
@@ -96,8 +96,6 @@ export const TaskCardInner = memo(function TaskCardInner({
 
   const CardContainer = c.animationsEnabled && !c.isDragging && !isOverlay ? motion.div : 'div';
 
-  // Soft animated glow for a ticket carrying an open PR (FLUX-558).
-  const showPrGlow = !isOverlay && hasOpenPr(task);
   // A PR ticket (FLUX-567) renders through this same card — inheriting session indicator,
   // context menu, comment badge — but with a PR-specific body (PrDeckSection) + violet identity.
   const isPrTicket = task.kind === 'pr';
@@ -118,18 +116,19 @@ export const TaskCardInner = memo(function TaskCardInner({
         c.setIsHovering(false);
       }}
     >
-      <motion.div {...c.contentAnimation} style={isPrTicket ? PR_CARD_STYLE : c.columnTintStyle} className={`eh-card relative flex flex-col rounded-xl border p-0 shadow-sm transition-all ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''} ${c.hasActiveCliSession ? 'border-emerald-400 dark:border-emerald-500/60' : isPrTicket ? 'border-violet-400 dark:border-violet-500/60' : c.isPromptStatus && !compact ? 'border-amber-300 dark:border-amber-500/40 ring-1 ring-amber-200/50 dark:ring-amber-500/20' : showPrGlow && !compact ? 'border-violet-300 dark:border-violet-500/50 pr-card-glow' : ''} ${c.liveAnimationClass} ${c.liveAccentClass} ${c.hasUnread && !c.liveAccentClass ? 'ring-2 ring-amber-400/60 dark:ring-amber-500/40' : ''} ${c.isEpic && !isPrTicket ? 'border-l-[3px] border-l-indigo-400 dark:border-l-indigo-500' : ''}`}>
+      <motion.div {...c.contentAnimation} style={isPrTicket ? PR_CARD_STYLE : c.columnTintStyle} className={`eh-card relative flex flex-col rounded-xl border p-0 shadow-sm transition-all ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''} ${c.hasActiveCliSession ? 'border-emerald-400 dark:border-emerald-500/60' : isPrTicket ? 'border-violet-400 dark:border-violet-500/60' : c.isPromptStatus && !compact ? 'border-amber-300 dark:border-amber-500/40 ring-1 ring-amber-200/50 dark:ring-amber-500/20' : ''} ${c.liveAnimationClass} ${c.liveAccentClass} ${c.hasUnread && !c.liveAccentClass ? 'ring-2 ring-amber-400/60 dark:ring-amber-500/40' : ''} ${c.isEpic && !isPrTicket ? 'border-l-[3px] border-l-indigo-400 dark:border-l-indigo-500' : ''}`}>
         {c.hasActiveCliSession && !isOverlay && (
           <div className="pointer-events-none absolute inset-0 rounded-xl bot-border-breathe" />
         )}
-        {/* Comment badge — kept in compact (in-deck) mode so you can still read comments, but
-            it renders CONTAINED (top-right inside the card) instead of jutting above, which
-            collided with the deck toggle (FLUX-567). */}
-        {!isOverlay && (
+        {/* Comment indicator: normal cards show it in the footer (see CardFooterRow) so chat
+            can own the top-right corner. Compact (folded-deck) and PR cards have no standard
+            footer, so they keep the contained corner badge (FLUX-567). */}
+        {!isOverlay && (compact || isPrTicket) && (
           <CardCommentBadge task={task} c={c} compact={compact} />
         )}
+        {/* Chat — the card's primary action, owning the freed-up top-right corner. */}
         {!isOverlay && !compact && !isPrTicket && (
-          <CardChatButton task={task} />
+          <CardChatButton task={task} nudged={c.isPromptStatus} />
         )}
         {c.isPromptStatus && !compact && (
           <div className="absolute -top-1.5 -right-1.5 z-10">
@@ -213,6 +212,13 @@ export const TaskCardInner = memo(function TaskCardInner({
 
                 {task.branch && !isOverlay && !compact && (
                   <CardBranchRow task={task} c={c} />
+                )}
+
+                {/* Live single-agent session gets its own bounded full-width lane (FLUX-652) so its
+                    variable-length progress/activity text can never push the card wider. Multi-session
+                    runs render through CardClusterPanel above, so this is gated on !clusterGroup. */}
+                {(c.hasActiveCliSession || c.shouldShowProgress) && !c.clusterGroup && !isOverlay && !compact && (
+                  <CardSessionRow task={task} c={c} />
                 )}
 
                 {c.isEpic && (

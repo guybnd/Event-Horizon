@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Check, X, Clock, GitPullRequest, GitMerge, Code2, GitCompare, ExternalLink, AlertTriangle, ArrowDown, RefreshCw, ShieldCheck } from 'lucide-react';
-import { useApp } from '../../AppContext';
+import { useAppActions } from '../../store/useAppSelector';
 import { fetchPrStatus, raisePr, mergePr, openWorktreeWindow, fetchBranchStatus, updatePrBranch, fetchDiffOverview, type PrStatus } from '../../api';
 
 interface Props {
@@ -18,7 +18,7 @@ interface Props {
  * when the ticket has no branch or gh is unavailable (pr stays null).
  */
 export function PrPanel({ taskId, branch, onSendForReview }: Props) {
-  const { triggerRefresh, setChangesFocus, setView } = useApp();
+  const { triggerRefresh, setChangesFocus, setView } = useAppActions();
   const [pr, setPr] = useState<PrStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<'raise' | 'merge' | 'open' | 'update' | null>(null);

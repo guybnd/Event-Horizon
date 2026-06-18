@@ -3,7 +3,7 @@ import { AlertTriangle, Bell, CheckCircle2, Info, X, CheckCheck, ExternalLink } 
 import { motion, AnimatePresence } from 'framer-motion';
 import type { Notification } from '../api';
 import { markNotificationRead, markAllNotificationsRead, dismissNotification, executeNotificationAction } from '../api';
-import { useApp } from '../AppContext';
+import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { relativeTime } from '../workflow';
 
 interface Props {
@@ -52,7 +52,8 @@ const NotificationCard = memo(function NotificationCard({
   onClose: () => void;
   onUpdate: () => void;
 }) {
-  const { openTaskFullView, tasks } = useApp();
+  const { openTaskFullView } = useAppActions();
+  const tasks = useAppSelector((s) => s.tasks);
   const config = TYPE_CONFIG[notification.type];
   const Icon = config.icon;
   const [successMessage, setSuccessMessage] = useState<string | null>(null);

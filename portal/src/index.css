@@ -842,19 +842,8 @@ button:not(:disabled):active {
   animation: bot-border-breathe 3s ease-in-out infinite;
 }
 
-/* Soft violet glow for tickets carrying an open PR (FLUX-558). */
-@keyframes pr-card-glow {
-  0%, 100% {
-    box-shadow: 0 0 0 0 rgba(139, 92, 246, 0), 0 0 6px 0 rgba(139, 92, 246, 0);
-  }
-  50% {
-    box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.22), 0 0 14px 1px rgba(139, 92, 246, 0.16);
-  }
-}
-
-.pr-card-glow {
-  animation: pr-card-glow 3.2s ease-in-out infinite;
-}
+/* (FLUX-558's `pr-card-glow` on normal tickets was retired in FLUX-569 — the PR's surface is
+   now its own PR-<n> deck card, so the open-PR glow keyframes were removed.) */
 
 .bot-assignee-glow {
   animation: bot-assignee-glow 2s ease-in-out infinite;
@@ -996,15 +985,28 @@ button:not(:disabled):active {
   box-shadow: 0 0 0 1.5px rgba(148, 163, 184, 0.35);
 }
 
+/* Tiny "thinking" dots on a working tab — an unobtrusive sign progress is ticking, shown in
+   place of the old activity text that buried the tab's real label. */
+@keyframes eh-thinking-dot {
+  0%, 80%, 100% { opacity: 0.25; transform: translateY(0); }
+  40% { opacity: 0.95; transform: translateY(-1.5px); }
+}
+.eh-thinking-dot {
+  animation: eh-thinking-dot 1.4s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .eh-logo-button,
   .eh-unread-badge,
   .eh-taskcard-working,
   .eh-taskcard-needs-input,
   .eh-taskcard-finished,
-  .eh-taskcard-error {
+  .eh-taskcard-error,
+  .eh-thinking-dot {
     animation: none;
   }
+  /* Static but visible so the indicator still reads as "working". */
+  .eh-thinking-dot { opacity: 0.6; }
 }
 
 .docs-editor-shell {

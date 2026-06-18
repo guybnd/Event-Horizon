@@ -1,0 +1,283 @@
+import { useEffect, useState, useSyncExternalStore } from 'react';
+import { HelpCircle, Send, Plus } from 'lucide-react';
+import { useAppActions } from '../store/useAppSelector';
+import { fetchPendingQuestions, answerQuestion, type PendingQuestion, type AskQuestion } from '../api';
+
+/**
+ * FLUX-662: surfaces an agent's `ask_user_question` call as an interactive picker and returns
+ * the user's selection into the same agent turn (mirrors FLUX-605 / ApprovalPrompts). Two
+ * surfaces share one picker:
+ *  - <ChatQuestionPicker conversationId> renders inline in the originating chat pane (the
+ *    preferred, routed surface). On mount it "claims" its conversationId so the global
+ *    overlay won't also show its questions.
+ *  - <QuestionPrompts/> is a global fallback overlay for questions that are unrouted
+ *    (no conversationId) or whose conversation has no open chat to render them inline.
+ */
+
+// ─── Shared pending-question store (one SSE subscription, many readers) ──────────
+// Tracks which conversationIds currently have an inline picker mounted, so the global
+// overlay can avoid double-rendering a question an inline picker is already handling.
+const claimed = new Map<string, number>(); // conversationId → mounted picker count
+const claimListeners = new Set<() => void>();
+let claimVersion = 0; // bumped on every claim change so external-store readers always re-read
+function emitClaims() { claimVersion++; claimListeners.forEach((l) => l()); }
+function claimConversation(id: string) {
+  claimed.set(id, (claimed.get(id) ?? 0) + 1);
+  emitClaims();
+}
+function releaseConversation(id: string) {
+  const n = (claimed.get(id) ?? 0) - 1;
+  if (n <= 0) claimed.delete(id); else claimed.set(id, n);
+  emitClaims();
+}
+function subscribeClaims(cb: () => void) {
+  claimListeners.add(cb);
+  return () => { claimListeners.delete(cb); };
+}
+function isClaimed(id: string | null): boolean {
+  return id != null && (claimed.get(id) ?? 0) > 0;
+}
+
+/** Maintains the live pending-question list from SSE (+ one catch-up fetch on mount). */
+function usePendingQuestions(): [PendingQuestion[], (id: string) => void] {
+  const { subscribeToEvent } = useAppActions();
+  const [pending, setPending] = useState<PendingQuestion[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const p = await fetchPendingQuestions();
+        if (!cancelled) setPending(p);
+      } catch {
+        /* ignore — SSE will deliver new ones */
+      }
+    })();
+    const onRequest = (d: unknown) => {
+      const req = d as PendingQuestion | null;
+      if (!req || !req.id) return;
+      setPending((prev) => (prev.some((p) => p.id === req.id) ? prev : [...prev, req]));
+    };
+    const onResolved = (d: unknown) => {
+      const id = (d as { id?: string } | null)?.id;
+      if (id) setPending((prev) => prev.filter((p) => p.id !== id));
+    };
+    const unsubs = [
+      subscribeToEvent('ask-question', onRequest),
+      subscribeToEvent('ask-question-resolved', onResolved),
+    ];
+    return () => { cancelled = true; unsubs.forEach((u) => u()); };
+  }, [subscribeToEvent]);
+
+  const remove = (id: string) => setPending((prev) => prev.filter((p) => p.id !== id));
+  return [pending, remove];
+}
+
+/**
+ * Inline picker for one chat pane — rendered inside ChatView (between transcript and
+ * composer). Shows only this conversation's pending questions, keeping the picker attached
+ * to the chat that asked.
+ */
+export function ChatQuestionPicker({ conversationId }: { conversationId: string }) {
+  const [pending, remove] = usePendingQuestions();
+
+  // Claim this conversation while mounted so the global overlay defers to us.
+  useEffect(() => {
+    claimConversation(conversationId);
+    return () => releaseConversation(conversationId);
+  }, [conversationId]);
+
+  const mine = pending.filter((p) => p.conversationId === conversationId);
+  if (mine.length === 0) return null;
+
+  return (
+    <div className="flex flex-col gap-2">
+      {mine.map((p) => (
+        <QuestionCard key={p.id} pending={p} onResolved={() => remove(p.id)} />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Global fallback overlay — bottom-right floating stack. Shows questions that are unrouted
+ * (no conversationId) or whose conversation has no inline picker mounted, so a question is
+ * never lost when its chat window is closed.
+ */
+export function QuestionPrompts() {
+  const [pending, remove] = usePendingQuestions();
+  // Re-render when inline pickers claim/release conversations.
+  useSyncExternalStore(subscribeClaims, () => claimVersion, () => 0);
+
+  const orphans = pending.filter((p) => !isClaimed(p.conversationId));
+  if (orphans.length === 0) return null;
+
+  return (
+    <div className="fixed bottom-24 right-4 z-[60] flex max-h-[80vh] w-[380px] flex-col gap-2 overflow-y-auto">
+      {orphans.map((p) => (
+        <div key={p.id} className="eh-border eh-surface rounded-xl border p-3 shadow-2xl">
+          {p.conversationId && (
+            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">
+              {p.conversationId === '__board__' ? 'Board chat' : p.conversationId}
+            </div>
+          )}
+          <QuestionCard pending={p} onResolved={() => remove(p.id)} bare />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * The picker itself — renders each question's options as single- or multi-select chips with
+ * an "Other" free-text affordance (parity with the native AskUserQuestion), plus an optional
+ * note. Submitting POSTs the selection to the engine, which settles the parked agent call.
+ * `bare` drops the card chrome (used by the overlay, which supplies its own).
+ */
+function QuestionCard({
+  pending,
+  onResolved,
+  bare = false,
+}: {
+  pending: PendingQuestion;
+  onResolved: () => void;
+  bare?: boolean;
+}) {
+  const { questions } = pending;
+  // Selections keyed by question index. For single-select we keep ≤1 entry; multi keeps many.
+  const [choices, setChoices] = useState<Record<number, string[]>>({});
+  const [otherOn, setOtherOn] = useState<Record<number, boolean>>({});
+  const [otherText, setOtherText] = useState<Record<number, string>>({});
+  const [notes, setNotes] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  function toggleOption(qi: number, label: string, multi: boolean) {
+    setChoices((prev) => {
+      const cur = prev[qi] ?? [];
+      if (multi) {
+        const next = cur.includes(label) ? cur.filter((l) => l !== label) : [...cur, label];
+        return { ...prev, [qi]: next };
+      }
+      // single-select: picking a real option clears any "Other" entry.
+      setOtherOn((o) => ({ ...o, [qi]: false }));
+      return { ...prev, [qi]: [label] };
+    });
+  }
+
+  function toggleOther(qi: number, multi: boolean) {
+    setOtherOn((prev) => {
+      const on = !prev[qi];
+      // single-select: enabling Other clears the chosen option.
+      if (on && !multi) setChoices((c) => ({ ...c, [qi]: [] }));
+      return { ...prev, [qi]: on };
+    });
+  }
+
+  function valueFor(qi: number, q: AskQuestion): string | string[] | undefined {
+    const labels = [...(choices[qi] ?? [])];
+    if (otherOn[qi] && otherText[qi]?.trim()) labels.push(otherText[qi].trim());
+    if (labels.length === 0) return undefined;
+    return q.multiSelect ? labels : labels[0];
+  }
+
+  const answers: Record<string, string | string[]> = {};
+  let complete = true;
+  questions.forEach((q, qi) => {
+    const v = valueFor(qi, q);
+    if (v === undefined) complete = false;
+    else answers[q.question] = v;
+  });
+
+  async function submit() {
+    if (!complete || submitting) return;
+    setSubmitting(true);
+    try {
+      await answerQuestion(pending.id, answers, notes.trim() || undefined);
+      // Remove only after the engine accepted the answer. (The engine also broadcasts
+      // ask-question-resolved, which removes it via SSE too — idempotent.) Resolving up front
+      // would strand the agent if the POST failed: the picker vanishes for this client but the
+      // engine stays parked until timeout. (FLUX-662 review m1.)
+      onResolved();
+    } catch {
+      // POST failed — keep the picker so the user can retry; the engine is still parked.
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className={bare ? '' : 'eh-border rounded-xl border border-primary/30 bg-primary/5 p-3'}>
+      <div className="mb-2 flex items-center gap-1.5 text-xs font-bold text-primary">
+        <HelpCircle className="h-3.5 w-3.5" /> The agent has a question
+      </div>
+      <div className="flex flex-col gap-3">
+        {questions.map((q, qi) => (
+          <div key={qi}>
+            <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">
+              {q.header}
+            </div>
+            <div className="mb-1.5 text-[13px] text-[var(--eh-text-primary)]">{q.question}</div>
+            <div className="flex flex-col gap-1.5">
+              {q.options.map((opt, oi) => {
+                const sel = (choices[qi] ?? []).includes(opt.label);
+                return (
+                  <button
+                    key={oi}
+                    type="button"
+                    onClick={() => toggleOption(qi, opt.label, !!q.multiSelect)}
+                    className={`flex w-full flex-col rounded-lg border px-2.5 py-1.5 text-left transition-colors ${
+                      sel
+                        ? 'border-primary bg-primary/15 text-[var(--eh-text-primary)]'
+                        : 'eh-border bg-[var(--eh-input-bg)] text-[var(--eh-text-secondary)] hover:bg-black/5 dark:hover:bg-white/5'
+                    }`}
+                  >
+                    <span className="text-[12px] font-medium">{opt.label}</span>
+                    {opt.description && (
+                      <span className="text-[11px] text-[var(--eh-text-muted)]">{opt.description}</span>
+                    )}
+                  </button>
+                );
+              })}
+              {/* "Other" free-text affordance — parity with the native picker. */}
+              <button
+                type="button"
+                onClick={() => toggleOther(qi, !!q.multiSelect)}
+                className={`flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-left text-[12px] font-medium transition-colors ${
+                  otherOn[qi]
+                    ? 'border-primary bg-primary/15 text-[var(--eh-text-primary)]'
+                    : 'eh-border bg-[var(--eh-input-bg)] text-[var(--eh-text-secondary)] hover:bg-black/5 dark:hover:bg-white/5'
+                }`}
+              >
+                <Plus className="h-3 w-3" /> Other…
+              </button>
+              {otherOn[qi] && (
+                <input
+                  type="text"
+                  autoFocus
+                  value={otherText[qi] ?? ''}
+                  onChange={(e) => setOtherText((t) => ({ ...t, [qi]: e.target.value }))}
+                  placeholder="Type your answer…"
+                  className="eh-border w-full rounded-lg border bg-[var(--eh-input-bg)] px-2.5 py-1.5 text-[12px] text-[var(--eh-text-primary)] placeholder:text-[var(--eh-text-muted)] focus:border-primary focus:outline-none"
+                />
+              )}
+            </div>
+          </div>
+        ))}
+        <input
+          type="text"
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          placeholder="Add a note (optional)…"
+          className="eh-border w-full rounded-lg border bg-[var(--eh-input-bg)] px-2.5 py-1.5 text-[12px] text-[var(--eh-text-primary)] placeholder:text-[var(--eh-text-muted)] focus:border-primary focus:outline-none"
+        />
+        <button
+          type="button"
+          onClick={() => void submit()}
+          disabled={!complete || submitting}
+          className="flex items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-[12px] font-semibold text-white transition-colors hover:bg-primary-hover disabled:opacity-40"
+        >
+          <Send className="h-3.5 w-3.5" /> Send answer
+        </button>
+      </div>
+    </div>
+  );
+}

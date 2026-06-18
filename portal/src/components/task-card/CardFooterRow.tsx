@@ -1,8 +1,9 @@
-import { User, Bot, Zap, GitCompare } from 'lucide-react';
+import { User, Bot, GitCompare } from 'lucide-react';
 import { motion } from 'framer-motion';
 import type { Task } from '../../types';
+import { CardCommentBadge } from './CardCommentBadge';
 import { TokenBadge } from '../TokenBadge';
-import { relativeTime } from '../../workflow';
+import { CardChip, CARD_CHIP_BASE, CARD_CHIP_TEXT } from './CardChip';
 import { reporterInitials } from './reporterInitials';
 import type { TaskCardController } from '../../hooks/useTaskCardController';
 
@@ -29,9 +30,6 @@ export function CardFooterRow({ task, isOverlay, c }: { task: Task; isOverlay?: 
     setChangesFocus,
     setView,
     assigneeMenuRef,
-    shouldShowProgress,
-    latestProgress,
-    currentActivity,
     rattleControls,
     hasActiveCliSession,
     visibleAssignee,
@@ -48,10 +46,15 @@ export function CardFooterRow({ task, isOverlay, c }: { task: Task; isOverlay?: 
   const menuTags = Array.from(new Set(allTags.map((t) => t.trim()).filter(Boolean)));
 
   return (
-    <div className="mt-auto flex flex-wrap items-center justify-between gap-2">
+    // Containment contract (FLUX-652): two deterministic aligned rows instead of one flex-wrap row
+    // that laddered chips down as the card narrowed. Row 1 = tags (own line). Row 2 = a single
+    // non-wrapping meta line (cost · diffs · reporter · assignee · comments) where truncation — not
+    // wrapping — absorbs overflow, so the chips stay locked on one baseline. Live agent
+    // progress/activity now lives in CardSessionRow.
+    <div className="mt-auto flex flex-col gap-2">
       <div
         ref={tagMenuRef}
-        className="group/tags relative min-w-0 max-w-[260px]"
+        className="group/tags relative min-w-0 max-w-full"
         onMouseEnter={() => {
           if (tagAreaHoverTimeout.current !== null) {
             window.clearTimeout(tagAreaHoverTimeout.current);
@@ -126,6 +129,8 @@ export function CardFooterRow({ task, isOverlay, c }: { task: Task; isOverlay?: 
         )}
       </div>
 
+      {/* Meta row: cost · diffs · reporter · assignee · comments on one aligned, non-wrapping line. */}
+      <div className="flex min-w-0 items-center gap-2">
       <TokenBadge
         data={task.tokenMetadata}
         config={config}
@@ -144,36 +149,20 @@ export function CardFooterRow({ task, isOverlay, c }: { task: Task; isOverlay?: 
         </button>
       )}
 
-      <div ref={assigneeMenuRef} className="relative ml-auto flex items-center gap-1.5">
+      <div ref={assigneeMenuRef} className="relative flex min-w-0 items-center gap-1.5">
         {task.createdBy && (
-          <span
-            title={`Reporter: ${task.createdBy}`}
-            className="flex items-center gap-1 rounded px-1 py-0.5 text-[10px] font-medium text-gray-500 dark:text-gray-400"
-          >
+          <CardChip title={`Reporter: ${task.createdBy}`} className="text-gray-500 dark:text-gray-400">
             <span
-              className="flex h-4 w-4 items-center justify-center rounded-full text-[7px] font-bold uppercase leading-none text-white ring-1 ring-white/25"
+              className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[7px] font-bold uppercase leading-none text-white ring-1 ring-white/25"
               style={{ background: 'linear-gradient(135deg, var(--eh-accent), var(--eh-accent-hover))' }}
             >
               {reporterInitials(task.createdBy)}
             </span>
-            <span className="max-w-[72px] truncate">{task.createdBy}</span>
-          </span>
+            <span className={`${CARD_CHIP_TEXT} max-w-[72px]`}>{task.createdBy}</span>
+          </CardChip>
         )}
-        {shouldShowProgress && latestProgress && (
-          <span
-            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300"
-            title={`Latest progress: ${latestProgress.message}\n${relativeTime(latestProgress.timestamp)}`}
-          >
-            <Zap className="w-2.5 h-2.5" />
-            <span className="text-gray-500 dark:text-gray-400">Agent:</span>
-            <span className="max-w-[140px] truncate">{latestProgress.message}</span>
-          </span>
-        )}
-        {currentActivity && !shouldShowProgress && (
-          <span className={`activity-badge activity-badge--${currentActivity.toLowerCase().replace(/\s+/g, '-')}`} title={currentActivity}>
-            <span className="activity-badge__label">{currentActivity}</span>
-          </span>
-        )}
+        {/* Live agent progress + activity moved to CardSessionRow (FLUX-652) — a bounded full-width
+            lane — so this footer cluster stays fixed-size and can't overflow the card. */}
         <motion.button
           animate={rattleControls}
           onClick={(event) => {
@@ -185,10 +174,10 @@ export function CardFooterRow({ task, isOverlay, c }: { task: Task; isOverlay?: 
               setTagMenuOpen(false);
             }
           }}
-          className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors ${hasActiveCliSession ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300 bot-assignee-glow cursor-default' : 'bg-gray-100 text-gray-500 dark:bg-black/20 dark:text-gray-400'}`}
+          className={`${CARD_CHIP_BASE} transition-colors ${hasActiveCliSession ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300 bot-assignee-glow cursor-default' : 'bg-gray-100 text-gray-500 dark:bg-black/20 dark:text-gray-400'}`}
         >
-          {hasActiveCliSession ? <Bot className="w-3 h-3" /> : <User className="w-3 h-3" />}
-          <span className="font-medium text-[10px]">{hasActiveCliSession && task.cliSession ? task.cliSession.label : visibleAssignee === 'unassigned' ? 'Unassigned' : visibleAssignee}</span>
+          {hasActiveCliSession ? <Bot className="w-3 h-3 shrink-0" /> : <User className="w-3 h-3 shrink-0" />}
+          <span className={`${CARD_CHIP_TEXT} max-w-[88px]`}>{hasActiveCliSession && task.cliSession ? task.cliSession.label : visibleAssignee === 'unassigned' ? 'Unassigned' : visibleAssignee}</span>
         </motion.button>
         {assigneeMenuOpen && !isOverlay && !hasActiveCliSession && (
           <div
@@ -212,6 +201,15 @@ export function CardFooterRow({ task, isOverlay, c }: { task: Task; isOverlay?: 
             ))}
           </div>
         )}
+      </div>
+
+      {/* Comment section — pushed to the far right of the footer (reporter + assignee sit to its
+          left). Relocated here from the card's top-right corner so chat can own that spot. */}
+      {!isOverlay && (
+        <div className="ml-auto flex items-center">
+          <CardCommentBadge task={task} c={c} inline />
+        </div>
+      )}
       </div>
     </div>
   );

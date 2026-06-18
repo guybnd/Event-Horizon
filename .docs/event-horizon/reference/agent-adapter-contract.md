@@ -214,6 +214,8 @@ The Claude adapter injects MCP servers into the spawned agent via `--mcp-config`
 
 Example: `"mcpServerPhases": { "basic-memory": ["implementation"] }` keeps basic-memory's ~8k of tool schemas out of grooming/review sessions. The pure filter is `filterMcpServersByPhase()` (exported, unit-tested). Measure the effect with the `GET /api/tasks/debug/mcp-schemas` probe (FLUX-488).
 
+> The `event-horizon` server entry itself is no longer a spawned stdio process: it is the engine's own in-process Streamable-HTTP mount at `http://127.0.0.1:<engine-port>/mcp` (`type: "http"`), so spawned agents — main checkout or `.eh-worktrees/*` worktree — all reach the same canonical task store over loopback. See [MCP Tools → How tools are exposed](mcp-tools.md#how-tools-are-exposed) (FLUX-645).
+
 > Caveat: in strict mode the engine is the single source of MCP servers for that spawn — any server only present in user/global config (not `.mcp.json` or modules) is dropped. Keep profiles minimal and verify with the probe.
 
 ## Error handling

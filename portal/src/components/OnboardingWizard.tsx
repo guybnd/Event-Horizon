@@ -16,7 +16,7 @@ import {
   Package,
 } from 'lucide-react';
 import { pickWorkspaceFolder, setWorkspace, installWorkspaceSkill, fetchPathInfo, setupPath, migrateStorage, fetchConfig, saveConfig as apiSaveConfig } from '../api';
-import { useApp } from '../AppContext';
+import { useAppActions } from '../store/useAppSelector';
 import { BootstrapPreview } from './BootstrapPreview';
 
 const COMPLETE_KEY = 'eh-onboarding-complete';
@@ -52,7 +52,7 @@ function StepDots({ current, total }: { current: number; total: number }) {
 }
 
 export function OnboardingWizard() {
-  const { notifyWorkspaceSet, setView } = useApp();
+  const { notifyWorkspaceSet, setView } = useAppActions();
   const [step, setStep] = useState(1);
   const [folderPath, setFolderPath] = useState('');
   const [userName, setUserName] = useState('');

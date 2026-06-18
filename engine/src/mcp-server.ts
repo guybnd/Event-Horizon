@@ -1,5 +1,9 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import { randomUUID } from 'node:crypto';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { z } from 'zod';
 import fs from 'fs/promises';
 import path from 'path';
@@ -15,6 +19,7 @@ import { getCliWorkspace, getActiveFluxDir, getWorkspacesList, workspaceRoot } f
 import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, checkGhAuth, captureDiff, resolveCommit, getPullRequestStatus } from './branch-manager.js';
 import { createTaskWorktree, detachTaskWorktree, taskWorktreeDir } from './task-worktree.js';
 import { cleanupMergedBranch } from './pr-cleanup.js';
+import { sharedNonDoneSiblings } from './pr-tickets.js';
 import { existsSync, statSync, readFileSync } from 'fs';
 import { getActiveSessionsForTask, stopAllSessionsForTask } from './session-store.js';
 import { generatePromptNotification, dismissNotificationsForTicket, addNotification } from './notifications.js';
@@ -109,6 +114,22 @@ export async function startMcpServer(): Promise<void> {
 
   await activateWorkspace(workspacePath);
 
+  const server = buildMcpServer();
+
+  // ─── Start Transport ────────────────────────────────────────────────────────
+
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}
+
+/**
+ * Build a fully-configured Event Horizon MCP server with every tool registered, WITHOUT
+ * connecting a transport. Shared by the stdio entry path (`startMcpServer`, the `--mcp`
+ * headless mode) and the in-process Streamable-HTTP mount on the engine
+ * (`handleMcpHttpRequest`, FLUX-645). The caller owns transport + workspace activation;
+ * the tools operate on the engine's already-active task-store cache.
+ */
+export function buildMcpServer(): McpServer {
   const server = new McpServer({
     name: 'event-horizon',
     version: '1.0.0',
@@ -457,6 +478,81 @@ export async function startMcpServer(): Promise<void> {
     },
   );
 
+  server.tool(
+    'archive_ticket',
+    'Safely remove a ticket from the active board by moving it to the Archived status. This is the reversible alternative to deletion — history is preserved and the ticket can be brought back with unarchive_ticket. There is no hard-delete tool; prefer archiving.',
+    {
+      ticketId: z.string().describe('Ticket ID'),
+      comment: z.string().optional().describe('Optional reason for archiving (recorded in history).'),
+    },
+    async ({ ticketId, comment }) => {
+      const task = tasksCache[ticketId];
+      if (!task) return errorResult(`Ticket ${ticketId} not found`);
+
+      const archiveStatus = configCache.archiveStatus || 'Archived';
+      if (task.status === archiveStatus) {
+        return textResult(`${ticketId} is already ${archiveStatus}`);
+      }
+
+      const entries: any[] = [];
+      if (comment) {
+        entries.push({ type: 'comment', user: 'Agent', comment, date: new Date().toISOString() });
+      }
+
+      const extraFields: Record<string, any> = {};
+      // Clear any swimlane so the archived ticket doesn't keep a stale blocked flag.
+      if (task.swimlane) {
+        extraFields.swimlane = null;
+        entries.push({ type: 'swimlane_change', swimlane: task.swimlane, action: 'cleared', user: 'Agent', date: new Date().toISOString() });
+        dismissNotificationsForTicket(ticketId);
+      }
+
+      const result = await updateTaskWithHistory(ticketId, {
+        entries,
+        updatedBy: 'Agent',
+        nextStatus: archiveStatus,
+        ...(Object.keys(extraFields).length > 0 ? { extraFields } : {}),
+      });
+      if (!result) return errorResult(`Failed to archive ${ticketId}`);
+
+      broadcastEvent('taskUpdated', { id: ticketId });
+      return textResult(`${ticketId} archived (moved to ${archiveStatus})`);
+    },
+  );
+
+  server.tool(
+    'unarchive_ticket',
+    'Bring an archived ticket back onto the active board by moving it out of the Archived status. Defaults to "Todo"; pass toStatus to restore it to a specific column.',
+    {
+      ticketId: z.string().describe('Ticket ID'),
+      toStatus: z.string().optional().describe('Status to restore the ticket to (default: "Todo")'),
+    },
+    async ({ ticketId, toStatus }) => {
+      const task = tasksCache[ticketId];
+      if (!task) return errorResult(`Ticket ${ticketId} not found`);
+
+      const archiveStatus = configCache.archiveStatus || 'Archived';
+      if (task.status !== archiveStatus) {
+        return errorResult(`${ticketId} is not archived (status is ${task.status}).`);
+      }
+
+      const target = toStatus || 'Todo';
+      if (target === archiveStatus) {
+        return errorResult(`Cannot unarchive ${ticketId} to ${archiveStatus} — choose a non-archive status.`);
+      }
+
+      const result = await updateTaskWithHistory(ticketId, {
+        entries: [],
+        updatedBy: 'Agent',
+        nextStatus: target,
+      });
+      if (!result) return errorResult(`Failed to unarchive ${ticketId}`);
+
+      broadcastEvent('taskUpdated', { id: ticketId });
+      return textResult(`${ticketId} unarchived (moved to ${target})`);
+    },
+  );
+
   // ─── Swimlane Tools ──────────────────────────────────────────────────────────
 
   server.tool(
@@ -610,8 +706,9 @@ export async function startMcpServer(): Promise<void> {
       ticketId: z.string().describe('Ticket ID'),
       implementationLink: z.string().describe('PR URL or commit hash'),
       completionComment: z.string().describe('Summary of what was implemented'),
+      force: z.boolean().optional().describe('Override the shared-PR guard: merge even though the branch is shared by non-Done sibling tickets (their work merges + they advance to Done too).'),
     },
-    async ({ ticketId, implementationLink, completionComment }) => {
+    async ({ ticketId, implementationLink, completionComment, force }) => {
       const task = tasksCache[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`);
 
@@ -621,6 +718,23 @@ export async function startMcpServer(): Promise<void> {
           `Cannot finish ${ticketId} — ticket must be in "${readyStatus}" status first (current: "${task.status}"). ` +
           `Move to "${readyStatus}" with change_status and wait for user confirmation before finishing.`
         );
+      }
+
+      // Finish-on-shared-PR guard (FLUX-569, from the FLUX-556/PR#6 incident): finishing one
+      // member of a SHARED branch merges the whole PR — advancing every bundled sibling to Done
+      // as a one-way door, even ones that aren't finished. Refuse when the branch is shared by
+      // non-Done sibling tickets, unless `force`. Exempt PR tickets (kind:'pr'): merging a PR
+      // ticket to advance its members IS the sanctioned shared-merge surface.
+      if (task.branch && task.kind !== 'pr' && !force) {
+        const nonDone = sharedNonDoneSiblings(Object.values(tasksCache) as any[], task.branch, ticketId);
+        if (nonDone.length > 0) {
+          return errorResult(
+            `Cannot finish ${ticketId} — its branch \`${task.branch}\` is shared by ${nonDone.length} sibling ticket(s) that are NOT Done: ` +
+            `${nonDone.map((t) => `${t.id} (${t.status})`).join(', ')}. Merging would advance them all to Done as a one-way door. ` +
+            `Either finish/close those siblings first, merge via the PR ticket, or re-run finish with force:true if you intend to land the whole shared PR. ` +
+            `(If this is a blocking call, raise it via Require Input — don't leave it only in chat — FLUX-570.)`
+          );
+        }
       }
 
       let finalLink = implementationLink;
@@ -1102,6 +1216,45 @@ export async function startMcpServer(): Promise<void> {
     },
   );
 
+  // FLUX-662: structured question → portal picker → answer-in-the-same-turn. The working
+  // substitute for the native AskUserQuestion (which can't be fulfilled in `claude -p` print
+  // mode). Schema mirrors the native tool so agents reach for it the same way; the handler
+  // POSTs to the engine and BLOCKS on the response, which is held open until the user answers
+  // (or a 4-minute timeout returns an `unanswered` sentinel — kept under undici's 300s
+  // headersTimeout so the held-open fetch doesn't abort before the park resolves).
+  server.tool(
+    'ask_user_question',
+    'Ask the user a structured multiple-choice question and BLOCK until they answer. Renders an interactive picker in the EH chat/board surface (single- or multi-select, with an "Other" free-text option) and returns the user\'s selection so you can continue the same turn. Use this whenever you need a decision or to resolve ambiguity instead of guessing — never assume; ask. Returns { answers: { [question]: chosenLabel | chosenLabel[] }, notes? }. If the user does not answer in time you get an unanswered result and should proceed with your best judgment.',
+    {
+      questions: z.array(z.object({
+        question: z.string().describe('The full question to ask the user.'),
+        header: z.string().describe('A very short label/category for the question (a few words).'),
+        options: z.array(z.object({
+          label: z.string().describe('The option text shown to (and returned for) the user.'),
+          description: z.string().optional().describe('Optional longer explanation of what this option means.'),
+        })).min(1).describe('The choices the user can pick from.'),
+        multiSelect: z.boolean().optional().describe('Allow the user to select multiple options (default false).'),
+      })).min(1).describe('One or more questions to ask (usually one).'),
+    },
+    async ({ questions }) => {
+      try {
+        const res = await fetch(`${ENGINE_URL}/api/board/ask-question`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ questions, conversationId: process.env.EH_CONVERSATION_ID || null }),
+        });
+        if (!res.ok) return errorResult('Ask-question channel error — no answer received. Proceed with your best judgment or ask again.');
+        const result = await res.json();
+        if (result?.unanswered) {
+          return textResult('The user did not answer in time. Proceed using your best judgment, or ask again if the answer is essential.');
+        }
+        return jsonResult({ answers: result.answers ?? {}, ...(result.notes ? { notes: result.notes } : {}) });
+      } catch (err: any) {
+        return errorResult(`Ask-question channel unavailable: ${err.message}. Proceed with your best judgment.`);
+      }
+    },
+  );
+
   // ─── Group Docs Tools (FLUX-421 / FLUX-420) ─────────────────────────────────
 
   server.tool(
@@ -1231,10 +1384,53 @@ export async function startMcpServer(): Promise<void> {
     },
   );
 
-  // ─── Start Transport ────────────────────────────────────────────────────────
+  return server;
+}
 
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+// ─── Streamable-HTTP mount (FLUX-645) ────────────────────────────────────────
+//
+// The engine process serves the MCP server in-process over loopback HTTP at
+// POST/GET/DELETE /mcp, so every Claude Code session — main checkout or an
+// `.eh-worktrees/*` worktree — points at one URL and shares the engine's single
+// task-store cache + chokidar watchers, with no per-session stdio process. Per-session
+// transports are keyed by the `Mcp-Session-Id` header so concurrent sessions stay
+// isolated. index.ts registers the routes BEFORE express.json so the raw JSON-RPC request
+// stream reaches the transport unparsed.
+const httpTransports = new Map<string, StreamableHTTPServerTransport>();
+
+export async function handleMcpHttpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const headerId = req.headers['mcp-session-id'];
+  const sessionId = Array.isArray(headerId) ? headerId[0] : headerId;
+  let transport = sessionId ? httpTransports.get(sessionId) : undefined;
+
+  if (!transport) {
+    // Only a POST may open a session — it must carry the `initialize` request. A GET/DELETE
+    // (or a POST with an unknown session id) has no live transport to attach to.
+    if (req.method !== 'POST') {
+      res.statusCode = 400;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'Bad Request: no valid MCP session' }, id: null }));
+      return;
+    }
+    // New session: fresh server + transport. The transport assigns the session id on
+    // `initialize` (and rejects a non-initialize first message itself), so we never pre-parse
+    // the body — pre-parsing would also let express.json consume the stream (see index.ts).
+    const newTransport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+      onsessioninitialized: (sid) => { httpTransports.set(sid, newTransport); },
+    });
+    newTransport.onclose = () => {
+      const sid = newTransport.sessionId;
+      if (sid) httpTransports.delete(sid);
+    };
+    // Cast: StreamableHTTPServerTransport `implements Transport`, but its getter/setter `onclose`
+    // is `(() => void) | undefined` which trips exactOptionalPropertyTypes against Transport's
+    // optional `onclose?`. The instance genuinely is a Transport.
+    await buildMcpServer().connect(newTransport as Transport);
+    transport = newTransport;
+  }
+
+  await transport.handleRequest(req, res);
 }
 
 // Auto-start only when this file is the direct entry point, not when imported as a module

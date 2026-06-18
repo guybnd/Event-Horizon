@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { FolderOpen, Rocket, AlertCircle } from 'lucide-react';
 import { setWorkspace, pickWorkspaceFolder } from '../api';
-import { useApp } from '../AppContext';
+import { useAppActions } from '../store/useAppSelector';
 
 export function WorkspaceSelector() {
-  const { notifyWorkspaceSet } = useApp();
+  const { notifyWorkspaceSet } = useAppActions();
   const [folderPath, setFolderPath] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);

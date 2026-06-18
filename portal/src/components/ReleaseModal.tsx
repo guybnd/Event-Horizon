@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useApp } from '../AppContext';
+import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { X, Loader2 } from 'lucide-react';
 import { updateTask, fetchDoc, updateDoc, createDoc } from '../api';
 import type { BasicHistoryEntry, Task } from '../types';
@@ -10,7 +10,9 @@ interface ReleaseModalProps {
 }
 
 export function ReleaseModal({ tasks: initialTasks, onClose }: ReleaseModalProps) {
-  const { config, currentUser, triggerRefresh } = useApp();
+  const { triggerRefresh } = useAppActions();
+  const config = useAppSelector((s) => s.config);
+  const currentUser = useAppSelector((s) => s.currentUser);
   const [selectedTasks, setSelectedTasks] = useState<Set<string>>(new Set(initialTasks.map(t => t.id)));
   const [version, setVersion] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);

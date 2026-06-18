@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react';
 import { Bot } from 'lucide-react';
-import { useApp } from '../AppContext';
+import { useAppSelector, useAppActions } from '../store/useAppSelector';
 
 export function LifetimeTokenStats() {
-  const { tasks, config, saveConfig } = useApp();
+  const { saveConfig } = useAppActions();
+  const tasks = useAppSelector((s) => s.tasks);
+  const config = useAppSelector((s) => s.config);
   const [lifetimeCostUSD, setLifetimeCostUSD] = useState<number | null>(null);
   const [lifetimeTokens, setLifetimeTokens] = useState<{ input: number; output: number; estimated: boolean } | null>(null);
   const [costStatsLoaded, setCostStatsLoaded] = useState(false);

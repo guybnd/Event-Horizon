@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ShieldAlert, Check, X } from 'lucide-react';
-import { useApp } from '../AppContext';
+import { useAppActions } from '../store/useAppSelector';
 import { fetchPendingApprovals, resolvePermission, type PendingApproval } from '../api';
 
 /**
@@ -11,7 +11,7 @@ import { fetchPendingApprovals, resolvePermission, type PendingApproval } from '
  * originating chat window); polls the pending queue.
  */
 export function ApprovalPrompts() {
-  const { subscribeToEvent } = useApp();
+  const { subscribeToEvent } = useAppActions();
   const [pending, setPending] = useState<PendingApproval[]>([]);
 
   useEffect(() => {

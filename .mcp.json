@@ -1,14 +1,8 @@
 {
   "mcpServers": {
     "event-horizon": {
-      "type": "stdio",
-      "command": "npx",
-      "args": [
-        "tsx",
-        "engine/src/mcp-server.ts",
-        "--workspace",
-        "."
-      ],
+      "type": "http",
+      "url": "http://127.0.0.1:3067/mcp",
       "alwaysLoad": true
     },
     "context7": {

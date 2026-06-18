@@ -1,13 +1,14 @@
 import { RotateCcw, ExternalLink } from 'lucide-react';
 import type { Task } from '../../types';
-import { useApp } from '../../AppContext';
+import { useAppSelector, useAppActions } from '../../store/useAppSelector';
 
 /**
  * Banner on a retry ticket (FLUX-593): points back at the merged PR it retries. Reads the
  * ticket's `retries` link (the first instance of the typed-relationships model, epic FLUX-596).
  */
 export function RetryBanner({ task, className = '' }: { task: Partial<Task>; className?: string }) {
-  const { openTaskFullView, taskById } = useApp();
+  const { openTaskFullView } = useAppActions();
+  const taskById = useAppSelector(s => s.taskById);
   const retry = (task.links ?? []).find((l) => l.type === 'retries');
   if (!retry) return null;
   const target = taskById.get(retry.target);

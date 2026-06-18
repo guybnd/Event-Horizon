@@ -77,6 +77,10 @@ export interface Task {
   /** 'pr' = an engine-managed PR ticket (FLUX-566); undefined/'ticket' = a normal ticket. */
   kind?: 'ticket' | 'pr';
   swimlane?: string | null;
+  /** FLUX-651: set by the engine when an agent ended its turn leaving the ticket parked in a
+   *  working status without taking a board action. Truthy = show as "Needs Action"; the string
+   *  is the reason. Cleared automatically when the ticket's status moves or work resumes. */
+  needsAction?: string | null;
   /** PR tickets only: the gh PR number, draft flag, and the work-gated member ticket ids. */
   prNumber?: number;
   prState?: string;
@@ -149,6 +153,8 @@ export interface CliSessionSummary {
   groupTotal?: number;
   groupType?: ExecutionPattern;
   groupVariant?: GroupVariant;
+  /** True when this session can be continued via `claude --resume` (FLUX-606). */
+  resumable?: boolean;
 }
 
 export interface TaskLiveEvent {
@@ -272,6 +278,9 @@ export interface Config {
   animationSpeed?: 'fast' | 'normal' | 'slow';
   hoverPopupsEnabled?: boolean;
   hoverPopupDelay?: number;
+  /** Open the comment popover when hovering a card's comment badge. Off by default —
+   *  the badge still opens its popover on click. */
+  commentHoverPreviewEnabled?: boolean;
   releaseSettings?: {
     generateDistinctFiles: boolean;
     releaseNotesPath: string;

@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { useApp } from '../AppContext';
+import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { updateTask } from '../api';
 import { Loader2, Plus } from 'lucide-react';
 import { TaskViewControls } from './TaskViewControls';
@@ -24,7 +24,7 @@ function BacklogRow({
   setSelectedTaskId: (id: string) => void;
   liveEvent?: TaskLiveEvent;
 }) {
-  const { config } = useApp();
+  const config = useAppSelector((s) => s.config);
   const [isHovering, setIsHovering] = useState(false);
   const [popupPos, setPopupPos] = useState({ top: 0, left: 'auto' as number | string, right: 'auto' as number | string });
   const hoverTimeout = useRef<number | null>(null);
@@ -127,25 +127,22 @@ function BacklogRow({
 }
 
 export function BacklogScreen() {
-  const {
-    openTaskModal,
-    triggerRefresh,
-    config,
-    currentUser,
-    searchQuery,
-    sortOption,
-    filterAssignee,
-    filterPriority,
-    filterTag,
-    filterUnreadOnly,
-    filterWorktree,
-    worktreeBranches,
-    readComments,
-    tasks: liveTasks,
-    tasksLoading,
-    taskLiveEvents,
-    parseErrors,
-  } = useApp();
+  const { openTaskModal, triggerRefresh } = useAppActions();
+  const config = useAppSelector((s) => s.config);
+  const currentUser = useAppSelector((s) => s.currentUser);
+  const searchQuery = useAppSelector((s) => s.searchQuery);
+  const sortOption = useAppSelector((s) => s.sortOption);
+  const filterAssignee = useAppSelector((s) => s.filterAssignee);
+  const filterPriority = useAppSelector((s) => s.filterPriority);
+  const filterTag = useAppSelector((s) => s.filterTag);
+  const filterUnreadOnly = useAppSelector((s) => s.filterUnreadOnly);
+  const filterWorktree = useAppSelector((s) => s.filterWorktree);
+  const worktreeBranches = useAppSelector((s) => s.worktreeBranches);
+  const readComments = useAppSelector((s) => s.readComments);
+  const liveTasks = useAppSelector((s) => s.tasks);
+  const tasksLoading = useAppSelector((s) => s.tasksLoading);
+  const taskLiveEvents = useAppSelector((s) => s.taskLiveEvents);
+  const parseErrors = useAppSelector((s) => s.parseErrors);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [descriptionDraft, setDescriptionDraft] = useState('');
   const [descriptionNotice, setDescriptionNotice] = useState<{ tone: 'error' | 'success'; message: string } | null>(null);

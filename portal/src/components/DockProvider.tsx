@@ -1,4 +1,7 @@
-import { createContext, useContext, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+
+/** localStorage key for the dismissed-card set (matches the `eh-`-prefixed convention). */
+const DISMISSED_KEY = 'eh-dock-dismissed';
 
 /**
  * FLUX-603: global ownership of the bottom chat dock's window/open state.
@@ -25,6 +28,9 @@ export interface DockActions {
   closeCard: (id: string) => void;
   /** Reopen a chat from the History popover (same as `openChat`). */
   reopenFromHistory: (id: string, from?: HTMLElement | null) => void;
+  /** FLUX-623: persist a conversation's unsent composer text so minimizing (which unmounts
+   *  the window) no longer discards it. Keyed per conversation id. */
+  setDraft: (id: string, text: string) => void;
 }
 
 export interface DockState {
@@ -35,6 +41,10 @@ export interface DockState {
   manuallyOpened: string[];
   /** Per-chat x-center of the element that triggered the open, so a window spawns "out of" it. */
   anchors: Record<string, number>;
+  /** FLUX-623: per-conversation unsent composer text. In-memory (resets on full reload, like
+   *  `seenRef` baselines in ChatDock); survives minimize/reopen + view switches because the dock
+   *  state is app-root-scoped. Pruned in `closeCard` when a chat is retired to History. */
+  drafts: Record<string, string>;
 }
 
 const DockActionsContext = createContext<DockActions | null>(null);
@@ -43,9 +53,31 @@ const DockStateContext = createContext<DockState | null>(null);
 export function DockProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState<string[]>([]);
   const [acked, setAcked] = useState<string[]>([]);
-  const [dismissed, setDismissed] = useState<string[]>([]); // most-recent-first
+  // FLUX-635: rehydrate dismissed cards from localStorage so closing a card survives a reload.
+  const [dismissed, setDismissed] = useState<string[]>(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      const raw = localStorage.getItem(DISMISSED_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
+    } catch {
+      return [];
+    }
+  }); // most-recent-first
   const [manuallyOpened, setManuallyOpened] = useState<string[]>([]);
   const [anchors, setAnchors] = useState<Record<string, number>>({});
+  // FLUX-623: per-conversation unsent composer text, so minimizing a chat (which unmounts its
+  // window subtree) no longer discards what the user typed.
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+
+  // FLUX-635: persist dismissals on change. Cap to bound growth (History only shows HISTORY_CAP).
+  useEffect(() => {
+    try {
+      localStorage.setItem(DISMISSED_KEY, JSON.stringify(dismissed.slice(0, 50)));
+    } catch {
+      /* quota exceeded / private mode — dismissal just won't persist this load */
+    }
+  }, [dismissed]);
 
   // Mirror of `open` so the stable `toggle` action can read the current value without a
   // dependency (which would make the action identity churn and re-render every card).
@@ -86,13 +118,29 @@ export function DockProvider({ children }: { children: ReactNode }) {
         setOpen((prev) => prev.filter((x) => x !== id));
         setAcked((prev) => prev.filter((x) => x !== id));
         setManuallyOpened((prev) => prev.filter((x) => x !== id));
+        // FLUX-623: retiring a chat to History clears its draft — reopening starts empty.
+        setDrafts((prev) => {
+          if (!(id in prev)) return prev;
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
       },
+      // FLUX-623: prune empty drafts so an emptied composer doesn't linger in the map.
+      setDraft: (id, text) =>
+        setDrafts((prev) => {
+          if (text) return prev[id] === text ? prev : { ...prev, [id]: text };
+          if (!(id in prev)) return prev;
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        }),
     };
   }, []);
 
   const state = useMemo<DockState>(
-    () => ({ open, acked, dismissed, manuallyOpened, anchors }),
-    [open, acked, dismissed, manuallyOpened, anchors],
+    () => ({ open, acked, dismissed, manuallyOpened, anchors, drafts }),
+    [open, acked, dismissed, manuallyOpened, anchors, drafts],
   );
 
   return (

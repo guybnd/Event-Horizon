@@ -7,7 +7,7 @@ import {
   fetchDiffOverview, fetchDiffFile, fetchTaskDiff,
   type DiffOverview, type DiffGroup, type DiffChangedFile,
 } from '../../api';
-import { useApp } from '../../AppContext';
+import { useAppActions, useAppSelector } from '../../store/useAppSelector';
 import { getTaskActivityTimestamp } from '../../taskSearch';
 import { DiffLines } from '../DiffLines';
 import type { Task } from '../../types';
@@ -55,7 +55,9 @@ const STATUS_BADGE: Record<FileStatus, { letter: string; cls: string; title: str
 };
 
 export function ChangesScreen() {
-  const { tasks, changesFocus, setChangesFocus } = useApp();
+  const { setChangesFocus } = useAppActions();
+  const tasks = useAppSelector(s => s.tasks);
+  const changesFocus = useAppSelector(s => s.changesFocus);
   const [overview, setOverview] = useState<DiffOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);

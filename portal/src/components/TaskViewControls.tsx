@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { AlertCircle, ArrowUpDown, ChevronDown, ChevronUp, Equal, FolderGit2, GitCompare, Inbox, Search, SlidersHorizontal, Tag, User, X } from 'lucide-react';
-import { useApp } from '../AppContext';
+import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import type { Config } from '../types';
 import type { WorktreeInfo } from '../api';
 import { BoardStatusCluster } from './BoardStatusCluster';
@@ -105,7 +105,7 @@ function WorktreeFilterChip({
   value: string;
   onChange: (v: string) => void;
 }) {
-  const { setView, setChangesFocus } = useApp();
+  const { setView, setChangesFocus } = useAppActions();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -208,25 +208,25 @@ export function TaskViewControls({
   itemLabel,
 }: TaskViewControlsProps) {
   const {
-    searchQuery,
     setSearchQuery,
-    sortOption,
     setSortOption,
-    filterAssignee,
     setFilterAssignee,
-    filterPriority,
     setFilterPriority,
-    filterTag,
     setFilterTag,
-    filterUnreadOnly,
     setFilterUnreadOnly,
-    filterWorktree,
     setFilterWorktree,
-    worktrees,
-    totalUnreadCount,
     clearTaskFilters,
-    config,
-  } = useApp();
+  } = useAppActions();
+  const searchQuery = useAppSelector((s) => s.searchQuery);
+  const sortOption = useAppSelector((s) => s.sortOption);
+  const filterAssignee = useAppSelector((s) => s.filterAssignee);
+  const filterPriority = useAppSelector((s) => s.filterPriority);
+  const filterTag = useAppSelector((s) => s.filterTag);
+  const filterUnreadOnly = useAppSelector((s) => s.filterUnreadOnly);
+  const filterWorktree = useAppSelector((s) => s.filterWorktree);
+  const worktrees = useAppSelector((s) => s.worktrees);
+  const totalUnreadCount = useAppSelector((s) => s.totalUnreadCount);
+  const config = useAppSelector((s) => s.config);
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const filtersRef = useRef<HTMLDivElement>(null);
 

@@ -1,9 +1,15 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Send, ExternalLink } from 'lucide-react';
 import { useChatSession } from '../../hooks/useChatSession';
 import { ChatView } from './ChatView';
+import { ChatDiffPanel } from './ChatDiffPanel';
+import { TicketContextCard } from './chatContext';
+import { parseQuickReplies } from './chatQuickReplies';
 import { TicketActionBar } from '../TicketActionBar';
+import { ChatQuestionPicker } from '../AskQuestionPrompts';
 import { useDockActions } from '../DockProvider';
+import { useConfig } from '../../store/useAppSelector';
+import { getRequireInputStatus } from '../../workflow';
 import type { Task } from '../../types';
 
 /**
@@ -18,6 +24,11 @@ export function ChatPane({ task }: { task: Task }) {
   const [open, setOpen] = useState(false);
   const chat = useChatSession(task.id, open);
   const { openChat } = useDockActions();
+  const config = useConfig();
+  const quickReplies = useMemo(
+    () => parseQuickReplies(task, getRequireInputStatus(config)),
+    [task, config],
+  );
 
   if (!open) {
     return (
@@ -45,6 +56,11 @@ export function ChatPane({ task }: { task: Task }) {
           <ExternalLink className="h-3.5 w-3.5" /> Pop out to dock
         </button>
       </div>
+      {task.branch && (
+        <div className="mb-2 overflow-hidden rounded-lg border border-gray-100 dark:border-white/5">
+          <ChatDiffPanel task={task} />
+        </div>
+      )}
       <ChatView
         title="Chat (spike)"
         messages={chat.messages}
@@ -53,8 +69,12 @@ export function ChatPane({ task }: { task: Task }) {
         working={task.cliSession?.status === 'running'}
         activity={task.cliSession?.currentActivity}
         emptyHint={`Ask anything about ${task.id}. Runs the Claude CLI bound to this ticket.`}
+        contextCard={<TicketContextCard task={task} />}
+        quickReplies={quickReplies}
+        linkifyTickets
         onSend={chat.send}
         onStop={chat.stop}
+        questionPicker={<ChatQuestionPicker conversationId={task.id} />}
         actions={<TicketActionBar task={task} />}
       />
     </div>

@@ -4,7 +4,7 @@ import type { TagDef, Task } from '../../types';
 import { TagSelector } from '../TagSelector';
 import { fetchBranchStatus, detachWorktree, type BranchStatus } from '../../api';
 import { DiffSummaryPanel } from './DiffSummaryPanel';
-import { useApp } from '../../AppContext';
+import { useAppActions } from '../../store/useAppSelector';
 
 const EFFORT_OPTIONS = ['None', 'XS', 'S', 'M', 'L', 'XL'];
 
@@ -49,7 +49,7 @@ export function MetadataPanel({
   variant,
   isWideMode,
 }: MetadataPanelProps) {
-  const { triggerRefresh, refreshWorktrees } = useApp();
+  const { triggerRefresh, refreshWorktrees } = useAppActions();
   const [branchStatus, setBranchStatus] = useState<BranchStatus | null>(null);
   const [copied, setCopied] = useState(false);
 

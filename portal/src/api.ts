@@ -897,6 +897,15 @@ export async function fetchTaskTranscript(taskId: string): Promise<TranscriptMes
   return payload.messages || [];
 }
 
+/** Wipe a conversation's durable transcript (backs the orchestrator "reset"). */
+export async function clearTaskTranscript(taskId: string): Promise<void> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/transcript`, { method: 'DELETE' });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to clear transcript');
+  }
+}
+
 /** FLUX-605: a gated tool call awaiting human approval. */
 export interface PendingApproval {
   id: string;
@@ -918,6 +927,47 @@ export async function resolvePermission(id: string, behavior: 'allow' | 'deny', 
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id, behavior, message }),
+  });
+}
+
+/** FLUX-662: one option within a structured question. */
+export interface AskOption {
+  label: string;
+  description?: string;
+}
+
+/** FLUX-662: a single structured question posed by an agent via ask_user_question. */
+export interface AskQuestion {
+  question: string;
+  header: string;
+  options: AskOption[];
+  multiSelect?: boolean;
+}
+
+/** FLUX-662: a parked ask_user_question call awaiting the user's selection. */
+export interface PendingQuestion {
+  id: string;
+  questions: AskQuestion[];
+  conversationId: string | null;
+  createdAt: string;
+}
+
+export async function fetchPendingQuestions(): Promise<PendingQuestion[]> {
+  const res = await fetch(`${API_URL}/board/pending-questions`);
+  if (!res.ok) return [];
+  const payload = await res.json();
+  return payload.pending || [];
+}
+
+export async function answerQuestion(
+  id: string,
+  answers: Record<string, string | string[]>,
+  notes?: string,
+): Promise<void> {
+  await fetch(`${API_URL}/board/ask-question/${id}/answer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ answers, notes }),
   });
 }
 
@@ -1251,12 +1301,43 @@ export interface MergePrResult {
   notificationId?: string;
 }
 
-/** Squash-merge the branch's PR + run post-merge cleanup (advances all branch tickets). */
-export async function mergePr(taskId: string): Promise<MergePrResult> {
-  const res = await fetch(`${API_URL}/tasks/${taskId}/pr/merge`, { method: 'POST' });
+/**
+ * Squash-merge the branch's PR + run post-merge cleanup (advances all branch tickets). Pass
+ * `force` to override the shared-PR guard (FLUX-569) when the branch bundles non-Done siblings
+ * that would all advance to Done — the deck card confirms that explicitly before forcing.
+ */
+export async function mergePr(taskId: string, opts?: { force?: boolean }): Promise<MergePrResult> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/pr/merge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ force: opts?.force === true }),
+  });
   if (!res.ok) {
     const err = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(err.error || 'Failed to merge PR');
+  }
+  return res.json();
+}
+
+export interface AdoptPrResult { memberId: string; members: string[] }
+
+/**
+ * Continue development on a PR by binding work to its branch (FLUX-569). `mode: 'adopt'` rebinds
+ * an existing ticket (by `ticketId`) to the PR's branch + moves it to In Progress; `mode: 'create'`
+ * makes a fresh ticket (by `title`/`body`) bound to the branch. Either way it folds into the deck.
+ */
+export async function adoptPr(
+  prId: string,
+  opts: { mode: 'adopt'; ticketId: string; updatedBy: string } | { mode: 'create'; title: string; body?: string; updatedBy: string },
+): Promise<AdoptPrResult> {
+  const res = await fetch(`${API_URL}/tasks/${prId}/pr/adopt`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(opts),
+  });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(err.error || 'Failed to continue development');
   }
   return res.json();
 }
@@ -1454,6 +1535,23 @@ export async function fetchDiffFile(ref: string, path: string): Promise<string |
   if (res.status === 404) return null;
   if (!res.ok) throw new Error('Failed to fetch file diff');
   return res.text();
+}
+
+// ─── Per-ticket branch diff (FLUX-615) ────────────────────────────────────────
+
+/** Live changed-file summary for one ticket's branch vs the merge-base. */
+export interface BranchDiffSummary {
+  branch: string | null;
+  worktree: string | null;
+  base: string | null;
+  files: DiffChangedFile[];
+}
+
+/** The ticket branch's changed files (worktree-aware, vs merge-base). Empty when no branch. */
+export async function fetchBranchDiff(taskId: string): Promise<BranchDiffSummary> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/branch-diff`);
+  if (!res.ok) throw new Error('Failed to fetch branch diff');
+  return res.json();
 }
 
 // ─── Bootstrap ──────────────────────────────────────────────────────────────

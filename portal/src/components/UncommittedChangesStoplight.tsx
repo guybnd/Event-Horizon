@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, Code2, ExternalLink, FileDiff, GitBranch, GitCommitHorizontal, Loader2 } from 'lucide-react';
-import { useApp } from '../AppContext';
+import { useAppActions } from '../store/useAppSelector';
 import { fetchUncommittedStatus, openWorkspaceEditor, fetchDiffOverview, fetchDiffFile, commitFiles, type DiffGroup } from '../api';
 import { DiffLines } from './DiffLines';
 
@@ -32,7 +32,7 @@ function groupRef(g: DiffGroup): string {
  * Changes view. Hidden when the count can't be determined.
  */
 export function UncommittedChangesStoplight() {
-  const { setView, setChangesFocus } = useApp();
+  const { setView, setChangesFocus } = useAppActions();
   const [count, setCount] = useState<number | null>(null);
   const [branch, setBranch] = useState<string | null>(null); // main-tree branch (for the badge + main group)
   const [editorMsg, setEditorMsg] = useState<string | null>(null);

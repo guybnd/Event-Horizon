@@ -109,6 +109,32 @@ export function generatePromptNotification(ticketId: string, ticketTitle: string
   });
 }
 
+/**
+ * FLUX-651 — an agent ended its turn leaving the ticket parked in a working status without
+ * taking a board action. Deduped per ticket (like the prompt notification) so repeated parked
+ * turns refresh the existing entry instead of stacking.
+ */
+export function generateNeedsActionNotification(ticketId: string, ticketTitle: string, status: string): void {
+  const message = `Agent stopped in "${status}" without moving the ticket forward — review and move it on (or resume).`;
+  const existing = notifications.find(
+    n => n.type === 'prompt' && n.ticketId === ticketId && n.title?.startsWith('Needs action') && !n.dismissed
+  );
+  if (existing) {
+    existing.message = message;
+    existing.read = false;
+    existing.createdAt = new Date().toISOString();
+    broadcastEvent('notification', { notification: existing, unreadCount: getUnreadCount() });
+    return;
+  }
+  addNotification({
+    type: 'prompt',
+    title: `Needs action — ${ticketTitle || ticketId}`,
+    message,
+    ticketId,
+    actions: [{ label: 'Open ticket', actionId: 'view' }],
+  });
+}
+
 export function generateCompletionNotification(ticketId: string, ticketTitle: string): void {
   addNotification({
     type: 'completion',

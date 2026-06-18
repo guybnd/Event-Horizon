@@ -10,15 +10,28 @@ Authoritative list of every tool exposed by the Event Horizon MCP server ([`engi
 
 ## How tools are exposed
 
-The server speaks JSON-RPC over stdio using `@modelcontextprotocol/sdk`. The transport is `StdioServerTransport`. Logs go to stderr so they never corrupt protocol framing on stdout.
+The tool set is built once by `buildMcpServer()` ([`engine/src/mcp-server.ts`](../../../engine/src/mcp-server.ts)) and served over **two transports**, both via `@modelcontextprotocol/sdk`:
 
-A single workspace must be provided at startup:
+### Streamable-HTTP, in-process on the engine (default, FLUX-645)
 
-```bash
-npx tsx engine/src/mcp-server.ts --workspace /path/to/project
+The already-running portal engine mounts the MCP server in-process and exposes it over loopback HTTP at `POST/GET/DELETE http://127.0.0.1:<engine-port>/mcp` (`handleMcpHttpRequest`, wired in [`engine/src/index.ts`](../../../engine/src/index.ts)). Every Claude Code session — whether opened in the main checkout or in a `.eh-worktrees/*` git worktree — points at this one URL and shares the engine's **single** task-store cache and chokidar watchers. There is **no per-session stdio process** and no per-request `--workspace`; the server binds to the engine's already-active canonical workspace.
+
+The installer renders the location-independent HTTP entry into `.mcp.json` with the configured port, re-writing it on every engine start so a port change is picked up:
+
+```json
+"event-horizon": { "type": "http", "url": "http://127.0.0.1:3067/mcp", "alwaysLoad": true }
 ```
 
-The auto-installed MCP config (placed by the workflow installer) does this for you.
+Key properties:
+
+- **Per-session isolation.** Each session gets its own `StreamableHTTPServerTransport`, keyed by the `Mcp-Session-Id` header the transport assigns on `initialize`; transports are removed on close. Concurrent sessions never cross-talk.
+- **Raw stream, not pre-parsed.** The `/mcp` routes are registered **before** `express.json()` so the JSON-RPC request stream reaches the transport unparsed — `express.json()` would otherwise consume the body and the transport would hang.
+- **Per-ticket write serialization.** With one shared server, concurrent sessions can issue concurrent read-modify-write on the same ticket's history. `updateTaskWithHistory` ([`engine/src/task-store.ts`](../../../engine/src/task-store.ts)) serializes writes per `ticketId` (a promise chain) so near-simultaneous `add_comment`/`log_progress`/`change_status` calls on one ticket no longer drop history entries; writes to *different* tickets stay parallel.
+- **Engine-restart reconnect caveat.** The MCP connection is bound to the engine process, so restarting the engine (e.g. the tsx-watch dev loop restarting on a code edit, or a customer update/crash) drops the connection. Claude Code reconnects on its next call; mid-call work in flight at the moment of restart is lost. This is the accepted residual for the single-process design.
+
+### Stdio (headless `--mcp` fallback)
+
+`startMcpServer()` keeps the original stdio behaviour for the headless entry point (`engine/src/index.ts --mcp`, also reachable via `npx tsx engine/src/mcp-server.ts --workspace /path/to/project`). It calls the same `buildMcpServer()` then connects a `StdioServerTransport`. Logs go to stderr so they never corrupt protocol framing on stdout. The worktree-redirect machinery (`EH_CANONICAL_WORKSPACE` / `resolveMainWorktree`) that lets a stdio server in a worktree bind to the canonical store is retained for this path (its broader fate is tracked in FLUX-646).
 
 ## Tool index
 
@@ -36,6 +49,8 @@ The auto-installed MCP config (placed by the workflow installer) does this for y
 | [`delete_group_doc`](#delete_group_doc) | Group docs — Write | yes |
 | [`update_ticket`](#update_ticket) | Mutation | yes |
 | [`change_status`](#change_status) | Mutation | yes (enforced) |
+| [`archive_ticket`](#archive_ticket) | Mutation | yes |
+| [`unarchive_ticket`](#unarchive_ticket) | Mutation | yes |
 | [`add_comment`](#add_comment) | Mutation | yes |
 | [`log_progress`](#log_progress) | Mutation | yes |
 | [`finish_ticket`](#finish_ticket) | Lifecycle (atomic) | yes |
@@ -44,6 +59,7 @@ The auto-installed MCP config (placed by the workflow installer) does this for y
 | [`get_branch`](#get_branch) | Branch | — |
 | [`delete_branch`](#delete_branch) | Branch | yes |
 | [`permission_prompt`](#permission_prompt) | Internal (gating) | — |
+| [`ask_user_question`](#ask_user_question) | Interaction (blocking) | — |
 
 ---
 
@@ -279,6 +295,32 @@ Move a ticket to a new status.
 
 **Side effects:** appends a `comment` entry when one is provided, plus a `status_change` entry recording the transition.
 
+### `archive_ticket`
+
+Safely remove a ticket from the active board by moving it to the **Archived** status (`config.archiveStatus`, default `Archived`). This is the reversible alternative to deletion: history is preserved and the ticket can be restored with [`unarchive_ticket`](#unarchive_ticket). **There is no hard-delete MCP tool** — prefer archiving.
+
+| Input | Type | Required | Notes |
+|-------|------|----------|-------|
+| `ticketId` | string | yes | |
+| `comment` | string | no | Reason for archiving (recorded as a `comment` entry) |
+
+**Behavior:** no-op-safe — returns `<id> is already <Archived>` if the ticket is already archived. Clears any active swimlane (and dismisses its notifications) so the archived ticket doesn't carry a stale blocked flag.
+
+**Output:** `<id> archived (moved to <Archived>)`.
+
+### `unarchive_ticket`
+
+Bring an archived ticket back onto the active board by moving it out of the Archived status.
+
+| Input | Type | Required | Notes |
+|-------|------|----------|-------|
+| `ticketId` | string | yes | |
+| `toStatus` | string | no | Status to restore to (default `Todo`); must not be the archive status |
+
+**Errors:** `<id> is not archived (status is <status>).` if the ticket isn't currently archived.
+
+**Output:** `<id> unarchived (moved to <toStatus>)`.
+
 ### `add_comment`
 
 Append a comment to history.
@@ -319,12 +361,14 @@ Atomic close-out: set `implementationLink`, append a completion comment, move st
 | `ticketId` | string | yes |
 | `implementationLink` | string | yes — commit hash or PR URL |
 | `completionComment` | string | yes — summary of what was implemented |
+| `force` | boolean | no — override the shared-PR guard (see below) |
 
 **Output:** `<id> finished → Done (link: <url>)`.
 
 **Side effects:**
 
 - For a branch ticket: ensures a PR exists (opens one if missing), squash-merges it, then runs the unified post-merge cleanup (`cleanupMergedBranch` — advance branch tickets, fast-forward master, remove worktree + delete branch, clear the `open-pr` swimlane).
+- **Shared-PR guard (FLUX-569):** finishing one member of a branch shared by **non-terminal sibling tickets** is refused — merging would advance them all to Done as a one-way door (the FLUX-556/PR#6 incident). The error names the siblings; either finish/close them first, merge via the PR ticket, or re-run with `force: true` to land the whole shared PR. **PR tickets (`kind:'pr'`) are exempt** — merging a PR ticket to advance its members is the sanctioned shared-merge surface.
 - No commits ahead / merge failure / `gh` unavailable → bounces the ticket back to In Progress with an actionable comment (no partial Done).
 - Writes status + link + comment in one disk write — no partial state on failure.
 
@@ -425,6 +469,24 @@ Sessions are spawned in one of two modes (`permissionArgs` in [`agents/claude-co
 - **`skip`** → `--dangerously-skip-permissions` (no gate; the legacy behavior).
 
 Defaults come from the workspace **risk tolerance** setting (`config.permissions`: `boardDefault` default `gated`, `ticketDefault` default `skip` — see [configuration](../configuration.md)). The per-chat **Perms** picker (Default / Gated / Skip) overrides per turn; "Default" inherits the configured value. Delegated/headless sessions (combiner, relay) can't block on a human, so they run un-gated regardless.
+
+---
+
+### `ask_user_question`
+
+Ask the user a **structured multiple-choice question** and block until they answer — the working substitute for the native `AskUserQuestion` tool, which can't be fulfilled in EH's `claude -p` print-mode spawns (no interactive TTY surface; see FLUX-662). The schema mirrors the native tool so agents reach for it the same way; chat and board prompts also steer the agent toward it ("never assume; ask"). Native `AskUserQuestion` is disabled in these spawns via `--disallowed-tools AskUserQuestion` so it can never be silently denied.
+
+| Input | Type | Required | Notes |
+|-------|------|----------|-------|
+| `questions` | array | yes | One or more questions (usually one). Each: `{ question, header, options[], multiSelect? }`. |
+| `questions[].question` | string | yes | The full question text. |
+| `questions[].header` | string | yes | A very short label/category. |
+| `questions[].options` | array | yes | `{ label, description? }` choices (≥1). |
+| `questions[].multiSelect` | boolean | no | Allow selecting multiple options (default false). |
+
+**Behavior:** the handler POSTs to [`/api/board/ask-question`](rest-api.md) with the questions + the session's `EH_CONVERSATION_ID`, and **blocks on the held-open HTTP response** until the user answers in the portal (or a 4-minute timeout — held under undici's 300s `headersTimeout` so the long-poll fetch doesn't abort before the park resolves). The reuse of the FLUX-605 round-trip is exact; the only difference is the payload — chosen option label(s) + an optional note, not allow/deny. It emits the `ask-question` / `ask-question-resolved` realtime events ([realtime channels](realtime-channels.md)) so the portal can render the picker inline in the originating chat (or a global overlay when unrouted).
+
+**Output:** `{ answers: { [questionText]: chosenLabel | chosenLabel[] }, notes? }` (JSON text). On timeout the agent receives a plain-text "the user did not answer in time — proceed with your best judgment" so a parked question never crashes the turn.
 
 ---
 

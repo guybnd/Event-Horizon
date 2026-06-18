@@ -50,6 +50,24 @@ export function appendTranscriptEvent(taskId: string, event: unknown): void {
   }
 }
 
+/** Clear a conversation's transcript (delete the JSONL). Serialized behind any in-flight
+ *  appends so it can't race a concurrent write; a missing file counts as already-clear. This
+ *  backs the orchestrator "reset" — wiping the durable record so the chat starts fresh. */
+export async function clearTranscript(taskId: string): Promise<void> {
+  const file = getTranscriptFile(taskId);
+  const prev = writeQueues.get(taskId) ?? Promise.resolve();
+  const next = prev.then(async () => {
+    try {
+      await fs.unlink(file);
+    } catch (err: any) {
+      if (err?.code !== 'ENOENT') throw err;
+    }
+  });
+  // Keep the queue chain alive even if this rejects, so later appends still serialize.
+  writeQueues.set(taskId, next.catch(() => {}));
+  await next;
+}
+
 /** Read the raw transcript lines for a ticket (empty array if none yet). */
 export async function readTranscript(taskId: string): Promise<string[]> {
   try {
@@ -95,6 +113,32 @@ export async function readTranscriptMessages(taskId: string): Promise<Transcript
     try { evt = JSON.parse(line); } catch { continue; }
     if (evt?.type === 'user' && typeof evt.text === 'string') {
       out.push({ role: 'user', text: evt.text, ts: typeof evt.timestamp === 'string' ? evt.timestamp : '' });
+    } else if (evt?.type === 'ask-question' && Array.isArray(evt.questions)) {
+      // FLUX-662: an agent asked the user a structured question. Render it as an assistant
+      // turn so a cold resume shows the question that was posed.
+      const ts = typeof evt.timestamp === 'string' ? evt.timestamp : '';
+      const md = evt.questions
+        .map((q: any) => {
+          const opts = Array.isArray(q.options)
+            ? q.options.map((o: any) => `- ${o?.label ?? ''}`).join('\n')
+            : '';
+          return `**${q?.header || 'Question'}** — ${q?.question ?? ''}\n${opts}`;
+        })
+        .join('\n\n');
+      out.push({ role: 'assistant', text: `❓ ${md}`, ts });
+    } else if (evt?.type === 'ask-answer') {
+      // FLUX-662: the user's answer to a structured question. Render as a user turn so the
+      // resolved selection is visible in history alongside the question above.
+      const ts = typeof evt.timestamp === 'string' ? evt.timestamp : '';
+      if (evt.unanswered) {
+        out.push({ role: 'user', text: '_(no answer — the question timed out)_', ts });
+      } else {
+        const picks = Object.values(evt.answers || {})
+          .map((a: any) => (Array.isArray(a) ? a.join(', ') : String(a)))
+          .filter((s) => s.trim());
+        const note = typeof evt.notes === 'string' && evt.notes.trim() ? ` — ${evt.notes.trim()}` : '';
+        out.push({ role: 'user', text: `✔ ${picks.join(' · ')}${note}`.trim(), ts });
+      }
     } else if (evt?.type === 'assistant' && Array.isArray(evt.message?.content)) {
       for (const b of evt.message.content) {
         if (b?.type === 'text' && typeof b.text === 'string' && b.text.trim()) {

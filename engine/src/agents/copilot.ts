@@ -9,6 +9,7 @@ import { workspaceRoot as canonicalWorkspaceRoot } from '../workspace.js';
 import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal, checkAutoRestart } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
+import { captureTurnStartState, clearNeedsActionIfSet, flagIfParked } from '../parked-ticket.js';
 import { buildMemberScopeArgs } from '../group.js';
 import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
 import { getModulePromptFragments } from '../modules.js';
@@ -529,6 +530,9 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   session.status = 'running';
   session.command = 'copilot';
   session.args = copilotArgs;
+  // FLUX-651: snapshot ticket state at turn start; drop any stale "parked" flag.
+  captureTurnStartState(session, id);
+  void clearNeedsActionIfSet(id);
 
   const commitPending = attachStdoutProcessing(proc, session, id);
 
@@ -675,6 +679,8 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     if (finalStatus === 'completed') {
       checkFrameworkHealth(session.framework).catch(() => {});
       checkSkillStaleness(session.framework).catch(() => {});
+      // FLUX-651: flag if the agent left the ticket parked in a working status without acting.
+      await flagIfParked(session, id);
     }
 
     if (session.groupId) {
@@ -727,6 +733,9 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   const inputAt = new Date().toISOString();
   session.lastInputAt = inputAt;
   session.status = 'running';
+  // FLUX-651: new turn — snapshot ticket state and drop any stale "parked" flag.
+  captureTurnStartState(session, id);
+  void clearNeedsActionIfSet(id);
 
   await updateTaskWithHistory(id, {
     updatedBy: user,
@@ -765,5 +774,8 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     commitReplyPending();
     flushSessionOutput(session, true);
     session.status = 'waiting-input';
+    // FLUX-651: resumed turn ended — flag if the agent parked without acting.
+    if (!session.pausedForInput) await flagIfParked(session, id);
+    broadcastEvent('taskUpdated', { id });
   });
 }

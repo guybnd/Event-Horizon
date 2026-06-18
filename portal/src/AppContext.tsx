@@ -1,12 +1,14 @@
-import { createContext, startTransition, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { ColumnLiveEvent, Config, Task, TaskLiveEvent } from './types';
 import { fetchConfig, fetchTasks, fetchWorktrees, fetchHealth, saveConfig as apiSaveConfig, fetchReadState, saveReadState, fetchWorkspace, fetchParseErrors, fetchNotifications, fetchWorkspaces, switchWorkspace as apiSwitchWorkspace, type ParseError, type Notification, type WorkspaceInfo, type WorktreeInfo } from './api';
 import { getArchiveStatus } from './workflow';
+import { tasksEqual } from './lib/tasksEqual';
+import { appStore } from './store/appStore';
+import type { AppStoreState, AppActions, AppView, AppTheme, TaskSortOption } from './store/appStore';
+import { AppActionsContext } from './store/useAppSelector';
 
-export type AppView = 'board' | 'backlog' | 'docs' | 'settings' | 'releases' | 'workflows' | 'changes';
-export type TaskSortOption = 'default' | 'priority' | 'updated' | 'assignee';
-export type AppTheme = 'light' | 'dark' | 'matrix' | 'cyber' | 'midnight';
+export type { AppView, TaskSortOption, AppTheme };
 
 export interface ThemeDef {
   name: AppTheme;
@@ -52,31 +54,6 @@ const LIVE_EVENT_DURATION_MS = 2200;
 
 function normalizeTaskList(tasks: Task[]) {
   return [...tasks].sort((left, right) => left.id.localeCompare(right.id));
-}
-
-function buildTaskSignature(task: Task) {
-  const history = task.history || [];
-  const lastEntry = history[history.length - 1];
-  return JSON.stringify({
-    id: task.id,
-    status: task.status,
-    title: task.title || '',
-    bodyLen: (task.body || '').length,
-    bodyHead: (task.body || '').slice(0, 200),
-    assignee: task.assignee || 'unassigned',
-    priority: task.priority || 'None',
-    effort: task.effort || 'None',
-    implementationLink: task.implementationLink || '',
-    order: task.order ?? null,
-    tags: task.tags || [],
-    subtasks: task.subtasks || [],
-    historyLen: history.length,
-    historyLast: lastEntry ? (lastEntry.date || '') + (lastEntry.type || '') : null,
-    sessionStatus: task.cliSession?.status ?? null,
-    sessionActivity: task.cliSession?.currentActivity ?? null,
-    sessionLabel: task.cliSession?.label ?? null,
-    tokenMetadata: task.tokenMetadata ?? null,
-  });
 }
 
 function removeKey<TValue>(record: Record<string, TValue>, key: string) {
@@ -147,91 +124,13 @@ function updateTaskFilterUrl(filters: {
   window.history.replaceState({}, '', url);
 }
 
-interface AppState {
-  currentUser: string;
-  setCurrentUser: (user: string) => void;
-  currentProject: string;
-  setCurrentProject: (proj: string) => void;
-  searchQuery: string;
-  setSearchQuery: (query: string) => void;
-  sortOption: TaskSortOption;
-  setSortOption: (option: TaskSortOption) => void;
-  filterAssignee: string;
-  setFilterAssignee: (value: string) => void;
-  filterPriority: string;
-  setFilterPriority: (value: string) => void;
-  filterTag: string;
-  setFilterTag: (value: string) => void;
-  filterUnreadOnly: boolean;
-  setFilterUnreadOnly: (value: boolean) => void;
-  /** '' = off, 'any' = any worktree, '<branch>' = isolate the board to that one worktree. */
-  filterWorktree: string;
-  setFilterWorktree: (value: string) => void;
-  clearTaskFilters: () => void;
-  view: AppView;
-  setView: (view: AppView) => void;
-  settingsTab: string | null;
-  setSettingsTab: (tab: string | null) => void;
-  modalTask: Partial<Task> | null;
-  setModalTask: (task: Partial<Task> | null) => void;
-  isModalOpen: boolean;
-  /** True while a blocking overlay (e.g. the orchestration launcher) is open. Board hover popups are suppressed while set. */
-  isOverlayOpen: boolean;
-  pushOverlay: () => void;
-  popOverlay: () => void;
-  closeModal: () => void;
-  openTaskModal: (task?: Partial<Task>) => void;
-  openTaskFullView: (task: Partial<Task>, options?: { scrollToComments?: boolean }) => void;
-  openModalScrollToComments: boolean;
-  clearOpenModalScrollToComments: () => void;
-  openModalInFullView: boolean;
-  tasks: Task[];
-  taskById: Map<string, Task>;
-  /** branch → PR ticket id, for the `→ PR-n` pile marker on linked-but-unfolded tickets. */
-  prByBranch: Map<string, string>;
-  /** Branches that currently have a live git worktree (FLUX-516) — powers badges + filter. */
-  worktreeBranches: Set<string>;
-  worktrees: WorktreeInfo[];
-  /** Re-fetch the active worktrees immediately (e.g. right after a detach). */
-  refreshWorktrees: () => void;
-  /** Pending focus for the Changes view (a branch ref) when opened via a board click-through. */
-  changesFocus: string | null;
-  setChangesFocus: (v: string | null) => void;
-  tasksLoading: boolean;
-  taskLiveEvents: Record<string, TaskLiveEvent>;
-  columnLiveEvents: Record<string, ColumnLiveEvent>;
-  refreshTrigger: number;
-  triggerRefresh: () => void;
-  lastRefreshAt: number | null;
-  isWindowVisible: boolean;
-  isConnected: boolean;
-  /** Subscribe to a raw engine SSE event ('activity' | 'progress' | 'taskUpdated' |
-   *  'permission-request' | 'permission-resolved'). Returns an unsubscribe fn — lets chat
-   *  surfaces react to the one shared stream instead of each running their own poller (FLUX-611). */
-  subscribeToEvent: (eventType: string, handler: (data: unknown) => void) => () => void;
-  workspaceConfigured: boolean;
-  workspacePath: string | null;
-  notifyWorkspaceSet: () => void;
-  workspaces: WorkspaceInfo[];
-  switchWorkspace: (path: string) => Promise<void>;
-  refreshWorkspaces: () => void;
-  config: Config | null;
-  saveConfig: (updates: Config) => Promise<void>;
-  readComments: Record<string, string[]>;
-  totalUnreadCount: number;
-  ensureReadStateLoaded: (ticketId: string) => void;
-  markCommentRead: (ticketId: string, commentId: string) => void;
-  markAllCommentsRead: (ticketId: string, commentIds: string[]) => void;
-  theme: AppTheme;
-  setAppTheme: (theme: AppTheme) => void;
-  toggleTheme: () => void;
-  parseErrors: ParseError[];
-  parseErrorsLoading: boolean;
-  notifications: Notification[];
-  notificationUnreadCount: number;
-  refreshNotifications: () => void;
-  restartPending: boolean;
-}
+/**
+ * Public contract of `useApp()` — the union of the data store and the stable
+ * action set. Defined as an intersection so it can never drift from the store
+ * shape (FLUX-625). Subscribe-narrowly via `useAppSelector`/`useAppActions`
+ * instead of `useApp()` to avoid re-rendering on unrelated changes.
+ */
+export type AppState = AppStoreState & AppActions;
 
 // Keep the selected project key in sync with the active workspace's config.
 // If the previous selection is still valid for this workspace, keep it;
@@ -242,8 +141,6 @@ function reconcileProject(prev: string, projects: string[] | undefined): string 
   if (prev && list.includes(prev)) return prev;
   return list[0] || 'PROJECT';
 }
-
-const AppContext = createContext<AppState | undefined>(undefined);
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const initialFilters = getTaskFiltersFromLocation();
@@ -280,7 +177,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
       })
       .catch(() => {});
   }, []);
-  useEffect(() => { refreshWorktrees(); }, [tasks, refreshWorktrees]);
+  // FLUX-627: refetch worktrees only when the SET of task branches actually changes
+  // (a worktree create/detach, or a newly branched ticket) — NOT on every `tasks`
+  // identity churn from an SSE activity/progress tick, which used to storm
+  // /api/worktrees during a live session. Explicit refreshWorktrees() (e.g. after a
+  // detach) still fires immediately via the exposed action.
+  const branchSignature = useMemo(
+    () => Array.from(new Set(tasks.map((t) => t.branch).filter((b): b is string => !!b))).sort().join('|'),
+    [tasks],
+  );
+  useEffect(() => { refreshWorktrees(); }, [branchSignature, refreshWorktrees]);
   // Pending focus (a branch) for the Changes view when navigated from a board click-through.
   const [changesFocus, setChangesFocus] = useState<string | null>(null);
   const taskById = useMemo(() => {
@@ -464,7 +370,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           continue;
         }
 
-        if (buildTaskSignature(previousTask) !== buildTaskSignature(task)) {
+        if (!tasksEqual(previousTask, task)) {
           changed = true;
 
           if (shouldEmitLiveEvents) {
@@ -866,37 +772,40 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!set) return;
       for (const h of set) { try { h(data); } catch { /* isolate subscriber errors */ } }
     };
-    for (const type of ['activity', 'progress', 'taskUpdated', 'permission-request', 'permission-resolved']) {
+    for (const type of ['activity', 'progress', 'taskUpdated', 'permission-request', 'permission-resolved', 'ask-question', 'ask-question-resolved']) {
       es.addEventListener(type, (e: MessageEvent) => {
         try { forward(type, JSON.parse(e.data)); } catch { /* non-JSON payload — skip */ }
       });
     }
     es.addEventListener('activity', (e: MessageEvent) => {
       const { taskId, activity } = JSON.parse(e.data) as { taskId: string; activity: string | null };
-      startTransition(() => {
-        setTasks(prev => prev.map(t =>
-          t.id === taskId
-            ? { ...t, cliSession: t.cliSession ? { ...t.cliSession, currentActivity: activity ?? undefined } : t.cliSession }
-            : t
-        ));
+      // FLUX-626: write to the isolated `liveSessions` slice instead of churning the whole
+      // `tasks` array (which re-rendered the entire board on every activity tick). Cards read
+      // this via `useLiveSession(id)` with a fallback to the polled `cliSession` value.
+      const current = appStore.getState().liveSessions;
+      const prev = current[taskId];
+      appStore.patch({
+        liveSessions: { ...current, [taskId]: { ...prev, currentActivity: activity ?? undefined } },
       });
     });
     es.addEventListener('progress', (e: MessageEvent) => {
       const { taskId, sessionId, timestamp, message } = JSON.parse(e.data) as { taskId: string; sessionId: string; timestamp: string; message: string };
-      startTransition(() => {
-        setTasks(prev => prev.map(t => {
-          if (t.id !== taskId || !t.history) return t;
-          const updatedHistory = t.history.map(entry => {
-            if (entry.type === 'agent_session' && entry.sessionId === sessionId && entry.status === 'active') {
-              return {
-                ...entry,
-                progress: [...(entry.progress ?? []), { timestamp, message }]
-              };
-            }
-            return entry;
-          });
-          return { ...t, history: updatedHistory };
-        }));
+      // FLUX-626: append live progress into the isolated `liveSessions` slice, keyed by
+      // sessionId, instead of rebuilding `task.history` inside the `tasks` array (which
+      // re-rendered the board on every flush). Live progress isn't in the polled payload — the
+      // engine holds it in memory — so consumers merge this slice with the persisted history.
+      const current = appStore.getState().liveSessions;
+      const prev = current[taskId];
+      const prevBySession = prev?.progressBySession ?? {};
+      const prevEntries = prevBySession[sessionId] ?? [];
+      appStore.patch({
+        liveSessions: {
+          ...current,
+          [taskId]: {
+            ...prev,
+            progressBySession: { ...prevBySession, [sessionId]: [...prevEntries, { timestamp, message }] },
+          },
+        },
       });
     });
     es.addEventListener('notification', (e: MessageEvent) => {
@@ -1019,63 +928,101 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }, 0);
   }, [tasks, readComments, currentUser, config]);
 
+  // --- External store plumbing (FLUX-625) ---------------------------------
+  // Stable action delegators read the freshest handler closures from this ref,
+  // so the action set below is built once (never changes identity) while still
+  // invoking up-to-date logic. Action-only consumers therefore never re-render.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const latest = useRef<Record<string, (...args: any[]) => any>>({});
+  latest.current = {
+    setCurrentUser, setCurrentProject, setSearchQuery, setSortOption,
+    setFilterAssignee, setFilterPriority, setFilterTag, setFilterUnreadOnly,
+    setFilterWorktree, clearTaskFilters, setView, setSettingsTab, setModalTask,
+    pushOverlay, popOverlay, closeModal, openTaskModal, openTaskFullView,
+    clearOpenModalScrollToComments, refreshWorktrees, setChangesFocus,
+    triggerRefresh, subscribeToEvent, notifyWorkspaceSet, switchWorkspace,
+    refreshWorkspaces, saveConfig, ensureReadStateLoaded, markCommentRead,
+    markAllCommentsRead, setAppTheme, toggleTheme, refreshNotifications,
+  };
+
+  const actions = useMemo<AppActions>(() => ({
+    setCurrentUser: (v) => latest.current.setCurrentUser(v),
+    setCurrentProject: (v) => latest.current.setCurrentProject(v),
+    setSearchQuery: (v) => latest.current.setSearchQuery(v),
+    setSortOption: (v) => latest.current.setSortOption(v),
+    setFilterAssignee: (v) => latest.current.setFilterAssignee(v),
+    setFilterPriority: (v) => latest.current.setFilterPriority(v),
+    setFilterTag: (v) => latest.current.setFilterTag(v),
+    setFilterUnreadOnly: (v) => latest.current.setFilterUnreadOnly(v),
+    setFilterWorktree: (v) => latest.current.setFilterWorktree(v),
+    clearTaskFilters: () => latest.current.clearTaskFilters(),
+    setView: (v) => latest.current.setView(v),
+    setSettingsTab: (v) => latest.current.setSettingsTab(v),
+    setModalTask: (v) => latest.current.setModalTask(v),
+    pushOverlay: () => latest.current.pushOverlay(),
+    popOverlay: () => latest.current.popOverlay(),
+    closeModal: () => latest.current.closeModal(),
+    openTaskModal: (t) => latest.current.openTaskModal(t),
+    openTaskFullView: (t, o) => latest.current.openTaskFullView(t, o),
+    clearOpenModalScrollToComments: () => latest.current.clearOpenModalScrollToComments(),
+    refreshWorktrees: () => latest.current.refreshWorktrees(),
+    setChangesFocus: (v) => latest.current.setChangesFocus(v),
+    triggerRefresh: () => latest.current.triggerRefresh(),
+    subscribeToEvent: (t, h) => latest.current.subscribeToEvent(t, h),
+    notifyWorkspaceSet: () => latest.current.notifyWorkspaceSet(),
+    switchWorkspace: (p) => latest.current.switchWorkspace(p),
+    refreshWorkspaces: () => latest.current.refreshWorkspaces(),
+    saveConfig: (u) => latest.current.saveConfig(u),
+    ensureReadStateLoaded: (id) => latest.current.ensureReadStateLoaded(id),
+    markCommentRead: (id, cid) => latest.current.markCommentRead(id, cid),
+    markAllCommentsRead: (id, cids) => latest.current.markAllCommentsRead(id, cids),
+    setAppTheme: (t) => latest.current.setAppTheme(t),
+    toggleTheme: () => latest.current.toggleTheme(),
+    refreshNotifications: () => latest.current.refreshNotifications(),
+  }), []);
+
+  // Snapshot mirrored into the external store. Memoized sub-objects (taskById,
+  // prByBranch) and state refs stay stable across renders, so setState's shallow
+  // diff only notifies subscribers whose selected slice actually changed.
+  const snapshot: AppStoreState = {
+    currentUser, currentProject, searchQuery, sortOption,
+    filterAssignee, filterPriority, filterTag, filterUnreadOnly, filterWorktree,
+    view, settingsTab, modalTask, isModalOpen,
+    isOverlayOpen: overlayCount > 0,
+    openModalScrollToComments, openModalInFullView,
+    tasks, taskById, prByBranch, worktreeBranches, worktrees,
+    liveSessions: appStore.getState().liveSessions,
+    changesFocus, tasksLoading, taskLiveEvents, columnLiveEvents,
+    refreshTrigger, lastRefreshAt, isWindowVisible, isConnected,
+    workspaceConfigured, workspacePath, workspaces,
+    config, readComments, totalUnreadCount,
+    theme, parseErrors, parseErrorsLoading,
+    notifications, notificationUnreadCount, restartPending,
+  };
+
+  // Seed the store during the first render, before children mount and subscribe,
+  // so the very first `useAppSelector` read sees correct values (no flash). There
+  // are no listeners yet, so this never notifies.
+  const seededRef = useRef(false);
+  if (!seededRef.current) {
+    appStore.setState(snapshot);
+    seededRef.current = true;
+  }
+
+  // Mirror React state into the store after each commit. The provider re-renders
+  // on any state change (as before), but `children` is a stable element so the
+  // subtree bails out; only store subscribers whose slice changed re-render.
+  useLayoutEffect(() => {
+    appStore.setState(snapshot);
+  });
+
   return (
-    <AppContext.Provider value={{
-      currentUser, setCurrentUser,
-      currentProject, setCurrentProject,
-      searchQuery, setSearchQuery,
-      sortOption, setSortOption,
-      filterAssignee, setFilterAssignee,
-      filterPriority, setFilterPriority,
-      filterTag, setFilterTag,
-      filterUnreadOnly, setFilterUnreadOnly,
-      filterWorktree, setFilterWorktree,
-      clearTaskFilters,
-      view, setView,
-      settingsTab, setSettingsTab,
-      modalTask, isModalOpen,
-      isOverlayOpen: overlayCount > 0,
-      pushOverlay,
-      popOverlay,
-      openTaskModal,
-      openTaskFullView,
-      openModalScrollToComments,
-      clearOpenModalScrollToComments,
-      openModalInFullView,
-      closeModal,
-      setModalTask,
-      tasks,
-      taskById,
-      prByBranch,
-      worktreeBranches,
-      worktrees,
-      refreshWorktrees,
-      changesFocus,
-      setChangesFocus,
-      tasksLoading,
-      taskLiveEvents,
-      columnLiveEvents,
-      refreshTrigger, triggerRefresh,
-      lastRefreshAt,
-      isWindowVisible,
-      isConnected,
-      subscribeToEvent,
-      workspaceConfigured, workspacePath, notifyWorkspaceSet, workspaces, switchWorkspace, refreshWorkspaces,
-      config, saveConfig,
-      readComments, totalUnreadCount, ensureReadStateLoaded, markCommentRead, markAllCommentsRead,
-      theme, setAppTheme, toggleTheme,
-      parseErrors, parseErrorsLoading,
-      notifications, notificationUnreadCount, refreshNotifications,
-      restartPending,
-    }}>
+    <AppActionsContext.Provider value={actions}>
       {children}
-    </AppContext.Provider>
+    </AppActionsContext.Provider>
   );
 }
 
-// eslint-disable-next-line react-refresh/only-export-components -- canonical context hook, idiomatically colocated with its provider and used by 30+ components.
-export function useApp() {
-  const ctx = useContext(AppContext);
-  if (!ctx) throw new Error('useApp must be used within AppProvider');
-  return ctx;
-}
+// `useApp()` (the back-compat shim) is gone — all consumers now subscribe narrowly
+// via `useAppSelector` / `useAppActions` from `./store/useAppSelector` (FLUX-625).
+// `AppState` is retained as the public state+actions contract type.

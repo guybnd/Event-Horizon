@@ -68,7 +68,7 @@ export function CardMetadataRow({ task, isOverlay, c }: { task: Task; isOverlay?
               setTagMenuOpen(false);
             }
           }}
-          className="mb-0.5 text-left font-semibold text-gray-900 transition-colors group-hover:text-primary dark:text-gray-100 text-[13.5px] leading-snug tracking-[-0.01em]"
+          className="mb-0.5 text-left font-semibold text-gray-900 transition-colors group-hover:text-primary dark:text-gray-100 text-[13.5px] leading-snug tracking-[-0.01em] pr-8"
         >
           {visibleTitle}
         </button>

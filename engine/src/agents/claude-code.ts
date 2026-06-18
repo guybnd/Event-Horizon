@@ -10,6 +10,7 @@ import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal, noti
 import { broadcastEvent } from '../events.js';
 import { appendTranscriptLine, appendTranscriptEvent } from '../transcript.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
+import { captureTurnStartState, clearNeedsActionIfSet, flagIfParked } from '../parked-ticket.js';
 import { buildMemberScopeArgs } from '../group.js';
 import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
 import { getModulePromptFragments, getModuleMcpServers, getActiveModules, getWorkspaceMcpServers } from '../modules.js';
@@ -26,7 +27,7 @@ function checkBinaryInstalled(binaryName: string): void {
   }
 }
 
-function cleanChildEnv(): NodeJS.ProcessEnv {
+function cleanChildEnv(conversationId?: string): NodeJS.ProcessEnv {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
     if (key.toUpperCase() === 'NODE_OPTIONS') delete env[key];
@@ -36,6 +37,11 @@ function cleanChildEnv(): NodeJS.ProcessEnv {
   // Pin the canonical ticket store so a worktree agent's event-horizon MCP binds
   // to the real workspace, not its cwd worktree (FLUX-516).
   if (canonicalWorkspaceRoot) env.EH_CANONICAL_WORKSPACE = canonicalWorkspaceRoot;
+  // FLUX-662: tag the conversation so the event-horizon MCP tools (permission_prompt,
+  // ask_user_question) can route their parked request back to the originating chat/board
+  // surface in the portal. Per-ticket sessions pass the ticket id; the board passes its
+  // sentinel. Absent (e.g. a delegated subagent) → unrouted, handled by the global overlay.
+  if (conversationId) env.EH_CONVERSATION_ID = conversationId;
   return env;
 }
 
@@ -268,12 +274,18 @@ export function buildInitialPrompt(task: any, appendPrompt: string, opts?: { dif
       switch (opts.phase) {
         case 'chat':
           // FLUX-602: free-form conversational session bound to a ticket. The user's
-          // message arrives via appendPrompt above — do NOT inject a mission. Discourage
-          // unsolicited state changes; the user drives.
+          // message arrives via appendPrompt above — do NOT inject a mission.
+          // FLUX-651: but if the user asks for WORK (groom/implement/review/fix) and you DO it,
+          // you must end the turn on a board action — never finish work and just narrate it.
           return `## Conversational session\n\n` +
             `This is a free-form chat about ticket ${task.id}. Respond conversationally to the user's message above — answer questions, discuss, and help.\n` +
-            `Do NOT change the ticket status, edit files, commit, or take other irreversible actions unless the user explicitly asks. ` +
-            `Read-only context tools (get_ticket, list_tickets, get_board_config) and add_comment / log_progress are fine when they help.\n\n` +
+            `For pure discussion or Q&A, do NOT change the ticket status, edit files, or commit unless asked — the user drives. Read-only tools (get_ticket, list_tickets, get_board_config) and add_comment / log_progress are always fine.\n\n` +
+            `END-OF-TURN ACTION CONTRACT (FLUX-651): if in THIS turn you actually performed grooming, implementation, or review work on the ticket, you MUST end the turn by taking the board action that reflects the outcome — do not finish the work and merely summarize it in chat:\n` +
+            `- Groomed it → change_status to "Todo" (or "Require Input" with your question).\n` +
+            `- Implemented it → change_status to "${readyStatus}" with a completion summary (or "Require Input" if blocked).\n` +
+            `- Reviewed it → change_status to "${readyStatus}", or back to "In Progress" with what to fix, or create_subtask for follow-ups, or "Require Input".\n` +
+            `Leaving the ticket parked in a working status with only a chat summary is a defect: the board flags it "Needs Action" and the user is notified. If you genuinely cannot decide, that itself is a "Require Input" — raise it, don't sit on it.\n\n` +
+            `To ask the user a structured question mid-turn, call the ask_user_question tool — it shows an interactive picker in this chat and returns their choice so you continue immediately. Never assume when a quick question would resolve ambiguity; ask.\n\n` +
             mcpNote;
         case 'grooming':
           return `## Your Mission: GROOM this ticket\n\n` +
@@ -511,6 +523,13 @@ function permissionArgs(session: CliSessionRecord): string[] {
   return [];
 }
 
+// FLUX-662: the native AskUserQuestion tool can't be fulfilled in `claude -p` print mode (no
+// interactive TTY surface — the harness silently denies it, degrading the agent to prose).
+// Disallow it everywhere so it can never be reached; agents ask via the event-horizon
+// `ask_user_question` MCP tool instead, which surfaces a real portal picker. (Flag verified
+// against the installed CLI: `--disallowedTools, --disallowed-tools <tools...>`.)
+const DISALLOW_NATIVE_ASK = ['--disallowed-tools', 'AskUserQuestion'];
+
 export async function startCliSession(session: CliSessionRecord, task: any, appendPrompt: string, effortOverrideRaw: string, workspaceRoot: string) {
   const framework = session.framework;
   const binaryName = framework === 'claude' ? 'claude' : 'copilot';
@@ -536,6 +555,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     '-p', initialPrompt,
     '--output-format', 'stream-json',
     '--verbose',
+    ...DISALLOW_NATIVE_ASK,
     ...permissionArgs(session),
     // Multi-repo group: put every checked-out member repo in scope (no-op single-repo).
     ...buildMemberScopeArgs(),
@@ -580,14 +600,14 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     console.log(`[${id}] Prompt length: ${initialPrompt.length} chars`);
     proc = spawn(exePath, claudeArgs, {
       cwd: executionRoot,
-      env: cleanChildEnv(),
+      env: cleanChildEnv(id),
       stdio: 'pipe',
       windowsHide: true,
     });
   } else {
     proc = spawn(binaryName, claudeArgs, {
       cwd: executionRoot,
-      env: cleanChildEnv(),
+      env: cleanChildEnv(id),
       stdio: 'pipe',
     });
   }
@@ -595,6 +615,10 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   session.pid = proc.pid;
   session.status = 'running';
   session.args = claudeArgs;
+  // FLUX-651: snapshot the ticket state at turn start; clear any stale "parked" flag now that
+  // work is (re)starting so the board stops showing Needs Action mid-turn.
+  captureTurnStartState(session, id);
+  void clearNeedsActionIfSet(id);
 
   const commitPending = attachStdoutProcessing(proc, session, id);
 
@@ -730,6 +754,9 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
           sessionEntry.progress = session.sessionHistoryEntry.progress || [];
         });
       }
+      // FLUX-651: a chat turn that ends without the agent moving the ticket = "sat on its
+      // hands". Don't flag a turn the agent itself paused for Require Input (pausedForInput).
+      if (!session.pausedForInput) await flagIfParked(session, id);
       broadcastEvent('taskUpdated', { id });
       return;
     }
@@ -793,6 +820,9 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     if (finalStatus === 'completed') {
       checkFrameworkHealth(session.framework).catch(() => {});
       checkSkillStaleness(session.framework).catch(() => {});
+      // FLUX-651: a phase session that ended cleanly but left the ticket in a working status
+      // without taking a board action gets flagged Needs Action (surface, don't auto-resume).
+      await flagIfParked(session, id);
     }
 
     // Notify delegation awaiters (supervisor pattern).
@@ -853,6 +883,9 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   session.lastInputAt = inputAt;
   session.status = 'running';
   session.pausedForInput = false;
+  // FLUX-651: new turn — snapshot ticket state and drop any stale "parked" flag.
+  captureTurnStartState(session, id);
+  void clearNeedsActionIfSet(id);
 
   // FLUX-602: record the user's turn in the durable transcript (raw tier).
   appendTranscriptEvent(id, { type: 'user', text: message, timestamp: inputAt });
@@ -868,8 +901,8 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   const moduleMcpArgs = buildSpawnMcpConfigArgs(session.phase, Array.isArray(task?.tags) ? task.tags : undefined);
   const meArgs = modelEffortArgs(session);
   const resumeArgs = session.claudeSessionId
-    ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', ...meArgs, ...permissionArgs(session), ...memberScopeArgs, ...moduleMcpArgs]
-    : ['-p', safeMessage, '--output-format', 'stream-json', '--verbose', ...meArgs, ...permissionArgs(session), ...memberScopeArgs, ...moduleMcpArgs];
+    ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...memberScopeArgs, ...moduleMcpArgs]
+    : ['-p', safeMessage, '--output-format', 'stream-json', '--verbose', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...memberScopeArgs, ...moduleMcpArgs];
 
   let replyProc: ReturnType<typeof spawn>;
   if (process.platform === 'win32') {
@@ -892,14 +925,14 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     console.log(`[${id}] Windows reply spawn: ${exePath} --resume ${session.claudeSessionId || '(new)'}`);
     replyProc = spawn(exePath, resumeArgs, {
       cwd: executionRoot,
-      env: cleanChildEnv(),
+      env: cleanChildEnv(id),
       stdio: 'pipe',
       windowsHide: true,
     });
   } else {
     replyProc = spawn(binaryName, resumeArgs, {
       cwd: executionRoot,
-      env: cleanChildEnv(),
+      env: cleanChildEnv(id),
       stdio: 'pipe',
       windowsHide: true,
     });
@@ -928,6 +961,10 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     commitReplyPending();
     flushSessionOutput(session, true);
     session.status = 'waiting-input';
+    // FLUX-651: resumed chat turn ended — flag if the agent parked without acting. Skip when
+    // it paused itself for Require Input (that IS an action and keeps the session resumable).
+    if (!session.pausedForInput) await flagIfParked(session, id);
+    broadcastEvent('taskUpdated', { id });
   });
 }
 
@@ -955,12 +992,13 @@ function spawnClaudeForBoard(claudeArgs: string[], executionRoot: string): Retur
     if (!exePath) {
       throw new Error('claude.exe not found. Please install @anthropic-ai/claude-code globally: npm install -g @anthropic-ai/claude-code');
     }
-    return spawn(exePath, claudeArgs, { cwd: executionRoot, env: cleanChildEnv(), stdio: 'pipe', windowsHide: true });
+    return spawn(exePath, claudeArgs, { cwd: executionRoot, env: cleanChildEnv(BOARD_CONVERSATION_ID), stdio: 'pipe', windowsHide: true });
   }
-  return spawn('claude', claudeArgs, { cwd: executionRoot, env: cleanChildEnv(), stdio: 'pipe', windowsHide: true });
+  return spawn('claude', claudeArgs, { cwd: executionRoot, env: cleanChildEnv(BOARD_CONVERSATION_ID), stdio: 'pipe', windowsHide: true });
 }
 
 function buildBoardPrompt(firstMessage: string): string {
+  const key = configCache.projects?.[0] || 'PROJECT';
   return [
     'You are the Event Horizon board orchestrator — a persistent chat for the whole board, not tied to any single ticket. You are powerful: you have the full "event-horizon" MCP toolset (list/get/create/update tickets, change_status, branches, comments, …) plus file reading, editing, bash, and subagents. Use whatever the task genuinely calls for.',
     '',
@@ -968,6 +1006,8 @@ function buildBoardPrompt(firstMessage: string): string {
     'For board and ticket actions, prefer the event-horizon MCP tools over editing ticket files by hand.',
     'When the user asks to GROOM, IMPLEMENT, REVIEW, or FINALIZE a specific ticket, DISPATCH it rather than doing that ticket\'s work here: call start_session(ticketId, phase) to launch the phase session on that ticket (it runs in the ticket\'s own scope and returns immediately), then tell the user to open that ticket\'s chat to drive it.',
     'Propose and CONFIRM before anything destructive or irreversible (status changes, deletions). Don\'t silently restructure the board.',
+    'To ask the user a structured question, call the ask_user_question tool — it shows an interactive picker in this chat and returns their choice so you continue the same turn. Never assume when a quick question would resolve ambiguity; ask.',
+    `When you reference a ticket in prose, write it as \`${key}-123 (short title)\` the first time it appears — the bare id is rendered as an interactive chip, but spelling out the title keeps the message readable before the reader hovers.`,
     'You run at the workspace root, with the whole board in scope.',
     '',
     firstMessage,
@@ -990,10 +1030,23 @@ function wireBoardProc(proc: ReturnType<typeof spawn>, session: CliSessionRecord
     flushSessionOutput(session, true);
     console.error('[board] spawn error:', error.message);
   });
-  proc.on('exit', () => {
+  proc.on('exit', (code) => {
     commitPending();
     flushSessionOutput(session, true);
-    onExitStatus();
+    // Only a CLEAN turn becomes the resumable parked state (waiting-input). A turn that the
+    // user stopped, that exited non-zero, or that died before `claude` emitted its init message
+    // (so we never captured a claudeSessionId) must end TERMINAL — otherwise it sits at
+    // waiting-input forever: unresumable (no session id) yet "active" enough to 409 every new
+    // start, permanently wedging the orchestrator (FLUX-667).
+    if (session.requestedStop) {
+      session.status = 'cancelled';
+      session.endedAt = new Date().toISOString();
+    } else if (code !== 0 || !session.claudeSessionId) {
+      session.status = 'failed';
+      session.endedAt = new Date().toISOString();
+    } else {
+      onExitStatus();
+    }
     broadcastEvent('taskUpdated', { id: BOARD_CONVERSATION_ID });
   });
 }
@@ -1007,6 +1060,7 @@ export async function startBoardSession(session: CliSessionRecord, firstMessage:
     '--verbose',
     // medium by default; the chat picker (FLUX-604) overrides via session.model/effortOverride.
     ...modelEffortArgs(session, 'medium'),
+    ...DISALLOW_NATIVE_ASK,
     ...permissionArgs(session),
     ...boardMcpArgs(),
   ];
@@ -1031,8 +1085,8 @@ export async function sendBoardInput(session: CliSessionRecord, message: string,
   const safeMessage = message.replace(/\0/g, '');
   const meArgs = modelEffortArgs(session, 'medium');
   const claudeArgs = session.claudeSessionId
-    ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', ...meArgs, ...permissionArgs(session), ...boardMcpArgs()]
-    : ['-p', safeMessage, '--output-format', 'stream-json', '--verbose', ...meArgs, ...permissionArgs(session), ...boardMcpArgs()];
+    ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...boardMcpArgs()]
+    : ['-p', safeMessage, '--output-format', 'stream-json', '--verbose', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...boardMcpArgs()];
   session.args = claudeArgs;
   const proc = spawnClaudeForBoard(claudeArgs, session.executionRoot ?? workspaceRoot);
   wireBoardProc(proc, session, () => { session.status = 'waiting-input'; });

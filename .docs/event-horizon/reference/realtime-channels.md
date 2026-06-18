@@ -70,6 +70,8 @@ Currently broadcast events:
 | `taskUpdated` | every MCP mutation tool | **no** — emitted but the portal does not subscribe |
 | `permission-request` | `permission-prompts.ts` (gated confirm tier, FLUX-605) | yes — adds a pending approval to the chat's Allow/Deny prompt (`ApprovalPrompts`). Payload: `{ id, toolName, input, conversationId, createdAt }`. |
 | `permission-resolved` | `permission-prompts.ts` (on resolve **or** 120s timeout) | yes — clears the resolved/expired approval from the prompt. Payload: `{ id }`. |
+| `ask-question` | `ask-questions.ts` (agent calls `ask_user_question`, FLUX-662) | yes — renders an interactive picker inline in the originating chat (`ChatQuestionPicker`, routed by `conversationId`) or a global overlay (`QuestionPrompts`) when unrouted. Payload: `{ id, questions, conversationId, createdAt }`. |
+| `ask-question-resolved` | `ask-questions.ts` (on answer **or** 4min timeout) | yes — clears the answered/expired question from the picker. Payload: `{ id }`. |
 
 **Key consequence:** ticket-state freshness on the portal does *not* come from SSE today. It comes from polling (Channel 3). SSE is only used for high-frequency agent activity that would be wasteful to poll for.
 

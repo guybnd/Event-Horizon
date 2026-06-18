@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Check, ChevronDown, Settings2 } from 'lucide-react';
-import { useApp } from '../AppContext';
+import { useAppSelector, useAppActions } from '../store/useAppSelector';
 
 function initialsFor(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -13,7 +13,9 @@ function initialsFor(name: string): string {
 // configured for the workspace (Settings → Workspace → Users & Agents); it does
 // not create them. Managing the roster is a deliberate workspace setting.
 export function UserMenu() {
-  const { currentUser, setCurrentUser, config, setView, setSettingsTab } = useApp();
+  const { setCurrentUser, setView, setSettingsTab } = useAppActions();
+  const currentUser = useAppSelector(s => s.currentUser);
+  const config = useAppSelector(s => s.config);
   const [isOpen, setIsOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 

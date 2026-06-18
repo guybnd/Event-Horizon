@@ -5,7 +5,7 @@ import os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { createTaskWorktree, listTaskWorktrees } from './task-worktree.js';
-import { buildDiffOverview, diffFileContent, computeCollisions, type DiffGroup } from './diff-aggregator.js';
+import { buildDiffOverview, diffFileContent, diffFilesForBranch, computeCollisions, type DiffGroup } from './diff-aggregator.js';
 
 const execFileAsync = promisify(execFile);
 const git = (cwd: string, args: string[]) => execFileAsync('git', args, { cwd, windowsHide: true });
@@ -115,6 +115,47 @@ describe('diff-aggregator', () => {
     await fs.writeFile(path.join(repo, 'README.md'), '# root edit\n', 'utf8');
     const d = await diffFileContent(repo, 'main', 'README.md');
     expect(d).toContain('# root edit');
+  });
+
+  it('diffFilesForBranch returns a worktree branch’s committed + uncommitted + untracked changes (FLUX-615)', async () => {
+    const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1-x', { linkDependencies: false });
+    await fs.writeFile(path.join(wt, 'committed.txt'), 'a\n', 'utf8');
+    await git(wt, ['add', 'committed.txt']);
+    await git(wt, ['commit', '-m', 'add committed']);
+    await fs.writeFile(path.join(wt, 'README.md'), '# changed\n', 'utf8');
+    await fs.writeFile(path.join(wt, 'untracked.txt'), 'u\n', 'utf8');
+
+    const summary = await diffFilesForBranch(repo, 'flux/FLUX-1-x');
+    expect(summary.branch).toBe('flux/FLUX-1-x');
+    // git reports the worktree path in a normalized form (slashes / long names differ from
+    // createTaskWorktree's return on Windows), so assert it resolves rather than string-equals.
+    expect(summary.worktree).toBeTruthy();
+    expect(path.basename(summary.worktree!)).toBe(path.basename(wt));
+    const byFile = Object.fromEntries(summary.files.map((f) => [f.file, f.status]));
+    expect(byFile['committed.txt']).toBe('added');
+    expect(byFile['README.md']).toBe('modified');
+    expect(byFile['untracked.txt']).toBe('untracked');
+  });
+
+  it('diffFilesForBranch falls back to the committed range for a branch with no worktree (FLUX-615)', async () => {
+    // A plain branch (no task worktree): commit a file on it, then return to master.
+    await git(repo, ['checkout', '-b', 'feature/no-wt']);
+    await fs.writeFile(path.join(repo, 'feat.txt'), 'hello\n', 'utf8');
+    await git(repo, ['add', 'feat.txt']);
+    await git(repo, ['commit', '-m', 'feat']);
+    await git(repo, ['checkout', 'master']);
+
+    const summary = await diffFilesForBranch(repo, 'feature/no-wt');
+    expect(summary.worktree).toBeNull();
+    expect(summary.base).toContain('..feature/no-wt');
+    const byFile = Object.fromEntries(summary.files.map((f) => [f.file, f.status]));
+    expect(byFile['feat.txt']).toBe('added');
+  });
+
+  it('diffFilesForBranch returns an empty summary for an unknown branch (FLUX-615)', async () => {
+    const summary = await diffFilesForBranch(repo, 'flux/does-not-exist');
+    expect(summary.worktree).toBeNull();
+    expect(summary.files).toEqual([]);
   });
 
   it('computeCollisions lists only multi-group files and annotates collidesWith', () => {

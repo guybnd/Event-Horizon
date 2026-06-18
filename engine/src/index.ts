@@ -24,11 +24,12 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 import { requireWorkspace } from './middleware.js';
 import { workspaceRoot, loadAppSettings, getCliWorkspace, resolvePortalDist, autoRegisterWorkspace } from './workspace.js';
-import { isPkg, isSea, isPackaged, ensureSeaAssetsExtracted, getSeaAsset } from './packaged-mode.js';
+import { isPkg, isSea, isPackaged, ensureSeaAssetsExtracted, getSeaAsset, setEnginePort } from './packaged-mode.js';
 import { migrateFromLegacy, getBootStatus } from './global-settings.js';
 import { activateWorkspace, tasksCache } from './task-store.js';
 import { stopAllCliSessions, setAutoRestartCallback, getAllActiveSessions } from './session-store.js';
 import { requestApproval, resolveApproval, listPendingApprovals } from './permission-prompts.js';
+import { requestAnswer, resolveAnswer, listPendingQuestions } from './ask-questions.js';
 import { shutdownSharedServers } from './shared-mcp-server.js';
 import { broadcastEvent } from './events.js';
 
@@ -71,6 +72,29 @@ function isValidWorkspaceRoot(dir: string): boolean {
 
 const app = express();
 app.use(cors());
+
+// ─── MCP over HTTP (FLUX-645) ───────────────────────────────────────────────────
+// Serve the Event Horizon MCP server in-process over loopback so every Claude Code session
+// — main checkout or an `.eh-worktrees/*` worktree — connects to ONE URL and shares this
+// engine's task-store cache + watchers (no per-session stdio process). Registered BEFORE
+// express.json so the raw JSON-RPC request stream reaches the MCP transport unparsed —
+// express.json would otherwise consume the body and the transport would hang. The handler
+// lazily loads the MCP module (keeping the SDK out of the normal-mode path and resolving the
+// SEA-extracted asset) and delegates per-session transport routing to it.
+const handleMcp = (req: express.Request, res: express.Response) => {
+  loadMcpModule()
+    .then(({ handleMcpHttpRequest }) => handleMcpHttpRequest(req, res))
+    .catch((err) => {
+      console.error('[mcp-http] request failed:', err);
+      if (!res.headersSent) {
+        res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal error' }, id: null });
+      }
+    });
+};
+app.post('/mcp', handleMcp);
+app.get('/mcp', handleMcp);
+app.delete('/mcp', handleMcp);
+
 app.use(express.json({ limit: '10mb' }));
 
 // ─── API routes ───────────────────────────────────────────────────────────────
@@ -134,6 +158,28 @@ app.post('/api/board/permission-resolve', requireWorkspace, (req, res) => {
 });
 app.get('/api/board/permission-pending', requireWorkspace, (_req, res) => {
   res.json({ pending: listPendingApprovals() });
+});
+
+// FLUX-662: structured-question round-trip. ask_user_question (MCP) posts a request that
+// parks until the user answers via the portal picker, or 4min timeout → unanswered sentinel.
+app.post('/api/board/ask-question', requireWorkspace, async (req, res) => {
+  const questions = Array.isArray(req.body?.questions) ? req.body.questions : [];
+  const conversationId = typeof req.body?.conversationId === 'string' ? req.body.conversationId : null;
+  if (questions.length === 0) {
+    res.status(400).json({ error: 'questions[] is required' });
+    return;
+  }
+  const result = await requestAnswer(questions, conversationId);
+  res.json(result);
+});
+app.post('/api/board/ask-question/:id/answer', requireWorkspace, (req, res) => {
+  const id = String(req.params.id || '');
+  const answers = req.body?.answers && typeof req.body.answers === 'object' ? req.body.answers : {};
+  const notes = typeof req.body?.notes === 'string' && req.body.notes.trim() ? req.body.notes.trim() : undefined;
+  res.json({ ok: resolveAnswer(id, { answers, notes }) });
+});
+app.get('/api/board/pending-questions', requireWorkspace, (_req, res) => {
+  res.json({ pending: listPendingQuestions() });
 });
 
 let ghAuthAvailable: boolean | null = null;
@@ -329,6 +375,7 @@ async function startServer() {
   }
 
   const PORT = await readPortConfig();
+  setEnginePort(PORT); // FLUX-645: the installer renders this port into .mcp.json's /mcp URL.
 
   const server = app.listen(PORT, async () => {
     console.log(`Event Horizon Engine running on port ${PORT}`);
@@ -446,28 +493,36 @@ process.on('unhandledRejection', (reason, promise) => {
   logCrash('unhandledRejection', reason);
 });
 
+// mcp-server.js is loaded lazily so its module-level code (and the MCP SDK) never runs in
+// normal server mode unless /mcp is actually hit.  In SEA mode it's embedded in the binary
+// and extracted to tmpdir on first run; we then load it from disk.  The SEA global require()
+// is Node's embedderRequire, which only resolves built-in modules — it CANNOT load a file
+// path.  createRequire() gives us a real filesystem-capable require rooted at the extract dir.
+// Shared by the `--mcp` headless stdio entry (startMcpServer) and the in-process
+// Streamable-HTTP mount (handleMcpHttpRequest, FLUX-645); the module is loaded at most once.
+let _mcpModulePromise: Promise<typeof import('./mcp-server.js')> | null = null;
+function loadMcpModule(): Promise<typeof import('./mcp-server.js')> {
+  if (!_mcpModulePromise) {
+    _mcpModulePromise = (async () => {
+      if (isSea) {
+        const extractDir = await ensureSeaAssetsExtracted();
+        const { createRequire } = await import('node:module');
+        const seaRequire = createRequire(path.join(extractDir, 'mcp-server.js'));
+        return seaRequire(path.join(extractDir, 'mcp-server.js')) as typeof import('./mcp-server.js');
+      }
+      return import('./mcp-server.js');
+    })();
+  }
+  return _mcpModulePromise;
+}
+
 if (MCP_MODE) {
-  // mcp-server.js is loaded lazily so its module-level code (and the MCP SDK)
-  // never runs in normal server mode.  In SEA mode it's embedded in the binary
-  // and extracted to tmpdir on first run; we then load it from disk.  The SEA
-  // global require() is Node's embedderRequire, which only resolves built-in
-  // modules — it CANNOT load a file path.  createRequire() gives us a real
-  // filesystem-capable require rooted at the extract dir.
-  (async () => {
-    if (isSea) {
-      const extractDir = await ensureSeaAssetsExtracted();
-      const { createRequire } = await import('node:module');
-      const seaRequire = createRequire(path.join(extractDir, 'mcp-server.js'));
-      const { startMcpServer } = seaRequire(path.join(extractDir, 'mcp-server.js')) as typeof import('./mcp-server.js');
-      startMcpServer();
-    } else {
-      const { startMcpServer } = await import('./mcp-server.js');
-      startMcpServer();
-    }
-  })().catch(err => {
-    console.error('MCP server failed:', err);
-    process.exit(1);
-  });
+  loadMcpModule()
+    .then(({ startMcpServer }) => startMcpServer())
+    .catch(err => {
+      console.error('MCP server failed:', err);
+      process.exit(1);
+    });
 } else {
   startServer().catch(err => {
     console.error('Failed to start Event Horizon:', err);

@@ -1,12 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Sparkles, MessageSquare, Minus, X, History, Square, GitBranch, FolderGit2, GitPullRequest } from 'lucide-react';
-import { useApp } from '../AppContext';
+import { Sparkles, MessageSquare, Minus, X, History, Square, RotateCcw, GitBranch, FolderGit2, GitPullRequest, ListChecks, Loader2 } from 'lucide-react';
+import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { useChatSession } from '../hooks/useChatSession';
 import { ChatView } from './task-modal/ChatView';
+import { ChatDiffPanel } from './task-modal/ChatDiffPanel';
+import { TicketContextCard, BoardSnapshotCard } from './task-modal/chatContext';
+import { parseQuickReplies } from './task-modal/chatQuickReplies';
 import { StatusBadge } from './StatusBadge';
 import { TicketActionBar } from './TicketActionBar';
+import { ChatQuestionPicker } from './AskQuestionPrompts';
 import { useDock } from './DockProvider';
-import { BOARD_CONVERSATION_ID, fetchTaskCliSession, stopTaskCliSession, fetchBranchStatus, type BranchStatus } from '../api';
+import { getStatusTint } from '../statusStyles';
+import { getRequireInputStatus } from '../workflow';
+import { BOARD_CONVERSATION_ID, fetchTaskCliSession, stopTaskCliSession, clearTaskTranscript, fetchBranchStatus, type BranchStatus } from '../api';
 import type { CliSessionStatus, CliSessionSummary, Task } from '../types';
 
 /**
@@ -100,10 +106,12 @@ function splitId(id: string): { prefix: string; short: string } {
 }
 
 export function ChatDock() {
-  const { tasks, subscribeToEvent } = useApp();
+  const { subscribeToEvent } = useAppActions();
+  const tasks = useAppSelector((s) => s.tasks);
+  const config = useAppSelector((s) => s.config);
   // Window/open state lives in the app-root DockProvider (FLUX-603) so a card can drive it
   // and it survives view switches. `anchors` records where each window should spawn from.
-  const { open, acked, dismissed, manuallyOpened, anchors, toggle, closeCard, reopenFromHistory } = useDock();
+  const { open, acked, dismissed, manuallyOpened, anchors, drafts, toggle, closeCard, reopenFromHistory, setDraft } = useDock();
   const [showHistory, setShowHistory] = useState(false);
   const [boardSession, setBoardSession] = useState<CliSessionSummary | null>(null);
   // Right-click context menu (anchored at the cursor) for a single tab at a time.
@@ -118,6 +126,24 @@ export function ChatDock() {
     const onResize = () => setViewportW(window.innerWidth);
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  // Mouse wheel over the tab strip scrolls it left/right (the strip is one row with
+  // overflow-x). A non-passive listener is required so we can preventDefault and stop the
+  // page from scrolling vertically instead. Only hijacked when there's real horizontal
+  // overflow to move.
+  const stripRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = stripRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      const delta = e.deltaY !== 0 ? e.deltaY : e.deltaX;
+      if (delta === 0 || el.scrollWidth <= el.clientWidth) return;
+      el.scrollLeft += delta;
+      e.preventDefault();
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
   }, []);
 
   // Orchestrator has no task in the board list, so track its session here (the pinned card
@@ -177,6 +203,13 @@ export function ChatDock() {
       ((t.cliSession && SURFACE_STATUSES.includes(t.cliSession.status)) || manuallyOpened.includes(t.id)),
   );
 
+  // While a tab's window is OPEN, freeze its sort weight so opening a card never makes it
+  // jump position. Without this, clicking a `finished`/`needs-input` card acks it, which
+  // demotes its weight and slides it rightward "out from under you". We keep recording each
+  // closed tab's live weight every render; an open tab reuses the weight it had just before
+  // it was opened, and only re-sorts once it's minimized (sent away).
+  const frozenWeightRef = useRef<Map<string, number>>(new Map());
+
   // Attention-first ordering: needs-input → error → working → finished → available → idle,
   // so the tabs that want you sit at the front. Ties keep a stable id order.
   const sortedTickets = useMemo(() => {
@@ -188,12 +221,27 @@ export function ChatDock() {
       available: 4,
       idle: 5,
     };
+    const frozen = frozenWeightRef.current;
+    const present = new Set(activeTickets.map((t) => t.id));
+    for (const key of [...frozen.keys()]) if (!present.has(key)) frozen.delete(key);
+    // Effective weight: closed tabs use their live weight (and keep it recorded); an open tab
+    // reuses the weight it carried just before opening, so it holds its spot until minimized.
+    const eff = new Map<string, number>();
+    for (const t of activeTickets) {
+      const live = weight[cardState(t.cliSession?.status, acked.includes(t.id), t.status === 'Require Input')];
+      if (open.includes(t.id)) {
+        eff.set(t.id, frozen.has(t.id) ? (frozen.get(t.id) as number) : live);
+      } else {
+        frozen.set(t.id, live);
+        eff.set(t.id, live);
+      }
+    }
     return [...activeTickets].sort((a, b) => {
-      const wa = weight[cardState(a.cliSession?.status, acked.includes(a.id), a.status === 'Require Input')];
-      const wb = weight[cardState(b.cliSession?.status, acked.includes(b.id), b.status === 'Require Input')];
+      const wa = eff.get(a.id) as number;
+      const wb = eff.get(b.id) as number;
       return wa !== wb ? wa - wb : a.id.localeCompare(b.id);
     });
-  }, [activeTickets, acked]);
+  }, [activeTickets, acked, open]);
 
   // Adaptive tab sizing (FLUX-603): give each ticket tab a slice of a horizontal budget so
   // the taskbar stays one row. With room, a tab shows `ID + title`; as tabs multiply the
@@ -233,6 +281,21 @@ export function ChatDock() {
     }
   }
 
+  // Reset a conversation (the orchestrator's analog of "close"): stop any live turn, then wipe
+  // its transcript. The engine broadcasts `taskUpdated`, so an open window refetches to empty.
+  async function resetSession(id: string) {
+    try {
+      await stopTaskCliSession(id);
+    } catch {
+      /* no live session to stop */
+    }
+    try {
+      await clearTaskTranscript(id);
+    } catch {
+      /* surfaced in-window via useChatSession.reset; here it's best-effort */
+    }
+  }
+
   // Reopen from History also closes the popover (window/open state is owned by the provider).
   function handleReopen(id: string, from?: HTMLElement | null) {
     reopenFromHistory(id, from);
@@ -250,7 +313,10 @@ export function ChatDock() {
           anchorX={anchors[id]}
           working={statusOf.get(id) === 'running'}
           activity={activityOf(id)}
+          draft={drafts[id] ?? ''}
+          onDraftChange={(t) => setDraft(id, t)}
           onMinimize={() => toggle(id)}
+          onClose={id === BOARD_CONVERSATION_ID ? undefined : () => closeCard(id)}
         />
       ))}
 
@@ -275,7 +341,7 @@ export function ChatDock() {
           <div className="h-7 w-px bg-[var(--eh-border)]" aria-hidden="true" />
         )}
 
-        <div className="flex items-center gap-1.5 overflow-x-auto px-1.5 py-2 -mx-1.5 -my-2">
+        <div ref={stripRef} className="flex items-center gap-1.5 overflow-x-auto px-1.5 py-2 -mx-1.5 -my-2">
           {sortedTickets.map((t) => (
             <ChatTab
               key={t.id}
@@ -284,6 +350,7 @@ export function ChatDock() {
               orchestrator={false}
               open={open.includes(t.id)}
               state={cardState(t.cliSession?.status, acked.includes(t.id), t.status === 'Require Input')}
+              statusTint={getStatusTint(config, t.status)}
               activity={t.cliSession?.currentActivity ?? null}
               unread={unreadOf(t.id)}
               titleWidth={titleWidth}
@@ -349,12 +416,19 @@ export function ChatDock() {
           isOpen={open.includes(menu.id)}
           isWorking={statusOf.get(menu.id) === 'running'}
           canClose={menu.id !== BOARD_CONVERSATION_ID}
+          canReset={menu.id === BOARD_CONVERSATION_ID}
           onToggle={() => {
             toggle(menu.id);
             setMenu(null);
           }}
           onStop={() => {
             void stopSession(menu.id);
+            setMenu(null);
+          }}
+          onReset={() => {
+            if (window.confirm('Reset the orchestrator conversation? This clears its chat history.')) {
+              void resetSession(menu.id);
+            }
             setMenu(null);
           }}
           onCloseCard={() => {
@@ -368,6 +442,23 @@ export function ChatDock() {
   );
 }
 
+/** Tiny, unobtrusive "thinking" indicator — three softly pulsing dots that show an agent is
+ *  ticking away without stealing the tab's label. Inherits the tab's text color (`bg-current`)
+ *  so it reads on both the blue orchestrator tab and the light/dark ticket tabs. */
+function ThinkingDots() {
+  return (
+    <span className="flex flex-shrink-0 items-center gap-[3px] pl-0.5" aria-hidden="true">
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          className="eh-thinking-dot h-1 w-1 rounded-full bg-current"
+          style={{ animationDelay: `${i * 0.18}s` }}
+        />
+      ))}
+    </span>
+  );
+}
+
 function ChatTab({
   id,
   label,
@@ -375,6 +466,7 @@ function ChatTab({
   orchestrator,
   open,
   state,
+  statusTint,
   activity,
   unread = false,
   titleWidth = 0,
@@ -391,6 +483,9 @@ function ChatTab({
   orchestrator: boolean;
   open: boolean;
   state: CardState;
+  /** FLUX-648: ticket board-status tint for the tab surface (ticket tabs only). The live
+   *  session-state dot/glow/badge stay layered on top as the fast-changing overlay. */
+  statusTint?: { rgb: string };
   /** Live activity ("Editing…") — shown in place of the title while working. */
   activity?: string | null;
   /** Agent produced output this chat hasn't shown the user yet (closed tabs only). */
@@ -411,14 +506,33 @@ function ChatTab({
 
   // Horizontal "chrome tab" — short, flat, label-bearing (vs the old square card).
   const base =
-    'group relative flex h-9 flex-shrink-0 items-center gap-1.5 rounded-lg border pl-2 pr-2.5 text-left shadow-sm transition-colors ';
+    'group relative flex h-9 flex-shrink-0 items-center gap-1.5 rounded-lg border pl-2 pr-2.5 text-left shadow-sm transition-all duration-150 ';
+  // FLUX-648: ticket tabs are tinted by their board status (the slow-changing axis) via an
+  // inline rgba fill/border built from the same status palette the board uses. The live
+  // session-state dot/glow/badge stay layered on top as the fast-changing overlay. Open tabs
+  // get a stronger wash so the focused chat still reads as "selected".
+  const ticketTintStyle: React.CSSProperties | undefined =
+    !orchestrator && statusTint
+      ? {
+          backgroundColor: `rgba(${statusTint.rgb}, ${open ? 0.3 : 0.16})`,
+          borderColor: `rgba(${statusTint.rgb}, ${open ? 0.65 : 0.4})`,
+        }
+      : undefined;
+  // Orchestrator gets a richer, gradient "home" treatment (indigo→blue→violet) with an inset
+  // highlight ring so it reads as the distinct, pinned anchor of the bar rather than a flat
+  // blue box. Open = brighter + stronger ring + lift; closed = slightly muted, brightens on hover.
   const surface = orchestrator
     ? open
-      ? 'border-blue-400 bg-blue-600 text-white '
-      : 'border-blue-500/40 bg-blue-600/90 text-white hover:bg-blue-500 '
-    : open
-      ? 'border-gray-300 bg-gray-100 text-gray-900 dark:border-white/20 dark:bg-white/15 dark:text-white '
-      : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-200 dark:hover:bg-white/10 ';
+      ? 'border-transparent bg-gradient-to-br from-indigo-500 via-blue-500 to-violet-500 text-white shadow-md shadow-blue-900/25 ring-1 ring-inset ring-white/30 '
+      : 'border-transparent bg-gradient-to-br from-indigo-500/90 via-blue-500/90 to-violet-500/90 text-white ring-1 ring-inset ring-white/15 hover:from-indigo-500 hover:via-blue-500 hover:to-violet-500 hover:ring-white/25 hover:shadow-md hover:shadow-blue-900/20 '
+    : ticketTintStyle
+      ? // Tinted ticket tab: color comes from `ticketTintStyle`; keep only text + hover lift here.
+        open
+        ? 'text-gray-900 dark:text-white '
+        : 'text-gray-700 hover:brightness-110 hover:shadow dark:text-gray-200 '
+      : open
+        ? 'border-gray-300 bg-gray-100 text-gray-900 dark:border-white/20 dark:bg-white/15 dark:text-white '
+        : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-200 dark:hover:bg-white/10 ';
 
   return (
     <button
@@ -428,49 +542,44 @@ function ChatTab({
         e.preventDefault();
         onContextMenu?.(e);
       }}
+      style={ticketTintStyle}
       aria-label={`${fullLabel} — ${copy}`}
-      title={`${fullLabel} — ${copy}`}
+      title={working && activity ? `${fullLabel} — ${activity}` : `${fullLabel} — ${copy}`}
       className={base + surface + STATE_ANIM[state]}
     >
-      {/* Leading: the orchestrator keeps its spark; a ticket gets a colored state dot. */}
+      {/* Leading: the orchestrator keeps its spark (warm-tinted with a soft glow so it pops on
+          the gradient); a ticket gets a colored state dot. */}
       {orchestrator ? (
-        <Sparkles className="h-4 w-4 flex-shrink-0" />
+        <Sparkles className="h-4 w-4 flex-shrink-0 text-amber-200 drop-shadow-[0_0_4px_rgba(253,230,138,0.55)]" />
       ) : (
         <span className={`h-2 w-2 flex-shrink-0 rounded-full ${STATE_DOT[state]}`} aria-hidden="true" />
       )}
 
-      {/* Label: id (full, or just the number when crowded) + title or live activity. */}
+      {/* Label: id (full, or just the number when crowded) + the real title. We no longer
+          swap the label out for the live activity text while working — that buried the useful
+          info. Instead a tiny thinking bubble (below) shows progress is ticking, and the
+          current activity stays available on hover (tooltip). */}
       <span className="flex min-w-0 items-baseline gap-1.5">
         <span className="flex-shrink-0 text-xs font-semibold leading-none tracking-tight">
           {orchestrator ? label : compactId ? short : id}
         </span>
-        {orchestrator
-          ? working &&
-            activity && (
-              <span className="truncate text-[11px] italic leading-none opacity-80" style={{ maxWidth: 150 }}>
-                {activity}
-              </span>
-            )
-          : titleWidth > 0 &&
-            (working && activity ? (
-              <span className="truncate text-[11px] italic leading-none opacity-80" style={{ maxWidth: titleWidth }}>
-                {activity}
-              </span>
-            ) : title ? (
-              <span className="truncate text-[11px] leading-none opacity-70" style={{ maxWidth: titleWidth }}>
-                {title}
-              </span>
-            ) : null)}
+        {!orchestrator && titleWidth > 0 && title && (
+          <span className="truncate text-[11px] leading-none opacity-70" style={{ maxWidth: titleWidth }}>
+            {title}
+          </span>
+        )}
+        {working && <ThinkingDots />}
       </span>
 
-      {/* Windows-style indicator bar: a full accent underline when this window is open
-          (focused), a short running pill while it works in the background. */}
+      {/* Windows-style indicator bar: a full underline when this window is open (focused), a
+          short running pill while it works in the background. On the orchestrator's colored
+          gradient a white bar reads cleanly; tickets use the accent / blue. */}
       {(open || working) && (
         <span
           aria-hidden="true"
           className={`pointer-events-none absolute bottom-0 left-1/2 h-[2px] -translate-x-1/2 rounded-full transition-all ${
-            open ? 'w-3/4 bg-primary' : 'w-3 bg-blue-500'
-          }`}
+            open ? 'w-3/4' : 'w-3'
+          } ${orchestrator ? (open ? 'bg-white/90' : 'bg-white/70') : open ? 'bg-primary' : 'bg-blue-500'}`}
         />
       )}
 
@@ -519,8 +628,10 @@ function DockContextMenu({
   isOpen,
   isWorking,
   canClose,
+  canReset,
   onToggle,
   onStop,
+  onReset,
   onCloseCard,
   dismiss,
 }: {
@@ -529,8 +640,10 @@ function DockContextMenu({
   isOpen: boolean;
   isWorking: boolean;
   canClose: boolean;
+  canReset: boolean;
   onToggle: () => void;
   onStop: () => void;
+  onReset: () => void;
   onCloseCard: () => void;
   dismiss: () => void;
 }) {
@@ -574,6 +687,11 @@ function DockContextMenu({
       {isWorking && (
         <button type="button" onClick={onStop} className={`${item} text-red-500`}>
           <Square className="h-3.5 w-3.5 flex-shrink-0 fill-current" /> Stop session
+        </button>
+      )}
+      {canReset && (
+        <button type="button" onClick={onReset} className={item}>
+          <RotateCcw className="h-3.5 w-3.5 flex-shrink-0" /> Reset conversation
         </button>
       )}
       {canClose && (
@@ -669,6 +787,41 @@ function ChatContextStrip({ task }: { task: Task }) {
   );
 }
 
+// Canned prompt fired by the Board-chat "Triage" quick action (FLUX-637). One board-agnostic
+// message: ask the orchestrator (which already sees the whole board) to prioritize the Todo
+// column. In Progress / Ready are allowed only as context so it won't recommend in-flight work.
+const TRIAGE_PROMPT =
+  "Triage the board's **Todo** column for me. Review every ticket currently in Todo and give a ranked, actionable prioritization:\n\n" +
+  '1. Rank the Todo tickets by value-per-effort and stated priority — lead with what to pick up next and say why.\n' +
+  '2. Group tickets into dependency clusters (what unblocks what); flag anything blocked by unfinished work.\n' +
+  '3. Call out quick wins (low effort, clear value) separately.\n' +
+  '4. Reference each ticket by its ID (link it where natural).\n\n' +
+  'Stay focused on Todo. You may briefly note items already In Progress or Ready as context only, so you ' +
+  "don't recommend something already in flight. Keep it concise and skimmable.";
+
+/**
+ * Board-chat-only quick action (FLUX-637): one tap seeds the orchestrator with the canned
+ * triage prompt and fires it immediately, returning a ranked/clustered prioritization of the
+ * Todo column. Disabled while a turn is in flight so it can't double-send mid-turn. Styled to
+ * match `TicketActionBar`'s default (engine-tone) button so the two action slots feel uniform.
+ */
+function TriageAction({ busy, onTriage }: { busy: boolean; onTriage: () => void }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <button
+        type="button"
+        onClick={onTriage}
+        disabled={busy}
+        title="Prioritize the Todo column — ranks tickets by value, clusters dependencies, flags quick wins"
+        className="eh-border inline-flex items-center gap-1 rounded-md border bg-[var(--eh-input-bg)] px-2.5 py-1 text-[11px] font-semibold text-[var(--eh-text-primary)] transition-colors hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/5"
+      >
+        {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <ListChecks className="h-3 w-3" />}
+        Triage
+      </button>
+    </div>
+  );
+}
+
 function ChatWindow({
   id,
   orchestrator,
@@ -676,7 +829,10 @@ function ChatWindow({
   anchorX,
   working,
   activity,
+  draft,
+  onDraftChange,
   onMinimize,
+  onClose,
 }: {
   id: string;
   orchestrator: boolean;
@@ -685,9 +841,28 @@ function ChatWindow({
   anchorX?: number;
   working: boolean;
   activity: string | null;
+  /** FLUX-623: persisted unsent composer text for this conversation (survives minimize). */
+  draft: string;
+  onDraftChange: (text: string) => void;
   onMinimize: () => void;
+  /** Retire the card into History and close the window. Absent for the pinned orchestrator. */
+  onClose?: () => void;
 }) {
   const chat = useChatSession(id, true);
+  const allTasks = useAppSelector((s) => s.tasks) as Task[];
+  const config = useAppSelector((s) => s.config);
+  const requireInputStatus = getRequireInputStatus(config);
+  // FLUX-642/643: empty-chat context + Require-Input quick replies, built from data we already
+  // hold and handed to the transport-free ChatView.
+  const contextCard = orchestrator ? (
+    <BoardSnapshotCard tasks={allTasks} requireInputStatus={requireInputStatus} />
+  ) : task ? (
+    <TicketContextCard task={task} />
+  ) : undefined;
+  const quickReplies = useMemo(
+    () => (task ? parseQuickReplies(task, requireInputStatus) : []),
+    [task, requireInputStatus],
+  );
   const windowRef = useRef<HTMLDivElement>(null);
   // User-resizable footprint. The window is pinned bottom-left (see `bottom`/`left`), so
   // the grip lives at the top-right corner and grows the window up + right.
@@ -781,17 +956,48 @@ function ChatWindow({
           )}
           <span className="truncate">{orchestrator ? 'Orchestrator' : task?.title ?? id}</span>
         </div>
-        <button
-          type="button"
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={onMinimize}
-          title="Minimize"
-          className="rounded-md p-1 text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5"
-        >
-          <Minus className="h-3.5 w-3.5" />
-        </button>
+        <div className="flex flex-shrink-0 items-center gap-0.5">
+          {/* Orchestrator can't be closed (it's pinned) — instead it can be reset to a clean
+              slate: stop the live turn and wipe the transcript. */}
+          {orchestrator && (
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => {
+                if (window.confirm('Reset the orchestrator conversation? This clears its chat history.')) {
+                  void chat.reset();
+                }
+              }}
+              title="Reset conversation (clears history)"
+              className="rounded-md p-1 text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+            </button>
+          )}
+          <button
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={onMinimize}
+            title="Minimize"
+            className="rounded-md p-1 text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5"
+          >
+            <Minus className="h-3.5 w-3.5" />
+          </button>
+          {onClose && (
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={onClose}
+              title="Close (move to recent chats)"
+              className="rounded-md p-1 text-[var(--eh-text-muted)] transition-colors hover:bg-red-500/10 hover:text-red-500 dark:hover:bg-red-500/15"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
       </div>
       {task && <ChatContextStrip task={task} />}
+      {task && <ChatDiffPanel task={task} />}
       <div className="flex min-h-0 flex-1 flex-col px-3 py-3">
         <ChatView
           title={orchestrator ? 'Board chat' : id}
@@ -802,9 +1008,21 @@ function ChatWindow({
           working={working}
           activity={activity}
           emptyHint={orchestrator ? 'Talk to the board. I can see and dispatch work to tickets.' : `Chat about ${id}.`}
+          contextCard={contextCard}
+          quickReplies={quickReplies}
+          linkifyTickets
+          draft={draft}
+          onDraftChange={onDraftChange}
           onSend={chat.send}
           onStop={chat.stop}
-          actions={task ? <TicketActionBar task={task} /> : undefined}
+          questionPicker={<ChatQuestionPicker conversationId={id} />}
+          actions={
+            orchestrator ? (
+              <TriageAction busy={chat.busy || working} onTriage={() => void chat.send(TRIAGE_PROMPT)} />
+            ) : task ? (
+              <TicketActionBar task={task} />
+            ) : undefined
+          }
         />
       </div>
     </div>

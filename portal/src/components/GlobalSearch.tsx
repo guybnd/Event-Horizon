@@ -1,13 +1,14 @@
 import { useState, useRef, useEffect } from 'react';
 import { Search } from 'lucide-react';
-import { useApp } from '../AppContext';
+import { useAppSelector } from '../store/useAppSelector';
 import { searchTasks } from '../taskSearch';
 import { StatusBadge } from './StatusBadge';
 import { getStatusColorClass } from '../statusStyles';
 import type { Task } from '../types';
 
 export function GlobalSearch() {
-  const { tasks, config } = useApp();
+  const tasks = useAppSelector((s) => s.tasks);
+  const config = useAppSelector((s) => s.config);
   const [globalSearchQuery, setGlobalSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const searchContainerRef = useRef<HTMLDivElement | null>(null);

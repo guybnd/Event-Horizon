@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useApp } from '../AppContext';
+import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { Save } from 'lucide-react';
 import { bulkRename } from '../api';
 import type { TagDef, StatusDef, UserDef, PriorityDef, DocsEditPermissions, BoardCardOpenMode, CliFramework } from '../types';
@@ -26,7 +26,10 @@ function stripOriginalName<T extends { originalName?: string }>(item: T): Omit<T
 }
 
 export function Settings() {
-  const { config, saveConfig, triggerRefresh, setView, workspacePath, notifyWorkspaceSet, settingsTab, setSettingsTab } = useApp();
+  const { saveConfig, triggerRefresh, setView, notifyWorkspaceSet, setSettingsTab } = useAppActions();
+  const config = useAppSelector(s => s.config);
+  const workspacePath = useAppSelector(s => s.workspacePath);
+  const settingsTab = useAppSelector(s => s.settingsTab);
 
   const [activeTab, setActiveTab] = useState<'workflow' | 'attributes' | 'workspace' | 'preferences' | 'agent' | 'modules' | 'global'>('workflow');
 
@@ -58,6 +61,7 @@ export function Settings() {
   const [docsRoot, setDocsRoot] = useState('.docs');
   const [hoverPopupsEnabled, setHoverPopupsEnabled] = useState(true);
   const [hoverPopupDelay, setHoverPopupDelay] = useState(1500);
+  const [commentHoverPreviewEnabled, setCommentHoverPreviewEnabled] = useState(false);
   const [tokenDisplayMode, setTokenDisplayMode] = useState<'cost' | 'tokens'>('cost');
   const [tokenCostThresholds, setTokenCostThresholds] = useState<{ green: number; yellow: number }>({ green: 0.10, yellow: 0.50 });
   const [effortLevel, setEffortLevel] = useState<string>('high');
@@ -101,6 +105,7 @@ export function Settings() {
       setDocsRoot(config.docsRoot || '.docs');
       setHoverPopupsEnabled(config.hoverPopupsEnabled ?? true);
       setHoverPopupDelay(config.hoverPopupDelay ?? 1500);
+      setCommentHoverPreviewEnabled(config.commentHoverPreviewEnabled ?? false);
       setTokenDisplayMode(config.tokenDisplayMode ?? 'cost');
       setTokenCostThresholds(config.tokenCostThresholds ?? { green: 0.10, yellow: 0.50 });
       setEffortLevel(config.effortLevel || 'high');
@@ -239,6 +244,7 @@ export function Settings() {
         docsRoot,
         hoverPopupsEnabled,
         hoverPopupDelay,
+        commentHoverPreviewEnabled,
         tokenDisplayMode,
         tokenCostThresholds,
         effortLevel,
@@ -306,6 +312,7 @@ export function Settings() {
     setDocsRoot(config.docsRoot || '.docs');
     setHoverPopupsEnabled(config.hoverPopupsEnabled ?? true);
     setHoverPopupDelay(config.hoverPopupDelay ?? 1500);
+    setCommentHoverPreviewEnabled(config.commentHoverPreviewEnabled ?? false);
     setTokenDisplayMode(config.tokenDisplayMode ?? 'cost');
     setTokenCostThresholds(config.tokenCostThresholds ?? { green: 0.10, yellow: 0.50 });
     setEffortLevel(config.effortLevel || 'high');
@@ -350,6 +357,7 @@ export function Settings() {
     docsRoot,
     hoverPopupsEnabled,
     hoverPopupDelay,
+    commentHoverPreviewEnabled,
     tokenDisplayMode,
     tokenCostThresholds,
     effortLevel,
@@ -392,6 +400,7 @@ export function Settings() {
     docsRoot: config.docsRoot || '.docs',
     hoverPopupsEnabled: config.hoverPopupsEnabled ?? true,
     hoverPopupDelay: config.hoverPopupDelay ?? 1500,
+    commentHoverPreviewEnabled: config.commentHoverPreviewEnabled ?? false,
     tokenDisplayMode: config.tokenDisplayMode ?? 'cost',
     tokenCostThresholds: config.tokenCostThresholds ?? { green: 0.10, yellow: 0.50 },
     effortLevel: config.effortLevel || 'high',
@@ -529,6 +538,8 @@ export function Settings() {
                   setHoverPopupsEnabled={setHoverPopupsEnabled}
                   hoverPopupDelay={hoverPopupDelay}
                   setHoverPopupDelay={setHoverPopupDelay}
+                  commentHoverPreviewEnabled={commentHoverPreviewEnabled}
+                  setCommentHoverPreviewEnabled={setCommentHoverPreviewEnabled}
                   tokenDisplayMode={tokenDisplayMode}
                   setTokenDisplayMode={setTokenDisplayMode}
                   tokenCostThresholds={tokenCostThresholds}

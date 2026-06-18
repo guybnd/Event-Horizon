@@ -6,7 +6,7 @@ import { Column } from './Column';
 import { StatusBadge } from './StatusBadge';
 import { TaskCardInner } from './TaskCard';
 import { updateTask } from '../api';
-import { useApp } from '../AppContext';
+import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { buildStatusChangeHistory } from '../lib/ticketActions';
 import type { Task } from '../types';
 import { normalizeSubtaskId } from '../types';
@@ -19,6 +19,7 @@ import { getArchiveStatus, getRequireInputStatus } from '../workflow';
 import { ParseErrorButton } from './ParseErrorButton';
 import { BootstrapPreview } from './BootstrapPreview';
 import { ApprovalPrompts } from './ApprovalPrompts';
+import { QuestionPrompts } from './AskQuestionPrompts';
 
 // Stable empty array so columns with no tasks get a referentially-stable prop (memo-friendly).
 const EMPTY_TASKS: Task[] = [];
@@ -28,25 +29,23 @@ export function Board() {
   const [activeTask, setActiveTask] = useState<Task | null>(null);
   const [releaseModalTasks, setReleaseModalTasks] = useState<Task[] | null>(null);
   const [showBootstrap, setShowBootstrap] = useState(false);
-  const {
-    tasks: liveTasks,
-    tasksLoading,
-    taskLiveEvents,
-    columnLiveEvents,
-    config,
-    currentUser,
-    triggerRefresh,
-    searchQuery,
-    sortOption,
-    filterAssignee,
-    filterPriority,
-    filterTag,
-    filterUnreadOnly,
-    filterWorktree,
-    worktreeBranches,
-    readComments,
-    parseErrors,
-  } = useApp();
+  const { triggerRefresh } = useAppActions();
+  const liveTasks = useAppSelector((s) => s.tasks);
+  const tasksLoading = useAppSelector((s) => s.tasksLoading);
+  const taskLiveEvents = useAppSelector((s) => s.taskLiveEvents);
+  const columnLiveEvents = useAppSelector((s) => s.columnLiveEvents);
+  const config = useAppSelector((s) => s.config);
+  const currentUser = useAppSelector((s) => s.currentUser);
+  const searchQuery = useAppSelector((s) => s.searchQuery);
+  const sortOption = useAppSelector((s) => s.sortOption);
+  const filterAssignee = useAppSelector((s) => s.filterAssignee);
+  const filterPriority = useAppSelector((s) => s.filterPriority);
+  const filterTag = useAppSelector((s) => s.filterTag);
+  const filterUnreadOnly = useAppSelector((s) => s.filterUnreadOnly);
+  const filterWorktree = useAppSelector((s) => s.filterWorktree);
+  const worktreeBranches = useAppSelector((s) => s.worktreeBranches);
+  const readComments = useAppSelector((s) => s.readComments);
+  const parseErrors = useAppSelector((s) => s.parseErrors);
 
   const scrollerRef = useRef<HTMLDivElement>(null);
 
@@ -351,6 +350,7 @@ export function Board() {
   return (
     <>
       <ApprovalPrompts />
+      <QuestionPrompts />
       <div className="flex h-full min-h-0 flex-col gap-4">
         <div className="flex items-center gap-3">
           <div className="flex-1">

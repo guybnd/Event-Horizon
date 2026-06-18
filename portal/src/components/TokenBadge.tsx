@@ -43,7 +43,9 @@ export function TokenBadge({ data, config, onToggle, variant = 'card', label }: 
   const displayLabel = showTokens
     ? (hasData ? `↑${(inTok / 1000).toFixed(1)}k ↓${(outTok / 1000).toFixed(1)}k` : '—')
     : costUSD > 0
-      ? `$${costUSD.toFixed(4)}${isEstimated ? '~' : ''}`
+      // Adaptive precision (FLUX-652): 2 decimals once it reads as real money ($9.65, not $9.6481),
+      // finer only for sub-dollar runs so a few cents doesn't collapse to $0.00.
+      ? `$${costUSD >= 1 ? costUSD.toFixed(2) : costUSD.toFixed(4)}${isEstimated ? '~' : ''}`
       : hasData
         ? `↑${(inTok / 1000).toFixed(1)}k ↓${(outTok / 1000).toFixed(1)}k`
         : '$0.00';

@@ -231,7 +231,40 @@ export async function updateAgentSession(taskId: string, sessionId: string, upda
   return tasksCache[taskId];
 }
 
-export async function updateTaskWithHistory(taskId: string, options: {
+// Per-ticket write serialization (FLUX-645). With a single shared MCP server, concurrent
+// sessions issue concurrent read-modify-write on a ticket's history; without a lock the later
+// write reads stale frontmatter and clobbers the earlier append, dropping history entries. A
+// per-ticketId promise chain serializes writes to the SAME ticket while writes to DIFFERENT
+// tickets stay parallel. (One engine process finally makes this enforceable — the old
+// N-stdio-servers design couldn't share a lock.)
+const ticketWriteChains = new Map<string, Promise<unknown>>();
+
+function serializeTicketWrite<T>(taskId: string, run: () => Promise<T>): Promise<T> {
+  const prev = ticketWriteChains.get(taskId) ?? Promise.resolve();
+  // Chain onto the previous write whether it resolved or rejected, so one failed write
+  // doesn't wedge the queue for that ticket.
+  const result = prev.then(run, run);
+  // Keep a non-rejecting tail as the chain head, and prune the map entry once this is the
+  // last write in flight so the map doesn't grow unbounded across many tickets.
+  const tail = result.then(() => {}, () => {});
+  ticketWriteChains.set(taskId, tail);
+  void tail.then(() => {
+    if (ticketWriteChains.get(taskId) === tail) ticketWriteChains.delete(taskId);
+  });
+  return result;
+}
+
+export function updateTaskWithHistory(taskId: string, options: {
+  entries?: any[];
+  updatedBy?: string;
+  nextStatus?: string;
+  extraFields?: Record<string, any>;
+  tokenMetadata?: { inputTokens: number; outputTokens: number; costUSD: number; costIsEstimated: boolean; cacheReadTokens?: number; cacheCreationTokens?: number } | undefined;
+}) {
+  return serializeTicketWrite(taskId, () => updateTaskWithHistoryLocked(taskId, options));
+}
+
+async function updateTaskWithHistoryLocked(taskId: string, options: {
   entries?: any[];
   updatedBy?: string;
   nextStatus?: string;
@@ -264,6 +297,12 @@ export async function updateTaskWithHistory(taskId: string, options: {
       date: activityTimestamp,
     });
     frontmatter.status = options.nextStatus;
+    // FLUX-651: any real status move is a board action — clear the "agent parked" flag so the
+    // ticket stops showing as Needs Action (covers the agent advancing it AND the user moving
+    // the card via the board). Skip when extraFields explicitly sets needsAction (the backstop).
+    if (!(options.extraFields && 'needsAction' in options.extraFields)) {
+      frontmatter.needsAction = null;
+    }
   }
 
   nextHistory = normalizeHistoryEntries([...nextHistory, ...entries]).history;
@@ -273,6 +312,10 @@ export async function updateTaskWithHistory(taskId: string, options: {
   if (options.extraFields) {
     const { id: _i, title: _t, history: _h, _path: _pp, ...safeFields } = options.extraFields;
     Object.assign(frontmatter, safeFields);
+    // FLUX-651: raising the Require Input swimlane is a board action too — clear any parked flag.
+    if (safeFields.swimlane === 'require-input' && !('needsAction' in safeFields)) {
+      frontmatter.needsAction = null;
+    }
   }
 
   if (options.tokenMetadata) {

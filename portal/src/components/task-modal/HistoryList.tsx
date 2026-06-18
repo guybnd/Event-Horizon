@@ -9,6 +9,7 @@ import { getStatusColorClass } from '../../statusStyles';
 import { TaskMarkdown } from '../TaskMarkdown';
 import { relativeTime } from '../../workflow';
 import { patternLabel, normalizeRoleLabel } from '../../orchestration';
+import { useLiveSession } from '../../store/useAppSelector';
 import type { ExecutionPattern, GroupVariant } from '../../types';
 
 function unwrapAgentMessage(text: string): string {
@@ -117,9 +118,19 @@ function ProgressItem({ prog }: { prog: AgentSessionProgress }) {
   );
 }
 
-function SessionHistoryEntry({ session }: { session: AgentSessionEntry }) {
+function SessionHistoryEntry({ session, taskId }: { session: AgentSessionEntry; taskId?: string }) {
   const [isExpanded, setIsExpanded] = useState(session.status === 'active');
   const duration = formatSessionDuration(session.startedAt, session.endedAt);
+  // FLUX-626: while a session is active, its streaming progress lives in the liveSessions slice
+  // (keyed by sessionId), not in the polled history (the engine only flushes progress to the
+  // ticket file when the session ends). Prefer the live slice while active; once finished, fall
+  // back to the persisted session.progress so we never double-render.
+  const live = useLiveSession(taskId);
+  const liveProgress = session.status === 'active' && session.sessionId
+    ? live?.progressBySession?.[session.sessionId]
+    : undefined;
+  const progressEntries: AgentSessionProgress[] | undefined =
+    (liveProgress && liveProgress.length > 0) ? liveProgress : session.progress;
   const statusLabel = session.status === 'completed' ? 'Completed' :
                       session.status === 'failed' ? 'Failed' :
                       session.status === 'cancelled' ? 'Cancelled' : 'Active';
@@ -169,9 +180,9 @@ function SessionHistoryEntry({ session }: { session: AgentSessionEntry }) {
           </div>
         )}
 
-        {isExpanded && (session.progress?.length ?? 0) > 0 && (
+        {isExpanded && (progressEntries?.length ?? 0) > 0 && (
           <div className="mt-4 space-y-1 pl-1 border-l-2 border-emerald-200/50 dark:border-emerald-500/20 ml-2.5">
-            {session.progress!.map((prog, idx) => (
+            {progressEntries!.map((prog, idx) => (
               <ProgressItem key={idx} prog={prog} />
             ))}
           </div>
@@ -182,7 +193,7 @@ function SessionHistoryEntry({ session }: { session: AgentSessionEntry }) {
 }
 
 /** Collapsible block grouping all agent_session entries from one orchestration run. */
-function GroupedSessionHistory({ sessions }: { sessions: AgentSessionEntry[] }) {
+function GroupedSessionHistory({ sessions, taskId }: { sessions: AgentSessionEntry[]; taskId?: string }) {
   const anyActive = sessions.some(s => s.status === 'active');
   const [isExpanded, setIsExpanded] = useState(anyActive);
   const pattern = sessions.find(s => s.pattern)?.pattern as ExecutionPattern | undefined;
@@ -220,12 +231,12 @@ function GroupedSessionHistory({ sessions }: { sessions: AgentSessionEntry[] }) 
         {isExpanded && (
           <div className="mt-3 space-y-2">
             {workers.map((s, idx) => (
-              <SessionHistoryEntry key={`grp-${s.sessionId}-${idx}`} session={s} />
+              <SessionHistoryEntry key={`grp-${s.sessionId}-${idx}`} session={s} taskId={taskId} />
             ))}
             {combiner && (
               <div className="mt-1">
                 <p className="mb-1 px-1 text-[10px] font-bold uppercase tracking-wider text-violet-500">Synthesis</p>
-                <SessionHistoryEntry session={combiner} />
+                <SessionHistoryEntry session={combiner} taskId={taskId} />
               </div>
             )}
           </div>
@@ -305,9 +316,9 @@ export const HistoryList = memo(function HistoryList({
             if (gid && groupBuckets.has(gid)) {
               if (renderedGroups.has(gid)) return null;
               renderedGroups.add(gid);
-              return <GroupedSessionHistory key={`grp-${gid}-${index}`} sessions={groupBuckets.get(gid)!} />;
+              return <GroupedSessionHistory key={`grp-${gid}-${index}`} sessions={groupBuckets.get(gid)!} taskId={taskId} />;
             }
-            return <SessionHistoryEntry key={`session-${(entry as AgentSessionEntry).sessionId}-${index}`} session={entry as AgentSessionEntry} />;
+            return <SessionHistoryEntry key={`session-${(entry as AgentSessionEntry).sessionId}-${index}`} session={entry as AgentSessionEntry} taskId={taskId} />;
           }
 
           const replies = entry.id ? repliesByParent.get(entry.id) || [] : [];

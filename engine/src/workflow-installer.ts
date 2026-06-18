@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getModuleMcpServers } from './modules.js';
-import { isPackaged } from './packaged-mode.js';
+import { getEnginePort } from './packaged-mode.js';
 
 export type Framework = 'auto' | 'copilot' | 'antigravity' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'generic';
 type ResolvedFramework = Exclude<Framework, 'auto'>;
@@ -343,34 +343,29 @@ function mcpConfigPathFor(targetDir: string, framework: ResolvedFramework): stri
   }
 }
 
-function buildMcpServerEntry(sourceRoot: string, targetDir: string) {
-  // alwaysLoad keeps event-horizon's OWN ticket tools loaded directly instead of
-  // deferred behind tool-search — without it, every session (orchestrator + ticket
-  // chats) re-runs ToolSearch to find get_ticket/change_status/etc. on cold start
-  // (FLUX-604). It's baked in here (not hand-added to .mcp.json) because this
-  // installer overwrites the event-horizon entry on every engine start, so a manual
-  // edit would be clobbered. Honored in merge mode by Claude Code >= 2.1.121; the
-  // strict-profile spawn path sets it separately in claude-code.ts.
-  if (isPackaged) {
-    return {
-      type: 'stdio',
-      command: process.execPath,
-      args: ['--mcp', '--workspace', '.'],
-      alwaysLoad: true,
-    };
-  }
-  const mcpEntryPoint = path.relative(targetDir, path.join(sourceRoot, 'engine', 'src', 'mcp-server.ts')).replace(/\\/g, '/');
+function buildMcpServerEntry() {
+  // FLUX-645: the engine serves the MCP server in-process over loopback HTTP, so the entry is
+  // location-independent — no relative path, no --workspace, no worktree path. Every session
+  // (main checkout or `.eh-worktrees/*` worktree) points at this one URL and shares the running
+  // engine's single task-store cache. Rendered with the engine's configured port and re-written
+  // on every engine start, so a port change is picked up automatically.
+  //
+  // alwaysLoad keeps event-horizon's OWN ticket tools loaded directly instead of deferred behind
+  // tool-search — without it, every session (orchestrator + ticket chats) re-runs ToolSearch to
+  // find get_ticket/change_status/etc. on cold start (FLUX-604). It's baked in here (not
+  // hand-added to .mcp.json) because this installer overwrites the event-horizon entry on every
+  // engine start, so a manual edit would be clobbered. Honored in merge mode by Claude Code >=
+  // 2.1.121; the strict-profile spawn path sets it separately in claude-code.ts.
   return {
-    type: 'stdio',
-    command: 'npx',
-    args: ['tsx', mcpEntryPoint, '--workspace', '.'],
+    type: 'http',
+    url: `http://127.0.0.1:${getEnginePort()}/mcp`,
     alwaysLoad: true,
   };
 }
 
 async function installMcpConfig(targetDir: string, sourceRoot: string, framework: ResolvedFramework): Promise<void> {
   const configPath = mcpConfigPathFor(targetDir, framework);
-  const serverEntry = buildMcpServerEntry(sourceRoot, targetDir);
+  const serverEntry = buildMcpServerEntry();
 
   let existing: any = {};
   try {

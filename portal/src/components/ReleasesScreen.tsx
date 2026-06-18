@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useApp } from '../AppContext';
+import { useAppSelector } from '../store/useAppSelector';
 import { TaskCard } from './TaskCard';
 
 function parseSemver(v: string): [number, number, number] {
@@ -17,7 +17,7 @@ function compareSemverDesc(a: string, b: string): number {
 }
 
 export function ReleasesScreen() {
-  const { tasks } = useApp();
+  const tasks = useAppSelector((s) => s.tasks);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
   const releasedTasks = tasks.filter(t => t.status === 'Released');

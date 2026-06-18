@@ -2,10 +2,10 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import type { CSSProperties } from 'react';
 import type { DraggableAttributes, DraggableSyntheticListeners } from '@dnd-kit/core';
-import type { Task, TaskLiveEvent, AgentSessionEntry } from '../types';
+import type { Task, TaskLiveEvent, AgentSessionEntry, AgentSessionProgress } from '../types';
 import { isAgentSession, normalizeSubtaskId } from '../types';
 import { AlertCircle, ChevronUp, ChevronDown, Equal } from 'lucide-react';
-import { useApp } from '../AppContext';
+import { useAppSelector, useAppActions, useLiveSession, shallowEqual } from '../store/useAppSelector';
 import { sendTaskCliInput, updateTask, fetchWorkflows, detachWorktree, type WorkflowTemplate } from '../api';
 import { runAgentAction, launchOrchestration, launchPhaseDefault, getOrchestrationMode, phaseCombiner, phaseLaunchStatus, resolvePhaseDefaultId, statusToPhase, type LaunchPhase } from '../agentActions';
 import { type OrchestrationLaunchPlan } from '../components/OrchestrationLauncher';
@@ -14,6 +14,25 @@ import { groupSessions, aggregateGroup, isGroupLive, isCombinerPending } from '.
 import { resolveEffectiveAgent } from '../utils';
 import { useAnimationControls } from 'framer-motion';
 import { tintFill, type StatusTint } from '../statusStyles';
+
+// Stable empty subtask list so non-epic cards get a referentially-stable selector
+// result and never re-render when an unrelated task changes (FLUX-625).
+const EMPTY_SUBTASKS: Task[] = [];
+
+// Strip inline markdown from the one-line card snippet (FLUX-652) so syntax like
+// `**Depends on P1–P3.**` renders as clean text instead of leaking literal asterisks into the
+// 3-line clamp. Block syntax (headings) is already filtered out before this runs.
+function stripInlineMarkdown(line: string): string {
+  return line
+    .replace(/`([^`]+)`/g, '$1')                // inline code
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')  // links / images → label text
+    .replace(/(\*\*|__)(.*?)\1/g, '$2')         // bold
+    .replace(/(\*|_)(.*?)\1/g, '$2')            // italic
+    .replace(/~~(.*?)~~/g, '$1')                // strikethrough
+    .replace(/^\s*[-*+]\s+/, '')                // leading list bullet
+    .replace(/^\s*>\s?/, '')                    // blockquote marker
+    .trim();
+}
 
 export interface TaskCardControllerArgs {
   task: Task;
@@ -44,12 +63,13 @@ export function useTaskCardController({
   isDragging = false,
 }: TaskCardControllerArgs) {
   const EFFORT_OPTIONS = ['None', 'XS', 'S', 'M', 'L', 'XL'];
-  const { openTaskModal, openTaskFullView, config, saveConfig, currentUser, triggerRefresh, readComments, ensureReadStateLoaded, markCommentRead: ctxMarkCommentRead, markAllCommentsRead: ctxMarkAllCommentsRead, taskById, worktreeBranches, worktrees, refreshWorktrees, setView, setChangesFocus } = useApp();
-  const hasWorktree = !!task.branch && worktreeBranches.has(task.branch);
-  const worktreeChangedFiles = useMemo(
-    () => (task.branch ? worktrees.find((w) => w.branch === task.branch)?.changedFiles ?? 0 : 0),
-    [worktrees, task.branch],
-  );
+  const { openTaskModal, openTaskFullView, saveConfig, triggerRefresh, ensureReadStateLoaded, markCommentRead: ctxMarkCommentRead, markAllCommentsRead: ctxMarkAllCommentsRead, refreshWorktrees, setView, setChangesFocus } = useAppActions();
+  const config = useAppSelector((s) => s.config);
+  const currentUser = useAppSelector((s) => s.currentUser);
+  // Fine-grained slices (FLUX-625): select per-card derived values so a worktree or
+  // read-state change for some OTHER card doesn't re-render this one.
+  const hasWorktree = useAppSelector((s) => !!task.branch && s.worktreeBranches.has(task.branch));
+  const worktreeChangedFiles = useAppSelector((s) => (task.branch ? s.worktrees.find((w) => w.branch === task.branch)?.changedFiles ?? 0 : 0));
   // Which Changes-view section this card links to: its live worktree (if it has
   // uncommitted changes) or its stored committed diff (Done/finished tickets — the
   // "Recently merged" section, which only carries done-ish statuses).
@@ -107,15 +127,22 @@ export function useTaskCardController({
     [config]
   );
 
-  const resolvedSubtasks = useMemo(
-    () => isEpic ? subtaskIds.map(id => taskById.get(id)).filter((t): t is Task => !!t) : [],
-    [isEpic, subtaskIds, taskById]
+  const resolvedSubtasks = useAppSelector(
+    (s) => (isEpic ? subtaskIds.map((id) => s.taskById.get(id)).filter((t): t is Task => !!t) : EMPTY_SUBTASKS),
+    shallowEqual,
   );
   const subtaskDoneCount = useMemo(
     () => resolvedSubtasks.filter(t => doneStatuses.has(t.status)).length,
     [resolvedSubtasks, doneStatuses]
   );
   const subtaskTotal = subtaskIds.length;
+  // Per-card subtask lookup (FLUX-625): only this epic's resolved children, so the
+  // subtask popover re-renders when one of THEM changes — not on any board task change.
+  const subtaskById = useMemo(() => {
+    const map = new Map<string, Task>();
+    for (const t of resolvedSubtasks) map.set(t.id, t);
+    return map;
+  }, [resolvedSubtasks]);
 
   // dnd-kit attributes/listeners/isDragging arrive from the <TaskCard> wrapper via args (above).
 
@@ -199,11 +226,16 @@ export function useTaskCardController({
     style['--task-shift-x'] = `${travelDirection * 42}px`;
   }
 
-  const snippet = task.body?.split('\n').find(line => line.trim() && !line.startsWith('#')) || 'No description provided';
+  const rawSnippetLine = task.body?.split('\n').find(line => line.trim() && !line.startsWith('#'));
+  const snippet = (rawSnippetLine && stripInlineMarkdown(rawSnippetLine)) || 'No description provided';
 
-  const readCommentIds = new Set(readComments[task.id] ?? []);
+  const readCommentIdsList = useAppSelector((s) => s.readComments[task.id]);
+  const readCommentIds = useMemo(() => new Set(readCommentIdsList ?? []), [readCommentIdsList]);
   const hasActiveCliSession = Boolean(task.cliSession && ['pending', 'running', 'waiting-input'].includes(task.cliSession.status));
-  const currentActivity = hasActiveCliSession ? (task.cliSession?.currentActivity ?? 'Running') : undefined;
+  // FLUX-626: prefer the SSE-fed `liveSessions` slice (instant) over the polled cliSession
+  // value, so activity ticks update this card without churning the whole tasks array.
+  const liveSession = useLiveSession(task.id);
+  const currentActivity = hasActiveCliSession ? (liveSession?.currentActivity ?? task.cliSession?.currentActivity ?? 'Running') : undefined;
 
   // Multi-agent cluster: show the most recent multi-session run group while it is
   // still live (workers running, or a combiner still owed). Grouping ALL sessions
@@ -225,7 +257,14 @@ export function useTaskCardController({
   const recentAgentSession = task.history?.find(
     (entry): entry is AgentSessionEntry => isAgentSession(entry) && entry.status === 'active'
   );
-  const latestProgress = recentAgentSession?.progress?.[recentAgentSession.progress.length - 1];
+  // FLUX-626: live progress streams into the liveSessions slice (keyed by sessionId), not the
+  // polled history — prefer it while the session is active so the card's inline progress updates.
+  const liveProgress = recentAgentSession?.sessionId
+    ? liveSession?.progressBySession?.[recentAgentSession.sessionId]
+    : undefined;
+  const latestProgress: AgentSessionProgress | undefined = (liveProgress && liveProgress.length > 0)
+    ? liveProgress[liveProgress.length - 1]
+    : recentAgentSession?.progress?.[recentAgentSession.progress.length - 1];
   const showAgentProgress = agentProgressEnabled && recentAgentSession && latestProgress;
   const sessionAge = recentAgentSession?.startedAt
     ? Date.now() - new Date(recentAgentSession.startedAt).getTime()
@@ -682,13 +721,17 @@ export function useTaskCardController({
   const speedMap = { fast: 0.2, normal: 0.4, slow: 0.7 };
   const duration = speedMap[config?.animationSpeed || 'normal'];
 
-  const layoutProps = animationsEnabled && !isDragging && !isOverlay ? {
-    layoutId: `ticket-${task.id}`,
-    transition: { type: 'spring' as const, bounce: 0.15, duration: duration + 0.3 }
-  } : {};
+  // FLUX-629: the per-card framer-motion FLIP (layoutId) forced a layout measurement
+  // (getBoundingClientRect) on EVERY re-render of every card — it collapsed drag to
+  // ~1fps (already disabled mid-drag) and taxed every poll/SSE re-render the same way.
+  // We drop layoutId on the board: cross-column moves still get visual feedback via the
+  // live-event accent classes (liveAccentClass / liveAnimationClass). Gating layoutId to
+  // only moved cards can't work — framer-motion needs the PRE-move render to also carry
+  // the id to compute the FLIP baseline, which a post-hoc 'moved' flag doesn't provide.
+  const layoutProps = {};
 
-  const { isModalOpen, modalTask, isOverlayOpen } = useApp();
-  const isThisTaskOpen = isModalOpen && modalTask?.id === task.id;
+  const isThisTaskOpen = useAppSelector((s) => s.isModalOpen && s.modalTask?.id === task.id);
+  const isOverlayOpen = useAppSelector((s) => s.isOverlayOpen);
   const [isAnimatingZ, setIsAnimatingZ] = useState(false);
   const [isHovering, setIsHovering] = useState(false);
   const rattleControls = useAnimationControls();
@@ -955,7 +998,7 @@ export function useTaskCardController({
     openTaskModal,
     openTaskFullView,
     ctxMarkAllCommentsRead,
-    taskById,
+    taskById: subtaskById,
     setView,
     setChangesFocus,
     hasWorktree,

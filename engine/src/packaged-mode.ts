@@ -14,6 +14,16 @@ export const isSea: boolean = (() => {
 
 export const isPackaged: boolean = isPkg || isSea;
 
+// ─── Engine port (FLUX-645) ───────────────────────────────────────────────────
+// The installer renders the loopback URL for the in-process MCP HTTP mount
+// (http://127.0.0.1:<port>/mcp) into .mcp.json, so it needs the engine's resolved
+// listen port. index.ts calls setEnginePort() once it knows the port; the installer
+// reads it via getEnginePort(). Defaults to the env/standard port so it's sane even
+// before the engine has bound (e.g. an installer call during early bootstrap).
+let _enginePort = parseInt(process.env.PORT || '3067', 10);
+export function setEnginePort(port: number): void { _enginePort = port; }
+export function getEnginePort(): number { return _enginePort; }
+
 // ─── SEA asset extraction ─────────────────────────────────────────────────────
 // In SEA mode all assets (portal, skills, docs, tray binaries) are embedded as
 // named blobs in the binary.  On first run they are extracted to a versioned

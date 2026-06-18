@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, memo } from 'react';
 import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, FileText, Tag, Plus, Workflow, Check, GitCompare } from 'lucide-react';
-import { useApp, THEMES, type AppTheme, type AppView } from '../AppContext';
+import { THEMES, type AppTheme, type AppView } from '../AppContext';
+import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { NotificationPanel } from './NotificationPanel';
 import { AnimatePresence } from 'framer-motion';
 import { GlobalSearch } from './GlobalSearch';
@@ -65,7 +66,8 @@ const THEME_SWATCH: Record<AppTheme, string> = {
 // The logo doubles as the theme selector. It glows on a slow cadence so the
 // otherwise-non-obvious "click me to theme" affordance gets noticed.
 const Branding = memo(function Branding() {
-  const { theme, setAppTheme } = useApp();
+  const { setAppTheme } = useAppActions();
+  const theme = useAppSelector((s) => s.theme);
   const [isOpen, setIsOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -118,15 +120,11 @@ const Branding = memo(function Branding() {
 });
 
 export function Header() {
-  const {
-    view,
-    setView,
-    isConnected,
-    openTaskModal,
-    notifications,
-    notificationUnreadCount,
-    refreshNotifications,
-  } = useApp();
+  const { setView, openTaskModal, refreshNotifications } = useAppActions();
+  const view = useAppSelector((s) => s.view);
+  const isConnected = useAppSelector((s) => s.isConnected);
+  const notifications = useAppSelector((s) => s.notifications);
+  const notificationUnreadCount = useAppSelector((s) => s.notificationUnreadCount);
 
   const [isPromptPulseActive, setIsPromptPulseActive] = useState(false);
   const [isNotificationPanelOpen, setIsNotificationPanelOpen] = useState(false);

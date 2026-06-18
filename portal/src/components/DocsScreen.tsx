@@ -11,7 +11,7 @@ import { gfm } from 'turndown-plugin-gfm';
 import { marked } from 'marked';
 import { AlertCircle, Bold, ChevronDown, ChevronRight, Code, FileText, Heading1, Heading2, Info, Italic, Link as LinkIcon, List, ListOrdered, Lock, Network, Save, Share2, Trash2, X } from 'lucide-react';
 import { applyDocsPromotion, createDoc, deleteDoc, fetchDoc, fetchDocs, fetchGroupStatus, renameDocsFolder, updateDoc, updateGroupDocsLabel } from '../api';
-import { useApp } from '../AppContext';
+import { useAppSelector } from '../store/useAppSelector';
 import type { Doc } from '../types';
 import type { GroupStatus } from '../api';
 import { resolveDocEditability } from '../utils';
@@ -202,7 +202,9 @@ function ToolbarButton({
 }
 
 export function DocsScreen() {
-  const { currentUser, config, workspacePath } = useApp();
+  const currentUser = useAppSelector((s) => s.currentUser);
+  const config = useAppSelector((s) => s.config);
+  const workspacePath = useAppSelector((s) => s.workspacePath);
   const [docs, setDocs] = useState<Doc[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(
     () => new URLSearchParams(window.location.search).get('doc')

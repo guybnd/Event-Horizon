@@ -1,11 +1,11 @@
 import { useState } from 'react';
 import type { JSX } from 'react';
-import { GitMerge, ChevronDown, ChevronRight, Check, X, Clock, AlertTriangle, Layers, ShieldCheck, Loader2, Bot, Wrench, RotateCcw, Undo2 } from 'lucide-react';
+import { GitMerge, ChevronDown, ChevronRight, Check, X, Clock, AlertTriangle, Layers, ShieldCheck, Loader2, Bot, Wrench, RotateCcw, Undo2, Plus, Link2 } from 'lucide-react';
 import type { Task } from '../types';
-import { useApp } from '../AppContext';
+import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import type { TaskCardController } from '../hooks/useTaskCardController';
 import { TaskCard } from './TaskCard';
-import { mergePr, retryPr, updateTask } from '../api';
+import { mergePr, retryPr, updateTask, adoptPr } from '../api';
 import { launchPhaseDefault } from '../agentActions';
 import { resolveEffectiveAgent } from '../utils';
 
@@ -28,7 +28,10 @@ const PR_BTN_VIOLET = `${PR_BTN} border border-violet-200 text-violet-700 hover:
  * mechanic here is the primitive epics (FLUX-580) will reuse.
  */
 export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }) {
-  const { taskById, triggerRefresh, currentUser, config } = useApp();
+  const { triggerRefresh } = useAppActions();
+  const taskById = useAppSelector((s) => s.taskById);
+  const currentUser = useAppSelector((s) => s.currentUser);
+  const config = useAppSelector((s) => s.config);
   const [unwound, setUnwound] = useState(false);
   const [confirmMerge, setConfirmMerge] = useState(false);
   const [merging, setMerging] = useState(false);
@@ -46,9 +49,20 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
   const [reworkStart, setReworkStart] = useState(false);
   const [reworkBusy, setReworkBusy] = useState(false);
   const [reworkErr, setReworkErr] = useState('');
+  // Continue-development prompt (FLUX-569) — a zero-member (unattached) PR adopts/creates a
+  // ticket to hold its work so it folds into the deck.
+  const [continuing, setContinuing] = useState(false);
+  const [continueMode, setContinueMode] = useState<'create' | 'adopt'>('create');
+  const [continueTitle, setContinueTitle] = useState('');
+  const [continueTicketId, setContinueTicketId] = useState('');
+  const [continueBusy, setContinueBusy] = useState(false);
+  const [continueErr, setContinueErr] = useState('');
 
   const members = (task.members ?? []).map((id) => taskById.get(id)).filter((t): t is Task => !!t);
   const memberCount = members.length;
+  // Members a merge would sweep to Done that aren't finished yet (drives the merge-confirm warning
+  // + the shared-PR force — FLUX-569).
+  const nonDoneMembers = members.filter((m) => m.status !== 'Done');
   const changesRequested = task.swimlane === 'changes-requested';
   // Hide the open action bar (Review/Merge) once the PR is merged/closed OR the card is Done.
   const isResolved = task.prState === 'MERGED' || task.prState === 'CLOSED' || task.status === 'Done';
@@ -61,13 +75,39 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
     setMerging(true);
     setMergeErr('');
     try {
-      await mergePr(task.id);
+      // force:true — the confirm step below already shows which non-Done members get swept to
+      // Done, so this click IS the explicit confirmation the shared-PR guard asks for (FLUX-569).
+      await mergePr(task.id, { force: true });
       triggerRefresh();
     } catch (e) {
       setMergeErr(e instanceof Error ? e.message : 'Merge failed');
     } finally {
       setMerging(false);
       setConfirmMerge(false);
+    }
+  };
+
+  // Continue development on an unattached (zero-member) PR (FLUX-569): adopt an existing ticket
+  // or create a fresh one, bound to this PR's branch, so the work has a home that folds in.
+  const doContinue = async () => {
+    setContinueErr('');
+    if (continueMode === 'create' && !continueTitle.trim()) { setContinueErr('Enter a title for the new ticket.'); return; }
+    if (continueMode === 'adopt' && !continueTicketId.trim()) { setContinueErr('Enter a ticket ID to adopt (e.g. FLUX-42).'); return; }
+    setContinueBusy(true);
+    try {
+      if (continueMode === 'create') {
+        await adoptPr(task.id, { mode: 'create', title: continueTitle.trim(), updatedBy: currentUser });
+      } else {
+        await adoptPr(task.id, { mode: 'adopt', ticketId: continueTicketId.trim(), updatedBy: currentUser });
+      }
+      triggerRefresh();
+      setContinuing(false);
+      setContinueTitle('');
+      setContinueTicketId('');
+    } catch (e) {
+      setContinueErr(e instanceof Error ? e.message : 'Failed to continue development');
+    } finally {
+      setContinueBusy(false);
     }
   };
 
@@ -142,7 +182,9 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
             <AlertTriangle className="h-3 w-3" /> Changes requested
           </span>
         )}
-        {reviewChip(task.reviewDecision ?? null)}
+        {/* Drop the redundant CHANGES_REQUESTED review chip when the dedicated "Changes
+            requested" pill above already conveys it (FLUX-594) — keep any other decision. */}
+        {reviewChip(changesRequested && task.reviewDecision === 'CHANGES_REQUESTED' ? null : (task.reviewDecision ?? null))}
         {/* Single-session running badge — when an agent (e.g. a review) runs ON the PR but
             isn't a live orchestration (no CardClusterPanel). Multi/orchestration sessions show
             the full HAND-OFF panel above instead. FLUX-567 regression fix. */}
@@ -174,8 +216,53 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
             </div>
           )}
         </div>
+      ) : continuing ? (
+        // Unattached PR (FLUX-569): adopt an existing ticket or create a fresh one to hold the work.
+        <div className="mb-1 border-t border-violet-200/60 pt-2 dark:border-violet-500/20">
+          <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-violet-600 dark:text-violet-400">Continue development</p>
+          <div className="mb-1.5 flex items-center gap-1 rounded-md bg-violet-50/60 p-0.5 text-[11px] dark:bg-violet-500/10">
+            <button onClick={() => setContinueMode('create')} className={`flex-1 rounded px-2 py-0.5 font-semibold transition-colors ${continueMode === 'create' ? 'bg-violet-600 text-white' : 'text-violet-700 hover:bg-violet-100/60 dark:text-violet-300'}`}>Create ticket</button>
+            <button onClick={() => setContinueMode('adopt')} className={`flex-1 rounded px-2 py-0.5 font-semibold transition-colors ${continueMode === 'adopt' ? 'bg-violet-600 text-white' : 'text-violet-700 hover:bg-violet-100/60 dark:text-violet-300'}`}>Adopt existing</button>
+          </div>
+          {continueMode === 'create' ? (
+            <input
+              autoFocus
+              value={continueTitle}
+              onChange={(e) => setContinueTitle(e.target.value)}
+              placeholder="New ticket title…"
+              className="w-full rounded-md border border-gray-200 bg-white px-2 py-1.5 text-[11px] text-gray-800 outline-none focus:border-violet-400 dark:border-white/10 dark:bg-[#1f2028] dark:text-gray-100"
+            />
+          ) : (
+            <input
+              autoFocus
+              value={continueTicketId}
+              onChange={(e) => setContinueTicketId(e.target.value)}
+              placeholder="Ticket ID to adopt (e.g. FLUX-42)…"
+              className="w-full rounded-md border border-gray-200 bg-white px-2 py-1.5 text-[11px] text-gray-800 outline-none focus:border-violet-400 dark:border-white/10 dark:bg-[#1f2028] dark:text-gray-100"
+            />
+          )}
+          <div className="mt-1.5 flex items-center justify-end gap-1">
+            <button disabled={continueBusy} onClick={doContinue} className="flex items-center gap-1 rounded-md bg-violet-600 px-2.5 py-1 text-[11px] font-semibold text-white transition-colors hover:bg-violet-700 disabled:opacity-50">
+              {continueBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : continueMode === 'create' ? <Plus className="h-3 w-3" /> : <Link2 className="h-3 w-3" />}
+              {continueBusy ? 'Working…' : continueMode === 'create' ? 'Create & fold in' : 'Adopt & fold in'}
+            </button>
+            <button disabled={continueBusy} onClick={() => { setContinuing(false); setContinueErr(''); }} className="rounded-md px-2 py-1 text-[11px] font-medium text-gray-500 hover:bg-gray-100 disabled:opacity-50 dark:hover:bg-white/5">Cancel</button>
+          </div>
+          {continueErr && <p role="alert" className="mt-1 text-[11px] text-red-600 dark:text-red-400">{continueErr}</p>}
+        </div>
       ) : (
-        <p className="mb-1 text-[11px] italic text-gray-500 dark:text-gray-400">No tickets folded in yet — start work on a linked ticket to fold it in.</p>
+        <div className="mb-1">
+          <p className="mb-1 text-[11px] italic text-gray-500 dark:text-gray-400">No tickets folded in yet — this PR has no ticket holding its work.</p>
+          {!isResolved && (
+            <button
+              onClick={() => { setContinueErr(''); setContinuing(true); }}
+              title="Continue development — adopt an existing ticket or create one bound to this PR's branch"
+              className={PR_BTN_VIOLET}
+            >
+              <Wrench className="h-3 w-3" /> Continue development
+            </button>
+          )}
+        </div>
       )}
 
       {/* PR-level actions — Review opens the launcher (reusing the controller's, which TaskCard
@@ -210,7 +297,11 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
         <div className={`flex items-center gap-1 border-violet-200/60 transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] dark:border-violet-500/20 ${confirmMerge ? 'mt-2 max-h-40 overflow-visible border-t pt-2 opacity-100' : 'mt-0 max-h-0 overflow-hidden opacity-0 group-hover:mt-2 group-hover:max-h-20 group-hover:overflow-visible group-hover:border-t group-hover:pt-2 group-hover:opacity-100'}`}>
           {confirmMerge ? (
             <>
-              <span className="mr-auto text-[11px] font-medium text-gray-600 dark:text-gray-300">Merge &amp; advance?</span>
+              <span className="mr-auto text-[11px] font-medium text-gray-600 dark:text-gray-300">
+                {nonDoneMembers.length > 0
+                  ? `Merge & advance ${nonDoneMembers.length} unfinished ticket(s) (${nonDoneMembers.map((m) => m.id).join(', ')}) to Done?`
+                  : 'Merge & advance?'}
+              </span>
               <button
                 disabled={merging}
                 onClick={doMerge}
@@ -230,13 +321,27 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
                     when you spot an issue pre-merge — keeps the same branch). Merge is primary
                     unless changes were requested. All equal-width (flex-1) so the bar is symmetrical. */}
               {(changesRequested || task.status === 'In Progress') ? (
-                <button
-                  onClick={() => c.openLauncherInPhase('implementation')}
-                  title="Continue development — launch a dev agent on this PR's branch"
-                  className={changesRequested ? PR_BTN_PRIMARY : PR_BTN_OUTLINE}
-                >
-                  <Wrench className="h-3 w-3" /> Continue dev
-                </button>
+                <>
+                  <button
+                    onClick={() => c.openLauncherInPhase('implementation')}
+                    title="Continue development — launch a dev agent on this PR's branch"
+                    className={changesRequested ? PR_BTN_PRIMARY : PR_BTN_OUTLINE}
+                  >
+                    <Wrench className="h-3 w-3" /> Continue dev
+                  </button>
+                  {/* Keep re-review reachable inline while changes-requested (FLUX-594): the loop
+                      is Review → Continue-dev → push → re-review → Merge, so don't force the user
+                      to the full surface just to re-trigger review after pushing fixes. */}
+                  {changesRequested && (
+                    <button
+                      onClick={() => c.openLauncherInPhase('review')}
+                      title="Re-review — launch a reviewer agent again after pushing fixes"
+                      className={PR_BTN_OUTLINE}
+                    >
+                      <ShieldCheck className="h-3 w-3" /> Re-review
+                    </button>
+                  )}
+                </>
               ) : (
                 <>
                   <button

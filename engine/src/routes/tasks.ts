@@ -22,6 +22,8 @@ import { computeAgentPayloadMetrics } from '../agent-payload-metrics.js';
 import { computeContextBudget } from '../context-budget-metrics.js';
 import { probeAllMcpSchemas } from '../mcp-schema-probe.js';
 import { getEffectiveSpawnServers } from '../agents/claude-code.js';
+import { diffFilesForBranch } from '../diff-aggregator.js';
+import { selectMembers, sharedNonDoneSiblings } from '../pr-tickets.js';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 
@@ -911,14 +913,15 @@ router.post('/:id/pr', async (req, res) => {
   try {
     const prBody = `${task.body ? task.body.slice(0, 800) : ''}\n\n---\nTicket: ${id}`;
     const url = await createPullRequest(task.branch, task.title || id, prBody);
-    // Set the open-pr swimlane on every ticket sharing the branch (branch-scoped PR) so
-    // they all surface in the "Open PRs" group + glow (FLUX-558).
+    // Stamp the PR link on every ticket sharing the branch (branch-scoped PR). The PR's surface
+    // is now its own `PR-<n>` deck card (created by syncPrTickets on the next poll) — the FLUX-558
+    // `open-pr` swimlane/glow on member tickets is retired (FLUX-569), so we no longer set it.
     const branchTickets = (Object.values(tasksCache) as any[]).filter((t) => t.branch === task.branch);
     for (const t of branchTickets) {
       await updateTaskWithHistory(t.id, {
         updatedBy: 'Agent',
         entries: t.id === id ? [buildActivityEntry(`PR raised: ${url}`, 'Agent', new Date().toISOString())] : [],
-        extraFields: { implementationLink: url, swimlane: 'open-pr' },
+        extraFields: { implementationLink: url },
       });
       if (t.id !== id) broadcastEvent('taskUpdated', { id: t.id });
     }
@@ -952,6 +955,22 @@ router.post('/:id/pr/merge', async (req, res) => {
     });
   }
 
+  // Finish-on-shared-PR guard (FLUX-569, from the FLUX-556/PR#6 incident): a merge advances ALL
+  // branch tickets → Done. When non-terminal siblings are bundled in, that's a one-way door, so
+  // require explicit confirmation (`force:true`) and surface exactly who would be swept along.
+  // The PR deck card lists them in its merge confirm and then re-sends with force.
+  const force = req.body?.force === true;
+  if (!force) {
+    const nonDone = sharedNonDoneSiblings(Object.values(tasksCache) as any[], branch, id);
+    if (nonDone.length > 0) {
+      return res.status(409).json({
+        error: `Merging \`${branch}\` would advance ${nonDone.length} unfinished ticket(s) to Done: ${nonDone.map((t) => `${t.id} (${t.status})`).join(', ')}. Confirm to merge the whole shared PR anyway.`,
+        sharedNonDone: nonDone.map((t) => ({ id: t.id, status: t.status, title: t.title })),
+        requiresForce: true,
+      });
+    }
+  }
+
   if (!(await checkGhAuth())) {
     return res.status(409).json({ error: 'gh is not authenticated (or no GitHub remote).', unavailable: true });
   }
@@ -977,6 +996,75 @@ router.post('/:id/pr/merge', async (req, res) => {
   }
 
   res.json({ merged: true, ...cleanup });
+});
+
+// Continue development on a PR by binding work to its branch (FLUX-569 AC1). A zero-member PR
+// ticket — e.g. a PR opened directly on GitHub with no EH ticket — has nothing holding its work,
+// so "Continue development" offers two ways to give it a home that folds into the deck:
+//  - mode 'adopt'  → rebind an EXISTING ticket to the PR's branch + move it to In Progress.
+//  - mode 'create' → create a FRESH ticket bound to the branch (status In Progress).
+// Either way the new member is work-gated In Progress on the branch, so it folds into the deck;
+// we recompute + stamp the PR ticket's members immediately rather than wait for the 90s poll.
+router.post('/:id/pr/adopt', async (req, res) => {
+  const { id } = req.params;
+  const pr = tasksCache[id] as any;
+  if (!pr) return res.status(404).json({ error: `Ticket ${id} not found` });
+  if (pr.kind !== 'pr') return res.status(409).json({ error: 'Adopt/create is only available for PR tickets.' });
+  const branch: string | undefined = pr.branch;
+  if (!branch) return res.status(409).json({ error: 'PR ticket has no branch to bind work to.' });
+
+  const mode: string = (req.body?.mode ?? '').toString();
+  const author: string = req.body?.updatedBy || 'Unknown';
+
+  try {
+    let memberId: string;
+    if (mode === 'adopt') {
+      const targetId: string = (req.body?.ticketId ?? '').toString().trim();
+      const target = tasksCache[targetId] as any;
+      if (!target) return res.status(404).json({ error: `Ticket ${targetId} not found` });
+      if (target.kind === 'pr') return res.status(409).json({ error: 'Cannot adopt a PR ticket into another PR.' });
+      // Don't silently re-point a ticket that's already bound to a DIFFERENT branch (FLUX-569
+      // lifecycle-edge safety): it's likely a live member of another PR, and rebinding would
+      // orphan it from that PR and abandon committed work on its old branch. Same-branch adopt is
+      // a harmless re-home (it just folds the ticket back in + re-activates it), so allow that.
+      if (target.branch && target.branch !== branch) {
+        return res.status(409).json({
+          error: `Ticket ${targetId} is already bound to branch \`${target.branch}\` — adopting it into PR #${pr.prNumber} (\`${branch}\`) would orphan it from its existing PR and abandon committed work. Detach it from its current branch first, or create a new ticket instead.`,
+        });
+      }
+      await updateTaskWithHistory(targetId, {
+        updatedBy: author,
+        entries: [{ type: 'comment', user: author, comment: `Adopted into PR #${pr.prNumber} — bound to branch \`${branch}\` to continue its work.`, date: new Date().toISOString() }],
+        nextStatus: 'In Progress',
+        extraFields: { branch, ...(target.implementationLink ? {} : { implementationLink: pr.implementationLink }) },
+      });
+      memberId = targetId;
+    } else if (mode === 'create') {
+      const title: string = (req.body?.title ?? '').toString().trim();
+      if (!title) return res.status(400).json({ error: 'A title is required to create a ticket.' });
+      const reqBody = (req.body?.body ?? '').toString().trim();
+      const { id: newId } = await createTask({
+        title,
+        status: 'In Progress',
+        body: reqBody || `Continues the work in PR #${pr.prNumber}${pr.implementationLink ? ` ([link](${pr.implementationLink}))` : ''}.`,
+        author,
+        links: [{ type: 'continues', target: id, label: `PR #${pr.prNumber}` }],
+      });
+      await updateTaskWithHistory(newId, { updatedBy: 'Agent', extraFields: { branch, implementationLink: pr.implementationLink } });
+      memberId = newId;
+    } else {
+      return res.status(400).json({ error: `Unknown mode "${mode}" — expected "adopt" or "create".` });
+    }
+
+    // Fold the new member into the PR deck immediately (don't wait for the 90s sync poll).
+    const members = selectMembers(Object.values(tasksCache) as any[], branch);
+    await upsertManagedTicket(id, { members }).catch(() => {});
+    broadcastEvent('taskUpdated', { id });
+    broadcastEvent('taskUpdated', { id: memberId });
+    res.json({ memberId, members });
+  } catch (err: any) {
+    res.status(500).json({ error: `Adopt/create failed: ${err.message}` });
+  }
 });
 
 // Retry a merged/closed PR (FLUX-593): spawn a NEW ticket linked to the PR via a 'retries'
@@ -1120,6 +1208,24 @@ router.get('/:id/diff', async (req, res) => {
     return;
   }
   res.type('text/plain').send(fullDiff);
+});
+
+// GET /api/tasks/:id/branch-diff — live changed-file summary for the ticket's branch vs
+// the merge-base (FLUX-615), powering the inline diff panel in the chat window. Worktree-
+// aware (same plumbing as /api/diffs/file), so per-file hunks fetched via that endpoint
+// line up with this summary. 404-free for "no branch" — returns an empty summary instead.
+router.get('/:id/branch-diff', async (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+  if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
+  if (!task.branch) return res.json({ branch: null, worktree: null, base: null, files: [] });
+
+  try {
+    const summary = await diffFilesForBranch(workspaceRoot!, task.branch);
+    res.json(summary);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 export default router;

@@ -215,6 +215,49 @@ export async function resolveCommit(rev: string): Promise<string | null> {
   }
 }
 
+// True if `ancestor` is an ancestor of (or identical to) `descendant`. `git merge-base
+// --is-ancestor` exits 0 for true, non-zero for false; any failure (unknown ref) → false.
+export async function isAncestor(ancestor: string, descendant: string): Promise<boolean> {
+  try {
+    await git(['merge-base', '--is-ancestor', ancestor, descendant]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// The fork point of `branch` from `base` (the default branch by default). Tries the local ref
+// first, then the remote-tracking ref — a PR branch synced from gh may not be checked out
+// locally. Returns the merge-base sha, or null if neither ref resolves / there's no common
+// ancestor.
+export async function getMergeBase(branch: string, base?: string): Promise<string | null> {
+  const baseBranch = base ?? (await getDefaultBranch());
+  for (const ref of [branch, `origin/${branch}`]) {
+    try {
+      await git(['rev-parse', '--verify', ref]);
+      const { stdout } = await git(['merge-base', baseBranch, ref]);
+      const mb = stdout.trim();
+      if (mb) return mb;
+    } catch {
+      /* ref not resolvable as written — try the next candidate */
+    }
+  }
+  return null;
+}
+
+// The commit to anchor a ticket's review diff (FLUX-585). For a branch/PR ticket the correct
+// anchor is the branch's fork point from the default branch (merge-base) — NOT whatever the
+// engine's HEAD happened to be when the session launched. HEAD can sit on an unrelated sibling
+// commit, so anchoring there made `baseline..HEAD` diffs surface phantom reversions of work that
+// lives only on that sibling. Branch-less tickets keep the current-HEAD anchor.
+export async function resolveBaselineCommit(branch?: string | null): Promise<string | null> {
+  if (branch) {
+    const mb = await getMergeBase(branch);
+    if (mb) return mb;
+  }
+  return getCurrentCommit();
+}
+
 export interface DiffFileSummary {
   file: string;
   additions: number;
@@ -257,7 +300,12 @@ async function resolveDiffRange(branch?: string | null, baselineCommit?: string 
   if (baselineCommit) {
     try {
       await git(['rev-parse', '--verify', baselineCommit]);
-      return `${baselineCommit}..HEAD`;
+      // Guard against a stale baseline that isn't an ancestor of HEAD (FLUX-585): diffing
+      // baseline..HEAD then surfaces phantom reverts of commits that only ever lived on a
+      // sibling branch. Fall through to the HEAD~1 fallback rather than emit a fictitious diff.
+      if (await isAncestor(baselineCommit, 'HEAD')) {
+        return `${baselineCommit}..HEAD`;
+      }
     } catch {
       /* baseline gone — fall through */
     }

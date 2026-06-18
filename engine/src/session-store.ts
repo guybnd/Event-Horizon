@@ -74,6 +74,11 @@ function toSummary(session: CliSessionRecord): CliSessionSummary {
   if (session.groupVariant) summary.groupVariant = session.groupVariant;
   if (session.lockedPaths) summary.lockedPaths = session.lockedPaths;
   if (session.outputData) summary.outputData = session.outputData;
+  // FLUX-606: the chat can continue (`claude --resume`) any terminal-or-active session
+  // that has a known claudeSessionId — including a dispatched grooming session that ended
+  // `completed`. Expose a boolean (not the raw id) so the frontend resumes that thread
+  // instead of starting a fresh, amnesiac chat.
+  summary.resumable = ['running', 'waiting-input', 'completed'].includes(session.status) && !!session.claudeSessionId;
   return summary;
 }
 

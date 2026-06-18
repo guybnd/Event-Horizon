@@ -24,11 +24,13 @@ export function isTaskAwaitingInput(task: Task): boolean {
   return task.swimlane === 'require-input';
 }
 
-export const OPEN_PR_SWIMLANE = 'open-pr';
+// FLUX-558's `open-pr` swimlane + glow on normal tickets is retired (FLUX-569): a PR's surface
+// is now its own `PR-<n>` deck card, so `hasOpenPr`/`OPEN_PR_SWIMLANE` were removed.
 
-/** A ticket carrying an open PR (engine sets the `open-pr` swimlane when one is raised). */
-export function hasOpenPr(task: Task): boolean {
-  return task.swimlane === OPEN_PR_SWIMLANE;
+/** FLUX-651: a ticket an agent left parked in a working status without taking a board action.
+ *  The engine sets `needsAction` (the reason string) at turn end and clears it on the next action. */
+export function needsAction(task: Task): boolean {
+  return !!task.needsAction;
 }
 
 export function relativeTime(dateStr: string): string {

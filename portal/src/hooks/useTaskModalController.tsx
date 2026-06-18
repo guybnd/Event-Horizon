@@ -1,6 +1,6 @@
 import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Bot, Zap } from 'lucide-react';
-import { useApp } from '../AppContext';
+import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { createTask, deleteTask, fetchTask, sendTaskCliInput, updateTask } from '../api';
 import { runAgentAction, launchOrchestration, launchPhaseDefault, getOrchestrationMode, phaseCombiner, phaseLaunchStatus, type LaunchPhase } from '../agentActions';
 import { type OrchestrationLaunchPlan } from '../components/OrchestrationLauncher';
@@ -26,26 +26,26 @@ function getInitialActivityFilter(): ActivityFilter {
 
 export function useTaskModalController() {
   const {
-    isModalOpen,
     closeModal,
-    modalTask,
     setModalTask,
     openTaskModal,
-    openModalScrollToComments,
     clearOpenModalScrollToComments,
-    openModalInFullView,
-    currentProject,
-    currentUser,
-    refreshTrigger,
     triggerRefresh,
-    config,
     saveConfig,
-    readComments,
     ensureReadStateLoaded,
     markCommentRead: ctxMarkCommentRead,
     markAllCommentsRead: ctxMarkAllCommentsRead,
-    tasks: allTasks,
-  } = useApp();
+  } = useAppActions();
+  const isModalOpen = useAppSelector(s => s.isModalOpen);
+  const modalTask = useAppSelector(s => s.modalTask);
+  const openModalScrollToComments = useAppSelector(s => s.openModalScrollToComments);
+  const openModalInFullView = useAppSelector(s => s.openModalInFullView);
+  const currentProject = useAppSelector(s => s.currentProject);
+  const currentUser = useAppSelector(s => s.currentUser);
+  const refreshTrigger = useAppSelector(s => s.refreshTrigger);
+  const config = useAppSelector(s => s.config);
+  const readComments = useAppSelector(s => s.readComments);
+  const allTasks = useAppSelector(s => s.tasks);
 
   const liveOutputRef = useRef<HTMLPreElement>(null);
   const commentBoxRef = useRef<CommentBoxHandle>(null);

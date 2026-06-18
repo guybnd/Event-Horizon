@@ -1,11 +1,11 @@
 import { useState } from 'react';
 import { Power } from 'lucide-react';
-import { useApp } from '../AppContext';
+import { useAppSelector } from '../store/useAppSelector';
 
 // Stop the local Event Horizon engine. Lives in Settings (top-right, every panel)
 // rather than the top bar so the destructive action is deliberate, not one stray click away.
 export function StopServiceButton() {
-  const { isConnected } = useApp();
+  const isConnected = useAppSelector(s => s.isConnected);
   const [isStopping, setIsStopping] = useState(false);
 
   const handleStop = async () => {

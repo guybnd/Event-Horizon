@@ -2,7 +2,7 @@ import { startTransition, useCallback, useEffect, useRef, useState } from 'react
 import { fetchTaskCliSession, stopTaskCliSession } from '../api';
 import { runAgentAction } from '../agentActions';
 import type { CliFramework, CliSessionSummary } from '../types';
-import { useApp } from '../AppContext';
+import { useAppSelector } from '../store/useAppSelector';
 import { resolveEffectiveAgent } from '../utils';
 
 interface UseCliSessionOptions {
@@ -13,7 +13,8 @@ interface UseCliSessionOptions {
 }
 
 export function useCliSession({ isModalOpen, taskId, liveOutputRef, onSessionChange }: UseCliSessionOptions) {
-  const { config, currentUser } = useApp();
+  const config = useAppSelector(s => s.config);
+  const currentUser = useAppSelector(s => s.currentUser);
   const [cliSession, setCliSession] = useState<CliSessionSummary | null>(null);
   const [cliSessionBusy, setCliSessionBusy] = useState(false);
   const [cliSessionError, setCliSessionError] = useState('');

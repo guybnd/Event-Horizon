@@ -1,5 +1,6 @@
 import type { BoardCardOpenMode } from '../../types';
-import { useApp, THEMES, type AppTheme } from '../../AppContext';
+import { THEMES, type AppTheme } from '../../AppContext';
+import { useAppSelector, useAppActions } from '../../store/useAppSelector';
 import { SettingToggleCard } from './shared';
 import { WorktreesPanel } from './WorktreesPanel';
 
@@ -16,6 +17,8 @@ interface PreferencesSectionProps {
   setHoverPopupsEnabled: (v: boolean) => void;
   hoverPopupDelay: number;
   setHoverPopupDelay: (v: number) => void;
+  commentHoverPreviewEnabled: boolean;
+  setCommentHoverPreviewEnabled: (v: boolean) => void;
   tokenDisplayMode: 'cost' | 'tokens';
   setTokenDisplayMode: (v: 'cost' | 'tokens') => void;
   tokenCostThresholds: { green: number; yellow: number };
@@ -45,6 +48,8 @@ export function PreferencesSection({
   setHoverPopupsEnabled,
   hoverPopupDelay,
   setHoverPopupDelay,
+  commentHoverPreviewEnabled,
+  setCommentHoverPreviewEnabled,
   tokenDisplayMode,
   setTokenDisplayMode,
   tokenCostThresholds,
@@ -60,7 +65,8 @@ export function PreferencesSection({
   releaseNotesPath,
   setReleaseNotesPath,
 }: PreferencesSectionProps) {
-  const { theme, setAppTheme } = useApp();
+  const { setAppTheme } = useAppActions();
+  const theme = useAppSelector(s => s.theme);
 
   const themeSwatches: Record<AppTheme, { base: string; accent: string; texture: string }> = {
     light: { base: '#f9fafb', accent: '#aa3bff', texture: '' },
@@ -236,6 +242,13 @@ export function PreferencesSection({
             </div>
           )}
         </SettingToggleCard>
+
+        <SettingToggleCard
+          title="Comment Hover Preview"
+          description="Open a card's comment popover when you hover its comment badge. Off by default — clicking the badge always opens it."
+          checked={commentHoverPreviewEnabled}
+          onChange={setCommentHoverPreviewEnabled}
+        />
 
         <SettingToggleCard
           title="Show Token Count Instead of Cost"
