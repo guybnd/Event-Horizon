@@ -211,8 +211,8 @@ export interface PendingCombinerSpec {
   role: string;
   appendPrompt: string;
   skipPermissions: boolean;
-  groupType?: ExecutionPattern;
-  groupVariant?: 'combiner' | 'headless';
+  groupType?: ExecutionPattern | undefined;
+  groupVariant?: 'combiner' | 'headless' | undefined;
   /** Number of worker sessions the combiner must wait for. Guards against
    *  launching before every worker has registered (fast-completion race). */
   expectedWorkers: number;
@@ -435,6 +435,17 @@ export function validatePatternSupport(framework: CliFramework, pattern: Executi
     return `${framework} does not support relay (no session resume) — use as fire-and-forget only`;
   }
   return null;
+}
+
+/** FLUX-604: all currently-active sessions across the whole board (orchestrator situational awareness). */
+export function getAllActiveSessions(): CliSessionRecord[] {
+  const out: CliSessionRecord[] = [];
+  for (const session of cliSessionsById.values()) {
+    if (session.status === 'running' || session.status === 'waiting-input' || session.status === 'pending') {
+      out.push(session);
+    }
+  }
+  return out;
 }
 
 export function getActiveSessionCount(): number {

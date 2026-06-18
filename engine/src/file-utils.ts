@@ -114,7 +114,7 @@ export function resolveSupportedImageExtension(fileName: string, mimeType: strin
 export function normalizeBase64Content(content: string) {
   const trimmedContent = content.trim();
   const match = trimmedContent.match(/^data:[^;]+;base64,(.+)$/i);
-  return (match ? match[1] : trimmedContent).replace(/\s+/g, '');
+  return (match ? match[1]! : trimmedContent).replace(/\s+/g, '');
 }
 
 export async function createUniqueAssetFileName(directoryPath: string, requestedFileName: string) {

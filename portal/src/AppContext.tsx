@@ -14,6 +14,7 @@ export interface ThemeDef {
   baseMode: 'light' | 'dark';
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- theme table colocated with the app context that owns it; consumed as data, not a component.
 export const THEMES: ThemeDef[] = [
   { name: 'light', label: 'Light', baseMode: 'light' },
   { name: 'dark', label: 'Dark', baseMode: 'dark' },
@@ -186,6 +187,8 @@ interface AppState {
   openModalInFullView: boolean;
   tasks: Task[];
   taskById: Map<string, Task>;
+  /** branch → PR ticket id, for the `→ PR-n` pile marker on linked-but-unfolded tickets. */
+  prByBranch: Map<string, string>;
   /** Branches that currently have a live git worktree (FLUX-516) — powers badges + filter. */
   worktreeBranches: Set<string>;
   worktrees: WorktreeInfo[];
@@ -202,6 +205,10 @@ interface AppState {
   lastRefreshAt: number | null;
   isWindowVisible: boolean;
   isConnected: boolean;
+  /** Subscribe to a raw engine SSE event ('activity' | 'progress' | 'taskUpdated' |
+   *  'permission-request' | 'permission-resolved'). Returns an unsubscribe fn — lets chat
+   *  surfaces react to the one shared stream instead of each running their own poller (FLUX-611). */
+  subscribeToEvent: (eventType: string, handler: (data: unknown) => void) => () => void;
   workspaceConfigured: boolean;
   workspacePath: string | null;
   notifyWorkspaceSet: () => void;
@@ -279,6 +286,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const taskById = useMemo(() => {
     const map = new Map<string, Task>();
     for (const t of tasks) map.set(t.id, t);
+    return map;
+  }, [tasks]);
+  // branch → PR ticket id (FLUX-567). A rendered normal ticket whose branch is in this map
+  // is a "pile" ticket linked to that PR (members fold into the deck and aren't rendered),
+  // so it gets a `→ PR-n` marker on its card.
+  const prByBranch = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const t of tasks) if (t.kind === 'pr' && t.branch) map.set(t.branch, t.id);
     return map;
   }, [tasks]);
   const [tasksLoading, setTasksLoading] = useState(true);
@@ -564,6 +579,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const clearOpenModalScrollToComments = () => setOpenModalScrollToComments(false);
 
   const closeModal = () => {
+    // Clear URL params synchronously before the state update so the "reopen from URL"
+    // effect can't race and re-open the modal when it sees ?ticket still set.
+    const url = new URL(window.location.href);
+    if (url.searchParams.has('ticket')) {
+      url.searchParams.delete('ticket');
+      url.searchParams.delete('view');
+      window.history.replaceState({}, '', url);
+    }
     setIsModalOpen(false);
     setOpenModalInFullView(false);
     setTimeout(() => setModalTask(null), 1000);
@@ -764,7 +787,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setWorkspaceConfigured(configured);
           setWorkspacePath(health.workspace ?? null);
         }
-      } catch (err) {
+      } catch {
         if (!cancelled) setIsConnected(false);
       }
       
@@ -821,10 +844,33 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, [loadTasks, loadParseErrors]);
 
+  // FLUX-611: one shared subscription bus over the single SSE connection below. Chat
+  // surfaces (transcript, dock, approvals) register here and react to pushed events,
+  // instead of each opening its own EventSource or running a 1–1.5s polling loop.
+  const eventSubsRef = useRef<Map<string, Set<(data: unknown) => void>>>(new Map());
+  const subscribeToEvent = useCallback((eventType: string, handler: (data: unknown) => void) => {
+    let set = eventSubsRef.current.get(eventType);
+    if (!set) { set = new Set(); eventSubsRef.current.set(eventType, set); }
+    set.add(handler);
+    return () => { set!.delete(handler); };
+  }, []);
+
   // SSE: receive instant activity pushes from the engine instead of polling for them.
   useEffect(() => {
     if (!isConnected) return;
     const es = new EventSource('/api/events');
+    // Fan the events chat surfaces care about out to bus subscribers. Added as separate
+    // listeners (EventSource allows many per type) so the built-in handlers stay untouched.
+    const forward = (type: string, data: unknown) => {
+      const set = eventSubsRef.current.get(type);
+      if (!set) return;
+      for (const h of set) { try { h(data); } catch { /* isolate subscriber errors */ } }
+    };
+    for (const type of ['activity', 'progress', 'taskUpdated', 'permission-request', 'permission-resolved']) {
+      es.addEventListener(type, (e: MessageEvent) => {
+        try { forward(type, JSON.parse(e.data)); } catch { /* non-JSON payload — skip */ }
+      });
+    }
     es.addEventListener('activity', (e: MessageEvent) => {
       const { taskId, activity } = JSON.parse(e.data) as { taskId: string; activity: string | null };
       startTransition(() => {
@@ -1000,6 +1046,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setModalTask,
       tasks,
       taskById,
+      prByBranch,
       worktreeBranches,
       worktrees,
       refreshWorktrees,
@@ -1012,6 +1059,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       lastRefreshAt,
       isWindowVisible,
       isConnected,
+      subscribeToEvent,
       workspaceConfigured, workspacePath, notifyWorkspaceSet, workspaces, switchWorkspace, refreshWorkspaces,
       config, saveConfig,
       readComments, totalUnreadCount, ensureReadStateLoaded, markCommentRead, markAllCommentsRead,
@@ -1025,6 +1073,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- canonical context hook, idiomatically colocated with its provider and used by 30+ components.
 export function useApp() {
   const ctx = useContext(AppContext);
   if (!ctx) throw new Error('useApp must be used within AppProvider');

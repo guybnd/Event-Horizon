@@ -1,4 +1,4 @@
-import { spawn, execSync, execFileSync } from 'child_process';
+import { spawn, execSync, execFileSync, type ChildProcessWithoutNullStreams } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { configCache } from '../config.js';
@@ -8,13 +8,14 @@ import { resolveTaskExecutionRoot } from '../task-worktree.js';
 import { workspaceRoot as canonicalWorkspaceRoot } from '../workspace.js';
 import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
+import { appendTranscriptLine, appendTranscriptEvent } from '../transcript.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
 import { buildMemberScopeArgs } from '../group.js';
 import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
 import { getModulePromptFragments, getModuleMcpServers, getActiveModules, getWorkspaceMcpServers } from '../modules.js';
 import { getProbeStatus } from '../module-probe.js';
 import { getSharedServerUrl, isSharedHttpPlatformProven } from '../shared-mcp-server.js';
-import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
+import type { AgentAdapter, CliSessionRecord, ProviderManifest, CliFramework } from './types.js';
 
 function checkBinaryInstalled(binaryName: string): void {
   const checker = process.platform === 'win32' ? 'where' : 'which';
@@ -115,6 +116,10 @@ function buildSpawnMcpConfigArgs(phase?: string, tags?: string[]): string[] {
     return buildModuleMcpConfigArgs(phase, tags);
   }
   if (Object.keys(filtered).length === 0) return [];
+  // FLUX-604: keep the agent's OWN ticket tools loaded directly — no tool-search
+  // deferral loop (the orchestrator was re-searching get_ticket ~10x before calling
+  // it). Requires Claude Code >= 2.1.121.
+  if (filtered['event-horizon']) filtered['event-horizon'] = { ...filtered['event-horizon'], alwaysLoad: true };
   return ['--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: filtered })];
 }
 
@@ -156,7 +161,7 @@ export function getEffectiveSpawnServers(phase?: string, tags?: string[]): { str
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 type EffortLevel = typeof EFFORT_LEVELS[number];
 
-export const PROVIDER_CAPABILITIES = {
+export const PROVIDER_CAPABILITIES: Partial<Record<CliFramework, { supportsEffort: boolean; effortFlag: string }>> = {
   claude: { supportsEffort: true, effortFlag: '--effort' },
   copilot: { supportsEffort: false, effortFlag: '' },
 };
@@ -261,6 +266,15 @@ export function buildInitialPrompt(task: any, appendPrompt: string, opts?: { dif
     // Phase-aware instructions take priority when the portal tells us the intent.
     if (opts?.phase) {
       switch (opts.phase) {
+        case 'chat':
+          // FLUX-602: free-form conversational session bound to a ticket. The user's
+          // message arrives via appendPrompt above — do NOT inject a mission. Discourage
+          // unsolicited state changes; the user drives.
+          return `## Conversational session\n\n` +
+            `This is a free-form chat about ticket ${task.id}. Respond conversationally to the user's message above — answer questions, discuss, and help.\n` +
+            `Do NOT change the ticket status, edit files, commit, or take other irreversible actions unless the user explicitly asks. ` +
+            `Read-only context tools (get_ticket, list_tickets, get_board_config) and add_comment / log_progress are fine when they help.\n\n` +
+            mcpNote;
         case 'grooming':
           return `## Your Mission: GROOM this ticket\n\n` +
             `1. Use update_ticket to fill metadata (priority, effort, tags) and rewrite the body with a Problem/Motivation section and Implementation Plan.\n` +
@@ -354,7 +368,7 @@ export function attachStdoutProcessing(
   };
 
   let lineBuf = '';
-  proc.stdout.on('data', (chunk: Buffer) => {
+  proc.stdout!.on('data', (chunk: Buffer) => {
     lineBuf += chunk.toString();
     const lines = lineBuf.split('\n');
     lineBuf = lines.pop() ?? '';
@@ -363,6 +377,8 @@ export function attachStdoutProcessing(
       if (!trimmed) continue;
       try {
         const evt = JSON.parse(trimmed);
+        // FLUX-602: tee every raw stream-json line to the durable per-ticket transcript.
+        appendTranscriptLine(taskId, trimmed);
         if (!session.claudeSessionId && evt.session_id) {
           session.claudeSessionId = evt.session_id;
         }
@@ -474,6 +490,27 @@ export function attachStdoutProcessing(
   return commitPendingAssistantText;
 }
 
+// FLUX-604: per-conversation --model/--effort args from the chat picker, read off
+// the session record. `defaultEffort` applies only when the user hasn't picked one.
+function modelEffortArgs(session: CliSessionRecord, defaultEffort?: string): string[] {
+  const args: string[] = [];
+  if (session.model) args.push('--model', session.model);
+  const picked = session.effortOverride && (EFFORT_LEVELS as readonly string[]).includes(session.effortOverride)
+    ? session.effortOverride
+    : defaultEffort;
+  if (picked) args.push('--effort', picked);
+  return args;
+}
+
+// FLUX-605: permission flag per session. 'gated' routes tool decisions through the EH
+// permission_prompt MCP tool; 'skip' (or legacy skipPermissions) uses
+// --dangerously-skip-permissions. Mutually exclusive.
+function permissionArgs(session: CliSessionRecord): string[] {
+  if (session.permissionMode === 'gated') return ['--permission-prompt-tool', 'mcp__event-horizon__permission_prompt'];
+  if (session.permissionMode === 'skip' || session.skipPermissions) return ['--dangerously-skip-permissions'];
+  return [];
+}
+
 export async function startCliSession(session: CliSessionRecord, task: any, appendPrompt: string, effortOverrideRaw: string, workspaceRoot: string) {
   const framework = session.framework;
   const binaryName = framework === 'claude' ? 'claude' : 'copilot';
@@ -493,12 +530,13 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
 
   const initialPrompt = buildInitialPrompt(task, appendPrompt, { diffBlock: session.diffBlock, phase: session.phase });
 
+  const modelToUse = session.model || selectedModel;
   const claudeArgs = [
-    ...(selectedModel ? ['--model', selectedModel] : []),
+    ...(modelToUse ? ['--model', modelToUse] : []),
     '-p', initialPrompt,
     '--output-format', 'stream-json',
     '--verbose',
-    ...(session.skipPermissions ? ['--dangerously-skip-permissions'] : []),
+    ...permissionArgs(session),
     // Multi-repo group: put every checked-out member repo in scope (no-op single-repo).
     ...buildMemberScopeArgs(),
     // Member worktree: add local .flux-group/ so the agent reads shared group docs (FLUX-422).
@@ -507,10 +545,10 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     ...(framework === 'claude' ? buildSpawnMcpConfigArgs(session.phase, Array.isArray(task.tags) ? task.tags : undefined) : []),
   ];
 
-  const caps = PROVIDER_CAPABILITIES[framework] ?? PROVIDER_CAPABILITIES['copilot'];
+  const caps = PROVIDER_CAPABILITIES[framework] ?? PROVIDER_CAPABILITIES['copilot']!;
   const globalEffort = (configCache as any).effortLevel as string | undefined;
   const taskEffort = (task as any).effortLevel as string | undefined;
-  const effectiveEffort = (effortOverrideRaw || taskEffort || globalEffort || '') as string;
+  const effectiveEffort = (session.effortOverride || effortOverrideRaw || taskEffort || globalEffort || '') as string;
   if (caps.supportsEffort && EFFORT_LEVELS.includes(effectiveEffort as EffortLevel)) {
     claudeArgs.push(caps.effortFlag, effectiveEffort);
   }
@@ -553,14 +591,14 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
       stdio: 'pipe',
     });
   }
-  session.proc = proc;
+  session.proc = proc as ChildProcessWithoutNullStreams;
   session.pid = proc.pid;
   session.status = 'running';
   session.args = claudeArgs;
 
   const commitPending = attachStdoutProcessing(proc, session, id);
 
-  proc.stderr.on('data', (chunk) => {
+  proc.stderr!.on('data', (chunk) => {
     appendSessionOutput(session, chunk, 'stderr', false);
   });
 
@@ -648,9 +686,18 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
       // Do NOT set endedAt — session is still alive, waiting for user reply.
       finalStatus = 'waiting-input';
     } else if (code === 0) {
-      session.endedAt = new Date().toISOString();
-      session.status = 'completed';
-      finalStatus = 'completed';
+      if (session.phase === 'chat') {
+        // FLUX-602: per-ticket chat is a persistent conversation — a finished turn
+        // stays resumable (waiting-input) instead of going terminal, so the next
+        // message --resumes the same session (one session, one history entry,
+        // full memory) rather than spawning a fresh, amnesiac one.
+        session.status = 'waiting-input';
+        finalStatus = 'waiting-input';
+      } else {
+        session.endedAt = new Date().toISOString();
+        session.status = 'completed';
+        finalStatus = 'completed';
+      }
     } else {
       session.endedAt = new Date().toISOString();
       session.status = 'failed';
@@ -807,6 +854,9 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   session.status = 'running';
   session.pausedForInput = false;
 
+  // FLUX-602: record the user's turn in the durable transcript (raw tier).
+  appendTranscriptEvent(id, { type: 'user', text: message, timestamp: inputAt });
+
   await updateTaskWithHistory(id, {
     updatedBy: user,
     entries: [buildCommentEntry(user, message, inputAt)],
@@ -816,9 +866,10 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   const memberScopeArgs = [...buildMemberScopeArgs(), ...buildGroupDocsScopeArg(workspaceRoot)];
   const task = tasksCache[id] as any;
   const moduleMcpArgs = buildSpawnMcpConfigArgs(session.phase, Array.isArray(task?.tags) ? task.tags : undefined);
+  const meArgs = modelEffortArgs(session);
   const resumeArgs = session.claudeSessionId
-    ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions', ...memberScopeArgs, ...moduleMcpArgs]
-    : ['-p', safeMessage, '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions', ...memberScopeArgs, ...moduleMcpArgs];
+    ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', ...meArgs, ...permissionArgs(session), ...memberScopeArgs, ...moduleMcpArgs]
+    : ['-p', safeMessage, '--output-format', 'stream-json', '--verbose', ...meArgs, ...permissionArgs(session), ...memberScopeArgs, ...moduleMcpArgs];
 
   let replyProc: ReturnType<typeof spawn>;
   if (process.platform === 'win32') {
@@ -853,12 +904,12 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       windowsHide: true,
     });
   }
-  session.proc = replyProc;
+  session.proc = replyProc as ChildProcessWithoutNullStreams;
   session.pid = replyProc.pid;
 
   const commitReplyPending = attachStdoutProcessing(replyProc, session, id);
 
-  replyProc.stderr.on('data', (chunk) => {
+  replyProc.stderr!.on('data', (chunk) => {
     appendSessionOutput(session, chunk, 'stderr', false);
   });
 
@@ -878,4 +929,111 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     flushSessionOutput(session, true);
     session.status = 'waiting-input';
   });
+}
+
+// ===========================================================================
+// FLUX-604: board-level orchestrator session — a persistent chat for the whole
+// board, NOT bound to any ticket. Isolated from the per-ticket path on purpose
+// (no regression risk). It deliberately has NO sessionHistoryEntry, so every
+// ticket-history write in the per-ticket lifecycle (all guarded by
+// `if (session.sessionHistoryEntry)`) is naturally skipped — the durable record
+// is the transcript (<fluxDir>/transcripts/__board__.jsonl) via attachStdoutProcessing.
+// ===========================================================================
+
+export const BOARD_CONVERSATION_ID = '__board__';
+
+function spawnClaudeForBoard(claudeArgs: string[], executionRoot: string): ReturnType<typeof spawn> {
+  if (process.platform === 'win32') {
+    let exePath: string | null = null;
+    try {
+      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', timeout: 10_000, windowsHide: true }).trim();
+      const candidateExe = path.join(npmPrefix, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
+      if (fs.existsSync(candidateExe)) exePath = candidateExe;
+    } catch (err) {
+      console.log('[board] Failed to resolve claude.exe path:', err);
+    }
+    if (!exePath) {
+      throw new Error('claude.exe not found. Please install @anthropic-ai/claude-code globally: npm install -g @anthropic-ai/claude-code');
+    }
+    return spawn(exePath, claudeArgs, { cwd: executionRoot, env: cleanChildEnv(), stdio: 'pipe', windowsHide: true });
+  }
+  return spawn('claude', claudeArgs, { cwd: executionRoot, env: cleanChildEnv(), stdio: 'pipe', windowsHide: true });
+}
+
+function buildBoardPrompt(firstMessage: string): string {
+  return [
+    'You are the Event Horizon board orchestrator — a persistent chat for the whole board, not tied to any single ticket. You are powerful: you have the full "event-horizon" MCP toolset (list/get/create/update tickets, change_status, branches, comments, …) plus file reading, editing, bash, and subagents. Use whatever the task genuinely calls for.',
+    '',
+    'Match the weight of your response to the weight of the request. For a greeting or a simple question, just reply in a sentence or two — don\'t go investigate. When a task actually needs depth — reasoning across the board, doing real work on a ticket, parallel research — bring your full toolkit to bear, including subagents. Quick for quick, thorough for thorough: don\'t gather context you don\'t need, and don\'t skimp on work that does.',
+    'For board and ticket actions, prefer the event-horizon MCP tools over editing ticket files by hand.',
+    'When the user asks to GROOM, IMPLEMENT, REVIEW, or FINALIZE a specific ticket, DISPATCH it rather than doing that ticket\'s work here: call start_session(ticketId, phase) to launch the phase session on that ticket (it runs in the ticket\'s own scope and returns immediately), then tell the user to open that ticket\'s chat to drive it.',
+    'Propose and CONFIRM before anything destructive or irreversible (status changes, deletions). Don\'t silently restructure the board.',
+    'You run at the workspace root, with the whole board in scope.',
+    '',
+    firstMessage,
+  ].join('\n');
+}
+
+function boardMcpArgs(): string[] {
+  return buildSpawnMcpConfigArgs(undefined, undefined);
+}
+
+function wireBoardProc(proc: ReturnType<typeof spawn>, session: CliSessionRecord, onExitStatus: () => void) {
+  session.proc = proc as ChildProcessWithoutNullStreams;
+  session.pid = proc.pid;
+  const commitPending = attachStdoutProcessing(proc, session, BOARD_CONVERSATION_ID);
+  proc.stderr!.on('data', (chunk) => appendSessionOutput(session, chunk, 'stderr', false));
+  proc.on('error', (error) => {
+    session.status = 'failed';
+    session.endedAt = new Date().toISOString();
+    commitPending();
+    flushSessionOutput(session, true);
+    console.error('[board] spawn error:', error.message);
+  });
+  proc.on('exit', () => {
+    commitPending();
+    flushSessionOutput(session, true);
+    onExitStatus();
+    broadcastEvent('taskUpdated', { id: BOARD_CONVERSATION_ID });
+  });
+}
+
+export async function startBoardSession(session: CliSessionRecord, firstMessage: string, workspaceRoot: string) {
+  checkBinaryInstalled('claude');
+  session.executionRoot = workspaceRoot;
+  const claudeArgs = [
+    '-p', buildBoardPrompt(firstMessage),
+    '--output-format', 'stream-json',
+    '--verbose',
+    // medium by default; the chat picker (FLUX-604) overrides via session.model/effortOverride.
+    ...modelEffortArgs(session, 'medium'),
+    ...permissionArgs(session),
+    ...boardMcpArgs(),
+  ];
+  session.status = 'running';
+  session.args = claudeArgs;
+  // First turn: record the user message in the transcript (mirrors the per-ticket chat /start).
+  appendTranscriptEvent(BOARD_CONVERSATION_ID, { type: 'user', text: firstMessage, timestamp: session.startedAt });
+  const proc = spawnClaudeForBoard(claudeArgs, workspaceRoot);
+  // Persistent conversation: a finished turn stays RESUMABLE (waiting-input), never
+  // terminal. If it ended 'completed', the next message would spawn a fresh session
+  // with no memory of this one (it wouldn't know about a ticket it just created).
+  wireBoardProc(proc, session, () => { session.status = 'waiting-input'; });
+}
+
+export async function sendBoardInput(session: CliSessionRecord, message: string, workspaceRoot: string) {
+  checkBinaryInstalled('claude');
+  const inputAt = new Date().toISOString();
+  session.lastInputAt = inputAt;
+  session.status = 'running';
+  session.pausedForInput = false;
+  appendTranscriptEvent(BOARD_CONVERSATION_ID, { type: 'user', text: message, timestamp: inputAt });
+  const safeMessage = message.replace(/\0/g, '');
+  const meArgs = modelEffortArgs(session, 'medium');
+  const claudeArgs = session.claudeSessionId
+    ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', ...meArgs, ...permissionArgs(session), ...boardMcpArgs()]
+    : ['-p', safeMessage, '--output-format', 'stream-json', '--verbose', ...meArgs, ...permissionArgs(session), ...boardMcpArgs()];
+  session.args = claudeArgs;
+  const proc = spawnClaudeForBoard(claudeArgs, session.executionRoot ?? workspaceRoot);
+  wireBoardProc(proc, session, () => { session.status = 'waiting-input'; });
 }

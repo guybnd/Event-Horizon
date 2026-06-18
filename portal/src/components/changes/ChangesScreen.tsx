@@ -182,7 +182,7 @@ export function ChangesScreen() {
     const p = selected.source.kind === 'live'
       ? fetchDiffFile(selected.source.ref, selected.path)
       : fetchTaskDiff(selected.source.ticketId, selected.path);
-    p.then((text) => { if (!cancelled) (text === null ? setFileError('No diff to show for this file.') : setFileDiff(text)); })
+    p.then((text) => { if (!cancelled) { if (text === null) setFileError('No diff to show for this file.'); else setFileDiff(text); } })
       .catch((err) => { if (!cancelled) setFileError(err instanceof Error ? err.message : 'Failed to load diff'); });
     return () => { cancelled = true; };
   }, [selected]);

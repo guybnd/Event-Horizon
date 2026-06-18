@@ -38,7 +38,11 @@ export let configCache: any = {
   archiveStatus: 'Archived',
   swimlanes: [
     { id: 'require-input', label: 'Require Input', color: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300', commentRequired: true },
+    { id: 'open-pr', label: 'Open PRs', color: 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300', commentRequired: false },
+    { id: 'changes-requested', label: 'Changes Requested', color: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300', commentRequired: false },
   ],
+  // Portal-side UX gate only (DocsScreen `canEditDocs`); NOT enforced
+  // server-side by routes/docs.ts — see the trust-model note there (FLUX-418).
   docsEditPermissions: 'all',
   docsAllowedUsers: [],
   releaseSettings: {
@@ -79,6 +83,15 @@ export let configCache: any = {
   agentProgress: {
     enabled: true,
     inlineDelay: 2,
+  },
+  // FLUX-605: per-surface default permission mode (the user's "risk tolerance"). The
+  // per-chat Perms picker inherits these when set to "Default"; an explicit per-chat
+  // choice overrides. 'gated' = destructive ops route through human approval
+  // (--permission-prompt-tool); 'skip' = --dangerously-skip-permissions. Orchestrator
+  // defaults to gated (it has triage teeth + a human present); per-ticket sessions skip.
+  permissions: {
+    boardDefault: 'gated',
+    ticketDefault: 'skip',
   },
   modules: [],
 };

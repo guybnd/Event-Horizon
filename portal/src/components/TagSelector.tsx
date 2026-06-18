@@ -17,7 +17,10 @@ export function TagSelector({
   const [focused, setFocused] = useState(false);
 
   const addTag = (tag: string) => {
-    if (!tags.includes(tag)) onChange([...tags, tag]);
+    // Trim and reject empty/whitespace-only tags, and never add a duplicate —
+    // an empty or repeated tag would break tag-keyed lists downstream.
+    const trimmed = tag.trim();
+    if (trimmed && !tags.includes(trimmed)) onChange([...tags, trimmed]);
     setInput('');
   };
 
@@ -48,12 +51,12 @@ export function TagSelector({
         }`}
         onClick={() => document.getElementById('tag-input')?.focus()}
       >
-        {tags.map((tag) => {
+        {tags.map((tag, i) => {
           const color =
             configTags.find((configTag) => configTag.name === tag)?.color ||
             'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300';
           return (
-            <span key={tag} className={`flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium ${color}`}>
+            <span key={i} className={`flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium ${color}`}>
               {tag}
               <button
                 onClick={(event) => {

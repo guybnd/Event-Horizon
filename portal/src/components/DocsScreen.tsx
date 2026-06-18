@@ -1343,8 +1343,8 @@ export function DocsScreen() {
                     setSelectedDoc(null);
                     setDocsRefreshKey((c) => c + 1);
                   }, 1200);
-                } catch (e: any) {
-                  setPromoteError(e.message ?? 'Promotion failed');
+                } catch (e) {
+                  setPromoteError(e instanceof Error ? e.message : 'Promotion failed');
                 } finally {
                   setPromoteApplying(false);
                 }

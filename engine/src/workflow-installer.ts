@@ -34,7 +34,7 @@ export interface WorkflowInstallStatus {
   skillSourceExists: boolean;
   skillInstalled: boolean;
   instructionsSourcePath?: string;
-  instructionsInstalledPath?: string;
+  instructionsInstalledPath?: string | undefined;
   instructionsSourceExists: boolean;
   instructionsInstalled: boolean;
   workflowInstalled: boolean;
@@ -43,7 +43,7 @@ export interface WorkflowInstallStatus {
 export interface WorkflowInstallResult {
   framework: ResolvedFramework;
   skillInstalledPath: string;
-  instructionsInstalledPath?: string;
+  instructionsInstalledPath?: string | undefined;
 }
 
 function resolveFramework(targetDir: string, requested: Framework): ResolvedFramework {
@@ -141,7 +141,7 @@ function getSourcePaths(sourceRoot: string) {
   const skillSourcePaths = SKILL_MODULES.map(m => path.join(skillsDir, `event-horizon-${m}.md`));
   return {
     /** Primary source path (orchestrator) — kept for backwards-compat. */
-    skillSourcePath: skillSourcePaths[0],
+    skillSourcePath: skillSourcePaths[0]!,
     skillSourcePaths,
     instructionsSourcePath: path.join(sourceRoot, '.flux', 'skills', 'event-horizon-copilot-instructions.md'),
   };
@@ -285,7 +285,7 @@ export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framewor
     // Option B: install one file per skill module
     console.log(`[installer] Installing modular skill...`);
     for (const [index, module] of SKILL_MODULES.entries()) {
-      const src = skillSourcePaths[index];
+      const src = skillSourcePaths[index]!;
       const dest = skillModuleDestinationFor(targetDir, resolvedFramework, module);
       await fs.mkdir(path.dirname(dest), { recursive: true });
       await fs.copyFile(src, dest);
@@ -344,11 +344,19 @@ function mcpConfigPathFor(targetDir: string, framework: ResolvedFramework): stri
 }
 
 function buildMcpServerEntry(sourceRoot: string, targetDir: string) {
+  // alwaysLoad keeps event-horizon's OWN ticket tools loaded directly instead of
+  // deferred behind tool-search — without it, every session (orchestrator + ticket
+  // chats) re-runs ToolSearch to find get_ticket/change_status/etc. on cold start
+  // (FLUX-604). It's baked in here (not hand-added to .mcp.json) because this
+  // installer overwrites the event-horizon entry on every engine start, so a manual
+  // edit would be clobbered. Honored in merge mode by Claude Code >= 2.1.121; the
+  // strict-profile spawn path sets it separately in claude-code.ts.
   if (isPackaged) {
     return {
       type: 'stdio',
       command: process.execPath,
       args: ['--mcp', '--workspace', '.'],
+      alwaysLoad: true,
     };
   }
   const mcpEntryPoint = path.relative(targetDir, path.join(sourceRoot, 'engine', 'src', 'mcp-server.ts')).replace(/\\/g, '/');
@@ -356,6 +364,7 @@ function buildMcpServerEntry(sourceRoot: string, targetDir: string) {
     type: 'stdio',
     command: 'npx',
     args: ['tsx', mcpEntryPoint, '--workspace', '.'],
+    alwaysLoad: true,
   };
 }
 
@@ -377,7 +386,12 @@ async function installMcpConfig(targetDir: string, sourceRoot: string, framework
     console.log('[installer] Note: module MCP server paths are resolved against the current flux directory. If you later run "Migrate to orphan mode", re-run the installer to refresh module paths in .mcp.json.');
   }
   for (const [id, server] of Object.entries(moduleServers)) {
-    existing.mcpServers[id] = server;
+    // Only write a module server when it's ABSENT — never clobber a user-customized entry.
+    // This runs on every workspace activation (engine start), so an unconditional overwrite
+    // kept reverting a pinned shared entry (e.g. serena → {type:'http', url:…}) back to the
+    // module's stdio default, forcing endless re-commits (FLUX-600). Newly-enabled modules with
+    // no existing entry are still installed on first run.
+    if (!(id in existing.mcpServers)) existing.mcpServers[id] = server;
   }
 
   await fs.mkdir(path.dirname(configPath), { recursive: true });

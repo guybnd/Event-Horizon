@@ -166,7 +166,7 @@ describe('loadGroupContext', () => {
     expect(ctx!.docsBranch).toBe(GROUP_DOCS_BRANCH);
     expect(ctx!.members).toHaveLength(2);
 
-    const engine = ctx!.members[0];
+    const engine = ctx!.members[0]!;
     expect(engine.path).toBe(path.resolve(root, '..', 'engine'));
     expect(engine.testCommand).toBe('npm test');
   });
@@ -198,7 +198,7 @@ describe('loadGroupContext', () => {
     );
 
     const ctx = await loadGroupContext(root);
-    expect(ctx!.members[0].path).toBe(path.resolve(root, '..', '..', 'apps', 'homeup'));
+    expect(ctx!.members[0]!.path).toBe(path.resolve(root, '..', '..', 'apps', 'homeup'));
   });
 
   it('scaffolds the canonical .flux-group store on load', async () => {
@@ -253,8 +253,8 @@ describe('summarizeGroup', () => {
     expect(summary.configured).toBe(true);
     expect(summary.name).toBe('p');
     expect(summary.members).toHaveLength(2);
-    expect(summary.members![0].testCommand).toBe('npm test');
-    expect('testCommand' in summary.members![1]).toBe(false);
+    expect(summary.members![0]!.testCommand).toBe('npm test');
+    expect('testCommand' in summary.members![1]!).toBe(false);
   });
 
   it('re-checks pathExists live, not from the load-time snapshot', async () => {
@@ -265,14 +265,14 @@ describe('summarizeGroup', () => {
     );
     const ctx = await loadGroupContext(root);
     // At load the sibling ../late does not exist.
-    expect(ctx!.members[0].pathExists).toBe(false);
+    expect(ctx!.members[0]!.pathExists).toBe(false);
 
     // Create the checkout *after* load.
-    const lateDir = ctx!.members[0].path;
+    const lateDir = ctx!.members[0]!.path;
     await fs.mkdir(lateDir, { recursive: true });
     try {
       // The frozen snapshot still says false, but summarizeGroup re-checks live.
-      expect(summarizeGroup(ctx).members![0].pathExists).toBe(true);
+      expect(summarizeGroup(ctx).members![0]!.pathExists).toBe(true);
     } finally {
       await fs.rm(lateDir, { recursive: true, force: true });
     }
@@ -285,13 +285,13 @@ describe('summarizeGroup', () => {
       'utf-8',
     );
     const ctx = await loadGroupContext(root);
-    const memberPath = ctx!.members[0].path;
+    const memberPath = ctx!.members[0]!.path;
     await fs.mkdir(memberPath, { recursive: true }); // present checkout
 
     // Parent registered, member not → incomplete.
     const partial = summarizeGroup(ctx, [root]);
     expect(partial.parentRegistered).toBe(true);
-    expect(partial.members![0].registered).toBe(false);
+    expect(partial.members![0]!.registered).toBe(false);
     expect(partial.registrationComplete).toBe(false);
 
     // Parent + member registered → complete.
@@ -301,7 +301,7 @@ describe('summarizeGroup', () => {
     // No registry supplied → legacy shape, no registration fields.
     const legacy = summarizeGroup(ctx);
     expect(legacy.parentRegistered).toBeUndefined();
-    expect('registered' in legacy.members![0]).toBe(false);
+    expect('registered' in legacy.members![0]!).toBe(false);
 
     await fs.rm(memberPath, { recursive: true, force: true });
   });

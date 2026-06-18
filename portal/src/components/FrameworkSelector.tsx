@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { ChevronDown, Bot, Zap, Code, Cloud, Terminal, Cpu, Layout } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 
 export type ExtendedFramework = 'auto' | 'claude' | 'gemini' | 'copilot' | 'cursor' | 'cline' | 'windsurf' | 'antigravity' | 'generic';
 
@@ -11,7 +12,7 @@ interface Props {
   allowedFrameworks?: ExtendedFramework[];
 }
 
-const FRAMEWORKS: { id: ExtendedFramework; label: string; icon: any; color: string; description: string }[] = [
+const FRAMEWORKS: { id: ExtendedFramework; label: string; icon: LucideIcon; color: string; description: string }[] = [
   { id: 'auto', label: 'Auto-Detect', icon: Cpu, color: 'text-gray-400', description: 'Detect based on workspace' },
   { id: 'claude', label: 'Claude Code', icon: Bot, color: 'text-orange-500', description: 'Anthropic\'s CLI agent' },
   { id: 'gemini', label: 'Gemini CLI', icon: Zap, color: 'text-blue-500', description: 'Google\'s CLI agent' },

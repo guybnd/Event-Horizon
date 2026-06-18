@@ -95,8 +95,8 @@ export function GroupSetupPreview({ onComplete, onCancel, initial }: GroupSetupP
       setPlan(result);
       setSkipped(new Set());
       setStep('plan');
-    } catch (err: any) {
-      setError(err.message || 'Failed to compute plan');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to compute plan');
     } finally {
       setBusy(false);
     }
@@ -116,8 +116,8 @@ export function GroupSetupPreview({ onComplete, onCancel, initial }: GroupSetupP
       });
       setResult(res);
       setStep('result');
-    } catch (err: any) {
-      setError(err.message || 'Failed to apply group setup');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to apply group setup');
     } finally {
       setBusy(false);
     }

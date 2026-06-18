@@ -79,7 +79,7 @@ export function SyncStatusIndicator() {
             }, 5000);
           }
         };
-      } catch (err) {
+      } catch {
         setIsOffline(true);
 
         // Retry connection after 5s

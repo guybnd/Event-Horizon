@@ -4,6 +4,7 @@ import { useApp } from '../AppContext';
 import type { Config } from '../types';
 import type { WorktreeInfo } from '../api';
 import { BoardStatusCluster } from './BoardStatusCluster';
+import { UncommittedChangesStoplight } from './UncommittedChangesStoplight';
 
 function getTagColor(name: string, config: Config | null) {
   const tagObj = config?.tags?.find((t) => t.name === name);
@@ -294,6 +295,10 @@ export function TaskViewControls({
           />
         )}
 
+        {/* Uncommitted-changes stoplight + dropdown (FLUX-535/544) — grouped with
+            the worktree control since both reflect the board's git working state. */}
+        <UncommittedChangesStoplight />
+
         <div ref={filtersRef} className="relative flex-none">
           <button
             onClick={() => setShowAdvancedFilters((current) => !current)}
@@ -433,7 +438,7 @@ export function TaskViewControls({
           />
         </label>
 
-        {/* Right: board-context live status — agents, tokens, sync.
+        {/* Right: board-context live status — agents, tokens.
             Anchored right so the agent popover opens leftward into the viewport. */}
         <div className="hidden h-9 w-px flex-none bg-gray-200 dark:bg-white/10 lg:block" />
         <BoardStatusCluster />

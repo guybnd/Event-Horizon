@@ -74,7 +74,7 @@ export function triggerTestError(): void {
   console.log('[sync-watcher] Test error triggered for UI testing');
 }
 
-async function allocateNewTicketId(storeDir: string, projectKey: string): Promise<string> {
+export async function allocateNewTicketId(storeDir: string, projectKey: string): Promise<string> {
   const files = await fs.readdir(storeDir);
   let maxId = 0;
 
@@ -133,7 +133,7 @@ export async function resolveConflicts(
         break;
 
       case 'rename-local': {
-        const projectKey = resolution.ticketId.split('-')[0];
+        const projectKey = resolution.ticketId.split('-')[0]!;
         const newId = await allocateNewTicketId(storeDir, projectKey);
         await fs.writeFile(filePath, conflict.remoteContent, 'utf-8');
         const parsed = matter(conflict.localContent);

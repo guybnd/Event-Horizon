@@ -97,13 +97,13 @@ describe('applyDocsPromotion — move semantics', () => {
       calls.push(args);
       // `git rm` actually deletes the file so the move is observable in tests.
       if (args[0] === 'rm') {
-        const target = args[args.length - 1];
+        const target = args[args.length - 1]!;
         await fs.rm(path.join(parentRoot, target), { force: true });
       }
       // syncGroup promotes `.flux-group` to a worktree by re-creating the dir;
       // the real git would create it, so the fake does too.
       if (args[0] === 'worktree' && args[1] === 'add') {
-        await fs.mkdir(args[args.length - 1], { recursive: true });
+        await fs.mkdir(args[args.length - 1]!, { recursive: true });
       }
       // Report a dirty tree so the commit path runs.
       if (args[0] === 'status') return { stdout: ' D .docs/overview.md\n', stderr: '' };
@@ -129,7 +129,7 @@ describe('applyDocsPromotion — move semantics', () => {
     // Removed from main (the fake `git rm` deleted it).
     expect(existsSync(path.join(parentRoot, '.docs', 'architecture', 'payments.md'))).toBe(false);
     // git rm was issued for the source.
-    expect(calls.some((c) => c[0] === 'rm' && c[c.length - 1].includes('payments.md'))).toBe(true);
+    expect(calls.some((c) => c[0] === 'rm' && c[c.length - 1]!.includes('payments.md'))).toBe(true);
     expect(result.promoted).toEqual(['features/payments.md']);
     expect(result.failed).toEqual([]);
     expect(result.sync).toBeDefined();
@@ -156,10 +156,10 @@ describe('applyMemberDocsPromotion — push-through-parent move', () => {
     const runner: GitRunner = async (cwd, args) => {
       calls.push({ cwd, args });
       if (args[0] === 'rm') {
-        await fs.rm(path.join(cwd, args[args.length - 1]), { force: true });
+        await fs.rm(path.join(cwd, args[args.length - 1]!), { force: true });
       }
       if (args[0] === 'worktree' && args[1] === 'add') {
-        await fs.mkdir(args[args.length - 1], { recursive: true });
+        await fs.mkdir(args[args.length - 1]!, { recursive: true });
       }
       if (args[0] === 'status') return { stdout: ' D .docs/architecture/auth.md\n', stderr: '' };
       return { stdout: '', stderr: '' };

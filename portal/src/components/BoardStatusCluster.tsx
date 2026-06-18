@@ -2,17 +2,18 @@ import { useCallback, useState } from 'react';
 import { Bot } from 'lucide-react';
 import { AnimatePresence } from 'framer-motion';
 import { useApp } from '../AppContext';
+import type { Task } from '../types';
 import { ActiveSessionsPopover } from './ActiveSessionsPopover';
 import { LifetimeTokenStats } from './LifetimeTokenStats';
-import { SyncStatusIndicator } from './SyncStatusIndicator';
 
 const ACTIVE_SESSION_STATUSES = new Set(['pending', 'running', 'waiting-input']);
 
 /**
  * Board-context status cluster — the live "working state" of the board:
- * active agent sessions, lifetime token/cost, and sync status. Lives on the
- * left of the board/backlog control bar (row 2) rather than the global header,
- * since these signals are only meaningful where tickets are shown.
+ * active agent sessions and lifetime token/cost. Lives on the board/backlog
+ * control bar rather than the global header, since these signals are only
+ * meaningful where tickets are shown. (Sync status moved to the top Header;
+ * the uncommitted-changes control sits next to the Worktrees chip.)
  */
 export function BoardStatusCluster() {
   const { tasks, openTaskFullView } = useApp();
@@ -23,7 +24,7 @@ export function BoardStatusCluster() {
   ).length;
 
   const handleCloseSessionsPopover = useCallback(() => setIsSessionsPopoverOpen(false), []);
-  const handleOpenTaskFromSessions = useCallback((t: any) => openTaskFullView(t), [openTaskFullView]);
+  const handleOpenTaskFromSessions = useCallback((t: Task) => openTaskFullView(t), [openTaskFullView]);
   const toggleSessionsPopover = useCallback(() => setIsSessionsPopoverOpen((prev) => !prev), []);
 
   return (
@@ -52,8 +53,6 @@ export function BoardStatusCluster() {
           )}
         </AnimatePresence>
       </div>
-
-      <SyncStatusIndicator />
 
       {/* Token/cost is informational only — pinned to the far edge where it won't
           get in the way of the controls you actually click. */}

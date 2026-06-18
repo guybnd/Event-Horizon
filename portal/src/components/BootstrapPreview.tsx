@@ -58,8 +58,8 @@ export function BootstrapPreview({ onComplete, onSkip }: BootstrapPreviewProps) 
         selectedTasks: tasks,
       });
       setImportResult(result);
-    } catch (err: any) {
-      setError(err.message || 'Import failed');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Import failed');
     } finally {
       setImporting(false);
     }

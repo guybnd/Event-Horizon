@@ -81,8 +81,8 @@ export function MetadataPanel({
       // manual page reload (the detach no longer lingers in the UI).
       refreshWorktrees();
       triggerRefresh();
-    } catch (err: any) {
-      setDetachMsg(err.message || 'Failed to detach worktree');
+    } catch (err) {
+      setDetachMsg(err instanceof Error ? err.message : 'Failed to detach worktree');
     } finally {
       setDetaching(false);
     }

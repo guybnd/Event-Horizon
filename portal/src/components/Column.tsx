@@ -3,10 +3,10 @@ import { useDroppable } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { TaskCard } from './TaskCard';
 import type { ColumnLiveEvent, Task, TaskLiveEvent } from '../types';
-import { Plus, CirclePause, Bot, Clock, Terminal } from 'lucide-react';
+import { Plus, CirclePause, Bot, Clock, Terminal, GitPullRequest } from 'lucide-react';
 import { useApp } from '../AppContext';
 import { getStatusTint, tintColumnWash } from '../statusStyles';
-import { isTaskAwaitingInput } from '../workflow';
+import { isTaskAwaitingInput, hasOpenPr } from '../workflow';
 
 /** Compact running-duration label, e.g. "4s", "3m 12s", "1h 04m". */
 function formatElapsed(startedAt: string | undefined, now: number): string {
@@ -97,7 +97,7 @@ interface ColumnProps {
 
 export const Column = memo(function Column({ id, title, tasks, parentByChildId, liveEvent, taskLiveEvents, getTaskTravelDirection }: ColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id });
-  const { openTaskModal, config, readComments, markAllCommentsRead } = useApp();
+  const { openTaskModal, config, readComments, markAllCommentsRead, prByBranch } = useApp();
 
   const columnUnreadByTask = useMemo(() => tasks.map(task => {
     const readIds = new Set(readComments[task.id] ?? []);
@@ -172,26 +172,49 @@ export const Column = memo(function Column({ id, title, tasks, parentByChildId, 
           const runningTasks = tasks.filter(
             t => t.cliSession && ['pending', 'running', 'waiting-input'].includes(t.cliSession.status)
           );
-          const swimlaneTasks = tasks.filter(
-            t => isTaskAwaitingInput(t) && !(t.cliSession && ['pending', 'running', 'waiting-input'].includes(t.cliSession.status))
-          );
-          const restTasks = tasks.filter(
-            t => !(t.cliSession && ['pending', 'running', 'waiting-input'].includes(t.cliSession.status)) && !isTaskAwaitingInput(t)
-          );
-          const sortedTasks = [...runningTasks, ...swimlaneTasks, ...restTasks];
+          const isRunning = (t: Task) => !!t.cliSession && ['pending', 'running', 'waiting-input'].includes(t.cliSession.status);
+          const isPr = (t: Task) => t.kind === 'pr';
+          // Only OPEN PR decks belong under the "Open PRs" header — a merged/closed (Done) PR
+          // still renders as a deck card, but in its normal column with no Open-PRs header
+          // (FLUX-567: don't show a Done PR under "Open PRs").
+          const isOpenPr = (t: Task) => isPr(t) && t.status !== 'Done';
+          const swimlaneTasks = tasks.filter(t => isTaskAwaitingInput(t) && !isRunning(t) && !isPr(t));
+          const openPrTasks = tasks.filter(t => (isOpenPr(t) || hasOpenPr(t)) && !isRunning(t) && !isTaskAwaitingInput(t));
+          // rest = the literal COMPLEMENT of the first three groups, so no task can ever be
+          // silently dropped by a future swimlane value (FLUX-567 QA hardening).
+          const groupedIds = new Set([...runningTasks, ...swimlaneTasks, ...openPrTasks].map(t => t.id));
+          const restTasks = tasks.filter(t => !groupedIds.has(t.id));
+          const sortedTasks = [...runningTasks, ...swimlaneTasks, ...openPrTasks, ...restTasks];
+          // Everything renders through TaskCard now — PR tickets (kind:'pr') render their
+          // PR-specific body inside the same card shell (FLUX-567 pivot). A non-PR ticket whose
+          // branch belongs to a PR (but isn't folded — a Todo/Grooming/Backlog "pile" ticket)
+          // gets a subtle `→ PR-n` marker above it, so it's clearly linked without leaving its
+          // column (FLUX-565 decision #4).
+          const renderTask = (task: Task) => {
+            const card = (
+              <TaskCard
+                task={task}
+                parentTask={parentByChildId.get(task.id)}
+                liveEvent={taskLiveEvents[task.id]}
+                travelDirection={getTaskTravelDirection(task.id)}
+                columnTint={tint}
+                hideStatusBadge
+              />
+            );
+            const prLink = task.kind !== 'pr' && task.branch ? prByBranch.get(task.branch) : undefined;
+            if (!prLink) return <div key={task.id}>{card}</div>;
+            return (
+              <div key={task.id}>
+                <div className="mb-0.5 ml-1 flex items-center gap-1 text-[10px] font-semibold text-violet-600 dark:text-violet-300" title={`Linked to ${prLink} (not folded — start work to fold it in)`}>
+                  <GitPullRequest className="h-2.5 w-2.5" /> linked to {prLink}
+                </div>
+                {card}
+              </div>
+            );
+          };
           return (
             <SortableContext items={sortedTasks.map(t => t.id)} strategy={verticalListSortingStrategy}>
-              {runningTasks.map(task => (
-                <TaskCard
-                  key={task.id}
-                  task={task}
-                  parentTask={parentByChildId.get(task.id)}
-                  liveEvent={taskLiveEvents[task.id]}
-                  travelDirection={getTaskTravelDirection(task.id)}
-                  columnTint={tint}
-                  hideStatusBadge
-                />
-              ))}
+              {runningTasks.map(renderTask)}
               {runningTasks.length > 0 && (swimlaneTasks.length > 0 || restTasks.length > 0) && (
                 <div className="flex items-center gap-2 my-1 px-1 shrink-0">
                   <div className="flex-1 h-px bg-gray-200 dark:bg-white/10" />
@@ -207,31 +230,23 @@ export const Column = memo(function Column({ id, title, tasks, parentByChildId, 
                     <div className="flex-1 h-px bg-amber-200 dark:bg-amber-800/40" />
                   </div>
                   <div className="rounded-lg border border-amber-200 dark:border-amber-800/40 bg-amber-50/50 dark:bg-amber-900/10 p-1.5 mb-1">
-                    {swimlaneTasks.map(task => (
-                      <TaskCard
-                        key={task.id}
-                        task={task}
-                        parentTask={parentByChildId.get(task.id)}
-                        liveEvent={taskLiveEvents[task.id]}
-                        travelDirection={getTaskTravelDirection(task.id)}
-                        columnTint={tint}
-                        hideStatusBadge
-                      />
-                    ))}
+                    {swimlaneTasks.map(renderTask)}
                   </div>
                 </>
               )}
-              {restTasks.map(task => (
-                <TaskCard
-                  key={task.id}
-                  task={task}
-                  parentTask={parentByChildId.get(task.id)}
-                  liveEvent={taskLiveEvents[task.id]}
-                  travelDirection={getTaskTravelDirection(task.id)}
-                  columnTint={tint}
-                  hideStatusBadge
-                />
-              ))}
+              {openPrTasks.length > 0 && (
+                <>
+                  <div className="flex items-center gap-1.5 my-1 px-1 shrink-0">
+                    <GitPullRequest className="w-3 h-3 text-violet-500" />
+                    <span className="text-[10px] font-semibold uppercase tracking-widest text-violet-500 dark:text-violet-400">Open PRs</span>
+                    <div className="flex-1 h-px bg-violet-200 dark:bg-violet-800/40" />
+                  </div>
+                  <div className="rounded-lg border border-violet-200 dark:border-violet-800/40 bg-violet-50/50 dark:bg-violet-900/10 p-1.5 mb-1">
+                    {openPrTasks.map(renderTask)}
+                  </div>
+                </>
+              )}
+              {restTasks.map(renderTask)}
             </SortableContext>
           );
         })()}

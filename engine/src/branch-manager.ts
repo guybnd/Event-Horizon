@@ -48,7 +48,7 @@ async function branchRefExists(name: string): Promise<boolean> {
   }
 }
 
-async function getDefaultBranch(): Promise<string> {
+export async function getDefaultBranch(): Promise<string> {
   try {
     const { stdout } = await git(['symbolic-ref', 'refs/remotes/origin/HEAD']);
     return stdout.trim().replace('refs/remotes/origin/', '') || 'master';
@@ -77,10 +77,27 @@ export async function getTicketBranchStatus(name: string): Promise<{ exists: boo
 }
 
 export async function deleteTicketBranch(name: string, force = false): Promise<void> {
-  const flag = force ? '-D' : '-d';
-  await git(['branch', flag, name]);
-  // Best-effort: clean up the remote ref we created in createTicketBranch. Swallow errors
-  // (branch may have been deleted on GitHub already, or never pushed).
+  // Idempotent local delete: skip `git branch -d/-D` when the branch is already gone.
+  // A merged branch is force-deleted by post-merge cleanup, so a LATER delete_branch (e.g.
+  // clearing a reopened ticket's stale ref) must not throw "branch not found" — the caller
+  // relies on this returning cleanly to then clear the ticket's `branch` field (FLUX-588).
+  if (await branchRefExists(name)) {
+    const flag = force ? '-D' : '-d';
+    try {
+      await git(['branch', flag, name]);
+    } catch (err: any) {
+      // FORCE delete: tolerate failure (most often "checked out" — you can't `-D` the branch a
+      // worktree / the main tree is on) so it doesn't block the REMOTE delete below. Otherwise
+      // a merge whose branch is still checked out orphaned the branch on BOTH sides (the throw
+      // skipped the remote push) with no retry — FLUX-599. The local copy is just our working
+      // ref; the backstop prune reclaims it once it's no longer checked out.
+      // NON-force (`-d`): rethrow — the failure is the "refuses unmerged" safety the caller wants.
+      if (!force) throw err;
+      console.warn(`[branch] forced local delete of ${name} failed (likely checked out): ${err?.message ?? err}`);
+    }
+  }
+  // Remote delete — attempted REGARDLESS of the local outcome (independent of it). Best-effort:
+  // swallow when the remote ref is already gone / was never pushed.
   try {
     await git(['push', 'origin', '--delete', name]);
   } catch {
@@ -101,13 +118,16 @@ export async function createPullRequest(branch: string, title: string, body: str
   // Push latest commits on the branch before creating/updating the PR.
   await execFileAsync('git', ['-C', workspaceRoot!, 'push', '-u', 'origin', branch], { windowsHide: true });
 
-  // If a PR already exists for this branch, return its URL rather than erroring.
+  // If an OPEN PR already exists for this branch, return its URL rather than erroring. Gate on
+  // state: `gh pr view <branch>` returns the most-recent PR regardless of state, so a previously
+  // CLOSED/MERGED PR on this branch would otherwise be "reused" and block opening a fresh one
+  // (a re-pushed branch whose old PR was closed never got a new PR — FLUX-597).
   try {
-    const { stdout: existing } = await execFileAsync('gh', ['pr', 'view', branch, '--json', 'url', '--jq', '.url'], { windowsHide: true });
-    const url = existing.trim();
-    if (url) return url;
+    const { stdout: existing } = await execFileAsync('gh', ['pr', 'view', branch, '--json', 'url,state'], { windowsHide: true });
+    const pr = JSON.parse(existing) as { url?: string; state?: string };
+    if (pr?.url && pr.state === 'OPEN') return pr.url;
   } catch {
-    // No existing PR — fall through to create one.
+    // No existing PR (or unreadable) — fall through to create one.
   }
 
   const { stdout } = await execFileAsync('gh', ['pr', 'create', '--title', title, '--body', body, '--head', branch], { windowsHide: true });
@@ -115,7 +135,65 @@ export async function createPullRequest(branch: string, title: string, body: str
 }
 
 export async function mergePullRequest(branch: string): Promise<void> {
-  await execFileAsync('gh', ['pr', 'merge', branch, '--squash', '--delete-branch'], { windowsHide: true });
+  // Merge only — do NOT `--delete-branch`. gh's local-branch delete fails when the branch
+  // is checked out (in a worktree, or the main tree itself), which made the merge call
+  // throw AFTER the merge had already landed (FLUX-574). Branch deletion is handled by the
+  // post-merge cleanup (`cleanupMergedBranch`) in the correct order: free the branch
+  // (remove worktree / switch the main tree off it) → then force-delete local + remote.
+  await execFileAsync('gh', ['pr', 'merge', branch, '--squash'], { windowsHide: true });
+}
+
+/** Normalized PR state for a branch — what the EH PR card / swimlane render (FLUX-556). */
+export interface PrStatus {
+  number: number;
+  state: string;                  // OPEN | MERGED | CLOSED
+  url: string;
+  title: string;
+  reviewDecision: string | null;  // APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | null
+  mergeable: string;              // MERGEABLE | CONFLICTING | UNKNOWN
+  checks: { total: number; passed: number; failed: number; pending: number };
+}
+
+/**
+ * Best-effort PR state for a branch via `gh pr view`. Returns null when no PR exists
+ * for the branch, or gh is unavailable/unauthed — callers degrade gracefully and never
+ * surface a 500 (FLUX-556). statusCheckRollup is folded into a compact pass/fail/pending
+ * tally; v1 surfaces (does not gate on) checks — CI gating is P3.
+ */
+export async function getPullRequestStatus(branch: string): Promise<PrStatus | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      'gh',
+      ['pr', 'view', branch, '--json', 'number,state,url,title,reviewDecision,mergeable,statusCheckRollup'],
+      { windowsHide: true },
+    );
+    const raw = JSON.parse(stdout);
+    if (!raw || typeof raw.number !== 'number') return null;
+
+    const rollup: any[] = Array.isArray(raw.statusCheckRollup) ? raw.statusCheckRollup : [];
+    const checks = { total: rollup.length, passed: 0, failed: 0, pending: 0 };
+    for (const c of rollup) {
+      // gh exposes CheckRun (status + conclusion) or StatusContext (state) entries.
+      const status = String(c.status ?? '').toUpperCase();
+      const concl = String(c.conclusion ?? c.state ?? '').toUpperCase();
+      if (status && status !== 'COMPLETED') { checks.pending++; continue; }
+      if (['SUCCESS', 'NEUTRAL', 'SKIPPED'].includes(concl)) checks.passed++;
+      else if (['FAILURE', 'ERROR', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE'].includes(concl)) checks.failed++;
+      else checks.pending++;
+    }
+
+    return {
+      number: raw.number,
+      state: String(raw.state ?? 'OPEN'),
+      url: String(raw.url ?? ''),
+      title: String(raw.title ?? ''),
+      reviewDecision: raw.reviewDecision ? String(raw.reviewDecision) : null,
+      mergeable: String(raw.mergeable ?? 'UNKNOWN'),
+      checks,
+    };
+  } catch {
+    return null; // no PR for this branch, or gh unavailable — best-effort
+  }
 }
 
 export async function getCurrentCommit(): Promise<string | null> {

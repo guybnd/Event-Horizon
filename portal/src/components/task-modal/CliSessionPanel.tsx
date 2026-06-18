@@ -53,7 +53,7 @@ export function CliSessionPanel({
       <div className="flex gap-2">
         <FrameworkSelector
           value={selectedCliFramework}
-          onChange={setSelectedCliFramework as any}
+          onChange={(v) => setSelectedCliFramework(v as CliFramework)}
           disabled={sessionIsActive || cliSessionBusy}
           allowedFrameworks={['claude', 'gemini', 'copilot']}
         />

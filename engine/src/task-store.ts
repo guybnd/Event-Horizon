@@ -7,11 +7,11 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { getActiveFluxDir, getTaskAssetsDir, getFluxStoreDir, isOrphanMode, setWorkspaceRoot, workspaceRoot, getWorkspacesList } from './workspace.js';
 import { attachWorktreeIfPresent, migrateStrandedFluxTickets } from './storage-sync.js';
-import { startSyncWatcher } from './sync-watcher.js';
+import { startSyncWatcher, allocateNewTicketId } from './sync-watcher.js';
 import { configCache, loadConfig, autoRegisterUnknownTags } from './config.js';
 import { loadCustomPersonas } from './orchestration-personas.js';
-import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate, getHistoryTimestamp, digestHistoryForAgent, digestTerminalSessionProgress, compactSessionProgress } from './history.js';
-import { generatePromptNotification, generateCompletionNotification, clearNotifications, checkSkillStaleness } from './notifications.js';
+import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate, getHistoryTimestamp, digestHistoryForAgent, digestTerminalSessionProgress, compactSessionProgress, extractRecentUserComments, extractLaunchFocus } from './history.js';
+import { generatePromptNotification, generateCompletionNotification, clearNotifications, checkSkillStaleness, addNotification } from './notifications.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
 import { broadcastEvent } from './events.js';
 import { getCliSessionSummaryForTask, getAllSessionSummariesForTask, getListSessionSummariesForTask, slimSessionSummaryForAgent, cliSessionsById, cliSessionIdByTaskId } from './session-store.js';
@@ -30,6 +30,18 @@ export let parseErrors: Record<string, { id: string; path: string; error: string
 export let workspaceActivating = false;
 
 const repairingPaths = new Set<string>();
+
+// Paths the engine just wrote itself. atomicWriteFile (temp + rename) fires a
+// chokidar 'change'/'add' for the .md, which would re-run loadTask on content
+// the engine already has in cache. Each guarded write adds its path here; the
+// next watcher-driven loadTask for that path consumes the entry and skips the
+// redundant stat/read/parse/validate pass (FLUX-290). Single-fire on purpose —
+// only the engine's own follow-up event is swallowed, not later external edits.
+const recentEngineWrites = new Set<string>();
+
+// Sessions whose final message we've already surfaced as a notification (FLUX-570) —
+// dedup across the multiple terminal persists a single session can make.
+const surfacedFinalMessages = new Set<string>();
 
 /**
  * Write file atomically: write to a .tmp sibling then rename over the target.
@@ -71,14 +83,22 @@ const AGENT_HISTORY_LIMIT = 20;
  * the portal. Use `get_session_log` semantics (fetch by sessionId) for raw
  * progress when an agent genuinely needs it.
  */
-export function serializeTaskForAgent(task: any, historyLimit?: number, opts: { expand?: string[]; fullHistory?: boolean } = {}) {
+export function serializeTaskForAgent(task: any, historyLimit?: number, opts: { expand?: string[] | undefined; fullHistory?: boolean | undefined } = {}) {
   const keepRecent = (configCache as any)?.commentDigest?.keepRecent ?? 3;
+  const fullHistory = Array.isArray(task.history) ? task.history : [];
   const { history, olderHistoryEntries, collapsedCount } = digestHistoryForAgent(
-    Array.isArray(task.history) ? task.history : [],
+    fullHistory,
     historyLimit ?? AGENT_HISTORY_LIMIT,
     keepRecent,
     opts,
   );
+  // FLUX-480: always surface the last few user-authored comments (even if they
+  // fall outside the history window) and the persisted launch focus, plus cheap
+  // boolean/timestamp flags so routing/preview consumers (FLUX-478/483) can read
+  // them without pulling full history.
+  const keepUserComments = (configCache as any)?.commentDigest?.recentUserComments ?? 3;
+  const recentUserComments = extractRecentUserComments(fullHistory, keepUserComments);
+  const launchFocus = extractLaunchFocus(fullHistory);
   const cliSession = getCliSessionSummaryForTask(task.id);
   const cliSessions = getListSessionSummariesForTask(task.id).map(slimSessionSummaryForAgent);
   return {
@@ -86,6 +106,14 @@ export function serializeTaskForAgent(task: any, historyLimit?: number, opts: { 
     history,
     ...(olderHistoryEntries > 0 ? { olderHistoryEntries } : {}),
     ...(collapsedCount ? { collapsedCount } : {}),
+    ...(recentUserComments.length > 0
+      ? {
+          recentUserComments,
+          hasUserComments: true,
+          lastUserCommentAt: recentUserComments[recentUserComments.length - 1]!.date,
+        }
+      : { hasUserComments: false }),
+    ...(launchFocus ? { launchFocus: launchFocus.launchFocus, hasLaunchFocus: true } : {}),
     cliSession: cliSession ? slimSessionSummaryForAgent(cliSession) : undefined,
     cliSessions: cliSessions.length > 0 ? cliSessions : undefined,
   };
@@ -171,10 +199,33 @@ export async function updateAgentSession(taskId: string, sessionId: string, upda
   // Every adapter persists its terminal state through here — compact the
   // per-second progress chunks once the session leaves 'active'.
   compactSessionProgress(history[sessionIndex]);
+
+  // FLUX-570 safety-net: if a session ended with a final message that reads like it needs
+  // the user's input, but the agent did NOT route it to the board (no require-input
+  // swimlane), surface it as a notification — so a blocking question can't die silently in
+  // the session log (as happened on the FLUX-556 finalize). Deduped per session.
+  const sess = history[sessionIndex];
+  if (sess?.status && sess.status !== 'active' && sess.finalMessage && !surfacedFinalMessages.has(sessionId)) {
+    const fm = String(sess.finalMessage);
+    const needsInput = /\?|\breply\b|\bwhich\b|\bconfirm\b|\bchoose\b|\bdecision\b|\blet me know\b|\bproceed\b/i.test(fm);
+    const properlyRouted = frontmatter.swimlane === 'require-input';
+    if (needsInput && !properlyRouted) {
+      surfacedFinalMessages.add(sessionId);
+      addNotification({
+        type: 'info',
+        title: `${taskId}: agent session ended with a question`,
+        message: fm.length > 280 ? fm.slice(0, 280) + '…' : fm,
+        ticketId: taskId,
+        actions: [{ label: 'View ticket', actionId: 'view' }],
+      });
+    }
+  }
+
   frontmatter.history = history;
   frontmatter.updatedBy = 'Agent';
 
   const fileContent = matter.stringify(body, frontmatter);
+  recentEngineWrites.add(task._path);
   await atomicWriteFile(task._path, fileContent);
   tasksCache[taskId] = { ...frontmatter, body, id: taskId, _path: task._path };
   return tasksCache[taskId];
@@ -185,7 +236,7 @@ export async function updateTaskWithHistory(taskId: string, options: {
   updatedBy?: string;
   nextStatus?: string;
   extraFields?: Record<string, any>;
-  tokenMetadata?: { inputTokens: number; outputTokens: number; costUSD: number; costIsEstimated: boolean; cacheReadTokens?: number; cacheCreationTokens?: number };
+  tokenMetadata?: { inputTokens: number; outputTokens: number; costUSD: number; costIsEstimated: boolean; cacheReadTokens?: number; cacheCreationTokens?: number } | undefined;
 }) {
   const task = tasksCache[taskId];
   if (!task) return null;
@@ -237,6 +288,7 @@ export async function updateTaskWithHistory(taskId: string, options: {
   }
 
   const fileContent = matter.stringify(body || '', frontmatter);
+  recentEngineWrites.add(_path);
   await atomicWriteFile(_path, fileContent);
   tasksCache[taskId] = { ...frontmatter, body, id: taskId, _path };
 
@@ -264,6 +316,19 @@ export interface CreateTaskOptions {
   author?: string;
   projectKey?: string;
   parentId?: string;
+  /**
+   * Typed relationships to other tickets (FLUX-593, first instance of the FLUX-596 epic):
+   * e.g. a retry ticket carries `[{ type: 'retries', target: 'PR-14', label: 'PR #14' }]`.
+   * Persisted verbatim into frontmatter; serializers spread it through to portal + agents.
+   */
+  links?: Array<{ type: string; target: string; label?: string }>;
+  /**
+   * Suppress the `taskCreated` broadcast inside createTask so a caller doing
+   * follow-up writes (e.g. create_subtask's parent-linking) can broadcast only
+   * after every write succeeds — avoids emitting an event for an orphan child
+   * if a later write fails (FLUX-435).
+   */
+  skipBroadcast?: boolean;
 }
 
 export interface CreateTaskResult {
@@ -325,7 +390,7 @@ export async function createTask(options: CreateTaskOptions): Promise<CreateTask
 
   const normalizedHistory = normalizeHistoryEntries([]);
   const historyWithCreation = options.parentId
-    ? { history: [{ type: 'activity', user: actor, date: createdAt, comment: `Created as subtask of ${options.parentId}.` }] }
+    ? { history: [{ type: 'activity', user: actor, date: createdAt, comment: `Created as subtask of ${options.parentId}.` }], changed: true }
     : ensureCreationActivity(normalizedHistory.history, actor, createdAt);
 
   const frontmatter: any = {
@@ -339,6 +404,7 @@ export async function createTask(options: CreateTaskOptions): Promise<CreateTask
     createdBy: actor,
     updatedBy: actor,
     ...(options.parentId && { parentId: options.parentId }),
+    ...(options.links && options.links.length > 0 ? { links: options.links } : {}),
     history: historyWithCreation.history,
   };
 
@@ -353,11 +419,48 @@ export async function createTask(options: CreateTaskOptions): Promise<CreateTask
 
   const body = options.body || '';
   const fileContent = matter.stringify(body, frontmatter);
+  recentEngineWrites.add(filePath);
   await atomicWriteFile(filePath, fileContent);
   tasksCache[nextId] = { ...frontmatter, body, id: nextId, _path: filePath };
-  broadcastEvent('taskCreated', { id: nextId, ...(options.parentId && { parentId: options.parentId }) });
+  if (!options.skipBroadcast) {
+    broadcastEvent('taskCreated', { id: nextId, ...(options.parentId && { parentId: options.parentId }) });
+  }
 
   return { id: nextId, task: tasksCache[nextId] };
+}
+
+
+/**
+ * Engine-managed upsert for synthetic, non-hand-authored tickets — the PR tickets EH
+ * derives from gh (FLUX-566). Creates `<id>.md` (or updates it) with `fields`, preserving
+ * any existing history and minting a creation entry for new ones. **Idempotent + quiet:**
+ * if every provided field already matches, it does nothing (no write, no broadcast) — so
+ * the 90s sync doesn't churn the file or spam the portal. Uses the same `recentEngineWrites`
+ * guard as other engine writes so the watcher doesn't echo it back.
+ */
+export async function upsertManagedTicket(
+  id: string,
+  fields: Record<string, any>,
+  body = '',
+): Promise<{ task: any; created: boolean; changed: boolean }> {
+  const existing = tasksCache[id];
+  const changed = !existing || Object.entries(fields).some(([k, v]) => JSON.stringify(existing[k]) !== JSON.stringify(v));
+  if (existing && !changed) return { task: existing, created: false, changed: false };
+
+  const filePath = existing?._path || path.join(getActiveFluxDir(), `${id}.md`);
+  const now = new Date().toISOString();
+  const history = Array.isArray(existing?.history) && existing.history.length > 0
+    ? existing.history
+    : [{ type: 'activity', user: 'Agent', date: now, comment: 'Created (engine-managed).' }];
+  const base = existing ? (() => { const { body: _b, _path: _p, ...fm } = existing; return fm; })() : {};
+  const frontmatter: any = { ...base, ...fields, id, history, updatedBy: 'Agent' };
+  const useBody = body || existing?.body || '';
+
+  recentEngineWrites.add(filePath);
+  await atomicWriteFile(filePath, matter.stringify(useBody, frontmatter));
+  tasksCache[id] = { ...frontmatter, body: useBody, id, _path: filePath };
+  broadcastEvent(existing ? 'taskUpdated' : 'taskCreated', { id });
+  return { task: tasksCache[id], created: !existing, changed: true };
 }
 
 /**
@@ -365,11 +468,11 @@ export async function createTask(options: CreateTaskOptions): Promise<CreateTask
  * into separate ticket files. Returns the normalized string[] of IDs if changes
  * were made, or null if no normalization needed.
  */
-async function normalizeInlineSubtasks(frontmatter: any, parentPath: string): Promise<string[] | null> {
+export async function normalizeInlineSubtasks(frontmatter: any, parentPath: string): Promise<string[] | null> {
   const subtasks = frontmatter.subtasks;
   if (!Array.isArray(subtasks) || subtasks.length === 0) return null;
 
-  const hasInlineObjects = subtasks.some((entry: any) => typeof entry === 'object' && entry !== null && entry.id);
+  const hasInlineObjects = subtasks.some((entry: any) => typeof entry === 'object' && entry !== null);
   if (!hasInlineObjects) return null;
 
   const fluxDir = path.dirname(parentPath);
@@ -383,12 +486,24 @@ async function normalizeInlineSubtasks(frontmatter: any, parentPath: string): Pr
       continue;
     }
 
-    if (typeof entry !== 'object' || !entry || !entry.id) continue;
+    if (typeof entry !== 'object' || !entry) continue;
 
-    const childId = entry.id as string;
+    // Determine the child ID: reuse an explicit id, or allocate a fresh
+    // sequential one for id-less inline objects (the FLUX-286 case). Allocation
+    // re-scans the directory each call, so writing each child before allocating
+    // the next keeps IDs non-colliding.
+    let childId: string;
+    if (typeof entry.id === 'string' && entry.id) {
+      childId = entry.id;
+    } else {
+      const projectKey = parentId.split('-')[0] || 'FLUX';
+      childId = await allocateNewTicketId(fluxDir, projectKey);
+      console.warn(`[subtasks] Auto-created ${childId} from id-less inline subtask of ${parentId}`);
+    }
+
     const childPath = path.join(fluxDir, `${childId}.md`);
 
-    // Don't overwrite existing ticket files
+    // Don't overwrite existing ticket files (a freshly-allocated id won't exist yet).
     try {
       await fs.access(childPath);
       // File exists — just use the ID reference
@@ -522,6 +637,11 @@ function repairTicket(frontmatter: any, filePath: string): string[] {
           subtasksRepaired = true;
           return entry.id;
         }
+        if (entry && typeof entry === 'object') {
+          // id-less inline object — normalizeInlineSubtasks should have handled
+          // this on load; warn rather than silently discarding (FLUX-286).
+          console.warn(`[repairTicket] Discarding id-less inline subtask object in ${path.basename(filePath, '.md')} — expected normalization on load`);
+        }
         return null;
       })
       .filter((entry: any) => entry != null);
@@ -536,6 +656,8 @@ function repairTicket(frontmatter: any, filePath: string): string[] {
 export async function loadTask(filePath: string) {
   if (!isTopLevelTaskFile(filePath)) return;
   if (repairingPaths.has(filePath)) return;
+  // Skip the watcher event generated by our own write-back (see recentEngineWrites).
+  if (recentEngineWrites.delete(filePath)) return;
 
   try {
     const fileStats = await fs.stat(filePath);
@@ -585,6 +707,7 @@ export async function loadTask(filePath: string) {
         repairingPaths.add(filePath);
         try {
           const repairedContent = matter.stringify(parsed.content, parsed.data);
+          recentEngineWrites.add(filePath);
           await atomicWriteFile(filePath, repairedContent);
         } finally {
           repairingPaths.delete(filePath);
@@ -669,6 +792,7 @@ export async function loadTask(filePath: string) {
 
     if (normalizedHistory.changed || subtasksNormalized || historyReinjected) {
       const normalizedContent = matter.stringify(parsed.content, normalizedFrontmatter);
+      recentEngineWrites.add(filePath);
       await atomicWriteFile(filePath, normalizedContent);
     }
 

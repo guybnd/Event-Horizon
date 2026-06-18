@@ -39,8 +39,8 @@ export function getLocalVersion(): string {
 
 function isNewer(remote: string, local: string): boolean {
   const parse = (v: string) => v.replace(/^v/, '').split('.').map(Number);
-  const [rMaj, rMin, rPatch] = parse(remote);
-  const [lMaj, lMin, lPatch] = parse(local);
+  const [rMaj = 0, rMin = 0, rPatch = 0] = parse(remote);
+  const [lMaj = 0, lMin = 0, lPatch = 0] = parse(local);
   if (rMaj !== lMaj) return rMaj > lMaj;
   if (rMin !== lMin) return rMin > lMin;
   return rPatch > lPatch;

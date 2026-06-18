@@ -9,19 +9,23 @@ import {
   normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry,
   summarizeFieldChanges, hasAppendedStatusChange, findEarliestHistoryDate,
 } from '../history.js';
-import { tasksCache, serializeTaskForApi, serializeTaskForAgent, serializeTaskForList, updateTaskWithHistory, workspaceActivating, parseErrors, atomicWriteFile, createTask } from '../task-store.js';
+import { tasksCache, serializeTaskForApi, serializeTaskForAgent, serializeTaskForList, updateTaskWithHistory, upsertManagedTicket, workspaceActivating, parseErrors, atomicWriteFile, createTask } from '../task-store.js';
 import { generatePromptNotification, generateCompletionNotification } from '../notifications.js';
 import { validateTicketFrontmatter, formatValidationErrors } from '../schema.js';
 import {
   resolveSupportedImageExtension, sanitizeAssetBaseName, normalizeBase64Content,
   normalizeRelativePath, encodeAssetPath, createUniqueAssetFileName,
 } from '../file-utils.js';
-import { cliSessionIdByTaskId, cliSessionsById, stopAllSessionsForTask } from '../session-store.js';
+import { cliSessionIdByTaskId, cliSessionsById, stopAllSessionsForTask, getActiveSessionsForTask } from '../session-store.js';
 import { getAdapter } from '../agents/index.js';
 import { computeAgentPayloadMetrics } from '../agent-payload-metrics.js';
 import { computeContextBudget } from '../context-budget-metrics.js';
 import { probeAllMcpSchemas } from '../mcp-schema-probe.js';
 import { getEffectiveSpawnServers } from '../agents/claude-code.js';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+
+const execFileAsync = promisify(execFile);
 
 const router = express.Router();
 
@@ -55,6 +59,89 @@ router.get('/worktrees', async (_req, res) => {
     res.json({ worktrees: result });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Count of uncommitted files in the active workspace — working tree vs HEAD
+// (tracked changes) plus untracked. Powers the board header "uncommitted
+// changes" stoplight (FLUX-535). Registered before /:id so the literal path
+// wins. Best-effort: 0 when not a git repo or git errors (worktreeChangeCount
+// already swallows those).
+router.get('/uncommitted-count', async (_req, res) => {
+  if (!workspaceRoot) return res.json({ count: 0, branch: null });
+  const [mainCount, branch, worktrees] = await Promise.all([
+    worktreeChangeCount(workspaceRoot, 'HEAD').catch(() => 0),
+    currentBranchName(workspaceRoot).catch(() => null),
+    listTaskWorktrees(workspaceRoot).catch(() => [] as Array<{ path: string }>),
+  ]);
+  // Aggregate uncommitted work across EVERY active task worktree too, not just the main
+  // tree — otherwise the badge reads 0 while 20+ files sit uncommitted in a worktree.
+  const wtCounts = await Promise.all(
+    worktrees.map((w) => worktreeChangeCount(w.path, 'HEAD').catch(() => 0)),
+  );
+  const count = mainCount + wtCounts.reduce((sum, n) => sum + n, 0);
+  res.json({ count, branch });
+});
+
+// Open the active workspace root in a new VS Code window (FLUX-544). Best-effort:
+// `opened` is false when the `code` CLI isn't on PATH (the portal surfaces that).
+router.post('/open-editor', async (req, res) => {
+  if (!workspaceRoot) return res.json({ opened: false });
+  const available = await isEditorAvailable();
+  if (!available) return res.json({ opened: false });
+  const file = typeof req.body?.file === 'string' ? req.body.file.trim() : '';
+  const ref = typeof req.body?.ref === 'string' ? req.body.ref.trim() : '';
+  if (file) {
+    // Repo-relative only — reject absolute / traversal paths before joining.
+    if (file.startsWith('/') || file.includes('..') || /^[a-zA-Z]:/.test(file)) {
+      return res.status(400).json({ error: 'Invalid path' });
+    }
+    // A worktree ref (branch) opens the file in that worktree's checkout;
+    // 'main'/empty opens it in the engine workspace root.
+    let root = workspaceRoot;
+    if (ref && ref !== 'main') {
+      const wt = await findWorktreeForBranch(workspaceRoot, ref).catch(() => null);
+      if (wt) root = wt;
+    }
+    openEditorFile(path.join(root, file));
+  } else {
+    openEditorWindow(workspaceRoot);
+  }
+  res.json({ opened: true });
+});
+
+// Commit selected uncommitted files from the board panel (FLUX-554). Commit-ONLY —
+// never pushes. Pathspec-scoped so only the listed files are committed even if the
+// index held other staged changes. `ref` picks the checkout: 'main'/omitted →
+// workspace root; a branch → that branch's worktree.
+router.post('/commit', async (req, res) => {
+  if (!workspaceRoot) return res.status(400).json({ error: 'No active workspace' });
+  const ref = typeof req.body?.ref === 'string' ? req.body.ref.trim() : 'main';
+  const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
+  const files: string[] = Array.isArray(req.body?.files)
+    ? req.body.files.filter((f: any) => typeof f === 'string' && f.trim()).map((f: string) => f.trim())
+    : [];
+  if (!message) return res.status(400).json({ error: 'Commit message is required' });
+  if (files.length === 0) return res.status(400).json({ error: 'No files selected' });
+  for (const f of files) {
+    if (f.startsWith('/') || f.includes('..') || /^[a-zA-Z]:/.test(f)) {
+      return res.status(400).json({ error: `Invalid path: ${f}` });
+    }
+  }
+  let root = workspaceRoot;
+  if (ref && ref !== 'main') {
+    const wt = await findWorktreeForBranch(workspaceRoot, ref).catch(() => null);
+    if (wt) root = wt;
+  }
+  try {
+    // Stage the selected paths (covers untracked + deletions), then commit only them.
+    await execFileAsync('git', ['-C', root, 'add', '--', ...files], { windowsHide: true });
+    await execFileAsync('git', ['-C', root, 'commit', '-m', message, '--', ...files], { windowsHide: true });
+    const { stdout } = await execFileAsync('git', ['-C', root, 'rev-parse', '--short', 'HEAD'], { windowsHide: true });
+    res.json({ hash: stdout.trim() });
+  } catch (err: any) {
+    const detail = (err?.stderr || err?.message || 'Commit failed').toString().trim();
+    res.status(500).json({ error: detail });
   }
 });
 
@@ -473,6 +560,20 @@ router.delete('/:id', async (req, res) => {
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
   try {
+    // Tear down the ticket's dedicated worktree first so deleting the ticket doesn't orphan
+    // it (FLUX-577). Abandon path (applyToMain:false): uncommitted work is preserved as a
+    // recoverable stash ref, NOT applied to master. Only this ticket's own worktree is
+    // touched (taskWorktreeDir by id) — a shared/joined worktree another ticket holds is
+    // left alone. Best-effort: a teardown failure must not block the delete.
+    if (task.branch) {
+      const wtPath = taskWorktreeDir(workspaceRoot!, id);
+      if (existsSync(wtPath)) {
+        stopAllSessionsForTask(id, 'Deleting ticket — detaching worktree');
+        await detachTaskWorktree(workspaceRoot!, wtPath, { ticketId: id, applyToMain: false }).catch((e) => {
+          console.error(`Worktree teardown failed while deleting ${id}:`, e?.message);
+        });
+      }
+    }
     await fs.unlink(task._path);
     delete tasksCache[id];
     res.json({ success: true });
@@ -586,9 +687,10 @@ router.post('/:id/assets', async (req, res) => {
 
 // ─── Branch routes ────────────────────────────────────────────────────────────
 
-import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, extractFileFromDiff, captureDiff } from '../branch-manager.js';
-import { createTaskWorktree, detachTaskWorktree, taskWorktreeDir, listTaskWorktrees, findWorktreeForBranch, worktreeChangeCount, listLocalBranches } from '../task-worktree.js';
-import { isEditorAvailable, openEditorWindow } from '../editor-launcher.js';
+import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, extractFileFromDiff, captureDiff, createPullRequest, mergePullRequest, checkGhAuth, getPullRequestStatus, getDefaultBranch } from '../branch-manager.js';
+import { createTaskWorktree, detachTaskWorktree, taskWorktreeDir, listTaskWorktrees, findWorktreeForBranch, worktreeChangeCount, listLocalBranches, currentBranchName } from '../task-worktree.js';
+import { isEditorAvailable, openEditorWindow, openEditorFile } from '../editor-launcher.js';
+import { cleanupMergedBranch } from '../pr-cleanup.js';
 import { broadcastEvent } from '../events.js';
 
 router.post('/:id/branch', async (req, res) => {
@@ -756,6 +858,226 @@ router.post('/:id/worktree/join', async (req, res) => {
     await updateTaskWithHistory(id, { updatedBy: 'Agent', extraFields: { branch } });
     broadcastEvent('taskUpdated', { id });
     res.json({ branch, worktree, joined: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── PR routes (FLUX-556) ───────────────────────────────────────────────────────
+// PRs are BRANCH-scoped: a PR belongs to a branch, and N tickets sharing that branch
+// share its PR. These endpoints back the in-EH PR card / "Open PRs" swimlane (FLUX-555).
+// Hard dependency on `gh` + a GitHub remote — every path degrades gracefully (clean
+// "unavailable", never a 500) when gh is missing/unauthed so the UI can fall back.
+
+// Live PR state for a ticket's branch. `{ pr: null }` when the ticket has no branch,
+// no PR exists, or gh is unavailable. Best-effort — never 500.
+router.get('/:id/pr', async (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+  if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
+  if (!task.branch) return res.json({ pr: null });
+
+  try {
+    // No `gh auth status` pre-check — getPullRequestStatus already returns null on any gh
+    // failure (unauthed / non-GitHub remote / no PR), so the extra subprocess on every poll
+    // was redundant (FLUX-561 #4).
+    const pr = await getPullRequestStatus(task.branch);
+    return res.json({ pr });
+  } catch {
+    return res.json({ pr: null }); // best-effort: never surface a 500 here
+  }
+});
+
+// "Raise PR": push the ticket's branch + open a PR for review WITHOUT moving to Done
+// (Done happens at merge — FLUX-555 decision #2). Stores the PR URL as implementationLink.
+router.post('/:id/pr', async (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+  if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
+  if (!task.branch) return res.status(409).json({ error: 'Ticket has no branch to raise a PR for.' });
+
+  if (!(await checkGhAuth())) {
+    return res.status(409).json({ error: 'gh is not authenticated (or no GitHub remote).', unavailable: true });
+  }
+
+  // Pre-check: a branch with no commits ahead of the default branch can't open a PR
+  // (gh would fail with "No commits between …"). Return an actionable 409 rather than a
+  // raw 500 (FLUX-561). aheadCount comes from rev-list vs the default branch.
+  const status = await getTicketBranchStatus(task.branch).catch(() => null);
+  if (status && status.exists && status.aheadCount === 0) {
+    return res.status(409).json({ error: `Branch \`${task.branch}\` has no commits ahead of the base branch yet — commit work before raising a PR.` });
+  }
+
+  try {
+    const prBody = `${task.body ? task.body.slice(0, 800) : ''}\n\n---\nTicket: ${id}`;
+    const url = await createPullRequest(task.branch, task.title || id, prBody);
+    // Set the open-pr swimlane on every ticket sharing the branch (branch-scoped PR) so
+    // they all surface in the "Open PRs" group + glow (FLUX-558).
+    const branchTickets = (Object.values(tasksCache) as any[]).filter((t) => t.branch === task.branch);
+    for (const t of branchTickets) {
+      await updateTaskWithHistory(t.id, {
+        updatedBy: 'Agent',
+        entries: t.id === id ? [buildActivityEntry(`PR raised: ${url}`, 'Agent', new Date().toISOString())] : [],
+        extraFields: { implementationLink: url, swimlane: 'open-pr' },
+      });
+      if (t.id !== id) broadcastEvent('taskUpdated', { id: t.id });
+    }
+    const pr = await getPullRequestStatus(task.branch).catch(() => null);
+    broadcastEvent('taskUpdated', { id });
+    res.json({ url, number: pr?.number ?? null });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Squash-merge the branch's PR, then run branch-scoped post-merge cleanup (advance every
+// ticket on the branch → Done, fast-forward master, tear down worktree + branch — FLUX-557).
+// Guard: refuse while a live agent session owns the worktree (FLUX-555 decision #8) —
+// merging out from under a running session would lose/clobber in-flight work.
+router.post('/:id/pr/merge', async (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+  if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
+  const branch: string | undefined = task.branch;
+  if (!branch) return res.status(409).json({ error: 'Ticket has no branch / PR to merge.' });
+
+  // Branch-scoped: a merge advances ALL tickets sharing this branch.
+  const sharedTickets = Object.values(tasksCache).filter((t: any) => t.branch === branch) as any[];
+
+  // Guard: any live session on a branch-sharing ticket owns the worktree.
+  const liveOwners = sharedTickets.filter((t) => getActiveSessionsForTask(t.id).length > 0);
+  if (liveOwners.length > 0) {
+    return res.status(409).json({
+      error: `Cannot merge — a live agent session owns this worktree (${liveOwners.map((t) => t.id).join(', ')}). Stop the session, then merge.`,
+    });
+  }
+
+  if (!(await checkGhAuth())) {
+    return res.status(409).json({ error: 'gh is not authenticated (or no GitHub remote).', unavailable: true });
+  }
+
+  try {
+    await mergePullRequest(branch); // squash + delete remote branch
+  } catch (err: any) {
+    return res.status(500).json({ error: `Merge failed: ${err.message}` });
+  }
+
+  // Post-merge cleanup (FLUX-557): advance all branch tickets → Done, fast-forward local
+  // master, and tear down the worktree + branch when the tree is clean (otherwise a
+  // persistent notification is raised). Branch-scoped — runs once for the shared branch.
+  const cleanup = await cleanupMergedBranch(workspaceRoot!, branch);
+
+  // Resolve PR tickets (kind:'pr') for this branch RIGHT NOW. cleanupMergedBranch deliberately
+  // skips them (their state is owned by syncPrTickets — FLUX-587), which left the merged PR
+  // card sitting OPEN until the next 90s poll ("nothing happened" for a long minute — FLUX-588).
+  // The merge just succeeded here, so move them to Done immediately instead of waiting.
+  for (const t of sharedTickets.filter((t) => (t as any).kind === 'pr')) {
+    await upsertManagedTicket(t.id, { status: 'Done', prState: 'MERGED', swimlane: null }).catch(() => {});
+    broadcastEvent('taskUpdated', { id: t.id });
+  }
+
+  res.json({ merged: true, ...cleanup });
+});
+
+// Retry a merged/closed PR (FLUX-593): spawn a NEW ticket linked to the PR via a 'retries'
+// relation, carrying the user's reason + the PR's context as agent launch-focus, optionally
+// on a fresh branch. A merged PR is immutable — this is a fresh cycle, not an un-merge. The
+// 'retries' link is the first instance of the typed-relationships model (epic FLUX-596).
+router.post('/:id/retry', async (req, res) => {
+  const { id } = req.params;
+  const pr = tasksCache[id] as any;
+  if (!pr) return res.status(404).json({ error: `Ticket ${id} not found` });
+  if (pr.kind !== 'pr') return res.status(409).json({ error: 'Retry is only available for PR tickets.' });
+
+  const reason: string = (req.body?.reason ?? '').toString().trim();
+  if (!reason) return res.status(400).json({ error: 'A reason is required to retry a PR.' });
+  const createBranch: boolean = req.body?.createBranch === true;
+  const author: string = req.body?.updatedBy || 'Unknown';
+
+  const prNum = pr.prNumber;
+  const prUrl: string = pr.implementationLink || '';
+  const baseTitle = (pr.title || `PR #${prNum}`).replace(/^PR #\d+:\s*/, ''); // drop "PR #n: " prefix
+  const members: string[] = Array.isArray(pr.members) ? pr.members : [];
+  const memberTask = members.map((m) => tasksCache[m]).find(Boolean) as any;
+  const tags: string[] = Array.isArray(memberTask?.tags) ? memberTask.tags : [];
+
+  const stateWord = pr.prState === 'MERGED' ? 'merged' : pr.prState === 'CLOSED' ? 'was closed without merging' : 'is resolved';
+  const body = [
+    `## Retry of PR #${prNum}`,
+    ``,
+    `**PR #${prNum}**${prUrl ? ` ([link](${prUrl}))` : ''} ${stateWord}, but the work needs another pass.`,
+    ``,
+    `**Reason for retry (from ${author}):**`,
+    `> ${reason.replace(/\n/g, '\n> ')}`,
+    ``,
+    members.length ? `**Original ticket(s):** ${members.join(', ')}` : `**Original ticket(s):** (none recorded)`,
+    ``,
+    `## How to continue`,
+    `The original PR is settled and can't be re-opened, so this is a fresh cycle on a new branch. Review PR #${prNum}'s diff and the reason above, reproduce the problem, and continue from where that work left off — then open a new PR.`,
+  ].join('\n');
+
+  try {
+    const { id: newId, task } = await createTask({
+      title: `Retry PR #${prNum}: ${baseTitle}`,
+      status: 'In Progress',
+      ...(memberTask?.priority ? { priority: memberTask.priority } : {}),
+      tags,
+      body,
+      author,
+      links: [{ type: 'retries', target: id, label: `PR #${prNum}` }],
+    });
+
+    let branch: string | undefined;
+    if (createBranch) {
+      try {
+        branch = await createTicketBranch(newId, task.title || newId);
+        await updateTaskWithHistory(newId, { updatedBy: 'Agent', extraFields: { branch } });
+      } catch (err: any) {
+        // Best-effort — the ticket exists regardless; note why the branch didn't get created.
+        await updateTaskWithHistory(newId, {
+          updatedBy: 'Agent',
+          entries: [{ type: 'comment', user: 'Agent', comment: `Retry branch could not be created automatically: ${err.message}. Create one via Start.`, date: new Date().toISOString() }],
+        });
+      }
+    }
+    broadcastEvent('taskUpdated', { id: newId });
+    res.json({ id: newId, branch: branch ?? null });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to create retry ticket: ${err.message}` });
+  }
+});
+
+// Update a stale PR branch by merging the default branch into it (FLUX-559). Conservative:
+// requires a clean worktree and aborts the merge on conflict (the user resolves in the
+// worktree) — never leaves a half-merged tree. Pushes the merge so the PR refreshes.
+router.post('/:id/pr/update-branch', async (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+  if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
+  const branch: string | undefined = task.branch;
+  if (!branch) return res.status(409).json({ error: 'Ticket has no branch to update.' });
+
+  const worktree = await findWorktreeForBranch(workspaceRoot!, branch).catch(() => null);
+  if (!worktree) {
+    return res.status(409).json({ error: 'No active worktree holds this branch — open the worktree before updating.' });
+  }
+  const { stdout: porcelain } = await execFileAsync('git', ['-C', worktree, 'status', '--porcelain'], { windowsHide: true }).catch(() => ({ stdout: 'err' }));
+  if (porcelain.trim().length > 0) {
+    return res.status(409).json({ error: 'Worktree has uncommitted changes — commit or stash them first.' });
+  }
+
+  try {
+    const def = await getDefaultBranch();
+    await execFileAsync('git', ['-C', worktree, 'fetch', 'origin', def], { windowsHide: true });
+    try {
+      await execFileAsync('git', ['-C', worktree, 'merge', '--no-edit', `origin/${def}`], { windowsHide: true });
+    } catch (mergeErr: any) {
+      await execFileAsync('git', ['-C', worktree, 'merge', '--abort'], { windowsHide: true }).catch(() => {});
+      return res.status(409).json({ error: `Update hit conflicts with ${def} — resolve them in the worktree, then push. (${mergeErr.message})` });
+    }
+    await execFileAsync('git', ['-C', worktree, 'push', 'origin', branch], { windowsHide: true }).catch(() => {});
+    broadcastEvent('taskUpdated', { id });
+    res.json({ updated: true, branch });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

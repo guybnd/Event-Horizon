@@ -39,3 +39,19 @@ export function openEditorWindow(dir: string): void {
   child.on('error', () => { /* best-effort — availability is checked separately */ });
   child.unref();
 }
+
+/**
+ * Open a single file in VS Code and reveal it (`-g`), reusing an existing window
+ * when one is open. Fire-and-forget; check {@link isEditorAvailable} first.
+ */
+export function openEditorFile(filePath: string): void {
+  const cmd = process.platform === 'win32' ? 'code.cmd' : 'code';
+  const child = spawn(cmd, ['-g', filePath], {
+    shell: true,
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  child.on('error', () => { /* best-effort */ });
+  child.unref();
+}

@@ -47,7 +47,7 @@ export interface TaskWorktreeOptions {
   /** Max simultaneous task worktrees for this repo (default DEFAULT_MAX_TASK_WORKTREES). */
   maxWorktrees?: number;
   /** Branch to create the task branch from when it doesn't exist yet (default 'master'). */
-  baseBranch?: string;
+  baseBranch?: string | undefined;
   /** Junction the main tree's node_modules into the new worktree (default true). FLUX-518. */
   linkDependencies?: boolean;
 }
@@ -473,6 +473,17 @@ export async function listLocalBranches(
     'for-each-ref', '--format=%(refname:short)', 'refs/heads',
   ]).catch(() => ({ stdout: '' }));
   return stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+}
+
+/** Current branch name of `dir` (e.g. 'master'); 'HEAD' when detached, null on error. */
+export async function currentBranchName(
+  dir: string,
+  opts: { gitRunner?: GitRunner } = {},
+): Promise<string | null> {
+  const runner = opts.gitRunner ?? defaultGitRunner;
+  const { stdout } = await runner(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => ({ stdout: '' }));
+  const branch = stdout.trim();
+  return branch || null;
 }
 
 // ─── Dependency links (FLUX-518) ─────────────────────────────────────────────

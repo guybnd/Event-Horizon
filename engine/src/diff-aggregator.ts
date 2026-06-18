@@ -62,6 +62,9 @@ export interface DiffOverviewOptions {
   gitRunner?: GitRunner;
   /** Default branch to diff worktrees against (default: resolved master→main→'master'). */
   baseBranch?: string;
+  /** Diff each worktree against its own HEAD (loose/uncommitted work only) instead
+   *  of the merge-base, so every group is uncommitted-only — matching the main tree. */
+  uncommittedOnly?: boolean;
 }
 
 // ─── Parsing ────────────────────────────────────────────────────────────────────
@@ -213,7 +216,9 @@ export async function buildDiffOverview(workspaceRoot: string, opts: DiffOvervie
   const worktrees = await listTaskWorktrees(workspaceRoot, { gitRunner: runner }).catch(() => []);
   const groups: DiffGroup[] = [];
   for (const wt of worktrees) {
-    const base = await mergeBaseOrBranch(runner, wt.path, defaultBranch);
+    // Uncommitted mode: a worktree's working tree vs its OWN HEAD (loose work only),
+    // matching the main group — not the branch's full divergence from master.
+    const base = opts.uncommittedOnly ? 'HEAD' : await mergeBaseOrBranch(runner, wt.path, defaultBranch);
     const files = await changedFilesAgainst(runner, wt.path, base).catch(() => []);
     groups.push({ kind: 'worktree', path: wt.path, files, ...(wt.branch ? { branch: wt.branch } : {}) });
   }

@@ -27,8 +27,8 @@ export function DocsPromotionPanel({ onPromoted }: { onPromoted?: () => void }) 
     try {
       const plan = await planDocsPromotion();
       setRows(plan.candidates.map((c) => ({ ...c, selected: false })));
-    } catch (e: any) {
-      setError(e.message ?? 'Failed to plan promotion');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to plan promotion');
     } finally {
       setLoading(false);
     }
@@ -45,8 +45,8 @@ export function DocsPromotionPanel({ onPromoted }: { onPromoted?: () => void }) 
       setResult(res);
       setRows(null);
       onPromoted?.();
-    } catch (e: any) {
-      setError(e.message ?? 'Failed to promote docs');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to promote docs');
     } finally {
       setApplying(false);
     }

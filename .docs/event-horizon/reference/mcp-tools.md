@@ -28,6 +28,7 @@ The auto-installed MCP config (placed by the workflow installer) does this for y
 | [`get_session_log`](#get_session_log) | Read | — |
 | [`list_tickets`](#list_tickets) | Read | — |
 | [`get_board_config`](#get_board_config) | Read | — |
+| [`get_board_state`](#get_board_state) | Read | — |
 | [`get_project_group`](#get_project_group) | Read | — |
 | [`list_group_docs`](#list_group_docs) | Group docs — Read | — |
 | [`read_group_doc`](#read_group_doc) | Group docs — Read | — |
@@ -42,6 +43,7 @@ The auto-installed MCP config (placed by the workflow installer) does this for y
 | [`create_branch`](#create_branch) | Branch | yes |
 | [`get_branch`](#get_branch) | Branch | — |
 | [`delete_branch`](#delete_branch) | Branch | yes |
+| [`permission_prompt`](#permission_prompt) | Internal (gating) | — |
 
 ---
 
@@ -66,6 +68,8 @@ Read a ticket by ID. Returns an **agent digest**, not the raw file: history is d
 - Older `agent_session` entries are likewise collapsed to their `outcome` (shown as `summary`), keeping `sessionId` — recover the full session via [`get_session_log`](#get_session_log)`(ticketId, sessionId)`, **not** `expand` (collapsed sessions carry `sessionId`, not `id`).
 - Only the most recent `historyLimit` entries are returned; when older ones are omitted, the response includes `olderHistoryEntries: <count>`.
 - Attached `cliSession`/`cliSessions` summaries are the list-scoped set with `liveOutput` truncated to a short tail, and slimmed for agents: `args` (which embeds the full launch prompt — i.e. the ticket body again), `command`, and `pid` are dropped; `argsChars` preserves a size hint.
+- **Recent user comments are always surfaced** (FLUX-480): a top-level `recentUserComments` array holds the last `commentDigest.recentUserComments` (config, default 3) **user-authored** `comment` entries — scanned from the *full* history, so a user comment that aged past the window is never silently dropped. Authorship is heuristic: agents write `user: 'Agent'` (the canonical marker) or a model/framework display name; everything else is treated as a user (the bias is to never hide user intent). Cheap flags `hasUserComments` (always present) and `lastUserCommentAt` accompany it so routing/preview consumers can read them without pulling history.
+- **Launch focus persists across sessions** (FLUX-480): when a session is launched with a `focusComment`, the engine records a small `activity` entry carrying a `launchFocus` field (the clean focus text only — never the full launch prompt, which FLUX-473 keeps out of the digest). The digest surfaces the most recent one as top-level `launchFocus`, with `hasLaunchFocus: true`.
 
 The REST detail endpoint (`GET /api/tasks/:id`) is unaffected and still returns the full history for the portal.
 
@@ -110,6 +114,19 @@ Read board configuration.
 **Input:** none.
 
 **Output:** `{ statuses, projects, tags, priorities, users, requireInputStatus, readyForMergeStatus }`. `statuses` merges visible columns and hidden statuses.
+
+### `get_board_state`
+
+Live snapshot of board activity for the **orchestrator** (FLUX-604) — the *pull* half of its situational awareness. Backs the `__board__` board-scoped chat; usable from any session.
+
+**Input:** none.
+
+**Output:** `{ activeSessions, statusCounts }` (from `GET /api/board/state`, [`engine/src/index.ts`](../../../engine/src/index.ts)):
+
+- `activeSessions` — one entry per currently-running CLI session: `{ taskId, status, phase, role, label, activity }` (`activity` is the session's `currentActivity`, e.g. *"Editing"*). Sourced from `getAllActiveSessions()` in [`session-store.ts`](../../../engine/src/session-store.ts).
+- `statusCounts` — `{ <status>: <count> }` over all cached tickets.
+
+Read-only and side-effect-free — a snapshot, not a subscription. The orchestrator calls it to see the field before dispatching work (`start_session`) or to check on running sessions.
 
 ### `get_project_group`
 
@@ -295,7 +312,7 @@ Append an `activity` entry (different from a comment — used for "agent did X" 
 
 ### `finish_ticket`
 
-Atomic close-out: set `implementationLink`, append a completion comment, move status to `Done`. If the ticket has an associated git branch *and* `gh` is authenticated, also opens a PR and stores the PR URL as the implementation link.
+Atomic close-out: set `implementationLink`, append a completion comment, move status to `Done`. For a **branch ticket** (with `gh` authenticated) it **merges the branch's PR** (squash) and then runs the shared post-merge cleanup (advance + master fast-forward + worktree/branch teardown, FLUX-574). The PR is normally opened at the Ready transition; if none exists at finish, finish **opens it first** (FLUX-578) — or, if the branch has **no commits**, bounces the ticket to In Progress with an actionable "commit first" message instead of failing on a raw merge error.
 
 | Input | Type | Required |
 |-------|------|----------|
@@ -307,8 +324,8 @@ Atomic close-out: set `implementationLink`, append a completion comment, move st
 
 **Side effects:**
 
-- Attempts `gh pr create` if `task.branch` is set and `gh` is authenticated; replaces `implementationLink` with the PR URL on success.
-- On `gh` failure, falls back to the provided commit hash and appends a warning to the completion comment.
+- For a branch ticket: ensures a PR exists (opens one if missing), squash-merges it, then runs the unified post-merge cleanup (`cleanupMergedBranch` — advance branch tickets, fast-forward master, remove worktree + delete branch, clear the `open-pr` swimlane).
+- No commits ahead / merge failure / `gh` unavailable → bounces the ticket back to In Progress with an actionable comment (no partial Done).
 - Writes status + link + comment in one disk write — no partial state on failure.
 
 ---
@@ -350,6 +367,8 @@ When `worktree` is `true` (or omitted with `worktreeByDefault` enabled), a dedic
 
 **Enforcement:** refuses to delete unmerged branches unless `force === true`. If the ticket has a dedicated worktree, the session is stopped and the worktree detached first (a branch can't be deleted while a worktree holds it checked out). As an **abandon**, any uncommitted work is preserved as a recoverable stash ref but NOT applied onto master.
 
+**Idempotent:** if the git branch is already gone (e.g. it was deleted by post-merge cleanup), the local delete is skipped rather than erroring, and the tool still clears the ticket's stale `branch` field. This makes it the way to detach a dead branch from a reopened ticket (FLUX-588).
+
 > **Worktree teardown on finish:** `finish_ticket` stops the session and tears the ticket's worktree down (via detach) after the work is committed and the PR merged (FLUX-521). If the worktree still has **uncommitted** changes — e.g. someone was editing it by accident — they are surfaced onto master and noted on the ticket, never discarded. The manual `POST /:id/worktree/detach` escape hatch behaves the same.
 
 ---
@@ -375,6 +394,37 @@ Create a child ticket and link it from the parent's `subtasks` array atomically.
 - Writes the child file with a creation activity entry referencing the parent.
 - Rewrites the parent file to append the new id to its `subtasks` array.
 - Broadcasts `taskCreated` with the `parentId` for portal hierarchy cues.
+
+---
+
+## Internal tool
+
+### `permission_prompt`
+
+**Not for agents to call directly.** Claude Code invokes this automatically when a gated session is spawned with `--permission-prompt-tool mcp__event-horizon__permission_prompt` (FLUX-605). It implements Claude Code's permission-prompt contract: given a tool that would otherwise prompt, return a synchronous decision.
+
+| Input | Type | Required | Notes |
+|-------|------|----------|-------|
+| `tool_name` | string | yes | The tool Claude Code wants to run (may be MCP-prefixed, e.g. `mcp__event-horizon__change_status`). |
+| `input` | any | no | The proposed tool input; echoed back as `updatedInput` on allow. |
+
+**Output:** the Claude Code permission decision — `{ behavior: 'allow', updatedInput }` or `{ behavior: 'deny', message }` (returned as JSON text).
+
+**Policy** (`permissionDecisionFor` in [`mcp-server.ts`](../../../engine/src/mcp-server.ts)):
+
+- **Auto-allow** — reads and safe tools (`get_ticket`, `list_tickets`, `get_board_config`, `Read`, `Glob`, `Grep`, `WebFetch`, …) and anything not in the confirm set.
+- **Confirm** — destructive ops `change_status`, `delete_branch`, `finish_ticket`, and `Bash` route through a human Allow/Deny round-trip: the tool POSTs to [`/api/board/permission-request`](rest-api.md), which parks the call until a human resolves it in the portal (or 120s elapses → auto-deny). The synchronous CLI contract is satisfied by holding the HTTP response open until resolution.
+
+The confirm round-trip emits the `permission-request` / `permission-resolved` realtime events ([realtime channels](realtime-channels.md)) so the portal can show the approval prompt. Gating is per-session: see [permission mode](#permission-mode) below.
+
+#### Permission mode
+
+Sessions are spawned in one of two modes (`permissionArgs` in [`agents/claude-code.ts`](../../../engine/src/agents/claude-code.ts)):
+
+- **`gated`** → `--permission-prompt-tool mcp__event-horizon__permission_prompt` (the policy above applies).
+- **`skip`** → `--dangerously-skip-permissions` (no gate; the legacy behavior).
+
+Defaults come from the workspace **risk tolerance** setting (`config.permissions`: `boardDefault` default `gated`, `ticketDefault` default `skip` — see [configuration](../configuration.md)). The per-chat **Perms** picker (Default / Gated / Skip) overrides per turn; "Default" inherits the configured value. Delegated/headless sessions (combiner, relay) can't block on a human, so they run un-gated regardless.
 
 ---
 

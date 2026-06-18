@@ -1,0 +1,41 @@
+{
+  // Surfacing project problems to the Problems panel (FLUX-576, FLUX-583).
+  // `check` is the green gate (portal + engine typecheck, plus portal lint as of
+  // FLUX-583). The per-leg tasks exist so individual surfaces show up in Problems too.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "check",
+      "detail": "Gate: portal + engine typecheck + portal lint (npm run check)",
+      "type": "shell",
+      "command": "npm run check",
+      "problemMatcher": ["$tsc", "$eslint-stylish"],
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+    },
+    {
+      "label": "typecheck: engine",
+      "detail": "Engine type errors only",
+      "type": "shell",
+      "command": "npm run typecheck -w engine",
+      "problemMatcher": ["$tsc"],
+      "group": "build"
+    },
+    {
+      "label": "typecheck: portal",
+      "detail": "Portal type errors only",
+      "type": "shell",
+      "command": "npm run typecheck -w portal",
+      "problemMatcher": ["$tsc"],
+      "group": "build"
+    },
+    {
+      "label": "lint: portal",
+      "detail": "Portal ESLint (now part of the gate — FLUX-583)",
+      "type": "shell",
+      "command": "npm run lint -w portal",
+      "problemMatcher": ["$eslint-stylish"],
+      "group": "build"
+    }
+  ]
+}

@@ -28,13 +28,19 @@ Refer to the orchestrator skill for the ticket model, APIs, and end-to-end check
 6. Make small, local changes and validate immediately after the first edit.
 7. Use `log_progress` to record progress when scope changes, validation fails, or the user redirects.
 8. If clarification is needed, use `change_status` with `newStatus: 'Require Input'` and a `comment` — do not ask only in chat.
-9. When moving to `Ready`: use `change_status` with `newStatus: 'Ready'` and a `comment` summarizing what was implemented, validated, and any caveats. Keep code files uncommitted at this stage.
+9. When moving to `Ready`: use `change_status` with `newStatus: 'Ready'` and a `comment` summarizing what was implemented, validated, and any caveats.
+   - **Branch / worktree tickets (PR flow):** **commit your work BEFORE moving to `Ready`** (one focused commit; the engine pushes it for you). Moving to `Ready` with a branch opens a PR for review, and a branch with **no commits ahead of base can't open a PR** — an uncommitted branch ticket is flagged with a notification telling you to commit. Never leave the work uncommitted in the worktree at `Ready`.
+   - **Branchless tickets (direct flow):** keep code files uncommitted at this stage; the commit happens at `finish`.
 10. **Before `Ready` or `Done`, update `.docs/` so the docs match the new behavior.** This is part of the ticket, not a follow-up. Check first:
     - `.docs/event-horizon/reference/*` — if you changed ticket schema, MCP tools, REST endpoints, realtime channels, or the agent-adapter contract, the matching reference page MUST be updated.
     - `.docs/event-horizon/architecture/code-map.md` — add an entry when a new module becomes the right "land here first" file for future agents.
     - `.docs/event-horizon/agent-integrations.md`, `workflow/*.md`, root `README.md`, and `.flux/skills/` templates when user-facing or agent-facing behavior changes.
     - If nothing needs updating, say so explicitly in the completion comment ("no docs needed because …") instead of skipping the check silently.
-11. On `finish <ticket>`: stage all relevant files (code + docs), create the commit, then use `finish_ticket` with `implementationLink` (commit hash) and `completionComment`. If the ticket has a `branch`, the engine pushes the branch and creates a PR automatically — the PR URL becomes `implementationLink`. Status moves to Done atomically. The completion comment should name the docs you updated, or state why none were needed.
+11. On `finish <ticket>`:
+    - **Branchless tickets:** stage all relevant files (code + docs), create the commit, then use `finish_ticket` with `implementationLink` (commit hash) and `completionComment`. Status moves to Done atomically.
+    - **Branch / worktree tickets:** the implementation commit already exists (made before `Ready`) and a PR is open. `finish_ticket` merges the PR and advances to Done — the PR URL is the `implementationLink`. If you made further changes (e.g. docs) after `Ready`, commit + `git push origin <branch>` first so the PR updates, then `finish_ticket`.
+    The completion comment should name the docs you updated, or state why none were needed.
+12. **Never end a session with a blocking decision only in your final chat message.** If you cannot safely finish (e.g. the branch bundles other tickets' work / an integration PR, or the merge is an irreversible one-way door you're unsure about), move the ticket to **Require Input** with the decision + options and stop — a question left only in your final message is invisible on the board and will be missed (FLUX-570).
 
 ## Branch Rules
 
@@ -74,7 +80,8 @@ Use MCP tools for all ticket interactions. Use Read for source code only.
 ## Commit Guidance
 
 - One focused commit per ticket. Describe shipped behavior, not files touched.
-- Wait for `finish <ticket>` before committing. Commit + implementationLink + Done = atomic.
+- **Branchless tickets:** wait for `finish <ticket>` before committing (commit + implementationLink + Done = atomic).
+- **Branch / worktree tickets:** commit BEFORE moving to `Ready` — the PR opens at `Ready` and needs commits to exist. `finish` then merges that PR.
 - Good: `Add ticket effort field editing`. Bad: `fix stuff`, `updates`.
 
 ## Comment Conventions

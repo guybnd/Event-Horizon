@@ -1,7 +1,42 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Task } from '../types';
 import { normalizeSubtaskId } from '../types';
-import { normalizeTaskMarkdownBody } from '../components/TaskDescriptionSurface';
+import { normalizeTaskMarkdownBody } from '../taskMarkdownUtils';
+
+type TaskFormValues = {
+  title: string;
+  body: string;
+  status: string;
+  assignee: string;
+  tags: string[];
+  priority: string;
+  effort: string;
+  effortLevel: string;
+  implementationLink: string;
+  subtasks: string[];
+  parentId: string;
+};
+
+// Serialize the editable form fields into a stable, comparison-ready string.
+// Body is normalized (line endings / trailing whitespace) so semantically
+// identical markdown compares equal. Used both for the live form payload and for
+// the baseline snapshot captured at sync time, so the two are always built the
+// same way and cannot drift apart through asymmetric normalization.
+function serializeTaskFormValues(values: TaskFormValues) {
+  return JSON.stringify({
+    title: values.title,
+    body: normalizeTaskMarkdownBody(values.body),
+    status: values.status,
+    assignee: values.assignee,
+    tags: values.tags,
+    priority: values.priority,
+    effort: values.effort,
+    effortLevel: values.effortLevel,
+    implementationLink: values.implementationLink,
+    subtasks: values.subtasks,
+    parentId: values.parentId,
+  });
+}
 
 export function useTaskForm(modalTask: Task | Partial<Task> | null | undefined) {
   const [title, setTitle] = useState('');
@@ -23,6 +58,12 @@ export function useTaskForm(modalTask: Task | Partial<Task> | null | undefined) 
   // isDirty is suppressed until this matches modalTask.id to prevent false-dirty
   // flashes on open caused by stale state from the previous ticket.
   const syncedTaskIdRef = useRef<string | undefined>(undefined);
+  // Snapshot of the form payload captured the moment state was last synced from
+  // modalTask. isDirty compares the live payload against this baseline, so a
+  // re-sync that keeps the same ticket id (e.g. the post-open fetchTask refresh)
+  // updates the baseline in lockstep and can never register as a spurious edit —
+  // which previously trapped the close/discard flow on an unedited ticket.
+  const baselinePayloadRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!modalTask) return;
@@ -35,7 +76,7 @@ export function useTaskForm(modalTask: Task | Partial<Task> | null | undefined) 
     const nextAssignee = modalTask.assignee || 'unassigned';
     const nextPriority = modalTask.priority || 'None';
     const nextEffort = modalTask.effort || 'None';
-    const nextThinkingBudget = (modalTask as any).effortLevel || '';
+    const nextThinkingBudget = modalTask.effortLevel || '';
     const nextLink = modalTask.implementationLink || '';
     const nextParentId = modalTask.parentId || '';
 
@@ -71,42 +112,39 @@ export function useTaskForm(modalTask: Task | Partial<Task> | null | undefined) 
       setParentId((prev) => (prev !== nextParentId ? nextParentId : prev));
     }
 
+    baselinePayloadRef.current = serializeTaskFormValues({
+      title: nextTitle,
+      body: nextBody,
+      status: nextStatus,
+      assignee: nextAssignee,
+      tags: modalTask.tags || [],
+      priority: nextPriority,
+      effort: nextEffort,
+      effortLevel: nextThinkingBudget,
+      implementationLink: nextLink,
+      subtasks: (modalTask.subtasks || []).map(normalizeSubtaskId),
+      parentId: nextParentId,
+    });
+
     if (isNewTicket) {
       openedTaskIdRef.current = modalTask.id;
     }
     syncedTaskIdRef.current = modalTask.id;
   }, [modalTask]);
 
-  const originalPayload = useMemo(() => JSON.stringify({
-    title: modalTask?.title || '',
-    body: normalizeTaskMarkdownBody(modalTask?.body || ''),
-    status: modalTask?.status || 'Todo',
-    assignee: modalTask?.assignee || 'unassigned',
-    tags: modalTask?.tags || [],
-    priority: modalTask?.priority || 'None',
-    effort: modalTask?.effort || 'None',
-    effortLevel: (modalTask as any)?.effortLevel || '',
-    implementationLink: modalTask?.implementationLink || '',
-    subtasks: (modalTask?.subtasks || []).map(normalizeSubtaskId),
-    parentId: modalTask?.parentId || '',
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [modalTask]);
-
-  const currentPayload = useMemo(() => JSON.stringify({
-    title,
-    body: normalizeTaskMarkdownBody(body),
-    status,
-    assignee,
-    tags,
-    priority,
-    effort,
-    effortLevel,
-    implementationLink,
-    subtasks,
-    parentId,
+  const currentPayload = useMemo(() => serializeTaskFormValues({
+    title, body, status, assignee, tags, priority, effort, effortLevel, implementationLink, subtasks, parentId,
   }), [title, body, status, assignee, tags, priority, effort, effortLevel, implementationLink, subtasks, parentId]);
 
-  const isDirty = syncedTaskIdRef.current === modalTask?.id && originalPayload !== currentPayload;
+  // Dirty only once the form has been synced for the current ticket (id guard) and
+  // the live payload has diverged from the baseline captured at that sync. Comparing
+  // against the synced baseline — rather than re-deriving an "original" from
+  // modalTask on every render — means a same-id refresh of modalTask can never flash
+  // a false-dirty state and send X / Esc / overlay-click into the discard prompt.
+  const isDirty =
+    syncedTaskIdRef.current === modalTask?.id &&
+    baselinePayloadRef.current !== null &&
+    currentPayload !== baselinePayloadRef.current;
 
   return {
     title, setTitle,
@@ -123,8 +161,6 @@ export function useTaskForm(modalTask: Task | Partial<Task> | null | undefined) 
     saving, setSaving,
     saveError, setSaveError,
     isDirty,
-    originalPayload,
-    currentPayload,
     openedTaskIdRef,
   };
 }

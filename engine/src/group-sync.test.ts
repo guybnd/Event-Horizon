@@ -49,8 +49,8 @@ describe('fanOutGroupDocs', () => {
     const results = await fanOutGroupDocs(group, { gitRunner: runner });
 
     expect(pushed).toBe(false);
-    expect(results[0].ok).toBe(false);
-    expect(results[0].error).toMatch(/invalid remote/i);
+    expect(results[0]!.ok).toBe(false);
+    expect(results[0]!.error).toMatch(/invalid remote/i);
   });
 
   it('isolates failures — one member failing does not abort the rest', async () => {
@@ -81,8 +81,8 @@ describe('fanOutGroupDocs', () => {
     const group = makeGroup([{ name: 'ahead', remote: 'https://h/ahead.git' }]);
     const results = await fanOutGroupDocs(group, { gitRunner: runner });
 
-    expect(results[0].ok).toBe(false);
-    expect(results[0].diverged).toBe(true);
+    expect(results[0]!.ok).toBe(false);
+    expect(results[0]!.diverged).toBe(true);
   });
 
   it('allows local remotes only when allowLocalRemotes is set', async () => {
@@ -90,9 +90,9 @@ describe('fanOutGroupDocs', () => {
     const group = makeGroup([{ name: 'local', remote: 'C:\\repos\\member.git' }]);
 
     const blocked = await fanOutGroupDocs(group, { gitRunner: runner });
-    expect(blocked[0].ok).toBe(false);
+    expect(blocked[0]!.ok).toBe(false);
 
     const allowed = await fanOutGroupDocs(group, { gitRunner: runner, allowLocalRemotes: true });
-    expect(allowed[0].ok).toBe(true);
+    expect(allowed[0]!.ok).toBe(true);
   });
 });

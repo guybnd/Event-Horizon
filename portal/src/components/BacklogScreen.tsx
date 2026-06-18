@@ -6,10 +6,11 @@ import { Loader2, Plus } from 'lucide-react';
 import { TaskViewControls } from './TaskViewControls';
 import { filterAndSortTasks } from '../taskSearch';
 import { getRequireInputStatus } from '../workflow';
-import { normalizeTaskMarkdownBody, TaskDescriptionSurface } from './TaskDescriptionSurface';
+import { TaskDescriptionSurface } from './TaskDescriptionSurface';
+import { normalizeTaskMarkdownBody } from '../taskMarkdownUtils';
 import { motion, AnimatePresence } from 'framer-motion';
 import { TaskMarkdown } from './TaskMarkdown';
-import type { Task, TaskLiveEvent } from '../types';
+import type { Task, TaskLiveEvent, HistoryEntry } from '../types';
 import { ParseErrorButton } from './ParseErrorButton';
 
 function BacklogRow({
@@ -28,7 +29,7 @@ function BacklogRow({
   const [popupPos, setPopupPos] = useState({ top: 0, left: 'auto' as number | string, right: 'auto' as number | string });
   const hoverTimeout = useRef<number | null>(null);
 
-  const handleMouseEnter = (event: any) => {
+  const handleMouseEnter = (event: React.MouseEvent<HTMLDivElement>) => {
     if (!config?.hoverPopupsEnabled) return;
     
     const currentCard = event.currentTarget.getBoundingClientRect();
@@ -129,7 +130,6 @@ export function BacklogScreen() {
   const {
     openTaskModal,
     triggerRefresh,
-    currentProject,
     config,
     currentUser,
     searchQuery,
@@ -186,7 +186,7 @@ export function BacklogScreen() {
   const handleStatusChange = async (newStatus: string) => {
     if (!selectedTask) return;
     
-    const newHistory = [...(selectedTask.history || []), {
+    const newHistory: HistoryEntry[] = [...(selectedTask.history || []), {
       type: 'status_change',
       from: selectedTask.status,
       to: newStatus,
@@ -195,7 +195,7 @@ export function BacklogScreen() {
     }];
 
     try {
-      await updateTask(selectedTask.id, { status: newStatus, history: newHistory as any, updatedBy: currentUser } as any);
+      await updateTask(selectedTask.id, { status: newStatus, history: newHistory, updatedBy: currentUser });
       triggerRefresh();
       setSelectedTaskId(null);
     } catch(err) {
@@ -255,7 +255,7 @@ export function BacklogScreen() {
         <div className="p-4 border-b border-gray-200 dark:border-white/5 flex items-center justify-between bg-white/80 dark:bg-[#252630]/80">
           <h2 className="font-semibold text-gray-800 dark:text-gray-200">Backlog Items ({visibleTasks.length})</h2>
           <button 
-            onClick={() => openTaskModal({ status: 'Backlog', projectKey: currentProject } as any)}
+            onClick={() => openTaskModal({ status: 'Backlog' })}
             className="flex items-center gap-1 text-xs font-medium bg-primary text-white px-2 py-1.5 rounded hover:bg-primary-hover cursor-pointer transition-colors"
           >
             <Plus className="w-3 h-3" /> Add
@@ -311,14 +311,20 @@ export function BacklogScreen() {
                 <div>
                   <span className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1">Tags</span>
                   <div className="flex gap-2 flex-wrap mt-1">
-                    {selectedVisibleTask.tags?.map(tag => {
-                      const tagColor = config.tags.find(t => t.name === tag)?.color || 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300';
-                      return (
-                        <span key={tag} className={`px-2 py-0.5 rounded text-xs font-medium ${tagColor}`}>
-                          {tag}
-                        </span>
-                      );
-                    }) || <span className="text-sm text-gray-500">None</span>}
+                    {(() => {
+                      // Drop empty/whitespace-only tags and de-duplicate so the tag-keyed
+                      // list can never emit empty or colliding React keys.
+                      const tags = Array.from(new Set((selectedVisibleTask.tags ?? []).map(t => t.trim()).filter(Boolean)));
+                      if (tags.length === 0) return <span className="text-sm text-gray-500">None</span>;
+                      return tags.map(tag => {
+                        const tagColor = config.tags.find(t => t.name === tag)?.color || 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300';
+                        return (
+                          <span key={tag} className={`px-2 py-0.5 rounded text-xs font-medium ${tagColor}`}>
+                            {tag}
+                          </span>
+                        );
+                      });
+                    })()}
                   </div>
                 </div>
               </div>

@@ -148,9 +148,9 @@ export function ConflictResolutionModal({ conflicts, onResolve, onClose }: Confl
       }));
       await onResolve(resolutionArray);
       onClose();
-    } catch (err: any) {
+    } catch (err) {
       console.error('Failed to resolve conflicts:', err);
-      const message = err?.message || String(err);
+      const message = err instanceof Error ? err.message : String(err);
       setErrorMessage(message);
     } finally {
       setIsSubmitting(false);

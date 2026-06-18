@@ -79,8 +79,8 @@ export function GroupWizard({ onComplete, onCancel }: GroupWizardProps) {
       const repos = await discoverGroupRegistry();
       setChoices(toChoices(repos));
       setStep('select');
-    } catch (err: any) {
-      setError(err.message || 'Failed to read workspace registry');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to read workspace registry');
     } finally {
       setBusy(false);
     }
@@ -94,8 +94,8 @@ export function GroupWizard({ onComplete, onCancel }: GroupWizardProps) {
       const result = await discoverGroupFolder(folderPath.trim());
       setChoices(toChoices(result.repos));
       setStep('select');
-    } catch (err: any) {
-      setError(err.message || 'Failed to scan folder');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to scan folder');
     } finally {
       setBusy(false);
     }
@@ -153,8 +153,8 @@ export function GroupWizard({ onComplete, onCancel }: GroupWizardProps) {
       setMemberResults(created.memberRegistrations ?? []);
       setCreatedParent(created.parentRoot);
       setStep('result');
-    } catch (err: any) {
-      setError(err.message || 'Failed to create group');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create group');
     } finally {
       setBusy(false);
     }

@@ -92,7 +92,7 @@ When you add a new framework, add a row here too.
 `start(session, task, appendPrompt, effortOverride, workspaceRoot)` is called once when a CLI session begins. The standard implementation in all three adapters is a thin wrapper around a shared `startCliSession(...)` helper that:
 
 1. Verifies the binary is on PATH (`checkBinaryInstalled`).
-2. Builds the CLI command + args (provider-specific flags for skip-permissions, effort, model, resume).
+2. Builds the CLI command + args (provider-specific flags for permission mode, effort, model, resume). For Claude Code, `permissionArgs(session)` emits either `--permission-prompt-tool mcp__event-horizon__permission_prompt` (`permissionMode: 'gated'`) or `--dangerously-skip-permissions` (`permissionMode: 'skip'` / legacy `skipPermissions`) — see [`permission_prompt`](mcp-tools.md#permission_prompt) (FLUX-605).
 3. `spawn`s the child process with a sanitized env (`cleanChildEnv` strips `NODE_OPTIONS` to avoid loader injection).
 4. Records the `pid`, `command`, `args`, `startedAt`, and writes an `agent_session` history entry to the ticket (`buildAgentSessionEntry` from [`history.ts`](../../../engine/src/history.ts)).
 5. Streams stdout and stderr:

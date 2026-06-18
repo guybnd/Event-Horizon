@@ -3,18 +3,18 @@ import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Archive, ArrowRightLeft, Bot, ChevronRight, CircleX, Code2, ExternalLink, Filter,
-  FolderGit2, GitBranch, GitCompare, Link2, MessageCircle, Play, Search, Trash2, Undo2, X,
+  FolderGit2, GitBranch, GitCompare, GitMerge, GitPullRequest, Link2, Loader2, MessageCircle, Play, Search, Trash2, Undo2, X,
 } from 'lucide-react';
 import type { Task } from '../types';
 import { normalizeSubtaskId } from '../types';
 import { useApp } from '../AppContext';
 import {
   deleteTask, updateTask, openWorktreeWindow, detachWorktree, joinWorktree,
-  setTicketBranch, attachParent, fetchBranches, fetchWorkflows,
+  setTicketBranch, attachParent, fetchBranches, fetchWorkflows, raisePr, mergePr,
   type BranchOption, type WorkflowTemplate,
 } from '../api';
 import { launchPhaseDefault, statusToPhase, resolvePhaseDefaultId } from '../agentActions';
-import { getArchiveStatus, getReadyForMergeStatus, isPromptableStatus } from '../workflow';
+import { getArchiveStatus, getReadyForMergeStatus, isPromptableStatus, hasOpenPr } from '../workflow';
 import { searchTasks } from '../taskSearch';
 import { resolveEffectiveAgent } from '../utils';
 
@@ -46,6 +46,10 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
   const [openWt, setOpenWt] = useState<WtMenu>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmDetach, setConfirmDetach] = useState(false);
+  const [confirmMergePr, setConfirmMergePr] = useState(false);
+  const [actionError, setActionError] = useState('');
+  const [prBusy, setPrBusy] = useState(false);
+  const [mergePrBusy, setMergePrBusy] = useState(false);
   const [templates, setTemplates] = useState<WorkflowTemplate[] | null>(null);
   const [branches, setBranches] = useState<BranchOption[] | null>(null);
 
@@ -175,7 +179,7 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
 
   const handleArchive = async () => {
     onClose();
-    await updateTask(task.id, { status: archiveStatus, updatedBy: currentUser } as any);
+    await updateTask(task.id, { status: archiveStatus, updatedBy: currentUser });
     triggerRefresh();
   };
 
@@ -190,15 +194,19 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
     onClose();
   };
 
-  // Worktree actions — refresh board state then close.
+  // Worktree actions — refresh board state then close. On failure, surface the message
+  // in the menu (it stays open) instead of failing silently (FLUX-561).
   const runWorktree = async (fn: () => Promise<unknown>) => {
+    setActionError('');
     try {
       await fn();
       refreshWorktrees();
       triggerRefresh();
       onClose();
     } catch (err) {
-      console.error('Worktree action failed:', err instanceof Error ? err.message : err);
+      const msg = err instanceof Error ? err.message : 'Action failed';
+      console.error('Worktree action failed:', msg);
+      setActionError(msg);
     }
   };
   const handleOpenVSCode = () => runWorktree(async () => {
@@ -206,11 +214,78 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
     if (!r.opened) await navigator.clipboard.writeText(r.worktree).catch(() => {});
   });
   const handleDetach = () => runWorktree(() => detachWorktree(task.id));
+  const handleRaisePr = async () => {
+    setPrBusy(true);
+    try { await runWorktree(() => raisePr(task.id)); } finally { setPrBusy(false); }
+  };
+  // PR tickets (kind:'pr') are engine-managed but their In Progress ↔ Ready review state is
+  // human-driven (syncPrTickets preserves it), so allow moving between those + a guarded Merge.
+  const movePrStatus = (status: string) => runWorktree(() => updateTask(task.id, { status, updatedBy: currentUser } as Partial<Task>));
+  const handleMergePr = async () => {
+    setMergePrBusy(true);
+    try { await runWorktree(() => mergePr(task.id)); } finally { setMergePrBusy(false); }
+  };
   const handleAttachWorktree = (branch: string) => runWorktree(() => joinWorktree(task.id, branch));
   const handleAttachBranch = (branch: string) => runWorktree(() => setTicketBranch(task.id, branch, currentUser));
   const handleAttachParent = (parentId: string) => runWorktree(() => attachParent(task.id, parentId, currentUser));
 
   const setFilter = (v: string) => { onClose(); setFilterWorktree(v); };
+
+  // PR tickets (kind:'pr', FLUX-567) get a focused menu — the normal ticket-workflow items
+  // (Launch/Attach/Raise-PR) don't apply to an engine-managed PR. But the In Progress ↔ Ready
+  // review state is human-driven, so we surface Move-to + a guarded Merge here too (FLUX-593).
+  if (task.kind === 'pr') {
+    const prResolved = task.prState === 'MERGED' || task.prState === 'CLOSED' || task.status === archiveStatus || task.status === 'Done';
+    const prMoveTargets = ['In Progress', getReadyForMergeStatus(config)].filter((s) => s !== task.status);
+    return createPortal(
+      <div
+        ref={menuRef}
+        data-eh-ctxmenu
+        style={{ position: 'fixed', top: pos.y, left: pos.x, maxHeight: 'calc(100vh - 16px)', overflowY: 'auto', zIndex: 1000000 }}
+        className="min-w-[200px] rounded-xl border border-gray-200/80 bg-white/95 py-1 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:bg-[#1e1f2a]/95"
+        onContextMenu={(e) => e.preventDefault()}
+      >
+        <MenuItem icon={<ExternalLink className="h-3.5 w-3.5" />} onClick={handleOpen}>Open PR surface</MenuItem>
+
+        {/* Move between the human-driven review states + merge — only while the PR is open. */}
+        {!prResolved && <Divider />}
+        {!prResolved && prMoveTargets.map((s) => (
+          <MenuItem key={s} icon={<ArrowRightLeft className="h-3.5 w-3.5" />} onClick={() => void movePrStatus(s)}>
+            Move to {s}
+          </MenuItem>
+        ))}
+        {!prResolved && (
+          confirmMergePr ? (
+            <div className="flex items-center gap-1 px-3 py-1.5">
+              <span className="flex-1 text-xs font-medium text-violet-600 dark:text-violet-300">Merge PR?</span>
+              <button onClick={() => void handleMergePr()} disabled={mergePrBusy} className="rounded bg-violet-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-violet-700 disabled:opacity-50">{mergePrBusy ? '…' : 'Yes'}</button>
+              <button onClick={() => setConfirmMergePr(false)} className="rounded px-2 py-0.5 text-[10px] font-semibold text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/10"><X className="h-3 w-3" /></button>
+            </div>
+          ) : (
+            <MenuItem icon={<GitMerge className="h-3.5 w-3.5" />} onClick={() => { setActionError(''); setConfirmMergePr(true); }}>Merge PR</MenuItem>
+          )
+        )}
+
+        {(task.branch || hasWorktree) && <Divider />}
+        {task.branch && (
+          <MenuItem icon={<GitCompare className="h-3.5 w-3.5" />} onClick={() => { onClose(); setChangesFocus(task.branch!); setView('changes'); }}>
+            View changes
+          </MenuItem>
+        )}
+        {hasWorktree && (
+          <MenuItem icon={<Code2 className="h-3.5 w-3.5" />} onClick={() => void handleOpenVSCode()}>
+            Open worktree in VS Code
+          </MenuItem>
+        )}
+        {actionError && (
+          <div className="mx-2 my-1 rounded-md bg-red-50 px-2.5 py-1.5 text-[11px] leading-snug text-red-700 dark:bg-red-500/10 dark:text-red-300">
+            {actionError}
+          </div>
+        )}
+      </div>,
+      document.body,
+    );
+  }
 
   return createPortal(
     <div
@@ -287,6 +362,24 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
         <MenuItem icon={<GitCompare className="h-3.5 w-3.5" />} onClick={() => { onClose(); setChangesFocus(task.branch!); setView('changes'); }}>
           View changes
         </MenuItem>
+      )}
+
+      {/* Raise PR — branch/worktree tickets only, hidden once a PR is open (FLUX-558). */}
+      {!!task.branch && !hasOpenPr(task) && (
+        <MenuItem
+          icon={prBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <GitPullRequest className="h-3.5 w-3.5" />}
+          disabled={prBusy}
+          onClick={() => void handleRaisePr()}
+        >
+          {prBusy ? 'Raising PR…' : 'Raise PR'}
+        </MenuItem>
+      )}
+
+      {/* Surface a failed worktree/PR action inline (the menu stays open on error). */}
+      {actionError && (
+        <div className="mx-2 my-1 rounded-md bg-red-50 px-2.5 py-1.5 text-[11px] leading-snug text-red-700 dark:bg-red-500/10 dark:text-red-300">
+          {actionError}
+        </div>
       )}
 
       {/* Worktree actions */}
@@ -401,7 +494,7 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
       {task.swimlane && (
         <MenuItem icon={<CircleX className="h-3.5 w-3.5" />} onClick={async () => {
           onClose();
-          await updateTask(task.id, { swimlane: null, updatedBy: currentUser } as any);
+          await updateTask(task.id, { swimlane: null, updatedBy: currentUser });
           triggerRefresh();
         }}>Clear Swimlane</MenuItem>
       )}
@@ -430,18 +523,20 @@ function Divider() {
 }
 
 function MenuItem({
-  icon, danger, onClick, children,
+  icon, danger, onClick, children, disabled,
 }: {
   icon?: ReactNode;
   danger?: boolean;
   onClick: () => void;
   children: ReactNode;
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors ${
+      disabled={disabled}
+      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
         danger
           ? 'text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10'
           : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-white/5'

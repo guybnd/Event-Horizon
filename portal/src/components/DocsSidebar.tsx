@@ -240,8 +240,8 @@ export function DocsSidebar({
     try {
       await onRenameFolder?.(fromPath, next);
       cancelRename();
-    } catch (err: any) {
-      setRenameError(err?.message ?? 'Rename failed');
+    } catch (err) {
+      setRenameError(err instanceof Error ? err.message : 'Rename failed');
       setRenameBusy(false);
     }
   };

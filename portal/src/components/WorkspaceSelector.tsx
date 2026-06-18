@@ -29,8 +29,8 @@ export function WorkspaceSelector() {
     try {
       await setWorkspace(trimmed);
       notifyWorkspaceSet();
-    } catch (err: any) {
-      setError(err.message || 'Failed to open workspace.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to open workspace.');
     } finally {
       setLoading(false);
     }

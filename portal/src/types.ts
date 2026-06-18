@@ -2,7 +2,7 @@ export interface AgentSessionProgress {
   timestamp: string;
   message: string;
   type?: 'text' | 'topic' | 'tool' | 'info';
-  data?: any;
+  data?: { summary?: string; parameters?: unknown };
 }
 
 export interface AgentSessionEntry {
@@ -64,10 +64,27 @@ export function normalizeSubtaskId(entry: string | InlineSubtask): string {
   return typeof entry === 'string' ? entry : entry.id;
 }
 
+/** A typed relationship from one ticket to another (FLUX-593 / epic FLUX-596). */
+export interface TicketLink {
+  type: string; // 'retries' is the first type; the epic adds blocked-by/refactors/relates/…
+  target: string; // target ticket id (e.g. 'PR-14' or 'FLUX-581')
+  label?: string;
+}
+
 export interface Task {
   id: string;
   status: string;
+  /** 'pr' = an engine-managed PR ticket (FLUX-566); undefined/'ticket' = a normal ticket. */
+  kind?: 'ticket' | 'pr';
   swimlane?: string | null;
+  /** PR tickets only: the gh PR number, draft flag, and the work-gated member ticket ids. */
+  prNumber?: number;
+  prState?: string;
+  reviewDecision?: string | null;
+  isDraft?: boolean;
+  members?: string[];
+  /** Typed relationships to other tickets (FLUX-593 'retries'; generalized by epic FLUX-596). */
+  links?: TicketLink[];
   assignee?: string;
   tags?: string[];
   title?: string;
@@ -285,6 +302,14 @@ export interface Config {
   agentProgress?: {
     enabled: boolean;
     inlineDelay: number;
+  };
+  /** Per-surface default permission mode — the workspace "risk tolerance" (FLUX-605).
+   *  The per-chat Perms picker inherits these when left on "Default"; an explicit
+   *  per-chat choice overrides. 'gated' routes destructive ops through human approval
+   *  (--permission-prompt-tool); 'skip' uses --dangerously-skip-permissions. */
+  permissions?: {
+    boardDefault?: 'gated' | 'skip';
+    ticketDefault?: 'gated' | 'skip';
   };
   modules?: ModuleDeclaration[];
 }

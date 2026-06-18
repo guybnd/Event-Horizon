@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useApp } from '../AppContext';
 import { Save } from 'lucide-react';
 import { bulkRename } from '../api';
-import type { TagDef, StatusDef, UserDef, PriorityDef, DocsEditPermissions, BoardCardOpenMode } from '../types';
+import type { TagDef, StatusDef, UserDef, PriorityDef, DocsEditPermissions, BoardCardOpenMode, CliFramework } from '../types';
 import { DEFAULT_READY_FOR_MERGE_STATUS, DEFAULT_REQUIRE_INPUT_STATUS, DEFAULT_ARCHIVE_STATUS } from '../workflow';
 import { StopServiceButton } from './StopServiceButton';
 import { WorkflowSection } from './settings/WorkflowSection';
@@ -13,7 +13,17 @@ import { AgentSection } from './settings/AgentSection';
 import { ModulesSection } from './settings/ModulesSection';
 import { McpPhasesSection } from './settings/McpPhasesSection';
 import { GlobalSection } from './settings/GlobalSection';
-import type { ModuleDeclaration } from '../types';
+import type { Config, ModuleDeclaration } from '../types';
+
+/** Runtime config carries a per-phase MCP server map that isn't yet on the `Config` type. */
+type ConfigWithMcpPhases = Config & { mcpServerPhases?: Record<string, string[]> };
+
+/** Drop the UI-only `originalName` field before an item is persisted. */
+function stripOriginalName<T extends { originalName?: string }>(item: T): Omit<T, 'originalName'> {
+  const rest = { ...item };
+  delete rest.originalName;
+  return rest;
+}
 
 export function Settings() {
   const { config, saveConfig, triggerRefresh, setView, workspacePath, notifyWorkspaceSet, settingsTab, setSettingsTab } = useApp();
@@ -52,6 +62,8 @@ export function Settings() {
   const [tokenCostThresholds, setTokenCostThresholds] = useState<{ green: number; yellow: number }>({ green: 0.10, yellow: 0.50 });
   const [effortLevel, setEffortLevel] = useState<string>('high');
   const [defaultAgent, setDefaultAgent] = useState<string>('auto');
+  const [boardPermissionDefault, setBoardPermissionDefault] = useState<'gated' | 'skip'>('gated');
+  const [ticketPermissionDefault, setTicketPermissionDefault] = useState<'gated' | 'skip'>('skip');
   const [groomingModel, setGroomingModel] = useState<string>('');
   const [implementationModel, setImplementationModel] = useState<string>('');
   const [geminiGroomingModel, setGeminiGroomingModel] = useState<string>('');
@@ -91,12 +103,14 @@ export function Settings() {
       setHoverPopupDelay(config.hoverPopupDelay ?? 1500);
       setTokenDisplayMode(config.tokenDisplayMode ?? 'cost');
       setTokenCostThresholds(config.tokenCostThresholds ?? { green: 0.10, yellow: 0.50 });
-      setEffortLevel((config as any).effortLevel || 'high');
+      setEffortLevel(config.effortLevel || 'high');
       setDefaultAgent(config.defaultAgent || 'auto');
-      setGroomingModel((config as any).integrations?.claudeCode?.groomingModel || '');
-      setImplementationModel((config as any).integrations?.claudeCode?.implementationModel || '');
-      setGeminiGroomingModel((config as any).integrations?.geminiCli?.groomingModel || '');
-      setGeminiImplementationModel((config as any).integrations?.geminiCli?.implementationModel || '');
+      setBoardPermissionDefault(config.permissions?.boardDefault === 'skip' ? 'skip' : 'gated');
+      setTicketPermissionDefault(config.permissions?.ticketDefault === 'gated' ? 'gated' : 'skip');
+      setGroomingModel(config.integrations?.claudeCode?.groomingModel || '');
+      setImplementationModel(config.integrations?.claudeCode?.implementationModel || '');
+      setGeminiGroomingModel(config.integrations?.geminiCli?.groomingModel || '');
+      setGeminiImplementationModel(config.integrations?.geminiCli?.implementationModel || '');
       if (config.releaseSettings) {
         setGenerateDistinctFiles(config.releaseSettings.generateDistinctFiles);
         setReleaseNotesPath(config.releaseSettings.releaseNotesPath || 'release-notes');
@@ -105,8 +119,8 @@ export function Settings() {
       setSyncMaxWaitMs(config.syncSettings?.maxWaitMs ?? 300000);
       setAgentProgressEnabled(config.agentProgress?.enabled ?? true);
       setAgentProgressDelay(config.agentProgress?.inlineDelay ?? 2);
-      setModules((config as any).modules || []);
-      setMcpServerPhases((config as any).mcpServerPhases || {});
+      setModules(config.modules || []);
+      setMcpServerPhases((config as ConfigWithMcpPhases).mcpServerPhases || {});
     }
   }, [config]);
 
@@ -161,11 +175,13 @@ export function Settings() {
       return false;
     };
 
-    renameExistingWorkflowStatus(nextColumns, currentRequireInputStatus, normalizedRequireInputStatus)
-      || renameExistingWorkflowStatus(nextHiddenStatuses, currentRequireInputStatus, normalizedRequireInputStatus);
+    if (!renameExistingWorkflowStatus(nextColumns, currentRequireInputStatus, normalizedRequireInputStatus)) {
+      renameExistingWorkflowStatus(nextHiddenStatuses, currentRequireInputStatus, normalizedRequireInputStatus);
+    }
 
-    renameExistingWorkflowStatus(nextColumns, currentReadyForMergeStatus, normalizedReadyForMergeStatus)
-      || renameExistingWorkflowStatus(nextHiddenStatuses, currentReadyForMergeStatus, normalizedReadyForMergeStatus);
+    if (!renameExistingWorkflowStatus(nextColumns, currentReadyForMergeStatus, normalizedReadyForMergeStatus)) {
+      renameExistingWorkflowStatus(nextHiddenStatuses, currentReadyForMergeStatus, normalizedReadyForMergeStatus);
+    }
 
     const tagRenames: Record<string, string> = {};
     tags.forEach(t => { if (t.originalName && t.originalName !== t.name) tagRenames[t.originalName] = t.name; });
@@ -190,11 +206,11 @@ export function Settings() {
         await bulkRename({ tags: tagRenames, users: userRenames, statuses: statusRenames, priorities: priorityRenames });
       }
 
-      const cleanTags = tags.filter(c => c.name.trim()).map(({ originalName, ...rest }) => rest);
-      const cleanColumns = nextColumns.filter(c => c.name.trim()).map(({ originalName, ...rest }) => rest);
-      const cleanHidden = nextHiddenStatuses.filter(c => c.name.trim()).map(({ originalName, ...rest }) => rest);
-      const cleanUsers = users.filter(c => c.name.trim()).map(({ originalName, ...rest }) => rest);
-      const cleanPriorities = priorities.filter(p => p.name.trim()).map(({ originalName, ...rest }) => rest);
+      const cleanTags = tags.filter(c => c.name.trim()).map(stripOriginalName);
+      const cleanColumns = nextColumns.filter(c => c.name.trim()).map(stripOriginalName);
+      const cleanHidden = nextHiddenStatuses.filter(c => c.name.trim()).map(stripOriginalName);
+      const cleanUsers = users.filter(c => c.name.trim()).map(stripOriginalName);
+      const cleanPriorities = priorities.filter(p => p.name.trim()).map(stripOriginalName);
       const cleanDocsAllowedUsers = docsEditPermissions === 'specified'
         ? docsAllowedUsers
             .map((userName) => userRenames[userName] || userName)
@@ -240,7 +256,11 @@ export function Settings() {
             implementationModel: geminiImplementationModel.trim(),
           }
         },
-        defaultAgent: defaultAgent as any,
+        defaultAgent: defaultAgent as CliFramework | 'auto',
+        permissions: {
+          boardDefault: boardPermissionDefault,
+          ticketDefault: ticketPermissionDefault,
+        },
         syncSettings: {
           debounceMs: syncDebounceMs,
           maxWaitMs: syncMaxWaitMs,
@@ -251,7 +271,7 @@ export function Settings() {
         },
         modules,
         mcpServerPhases,
-      } as any);
+      } as ConfigWithMcpPhases);
 
       triggerRefresh();
       alert('Settings & Global Renames saved successfully!');
@@ -288,30 +308,32 @@ export function Settings() {
     setHoverPopupDelay(config.hoverPopupDelay ?? 1500);
     setTokenDisplayMode(config.tokenDisplayMode ?? 'cost');
     setTokenCostThresholds(config.tokenCostThresholds ?? { green: 0.10, yellow: 0.50 });
-    setEffortLevel((config as any).effortLevel || 'high');
+    setEffortLevel(config.effortLevel || 'high');
     setDefaultAgent(config.defaultAgent || 'auto');
-    setGroomingModel((config as any).integrations?.claudeCode?.groomingModel || '');
-    setImplementationModel((config as any).integrations?.claudeCode?.implementationModel || '');
-    setGeminiGroomingModel((config as any).integrations?.geminiCli?.groomingModel || '');
-    setGeminiImplementationModel((config as any).integrations?.geminiCli?.implementationModel || '');
+    setBoardPermissionDefault(config.permissions?.boardDefault === 'skip' ? 'skip' : 'gated');
+    setTicketPermissionDefault(config.permissions?.ticketDefault === 'gated' ? 'gated' : 'skip');
+    setGroomingModel(config.integrations?.claudeCode?.groomingModel || '');
+    setImplementationModel(config.integrations?.claudeCode?.implementationModel || '');
+    setGeminiGroomingModel(config.integrations?.geminiCli?.groomingModel || '');
+    setGeminiImplementationModel(config.integrations?.geminiCli?.implementationModel || '');
     setGenerateDistinctFiles(config.releaseSettings?.generateDistinctFiles ?? true);
     setReleaseNotesPath(config.releaseSettings?.releaseNotesPath || 'release-notes');
     setSyncDebounceMs(config.syncSettings?.debounceMs ?? 30000);
     setSyncMaxWaitMs(config.syncSettings?.maxWaitMs ?? 300000);
     setAgentProgressEnabled(config.agentProgress?.enabled ?? true);
     setAgentProgressDelay(config.agentProgress?.inlineDelay ?? 2);
-    setModules((config as any).modules || []);
-    setMcpServerPhases((config as any).mcpServerPhases || {});
+    setModules(config.modules || []);
+    setMcpServerPhases((config as ConfigWithMcpPhases).mcpServerPhases || {});
   };
 
   if (!config) return null;
 
   const currentSavedPayload = JSON.stringify({
-    columns: columns.filter(c => c.name.trim()).map(({ originalName, ...rest }) => rest),
-    hiddenStatuses: hiddenStatuses.filter(c => c.name.trim()).map(({ originalName, ...rest }) => rest),
-    users: users.filter(c => c.name.trim()).map(({ originalName, ...rest }) => rest),
-    tags: tags.filter(c => c.name.trim()).map(({ originalName, ...rest }) => rest),
-    priorities: priorities.filter(p => p.name.trim()).map(({ originalName, ...rest }) => rest),
+    columns: columns.filter(c => c.name.trim()).map(stripOriginalName),
+    hiddenStatuses: hiddenStatuses.filter(c => c.name.trim()).map(stripOriginalName),
+    users: users.filter(c => c.name.trim()).map(stripOriginalName),
+    tags: tags.filter(c => c.name.trim()).map(stripOriginalName),
+    priorities: priorities.filter(p => p.name.trim()).map(stripOriginalName),
     projects: projects.split(',').map(s => s.trim()).filter(Boolean),
     enableBacklogScreen: enableBacklog,
     requireCommentOnStatusChange: requireComment,
@@ -332,6 +354,8 @@ export function Settings() {
     tokenCostThresholds,
     effortLevel,
     defaultAgent,
+    boardPermissionDefault,
+    ticketPermissionDefault,
     groomingModel,
     implementationModel,
     geminiGroomingModel,
@@ -370,20 +394,22 @@ export function Settings() {
     hoverPopupDelay: config.hoverPopupDelay ?? 1500,
     tokenDisplayMode: config.tokenDisplayMode ?? 'cost',
     tokenCostThresholds: config.tokenCostThresholds ?? { green: 0.10, yellow: 0.50 },
-    effortLevel: (config as any).effortLevel || 'high',
+    effortLevel: config.effortLevel || 'high',
     defaultAgent: config.defaultAgent || 'auto',
-    groomingModel: (config as any).integrations?.claudeCode?.groomingModel || '',
-    implementationModel: (config as any).integrations?.claudeCode?.implementationModel || '',
-    geminiGroomingModel: (config as any).integrations?.geminiCli?.groomingModel || '',
-    geminiImplementationModel: (config as any).integrations?.geminiCli?.implementationModel || '',
+    boardPermissionDefault: config.permissions?.boardDefault === 'skip' ? 'skip' : 'gated',
+    ticketPermissionDefault: config.permissions?.ticketDefault === 'gated' ? 'gated' : 'skip',
+    groomingModel: config.integrations?.claudeCode?.groomingModel || '',
+    implementationModel: config.integrations?.claudeCode?.implementationModel || '',
+    geminiGroomingModel: config.integrations?.geminiCli?.groomingModel || '',
+    geminiImplementationModel: config.integrations?.geminiCli?.implementationModel || '',
     generateDistinctFiles: config.releaseSettings?.generateDistinctFiles ?? true,
     releaseNotesPath: config.releaseSettings?.releaseNotesPath || 'release-notes',
     syncDebounceMs: config.syncSettings?.debounceMs ?? 30000,
     syncMaxWaitMs: config.syncSettings?.maxWaitMs ?? 300000,
     agentProgressEnabled: config.agentProgress?.enabled ?? true,
     agentProgressDelay: config.agentProgress?.inlineDelay ?? 2,
-    modules: (config as any).modules || [],
-    mcpServerPhases: (config as any).mcpServerPhases || {},
+    modules: config.modules || [],
+    mcpServerPhases: (config as ConfigWithMcpPhases).mcpServerPhases || {},
   });
 
   const isDirty = currentSavedPayload !== originalPayload;
@@ -526,6 +552,10 @@ export function Settings() {
                   setEffortLevel={setEffortLevel}
                   targetFramework={defaultAgent}
                   setTargetFramework={setDefaultAgent}
+                  boardPermissionDefault={boardPermissionDefault}
+                  setBoardPermissionDefault={setBoardPermissionDefault}
+                  ticketPermissionDefault={ticketPermissionDefault}
+                  setTicketPermissionDefault={setTicketPermissionDefault}
                   groomingModel={groomingModel}
                   setGroomingModel={setGroomingModel}
                   implementationModel={implementationModel}

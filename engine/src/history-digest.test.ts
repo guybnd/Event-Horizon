@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { digestHistoryForAgent, digestTerminalSessionProgress, compactSessionProgress } from './history.js';
+import { digestHistoryForAgent, digestTerminalSessionProgress, compactSessionProgress, normalizeHistoryEntries } from './history.js';
 
 function sessionEntry(sessionId: string, progressEntries: number) {
   return {
@@ -177,6 +177,46 @@ describe('digestHistoryForAgent — summary-gated collapse (FLUX-503)', () => {
     expect(collapsedCount).toBe(1);
     expect(history[0]).toMatchObject({ type: 'agent_session', sessionId: 's-old', summary: 'Implemented the thing', collapsed: true });
     expect(history[0].progress).toBeUndefined();
+  });
+});
+
+describe('activity entry ids + collapse (FLUX-526)', () => {
+  it('normalizeHistoryEntries assigns a stable id to activity entries', () => {
+    const { history } = normalizeHistoryEntries([
+      { type: 'activity', user: 'Agent', date: '2026-06-01T10:00:00.000Z', comment: 'note' },
+    ]);
+    expect(typeof history[0].id).toBe('string');
+    expect(history[0].id).toMatch(/^a-/);
+  });
+
+  it('collapses an old summarized activity entry and round-trips via expand', () => {
+    const id = 'a-2026-06-01t10-00-00-000z';
+    const history = [
+      { type: 'activity', user: 'Agent', date: '2026-06-01T10:00:00.000Z', comment: 'full long progress note '.repeat(20), summary: 'did the thing', id },
+      { type: 'comment', user: 'guybnd', date: '2026-06-01T11:00:00.000Z', comment: 'recent', id: 'c-1' },
+      { type: 'comment', user: 'guybnd', date: '2026-06-01T11:30:00.000Z', comment: 'recent2', id: 'c-2' },
+    ];
+    // keepRecent=1 → indices 0 and 1 are "old"; the summarized activity at 0 collapses.
+    const { history: digested } = digestHistoryForAgent(history, 20, 1);
+    expect(digested[0]).toMatchObject({ type: 'activity', summary: 'did the thing', id, collapsed: true });
+    expect(digested[0].comment).toBeUndefined();
+
+    // expand:[id] recovers the full text.
+    const { history: expanded } = digestHistoryForAgent(history, 20, 1, { expand: [id] });
+    expect(expanded[0].comment).toContain('full long progress note');
+    expect(expanded[0].collapsed).toBeUndefined();
+  });
+
+  it('keeps a summary-less activity entry full even though it now has an id', () => {
+    const id = 'a-2026-06-01t09-00-00-000z';
+    const history = [
+      { type: 'activity', user: 'Agent', date: '2026-06-01T09:00:00.000Z', comment: 'Created ticket.', id },
+      { type: 'comment', user: 'guybnd', date: '2026-06-01T11:00:00.000Z', comment: 'r1', id: 'c-1' },
+      { type: 'comment', user: 'guybnd', date: '2026-06-01T11:30:00.000Z', comment: 'r2', id: 'c-2' },
+    ];
+    const { history: digested } = digestHistoryForAgent(history, 20, 1);
+    expect(digested[0].collapsed).toBeUndefined();
+    expect(digested[0].comment).toBe('Created ticket.');
   });
 });
 

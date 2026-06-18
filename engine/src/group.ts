@@ -641,19 +641,25 @@ export async function resolveWorkspaceGroups(roots: string[]): Promise<Map<strin
   if (parents.length === 0) return result;
 
   // Pass 2: bind each non-parent root to a parent group via its origin remote.
-  for (const root of normalizedRoots) {
-    if (result.has(root)) continue; // already classified as a parent
-    const selfRemote = await getOriginRemote(root);
-    if (!selfRemote) continue;
+  // `git remote get-url origin` is a subprocess spawn per root, so resolve all
+  // candidates in parallel rather than sequentially, and skip roots whose path
+  // no longer exists on disk to avoid guaranteed-failing spawns (FLUX-417).
+  const candidates = normalizedRoots.filter((root) => !result.has(root) && existsSync(root));
+  const remotes = await Promise.all(
+    candidates.map((root) => getOriginRemote(root).catch(() => null)),
+  );
+  candidates.forEach((root, i) => {
+    const selfRemote = remotes[i];
+    if (!selfRemote) return;
     const selfKey = normalizeRemoteForCompare(selfRemote);
-    if (!selfKey) continue;
+    if (!selfKey) return;
     for (const parent of parents) {
       const match = parent.members.find((m) => m.key === selfKey);
       if (!match) continue;
       result.set(root, { groupName: parent.groupName, role: 'member', parentPath: parent.parentPath, memberName: match.name });
       break;
     }
-  }
+  });
   return result;
 }
 

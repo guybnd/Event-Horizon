@@ -60,7 +60,7 @@ export function buildAgentSessionEntry(
   sessionId: string,
   startedAt: string,
   label: string,
-  group?: { groupId?: string; role?: string; pattern?: string },
+  group?: { groupId?: string | undefined; role?: string | undefined; pattern?: string | undefined },
 ): AgentSessionEntry {
   return {
     type: 'agent_session',
@@ -136,7 +136,7 @@ export function digestHistoryForAgent(
   history: any[] = [],
   limit: number,
   keepRecent = 3,
-  opts: { expand?: string[]; fullHistory?: boolean } = {},
+  opts: { expand?: string[] | undefined; fullHistory?: boolean | undefined } = {},
 ) {
   // Drop status_change entries from the agent digest — the current status is
   // already in the frontmatter and the transition log is rarely actionable to a
@@ -209,6 +209,66 @@ export function digestHistoryForAgent(
   };
 }
 
+// ── User-comment & launch-focus surfacing (FLUX-480) ────────────────────────
+
+// Agents write ticket history with `user: 'Agent'` — that is the canonical
+// marker (the MCP `add_comment` default and every engine write path). Some
+// agent sessions post under a model/framework display name instead. We bias
+// toward treating an author as a USER when uncertain: surfacing one extra agent
+// comment is harmless, while dropping a real user instruction is exactly the
+// bug FLUX-480 guards against.
+const AGENT_AUTHOR_PATTERN = /\b(agent|claude|gpt|copilot|gemini|opus|sonnet|haiku|codex)\b/i;
+
+export function isAgentAuthor(user: unknown): boolean {
+  if (typeof user !== 'string') return false;
+  const u = user.trim();
+  if (!u) return false;
+  return u === 'Agent' || AGENT_AUTHOR_PATTERN.test(u);
+}
+
+export interface RecentUserComment {
+  user: string;
+  date: string;
+  comment: string;
+  id?: string;
+}
+
+/**
+ * Scan the FULL history (not just the windowed digest) for the last `limit`
+ * user-authored `comment` entries. A user comment older than the agent's
+ * ~20-entry history window would otherwise be silently invisible (FLUX-480);
+ * this pins the most recent few so the agent always sees them.
+ */
+export function extractRecentUserComments(history: any[] = [], limit = 3): RecentUserComment[] {
+  const cap = Math.max(0, limit);
+  if (cap === 0) return [];
+  const userComments = history.filter(
+    (e) => e && e.type === 'comment' && typeof e.comment === 'string' && !isAgentAuthor(e.user),
+  );
+  return userComments.slice(-cap).map((e) => ({
+    user: e.user,
+    date: e.date,
+    comment: e.comment,
+    ...(e.id ? { id: e.id } : {}),
+  }));
+}
+
+/**
+ * The most recent persisted launch-focus instruction, if any. Persisted as a
+ * `launchFocus` field on a launch activity entry (routes/cli-session.ts). Only
+ * the clean focus text is ever stored — never the full launch-prompt blob,
+ * which FLUX-473 deliberately stripped from the agent digest.
+ */
+export function extractLaunchFocus(history: any[] = []): { launchFocus: string; date: string } | undefined {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const e = history[i];
+    if (e && typeof e.launchFocus === 'string' && e.launchFocus.trim()) {
+      return { launchFocus: e.launchFocus.trim(), date: e.date };
+    }
+  }
+  return undefined;
+}
+
 /**
  * Strip `progress[]` from terminal (non-active) `agent_session` entries for
  * the board list payload. Nothing on the board reads a finished session's
@@ -224,13 +284,13 @@ export function digestTerminalSessionProgress(history: any[] = []) {
   });
 }
 
-function buildCommentId(seed: string, usedIds: Set<string>) {
-  const normalizedSeed = seed.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'comment';
-  let candidate = `c-${normalizedSeed}`;
+function buildCommentId(seed: string, usedIds: Set<string>, prefix = 'c') {
+  const normalizedSeed = seed.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'entry';
+  let candidate = `${prefix}-${normalizedSeed}`;
   let suffix = 2;
 
   while (usedIds.has(candidate)) {
-    candidate = `c-${normalizedSeed}-${suffix}`;
+    candidate = `${prefix}-${normalizedSeed}-${suffix}`;
     suffix += 1;
   }
 
@@ -353,13 +413,19 @@ export function normalizeHistoryEntries(history: any[] = []) {
       changed = true;
     }
 
-    if (nextEntry.type === 'comment') {
+    // Assign a stable, collision-safe id to comment AND activity entries so the
+    // agent digest can collapse old summarized entries and recover them via
+    // expand:[id]. Activity entries previously had no id, so a `summary` written
+    // on log_progress was inert for the digest (FLUX-526).
+    if (nextEntry.type === 'comment' || nextEntry.type === 'activity') {
       if (!nextEntry.id) {
         const seed = nextEntry.date || `${Date.now()}-${index + 1}`;
-        nextEntry.id = buildCommentId(seed, usedIds);
+        nextEntry.id = buildCommentId(seed, usedIds, nextEntry.type === 'activity' ? 'a' : 'c');
         changed = true;
       }
+    }
 
+    if (nextEntry.type === 'comment') {
       if (nextEntry.replyTo != null && typeof nextEntry.replyTo !== 'string') {
         delete nextEntry.replyTo;
         changed = true;

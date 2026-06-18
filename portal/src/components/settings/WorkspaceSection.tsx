@@ -5,7 +5,7 @@ import { GroupSetupPreview } from '../GroupSetupPreview';
 import { GroupWizard } from '../GroupWizard';
 import { DocsPromotionPanel } from '../DocsPromotionPanel';
 import { groupRegistrationGaps, parentDirOf, multiRepoNudge, groupWorkspaces } from '../../utils';
-import { setWorkspace as apiSetWorkspace, pickWorkspaceFolder, fetchStorageMode, migrateStorage, restoreStorage, fetchWorkspaces, addWorkspace, removeWorkspace, updateWorkspaceLabel as apiUpdateLabel, switchWorkspace as apiSwitchWorkspace, fetchGroupStatus, ensureGroupRegistered, discoverGroupFolder, updateGroupDocsLabel, type WorkspaceInfo, type GroupStatus } from '../../api';
+import { pickWorkspaceFolder, fetchStorageMode, migrateStorage, restoreStorage, fetchWorkspaces, addWorkspace, removeWorkspace, updateWorkspaceLabel as apiUpdateLabel, switchWorkspace as apiSwitchWorkspace, fetchGroupStatus, ensureGroupRegistered, discoverGroupFolder, updateGroupDocsLabel, type WorkspaceInfo, type GroupStatus } from '../../api';
 
 interface WorkspaceSectionProps {
   users: UserDef[];
@@ -52,11 +52,6 @@ export function WorkspaceSection({
   agentProgressDelay,
   setAgentProgressDelay,
 }: WorkspaceSectionProps) {
-  const [newWorkspacePath, setNewWorkspacePath] = useState('');
-  const [workspaceSwitchError, setWorkspaceSwitchError] = useState<string | null>(null);
-  const [workspaceSwitching, setWorkspaceSwitching] = useState(false);
-  const [workspacePicking, setWorkspacePicking] = useState(false);
-
   const [storageMode, setStorageMode] = useState<'in-repo' | 'orphan' | null>(null);
   const [storageBusy, setStorageBusy] = useState(false);
   const [storageError, setStorageError] = useState<string | null>(null);
@@ -96,8 +91,8 @@ export function WorkspaceSection({
       await ensureGroupRegistered();
       loadGroupStatus();
       loadWorkspaces();
-    } catch (err: any) {
-      setRegisterError(err.message);
+    } catch (err) {
+      setRegisterError(err instanceof Error ? err.message : 'Failed to register workspaces');
     } finally {
       setRegistering(false);
     }
@@ -111,8 +106,8 @@ export function WorkspaceSection({
       await updateGroupDocsLabel(docsLabelValue.trim());
       setDocsLabelEditing(false);
       loadGroupStatus();
-    } catch (err: any) {
-      setDocsLabelError(err.message ?? 'Failed to update docs label');
+    } catch (err) {
+      setDocsLabelError(err instanceof Error ? err.message : 'Failed to update docs label');
     } finally {
       setDocsLabelSaving(false);
     }
@@ -183,8 +178,8 @@ export function WorkspaceSection({
           setSwitchingPath(null);
         }
       }
-    } catch (err: any) {
-      setAddWorkspaceError(err.message);
+    } catch (err) {
+      setAddWorkspaceError(err instanceof Error ? err.message : 'Failed to add workspace');
     } finally {
       setAddingWorkspace(false);
     }
@@ -206,8 +201,8 @@ export function WorkspaceSection({
       }
       notifyWorkspaceSet();
       loadWorkspaces();
-    } catch (err: any) {
-      alert(`Failed to switch: ${err.message}`);
+    } catch (err) {
+      alert(`Failed to switch: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setSwitchingPath(null);
     }
@@ -296,7 +291,15 @@ export function WorkspaceSection({
         <p className="text-xs text-gray-500 mb-4">Manage your workspace list. These appear in the header switcher for quick project switching.</p>
 
         {configuredWorkspaces.length === 0 ? (
-          <p className="text-xs text-gray-400 italic mb-3">No workspaces registered yet. Your current workspace will be auto-registered on next startup.</p>
+          <div className="mb-3">
+            {workspacePath && (
+              <div className="mb-2 rounded-lg border border-primary/40 bg-primary/5 px-3 py-2">
+                <span className="text-[10px] font-bold uppercase tracking-wide text-primary">Active board</span>
+                <p className="mt-0.5 break-all font-mono text-xs text-gray-600 dark:text-gray-300">{workspacePath}</p>
+              </div>
+            )}
+            <p className="text-xs text-gray-400 italic">This workspace is saved to your list on next startup. Add another project below to switch between them.</p>
+          </div>
         ) : (
           <div className="space-y-2 mb-4">
             {workspaceGroups.groups.map((group) => (
@@ -341,60 +344,6 @@ export function WorkspaceSection({
         )}
       </div>
 
-      <div className="col-span-2 rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
-        <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Project Folder</h3>
-        <p className="text-xs text-gray-500 mb-4">Switch to a different project. The folder must contain a <code className="font-mono bg-gray-100 dark:bg-white/10 px-1 rounded">.flux/</code> or <code className="font-mono bg-gray-100 dark:bg-white/10 px-1 rounded">.flux-store/</code> directory.</p>
-        {workspacePath && (
-          <p className="mb-3 rounded-lg bg-gray-100 dark:bg-black/20 px-3 py-2 font-mono text-xs text-gray-600 dark:text-gray-300 break-all">{workspacePath}</p>
-        )}
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={newWorkspacePath}
-            onChange={(e) => setNewWorkspacePath(e.target.value)}
-            placeholder="Path to project folder…"
-            className="min-w-0 flex-1 rounded-lg border border-gray-200 dark:border-white/10 bg-white dark:bg-black/20 px-3 py-2 text-sm outline-none focus:border-primary"
-          />
-          <button
-            disabled={workspacePicking}
-            onClick={async () => {
-              setWorkspacePicking(true);
-              try {
-                const picked = await pickWorkspaceFolder();
-                if (picked) setNewWorkspacePath(picked);
-              } finally {
-                setWorkspacePicking(false);
-              }
-            }}
-            className="rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/5 px-3 py-2 text-sm font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-white/10 disabled:opacity-50"
-          >
-            {workspacePicking ? '…' : 'Browse'}
-          </button>
-          <button
-            disabled={workspaceSwitching || !newWorkspacePath.trim()}
-            onClick={async () => {
-              setWorkspaceSwitchError(null);
-              setWorkspaceSwitching(true);
-              try {
-                await apiSetWorkspace(newWorkspacePath.trim());
-                setNewWorkspacePath('');
-                notifyWorkspaceSet();
-              } catch (err: any) {
-                setWorkspaceSwitchError(err.message);
-              } finally {
-                setWorkspaceSwitching(false);
-              }
-            }}
-            className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-white hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {workspaceSwitching ? 'Switching…' : 'Switch'}
-          </button>
-        </div>
-        {workspaceSwitchError && (
-          <p className="mt-2 text-xs text-red-500">{workspaceSwitchError}</p>
-        )}
-      </div>
-
       {workspacePath && (
         <div className="col-span-2 rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
           <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Git Sync</h3>
@@ -421,8 +370,8 @@ export function WorkspaceSection({
                   try {
                     const result = await migrateStorage();
                     setStorageMode(result.mode as 'in-repo' | 'orphan');
-                  } catch (err: any) {
-                    setStorageError(err.message);
+                  } catch (err) {
+                    setStorageError(err instanceof Error ? err.message : 'Migration failed');
                   } finally {
                     setStorageBusy(false);
                   }
@@ -441,8 +390,8 @@ export function WorkspaceSection({
                   try {
                     const result = await restoreStorage();
                     setStorageMode(result.mode as 'in-repo' | 'orphan');
-                  } catch (err: any) {
-                    setStorageError(err.message);
+                  } catch (err) {
+                    setStorageError(err instanceof Error ? err.message : 'Restore failed');
                   } finally {
                     setStorageBusy(false);
                   }

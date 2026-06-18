@@ -115,8 +115,8 @@ export function OnboardingWizard() {
       if (trimmedName) {
         const cfg = await fetchConfig();
         const existingUsers = cfg.users || [];
-        const hasUser = existingUsers.some((u: any) => u.name === trimmedName);
-        const hasAgent = existingUsers.some((u: any) => u.name === 'Agent');
+        const hasUser = existingUsers.some((u) => u.name === trimmedName);
+        const hasAgent = existingUsers.some((u) => u.name === 'Agent');
         const newUsers = [
           ...(hasUser ? [] : [{ name: trimmedName }]),
           ...existingUsers,
@@ -125,8 +125,8 @@ export function OnboardingWizard() {
         await apiSaveConfig({ ...cfg, users: newUsers });
       }
       setStep(2);
-    } catch (err: any) {
-      setFolderError(err.message || 'Failed to open workspace.');
+    } catch (err) {
+      setFolderError(err instanceof Error ? err.message : 'Failed to open workspace.');
     } finally {
       setFolderLoading(false);
     }
@@ -143,8 +143,8 @@ export function OnboardingWizard() {
     try {
       await migrateStorage();
       setStep(3);
-    } catch (err: any) {
-      setModeError(err.message || 'Migration failed. You can continue with In-Repo mode instead.');
+    } catch (err) {
+      setModeError(err instanceof Error ? err.message : 'Migration failed. You can continue with In-Repo mode instead.');
     } finally {
       setModeLoading(false);
     }
@@ -157,8 +157,8 @@ export function OnboardingWizard() {
     try {
       await installWorkspaceSkill(selectedFramework);
       setInstallDone(true);
-    } catch (err: any) {
-      setInstallError(err.message || 'Installation failed.');
+    } catch (err) {
+      setInstallError(err instanceof Error ? err.message : 'Installation failed.');
     } finally {
       setInstalling(false);
     }
@@ -183,8 +183,8 @@ export function OnboardingWizard() {
       const result = await setupPath(mode);
       setPathSnippet(result.snippet);
       setPathDone(mode === 'auto');
-    } catch (err: any) {
-      setPathError(err.message || 'Failed to update PATH.');
+    } catch (err) {
+      setPathError(err instanceof Error ? err.message : 'Failed to update PATH.');
     } finally {
       setPathLoading(false);
     }

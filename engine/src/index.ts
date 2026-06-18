@@ -26,8 +26,9 @@ import { requireWorkspace } from './middleware.js';
 import { workspaceRoot, loadAppSettings, getCliWorkspace, resolvePortalDist, autoRegisterWorkspace } from './workspace.js';
 import { isPkg, isSea, isPackaged, ensureSeaAssetsExtracted, getSeaAsset } from './packaged-mode.js';
 import { migrateFromLegacy, getBootStatus } from './global-settings.js';
-import { activateWorkspace } from './task-store.js';
-import { stopAllCliSessions, setAutoRestartCallback } from './session-store.js';
+import { activateWorkspace, tasksCache } from './task-store.js';
+import { stopAllCliSessions, setAutoRestartCallback, getAllActiveSessions } from './session-store.js';
+import { requestApproval, resolveApproval, listPendingApprovals } from './permission-prompts.js';
 import { shutdownSharedServers } from './shared-mcp-server.js';
 import { broadcastEvent } from './events.js';
 
@@ -54,6 +55,8 @@ import bootstrapRouter from './routes/bootstrap.js';
 import groupRouter from './routes/group.js';
 import { checkForUpdate, getCachedUpdateInfo, getLocalVersion } from './update-check.js';
 import { checkGhAuth } from './branch-manager.js';
+import { reconcilePullRequests, pruneMergedBranches } from './pr-cleanup.js';
+import { syncPrTickets } from './pr-tickets.js';
 
 const __dir = (() => {
   // @ts-ignore
@@ -95,7 +98,49 @@ app.use('/api/agents', requireWorkspace, agentsRouter);
 app.use('/api/bootstrap', requireWorkspace, bootstrapRouter);
 app.use('/api/group', requireWorkspace, groupRouter);
 
+// FLUX-604: live board snapshot for the orchestrator — active sessions + status counts.
+app.get('/api/board/state', requireWorkspace, (_req, res) => {
+  const activeSessions = getAllActiveSessions().map((s) => ({
+    taskId: s.taskId,
+    status: s.status,
+    phase: s.phase,
+    role: s.role,
+    label: s.label,
+    activity: s.currentActivity,
+  }));
+  const statusCounts: Record<string, number> = {};
+  for (const t of Object.values(tasksCache)) {
+    const st = (t as any).status || 'Unknown';
+    statusCounts[st] = (statusCounts[st] || 0) + 1;
+  }
+  res.json({ activeSessions, statusCounts });
+});
+
+// FLUX-605: gated-tool approval round-trip. permission_prompt (MCP) posts a request that
+// parks until a human resolves it via the portal, or 120s timeout → deny.
+app.post('/api/board/permission-request', requireWorkspace, async (req, res) => {
+  const toolName = String(req.body?.tool_name || req.body?.toolName || 'unknown');
+  const input = req.body?.input ?? {};
+  const conversationId = typeof req.body?.conversationId === 'string' ? req.body.conversationId : null;
+  const decision = await requestApproval(toolName, input, conversationId);
+  res.json(decision);
+});
+app.post('/api/board/permission-resolve', requireWorkspace, (req, res) => {
+  const id = String(req.body?.id || '');
+  const decision = req.body?.behavior === 'allow'
+    ? { behavior: 'allow' as const, updatedInput: req.body?.updatedInput }
+    : { behavior: 'deny' as const, message: typeof req.body?.message === 'string' ? req.body.message : 'Denied by user.' };
+  res.json({ ok: resolveApproval(id, decision) });
+});
+app.get('/api/board/permission-pending', requireWorkspace, (_req, res) => {
+  res.json({ pending: listPendingApprovals() });
+});
+
 let ghAuthAvailable: boolean | null = null;
+
+// How often to poll gh for out-of-band PR state (FLUX-557). 90s balances freshness against
+// gh process churn — branch tickets in review are few.
+const PR_RECONCILE_INTERVAL_MS = 90_000;
 
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', workspace: workspaceRoot, ghAuthAvailable });
@@ -216,9 +261,14 @@ async function initTray(port: number): Promise<void> {
 
   const TRAY_ICON_PNG = 'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAGXRFWHRTb2Z0d2FyZQBBZG9iZSBJbWFnZVJlYWR5ccllPAAAA2ZpVFh0WE1MOmNvbS5hZG9iZS54bXAAAAAAADw/eHBhY2tldCBiZWdpbj0i77u/IiBpZD0iVzVNME1wQ2VoaUh6cmVTek5UY3prYzlkIj8+IDx4OnhtcG1ldGEgeG1sbnM6eD0iYWRvYmU6bnM6bWV0YS8iIHg6eG1wdGs9IkFkb2JlIFhNUCBDb3JlIDUuMC1jMDYwIDYxLjEzNDc3NywgMjAxMC8wMi8xMi0xNzozMjowMCAgICAgICAgIj4gPHJkZjpSREYgeG1sbnM6cmRmPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5LzAyLzIyLXJkZi1zeW50YXgtbnMjIj4gPHJkZjpEZXNjcmlwdGlvbiByZGY6YWJvdXQ9IiIgeG1sbnM6eG1wTU09Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC9tbS8iIHhtbG5zOnN0UmVmPSJodHRwOi8vbnMuYWRvYmUuY29tL3hhcC8xLjAvc1R5cGUvUmVzb3VyY2VSZWYjIiB4bWxuczp4bXA9Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC8iIHhtcE1NOk9yaWdpbmFsRG9jdW1lbnRJRD0ieG1wLmRpZDo2NzI0QkUxNUVEMjA2ODExODhDNkYyODE1REEzQzU1NSIgeG1wTU06RG9jdW1lbnRJRD0ieG1wLmRpZDpBM0I0RkI2NjNBQTgxMUUyQjJDQTk3QkQzNDQxRUYzMiIgeG1wTU06SW5zdGFuY2VJRD0ieG1wLmlpZDpBM0I0RkI2NTNBQTgxMUUyQjJDQTk3QkQzNDQxRUYzMiIgeG1wOkNyZWF0b3JUb29sPSJBZG9iZSBQaG90b3Nob3AgQ1M1IE1hY2ludG9zaCI+IDx4bXBNTTpEZXJpdmVkRnJvbSBzdFJlZjppbnN0YW5jZUlEPSJ4bXAuaWlkOkU2ODE0QzZBRUUyMDY4MTE4OEM2RjI4MTVEQTNDNTU1IiBzdFJlZjpkb2N1bWVudElEPSJ4bXAuZGlkOjY3MjRCRTE1RUQyMDY4MTE4OEM2RjI4MTVEQTNDNTU1Ii8+IDwvcmRmOkRlc2NyaXB0aW9uPiA8L3JkZjpSREY+IDwveDp4bXBtZXRhPiA8P3hwYWNrZXQgZW5kPSJyIj8+Xe014gAABO5JREFUeNrEV89vVUUYPfPj/up7r6VtCtg0vhaDaYwuBOKGuHDhBjUYE11gjNFo4sq4MzHxb3BnXLFi4UZCjAvjRjQlEUEUpCSkCFgKKRQKbenru+/OnfHMva+lRGNJ7kt4yffunTszd853vvN9M1c45/A4f3qrAeLZN//rsaJ9Rtvrh9CO07741yhr4S5887/vl1tCNAbwLG024EPaiJDykOpvvAshnmf7jaLPdsdwXv9Af3UGxieauHZjvnBT8C/nAtbacTav0Q7LOBZc9Hq+vNIUcQQZaPiwStouzq0MYPdTu5CHEXaP7kCoNf6avzU2c/nqJNL0IF0tvBVJDB2G3wklf4AU044gkzBEo9HYEoDcOgIGpLqwWhIrLvQ1tD5YhN6zkaZkhvdKvkrPj+QmD0Kl8MzoE1D+eWUR8h2GYpqavoind44EnTQbRdqB995TnXcyBEmCiB5nuak34kQ8OTyEqBuKygC6vyg15sCfFy99IK1twuTYEEUQINAB+gmiFoUT9Sg6Gih1mEt/z95W5RDw9zZtSgpxFEodsH7OOrW8KuoiUJIRkNCK3Au8wh6fe7/QPuoFgI9p+3x2gY4jdaV1MWgPgGasRJoJOFu+kt3P0d6rHIKVVN9YWuOrOg71yGFyTFNcDidnsmJ2KFVRl/aMS/RFwK175L0jsNohURBXKgM4tPfvmeCFNTSHFSZ3DqM5XnPHflrFW5/PCdQVGVCUhMT7LyV4bZ/E7YUMc/dSzC44XF905yoD+OTlm+egt9HJQQq/jy73Cak4TcwWnvuwB1pQi3VIHWFksI3tQ23smaD+TGu6MoDU7LgsXJ1FvSEhayxGNaadfaABCjAkC1FcZyNBJkJqxZs2cOG1sHIdCIZmoeIl6IFBoWpkoB9B3FnvpfoVQg+iAOBZCOD4zAlxmyBmq9cBmdyk51eEbgzSmPeD9HZtI398CvoQxDH7FDcfTfFRE6xCl51Qi9UrYTCQQYaX6P2eAoDaRm9Xi1LgM9PnPwsPomSAjTqEZoUswpPPCBfZ6nVAUXgy+oNhgPD3XCSMBiBlOdXX+1IDBKf92ITgIu4d0Rl/rc6A8i+RZ3nj6fBgEIQNNmWxH0jRZSBooBgjA39lR3gewlXfDf2CfOl53i2V269FGPj0K6d6IiK2g5ALk/syOeQCQZwvwPSgFHtP5+CyC7BUf75GAOkDAD4E3PkixcrIfud8vc4JWCxs5GolAI4vdsZy4z/t8lWW5GXEqsW4y4IQgTILIsHMMDTbJojs12IvdrY6AJdnpZnWlDPLBHAXfWKFJ54ugEKErAfuPgGscGzLM3GCE1BY5TpgVtehnHa2cx/C1H1161sHAA+A2WC5uD/AmrU7RHGmZ8dyl6+s315F7s5atPcrq5Fs6IsAKHqRL3eZSn8jsTd6BgDZvY1Tvj+YONvar4RGrF2peoZASwIwSzwts/xbc7ynHyaWnm2i40dh5adCBTwDWpQlzzPA+5xZmlOszv38KOp/9BBk85ubp7jJzJGBsXpoSgDC74YGiqHi+peoht97yoDLFjY3F3NnTvIUNFaPkvJ8QG99DRD5XY51JxiMVm8BmPmH284cgWm/WIub24F6kcmhbFEDd864XH/lis/GHgJ4OJ7+3hyDXThVC4dfZ/sdPmgrYb6Ea3/rUGuXYx79i1s87s/zfwQYAOBu3WMkV4BvAAAAAElFTkSuQmCC';
 
+  // Windows needs an .ico; macOS/Linux use the PNG. The systray Go binary loads
+  // the icon through the OS, which won't render a PNG on win32. This ICO wraps the
+  // same 32x32 image bytes in an ICO container (FLUX-129).
+  const TRAY_ICON_ICO = 'AAABAAEAICAAAAEAIAC+CAAAFgAAAIlQTkcNChoKAAAADUlIRFIAAAAgAAAAIAgGAAAAc3p69AAAABl0RVh0U29mdHdhcmUAQWRvYmUgSW1hZ2VSZWFkeXHJZTwAAANmaVRYdFhNTDpjb20uYWRvYmUueG1wAAAAAAA8P3hwYWNrZXQgYmVnaW49Iu+7vyIgaWQ9Ilc1TTBNcENlaGlIenJlU3pOVGN6a2M5ZCI/PiA8eDp4bXBtZXRhIHhtbG5zOng9ImFkb2JlOm5zOm1ldGEvIiB4OnhtcHRrPSJBZG9iZSBYTVAgQ29yZSA1LjAtYzA2MCA2MS4xMzQ3NzcsIDIwMTAvMDIvMTItMTc6MzI6MDAgICAgICAgICI+IDxyZGY6UkRGIHhtbG5zOnJkZj0iaHR0cDovL3d3dy53My5vcmcvMTk5OS8wMi8yMi1yZGYtc3ludGF4LW5zIyI+IDxyZGY6RGVzY3JpcHRpb24gcmRmOmFib3V0PSIiIHhtbG5zOnhtcE1NPSJodHRwOi8vbnMuYWRvYmUuY29tL3hhcC8xLjAvbW0vIiB4bWxuczpzdFJlZj0iaHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wL3NUeXBlL1Jlc291cmNlUmVmIyIgeG1sbnM6eG1wPSJodHRwOi8vbnMuYWRvYmUuY29tL3hhcC8xLjAvIiB4bXBNTTpPcmlnaW5hbERvY3VtZW50SUQ9InhtcC5kaWQ6NjcyNEJFMTVFRDIwNjgxMTg4QzZGMjgxNURBM0M1NTUiIHhtcE1NOkRvY3VtZW50SUQ9InhtcC5kaWQ6QTNCNEZCNjYzQUE4MTFFMkIyQ0E5N0JEMzQ0MUVGMzIiIHhtcE1NOkluc3RhbmNlSUQ9InhtcC5paWQ6QTNCNEZCNjUzQUE4MTFFMkIyQ0E5N0JEMzQ0MUVGMzIiIHhtcDpDcmVhdG9yVG9vbD0iQWRvYmUgUGhvdG9zaG9wIENTNSBNYWNpbnRvc2giPiA8eG1wTU06RGVyaXZlZEZyb20gc3RSZWY6aW5zdGFuY2VJRD0ieG1wLmlpZDpFNjgxNEM2QUVFMjA2ODExODhDNkYyODE1REEzQzU1NSIgc3RSZWY6ZG9jdW1lbnRJRD0ieG1wLmRpZDo2NzI0QkUxNUVEMjA2ODExODhDNkYyODE1REEzQzU1NSIvPiA8L3JkZjpEZXNjcmlwdGlvbj4gPC9yZGY6UkRGPiA8L3g6eG1wbWV0YT4gPD94cGFja2V0IGVuZD0iciI/Pl3tNeIAAATuSURBVHjaxFfPb1VFGD3z4/7qe6+lbQrYNL4Wg2mMLgTihrhw4QY1GBNdYIzRaOLKuDMx8W9wZ1yxYuFGQowL40Y0JRFBFKQkpAhYCikUCm3p67vvzp3xzL2vpURjSe5LeMn37p07M3fOd77zfTNXOOfwOH96qwHi2Tf/67GifUbb64fQjtO++Ncoa+EufPO/75dbQjQG8CxtNuBD2oiQ8pDqb7wLIZ5n+42iz3bHcF7/QH91BsYnmrh2Y75wU/Av5wLW2nE2r9EOyzgWXPR6vrzSFHEEGWj4sEraLs6tDGD3U7uQhxF2j+5AqDX+mr81NnP56iTS9CBdLbwVSQwdht8JJX+AFNOOIJMwRKPR2BKA3DoCBqS6sFoSKy70NbQ+WITes5GmZIb3Sr5Kz4/kJg9CpfDM6BNQ/nllEfIdhmKamr6Ip3eOBJ00G0XagffeU513MgRJgogeZ7mpN+JEPDk8hKgbisoAur8oNebAnxcvfSCtbcLk2BBFECDQAfoJohaFE/UoOhoodZhLf8/eVuUQ8Pc2bUoKcRRKHbB+zjq1vCrqIlCSEZDQitwLvMIen3u/0D7qBYCPaft8doGOI3WldTFoD4BmrESaCThbvpLdz9HeqxyClVTfWFrjqzoO9chhckxTXA4nZ7JidihVUZf2jEv0RcCte+S9I7DaIVEQVyoDOLT375nghTU0hxUmdw6jOV5zx35axVufzwnUFRlQlITE+y8leG2fxO2FDHP3UswuOFxfdOcqA/jk5ZvnoLfRyUEKv48u9wmpOE3MFp77sAdaUIt1SB1hZLCN7UNt7Jmg/kxrujKA1Oy4LFydRb0hIWssRjWmnX2gAQowJAtRXGcjQSZCasWbNnDhtbByHQiGZqHiJeiBQaFqZKAfQdxZ76X6FUIPogDgWQjg+MwJcZsgZqvXAZncpOdXhG4M0pj3g/R2bSN/fAr6EMQx+xQ3H03xUROsQpedUIvVK2EwkEGGl+j9ngKA2kZvV4tS4DPT5z8LD6JkgI06hGaFLMKTzwgX2ep1QFF4MvqDYYDw91wkjAYgZTnV1/tSAwSn/diE4CLuHdEZf63OgPIvkWd54+nwYBCEDTZlsR9I0WUgaKAYIwN/ZUd4HsJV3w39gnzped4tlduvRRj49CuneiIitoOQC5P7MjnkAkGcL8D0oBR7T+fgsguwVH++RgDpAwA+BNz5IsXKyH7nfL3OCVgsbORqJQCOL3bGcuM/7fJVluRlxKrFuMuCEIEyCyLBzDA02yaI7NdiL3a2OgCXZ6WZ1pQzywRwF31ihSeeLoBChKwH7j4BrHBsyzNxghNQWOU6YFbXoZx2tnMfwtR9detbBwAPgNlgubg/wJq1O0RxpmfHcpevrN9eRe7OWrT3K6uRbOiLACh6kS93mUp/I7E3egYA2b2NU74/mDjb2q+ERqxdqXqGQEsCMEs8LbP8W3O8px8mlp5touNHYeWnQgU8A1qUJc8zwPucWZpTrM79/Cjqf/QQZPObm6e4ycyRgbF6aEoAwu+GBoqh4vqXqIbfe8qAyxY2NxdzZ07yFDRWj5LyfEBvfQ0Q+V2OdScYjFZvAZj5h9vOHIFpv1iLm9uBepHJoWxRA3fOuFx/5YrPxh4CeDie/t4cg104VQuHX2f7HT5oK2G+hGt/61Brl2Me/YtbPO7P838EGADgbt1jJFeAbwAAAABJRU5ErkJggg==';
+
   const projectName = workspaceRoot ? path.basename(workspaceRoot) : 'No project open';
   const menu = {
-    icon: TRAY_ICON_PNG,
+    icon: process.platform === 'win32' ? TRAY_ICON_ICO : TRAY_ICON_PNG,
     title: 'Event Horizon',
     tooltip: 'Event Horizon',
     items: [
@@ -313,6 +363,19 @@ async function startServer() {
         console.warn('[branch] GitHub CLI not configured — PR creation unavailable. Run `gh auth login` to enable.');
       }
     }).catch(() => { ghAuthAvailable = false; });
+
+    // Out-of-band PR reconcile (FLUX-557): catch PRs merged/closed directly on GitHub and
+    // reconcile the board (advance + clean up, or bounce a closed PR back to In Progress).
+    // Polling-based v1 (decision #10); only runs when gh is available and a workspace is active.
+    setInterval(() => {
+      if (ghAuthAvailable && workspaceRoot) {
+        reconcilePullRequests(workspaceRoot).catch(() => {});
+        // FLUX-566: maintain the engine-managed PR-<n> tickets (the PR-as-first-class entity).
+        syncPrTickets(workspaceRoot).catch(() => {});
+        // FLUX-599: backstop — reclaim merged branches whose merge-time delete was missed.
+        pruneMergedBranches(workspaceRoot).catch(() => {});
+      }
+    }, PR_RECONCILE_INTERVAL_MS);
   });
 
   // Without this, a listen failure (e.g. another Event Horizon instance already

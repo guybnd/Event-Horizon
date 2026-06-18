@@ -1,6 +1,7 @@
 import express from 'express';
 import { randomUUID } from 'crypto';
 import { workspaceRoot } from '../workspace.js';
+import { configCache } from '../config.js';
 import { tasksCache } from '../task-store.js';
 import {
   cliSessionsById,
@@ -26,15 +27,35 @@ import {
   type PendingRelaySpec,
 } from '../session-store.js';
 import { getAdapter } from '../agents/index.js';
+import { BOARD_CONVERSATION_ID, startBoardSession, sendBoardInput } from '../agents/claude-code.js';
 import { updateTaskWithHistory } from '../task-store.js';
 import { broadcastEvent } from '../events.js';
+import { appendTranscriptEvent, readTranscriptMessages } from '../transcript.js';
 import { dismissNotificationsForTicket } from '../notifications.js';
 import { resolvePersonaPrompt } from '../orchestration-personas.js';
 import { buildActivityEntry } from '../history.js';
 import { captureDiffForPrompt, getCurrentCommit, type PromptDiffCapture } from '../branch-manager.js';
-import type { CliSessionRecord, CliFramework, ExecutionPattern, PatternPosition, GroupVariant } from '../agents/types.js';
+import type { CliSessionRecord, CliFramework, ExecutionPattern, PatternPosition, GroupVariant, LaunchPhase } from '../agents/types.js';
 
 const router = express.Router();
+
+/**
+ * Resolve the default permission mode for a session surface (FLUX-605). The per-chat
+ * Perms picker overrides this (`requested`); when it's absent ("Default") the session
+ * inherits the workspace risk-tolerance setting (`config.permissions`). Falls back to
+ * the built-in defaults — orchestrator gated, per-ticket skip — if unconfigured.
+ */
+function resolvePermissionMode(
+  requested: 'gated' | 'skip' | undefined,
+  surface: 'board' | 'ticket',
+): 'gated' | 'skip' {
+  if (requested === 'gated' || requested === 'skip') return requested;
+  const configured = surface === 'board'
+    ? configCache?.permissions?.boardDefault
+    : configCache?.permissions?.ticketDefault;
+  if (configured === 'gated' || configured === 'skip') return configured;
+  return surface === 'board' ? 'gated' : 'skip';
+}
 
 function formatDiffBlock(capture: PromptDiffCapture): string {
   const lines = [
@@ -64,9 +85,11 @@ interface SpawnOptions {
   framework: CliFramework;
   appendPrompt: string;
   effortOverride: string;
+  model?: string;
+  permissionMode?: 'gated' | 'skip' | undefined;
   skipPermissions: boolean;
   role?: string | undefined;
-  phase?: import('../agents/types').LaunchPhase | undefined;
+  phase?: LaunchPhase | undefined;
   pattern?: ExecutionPattern | undefined;
   patternPosition?: PatternPosition | undefined;
   groupId?: string | undefined;
@@ -132,6 +155,9 @@ async function spawnSession(task: any, opts: SpawnOptions): Promise<CliSessionRe
   if (opts.groupVariant) session.groupVariant = opts.groupVariant;
   if (opts.lockedPaths && opts.lockedPaths.length > 0) session.lockedPaths = opts.lockedPaths;
   if (opts.diffBlock) session.diffBlock = opts.diffBlock;
+  if (opts.model) session.model = opts.model;
+  if (opts.effortOverride) session.effortOverride = opts.effortOverride;
+  if (opts.permissionMode) session.permissionMode = opts.permissionMode;
 
   cliSessionsById.set(sessionId, session);
   registerSession(task.id, sessionId);
@@ -212,8 +238,7 @@ setRelayStepLauncher(async (spec: PendingRelaySpec, previousOutput: string, prev
 // GET single session (backwards compat — returns most recent active)
 router.get('/:id/cli-session', (req, res) => {
   const { id } = req.params;
-  const task = tasksCache[id];
-  if (!task) return res.status(404).json({ error: 'Task not found' });
+  if (id !== BOARD_CONVERSATION_ID && !tasksCache[id]) return res.status(404).json({ error: 'Task not found' });
   res.json({ session: getCliSessionSummaryForTask(id) || null });
 });
 
@@ -225,8 +250,75 @@ router.get('/:id/cli-sessions', (req, res) => {
   res.json({ sessions: getAllSessionSummariesForTask(id) });
 });
 
+// FLUX-602: durable conversation transcript (raw tier) for the chat pane.
+// Source of truth for rendering — persists across reopen/restart, unlike the
+// in-memory live progress stream.
+router.get('/:id/transcript', async (req, res) => {
+  const { id } = req.params;
+  if (id !== BOARD_CONVERSATION_ID && !tasksCache[id]) return res.status(404).json({ error: 'Task not found' });
+  try {
+    const messages = await readTranscriptMessages(id);
+    res.json({ messages });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Failed to read transcript' });
+  }
+});
+
 router.post('/:id/cli-session/start', async (req, res) => {
   const { id } = req.params;
+
+  // FLUX-604: board-level orchestrator session — not bound to any ticket.
+  if (id === BOARD_CONVERSATION_ID) {
+    const firstMessage = typeof req.body?.appendPrompt === 'string' ? req.body.appendPrompt.trim() : '';
+    if (!firstMessage) return res.status(400).json({ error: 'appendPrompt (first message) is required for the orchestrator chat' });
+    const existingId = cliSessionIdByTaskId.get(BOARD_CONVERSATION_ID);
+    const existing = existingId ? cliSessionsById.get(existingId) : undefined;
+    if (existing && (existing.status === 'running' || existing.status === 'waiting-input')) {
+      return res.status(409).json({ error: 'Orchestrator session already active', session: getCliSessionSummaryForTask(BOARD_CONVERSATION_ID) });
+    }
+    const boardSession: CliSessionRecord = {
+      id: randomUUID(),
+      taskId: BOARD_CONVERSATION_ID,
+      framework: 'claude',
+      status: 'pending',
+      command: 'claude',
+      args: [],
+      startedAt: new Date().toISOString(),
+      label: 'Orchestrator',
+      outputBuffer: '',
+      liveOutputBuffer: '',
+      pendingAssistantText: '',
+      cumulativeOutput: '',
+      // Permission policy is governed by permissionMode below (defaults to 'gated'),
+      // NOT this legacy flag — permissionArgs() checks permissionMode first. Kept false
+      // so the record doesn't misread as an ungated skip-permissions session.
+      skipPermissions: false,
+      requestedStop: false,
+      writeQueue: Promise.resolve(),
+      inputTokens: 0,
+      outputTokens: 0,
+      costUSD: 0,
+    };
+    cliSessionsById.set(boardSession.id, boardSession);
+    registerSession(BOARD_CONVERSATION_ID, boardSession.id);
+    if (typeof req.body?.model === 'string' && req.body.model.trim()) boardSession.model = req.body.model.trim();
+    if (typeof req.body?.effortOverride === 'string' && req.body.effortOverride.trim()) boardSession.effortOverride = req.body.effortOverride.trim();
+    // Orchestrator default comes from the workspace risk-tolerance setting (board default
+    // gated); an explicit per-chat Perms choice overrides it. (FLUX-605)
+    boardSession.permissionMode = resolvePermissionMode(
+      req.body?.permissionMode === 'gated' || req.body?.permissionMode === 'skip' ? req.body.permissionMode : undefined,
+      'board',
+    );
+    try {
+      await startBoardSession(boardSession, firstMessage, workspaceRoot!);
+      return res.status(201).json({ session: getCliSessionSummaryForTask(BOARD_CONVERSATION_ID) });
+    } catch (error: any) {
+      unregisterSession(BOARD_CONVERSATION_ID, boardSession.id);
+      cliSessionsById.delete(boardSession.id);
+      return res.status(500).json({ error: error.message || 'Failed to start orchestrator session' });
+    }
+  }
+
   const task = tasksCache[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
@@ -237,12 +329,16 @@ router.post('/:id/cli-session/start', async (req, res) => {
   const framework = frameworkRaw as CliFramework;
   const skipPermissions = req.body?.skipPermissions !== false;
   const effortOverrideRaw = typeof req.body?.effortOverride === 'string' ? req.body.effortOverride.trim() : '';
+  const modelRaw = typeof req.body?.model === 'string' ? req.body.model.trim() : '';
+  const permissionModeRaw: 'gated' | 'skip' | undefined =
+    req.body?.permissionMode === 'gated' || req.body?.permissionMode === 'skip' ? req.body.permissionMode : undefined;
 
   // Persona resolution: when a personaId is supplied the engine owns the prompt
   // text (it never ships to the client). A raw appendPrompt is still accepted
   // for ad-hoc, non-persona launches.
   const personaId = typeof req.body?.personaId === 'string' ? req.body.personaId.trim() : '';
   const focusComment = typeof req.body?.focusComment === 'string' ? req.body.focusComment.trim() : '';
+  const launchedBy = typeof req.body?.user === 'string' && req.body.user.trim() ? req.body.user.trim() : 'User';
   let appendPrompt = typeof req.body?.appendPrompt === 'string' ? req.body.appendPrompt.trim() : '';
   if (personaId) {
     const resolved = resolvePersonaPrompt(personaId, focusComment);
@@ -250,8 +346,14 @@ router.post('/:id/cli-session/start', async (req, res) => {
     appendPrompt = resolved;
   }
 
-  // Launch phase / intent (portal tells engine why this session exists)
-  const phase = typeof req.body?.phase === 'string' ? req.body.phase.trim() as import('../agents/types').LaunchPhase : undefined;
+  // Launch phase / intent (portal tells engine why this session exists).
+  // Validate against the known set so an arbitrary value never lands on the session record;
+  // an unrecognized phase is ignored (buildInitialPrompt falls back to status-based logic).
+  const VALID_PHASES: LaunchPhase[] = ['grooming', 'implementation', 'review', 'finalize', 'chat'];
+  const phaseRaw = typeof req.body?.phase === 'string' ? req.body.phase.trim() : '';
+  const phase: LaunchPhase | undefined = (VALID_PHASES as string[]).includes(phaseRaw)
+    ? (phaseRaw as LaunchPhase)
+    : undefined;
 
   // Multi-session fields
   const role = typeof req.body?.role === 'string' ? req.body.role.trim() : undefined;
@@ -315,6 +417,10 @@ router.post('/:id/cli-session/start', async (req, res) => {
       framework,
       appendPrompt,
       effortOverride: effortOverrideRaw,
+      model: modelRaw,
+      // Per-chat Perms choice wins; otherwise inherit the workspace ticket default
+      // (risk-tolerance setting, default skip). (FLUX-605)
+      permissionMode: resolvePermissionMode(permissionModeRaw, 'ticket'),
       skipPermissions,
       phase,
       role,
@@ -328,6 +434,26 @@ router.post('/:id/cli-session/start', async (req, res) => {
       lockedPaths,
       diffBlock,
     });
+    // FLUX-602: record the user's opening turn for chat sessions in the transcript.
+    if (phase === 'chat' && appendPrompt) {
+      appendTranscriptEvent(id, { type: 'user', text: appendPrompt, timestamp: new Date().toISOString() });
+    }
+    // FLUX-480: persist the launch focus as a small, clean history entry so it
+    // survives across sessions and is visible to any agent re-reading the
+    // ticket. Only the focus text is stored — never the full launch prompt
+    // (FLUX-473 deliberately keeps that blob out of the agent digest).
+    // Best-effort: the session already launched, so a failure to record the
+    // focus must NOT turn a successful launch into a 500 (FLUX-480 review).
+    if (focusComment) {
+      try {
+        await updateTaskWithHistory(id, {
+          updatedBy: 'Agent',
+          entries: [buildActivityEntry(`🎯 Launch focus: ${focusComment}`, launchedBy, new Date().toISOString(), { launchFocus: focusComment })],
+        });
+      } catch (focusErr: any) {
+        console.warn(`[cli-session] Failed to persist launch focus for ${id}: ${focusErr?.message || focusErr}`);
+      }
+    }
     res.status(201).json({ session: getCliSessionSummaryForTask(id) });
   } catch (error: any) {
     res.status(500).json({ error: error.message || `Failed to launch ${framework}` });
@@ -544,6 +670,28 @@ router.post('/:id/cli-session/delegate', async (req, res) => {
 
 router.post('/:id/cli-session/input', async (req, res) => {
   const { id } = req.params;
+
+  // FLUX-604: orchestrator follow-up turn.
+  if (id === BOARD_CONVERSATION_ID) {
+    const boardMessage = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
+    if (!boardMessage) return res.status(400).json({ error: 'message is required' });
+    const sid = cliSessionIdByTaskId.get(BOARD_CONVERSATION_ID);
+    const boardSession = sid ? cliSessionsById.get(sid) : undefined;
+    if (!boardSession) return res.status(409).json({ error: 'No orchestrator session — start one first' });
+    if (!boardSession.claudeSessionId) {
+      return res.status(409).json({ error: 'Session ID not yet available — wait for the initial response to complete' });
+    }
+    if (typeof req.body?.model === 'string') boardSession.model = req.body.model.trim() || undefined;
+    if (typeof req.body?.effortOverride === 'string') boardSession.effortOverride = req.body.effortOverride.trim() || undefined;
+    if (req.body?.permissionMode === 'gated' || req.body?.permissionMode === 'skip') boardSession.permissionMode = req.body.permissionMode;
+    try {
+      await sendBoardInput(boardSession, boardMessage, workspaceRoot!);
+      return res.json({ session: getCliSessionSummaryForTask(BOARD_CONVERSATION_ID) });
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message || 'Failed to send message to orchestrator' });
+    }
+  }
+
   const task = tasksCache[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
@@ -572,6 +720,9 @@ router.post('/:id/cli-session/input', async (req, res) => {
     return res.status(409).json({ error: 'Session ID not yet available — wait for the initial response to complete' });
   }
 
+  if (typeof req.body?.model === 'string') session.model = req.body.model.trim() || undefined;
+  if (typeof req.body?.effortOverride === 'string') session.effortOverride = req.body.effortOverride.trim() || undefined;
+  if (req.body?.permissionMode === 'gated' || req.body?.permissionMode === 'skip') session.permissionMode = req.body.permissionMode;
   try {
     await adapter.sendInput(session, message, user, workspaceRoot!);
 
@@ -597,6 +748,18 @@ router.post('/:id/cli-session/input', async (req, res) => {
 
 router.post('/:id/cli-session/stop', async (req, res) => {
   const { id } = req.params;
+
+  // FLUX-604: stop the orchestrator session.
+  if (id === BOARD_CONVERSATION_ID) {
+    const sid = cliSessionIdByTaskId.get(BOARD_CONVERSATION_ID);
+    const boardSession = sid ? cliSessionsById.get(sid) : undefined;
+    if (boardSession) {
+      boardSession.requestedStop = true;
+      boardSession.proc?.kill('SIGTERM');
+    }
+    return res.json({ session: getCliSessionSummaryForTask(BOARD_CONVERSATION_ID) || null });
+  }
+
   const task = tasksCache[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
 

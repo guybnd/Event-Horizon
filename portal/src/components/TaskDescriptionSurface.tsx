@@ -12,16 +12,11 @@ import { gfm } from 'turndown-plugin-gfm';
 import { marked } from 'marked';
 import { Bold, Code, Eye, Heading1, Heading2, Italic, Link as LinkIcon, List, ListOrdered } from 'lucide-react';
 import { buildUnsupportedImageMessage, uploadTaskImageMarkdownLinks } from '../taskAssetUploads';
-import { resolveTaskMarkdownHref } from './TaskMarkdown';
+import { normalizeTaskMarkdownBody, resolveTaskMarkdownHref } from '../taskMarkdownUtils';
 
 type TaskDescriptionSurfaceMode = 'popup' | 'full' | 'backlog';
 
 marked.setOptions({ gfm: true, breaks: false });
-
-export function normalizeTaskMarkdownBody(markdown: string) {
-  const normalized = markdown.replace(/\r\n/g, '\n').trimEnd();
-  return normalized ? `${normalized}\n` : '';
-}
 
 const normalizeMarkdownBody = normalizeTaskMarkdownBody;
 
@@ -387,8 +382,6 @@ export function TaskDescriptionSurface({
     } catch (error) {
       console.error(error);
       setAssetError(error instanceof Error ? error.message : 'Failed to attach image.');
-    } finally {
-
     }
   };
 

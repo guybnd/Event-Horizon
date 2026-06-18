@@ -65,7 +65,7 @@ async function isWorktreeOnBranch(runner: GitRunner, dir: string, branch: string
 export async function attachMemberWorktree(
   memberRoot: string,
   parentRoot: string,
-  opts: { gitRunner?: GitRunner } = {},
+  opts: { gitRunner?: GitRunner | undefined } = {},
 ): Promise<boolean> {
   const runner = opts.gitRunner ?? defaultGitRunner;
   const storeDir = path.resolve(path.join(memberRoot, GROUP_STORE_DIRNAME));
@@ -132,7 +132,7 @@ export async function attachMemberWorktree(
  */
 export async function refreshMemberWorktrees(
   group: GroupContext,
-  opts: { gitRunner?: GitRunner } = {},
+  opts: { gitRunner?: GitRunner | undefined } = {},
 ): Promise<void> {
   for (const member of group.members as ResolvedMember[]) {
     if (!member.path || !existsSync(member.path)) continue;

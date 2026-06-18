@@ -2,6 +2,10 @@
 
 EventHorizon ("Event Horizon" / FLUX) is a local-first, markdown-backed ticket board. The engine is an Express + TypeScript API (`engine/src/`); the portal is a React UI (`portal/src/`). Ticket workflow rules for agents live in [.claude/rules/event-horizon.md](.claude/rules/event-horizon.md) — that file governs how you interact with tickets (always via the `event-horizon` MCP tools, never by editing `.flux/` or `.flux-store/` directly).
 
+## Validating changes — run `npm run check`
+
+After editing code, run **`npm run check`** from the repo root before moving a ticket to `Ready`/`Done`. It is the type-check gate (portal + engine `tsc --noEmit`) and must exit 0 — neither runs as part of `dev` (the engine executes via `tsx`/esbuild, which strip types), so a type error surfaces nowhere else. The VS Code **Problems** panel is wired to the same checks via `.vscode/tasks.json` (run the default build task, "check"). Lint (`npm run lint -w portal`) and the engine test suite are **not** in the gate yet — their baselines are still being burned down (see the lint/test burndown tickets); run them directly when relevant.
+
 ## Code Navigation — Use Serena's Symbol Tools
 
 This is a TypeScript codebase indexed by **Serena** (MCP server `serena`, available via `ToolSearch` with query `serena`). Serena gives you language-server-backed semantic navigation that is faster and more precise than text search for code. **Prefer it over raw `Grep`/`Glob` whenever you are working with code symbols.**

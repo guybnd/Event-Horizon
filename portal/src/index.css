@@ -842,6 +842,20 @@ button:not(:disabled):active {
   animation: bot-border-breathe 3s ease-in-out infinite;
 }
 
+/* Soft violet glow for tickets carrying an open PR (FLUX-558). */
+@keyframes pr-card-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(139, 92, 246, 0), 0 0 6px 0 rgba(139, 92, 246, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.22), 0 0 14px 1px rgba(139, 92, 246, 0.16);
+  }
+}
+
+.pr-card-glow {
+  animation: pr-card-glow 3.2s ease-in-out infinite;
+}
+
 .bot-assignee-glow {
   animation: bot-assignee-glow 2s ease-in-out infinite;
 }
@@ -940,9 +954,55 @@ button:not(:disabled):active {
   animation: eh-unread-pulse 2.2s ease-in-out infinite;
 }
 
+/* ─── Chat taskbar cards (FLUX-607) ──────────────────────────────────
+   Per-chat state glow for the bottom dock. Working = accent breathe;
+   attention states (needs-input / finished / failed) each get a distinct
+   colored border glow so the user can tell them apart at a glance. */
+@keyframes eh-taskcard-working {
+  0%, 100% { box-shadow: 0 0 0 0 var(--eh-accent-glow); }
+  50% { box-shadow: 0 0 0 3px var(--eh-accent-glow), 0 0 14px 2px var(--eh-accent-glow); }
+}
+.eh-taskcard-working {
+  animation: eh-taskcard-working 1.8s ease-in-out infinite;
+}
+
+@keyframes eh-taskcard-needs-input {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+  50% { box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.55), 0 0 14px 2px rgba(245, 158, 11, 0.3); }
+}
+.eh-taskcard-needs-input {
+  animation: eh-taskcard-needs-input 2s ease-in-out infinite;
+}
+
+@keyframes eh-taskcard-finished {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+  50% { box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.5), 0 0 14px 2px rgba(16, 185, 129, 0.28); }
+}
+.eh-taskcard-finished {
+  animation: eh-taskcard-finished 2.4s ease-in-out infinite;
+}
+
+@keyframes eh-taskcard-error {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+  50% { box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.55), 0 0 14px 2px rgba(239, 68, 68, 0.3); }
+}
+.eh-taskcard-error {
+  animation: eh-taskcard-error 2s ease-in-out infinite;
+}
+
+/* Parked & resumable: a calm, steady ring — present but not clamoring for attention.
+   No animation by design (a finished turn shouldn't pulse like it's still working). */
+.eh-taskcard-available {
+  box-shadow: 0 0 0 1.5px rgba(148, 163, 184, 0.35);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .eh-logo-button,
-  .eh-unread-badge {
+  .eh-unread-badge,
+  .eh-taskcard-working,
+  .eh-taskcard-needs-input,
+  .eh-taskcard-finished,
+  .eh-taskcard-error {
     animation: none;
   }
 }

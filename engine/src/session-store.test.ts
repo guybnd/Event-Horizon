@@ -60,7 +60,7 @@ function createMockSession(overrides: Partial<CliSessionRecord> = {}): CliSessio
     outputTokens: 0,
     costUSD: 0,
     ...overrides,
-  };
+  } as CliSessionRecord;
 }
 
 describe('session-store', () => {
@@ -157,8 +157,8 @@ describe('session-store', () => {
 
       const summaries = getAllSessionSummariesForTask('FLUX-1');
       expect(summaries).toHaveLength(2);
-      expect(summaries[0].role).toBe('reviewer');
-      expect(summaries[1].role).toBe('implementer');
+      expect(summaries[0]!.role).toBe('reviewer');
+      expect(summaries[1]!.role).toBe('implementer');
     });
 
     it('returns empty array when no sessions', () => {
@@ -199,8 +199,8 @@ describe('session-store', () => {
       reg(createMockSession({ id: 'big-1', taskId: 'FLUX-2', status: 'completed', startedAt: '2026-06-02T00:00:00.000Z', endedAt: '2026-06-02T00:01:00.000Z', liveOutputBuffer: big }));
 
       const [summary] = getListSessionSummariesForTask('FLUX-2');
-      expect(summary.liveOutput!.length).toBe(2048);
-      expect(summary.liveOutput).toBe(big.slice(-2048));
+      expect(summary!.liveOutput!.length).toBe(2048);
+      expect(summary!.liveOutput).toBe(big.slice(-2048));
     });
   });
 
@@ -405,8 +405,8 @@ describe('session-store', () => {
 
       const active = getActiveSessionsForTask('FLUX-1');
       expect(active).toHaveLength(1);
-      expect(active[0].id).toBe('sess-b');
-      expect(active[0].status).toBe('running');
+      expect(active[0]!.id).toBe('sess-b');
+      expect(active[0]!.status).toBe('running');
     });
   });
 
@@ -423,7 +423,7 @@ describe('session-store', () => {
       // GET all sessions
       const all = getAllSessionSummariesForTask('FLUX-1');
       expect(all).toHaveLength(1);
-      expect(all[0].id).toBe('sess-single');
+      expect(all[0]!.id).toBe('sess-single');
 
       // Stop it
       sess.status = 'cancelled';

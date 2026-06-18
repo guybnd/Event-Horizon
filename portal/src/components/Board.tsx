@@ -4,10 +4,11 @@ import type { DragEndEvent, DragStartEvent } from '@dnd-kit/core';
 import { arrayMove } from '@dnd-kit/sortable';
 import { Column } from './Column';
 import { StatusBadge } from './StatusBadge';
-import { TaskCard } from './TaskCard';
+import { TaskCardInner } from './TaskCard';
 import { updateTask } from '../api';
 import { useApp } from '../AppContext';
-import type { Task, HistoryEntry } from '../types';
+import { buildStatusChangeHistory } from '../lib/ticketActions';
+import type { Task } from '../types';
 import { normalizeSubtaskId } from '../types';
 import { Loader2, Upload } from 'lucide-react';
 import { TaskViewControls } from './TaskViewControls';
@@ -17,6 +18,10 @@ import { ReleaseModal } from './ReleaseModal';
 import { getArchiveStatus, getRequireInputStatus } from '../workflow';
 import { ParseErrorButton } from './ParseErrorButton';
 import { BootstrapPreview } from './BootstrapPreview';
+import { ApprovalPrompts } from './ApprovalPrompts';
+
+// Stable empty array so columns with no tasks get a referentially-stable prop (memo-friendly).
+const EMPTY_TASKS: Task[] = [];
 
 export function Board() {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -50,15 +55,19 @@ export function Board() {
   const [optimisticTasks, setOptimisticTasks] = useState<Record<string, Task>>({});
   const [commentText, setCommentText] = useState('');
 
-  // Sync local tasks with liveTasks + optimistic overrides
+  // Sync local tasks with liveTasks + optimistic overrides.
+  // FLUX-619 / drag perf: while a drag is in progress, DON'T re-sync — a poll/SSE update
+  // mid-drag re-renders every (heavy) card under the cursor, tanking drag to a crawl and
+  // making cards jump. The effect re-runs when `activeTask` clears (drop), so it catches up.
   useEffect(() => {
+    if (activeTask) return;
     setTasks(liveTasks.map(task => {
       if (movingTaskIds.has(task.id) && optimisticTasks[task.id]) {
         return optimisticTasks[task.id];
       }
       return task;
     }));
-  }, [liveTasks, movingTaskIds, optimisticTasks]);
+  }, [liveTasks, movingTaskIds, optimisticTasks, activeTask]);
 
   // Clean up movingTaskIds once liveTasks catches up to the optimistic state
   useEffect(() => {
@@ -88,8 +97,8 @@ export function Board() {
   }, [liveTasks, optimisticTasks, movingTaskIds]);
 
   useEffect(() => {
-    const fn = (e: any) => {
-      setReleaseModalTasks(e.detail.tasks);
+    const fn = (e: Event) => {
+      setReleaseModalTasks((e as CustomEvent<{ tasks: Task[] | null }>).detail.tasks);
     };
     window.addEventListener('flux:open-release-modal', fn);
     return () => window.removeEventListener('flux:open-release-modal', fn);
@@ -98,11 +107,13 @@ export function Board() {
   const archiveStatus = config ? getArchiveStatus(config) : null;
   const requireInputStatus = config ? getRequireInputStatus(config) : null;
   const hasSwimlanes = config?.swimlanes && config.swimlanes.length > 0;
-  const boardTasks = config ? tasks.filter((task) =>
+  // Memoized so the filter (and the whole chain keyed off it) only re-runs when tasks/config
+  // actually change — not on every Board re-render (e.g. each SSE activity tick). (FLUX-611)
+  const boardTasks = useMemo(() => config ? tasks.filter((task) =>
     task.status !== 'Released' &&
     task.status !== archiveStatus &&
     !config.hiddenStatuses?.some((hiddenStatus) => hiddenStatus.name === task.status)
-  ) : [];
+  ) : [], [tasks, config, archiveStatus]);
   const allColumns = useMemo(() => {
     if (!config) return [];
     const extraStatuses = Array.from(new Set(boardTasks.map(t => t.status)))
@@ -133,6 +144,48 @@ export function Board() {
       });
     return map;
   }, [tasks]);
+  // Union of every PR ticket's work-gated members — these fold into the PR deck and are
+  // excluded from their own columns. Memoized so the Set isn't rebuilt every Board render
+  // (FLUX-567 perf review).
+  const foldedMemberIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const t of tasks) if (t.kind === 'pr') (t.members ?? []).forEach((m: string) => ids.add(m));
+    return ids;
+  }, [tasks]);
+
+  // Filter + sort once per input change (was recomputed on EVERY render — incl. each SSE
+  // activity/progress tick during agent sessions, the main board-sluggishness cause). (FLUX-611)
+  const visibleTasks = useMemo(() => config ? filterAndSortTasks(boardTasks, config, {
+    searchQuery,
+    sortOption,
+    filterAssignee,
+    filterPriority,
+    filterTag,
+    filterUnreadOnly,
+    filterWorktree,
+    worktreeBranches,
+    readComments,
+    requireInputStatus: getRequireInputStatus(config),
+  }) : [], [boardTasks, config, searchQuery, sortOption, filterAssignee, filterPriority, filterTag, filterUnreadOnly, filterWorktree, worktreeBranches, readComments]);
+
+  // PR deck (FLUX-567): worked members fold INTO their PR ticket's card (deck-replace), so they
+  // don't render in their own columns. Memoized alongside the rest of the chain.
+  const deckedTasks = useMemo(() => foldedMemberIds.size > 0
+    ? visibleTasks.filter(t => !foldedMemberIds.has(t.id))
+    : visibleTasks, [visibleTasks, foldedMemberIds]);
+
+  // Bucket tasks by column ONCE, instead of `deckedTasks.filter(...)` per-column on every
+  // render (was O(columns × tasks) per render and handed Column a fresh array each time,
+  // defeating its memo). (FLUX-611)
+  const columnTasksByStatus = useMemo(() => {
+    const map = new Map<string, Task[]>();
+    for (const t of deckedTasks) {
+      const arr = map.get(t.status);
+      if (arr) arr.push(t);
+      else map.set(t.status, [t]);
+    }
+    return map;
+  }, [deckedTasks]);
 
   const getTaskTravelDirection = useCallback((taskId: string) => {
     const liveEvent = taskLiveEvents[taskId];
@@ -157,19 +210,6 @@ export function Board() {
       </div>
     );
   }
-
-  const visibleTasks = filterAndSortTasks(boardTasks, config, {
-    searchQuery,
-    sortOption,
-    filterAssignee,
-    filterPriority,
-    filterTag,
-    filterUnreadOnly,
-    filterWorktree,
-    worktreeBranches,
-    readComments,
-    requireInputStatus: getRequireInputStatus(config),
-  });
 
   const handleDragStart = (event: DragStartEvent) => {
     const { active } = event;
@@ -235,7 +275,7 @@ export function Board() {
       // Persist changes
       try {
         await Promise.all(changedTasks.map((t) =>
-          updateTask(t.id, { order: t.order, updatedBy: currentUser } as any)
+          updateTask(t.id, { order: t.order, updatedBy: currentUser })
         ));
         triggerRefresh();
       } catch (err) {
@@ -259,42 +299,25 @@ export function Board() {
     const task = tasks.find(t => t.id === taskId);
     if (!task) return;
 
-    const timestamp = new Date().toISOString();
-    const newHistory: HistoryEntry[] = [...(task.history || [])];
-
-    // If a comment is provided, add it as a separate entry to satisfy engine validation for Ready/Require Input
-    if (comment?.trim()) {
-      newHistory.push({
-        type: 'comment',
-        user: currentUser,
-        date: timestamp,
-        comment: comment.trim()
-      });
-    }
-
-    newHistory.push({
-      type: 'status_change',
-      from: oldStatus,
-      to: newStatus,
-      user: currentUser,
-      date: timestamp,
-      comment: comment?.trim() ? 'Included with comment' : undefined
-    });
+    // Shared with the chat action bar (FLUX-610) — `from` pinned to the explicit oldStatus
+    // so optimistic state never skews the recorded transition.
+    const newHistory = buildStatusChangeHistory({ ...task, status: oldStatus }, newStatus, currentUser, comment);
 
     const finalOrder = newOrder ?? (task.order || 0);
-    const optimisticTask = { ...task, status: newStatus, order: finalOrder, history: newHistory as any };
+    const optimisticTask = { ...task, status: newStatus, order: finalOrder, history: newHistory };
 
     setMovingTaskIds(prev => new Set(prev).add(taskId));
     setOptimisticTasks(prev => ({ ...prev, [taskId]: optimisticTask }));
 
     try {
-      await updateTask(taskId, { status: newStatus, order: finalOrder, history: newHistory, updatedBy: currentUser } as any);
+      await updateTask(taskId, { status: newStatus, order: finalOrder, history: newHistory, updatedBy: currentUser });
       triggerRefresh();
-    } catch (err: any) {
+    } catch (err) {
       console.error(err);
-      
+
+      const errMessage = err instanceof Error ? err.message : '';
       // Reactive prompting: If backend requires a comment, show the modal
-      if (err.message?.includes('comment is required') || err.message?.includes('_MISSING_COMMENT')) {
+      if (errMessage.includes('comment is required') || errMessage.includes('_MISSING_COMMENT')) {
         setMovingTaskIds(prev => {
           const next = new Set(prev);
           next.delete(taskId);
@@ -319,7 +342,7 @@ export function Board() {
         delete next[taskId];
         return next;
       });
-      alert('Failed to update task: ' + err.message);
+      alert('Failed to update task: ' + errMessage);
     }
     setPendingStatusChange(null);
     setCommentText('');
@@ -327,6 +350,7 @@ export function Board() {
 
   return (
     <>
+      <ApprovalPrompts />
       <div className="flex h-full min-h-0 flex-col gap-4">
         <div className="flex items-center gap-3">
           <div className="flex-1">
@@ -361,7 +385,7 @@ export function Board() {
                   key={columnId}
                   id={columnId}
                   title={columnId}
-                  tasks={visibleTasks.filter(t => t.status === columnId)}
+                  tasks={columnTasksByStatus.get(columnId) ?? EMPTY_TASKS}
                   parentByChildId={parentByChildId}
                   liveEvent={columnLiveEvents[columnId]}
                   taskLiveEvents={taskLiveEvents}
@@ -369,7 +393,7 @@ export function Board() {
                 />
               ))}
             </div>
-            <DragOverlay>{activeTask ? <TaskCard task={activeTask} parentTask={parentByChildId.get(activeTask.id)} isOverlay /> : null}</DragOverlay>
+            <DragOverlay>{activeTask ? <TaskCardInner task={activeTask} parentTask={parentByChildId.get(activeTask.id)} isOverlay /> : null}</DragOverlay>
           </DndContext>
         </div>
       </div>

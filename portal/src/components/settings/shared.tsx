@@ -8,7 +8,7 @@ import type { DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 
-export const COLOR_PALETTE = [
+const COLOR_PALETTE = [
   'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300',
   'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
   'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400',
@@ -19,7 +19,7 @@ export const COLOR_PALETTE = [
   'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-400',
 ];
 
-export const SWATCH_COLORS: Record<string, string> = {
+const SWATCH_COLORS: Record<string, string> = {
   gray: '#9ca3af',
   red: '#ef4444',
   orange: '#f97316',
@@ -31,7 +31,7 @@ export const SWATCH_COLORS: Record<string, string> = {
   pink: '#ec4899',
 };
 
-export function getPaletteSwatchColor(colorClass: string) {
+function getPaletteSwatchColor(colorClass: string) {
   const match = colorClass.match(/(?:bg|text)-([a-z]+)-\d+/);
   if (!match) return SWATCH_COLORS.gray;
   return SWATCH_COLORS[match[1]] || SWATCH_COLORS.gray;
@@ -327,7 +327,7 @@ export function SettingToggleCard({
   );
 }
 
-export const SimpleEditor = ({ items, setItems, placeholder, sortable = false }: { items: { name: string; originalName?: string }[]; setItems: (items: any[]) => void; placeholder: string; sortable?: boolean }) => {
+export const SimpleEditor = ({ items, setItems, placeholder, sortable = false }: { items: { name: string; originalName?: string }[]; setItems: (items: { name: string; originalName?: string }[]) => void; placeholder: string; sortable?: boolean }) => {
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
   const handleDragEnd = (event: DragEndEvent) => {

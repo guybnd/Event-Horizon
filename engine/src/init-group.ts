@@ -21,12 +21,14 @@ function parseArgs() {
   const args = process.argv.slice(2);
   const get = (flag: string): string | null => {
     const i = args.indexOf(flag);
-    return i !== -1 && args[i + 1] ? args[i + 1] : null;
+    const next = i !== -1 ? args[i + 1] : undefined;
+    return next ? next : null;
   };
   const getAll = (flag: string): string[] => {
     const out: string[] = [];
     for (let i = 0; i < args.length; i++) {
-      if (args[i] === flag && args[i + 1]) out.push(args[i + 1]);
+      const next = args[i + 1];
+      if (args[i] === flag && next) out.push(next);
     }
     return out;
   };

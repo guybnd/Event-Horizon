@@ -94,7 +94,7 @@ async function restoreDir(backup: string, dir: string): Promise<void> {
  */
 export async function ensureCanonicalBranch(
   parentRoot: string,
-  opts: { gitRunner?: GitRunner } = {},
+  opts: { gitRunner?: GitRunner | undefined } = {},
 ): Promise<void> {
   const runner = opts.gitRunner ?? defaultGitRunner;
   const storeDir = getGroupStoreDir(parentRoot);
@@ -127,7 +127,7 @@ export async function ensureCanonicalBranch(
 export async function commitCanonicalDocs(
   parentRoot: string,
   message: string,
-  opts: { gitRunner?: GitRunner } = {},
+  opts: { gitRunner?: GitRunner | undefined } = {},
 ): Promise<boolean> {
   const runner = opts.gitRunner ?? defaultGitRunner;
   const storeDir = getGroupStoreDir(parentRoot);
@@ -172,7 +172,7 @@ function isRejection(message: string): boolean {
  */
 export async function fanOutGroupDocs(
   group: GroupContext,
-  opts: { gitRunner?: GitRunner; allowLocalRemotes?: boolean } = {},
+  opts: { gitRunner?: GitRunner | undefined; allowLocalRemotes?: boolean | undefined } = {},
 ): Promise<MemberSyncResult[]> {
   const runner = opts.gitRunner ?? defaultGitRunner;
   const refspec = `${GROUP_DOCS_BRANCH}:${GROUP_DOCS_BRANCH}`;
@@ -209,7 +209,7 @@ export async function fanOutGroupDocs(
  */
 export async function syncGroup(
   group: GroupContext,
-  opts: { gitRunner?: GitRunner; allowLocalRemotes?: boolean; message?: string } = {},
+  opts: { gitRunner?: GitRunner | undefined; allowLocalRemotes?: boolean | undefined; message?: string | undefined } = {},
 ): Promise<GroupSyncResult> {
   await ensureCanonicalBranch(group.parentRoot, opts);
   const committed = await commitCanonicalDocs(

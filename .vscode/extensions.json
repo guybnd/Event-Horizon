@@ -1,0 +1,8 @@
+{
+  // Recommended so the Problems panel is actually populated for this repo.
+  // TypeScript ships with VS Code; ESLint needs the extension to surface lint
+  // diagnostics inline (FLUX-576).
+  "recommendations": [
+    "dbaeumer.vscode-eslint"
+  ]
+}

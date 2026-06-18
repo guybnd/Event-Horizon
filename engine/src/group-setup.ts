@@ -62,7 +62,7 @@ function isPathRegistered(target: string, registered: Array<{ path: string }>): 
  * `--upload-pack=` / `--receive-pack=` options, and anything starting with `-`
  * (which git could interpret as an option rather than a URL).
  */
-export function validateGitRemote(raw: unknown, opts: { allowLocal?: boolean } = {}): { ok: boolean; reason?: string } {
+export function validateGitRemote(raw: unknown, opts: { allowLocal?: boolean | undefined } = {}): { ok: boolean; reason?: string } {
   if (typeof raw !== 'string' || raw.trim().length === 0) {
     return { ok: false, reason: 'remote must be a non-empty string' };
   }
@@ -190,7 +190,7 @@ function resolveMemberPath(parentRoot: string, member: GroupMember): string {
  */
 export async function planGroupSetup(
   input: GroupSetupInput,
-  opts: { listWorkspaces?: WorkspaceLister } = {},
+  opts: { listWorkspaces?: WorkspaceLister | undefined } = {},
 ): Promise<GroupSetupPlan> {
   const parentRoot = path.resolve(input.parentRoot);
   const warnings: string[] = [];

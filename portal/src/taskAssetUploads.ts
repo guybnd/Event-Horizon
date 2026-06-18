@@ -18,7 +18,7 @@ export function buildUnsupportedImageMessage(files: File[]) {
 
 function buildImageMarkdownLink(assetPath: string, fileName: string) {
   const rawAltText = fileName.replace(/\.[^.]+$/, '').trim();
-  const altText = rawAltText.replace(/[\[\]]+/g, ' ').trim() || 'image';
+  const altText = rawAltText.replace(/[[\]]+/g, ' ').trim() || 'image';
   return `![${altText}](${assetPath})`;
 }
 

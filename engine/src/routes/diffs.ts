@@ -8,9 +8,12 @@ const router = express.Router();
 // GET /api/diffs/overview — cross-worktree change overview (FLUX-527/528/529).
 // One group per active worktree (+ collision radar) plus the main tree's loose
 // uncommitted changes. Worktree groups are enriched with their owning ticket.
-router.get('/overview', async (_req, res) => {
+router.get('/overview', async (req, res) => {
   try {
-    const overview = await buildDiffOverview(workspaceRoot!);
+    // ?uncommitted=1 → loose working-tree changes per root (powers the board
+    // header uncommitted panel); default → branch divergence vs merge-base.
+    const uncommittedOnly = req.query.uncommitted === '1';
+    const overview = await buildDiffOverview(workspaceRoot!, uncommittedOnly ? { uncommittedOnly: true } : {});
     const groups = overview.groups.map((g) => {
       if (g.kind !== 'worktree' || !g.branch) return g;
       const ticket = Object.values(tasksCache).find((t: any) => t.branch === g.branch) as any;

@@ -44,8 +44,8 @@ export function GlobalSection() {
       });
       setSettings(updated);
       setDirty(false);
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save global settings');
     } finally {
       setSaving(false);
     }

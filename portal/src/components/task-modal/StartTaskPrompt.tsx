@@ -47,8 +47,8 @@ export function StartTaskPrompt({ task, onConfirm, onCancel }: StartTaskPromptPr
     setError(null);
     try {
       onConfirm(await resolveBranch()); // parent closes the modal
-    } catch (err: any) {
-      setError(err.message || 'Failed to start');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start');
       setBusy(false);
     }
   };
@@ -68,8 +68,8 @@ export function StartTaskPrompt({ task, onConfirm, onCancel }: StartTaskPromptPr
           ? `Opened ${task.id} in a new window. The prompt is on your clipboard — paste it there to start the agent.`
           : `Worktree ready at ${r.worktree}, but the 'code' CLI wasn't found — open that folder manually. The prompt is on your clipboard.`,
       );
-    } catch (err: any) {
-      setError(err.message || 'Failed to open worktree window');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to open worktree window');
     } finally {
       setBusy(false);
     }

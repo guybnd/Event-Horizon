@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useApp } from '../AppContext';
 import { X, Loader2 } from 'lucide-react';
 import { updateTask, fetchDoc, updateDoc, createDoc } from '../api';
-import type { Task } from '../types';
+import type { BasicHistoryEntry, Task } from '../types';
 
 interface ReleaseModalProps {
   tasks: Task[];
@@ -73,13 +73,14 @@ export function ReleaseModal({ tasks: initialTasks, onClose }: ReleaseModalProps
       // Update tasks
       await Promise.all(
         tasksToRelease.map(t => {
-          const newHistory = [...(t.history || []), {
+          const releaseEntry: BasicHistoryEntry = {
             type: 'status_change',
             from: t.status,
             to: 'Released',
             user: currentUser,
             date: releasedAt,
-          }];
+          };
+          const newHistory = [...(t.history || []), releaseEntry];
 
           return updateTask(t.id, {
             status: 'Released',
@@ -88,7 +89,7 @@ export function ReleaseModal({ tasks: initialTasks, onClose }: ReleaseModalProps
             releaseDocPath: docRelativePath,
             history: newHistory,
             updatedBy: currentUser,
-          } as any);
+          });
         })
       );
 

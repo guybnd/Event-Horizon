@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Bot, Zap } from 'lucide-react';
+import { Bot, Zap, ShieldAlert } from 'lucide-react';
 import { fetchSkillStatus, installWorkspaceSkill } from '../../api';
 import { FrameworkSelector } from '../FrameworkSelector';
 import type { AppView } from '../../AppContext';
@@ -9,6 +9,10 @@ interface AgentSectionProps {
   setEffortLevel: (v: string) => void;
   targetFramework: string;
   setTargetFramework: (v: string) => void;
+  boardPermissionDefault: 'gated' | 'skip';
+  setBoardPermissionDefault: (v: 'gated' | 'skip') => void;
+  ticketPermissionDefault: 'gated' | 'skip';
+  setTicketPermissionDefault: (v: 'gated' | 'skip') => void;
   groomingModel: string;
   setGroomingModel: (v: string) => void;
   implementationModel: string;
@@ -26,6 +30,10 @@ export function AgentSection({
   setEffortLevel,
   targetFramework,
   setTargetFramework,
+  boardPermissionDefault,
+  setBoardPermissionDefault,
+  ticketPermissionDefault,
+  setTicketPermissionDefault,
   groomingModel,
   setGroomingModel,
   implementationModel,
@@ -214,6 +222,48 @@ export function AgentSection({
             <option value="xhigh">xhigh</option>
             <option value="max">max</option>
           </select>
+        </div>
+      </div>
+
+      <div className="mt-6 rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
+        <div className="flex items-center gap-2 mb-1">
+          <ShieldAlert className="h-5 w-5 text-amber-500" />
+          <h3 className="text-base font-bold text-gray-800 dark:text-gray-200">Permission Risk Tolerance</h3>
+        </div>
+        <p className="text-xs text-gray-500 mb-4 ml-7">
+          Default permission mode per session surface. <strong>Gated</strong> routes destructive
+          ops (status changes, deletes, branch ops, <code className="text-xs font-mono">Bash</code>)
+          through a human Allow/Deny prompt via <code className="text-xs font-mono">--permission-prompt-tool</code>;
+          <strong> Skip</strong> runs ungated (<code className="text-xs font-mono">--dangerously-skip-permissions</code>).
+          The per-chat <strong>Perms</strong> picker inherits these when left on “Default”.
+        </p>
+        <div className="ml-7 flex flex-wrap gap-6">
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+              Orchestrator (board) sessions
+            </label>
+            <select
+              value={boardPermissionDefault}
+              onChange={(e) => setBoardPermissionDefault(e.target.value as 'gated' | 'skip')}
+              className="w-48 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630] dark:text-gray-100"
+            >
+              <option value="gated">Gated (ask to approve)</option>
+              <option value="skip">Skip (no prompt)</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 mb-1">
+              Per-ticket sessions
+            </label>
+            <select
+              value={ticketPermissionDefault}
+              onChange={(e) => setTicketPermissionDefault(e.target.value as 'gated' | 'skip')}
+              className="w-48 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium outline-none focus:border-primary dark:border-white/10 dark:bg-[#252630] dark:text-gray-100"
+            >
+              <option value="gated">Gated (ask to approve)</option>
+              <option value="skip">Skip (no prompt)</option>
+            </select>
+          </div>
         </div>
       </div>
 

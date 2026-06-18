@@ -6,6 +6,8 @@ import { BacklogScreen } from './components/BacklogScreen';
 import { ChangesScreen } from './components/changes/ChangesScreen';
 import { DocsScreen } from './components/DocsScreen';
 import { TaskModal } from './components/TaskModal';
+import { ChatDock } from './components/ChatDock';
+import { DockProvider } from './components/DockProvider';
 import { Settings } from './components/Settings';
 import { ReleasesScreen } from './components/ReleasesScreen';
 import { WorkflowBuilder } from './components/WorkflowBuilder';
@@ -46,6 +48,7 @@ function AppContent() {
           {view === 'workflows' && <WorkflowBuilder />}
         </main>
         <TaskModal />
+        <ChatDock />
       </div>
     </div>
   );
@@ -54,7 +57,9 @@ function AppContent() {
 function App() {
   return (
     <AppProvider>
-      <AppContent />
+      <DockProvider>
+        <AppContent />
+      </DockProvider>
     </AppProvider>
   );
 }

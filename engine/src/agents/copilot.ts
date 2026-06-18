@@ -142,7 +142,7 @@ export function flushSessionOutput(session: CliSessionRecord, force = false) {
   }, 1000);
 }
 
-export function buildInitialPrompt(task: any, appendPrompt: string, opts?: { phase?: string }): string {
+export function buildInitialPrompt(task: any, appendPrompt: string, opts?: { phase?: string | undefined }): string {
   const readyStatus = (configCache as any)?.readyForMergeStatus || 'Ready';
   const taskStatus = (task as any).status || 'Unknown';
   const mcpNote = 'CRITICAL: Use the "event-horizon" MCP tools (change_status, update_ticket, add_comment, log_progress) for ALL ticket updates. Do NOT edit .flux/ files directly — direct edits corrupt session tracking.';
@@ -206,7 +206,7 @@ export function attachStdoutProcessing(
 
   let lineBuf = '';
   let stdoutChunkCount = 0;
-  proc.stdout.on('data', (chunk: Buffer) => {
+  proc.stdout!.on('data', (chunk: Buffer) => {
     stdoutChunkCount++;
     lineBuf += chunk.toString();
     const lines = lineBuf.split('\n');

@@ -14,6 +14,7 @@ import {
   getActiveModules,
   getModuleMcpServers,
   getModulePromptFragments,
+  loadModules,
   BUILTIN_MODULES,
 } from './modules.js';
 
@@ -194,7 +195,7 @@ describe('getModulePromptFragments', () => {
     const result = getModulePromptFragments('implementation');
     const match = result.match(/<module name="Long">\n([\s\S]*?)\n<\/module>/);
     expect(match).not.toBeNull();
-    expect(match![1].length).toBe(2000);
+    expect(match![1]!.length).toBe(2000);
   });
 });
 
@@ -298,6 +299,64 @@ describe('BUILTIN_MODULES — mem0 entry', () => {
 
   it('mem0 has a non-empty promptFragment', () => {
     expect(mem0!.promptFragment?.trim().length).toBeGreaterThan(0);
+  });
+});
+
+// ── FLUX-447: mcpServer shape validation ──────────────────────────────────────
+
+describe('loadModules — mcpServer shape validation (FLUX-447)', () => {
+  it('keeps a module with a well-formed mcpServer', () => {
+    (configCache as any).modules = [{
+      id: 'good', name: 'Good', description: 'd', enabled: true,
+      mcpServer: { command: 'npx', args: ['-y', 'x'] },
+    }];
+    expect(loadModules().map(m => m.id)).toContain('good');
+  });
+
+  it('drops a module whose mcpServer is missing command', () => {
+    (configCache as any).modules = [{
+      id: 'bad', name: 'Bad', description: 'd', enabled: true,
+      mcpServer: { args: ['-y', 'x'] },
+    }];
+    expect(loadModules().map(m => m.id)).not.toContain('bad');
+  });
+
+  it('drops a module whose mcpServer args are not all strings', () => {
+    (configCache as any).modules = [{
+      id: 'bad2', name: 'Bad2', description: 'd', enabled: true,
+      mcpServer: { command: 'npx', args: ['ok', 3] },
+    }];
+    expect(loadModules().map(m => m.id)).not.toContain('bad2');
+  });
+
+  it('keeps a prompt-only module with no mcpServer', () => {
+    (configCache as any).modules = [{
+      id: 'frag-only', name: 'Frag', description: 'd', enabled: true,
+      promptFragment: 'hi',
+    }];
+    expect(loadModules().map(m => m.id)).toContain('frag-only');
+  });
+
+  it('drops a module whose sharedHttp is malformed', () => {
+    (configCache as any).modules = [{
+      id: 'bad-http', name: 'BadHttp', description: 'd', enabled: true,
+      mcpServer: { command: 'serena', args: [] },
+      sharedHttp: { command: '', args: [] },
+    }];
+    expect(loadModules().map(m => m.id)).not.toContain('bad-http');
+  });
+});
+
+// ── FLUX-447: prompt-fragment dedupe by id ────────────────────────────────────
+
+describe('getModulePromptFragments — dedupe by id (FLUX-447)', () => {
+  it('injects a duplicate-id module fragment only once', () => {
+    (configCache as any).modules = [
+      { id: 'dup', name: 'Dup', description: 'd', enabled: true, promptFragment: 'FRAGMENT_X' },
+      { id: 'dup', name: 'Dup', description: 'd', enabled: true, promptFragment: 'FRAGMENT_X' },
+    ];
+    const result = getModulePromptFragments('implementation');
+    expect(result.split('FRAGMENT_X').length - 1).toBe(1);
   });
 });
 

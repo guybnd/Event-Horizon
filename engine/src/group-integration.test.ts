@@ -110,7 +110,7 @@ describe('group fan-out (real git, local remotes)', () => {
     expect(result.committed).toBe(true);
     expect(result.pushed).toBe(1);
     expect(result.failed).toBe(0);
-    expect(result.members[0].ok).toBe(true);
+    expect(result.members[0]!.ok).toBe(true);
 
     // The canonical store is now a worktree on the fan-out branch.
     const head = await git(h.storeDir, ['rev-parse', '--abbrev-ref', 'HEAD']);
@@ -141,7 +141,7 @@ describe('group fan-out (real git, local remotes)', () => {
 
     expect(edit.applied).toEqual(['features/login.md', 'features/signup.md']);
     expect(edit.sync.pushed).toBe(1);
-    expect(edit.sync.members[0].ok).toBe(true);
+    expect(edit.sync.members[0]!.ok).toBe(true);
 
     const verify = await checkoutMemberDocs(h, 'edited');
     expect(await fs.readFile(path.join(verify, 'features', 'login.md'), 'utf8')).toContain('Login v2');
@@ -171,8 +171,8 @@ describe('group fan-out (real git, local remotes)', () => {
 
     expect(result.sync.failed).toBe(1);
     expect(result.sync.pushed).toBe(0);
-    expect(result.sync.members[0].ok).toBe(false);
-    expect(result.sync.members[0].diverged).toBe(true);
+    expect(result.sync.members[0]!.ok).toBe(false);
+    expect(result.sync.members[0]!.diverged).toBe(true);
 
     // The member's rogue commit was never overwritten (no force-push).
     const verify = await checkoutMemberDocs(h, 'diverged');

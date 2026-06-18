@@ -12,11 +12,12 @@ import { broadcastEvent } from './events.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
 import { normalizeHistoryEntries, buildActivityEntry } from './history.js';
 import { getCliWorkspace, getActiveFluxDir, getWorkspacesList, workspaceRoot } from './workspace.js';
-import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, checkGhAuth, captureDiff, resolveCommit } from './branch-manager.js';
+import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, checkGhAuth, captureDiff, resolveCommit, getPullRequestStatus } from './branch-manager.js';
 import { createTaskWorktree, detachTaskWorktree, taskWorktreeDir } from './task-worktree.js';
-import { existsSync } from 'fs';
+import { cleanupMergedBranch } from './pr-cleanup.js';
+import { existsSync, statSync, readFileSync } from 'fs';
 import { getActiveSessionsForTask, stopAllSessionsForTask } from './session-store.js';
-import { generatePromptNotification, dismissNotificationsForTicket } from './notifications.js';
+import { generatePromptNotification, dismissNotificationsForTicket, addNotification } from './notifications.js';
 import { getGroupContext, getMemberBinding, groupDocsLabel, summarizeGroup, groupDocPathToStoreRelative, activeGroupDocsLabel } from './group.js';
 import { submitGroupEdit } from './group-edit.js';
 
@@ -42,6 +43,41 @@ function bodySizeWarning(body: string | undefined | null): string | undefined {
   return `Body is ${body.length} chars (soft limit ${BODY_WARN_CHARS}). Large bodies bloat every agent session on this ticket — keep the body a concise plan and move bulk material (logs, dumps, research) to .docs/ with a link.`;
 }
 
+/**
+ * If `dir` is a **linked git worktree**, resolve the main working tree (which holds the
+ * real `.flux`/`.flux-store`) so the MCP server binds to the canonical ticket store rather
+ * than the worktree's empty one (FLUX-571). A linked worktree has a `.git` **file** (not a
+ * dir) of the form `gitdir: <main>/.git/worktrees/<name>`; the main tree is the parent of
+ * the common git dir. Returns null for a normal repo / bare / unreadable layout. Pure
+ * filesystem (no subprocess) so it's cheap at MCP startup.
+ */
+export function resolveMainWorktree(dir: string): string | null {
+  try {
+    const gitPath = path.join(dir, '.git');
+    if (!existsSync(gitPath) || statSync(gitPath).isDirectory()) return null; // normal repo or no repo
+    const m = readFileSync(gitPath, 'utf8').trim().match(/^gitdir:\s*(.+)$/);
+    if (!m || !m[1]) return null;
+    let gitdir = m[1].trim(); // <main>/.git/worktrees/<name>
+    if (!path.isAbsolute(gitdir)) gitdir = path.resolve(dir, gitdir);
+    // The common git dir (<main>/.git) is recorded in `commondir`, else derive it by
+    // stripping the `/worktrees/<name>` suffix.
+    let commonDir: string;
+    try {
+      const cd = readFileSync(path.join(gitdir, 'commondir'), 'utf8').trim();
+      commonDir = path.isAbsolute(cd) ? cd : path.resolve(gitdir, cd);
+    } catch {
+      const norm = gitdir.replace(/\\/g, '/');
+      const idx = norm.lastIndexOf('/worktrees/');
+      if (idx === -1) return null;
+      commonDir = gitdir.slice(0, idx);
+    }
+    const mainWorktree = path.dirname(commonDir); // parent of <main>/.git
+    return existsSync(mainWorktree) ? path.resolve(mainWorktree) : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function startMcpServer(): Promise<void> {
   // MCP uses stdout for protocol messages — redirect all logging to stderr
   const originalLog = console.log;
@@ -52,11 +88,23 @@ export async function startMcpServer(): Promise<void> {
   // `--workspace .` would otherwise bind this server to the worktree's own (empty)
   // store instead of the real ticket store. EH_CANONICAL_WORKSPACE is the engine's
   // active workspace root, so worktree agents see and update their real tickets.
+  // EH_CANONICAL_WORKSPACE (set by the agent adapters when EH spawns the agent) wins —
+  // it's the engine's explicit canonical root. When it's absent (e.g. a session opened
+  // manually in a worktree via "Open in VS Code"), fall back to --workspace/cwd, but if
+  // THAT is a linked git worktree, redirect to the main working tree so the server still
+  // binds to the real ticket store instead of the worktree's empty one (FLUX-571).
   const envWorkspace = process.env.EH_CANONICAL_WORKSPACE;
-  const workspacePath = envWorkspace ? path.resolve(envWorkspace) : getCliWorkspace();
+  let workspacePath = envWorkspace ? path.resolve(envWorkspace) : getCliWorkspace();
   if (!workspacePath) {
     console.error('MCP server requires --workspace <path> argument');
     process.exit(1);
+  }
+  if (!envWorkspace) {
+    const mainTree = resolveMainWorktree(workspacePath);
+    if (mainTree && mainTree !== path.resolve(workspacePath)) {
+      console.error(`[mcp] ${workspacePath} is a linked worktree — binding to the canonical workspace ${mainTree} (FLUX-571)`);
+      workspacePath = mainTree;
+    }
   }
 
   await activateWorkspace(workspacePath);
@@ -202,12 +250,12 @@ export async function startMcpServer(): Promise<void> {
 
       try {
         const opts: CreateTaskOptions = { title, author: author || 'Agent' };
-        if (status) opts.status = status;
-        if (priority) opts.priority = priority;
-        if (effort) opts.effort = effort;
-        if (assignee) opts.assignee = assignee;
+        if (status !== undefined) opts.status = status;
+        if (priority !== undefined) opts.priority = priority;
+        if (effort !== undefined) opts.effort = effort;
+        if (assignee !== undefined) opts.assignee = assignee;
         if (tags) opts.tags = tags;
-        if (body) opts.body = body;
+        if (body !== undefined) opts.body = body;
         const { id, task } = await createTask(opts);
         const warning = bodySizeWarning(body);
         return jsonResult({ id, title: task.title, status: task.status, ...(warning ? { warning } : {}) });
@@ -361,17 +409,36 @@ export async function startMcpServer(): Promise<void> {
         dismissNotificationsForTicket(ticketId);
       }
 
-      // When moving to Ready with a branch, push and create a PR for review.
+      // When moving to Ready with a branch, push and create a PR for review (FLUX-555).
+      // The work MUST be committed before Ready — a branch with no commits ahead of base
+      // can't open a PR. Rather than fail silently in a buried activity line, surface it
+      // LOUDLY (notification + comment) so the user/agent knows to commit (FLUX-563).
       if (newStatus === readyStatus && task.branch) {
         const ghAvailable = await checkGhAuth();
         if (ghAvailable) {
-          try {
-            const prBody = `${task.body ? task.body.slice(0, 800) : ''}\n\n---\nTicket: ${ticketId}`;
-            const prUrl = await createPullRequest(task.branch, task.title || ticketId, prBody);
-            extraFields.implementationLink = prUrl;
-            entries.push({ type: 'activity', user: 'Agent', comment: `PR created: ${prUrl}`, date: new Date().toISOString() });
-          } catch (err: any) {
-            entries.push({ type: 'activity', user: 'Agent', comment: `⚠️ PR creation failed: ${err.message}. Push branch manually.`, date: new Date().toISOString() });
+          const branchStatus = await getTicketBranchStatus(task.branch).catch(() => null);
+          if (branchStatus && branchStatus.exists && branchStatus.aheadCount === 0) {
+            const msg = `${ticketId} moved to ${readyStatus} but its branch \`${task.branch}\` has no commits yet — commit the worktree's work to open a PR for review.`;
+            entries.push({ type: 'activity', user: 'Agent', comment: `⚠️ ${msg}`, date: new Date().toISOString() });
+            addNotification({
+              type: 'info',
+              title: 'Commit needed to open PR',
+              message: msg,
+              ticketId,
+              actions: [{ label: 'Open worktree', actionId: 'open-worktree' }],
+            });
+          } else {
+            try {
+              const prBody = `${task.body ? task.body.slice(0, 800) : ''}\n\n---\nTicket: ${ticketId}`;
+              const prUrl = await createPullRequest(task.branch, task.title || ticketId, prBody);
+              extraFields.implementationLink = prUrl;
+              extraFields.swimlane = 'open-pr';
+              entries.push({ type: 'activity', user: 'Agent', comment: `PR created: ${prUrl}`, date: new Date().toISOString() });
+            } catch (err: any) {
+              const msg = `PR creation failed: ${err.message}. Push the branch / commit work manually.`;
+              entries.push({ type: 'activity', user: 'Agent', comment: `⚠️ ${msg}`, date: new Date().toISOString() });
+              addNotification({ type: 'error', title: 'PR creation failed', message: `${ticketId}: ${msg}`, ticketId, actions: [{ label: 'Open worktree', actionId: 'open-worktree' }] });
+            }
           }
         }
       }
@@ -569,6 +636,30 @@ export async function startMcpServer(): Promise<void> {
           broadcastEvent('taskUpdated', { id: ticketId });
           return errorResult(`Cannot finish ${ticketId} — gh not configured. Ticket moved back to In Progress.`);
         }
+
+        // Ensure a PR exists before merging (FLUX-578). finish must be self-sufficient: the
+        // PR is normally opened at the Ready transition, but if that didn't happen (e.g. the
+        // work wasn't committed until now) we open it here. No commits ahead → bounce with an
+        // actionable "commit first" message rather than a raw gh merge error.
+        const existingPr = await getPullRequestStatus(task.branch).catch(() => null);
+        if (!existingPr) {
+          const branchStatus = await getTicketBranchStatus(task.branch).catch(() => null);
+          if (branchStatus && branchStatus.exists && branchStatus.aheadCount === 0) {
+            const msg = `Cannot finish ${ticketId} — branch \`${task.branch}\` has no commits yet. Commit your work, then finish again.`;
+            await updateTaskWithHistory(ticketId, { entries: [{ type: 'comment', user: 'Agent', comment: `⚠️ ${msg}`, date: new Date().toISOString() }], updatedBy: 'Agent', nextStatus: 'In Progress' });
+            broadcastEvent('taskUpdated', { id: ticketId });
+            return errorResult(`${msg} Ticket moved back to In Progress.`);
+          }
+          try {
+            const prBody = `${task.body ? task.body.slice(0, 800) : ''}\n\n---\nTicket: ${ticketId}`;
+            finalLink = await createPullRequest(task.branch, task.title || ticketId, prBody);
+          } catch (createErr: any) {
+            await updateTaskWithHistory(ticketId, { entries: [{ type: 'comment', user: 'Agent', comment: `⚠️ Finish aborted — could not open a PR: ${createErr.message}.`, date: new Date().toISOString() }], updatedBy: 'Agent', nextStatus: 'In Progress' });
+            broadcastEvent('taskUpdated', { id: ticketId });
+            return errorResult(`Cannot finish ${ticketId} — PR creation failed: ${createErr.message}. Ticket moved back to In Progress.`);
+          }
+        }
+
         try {
           await mergePullRequest(task.branch);
           if (!finalLink || !finalLink.startsWith('http')) {
@@ -584,7 +675,9 @@ export async function startMcpServer(): Promise<void> {
       }
 
       const entries = [{ type: 'comment', user: 'Agent', comment: completionComment, date: new Date().toISOString() }];
-      const finishExtraFields: Record<string, any> = { implementationLink: finalLink };
+      // Clear any swimlane (e.g. open-pr) as we move to Done — finish used to leave it set,
+      // so merged tickets kept glowing as open PRs forever (FLUX-574).
+      const finishExtraFields: Record<string, any> = { implementationLink: finalLink, swimlane: null };
 
       // Capture diff summary + sidecar file. Best-effort — failure here must not block finish.
       try {
@@ -623,26 +716,19 @@ export async function startMcpServer(): Promise<void> {
 
       if (!result) return errorResult(`Failed to finish ${ticketId}`);
 
-      // FLUX-521: the work is committed + merged — tear down the task worktree.
-      // Stop any live session first so its process doesn't hold the worktree cwd
-      // (Windows file lock). DETACH (not force-remove): if the worktree still has
-      // uncommitted changes — e.g. someone was editing it by accident — surface them
-      // onto master and note it on the ticket rather than discarding them silently.
-      // Best-effort; a failure here must not undo the finish.
-      try {
-        const wtPath = taskWorktreeDir(workspaceRoot!, ticketId);
-        if (existsSync(wtPath)) {
-          stopAllSessionsForTask(ticketId, 'Finishing ticket — tearing down worktree');
-          const detach = await detachTaskWorktree(workspaceRoot!, wtPath, { ticketId });
-          if (detach.outcome !== 'clean') {
-            await updateTaskWithHistory(ticketId, {
-              updatedBy: 'Agent',
-              entries: [buildActivityEntry(`Worktree had uncommitted changes at finish — ${detach.message}`, 'Agent', new Date().toISOString())],
-            });
-          }
+      // Post-merge cleanup — the SAME unified path as POST /:id/pr/merge (FLUX-574): for a
+      // branch ticket, `cleanupMergedBranch` tears down the worktree (by branch, so shared
+      // worktrees resolve correctly), switches the main tree off the branch if needed, then
+      // force-deletes the branch and fast-forwards master — in the correct order, so the
+      // branch-delete no longer fails after the merge already landed. It skips re-advancing
+      // this already-Done ticket. A dirty worktree is kept + flagged (never stashed to
+      // master post-merge). Best-effort — a failure here must not undo the finish.
+      if (task.branch) {
+        try {
+          await cleanupMergedBranch(workspaceRoot!, task.branch);
+        } catch (cleanupErr: any) {
+          console.error(`Post-merge cleanup failed for ${ticketId}:`, cleanupErr.message);
         }
-      } catch (wtErr: any) {
-        console.error(`Worktree cleanup failed for ${ticketId}:`, wtErr.message);
       }
 
       broadcastEvent('taskUpdated', { id: ticketId });
@@ -768,13 +854,16 @@ export async function startMcpServer(): Promise<void> {
       if (workspaceActivating) return errorResult('Workspace is activating, please retry');
 
       try {
-        const opts: CreateTaskOptions = { title, author: 'Agent', parentId };
-        if (status) opts.status = status;
-        if (priority) opts.priority = priority;
-        if (effort) opts.effort = effort;
-        if (assignee) opts.assignee = assignee;
+        // skipBroadcast: defer the taskCreated event until after the child is
+        // linked to its parent, so a failed parent write never emits an event
+        // for an orphan child (FLUX-435).
+        const opts: CreateTaskOptions = { title, author: 'Agent', parentId, skipBroadcast: true };
+        if (status !== undefined) opts.status = status;
+        if (priority !== undefined) opts.priority = priority;
+        if (effort !== undefined) opts.effort = effort;
+        if (assignee !== undefined) opts.assignee = assignee;
         if (tags) opts.tags = tags;
-        if (body) opts.body = body;
+        if (body !== undefined) opts.body = body;
         const { id: childId, task: childTask } = await createTask(opts);
 
         // Link to parent — derive subtasks from disk to avoid TOCTOU race
@@ -789,6 +878,10 @@ export async function startMcpServer(): Promise<void> {
         const parentContent = matter.stringify(parentParsed.content, parentParsed.data);
         await atomicWriteFile(parent._path, parentContent);
         tasksCache[parentId] = { ...tasksCache[parentId], subtasks: parentSubtasks, updatedBy: 'Agent' };
+
+        // Now that both the child and the parent link are persisted, emit the
+        // creation event (FLUX-435).
+        broadcastEvent('taskCreated', { id: childId, parentId });
 
         return jsonResult({ id: childId, parentId, title: childTask.title, status: childTask.status });
       } catch (err: any) {
@@ -921,6 +1014,91 @@ export async function startMcpServer(): Promise<void> {
         return { persona, succeeded: false, status: 'error', output: reason?.message || 'unknown error' };
       });
       return jsonResult(output);
+    },
+  );
+
+  server.tool(
+    'start_session',
+    'Start an agent work session ON a ticket and return IMMEDIATELY (fire-and-forget). Use this to DISPATCH work: when the user asks to groom/implement/review/finalize a ticket, start the phase session on that ticket instead of doing the work yourself in this chat. The session runs in the ticket\'s own scope; the user opens that ticket\'s chat to drive it. Unlike delegate_to_agent, this does NOT wait for the session to finish.',
+    {
+      ticketId: z.string().describe('Ticket ID to start the session on'),
+      phase: z.enum(['grooming', 'implementation', 'review', 'finalize']).optional().describe('Work phase — drives the session mission. If omitted, the engine derives it from the ticket status.'),
+      personaId: z.string().optional().describe('Optional persona to lead the session (from list_available_agents). Default: the phase\'s solo lead.'),
+      effort: z.string().optional().describe('Effort level: low, medium, high, xhigh.'),
+    },
+    async ({ ticketId, phase, personaId, effort }) => {
+      try {
+        const framework = process.env.EVENT_HORIZON_FRAMEWORK || 'claude';
+        const body: Record<string, unknown> = { framework, skipPermissions: true, patternPosition: 'standalone' };
+        if (phase) body.phase = phase;
+        if (personaId) body.personaId = personaId;
+        if (effort) body.effortOverride = effort;
+        const res = await fetch(`${ENGINE_URL}/api/tasks/${ticketId}/cli-session/start`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          return errorResult(`Failed to start session on ${ticketId}: ${err.error || res.statusText}`);
+        }
+        const result = await res.json();
+        const sid = result.session?.id || 'unknown';
+        return textResult(`Started a ${phase || 'phase'} session on ${ticketId} (session ${sid}). It is running in the ticket's own scope — open ${ticketId}'s chat to drive it.`);
+      } catch (err: any) {
+        return errorResult(`Failed to start session: ${err.message}`);
+      }
+    },
+  );
+
+  server.tool(
+    'get_board_state',
+    'Live snapshot of board activity: which tickets have ACTIVE agent sessions right now and what each is doing, plus ticket counts by status. Use this to see the field before dispatching work or to check on running sessions.',
+    {},
+    async () => {
+      try {
+        const res = await fetch(`${ENGINE_URL}/api/board/state`);
+        if (!res.ok) return errorResult(`Failed to get board state: ${res.statusText}`);
+        return jsonResult(await res.json());
+      } catch (err: any) {
+        return errorResult(`Failed to get board state: ${err.message}`);
+      }
+    },
+  );
+
+  // FLUX-605: permission policy for gated sessions (--permission-prompt-tool).
+  const SAFE_PERMISSION_TOOLS = new Set([
+    'get_ticket', 'list_tickets', 'get_board_config', 'get_branch', 'get_project_group', 'get_board_state',
+    'list_available_agents', 'read_group_doc', 'list_group_docs', 'get_session_log',
+    'Read', 'Glob', 'Grep', 'LS', 'WebFetch', 'WebSearch', 'TodoWrite', 'NotebookRead',
+  ]);
+  const CONFIRM_PERMISSION_TOOLS = new Set(['change_status', 'delete_branch', 'finish_ticket', 'Bash']);
+  function permissionDecisionFor(toolName: string): 'allow' | 'deny' | 'confirm' {
+    const bare = toolName.replace(/^mcp__.+?__/, '');
+    if (SAFE_PERMISSION_TOOLS.has(bare)) return 'allow';
+    if (CONFIRM_PERMISSION_TOOLS.has(bare)) return 'confirm';
+    return 'allow';
+  }
+
+  server.tool(
+    'permission_prompt',
+    'Internal — Claude Code calls this via --permission-prompt-tool to decide if a tool call is permitted. Returns {behavior:"allow",updatedInput} or {behavior:"deny",message}. Reads auto-allow; destructive ops (change_status, delete_branch, finish_ticket, Bash) require human approval via the EH portal.',
+    { tool_name: z.string(), input: z.any().optional() },
+    async ({ tool_name, input }) => {
+      const decision = permissionDecisionFor(tool_name);
+      if (decision === 'allow') return jsonResult({ behavior: 'allow', updatedInput: input ?? {} });
+      if (decision === 'deny') return jsonResult({ behavior: 'deny', message: `${tool_name} is not permitted.` });
+      try {
+        const res = await fetch(`${ENGINE_URL}/api/board/permission-request`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tool_name, input, conversationId: process.env.EH_CONVERSATION_ID || null }),
+        });
+        if (!res.ok) return jsonResult({ behavior: 'deny', message: 'Approval channel error — denied.' });
+        return jsonResult(await res.json());
+      } catch (err: any) {
+        return jsonResult({ behavior: 'deny', message: `Approval channel unavailable — denied (${err.message}).` });
+      }
     },
   );
 

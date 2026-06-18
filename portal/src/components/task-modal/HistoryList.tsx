@@ -95,7 +95,7 @@ function ProgressItem({ prog }: { prog: AgentSessionProgress }) {
           <span className="text-[11px] text-gray-600 dark:text-gray-400 group-hover:text-gray-900 dark:group-hover:text-gray-200 transition-colors">
             {prog.message}
           </span>
-          {prog.type === 'tool' && prog.data?.parameters && (
+          {prog.type === 'tool' && prog.data?.parameters != null && (
             <button 
               onClick={() => setShowDetails(!showDetails)}
               className="text-[9px] font-bold text-gray-400 hover:text-primary uppercase tracking-tighter"
@@ -107,7 +107,7 @@ function ProgressItem({ prog }: { prog: AgentSessionProgress }) {
             {relativeTime(prog.timestamp)}
           </span>
         </div>
-        {showDetails && prog.data?.parameters && (
+        {showDetails && prog.data?.parameters != null && (
           <pre className="mt-1 overflow-x-auto rounded bg-gray-100 p-1.5 text-[10px] text-gray-700 dark:bg-black/40 dark:text-gray-400 border border-gray-200 dark:border-white/5">
             {JSON.stringify(prog.data.parameters, null, 2)}
           </pre>

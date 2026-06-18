@@ -19,7 +19,7 @@ export function WorktreesPanel() {
   const handleOpen = async (w: WorktreeInfo) => {
     if (!w.ticketId) return;
     setBusy(w.path); setMsg(null);
-    try { await openWorktreeWindow(w.ticketId); } catch (e: any) { setMsg(e.message); } finally { setBusy(null); }
+    try { await openWorktreeWindow(w.ticketId); } catch (e) { setMsg(e instanceof Error ? e.message : 'Failed to open worktree window'); } finally { setBusy(null); }
   };
 
   const handleDetach = async (w: WorktreeInfo) => {
@@ -30,8 +30,8 @@ export function WorktreesPanel() {
       const r = await detachWorktree(w.ticketId);
       setMsg(r.message);
       await load();
-    } catch (e: any) {
-      setMsg(e.message);
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'Failed to detach worktree');
     } finally { setBusy(null); }
   };
 

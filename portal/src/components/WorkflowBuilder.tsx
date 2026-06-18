@@ -455,7 +455,7 @@ function PersonaEditPanel({
       if (creating) await createPersona({ id, label: label.trim(), description: description.trim(), role, phases, requiredCapabilities: [], prompt });
       else await updatePersona(initial!.id, { id, label: label.trim(), description: description.trim(), role, phases, requiredCapabilities: [], prompt });
       onSaved();
-    } catch (err: any) { setError(err?.message || 'Failed to save'); }
+    } catch (err) { setError(err instanceof Error ? err.message : 'Failed to save'); }
     finally { setSaving(false); }
   };
 

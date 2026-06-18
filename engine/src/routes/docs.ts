@@ -18,6 +18,17 @@ import { submitGroupEdit } from '../group-edit.js';
 
 const router = express.Router();
 
+// Trust model (FLUX-418): Event Horizon is local-first — a single user driving
+// the engine on localhost. The doc routes below intentionally enforce NO
+// server-side edit authorization. `config.docsEditPermissions` / `docsAllowedUsers`
+// are a *portal-side UX gate* (DocsScreen `canEditDocs`), not a security boundary:
+// a direct POST/PUT/DELETE to /api/docs bypasses that gate by design. The 403s
+// here are group-writer-resolution failures (no writable group context), NOT
+// authorization checks. This is acceptable-by-design for the single-user-on-
+// localhost deployment. If EH is ever exposed beyond localhost this becomes a
+// real gap to close — group doc writes fan out to every member repo — by
+// resolving the acting user and gating POST/PUT/DELETE at the top of each handler.
+
 // All doc path routes strip leading slash from req.path to get the doc path segment
 function docPathFromReq(req: express.Request) {
   const raw = req.path.replace(/^\//, '');

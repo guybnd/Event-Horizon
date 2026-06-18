@@ -68,6 +68,8 @@ Currently broadcast events:
 | `notification` | `notifications.ts`, notification routes | yes — updates notification panel + unread count |
 | `taskCreated` | MCP `create_ticket` / `create_subtask` | **no** — emitted but the portal does not subscribe |
 | `taskUpdated` | every MCP mutation tool | **no** — emitted but the portal does not subscribe |
+| `permission-request` | `permission-prompts.ts` (gated confirm tier, FLUX-605) | yes — adds a pending approval to the chat's Allow/Deny prompt (`ApprovalPrompts`). Payload: `{ id, toolName, input, conversationId, createdAt }`. |
+| `permission-resolved` | `permission-prompts.ts` (on resolve **or** 120s timeout) | yes — clears the resolved/expired approval from the prompt. Payload: `{ id }`. |
 
 **Key consequence:** ticket-state freshness on the portal does *not* come from SSE today. It comes from polling (Channel 3). SSE is only used for high-frequency agent activity that would be wasteful to poll for.
 

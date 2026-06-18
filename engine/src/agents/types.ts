@@ -4,7 +4,7 @@ export type CliSessionStatus = 'pending' | 'running' | 'waiting-input' | 'comple
 export type CliFramework = 'claude' | 'copilot' | 'gemini';
 export type ExecutionPattern = 'relay' | 'scatter-gather' | 'supervisor';
 export type PatternPosition = 'lead' | 'assistant' | 'combiner' | 'step' | 'standalone';
-export type LaunchPhase = 'grooming' | 'implementation' | 'review' | 'finalize';
+export type LaunchPhase = 'grooming' | 'implementation' | 'review' | 'finalize' | 'chat';
 // Run-group classification: every session launched in one orchestration run shares
 // these so any surface can render the topology without inspecting sibling sessions.
 export type GroupVariant = 'combiner' | 'headless';
@@ -47,13 +47,13 @@ export interface CliSessionSummary {
   args: string[];
   startedAt: string;
   endedAt?: string;
-  pid?: number;
+  pid?: number | undefined;
   label: string;
   lastOutputAt?: string;
   lastInputAt?: string;
   blockedReason?: string;
   liveOutput?: string;
-  currentActivity?: string;
+  currentActivity?: string | undefined;
   skipPermissions?: boolean;
   inputTokens?: number;
   outputTokens?: number;
@@ -89,13 +89,13 @@ export interface CliSessionRecord extends CliSessionSummary {
   pendingAssistantText: string;
   /** Cumulative assistant text — never flushed, used for relay handoff. */
   cumulativeOutput: string;
-  flushTimer?: NodeJS.Timeout;
+  flushTimer?: NodeJS.Timeout | undefined;
   requestedStop: boolean;
   writeQueue: Promise<void>;
   skipPermissions: boolean;
   sessionHistoryEntry?: any;
-  progressHeartbeat?: NodeJS.Timeout;
-  lastProgressLog?: string;
+  progressHeartbeat?: NodeJS.Timeout | undefined;
+  lastProgressLog?: string | undefined;
   role?: string;
   pattern?: ExecutionPattern;
   patternPosition?: PatternPosition;
@@ -111,6 +111,12 @@ export interface CliSessionRecord extends CliSessionSummary {
    * SAME tree, and so we can refuse to resume on master if the worktree was removed.
    */
   executionRoot?: string;
+  /** Per-conversation model + effort override from the chat picker (FLUX-604). */
+  model?: string;
+  effortOverride?: string;
+  /** FLUX-605: 'gated' = route tool decisions through EH approval (--permission-prompt-tool);
+   *  'skip' = --dangerously-skip-permissions. Undefined falls back to skipPermissions. */
+  permissionMode?: 'gated' | 'skip';
 }
 
 export interface AgentEvent {

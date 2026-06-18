@@ -24,6 +24,57 @@ export async function fetchParseErrors(): Promise<ParseError[]> {
   return res.json();
 }
 
+export interface UncommittedStatus {
+  count: number;
+  branch: string | null;
+}
+
+export async function fetchUncommittedStatus(): Promise<UncommittedStatus> {
+  const res = await fetch(`${API_URL}/tasks/uncommitted-count`);
+  if (!res.ok) throw new Error('Failed to fetch uncommitted status');
+  const data = await res.json();
+  return {
+    count: typeof data?.count === 'number' ? data.count : 0,
+    branch: typeof data?.branch === 'string' ? data.branch : null,
+  };
+}
+
+/**
+ * Open VS Code: a specific repo-relative `file` (revealed via `code -g`), or the
+ * workspace root in a new window when `file` is omitted. `ref` is the diff group's
+ * ref — a branch name opens the file in that worktree's checkout; 'main'/omitted
+ * uses the workspace root. False if `code` isn't on PATH.
+ */
+export async function openWorkspaceEditor(file?: string, ref?: string): Promise<boolean> {
+  const body: Record<string, string> = {};
+  if (file) body.file = file;
+  if (ref) body.ref = ref;
+  const res = await fetch(`${API_URL}/tasks/open-editor`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) return false;
+  const data = await res.json();
+  return !!data?.opened;
+}
+
+/**
+ * Commit selected (repo-relative) files from the uncommitted panel (FLUX-554).
+ * Commit-only — never pushes. `ref` is the diff group's ref ('main' → workspace
+ * root; a branch → that worktree). Returns the new short hash, or an error string.
+ */
+export async function commitFiles(ref: string, files: string[], message: string): Promise<{ hash?: string; error?: string }> {
+  const res = await fetch(`${API_URL}/tasks/commit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ref, files, message }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return { error: (data && data.error) || 'Commit failed' };
+  return { hash: data?.hash };
+}
+
 export async function fetchTask(id: string): Promise<Task> {
   const res = await fetch(`${API_URL}/tasks/${id}`);
   if (!res.ok) throw new Error('Failed to fetch task');
@@ -499,6 +550,10 @@ export interface StartSessionOptions {
   focusComment?: string;
   skipPermissions?: boolean;
   effortOverride?: string;
+  /** Per-conversation model override (chat picker). */
+  model?: string;
+  /** Per-conversation permission mode (chat picker): 'gated' | 'skip'. */
+  permissionMode?: string;
   /** Launch phase / intent — tells the engine what action instruction to use. */
   phase?: string;
   role?: string;
@@ -513,12 +568,14 @@ export interface StartSessionOptions {
 }
 
 export async function startTaskCliSessionEx(taskId: string, opts: StartSessionOptions): Promise<CliSessionSummary> {
-  const { framework, appendPrompt, personaId, focusComment, skipPermissions = true, effortOverride, phase, role, pattern, patternPosition, groupId, groupSeq, groupTotal, groupType, groupVariant, lockedPaths } = opts;
+  const { framework, appendPrompt, personaId, focusComment, skipPermissions = true, effortOverride, model, permissionMode, phase, role, pattern, patternPosition, groupId, groupSeq, groupTotal, groupType, groupVariant, lockedPaths } = opts;
   const body: Record<string, unknown> = { framework, skipPermissions };
   if (appendPrompt) body.appendPrompt = appendPrompt;
   if (personaId) body.personaId = personaId;
   if (focusComment) body.focusComment = focusComment;
   if (effortOverride) body.effortOverride = effortOverride;
+  if (model) body.model = model;
+  if (permissionMode) body.permissionMode = permissionMode;
   if (phase) body.phase = phase;
   if (role) body.role = role;
   if (pattern) body.pattern = pattern;
@@ -823,11 +880,56 @@ export async function fetchTaskCliSessions(taskId: string): Promise<CliSessionSu
   return payload.sessions || [];
 }
 
-export async function sendTaskCliInput(taskId: string, message: string, user: string): Promise<CliSessionSummary> {
+/** FLUX-604: reserved conversation id for the board-level orchestrator chat. */
+export const BOARD_CONVERSATION_ID = '__board__';
+
+/** FLUX-602: a parsed chat message from a ticket's durable transcript. */
+export interface TranscriptMessage {
+  role: 'user' | 'assistant' | 'tool';
+  text: string;
+  ts: string;
+}
+
+export async function fetchTaskTranscript(taskId: string): Promise<TranscriptMessage[]> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/transcript`);
+  if (!res.ok) throw new Error('Failed to fetch transcript');
+  const payload = await res.json();
+  return payload.messages || [];
+}
+
+/** FLUX-605: a gated tool call awaiting human approval. */
+export interface PendingApproval {
+  id: string;
+  toolName: string;
+  input: unknown;
+  conversationId: string | null;
+  createdAt: string;
+}
+
+export async function fetchPendingApprovals(): Promise<PendingApproval[]> {
+  const res = await fetch(`${API_URL}/board/permission-pending`);
+  if (!res.ok) return [];
+  const payload = await res.json();
+  return payload.pending || [];
+}
+
+export async function resolvePermission(id: string, behavior: 'allow' | 'deny', message?: string): Promise<void> {
+  await fetch(`${API_URL}/board/permission-resolve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, behavior, message }),
+  });
+}
+
+export async function sendTaskCliInput(taskId: string, message: string, user: string, opts?: { model?: string; effort?: string; permissionMode?: string }): Promise<CliSessionSummary> {
+  const body: Record<string, unknown> = { message, user };
+  if (opts?.model) body.model = opts.model;
+  if (opts?.effort) body.effortOverride = opts.effort;
+  if (opts?.permissionMode) body.permissionMode = opts.permissionMode;
   const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/input`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, user }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
@@ -1002,7 +1104,7 @@ export async function dismissNotification(id: string): Promise<void> {
   await fetch(`${API_URL}/notifications/${id}/dismiss`, { method: 'POST' });
 }
 
-export async function executeNotificationAction(id: string, actionId: string): Promise<any> {
+export async function executeNotificationAction(id: string, actionId: string): Promise<unknown> {
   const res = await fetch(`${API_URL}/notifications/${id}/action`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1100,8 +1202,91 @@ export async function createBranch(
     body: JSON.stringify(body),
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as any).error || 'Failed to create branch');
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(err.error || 'Failed to create branch');
+  }
+  return res.json();
+}
+
+// ─── Pull requests (FLUX-555 / 556) ─────────────────────────────────────────────
+
+/** Normalized PR state for a ticket's branch (mirrors engine `PrStatus`). */
+export interface PrStatus {
+  number: number;
+  state: string;                  // OPEN | MERGED | CLOSED
+  url: string;
+  title: string;
+  reviewDecision: string | null;  // APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | null
+  mergeable: string;              // MERGEABLE | CONFLICTING | UNKNOWN
+  checks: { total: number; passed: number; failed: number; pending: number };
+}
+
+/** Live PR state for a ticket's branch. `null` when no branch/PR or gh unavailable. */
+export async function fetchPrStatus(taskId: string): Promise<PrStatus | null> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/pr`);
+  if (!res.ok) return null;
+  const data = await res.json().catch(() => ({ pr: null }));
+  return (data.pr ?? null) as PrStatus | null;
+}
+
+/** Raise a PR for the ticket's branch (push + open) without moving to Done. */
+export async function raisePr(taskId: string): Promise<{ url: string; number: number | null }> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/pr`, { method: 'POST' });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(err.error || 'Failed to raise PR');
+  }
+  return res.json();
+}
+
+export interface MergePrResult {
+  merged: boolean;
+  outcome: 'cleaned' | 'unsafe' | 'noop';
+  branch: string;
+  advanced: string[];
+  masterSynced: boolean;
+  worktreeRemoved: boolean;
+  branchDeleted: boolean;
+  reason?: string;
+  notificationId?: string;
+}
+
+/** Squash-merge the branch's PR + run post-merge cleanup (advances all branch tickets). */
+export async function mergePr(taskId: string): Promise<MergePrResult> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/pr/merge`, { method: 'POST' });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(err.error || 'Failed to merge PR');
+  }
+  return res.json();
+}
+
+export interface RetryPrResult { id: string; branch: string | null }
+
+/**
+ * Retry a merged/closed PR (FLUX-593): spawn a new ticket linked to it via a 'retries'
+ * relation, carrying the reason + the PR's context, optionally on a fresh branch. Returns
+ * the new ticket id (+ branch if created). The merged PR is immutable — this is a fresh cycle.
+ */
+export async function retryPr(prId: string, opts: { reason: string; createBranch: boolean; updatedBy: string }): Promise<RetryPrResult> {
+  const res = await fetch(`${API_URL}/tasks/${prId}/retry`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason: opts.reason, createBranch: opts.createBranch, updatedBy: opts.updatedBy }),
+  });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(err.error || 'Failed to retry PR');
+  }
+  return res.json();
+}
+
+/** Refresh a stale PR branch by merging the default branch into it (FLUX-559). */
+export async function updatePrBranch(taskId: string): Promise<{ updated: boolean; branch: string }> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/pr/update-branch`, { method: 'POST' });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(err.error || 'Failed to update branch');
   }
   return res.json();
 }
@@ -1116,8 +1301,8 @@ export async function detachWorktree(
 ): Promise<{ outcome: 'clean' | 'applied' | 'stashed'; stashRef?: string; message: string }> {
   const res = await fetch(`${API_URL}/tasks/${taskId}/worktree/detach`, { method: 'POST' });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as any).error || 'Failed to detach worktree');
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(err.error || 'Failed to detach worktree');
   }
   return res.json();
 }
@@ -1136,8 +1321,8 @@ export async function openWorktreeWindow(
     body: JSON.stringify({}),
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as any).error || 'Failed to open worktree window');
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(err.error || 'Failed to open worktree window');
   }
   return res.json();
 }
@@ -1205,8 +1390,8 @@ export async function joinWorktree(
     body: JSON.stringify({ branch }),
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error((err as any).error || 'Failed to join worktree');
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(err.error || 'Failed to join worktree');
   }
   return res.json();
 }
@@ -1256,8 +1441,8 @@ export interface DiffOverview {
 }
 
 /** Cross-worktree change overview: every active worktree + the main tree's loose changes (FLUX-527). */
-export async function fetchDiffOverview(): Promise<DiffOverview> {
-  const res = await fetch(`${API_URL}/diffs/overview`);
+export async function fetchDiffOverview(uncommittedOnly = false): Promise<DiffOverview> {
+  const res = await fetch(`${API_URL}/diffs/overview${uncommittedOnly ? '?uncommitted=1' : ''}`);
   if (!res.ok) throw new Error('Failed to fetch diff overview');
   return res.json();
 }

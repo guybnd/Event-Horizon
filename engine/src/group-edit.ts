@@ -103,7 +103,7 @@ export async function applyEditsToStore(storeDir: string, edits: GroupEditFile[]
 export function submitGroupEdit(
   group: GroupContext,
   edits: GroupEditFile[],
-  opts: { gitRunner?: GitRunner; allowLocalRemotes?: boolean; message?: string } = {},
+  opts: { gitRunner?: GitRunner | undefined; allowLocalRemotes?: boolean | undefined; message?: string | undefined } = {},
 ): Promise<GroupEditResult> {
   return serialize(async () => {
     const storeDir = getGroupStoreDir(group.parentRoot);

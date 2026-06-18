@@ -24,6 +24,13 @@ export function isTaskAwaitingInput(task: Task): boolean {
   return task.swimlane === 'require-input';
 }
 
+export const OPEN_PR_SWIMLANE = 'open-pr';
+
+/** A ticket carrying an open PR (engine sets the `open-pr` swimlane when one is raised). */
+export function hasOpenPr(task: Task): boolean {
+  return task.swimlane === OPEN_PR_SWIMLANE;
+}
+
 export function relativeTime(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
   const mins = Math.floor(diff / 60000);

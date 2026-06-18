@@ -1,4 +1,4 @@
-import { spawn, execSync, execFileSync } from 'child_process';
+import { spawn, execSync, execFileSync, type ChildProcessWithoutNullStreams } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { configCache } from '../config.js';
@@ -145,7 +145,7 @@ export function flushSessionOutput(session: CliSessionRecord, force = false) {
   }, 1000);
 }
 
-export function buildInitialPrompt(task: any, appendPrompt: string, opts?: { phase?: string }): string {
+export function buildInitialPrompt(task: any, appendPrompt: string, opts?: { phase?: string | undefined }): string {
   const readyStatus = (configCache as any)?.readyForMergeStatus || 'Ready';
   const taskStatus = (task as any).status || 'Unknown';
   const mcpNote = 'CRITICAL: Use the "event-horizon" MCP tools (change_status, update_ticket, add_comment, log_progress) for ALL ticket updates. Do NOT edit .flux/ files directly — direct edits corrupt session tracking.';
@@ -200,8 +200,9 @@ export function buildGeminiScopeArgs(workspaceRoot: string): string[] {
   const scopeArgs = [...buildMemberScopeArgs(), ...buildGroupDocsScopeArg(workspaceRoot)];
   const geminiScopeArgs: string[] = [];
   for (let i = 0; i < scopeArgs.length; i += 2) {
-    if (scopeArgs[i] === '--add-dir' && scopeArgs[i + 1]) {
-      geminiScopeArgs.push('--include-directories', scopeArgs[i + 1]);
+    const dir = scopeArgs[i + 1];
+    if (scopeArgs[i] === '--add-dir' && dir) {
+      geminiScopeArgs.push('--include-directories', dir);
     }
   }
   return geminiScopeArgs;
@@ -221,7 +222,7 @@ export function attachStdoutProcessing(
   };
 
   let lineBuf = '';
-  proc.stdout.on('data', (chunk: Buffer) => {
+  proc.stdout!.on('data', (chunk: Buffer) => {
     lineBuf += chunk.toString();
     const lines = lineBuf.split('\n');
     lineBuf = lines.pop() ?? '';
@@ -632,14 +633,14 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
       stdio: 'pipe',
     });
   }
-  session.proc = proc;
+  session.proc = proc as ChildProcessWithoutNullStreams;
   session.pid = proc.pid;
   session.status = 'running';
   session.args = geminiArgs;
 
   const commitPending = attachStdoutProcessing(proc, session, id);
 
-  proc.stderr.on('data', (chunk) => {
+  proc.stderr!.on('data', (chunk) => {
     appendSessionOutput(session, chunk, 'stderr', false);
   });
 
@@ -940,12 +941,12 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       stdio: 'pipe',
     });
   }
-  session.proc = replyProc;
+  session.proc = replyProc as ChildProcessWithoutNullStreams;
   session.pid = replyProc.pid;
 
   const commitReplyPending = attachStdoutProcessing(replyProc, session, id);
 
-  replyProc.stderr.on('data', (chunk) => {
+  replyProc.stderr!.on('data', (chunk) => {
     appendSessionOutput(session, chunk, 'stderr', false);
   });
 

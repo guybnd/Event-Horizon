@@ -357,8 +357,8 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
           branch = (await createBranch(ticket.id, { worktree: startMode === 'worktree' })).branch;
         }
         onLaunch({ ...plan, branch });
-      } catch (err: any) {
-        setBranchError(err.message || 'Failed to create branch');
+      } catch (err) {
+        setBranchError(err instanceof Error ? err.message : 'Failed to create branch');
         setBranchBusy(false);
       }
       return;
@@ -739,7 +739,9 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
             disabled={!canLaunch || branchBusy}
             className="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {busy || branchBusy ? (
+            {branchBusy && !busy ? (
+              'Creating branch…'
+            ) : busy ? (
               'Launching…'
             ) : isSupervisor ? (
               <>

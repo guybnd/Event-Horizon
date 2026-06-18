@@ -6,6 +6,7 @@ import { AnimatePresence } from 'framer-motion';
 import { GlobalSearch } from './GlobalSearch';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { UserMenu } from './UserMenu';
+import { SyncStatusIndicator } from './SyncStatusIndicator';
 
 // Per-section accent so the nav reads as a colorful selector rather than six
 // identical muted glyphs. Tints are saturated enough to stay legible in light
@@ -191,6 +192,9 @@ export function Header() {
 
         {/* Right cluster */}
         <div className="flex shrink-0 items-center gap-2 justify-end">
+
+          {/* Sync status — global (orphan-branch store), so it lives in the top bar. */}
+          <SyncStatusIndicator />
 
           {/* Notifications dropdown */}
           <div className="relative">

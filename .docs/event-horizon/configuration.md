@@ -38,7 +38,19 @@ This is your primary workspace configuration file. It is tracked in your reposit
 | `defaultAgent` | `string` | Which agent framework to use by default when launching sessions from the portal. Options: `claude`, `gemini`, `copilot`. |
 | `worktreeByDefault` | `boolean` | Default state of the per-launch "dedicated worktree" choice (default `false`). When on, creating a ticket branch also creates a git worktree so the agent runs isolated from `master` (FLUX-516). A per-launch `worktree` param on `create_branch` / `POST /:id/branch` overrides it. |
 | `effortLevel` | `string` | Global effort level for agent sessions. Options: `low`, `medium`, `high`, `xhigh`, `max`. Can be overridden per-ticket or per-session. |
+| `permissions` | `object` | Default permission mode per session surface — the workspace "risk tolerance" (FLUX-605, see below). |
 | `integrations` | `object` | Per-framework agent configuration (see below). |
+
+### Permission Risk Tolerance
+
+The `permissions` object sets the default permission mode for each session surface. `gated` routes destructive ops (`change_status`, `delete_branch`, `finish_ticket`, `Bash`) through a human **Allow/Deny** prompt via Claude Code's `--permission-prompt-tool`; `skip` runs ungated (`--dangerously-skip-permissions`). Configured in **Settings → Agent Integration → Permission Risk Tolerance**. The per-chat **Perms** picker overrides per turn; leaving it on *Default* inherits these values.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `permissions.boardDefault` | `"gated" \| "skip"` | `gated` | Default mode for orchestrator/board sessions (they have triage teeth and a human present to approve). |
+| `permissions.ticketDefault` | `"gated" \| "skip"` | `skip` | Default mode for per-ticket chat sessions. |
+
+> Delegated/headless sessions (combiner, relay) cannot block on a human and always run ungated, regardless of this setting.
 
 ### Integration Settings
 

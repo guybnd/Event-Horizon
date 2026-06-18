@@ -25,10 +25,10 @@ function suggestedBranchName(id: string, title: string): string {
   return `flux/${id}-${slug}`;
 }
 
-function OptionCard({ active, onSelect, children }: { active: boolean; onSelect: () => void; children: ReactNode }) {
+function OptionCard({ active, onSelect, name, children }: { active: boolean; onSelect: () => void; name: string; children: ReactNode }) {
   return (
     <label className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors ${active ? 'border-primary bg-primary/5' : 'border-gray-200 dark:border-white/10'}`}>
-      <input type="radio" className="mt-0.5 accent-primary" checked={active} onChange={onSelect} />
+      <input type="radio" name={name} className="mt-0.5 accent-primary" checked={active} onChange={onSelect} />
       <div className="min-w-0 flex-1">{children}</div>
     </label>
   );
@@ -41,14 +41,16 @@ export function BranchSection({
   const isXs = effort === 'XS';
   const usesNewBranch = mode === 'worktree' || mode === 'branch';
   const branchName = suggestedBranchName(taskId, taskTitle);
+  const radioGroupName = `branch-choice-${taskId}`;
 
   return (
     <div>
-      <label className="mb-1.5 block text-[10px] font-bold uppercase tracking-wider text-gray-400">
+      <fieldset className="m-0 min-w-0 border-0 p-0">
+      <legend className="mb-1.5 block text-[10px] font-bold uppercase tracking-wider text-gray-400">
         How to start
-      </label>
+      </legend>
       <div className="space-y-2">
-        <OptionCard active={mode === 'worktree'} onSelect={() => setMode('worktree')}>
+        <OptionCard name={radioGroupName} active={mode === 'worktree'} onSelect={() => setMode('worktree')}>
           <div className="flex items-center gap-1.5 text-sm font-medium text-gray-800 dark:text-gray-100">
             <FolderGit2 className="h-3.5 w-3.5 shrink-0 text-primary" /> New branch + dedicated worktree
           </div>
@@ -56,20 +58,21 @@ export function BranchSection({
           <p className="mt-0.5 truncate font-mono text-[10px] text-gray-400">{branchName}</p>
         </OptionCard>
 
-        <OptionCard active={mode === 'branch'} onSelect={() => setMode('branch')}>
+        <OptionCard name={radioGroupName} active={mode === 'branch'} onSelect={() => setMode('branch')}>
           <div className="flex items-center gap-1.5 text-sm font-medium text-gray-800 dark:text-gray-100">
             <GitBranch className="h-3.5 w-3.5 shrink-0 text-primary" /> New branch
           </div>
           <p className="mt-0.5 truncate font-mono text-[10px] text-gray-400">{branchName}</p>
         </OptionCard>
 
-        <OptionCard active={mode === 'current'} onSelect={() => setMode('current')}>
+        <OptionCard name={radioGroupName} active={mode === 'current'} onSelect={() => setMode('current')}>
           <span className="text-sm font-medium text-gray-800 dark:text-gray-100">Continue on current branch</span>
         </OptionCard>
 
         {worktrees.length > 0 && (
           <>
             <OptionCard
+              name={radioGroupName}
               active={mode === 'join'}
               onSelect={() => { setMode('join'); if (!joinBranch) setJoinBranch(worktrees[0].branch); }}
             >
@@ -85,7 +88,9 @@ export function BranchSection({
                 onChange={(e) => setJoinBranch(e.target.value)}
               >
                 {worktrees.map((w) => (
-                  <option key={w.branch} value={w.branch}>
+                  // Key on the worktree path (always present + unique) rather than the
+                  // branch, which can be empty on a detached worktree and collide.
+                  <option key={w.path} value={w.branch}>
                     {w.branch}{w.ticketId ? ` · ${w.ticketId}` : ''}
                   </option>
                 ))}
@@ -94,6 +99,7 @@ export function BranchSection({
           </>
         )}
       </div>
+      </fieldset>
 
       {isXs && mode !== 'current' && (
         <p className="mt-2 text-[10px] text-gray-400">XS ticket — a branch is optional.</p>

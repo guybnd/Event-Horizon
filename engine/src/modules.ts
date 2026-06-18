@@ -56,14 +56,39 @@ export interface ModuleDeclaration {
 
 const MAX_PROMPT_FRAGMENT_LENGTH = 2000;
 
-function isValidModule(m: any): m is ModuleDeclaration {
+/**
+ * Validate an `mcpServer` / `sharedHttp` block's shape. A malformed server
+ * (missing/empty `command`, non-string `args`) must never reach `.mcp.json`
+ * (FLUX-447).
+ */
+function isValidMcpServerShape(s: any): boolean {
   return (
+    !!s &&
+    typeof s.command === 'string' && s.command.trim() !== '' &&
+    Array.isArray(s.args) && s.args.every((a: any) => typeof a === 'string') &&
+    (s.env === undefined || (typeof s.env === 'object' && s.env !== null && !Array.isArray(s.env)))
+  );
+}
+
+function isValidModule(m: any): m is ModuleDeclaration {
+  const baseValid =
     m &&
     typeof m.id === 'string' && m.id.trim() !== '' &&
     typeof m.name === 'string' &&
     typeof m.description === 'string' &&
-    typeof m.enabled === 'boolean'
-  );
+    typeof m.enabled === 'boolean';
+  if (!baseValid) return false;
+  // A declared mcpServer / sharedHttp must be well-formed — otherwise the module
+  // is skipped so a malformed server can't be written into `.mcp.json` (FLUX-447).
+  if (m.mcpServer !== undefined && !isValidMcpServerShape(m.mcpServer)) {
+    console.warn(`[modules] Skipping module "${m.id}" — malformed mcpServer (needs command: string, args: string[])`);
+    return false;
+  }
+  if (m.sharedHttp !== undefined && !isValidMcpServerShape(m.sharedHttp)) {
+    console.warn(`[modules] Skipping module "${m.id}" — malformed sharedHttp (needs command: string, args: string[])`);
+    return false;
+  }
+  return true;
 }
 
 export function loadModules(): ModuleDeclaration[] {
@@ -115,7 +140,12 @@ export function getModuleMcpServers(phase?: string, tags?: string[]): Record<str
 export function getModulePromptFragments(phase?: string, tags?: string[]): string {
   const active = getActiveModules(phase, tags);
   const fragments: string[] = [];
+  // Dedupe by module id — matches getModuleMcpServers' object-key dedupe, so a
+  // duplicate id in config doesn't inject the same fragment twice (FLUX-447).
+  const seen = new Set<string>();
   for (const m of active) {
+    if (seen.has(m.id)) continue;
+    seen.add(m.id);
     if (m.promptFragment && m.promptFragment.trim()) {
       const trimmed = m.promptFragment.slice(0, MAX_PROMPT_FRAGMENT_LENGTH);
       fragments.push(`<module name="${m.name}">\n${trimmed}\n</module>`);

@@ -30,6 +30,8 @@ Research for FLUX-282. Covers execution arguments, system prompt injection, cont
 | Model selection | `--settings '{"model":"..."}'` | `-m model` | `--model model` |
 | Stdin piping | `cat x \| claude -p "..."` | `cat x \| gemini -p "..."` | Supported with `-p` |
 
+> **Permission gating (FLUX-605, supersedes blanket auto-approve):** Event Horizon no longer spawns every Claude Code session with `--dangerously-skip-permissions`. Sessions now run in one of two modes — `gated` (`--permission-prompt-tool mcp__event-horizon__permission_prompt`, which routes destructive ops `change_status` / `delete_branch` / `finish_ticket` / `Bash` through a human Allow/Deny prompt) or `skip` (the legacy `--dangerously-skip-permissions`). Defaults come from the workspace risk-tolerance setting (`config.permissions`: board `gated`, ticket `skip`) and are overridable per chat. The "Auto-approve all" flag in the matrix above is still the *mechanism* for `skip` mode, but it is no longer EH's default for interactive sessions. See [MCP Tools → `permission_prompt`](../reference/mcp-tools.md#permission_prompt) and [Configuration → Permission Risk Tolerance](../configuration.md#permission-risk-tolerance).
+
 ---
 
 ## 1. Claude Code CLI

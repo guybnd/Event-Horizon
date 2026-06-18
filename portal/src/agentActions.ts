@@ -364,8 +364,8 @@ export async function launchOrchestration(opts: {
         skipPermissions,
         effortOverride,
       });
-    } catch (err: any) {
-      throw new Error(`Failed to register relay chain: ${err?.message || 'unknown'}`);
+    } catch (err) {
+      throw new Error(`Failed to register relay chain: ${err instanceof Error ? err.message : 'unknown'}`, { cause: err });
     }
 
     // Launch only the first step; the engine barrier handles the rest.
@@ -387,9 +387,9 @@ export async function launchOrchestration(opts: {
         groupType: 'relay',
       });
       return { sessions: [session], errors: [] };
-    } catch (err: any) {
+    } catch (err) {
       await unregisterRelayChain(taskId, groupId).catch(() => {});
-      throw new Error(`${first.label}: ${err?.message || 'failed to launch step 0'}`);
+      throw new Error(`${first.label}: ${err instanceof Error ? err.message : 'failed to launch step 0'}`, { cause: err });
     }
   }
 
@@ -437,8 +437,8 @@ export async function launchOrchestration(opts: {
         groupVariant: def.variant,
       });
       return { sessions: [leadSession], errors: [] };
-    } catch (err: any) {
-      throw new Error(`${lead.label}: ${err?.message || 'failed to launch supervisor lead'}`);
+    } catch (err) {
+      throw new Error(`${lead.label}: ${err instanceof Error ? err.message : 'failed to launch supervisor lead'}`, { cause: err });
     }
   }
 
@@ -530,8 +530,8 @@ export async function launchOrchestration(opts: {
         groupVariant: def.variant,
       });
       sessions.unshift(leadSession);
-    } catch (err: any) {
-      errors.push(`${lead.label}: ${err?.message || 'failed to launch'}`);
+    } catch (err) {
+      errors.push(`${lead.label}: ${err instanceof Error ? err.message : 'failed to launch'}`);
     }
   }
 

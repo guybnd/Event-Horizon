@@ -8,7 +8,8 @@
         "engine/src/mcp-server.ts",
         "--workspace",
         "."
-      ]
+      ],
+      "alwaysLoad": true
     },
     "context7": {
       "command": "npx",
@@ -24,12 +25,21 @@
         "mcp"
       ],
       "env": {
-        "BASIC_MEMORY_HOME": "C:\\GitHub\\EventHorizon\\.flux-store/memory"
+        "BASIC_MEMORY_HOME": "c:\\GitHub\\EventHorizon\\.flux-store/memory"
       }
     },
     "serena": {
-      "type": "http",
-      "url": "http://127.0.0.1:9122/mcp"
+      "command": "serena",
+      "args": [
+        "start-mcp-server",
+        "--context",
+        "claude-code",
+        "--project-from-cwd",
+        "--open-web-dashboard",
+        "False",
+        "--enable-gui-log-window",
+        "False"
+      ]
     }
   }
 }

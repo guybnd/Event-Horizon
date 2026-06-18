@@ -32,8 +32,8 @@ export function FirstBootDialog({ onComplete }: FirstBootDialogProps) {
     try {
       await confirmBoot(migrate);
       onComplete();
-    } catch (err: any) {
-      setError(err.message || 'Failed to initialize settings.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to initialize settings.');
     } finally {
       setConfirming(false);
     }
