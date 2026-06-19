@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import type { ColumnLiveEvent, Config, Task, TaskLiveEvent } from './types';
 import { fetchConfig, fetchTasks, fetchWorktrees, fetchHealth, saveConfig as apiSaveConfig, fetchReadState, saveReadState, fetchWorkspace, fetchParseErrors, fetchNotifications, fetchWorkspaces, switchWorkspace as apiSwitchWorkspace, type ParseError, type Notification, type WorkspaceInfo, type WorktreeInfo } from './api';
 import { getArchiveStatus } from './workflow';
+import { collectPrMemberIds } from './lib/decks';
 import { tasksEqual } from './lib/tasksEqual';
 import { appStore } from './store/appStore';
 import type { AppStoreState, AppActions, AppView, AppTheme, TaskSortOption } from './store/appStore';
@@ -202,6 +203,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     for (const t of tasks) if (t.kind === 'pr' && t.branch) map.set(t.branch, t.id);
     return map;
   }, [tasks]);
+  // Ids folded into a PR deck (FLUX-580). Computed once here so the epic card can apply
+  // PR precedence (a PR-folded subtask is never also epic-folded) without each card
+  // re-scanning every PR ticket's members.
+  const prMemberIds = useMemo(() => collectPrMemberIds(tasks), [tasks]);
   const [tasksLoading, setTasksLoading] = useState(true);
   const [taskLiveEvents, setTaskLiveEvents] = useState<Record<string, TaskLiveEvent>>({});
   const [columnLiveEvents, setColumnLiveEvents] = useState<Record<string, ColumnLiveEvent>>({});
@@ -772,7 +777,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!set) return;
       for (const h of set) { try { h(data); } catch { /* isolate subscriber errors */ } }
     };
-    for (const type of ['activity', 'progress', 'taskUpdated', 'permission-request', 'permission-resolved', 'ask-question', 'ask-question-resolved']) {
+    for (const type of ['activity', 'progress', 'taskUpdated', 'permission-request', 'permission-resolved', 'ask-question', 'ask-question-resolved', 'board-rebase-proposed', 'board-rebase-resolved']) {
       es.addEventListener(type, (e: MessageEvent) => {
         try { forward(type, JSON.parse(e.data)); } catch { /* non-JSON payload — skip */ }
       });
@@ -990,7 +995,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     view, settingsTab, modalTask, isModalOpen,
     isOverlayOpen: overlayCount > 0,
     openModalScrollToComments, openModalInFullView,
-    tasks, taskById, prByBranch, worktreeBranches, worktrees,
+    tasks, taskById, prByBranch, prMemberIds, worktreeBranches, worktrees,
     liveSessions: appStore.getState().liveSessions,
     changesFocus, tasksLoading, taskLiveEvents, columnLiveEvents,
     refreshTrigger, lastRefreshAt, isWindowVisible, isConnected,

@@ -30,6 +30,7 @@ import { activateWorkspace, tasksCache } from './task-store.js';
 import { stopAllCliSessions, setAutoRestartCallback, getAllActiveSessions } from './session-store.js';
 import { requestApproval, resolveApproval, listPendingApprovals } from './permission-prompts.js';
 import { requestAnswer, resolveAnswer, listPendingQuestions } from './ask-questions.js';
+import { proposeBoardRebase, resolveBoardRebase, listPendingBoardRebases } from './board-rebase.js';
 import { shutdownSharedServers } from './shared-mcp-server.js';
 import { broadcastEvent } from './events.js';
 
@@ -180,6 +181,35 @@ app.post('/api/board/ask-question/:id/answer', requireWorkspace, (req, res) => {
 });
 app.get('/api/board/pending-questions', requireWorkspace, (_req, res) => {
   res.json({ pending: listPendingQuestions() });
+});
+
+// FLUX-659: board-rebase ritual. propose_board_rebase (MCP) parks a BATCH of proposed
+// restructurings and broadcasts `board-rebase-proposed`; the portal panel approves a subset and
+// posts to -resolve, which executes the approved items via the verb registry and broadcasts
+// `board-rebase-resolved`. Sibling of the permission round-trip but batch + fire-then-resolve
+// (the propose call returns immediately, it does not block).
+app.post('/api/board/board-rebase', requireWorkspace, (req, res) => {
+  const items = Array.isArray(req.body?.items) ? req.body.items : [];
+  const conversationId = typeof req.body?.conversationId === 'string' ? req.body.conversationId : null;
+  if (items.length === 0) {
+    res.status(400).json({ error: 'items[] is required' });
+    return;
+  }
+  const batch = proposeBoardRebase(items, conversationId);
+  res.status(201).json({ id: batch.id, count: batch.items.length });
+});
+app.get('/api/board/board-rebase', requireWorkspace, (_req, res) => {
+  res.json({ pending: listPendingBoardRebases() });
+});
+app.post('/api/board/board-rebase-resolve', requireWorkspace, async (req, res) => {
+  const id = String(req.body?.id || '');
+  const approvedItemIds = Array.isArray(req.body?.approvedItemIds) ? req.body.approvedItemIds.map(String) : [];
+  const result = await resolveBoardRebase(id, approvedItemIds);
+  if (!result) {
+    res.status(404).json({ error: 'No pending board-rebase batch with that id' });
+    return;
+  }
+  res.json(result);
 });
 
 let ghAuthAvailable: boolean | null = null;

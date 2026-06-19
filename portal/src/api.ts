@@ -565,12 +565,15 @@ export interface StartSessionOptions {
   groupType?: string;
   groupVariant?: string;
   lockedPaths?: string[];
+  /** FLUX-674: pasted-image attachments to send with the opening chat turn. */
+  attachments?: ChatAttachment[];
 }
 
 export async function startTaskCliSessionEx(taskId: string, opts: StartSessionOptions): Promise<CliSessionSummary> {
-  const { framework, appendPrompt, personaId, focusComment, skipPermissions = true, effortOverride, model, permissionMode, phase, role, pattern, patternPosition, groupId, groupSeq, groupTotal, groupType, groupVariant, lockedPaths } = opts;
+  const { framework, appendPrompt, personaId, focusComment, skipPermissions = true, effortOverride, model, permissionMode, phase, role, pattern, patternPosition, groupId, groupSeq, groupTotal, groupType, groupVariant, lockedPaths, attachments } = opts;
   const body: Record<string, unknown> = { framework, skipPermissions };
   if (appendPrompt) body.appendPrompt = appendPrompt;
+  if (attachments?.length) body.attachments = attachments;
   if (personaId) body.personaId = personaId;
   if (focusComment) body.focusComment = focusComment;
   if (effortOverride) body.effortOverride = effortOverride;
@@ -883,11 +886,28 @@ export async function fetchTaskCliSessions(taskId: string): Promise<CliSessionSu
 /** FLUX-604: reserved conversation id for the board-level orchestrator chat. */
 export const BOARD_CONVERSATION_ID = '__board__';
 
+/** FLUX-674: an image attached to a user chat turn (paste / drop / file picker). */
+export interface ChatAttachment {
+  /** API URL to display the image (e.g. `/api/assets/FLUX-1/foo.png`). */
+  url: string;
+  /** Flux-dir-relative stored path (`assets/FLUX-1/foo.png`) — sent to the engine so it can
+   *  resolve the absolute on-disk path and reference the file in the agent prompt. */
+  path: string;
+  fileName: string;
+}
+
 /** FLUX-602: a parsed chat message from a ticket's durable transcript. */
 export interface TranscriptMessage {
   role: 'user' | 'assistant' | 'tool';
   text: string;
   ts: string;
+  /** FLUX-661: normalized tool name for an edit-ish tool row (`Edit`, `Write`, …). */
+  tool?: string;
+  /** FLUX-661: repo-relative path of the file an edit tool touched. When present (and the
+   *  chat knows the branch), the tool row renders an expandable inline diff of that file. */
+  path?: string;
+  /** FLUX-674: images attached to a user turn — rendered inline in the user bubble. */
+  attachments?: ChatAttachment[];
 }
 
 export async function fetchTaskTranscript(taskId: string): Promise<TranscriptMessage[]> {
@@ -928,6 +948,57 @@ export async function resolvePermission(id: string, behavior: 'allow' | 'deny', 
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ id, behavior, message }),
   });
+}
+
+/** FLUX-659: the verbs the board-rebase ritual can propose. */
+export type BoardRebaseKind = 'promote' | 'fold' | 'archive' | 'dispatch' | 'status' | 'leave';
+
+/** FLUX-659: a single proposed restructuring within a board-rebase batch. */
+export interface BoardRebaseItem {
+  id: string;
+  kind: BoardRebaseKind;
+  targets: string[];
+  summary: string;
+  rationale?: string;
+  newStatus?: string;
+  phase?: string;
+  into?: string;
+}
+
+/** FLUX-659: a parked board-rebase batch awaiting the user's per-item approval. */
+export interface PendingBoardRebase {
+  id: string;
+  items: BoardRebaseItem[];
+  conversationId: string | null;
+  createdAt: string;
+}
+
+/** FLUX-659: the outcome of applying one approved (or skipped) board-rebase item. */
+export interface BoardRebaseItemResult {
+  id: string;
+  kind: BoardRebaseKind;
+  ok: boolean;
+  message: string;
+}
+
+export async function fetchPendingBoardRebases(): Promise<PendingBoardRebase[]> {
+  const res = await fetch(`${API_URL}/board/board-rebase`);
+  if (!res.ok) return [];
+  const payload = await res.json();
+  return payload.pending || [];
+}
+
+export async function resolveBoardRebase(
+  id: string,
+  approvedItemIds: string[],
+): Promise<{ ok: boolean; results: BoardRebaseItemResult[] } | null> {
+  const res = await fetch(`${API_URL}/board/board-rebase-resolve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, approvedItemIds }),
+  });
+  if (!res.ok) return null;
+  return res.json();
 }
 
 /** FLUX-662: one option within a structured question. */
@@ -971,11 +1042,12 @@ export async function answerQuestion(
   });
 }
 
-export async function sendTaskCliInput(taskId: string, message: string, user: string, opts?: { model?: string; effort?: string; permissionMode?: string }): Promise<CliSessionSummary> {
+export async function sendTaskCliInput(taskId: string, message: string, user: string, opts?: { model?: string; effort?: string; permissionMode?: string; attachments?: ChatAttachment[] }): Promise<CliSessionSummary> {
   const body: Record<string, unknown> = { message, user };
   if (opts?.model) body.model = opts.model;
   if (opts?.effort) body.effortOverride = opts.effort;
   if (opts?.permissionMode) body.permissionMode = opts.permissionMode;
+  if (opts?.attachments?.length) body.attachments = opts.attachments;
   const res = await fetch(`${API_URL}/tasks/${taskId}/cli-session/input`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

@@ -1180,13 +1180,60 @@ export function buildMcpServer(): McpServer {
     },
   );
 
+  // FLUX-659: the board-rebase ritual. The orchestrator emits a BATCH of proposed restructurings
+  // for the human to approve in one pass; this parks the batch (engine-side) and broadcasts it —
+  // it does NOT mutate. Fire-then-resolve: the tool returns immediately (unlike permission_prompt,
+  // which blocks). "Propose, never silently restructure."
+  server.tool(
+    'propose_board_rebase',
+    'Propose a BATCH of board restructurings for the human to approve in one pass — the board-rebase ritual. Use this when asked to triage / "rebase the board" or at end-of-session, INSTEAD of mutating the board directly. Each item is a single action the user approves or rejects; nothing is applied until they click Apply approved. NEVER call the restructuring verbs (extract_ticket / merge_tickets / archive_ticket / change_status) directly to reorganize the board — emit them here as proposals. Returns immediately; the proposal is parked for approval.',
+    {
+      items: z.array(z.object({
+        kind: z.enum(['promote', 'fold', 'archive', 'dispatch', 'status', 'leave']).describe('promote = extract a chat/turns into a new card (FLUX-656); fold = merge one stream into another (FLUX-657); archive = retire the ticket(s); dispatch = start a phase session; status = move a ticket to a new status; leave = keep it in the orchestrator thread (the safe default — never drop an item, leave it).'),
+        targets: z.array(z.string()).describe('Ticket id(s) the item acts on, e.g. ["FLUX-123"]. For fold, the source stream(s) being merged.'),
+        summary: z.string().describe('One-line human-readable description of the proposed action.'),
+        rationale: z.string().optional().describe('Why you propose this — shown under the summary and recorded as a comment when applied.'),
+        newStatus: z.string().optional().describe('For kind "status": the target status.'),
+        phase: z.string().optional().describe('For kind "dispatch": the phase (grooming / implementation / review / finalize).'),
+        into: z.string().optional().describe('For kind "fold": the destination ticket the sources merge into.'),
+      })).min(1).describe('The batch of proposed restructurings.'),
+    },
+    async ({ items }) => {
+      try {
+        const res = await fetch(`${ENGINE_URL}/api/board/board-rebase`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items, conversationId: process.env.EH_CONVERSATION_ID || null }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          return errorResult(`Failed to surface board-rebase proposal: ${err.error || res.statusText}`);
+        }
+        const result = await res.json();
+        return textResult(`Surfaced a board-rebase proposal with ${result.count} item(s) for the user to approve (batch ${result.id}). The proposal is PARKED — nothing has been applied. The user reviews each item and clicks "Apply approved" (or "Dismiss"). Do not call the restructuring verbs directly.`);
+      } catch (err: any) {
+        return errorResult(`Board-rebase channel unavailable: ${err.message}`);
+      }
+    },
+  );
+
   // FLUX-605: permission policy for gated sessions (--permission-prompt-tool).
   const SAFE_PERMISSION_TOOLS = new Set([
     'get_ticket', 'list_tickets', 'get_board_config', 'get_branch', 'get_project_group', 'get_board_state',
     'list_available_agents', 'read_group_doc', 'list_group_docs', 'get_session_log',
+    // FLUX-659: the proposal path is always safe — it parks a batch for human approval, never mutates.
+    'propose_board_rebase',
     'Read', 'Glob', 'Grep', 'LS', 'WebFetch', 'WebSearch', 'TodoWrite', 'NotebookRead',
   ]);
-  const CONFIRM_PERMISSION_TOOLS = new Set(['change_status', 'delete_branch', 'finish_ticket', 'Bash']);
+  // FLUX-659 teeth: the restructuring verbs join the CONFIRM tier so a DIRECT orchestrator call to
+  // mutate the board is gated even if it bypasses the board-rebase ritual — "never silently
+  // restructure" is enforced by the gate, not just the prompt. extract_ticket (FLUX-656) and
+  // merge_tickets (FLUX-657) aren't built yet; they're listed speculatively so they're gated the
+  // moment they land — verify the names when those tickets ship.
+  const CONFIRM_PERMISSION_TOOLS = new Set([
+    'change_status', 'delete_branch', 'finish_ticket', 'Bash',
+    'archive_ticket', 'extract_ticket', 'merge_tickets',
+  ]);
   function permissionDecisionFor(toolName: string): 'allow' | 'deny' | 'confirm' {
     const bare = toolName.replace(/^mcp__.+?__/, '');
     if (SAFE_PERMISSION_TOOLS.has(bare)) return 'allow';

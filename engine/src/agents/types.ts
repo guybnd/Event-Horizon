@@ -1,4 +1,10 @@
 import type { ChildProcessWithoutNullStreams } from 'child_process';
+import type { ChatAttachment } from '../projection.js';
+
+/** FLUX-674: optional per-turn extras for a chat reply (pasted image attachments). */
+export interface SendInputOptions {
+  attachments?: ChatAttachment[];
+}
 
 export type CliSessionStatus = 'pending' | 'running' | 'waiting-input' | 'completed' | 'failed' | 'cancelled';
 export type CliFramework = 'claude' | 'copilot' | 'gemini';
@@ -34,7 +40,7 @@ export interface AgentAdapter {
   readonly manifest: ProviderManifest;
   labelForFramework(): string;
   start(session: CliSessionRecord, task: unknown, appendPrompt: string, effortOverride: string, workspaceRoot: string): Promise<void>;
-  sendInput(session: CliSessionRecord, message: string, user: string, workspaceRoot: string): Promise<void>;
+  sendInput(session: CliSessionRecord, message: string, user: string, workspaceRoot: string, opts?: SendInputOptions): Promise<void>;
   stop(session: CliSessionRecord): void;
 }
 

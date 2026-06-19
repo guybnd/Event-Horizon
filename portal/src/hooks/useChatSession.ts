@@ -8,7 +8,17 @@ import {
   stopTaskCliSession,
   clearTaskTranscript,
   type TranscriptMessage,
+  type ChatAttachment,
 } from '../api';
+import { uploadChatImage } from '../taskAssetUploads';
+
+/** FLUX-674: per-turn send options, including pasted-image attachments. */
+export interface ChatSendOptions {
+  model?: string;
+  effort?: string;
+  permissionMode?: string;
+  attachments?: ChatAttachment[];
+}
 
 function sameMessages(a: TranscriptMessage[], b: TranscriptMessage[]): boolean {
   if (a.length !== b.length) return false;
@@ -23,10 +33,12 @@ export interface UseChatSession {
   messages: TranscriptMessage[];
   busy: boolean;
   error: string | null;
-  send: (text: string, opts?: { model?: string; effort?: string; permissionMode?: string }) => Promise<void>;
+  send: (text: string, opts?: ChatSendOptions) => Promise<void>;
   stop: () => Promise<void>;
   /** Stop any live session and wipe the durable transcript — a fresh start (orchestrator reset). */
   reset: () => Promise<void>;
+  /** FLUX-674: upload one pasted/dropped image for this conversation, returning its ref. */
+  uploadImage: (file: File) => Promise<ChatAttachment>;
 }
 
 /**
@@ -44,6 +56,7 @@ export function useChatSession(conversationId: string, enabled = true): UseChatS
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingUser, setPendingUser] = useState<string | null>(null);
+  const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
 
   // Event-driven transcript sync (FLUX-611): fetch once on open, then refetch only when the
   // engine pushes an event for THIS conversation — no idle polling, so a parked chat (and N
@@ -77,12 +90,15 @@ export function useChatSession(conversationId: string, enabled = true): UseChatS
     return () => { cancelled = true; unsubs.forEach((u) => u()); };
   }, [conversationId, enabled, subscribeToEvent]);
 
-  async function send(text: string, sendOpts?: { model?: string; effort?: string; permissionMode?: string }) {
+  async function send(text: string, sendOpts?: ChatSendOptions) {
     const trimmed = text.trim();
-    if (!trimmed || busy) return;
+    const attachments = sendOpts?.attachments ?? [];
+    // FLUX-674: allow an image-only turn (no text) as long as something is attached.
+    if ((!trimmed && attachments.length === 0) || busy) return;
     setBusy(true);
     setError(null);
     setPendingUser(trimmed);
+    setPendingAttachments(attachments);
     try {
       let resumable = false;
       try {
@@ -104,13 +120,14 @@ export function useChatSession(conversationId: string, enabled = true): UseChatS
           model: sendOpts?.model || undefined,
           effortOverride: sendOpts?.effort || undefined,
           permissionMode: sendOpts?.permissionMode || undefined,
+          attachments: attachments.length ? attachments : undefined,
         });
       if (resumable) {
         // The engine refuses to resume when the worktree is gone (finished ticket). That's an
         // expected fallback, not an error — fall back to a fresh chat. A genuine failure of the
         // fresh start still propagates to the catch below and surfaces via setError.
         try {
-          await sendTaskCliInput(conversationId, trimmed, 'User', sendOpts);
+          await sendTaskCliInput(conversationId, trimmed, 'User', { ...sendOpts, attachments });
         } catch {
           await startFresh();
         }
@@ -126,15 +143,23 @@ export function useChatSession(conversationId: string, enabled = true): UseChatS
       setError(err instanceof Error ? err.message : 'Failed to send message');
     } finally {
       setPendingUser(null);
+      setPendingAttachments([]);
       setBusy(false);
     }
   }
 
+  /** FLUX-674: upload a pasted/dropped image to this ticket's asset sidecar. */
+  async function uploadImage(file: File): Promise<ChatAttachment> {
+    return uploadChatImage(conversationId, file);
+  }
+
   // Optimistic pending bubble, unless the transcript already has it.
   const last = messages.length > 0 ? messages[messages.length - 1] : undefined;
-  const lastIsPending = !!pendingUser && last?.role === 'user' && last.text === pendingUser;
+  const lastIsPending = pendingUser !== null && last?.role === 'user' && last.text === pendingUser;
   const merged: TranscriptMessage[] =
-    pendingUser && !lastIsPending ? [...messages, { role: 'user', text: pendingUser, ts: '' }] : messages;
+    pendingUser !== null && !lastIsPending
+      ? [...messages, { role: 'user', text: pendingUser, ts: '', attachments: pendingAttachments.length ? pendingAttachments : undefined }]
+      : messages;
 
   async function stop() {
     try {
@@ -163,5 +188,5 @@ export function useChatSession(conversationId: string, enabled = true): UseChatS
     }
   }
 
-  return { messages: merged, busy, error, send, stop, reset };
+  return { messages: merged, busy, error, send, stop, reset, uploadImage };
 }

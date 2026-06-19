@@ -9,6 +9,7 @@ import { parseQuickReplies } from './task-modal/chatQuickReplies';
 import { StatusBadge } from './StatusBadge';
 import { TicketActionBar } from './TicketActionBar';
 import { ChatQuestionPicker } from './AskQuestionPrompts';
+import { ChatBoardRebasePanel } from './BoardRebasePanel';
 import { useDock } from './DockProvider';
 import { getStatusTint } from '../statusStyles';
 import { getRequireInputStatus } from '../workflow';
@@ -1015,7 +1016,14 @@ function ChatWindow({
           onDraftChange={onDraftChange}
           onSend={chat.send}
           onStop={chat.stop}
-          questionPicker={<ChatQuestionPicker conversationId={id} />}
+          onUploadImage={orchestrator ? undefined : chat.uploadImage}
+          questionPicker={
+            <>
+              {orchestrator && <ChatBoardRebasePanel conversationId={id} />}
+              <ChatQuestionPicker conversationId={id} />
+            </>
+          }
+          diffBranch={task?.branch}
           actions={
             orchestrator ? (
               <TriageAction busy={chat.busy || working} onTriage={() => void chat.send(TRIAGE_PROMPT)} />

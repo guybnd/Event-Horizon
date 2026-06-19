@@ -16,6 +16,7 @@ import { filterAndSortTasks } from '../taskSearch';
 import { getStatusColorClass } from '../statusStyles';
 import { ReleaseModal } from './ReleaseModal';
 import { getArchiveStatus, getRequireInputStatus } from '../workflow';
+import { collectPrMemberIds, collectEpicFoldedIds } from '../lib/decks';
 import { ParseErrorButton } from './ParseErrorButton';
 import { BootstrapPreview } from './BootstrapPreview';
 import { ApprovalPrompts } from './ApprovalPrompts';
@@ -146,11 +147,21 @@ export function Board() {
   // Union of every PR ticket's work-gated members — these fold into the PR deck and are
   // excluded from their own columns. Memoized so the Set isn't rebuilt every Board render
   // (FLUX-567 perf review).
-  const foldedMemberIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const t of tasks) if (t.kind === 'pr') (t.members ?? []).forEach((m: string) => ids.add(m));
+  const foldedMemberIds = useMemo(() => collectPrMemberIds(tasks), [tasks]);
+  // Epic deck (FLUX-580): a subtask in the SAME column as its epic folds into the epic's card,
+  // mirroring PR members. PR membership wins (a PR-folded subtask is never also epic-folded).
+  // Memoized alongside the rest of the chain (FLUX-611 perf).
+  const epicFoldedIds = useMemo(() => {
+    const byId = new Map(tasks.map((t) => [t.id, t]));
+    return collectEpicFoldedIds(tasks, byId, foldedMemberIds);
+  }, [tasks, foldedMemberIds]);
+  // Everything pulled out of its own column into a deck (PR members ∪ epic subtasks).
+  const deckedIds = useMemo(() => {
+    if (foldedMemberIds.size === 0 && epicFoldedIds.size === 0) return null;
+    const ids = new Set(foldedMemberIds);
+    epicFoldedIds.forEach((id) => ids.add(id));
     return ids;
-  }, [tasks]);
+  }, [foldedMemberIds, epicFoldedIds]);
 
   // Filter + sort once per input change (was recomputed on EVERY render — incl. each SSE
   // activity/progress tick during agent sessions, the main board-sluggishness cause). (FLUX-611)
@@ -167,11 +178,11 @@ export function Board() {
     requireInputStatus: getRequireInputStatus(config),
   }) : [], [boardTasks, config, searchQuery, sortOption, filterAssignee, filterPriority, filterTag, filterUnreadOnly, filterWorktree, worktreeBranches, readComments]);
 
-  // PR deck (FLUX-567): worked members fold INTO their PR ticket's card (deck-replace), so they
-  // don't render in their own columns. Memoized alongside the rest of the chain.
-  const deckedTasks = useMemo(() => foldedMemberIds.size > 0
-    ? visibleTasks.filter(t => !foldedMemberIds.has(t.id))
-    : visibleTasks, [visibleTasks, foldedMemberIds]);
+  // Decked tasks (FLUX-567 PR members + FLUX-580 epic subtasks) fold INTO their parent card
+  // (deck-replace), so they don't render in their own columns. Memoized alongside the chain.
+  const deckedTasks = useMemo(() => deckedIds
+    ? visibleTasks.filter(t => !deckedIds.has(t.id))
+    : visibleTasks, [visibleTasks, deckedIds]);
 
   // Bucket tasks by column ONCE, instead of `deckedTasks.filter(...)` per-column on every
   // render (was O(columns × tasks) per render and handed Column a fresh array each time,

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Send, Loader2, Square, Wrench, ChevronDown, ChevronRight, Check, CheckCircle2, ArrowDown, Cpu, Gauge, Shield } from 'lucide-react';
+import { Send, Loader2, Square, Wrench, ChevronDown, ChevronRight, Check, CheckCircle2, ArrowDown, Cpu, Gauge, Shield, Paperclip, X } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import type { TranscriptMessage } from '../../api';
+import { fetchDiffFile, type TranscriptMessage, type ChatAttachment } from '../../api';
 import { TaskMarkdown } from '../TaskMarkdown';
+import { DiffLines } from '../DiffLines';
 
 /** FLUX-643: a one-tap reply chip rendered above the composer. Selecting it sends
  *  `value` as the chat reply. `tone: 'danger'` paints it red (e.g. a "Skip" option). */
@@ -60,9 +61,13 @@ export interface ChatViewProps {
   /** Fill the parent's height (flex column, message area flex-grows) instead of
    *  using `scrollMaxClass`. Used by the resizable floating dock window. */
   fill?: boolean;
-  onSend: (text: string, opts?: { model?: string; effort?: string; permissionMode?: string }) => void | Promise<void>;
+  onSend: (text: string, opts?: { model?: string; effort?: string; permissionMode?: string; attachments?: ChatAttachment[] }) => void | Promise<void>;
   /** Stop/interrupt the running turn. Shown while `working`. */
   onStop?: () => void | Promise<void>;
+  /** FLUX-674: upload a pasted/dropped/picked image, returning its ref. When provided, the
+   *  composer enables image attachments (paste, drag-drop, file picker). Omit (e.g. the board
+   *  orchestrator chat, which has no ticket to attach to) to keep the composer text-only. */
+  onUploadImage?: (file: File) => Promise<ChatAttachment>;
   /** Phase-aware action bar (FLUX-610) — rendered pinned above the composer. Optional so
    *  ChatView stays transport-free; callers build & pass `<TicketActionBar />`.
    *  FLUX-622: suppressed while the chat is `working`/`busy` — only shown when idle/pending,
@@ -86,6 +91,11 @@ export interface ChatViewProps {
    *  to keep the composer's internal uncontrolled state (the task-modal `ChatPane` path). */
   draft?: string;
   onDraftChange?: (text: string) => void;
+  /** FLUX-661: branch/ref whose file diffs back the inline per-edit diffs. When set, a tool
+   *  row carrying a `path` (edit-ish tools) becomes an expandable inline diff of that file
+   *  (current cumulative diff vs base, via `fetchDiffFile(diffBranch, path)`). Omit (e.g. the
+   *  branch-less orchestrator chat) to keep all tool rows label-only. */
+  diffBranch?: string | null;
 }
 
 /**
@@ -111,6 +121,7 @@ export function ChatView({
   fill = false,
   onSend,
   onStop,
+  onUploadImage,
   actions,
   contextCard,
   quickReplies,
@@ -118,6 +129,7 @@ export function ChatView({
   questionPicker,
   draft,
   onDraftChange,
+  diffBranch,
 }: ChatViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
@@ -198,6 +210,11 @@ export function ChatView({
     () =>
       messages.map((m, i) => {
         if (m.role === 'tool') {
+          // FLUX-661: an edit-ish tool row carrying a file path becomes an expandable inline
+          // diff (when the chat knows the branch). Other tool rows stay the quiet label.
+          if (m.path && diffBranch) {
+            return <InlineEditDiff key={i} branch={diffBranch} path={m.path} label={m.text} />;
+          }
           // Quiet, uniform tool row — muted icon (no per-row colored marker) + monospace,
           // truncated so long file paths never blow out the width.
           return (
@@ -208,10 +225,25 @@ export function ChatView({
           );
         }
         if (m.role === 'user') {
+          // FLUX-674: a user turn may carry pasted images — render them inline above the text.
+          const atts = m.attachments ?? [];
           return (
             <div key={i} className="flex justify-end">
-              <div className="max-w-[80%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md border border-primary/15 bg-primary/10 px-3.5 py-2 text-[13px] text-[var(--eh-text-primary)]">
-                {m.text}
+              <div className="flex max-w-[80%] flex-col gap-1.5 rounded-2xl rounded-br-md border border-primary/15 bg-primary/10 px-3.5 py-2 text-[13px] text-[var(--eh-text-primary)]">
+                {atts.length > 0 && (
+                  <div className="flex flex-wrap justify-end gap-1.5">
+                    {atts.map((a, j) => (
+                      <a key={j} href={a.url} target="_blank" rel="noreferrer" title={a.fileName}>
+                        <img
+                          src={a.url}
+                          alt={a.fileName}
+                          className="max-h-40 max-w-[200px] rounded-lg border border-primary/20 object-contain"
+                        />
+                      </a>
+                    ))}
+                  </div>
+                )}
+                {m.text && <span className="whitespace-pre-wrap break-words">{m.text}</span>}
               </div>
             </div>
           );
@@ -223,7 +255,7 @@ export function ChatView({
           </div>
         );
       }),
-    [messages, linkifyTickets],
+    [messages, linkifyTickets, diffBranch],
   );
 
   // The floating window owns its own title bar, so suppress the in-surface title there. The
@@ -309,7 +341,55 @@ export function ChatView({
 
       {/* Composer lives in its own component so its per-keystroke input state never
           re-renders the transcript above it. */}
-      <Composer busy={busy} onSend={onSend} draft={draft} onDraftChange={onDraftChange} />
+      <Composer busy={busy} onSend={onSend} onUploadImage={onUploadImage} draft={draft} onDraftChange={onDraftChange} />
+    </div>
+  );
+}
+
+/**
+ * FLUX-661: an edit-tool row rendered as an expandable inline diff. The collapsed row mirrors
+ * the quiet tool row (wrench + monospace label) but is clickable; expanding lazily fetches the
+ * file's current cumulative diff vs base (`fetchDiffFile(branch, path)`, the same endpoint the
+ * ChatDiffPanel uses) and renders the syntax-highlighted hunk. v1 shows the file's *current*
+ * diff, not a point-in-time hunk — consistent with the always-current diff panel (sibling
+ * ticket); a true per-edit hunk is the documented follow-up.
+ */
+function InlineEditDiff({ branch, path, label }: { branch: string; path: string; label: string }) {
+  const [open, setOpen] = useState(false);
+  const [diff, setDiff] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const reqIdRef = useRef(0);
+
+  useEffect(() => {
+    if (!open || diff !== null || loading || error) return;
+    const reqId = ++reqIdRef.current;
+    setLoading(true);
+    fetchDiffFile(branch, path)
+      .then((text) => { if (reqIdRef.current === reqId) setDiff(text ?? '(no diff available)'); })
+      .catch((e) => { if (reqIdRef.current === reqId) setError(e?.message || 'Failed to load file diff'); })
+      .finally(() => { if (reqIdRef.current === reqId) setLoading(false); });
+  }, [open, diff, loading, error, branch, path]);
+
+  return (
+    <div className="min-w-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        title={open ? 'Hide diff' : 'Show diff'}
+        className="flex w-full min-w-0 items-center gap-1.5 rounded px-0.5 py-0.5 text-left text-[11px] text-[var(--eh-text-muted)] transition-colors hover:text-[var(--eh-text-secondary)]"
+      >
+        {open ? <ChevronDown className="h-3 w-3 flex-shrink-0" /> : <ChevronRight className="h-3 w-3 flex-shrink-0" />}
+        <Wrench className="h-3 w-3 flex-shrink-0" />
+        <span className="truncate font-mono">{label}</span>
+      </button>
+      {open && (
+        <div className="mb-1 ml-3.5 overflow-x-auto rounded border border-[var(--eh-border)] bg-black/[0.02] py-1 dark:bg-white/[0.02]">
+          {loading && <p className="px-2 py-1 text-[11px] text-[var(--eh-text-muted)]">Loading…</p>}
+          {error && <p className="px-2 py-1 text-[11px] text-red-500">{error}</p>}
+          {!loading && !error && diff !== null && <DiffLines content={diff} />}
+        </div>
+      )}
     </div>
   );
 }
@@ -445,11 +525,13 @@ function TrailList({ trail }: { trail: string[] }) {
 function Composer({
   busy,
   onSend,
+  onUploadImage,
   draft,
   onDraftChange,
 }: {
   busy: boolean;
   onSend: ChatViewProps['onSend'];
+  onUploadImage?: (file: File) => Promise<ChatAttachment>;
   draft?: string;
   onDraftChange?: (text: string) => void;
 }) {
@@ -457,6 +539,12 @@ function Composer({
   const [model, setModel] = useState('');
   const [effort, setEffort] = useState('');
   const [permission, setPermission] = useState('');
+  // FLUX-674: pasted/dropped/picked images staged for the next turn, plus upload state.
+  const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
+  const [uploading, setUploading] = useState(0);
+  const [attachError, setAttachError] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Controlled when the parent owns the draft; uncontrolled otherwise. A single value/setValue
   // pair keeps the textarea always-controlled (no controlled↔uncontrolled flip warning).
@@ -464,18 +552,103 @@ function Composer({
   const input = controlled ? draft ?? '' : internalInput;
   const setValue = controlled ? onDraftChange! : setInternalInput;
 
+  const canAttach = !!onUploadImage;
+  const isUploading = uploading > 0;
+
+  // Upload a batch of image files in parallel, appending each successful ref to the chips.
+  async function uploadFiles(files: File[]) {
+    if (!onUploadImage || files.length === 0) return;
+    setAttachError(null);
+    setUploading((n) => n + files.length);
+    await Promise.all(
+      files.map(async (file) => {
+        try {
+          const att = await onUploadImage(file);
+          setAttachments((prev) => [...prev, att]);
+        } catch (err) {
+          setAttachError(err instanceof Error ? err.message : 'Failed to attach image.');
+        } finally {
+          setUploading((n) => n - 1);
+        }
+      }),
+    );
+  }
+
+  function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    if (!canAttach) return;
+    const files = Array.from(e.clipboardData.files || []).filter((f) => f.type.startsWith('image/'));
+    if (files.length === 0) return;
+    e.preventDefault();
+    void uploadFiles(files);
+  }
+
+  function handleDrop(e: React.DragEvent<HTMLDivElement>) {
+    if (!canAttach) return;
+    const files = Array.from(e.dataTransfer.files || []).filter((f) => f.type.startsWith('image/'));
+    setDragging(false);
+    if (files.length === 0) return;
+    e.preventDefault();
+    void uploadFiles(files);
+  }
+
+  function handleDragOver(e: React.DragEvent<HTMLDivElement>) {
+    if (!canAttach || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    if (!dragging) setDragging(true);
+  }
+
   function submit() {
     const text = input.trim();
-    if (!text || busy) return;
+    if ((!text && attachments.length === 0) || busy || isUploading) return;
     setValue('');
-    void onSend(text, { model, effort, permissionMode: permission });
+    setAttachments([]);
+    setAttachError(null);
+    void onSend(text, { model, effort, permissionMode: permission, attachments });
   }
 
   return (
-    <div className="rounded-2xl border border-[var(--eh-border)] bg-[var(--eh-input-bg)] transition-colors focus-within:border-primary">
+    <div
+      onDrop={handleDrop}
+      onDragOver={handleDragOver}
+      onDragLeave={() => setDragging(false)}
+      className={`rounded-2xl border bg-[var(--eh-input-bg)] transition-colors focus-within:border-primary ${
+        dragging ? 'border-primary border-dashed' : 'border-[var(--eh-border)]'
+      }`}
+    >
+      {/* FLUX-674: thumbnail chips for staged images, each removable before send. */}
+      {(attachments.length > 0 || isUploading) && (
+        <div className="flex flex-wrap items-center gap-2 px-3 pt-3">
+          {attachments.map((a, i) => (
+            <div key={i} className="group relative">
+              <img
+                src={a.url}
+                alt={a.fileName}
+                title={a.fileName}
+                className="h-14 w-14 rounded-lg border border-[var(--eh-border)] object-cover"
+              />
+              <button
+                type="button"
+                onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
+                title="Remove"
+                className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-gray-700 text-white opacity-0 shadow transition-opacity group-hover:opacity-100 hover:bg-gray-900 dark:bg-white/30 dark:hover:bg-white/50"
+              >
+                <X className="h-2.5 w-2.5" />
+              </button>
+            </div>
+          ))}
+          {isUploading && (
+            <div className="flex h-14 w-14 items-center justify-center rounded-lg border border-dashed border-[var(--eh-border)] text-[var(--eh-text-muted)]">
+              <Loader2 className="h-4 w-4 animate-spin" />
+            </div>
+          )}
+        </div>
+      )}
+      {attachError && <p className="px-3.5 pt-2 text-[11px] text-red-500">{attachError}</p>}
       <textarea
         value={input}
         onChange={(e) => setValue(e.target.value)}
+        onPaste={handlePaste}
         onKeyDown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
@@ -483,7 +656,7 @@ function Composer({
           }
         }}
         rows={1}
-        placeholder="Message…  (Enter to send, Shift+Enter for newline)"
+        placeholder={canAttach ? 'Message…  (Enter to send, paste or drop an image)' : 'Message…  (Enter to send, Shift+Enter for newline)'}
         className="max-h-32 min-h-[40px] w-full resize-none bg-transparent px-3.5 pt-3 text-[13px] text-[var(--eh-text-primary)] placeholder:text-[var(--eh-text-muted)] focus:outline-none"
       />
       <div className="flex items-center justify-between gap-2 px-2 pb-2">
@@ -491,11 +664,35 @@ function Composer({
           <ChipSelect icon={Cpu} name="Model" value={model} options={MODEL_OPTS} onChange={setModel} />
           <ChipSelect icon={Gauge} name="Effort" value={effort} options={EFFORT_OPTS} onChange={setEffort} />
           <ChipSelect icon={Shield} name="Perms" value={permission} options={PERM_OPTS} onChange={setPermission} />
+          {canAttach && (
+            <>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                title="Attach image"
+                className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-secondary)] dark:hover:bg-white/5"
+              >
+                <Paperclip className="h-3.5 w-3.5 flex-shrink-0" />
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/svg+xml"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  const files = Array.from(e.target.files || []);
+                  e.target.value = ''; // allow re-picking the same file
+                  void uploadFiles(files);
+                }}
+              />
+            </>
+          )}
         </div>
         <button
           type="button"
           onClick={submit}
-          disabled={busy || !input.trim()}
+          disabled={busy || isUploading || (!input.trim() && attachments.length === 0)}
           title="Send"
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-white transition-colors hover:bg-primary-hover disabled:opacity-40"
         >

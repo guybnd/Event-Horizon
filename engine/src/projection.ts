@@ -1,0 +1,217 @@
+import path from 'path';
+import { workspaceRoot } from './workspace.js';
+import { taskWorktreeDir } from './task-worktree.js';
+
+/**
+ * FLUX-658: substrate vs projection split.
+ *
+ * The raw turn substrate (the append-only JSONL transcript, see transcript.ts) is the
+ * immutable source of record. A *view* — what a human navigates on the board — is a
+ * pure function of that substrate plus an append-only curation op-log:
+ *
+ *     view = projectTranscript(turns, ops?)
+ *
+ * This module owns the turn/message TYPES and the pure projector. It performs no IO —
+ * `transcript.ts` reads the substrate (`readTurns`) and feeds the turns in here, proving
+ * the rendered transcript is a function of the substrate rather than an independent store.
+ *
+ * The curation verbs (extract / merge / archive / board-rebase) are out of scope for
+ * FLUX-658; only the seam they plug into is fixed here — `projectTranscript` already
+ * accepts a trailing `ops` parameter (defaulting to empty) so the verbs land as op-log
+ * appends without touching this call site. See
+ * `.docs/event-horizon/architecture/substrate-vs-projection.md`.
+ */
+
+/** Coarse role classification of a turn's raw payload. */
+export type TurnRole = 'user' | 'assistant' | 'system' | 'result' | 'tool' | 'unknown';
+
+/**
+ * A turn in the substrate, addressed by a stable `turnId` and a monotonic per-stream
+ * `seq`. `raw` is the original stream-json / synthetic event, intact — the envelope only
+ * adds identity around it. `turnId` is `${streamId}:${seq}`.
+ */
+export interface Turn {
+  turnId: string;
+  streamId: string;
+  seq: number;
+  ts: string;
+  role: TurnRole;
+  raw: any;
+}
+
+/**
+ * FLUX-674: an image attached to a user chat turn (paste / drop / file picker). The bytes
+ * live in the per-ticket asset sidecar (`<fluxDir>/assets/<id>/`); this is the durable
+ * reference recorded on the user turn so the transcript re-renders the thumbnail after a
+ * reload and the path stays resolvable for cold resume.
+ */
+export interface ChatAttachment {
+  /** API URL to display the image (e.g. `/api/assets/FLUX-1/foo.png`). */
+  url: string;
+  /** Flux-dir-relative stored path (`assets/FLUX-1/foo.png`) — the engine resolves the
+   *  absolute on-disk path from this to reference the file in the agent prompt. */
+  path: string;
+  fileName: string;
+}
+
+export interface TranscriptMessage {
+  role: 'user' | 'assistant' | 'tool';
+  text: string;
+  ts: string;
+  /** FLUX-661: normalized tool name for a tool row (e.g. `Edit`, `list_tickets`). */
+  tool?: string;
+  /** FLUX-661: repo-relative path of the file an edit-ish tool touched, when resolvable.
+   *  Present only for `EDIT_TOOLS`; powers the expandable inline diff in the chat stream. */
+  path?: string;
+  /** FLUX-674: images attached to a user turn — rendered inline in the user bubble. */
+  attachments?: ChatAttachment[];
+}
+
+/** FLUX-661: file-mutating Claude Code tools whose rows get an expandable inline diff. */
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+
+/** Normalize a tool_use block's name, unwrapping the `mcp__server__tool` prefix. */
+function normalizeToolName(block: any): string {
+  let name = String(block?.name || 'tool');
+  const m = name.match(/^mcp__.+?__(.+)$/); // mcp__event-horizon__list_tickets -> list_tickets
+  if (m && m[1]) name = m[1];
+  return name;
+}
+
+/**
+ * FLUX-661: resolve the absolute `file_path` Claude Code passes to an edit tool into a
+ * repo-relative POSIX path (the shape `fetchDiffFile` / git expect). Edits land in either
+ * the main worktree or the ticket's task worktree; both mirror the same tree, so the
+ * relative path is identical regardless of which root the session ran in. We match the
+ * absolute path against both candidate roots (longest prefix wins) and relativize. Returns
+ * undefined when the path is empty or sits under neither root (then the row stays label-only).
+ */
+function relativizeEditPath(filePath: unknown, taskId: string): string | undefined {
+  if (typeof filePath !== 'string' || !filePath.trim()) return undefined;
+  if (!workspaceRoot) return undefined;
+  const abs = path.resolve(filePath);
+  const roots = [taskWorktreeDir(workspaceRoot, taskId), workspaceRoot];
+  const onWin = process.platform === 'win32';
+  const norm = (p: string) => (onWin ? path.resolve(p).toLowerCase() : path.resolve(p));
+  const absKey = norm(abs);
+  let best: string | undefined;
+  let bestLen = -1;
+  for (const root of roots) {
+    const rootKey = norm(root);
+    const under = absKey === rootKey || absKey.startsWith(rootKey + path.sep);
+    if (under && rootKey.length > bestLen) {
+      bestLen = rootKey.length;
+      best = path.relative(path.resolve(root), abs);
+    }
+  }
+  if (best === undefined || best === '' || best.startsWith('..')) return undefined;
+  return best.split(path.sep).join('/');
+}
+
+/**
+ * A curation op — an append-only structuring operation over the substrate (turn→ticket
+ * membership, extract, merge, archive). FLUX-658 fixes only the SEAM: the verbs that
+ * produce/consume these land in separate tickets. The shape is intentionally open here.
+ */
+export interface CurationOp {
+  op: string;
+  ts?: string;
+  [key: string]: unknown;
+}
+
+/** Classify a raw event into a coarse turn role (envelope metadata; ordering is by seq). */
+export function classifyRole(raw: any): TurnRole {
+  const t = raw?.type;
+  if (t === 'user' || t === 'ask-answer') return 'user';
+  if (t === 'assistant' || t === 'ask-question') return 'assistant';
+  if (t === 'system') return 'system';
+  if (t === 'result') return 'result';
+  if (t === 'tool' || t === 'tool_use' || t === 'tool_result') return 'tool';
+  return 'unknown';
+}
+
+/** Friendly one-line label for a tool_use block ("watch it work"). */
+function toolLabel(block: any): string {
+  const name = normalizeToolName(block);
+  const input = block?.input || {};
+  const hint = input.ticketId ?? input.id ?? input.newStatus ?? input.file_path ?? input.command ?? input.query;
+  const hintStr = hint != null ? String(hint).replace(/\s+/g, ' ').slice(0, 48) : '';
+  return hintStr ? `${name} · ${hintStr}` : name;
+}
+
+/**
+ * Re-derive the ordered chat messages for the portal from turns alone. Turn order is
+ * `seq` (the substrate is append-only and chronological), so we preserve it rather than
+ * sorting — assistant stream-json events don't carry a reliable timestamp. User turns
+ * come from synthetic `{ type: 'user' }` events; assistant events yield a 'text' message
+ * per text block and a 'tool' message per tool_use block (so the user watches the agent
+ * check the board / act). Empty thinking blocks, system, and result events are skipped.
+ *
+ * `ops` is the append-only curation op-log. No ops exist yet (the verbs are separate
+ * tickets); the parameter is present so the projector consumes a log from day one.
+ */
+export function projectTranscript(turns: Turn[], _ops: CurationOp[] = []): TranscriptMessage[] {
+  const out: TranscriptMessage[] = [];
+  for (const turn of turns) {
+    const evt = turn.raw;
+    if (evt?.type === 'user' && typeof evt.text === 'string') {
+      const msg: TranscriptMessage = { role: 'user', text: evt.text, ts: typeof evt.timestamp === 'string' ? evt.timestamp : '' };
+      // FLUX-674: carry pasted-image refs onto the user turn so the bubble renders them
+      // inline on reload / cold resume. Defensively filter to well-formed entries.
+      if (Array.isArray(evt.attachments)) {
+        const atts = evt.attachments
+          .filter((a: any) => a && typeof a.url === 'string' && typeof a.path === 'string')
+          .map((a: any) => ({ url: a.url, path: a.path, fileName: typeof a.fileName === 'string' ? a.fileName : 'image' }));
+        if (atts.length) msg.attachments = atts;
+      }
+      out.push(msg);
+    } else if (evt?.type === 'ask-question' && Array.isArray(evt.questions)) {
+      // FLUX-662: an agent asked the user a structured question. Render it as an assistant
+      // turn so a cold resume shows the question that was posed.
+      const ts = typeof evt.timestamp === 'string' ? evt.timestamp : '';
+      const md = evt.questions
+        .map((q: any) => {
+          const opts = Array.isArray(q.options)
+            ? q.options.map((o: any) => `- ${o?.label ?? ''}`).join('\n')
+            : '';
+          return `**${q?.header || 'Question'}** — ${q?.question ?? ''}\n${opts}`;
+        })
+        .join('\n\n');
+      out.push({ role: 'assistant', text: `❓ ${md}`, ts });
+    } else if (evt?.type === 'ask-answer') {
+      // FLUX-662: the user's answer to a structured question. Render as a user turn so the
+      // resolved selection is visible in history alongside the question above.
+      const ts = typeof evt.timestamp === 'string' ? evt.timestamp : '';
+      if (evt.unanswered) {
+        out.push({ role: 'user', text: '_(no answer — the question timed out)_', ts });
+      } else {
+        const picks = Object.values(evt.answers || {})
+          .map((a: any) => (Array.isArray(a) ? a.join(', ') : String(a)))
+          .filter((s) => s.trim());
+        const note = typeof evt.notes === 'string' && evt.notes.trim() ? ` — ${evt.notes.trim()}` : '';
+        out.push({ role: 'user', text: `✔ ${picks.join(' · ')}${note}`.trim(), ts });
+      }
+    } else if (evt?.type === 'assistant' && Array.isArray(evt.message?.content)) {
+      for (const b of evt.message.content) {
+        if (b?.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
+          out.push({ role: 'assistant', text: b.text, ts: '' });
+        } else if (b?.type === 'tool_use') {
+          const msg: TranscriptMessage = { role: 'tool', text: toolLabel(b), ts: '' };
+          // FLUX-661: for edit-ish tools, attach the normalized name + repo-relative path so
+          // the portal can render an expandable inline diff for that file. Other tools stay
+          // label-only. The turn's streamId is the taskId the session ran under.
+          const name = normalizeToolName(b);
+          if (EDIT_TOOLS.has(name)) {
+            const rel = relativizeEditPath(b?.input?.file_path ?? b?.input?.notebook_path, turn.streamId);
+            if (rel) {
+              msg.tool = name;
+              msg.path = rel;
+            }
+          }
+          out.push(msg);
+        }
+      }
+    }
+  }
+  return out;
+}

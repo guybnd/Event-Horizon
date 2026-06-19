@@ -27,10 +27,12 @@ import {
   type PendingRelaySpec,
 } from '../session-store.js';
 import { getAdapter } from '../agents/index.js';
-import { BOARD_CONVERSATION_ID, startBoardSession, sendBoardInput } from '../agents/claude-code.js';
+import { BOARD_CONVERSATION_ID, startBoardSession, sendBoardInput, resolveAttachmentAbsPaths, attachmentReadInstruction } from '../agents/claude-code.js';
+import type { ChatAttachment } from '../projection.js';
 import { updateTaskWithHistory } from '../task-store.js';
 import { broadcastEvent } from '../events.js';
 import { appendTranscriptEvent, readTranscriptMessages, clearTranscript } from '../transcript.js';
+import { resetBoardDigest } from '../board-digest.js';
 import { dismissNotificationsForTicket } from '../notifications.js';
 import { resolvePersonaPrompt } from '../orchestration-personas.js';
 import { buildActivityEntry } from '../history.js';
@@ -61,6 +63,23 @@ function resolvePermissionMode(
     : configCache?.permissions?.ticketDefault;
   if (configured === 'gated' || configured === 'skip') return configured;
   return surface === 'board' ? 'gated' : 'skip';
+}
+
+/**
+ * FLUX-674: parse the `attachments` field off a chat request into well-formed ChatAttachment
+ * records (pasted-image refs from the composer). Only entries with string `url` + `path` are
+ * kept; the absolute-path resolution + assets-root guard happen later in the claude adapter.
+ */
+function parseChatAttachments(raw: unknown): ChatAttachment[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ChatAttachment[] = [];
+  for (const a of raw) {
+    const url = typeof a?.url === 'string' ? a.url : '';
+    const p = typeof a?.path === 'string' ? a.path : '';
+    if (!url || !p) continue;
+    out.push({ url, path: p, fileName: typeof a?.fileName === 'string' ? a.fileName : 'image' });
+  }
+  return out;
 }
 
 function formatDiffBlock(capture: PromptDiffCapture): string {
@@ -299,6 +318,9 @@ router.delete('/:id/transcript', async (req, res) => {
   if (id !== BOARD_CONVERSATION_ID && !tasksCache[id]) return res.status(404).json({ error: 'Task not found' });
   try {
     await clearTranscript(id);
+    // FLUX-659: resetting the orchestrator conversation drops the digest delta baseline too, so the
+    // next turn's "since last turn" starts clean rather than diffing against a wiped conversation.
+    if (id === BOARD_CONVERSATION_ID) resetBoardDigest();
     broadcastEvent('taskUpdated', { id });
     res.json({ ok: true });
   } catch (err: any) {
@@ -457,6 +479,15 @@ router.post('/:id/cli-session/start', async (req, res) => {
     return res.status(400).json({ error: `Unsupported framework: ${framework}` });
   }
 
+  // FLUX-674: pasted-image attachments on the opening chat turn. Reference their absolute
+  // sidecar paths in the spawn prompt (the agent Reads them); keep the clean text + refs for
+  // the transcript so the bubble re-renders the thumbnail.
+  const chatAttachments = phase === 'chat' ? parseChatAttachments(req.body?.attachments) : [];
+  const attachmentAbs = resolveAttachmentAbsPaths(chatAttachments);
+  const spawnAppendPrompt = attachmentAbs.length
+    ? `${appendPrompt}${attachmentReadInstruction(attachmentAbs)}`
+    : appendPrompt;
+
   try {
     // Inject pre-computed diff for scatter-gather review workers
     let diffBlock: string | undefined;
@@ -466,7 +497,7 @@ router.post('/:id/cli-session/start', async (req, res) => {
 
     await spawnSession(task, {
       framework,
-      appendPrompt,
+      appendPrompt: spawnAppendPrompt,
       effortOverride: effortOverrideRaw,
       model: modelRaw,
       // Per-chat Perms choice wins; otherwise inherit the workspace ticket default
@@ -486,8 +517,9 @@ router.post('/:id/cli-session/start', async (req, res) => {
       diffBlock,
     });
     // FLUX-602: record the user's opening turn for chat sessions in the transcript.
-    if (phase === 'chat' && appendPrompt) {
-      appendTranscriptEvent(id, { type: 'user', text: appendPrompt, timestamp: new Date().toISOString() });
+    // FLUX-674: include attachments; allow an image-only opening turn (empty text).
+    if (phase === 'chat' && (appendPrompt || chatAttachments.length)) {
+      appendTranscriptEvent(id, { type: 'user', text: appendPrompt, attachments: chatAttachments, timestamp: new Date().toISOString() });
     }
     // FLUX-480: persist the launch focus as a small, clean history entry so it
     // survives across sessions and is visible to any agent re-reading the
@@ -749,7 +781,9 @@ router.post('/:id/cli-session/input', async (req, res) => {
   const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
   const user = typeof req.body?.user === 'string' && req.body.user.trim() ? req.body.user.trim() : 'Guy';
   const targetSessionId = typeof req.body?.sessionId === 'string' ? req.body.sessionId.trim() : undefined;
-  if (!message) return res.status(400).json({ error: 'message is required' });
+  // FLUX-674: a turn may carry pasted images; allow an image-only turn (empty text).
+  const attachments = parseChatAttachments(req.body?.attachments);
+  if (!message && attachments.length === 0) return res.status(400).json({ error: 'message is required' });
 
   // Allow targeting a specific session, or fall back to most recent active
   const sessionId = targetSessionId || cliSessionIdByTaskId.get(id);
@@ -775,7 +809,7 @@ router.post('/:id/cli-session/input', async (req, res) => {
   if (typeof req.body?.effortOverride === 'string') session.effortOverride = req.body.effortOverride.trim() || undefined;
   if (req.body?.permissionMode === 'gated' || req.body?.permissionMode === 'skip') session.permissionMode = req.body.permissionMode;
   try {
-    await adapter.sendInput(session, message, user, workspaceRoot!);
+    await adapter.sendInput(session, message, user, workspaceRoot!, { attachments });
 
     // Clear swimlane when user sends input (they answered the question)
     if (task.swimlane === 'require-input') {

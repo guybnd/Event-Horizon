@@ -5,7 +5,8 @@ import { configCache } from '../config.js';
 import { buildActivityEntry, buildCommentEntry, buildAgentMessageEntry, buildAgentSessionEntry, appendSessionProgress, closeAgentSession, type AgentSessionEntry } from '../history.js';
 import { updateTaskWithHistory, updateAgentSession, tasksCache, estimateCostUSD } from '../task-store.js';
 import { resolveTaskExecutionRoot } from '../task-worktree.js';
-import { workspaceRoot as canonicalWorkspaceRoot } from '../workspace.js';
+import { workspaceRoot as canonicalWorkspaceRoot, getActiveFluxDir, getTaskAssetsDir } from '../workspace.js';
+import { isPathInsideRoot } from '../file-utils.js';
 import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
 import { appendTranscriptLine, appendTranscriptEvent } from '../transcript.js';
@@ -16,7 +17,9 @@ import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
 import { getModulePromptFragments, getModuleMcpServers, getActiveModules, getWorkspaceMcpServers } from '../modules.js';
 import { getProbeStatus } from '../module-probe.js';
 import { getSharedServerUrl, isSharedHttpPlatformProven } from '../shared-mcp-server.js';
-import type { AgentAdapter, CliSessionRecord, ProviderManifest, CliFramework } from './types.js';
+import { buildBoardDigest } from '../board-digest.js';
+import type { AgentAdapter, CliSessionRecord, ProviderManifest, CliFramework, SendInputOptions } from './types.js';
+import type { ChatAttachment } from '../projection.js';
 
 function checkBinaryInstalled(binaryName: string): void {
   const checker = process.platform === 'win32' ? 'where' : 'which';
@@ -262,6 +265,49 @@ export function flushSessionOutput(session: CliSessionRecord, force = false) {
     session.flushTimer = undefined;
     enqueueSessionWrite(session, flushNow);
   }, 1000);
+}
+
+/**
+ * FLUX-674: resolve chat image attachments (paste/drop in the composer) to absolute on-disk
+ * paths under the per-ticket asset sidecar. Each attachment's `path` is flux-dir-relative
+ * (`assets/<id>/foo.png`, as returned by the asset-upload route). We resolve against the active
+ * flux dir and hard-guard that the result stays inside the assets root (defense-in-depth against
+ * path traversal) and actually exists on disk; anything that fails is dropped. Returns the
+ * absolute paths the agent will `Read`.
+ */
+export function resolveAttachmentAbsPaths(attachments: ChatAttachment[] | undefined): string[] {
+  if (!Array.isArray(attachments) || attachments.length === 0) return [];
+  let assetsRoot: string;
+  let fluxDir: string;
+  try {
+    assetsRoot = getTaskAssetsDir();
+    fluxDir = getActiveFluxDir();
+  } catch {
+    return [];
+  }
+  const out: string[] = [];
+  for (const a of attachments) {
+    const rel = typeof a?.path === 'string' ? a.path.trim() : '';
+    if (!rel) continue;
+    const abs = path.resolve(fluxDir, rel);
+    if (!isPathInsideRoot(assetsRoot, abs)) continue;
+    if (!fs.existsSync(abs)) continue;
+    out.push(abs);
+  }
+  return out;
+}
+
+/**
+ * FLUX-674: the prompt suffix that makes the agent see pasted images. The `claude` CLI is
+ * driven via `-p "<prompt>"` (not a stream-json content-block stdin), so an image reaches the
+ * model by referencing its absolute path and asking the agent to open it with the Read tool —
+ * which renders images visually. Returns '' when there are no attachments.
+ */
+export function attachmentReadInstruction(absPaths: string[]): string {
+  if (absPaths.length === 0) return '';
+  const n = absPaths.length;
+  const list = absPaths.map((p) => `- ${p}`).join('\n');
+  return `\n\n[The user attached ${n} image${n === 1 ? '' : 's'}. Use the Read tool to view ${n === 1 ? 'it' : 'them'} before responding:\n${list}\n]`;
 }
 
 export function buildInitialPrompt(task: any, appendPrompt: string, opts?: { diffBlock?: string | undefined; phase?: string | undefined }): string {
@@ -858,8 +904,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     return startCliSession(session, task, appendPrompt, effortOverride, workspaceRoot);
   }
 
-  async sendInput(session: CliSessionRecord, message: string, user: string, workspaceRoot: string): Promise<void> {
-    return sendCliSessionInput(session, message, user, workspaceRoot);
+  async sendInput(session: CliSessionRecord, message: string, user: string, workspaceRoot: string, opts?: SendInputOptions): Promise<void> {
+    return sendCliSessionInput(session, message, user, workspaceRoot, opts);
   }
 
   stop(session: CliSessionRecord): void {
@@ -867,7 +913,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   }
 }
 
-export async function sendCliSessionInput(session: CliSessionRecord, message: string, user: string, workspaceRoot: string) {
+export async function sendCliSessionInput(session: CliSessionRecord, message: string, user: string, workspaceRoot: string, opts?: SendInputOptions) {
   const id = session.taskId;
   const binaryName = session.command;
   // FLUX-519 review: resume in the SAME root the session started in; refuse to fall
@@ -887,15 +933,27 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   captureTurnStartState(session, id);
   void clearNeedsActionIfSet(id);
 
-  // FLUX-602: record the user's turn in the durable transcript (raw tier).
-  appendTranscriptEvent(id, { type: 'user', text: message, timestamp: inputAt });
+  // FLUX-674: pasted-image attachments for this turn. Resolve to absolute sidecar paths the
+  // agent can Read; keep the metadata for the durable transcript so the bubble re-renders.
+  const attachments = opts?.attachments ?? [];
+  const attachmentAbsPaths = resolveAttachmentAbsPaths(attachments);
 
+  // FLUX-602: record the user's turn in the durable transcript (raw tier). The image refs ride
+  // on the turn (FLUX-674) so a reload / cold resume re-presents them.
+  appendTranscriptEvent(id, { type: 'user', text: message, attachments, timestamp: inputAt });
+
+  // History comment shows the user's words plus a note of any attached files.
+  const fileNote = attachments.length
+    ? `\n\n📎 ${attachments.map((a) => a.fileName || 'image').join(', ')}`
+    : '';
+  const historyComment = `${message}${fileNote}`.trim();
   await updateTaskWithHistory(id, {
     updatedBy: user,
-    entries: [buildCommentEntry(user, message, inputAt)],
+    entries: [buildCommentEntry(user, historyComment, inputAt)],
   });
 
-  const safeMessage = message.replace(/\0/g, '');
+  // Effective prompt to the CLI = the user's text + a Read-the-image instruction (FLUX-674).
+  const safeMessage = `${message.replace(/\0/g, '')}${attachmentReadInstruction(attachmentAbsPaths)}`;
   const memberScopeArgs = [...buildMemberScopeArgs(), ...buildGroupDocsScopeArg(workspaceRoot)];
   const task = tasksCache[id] as any;
   const moduleMcpArgs = buildSpawnMcpConfigArgs(session.phase, Array.isArray(task?.tags) ? task.tags : undefined);
@@ -999,6 +1057,7 @@ function spawnClaudeForBoard(claudeArgs: string[], executionRoot: string): Retur
 
 function buildBoardPrompt(firstMessage: string): string {
   const key = configCache.projects?.[0] || 'PROJECT';
+  const digest = buildBoardDigest();
   return [
     'You are the Event Horizon board orchestrator — a persistent chat for the whole board, not tied to any single ticket. You are powerful: you have the full "event-horizon" MCP toolset (list/get/create/update tickets, change_status, branches, comments, …) plus file reading, editing, bash, and subagents. Use whatever the task genuinely calls for.',
     '',
@@ -1006,10 +1065,12 @@ function buildBoardPrompt(firstMessage: string): string {
     'For board and ticket actions, prefer the event-horizon MCP tools over editing ticket files by hand.',
     'When the user asks to GROOM, IMPLEMENT, REVIEW, or FINALIZE a specific ticket, DISPATCH it rather than doing that ticket\'s work here: call start_session(ticketId, phase) to launch the phase session on that ticket (it runs in the ticket\'s own scope and returns immediately), then tell the user to open that ticket\'s chat to drive it.',
     'Propose and CONFIRM before anything destructive or irreversible (status changes, deletions). Don\'t silently restructure the board.',
+    'BOARD-REBASE RITUAL: when asked to triage, "rebase the board", or at the end of a session, do NOT mutate the board directly — call propose_board_rebase with a BATCH of items so the user approves/rejects them in one pass. Each item is { kind, targets, summary, rationale }, kind ∈ promote (extract a chat/turns into a new card) · fold (merge a stream into another) · archive (retire) · dispatch (start a phase session) · status (move a ticket) · leave (keep it in this thread). The restructuring verbs (extract_ticket, merge_tickets, archive_ticket) and change_status are GATED — reorganize the board through proposals, not direct calls. When unsure about an item, propose it as "leave" (it stays in this durable thread) — never drop it.',
     'To ask the user a structured question, call the ask_user_question tool — it shows an interactive picker in this chat and returns their choice so you continue the same turn. Never assume when a quick question would resolve ambiguity; ask.',
-    `When you reference a ticket in prose, write it as \`${key}-123 (short title)\` the first time it appears — the bare id is rendered as an interactive chip, but spelling out the title keeps the message readable before the reader hovers.`,
+    `When you reference a ticket in prose, always write its full id (e.g. \`${key}-123\`) — every single time, including repeat mentions, shorthand lists, and x/y comparisons. Never abbreviate to a bare number (a bare \`123\` cannot render as a chip). The full id renders as an interactive chip; on first mention spell out the title too — \`${key}-123 (short title)\` — to keep the message readable before the reader hovers.`,
     'You run at the workspace root, with the whole board in scope.',
     '',
+    ...(digest ? [digest, ''] : []),
     firstMessage,
   ].join('\n');
 }
@@ -1083,10 +1144,14 @@ export async function sendBoardInput(session: CliSessionRecord, message: string,
   session.pausedForInput = false;
   appendTranscriptEvent(BOARD_CONVERSATION_ID, { type: 'user', text: message, timestamp: inputAt });
   const safeMessage = message.replace(/\0/g, '');
+  // Prepend the fresh triage digest to the prompt sent to claude — NOT to the transcript above,
+  // which keeps the user's verbatim message (FLUX-659 push half).
+  const digest = buildBoardDigest();
+  const promptWithDigest = digest ? `${digest}\n\n${safeMessage}` : safeMessage;
   const meArgs = modelEffortArgs(session, 'medium');
   const claudeArgs = session.claudeSessionId
-    ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...boardMcpArgs()]
-    : ['-p', safeMessage, '--output-format', 'stream-json', '--verbose', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...boardMcpArgs()];
+    ? ['-p', promptWithDigest, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...boardMcpArgs()]
+    : ['-p', promptWithDigest, '--output-format', 'stream-json', '--verbose', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...boardMcpArgs()];
   session.args = claudeArgs;
   const proc = spawnClaudeForBoard(claudeArgs, session.executionRoot ?? workspaceRoot);
   wireBoardProc(proc, session, () => { session.status = 'waiting-input'; });

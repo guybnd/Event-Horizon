@@ -10,6 +10,7 @@ import { sendTaskCliInput, updateTask, fetchWorkflows, detachWorktree, type Work
 import { runAgentAction, launchOrchestration, launchPhaseDefault, getOrchestrationMode, phaseCombiner, phaseLaunchStatus, resolvePhaseDefaultId, statusToPhase, type LaunchPhase } from '../agentActions';
 import { type OrchestrationLaunchPlan } from '../components/OrchestrationLauncher';
 import { getArchiveStatus, getReadyForMergeStatus, isPromptableStatus, isTaskAwaitingInput } from '../workflow';
+import { epicDeckSubtasks } from '../lib/decks';
 import { groupSessions, aggregateGroup, isGroupLive, isCombinerPending } from '../orchestration';
 import { resolveEffectiveAgent } from '../utils';
 import { useAnimationControls } from 'framer-motion';
@@ -143,6 +144,14 @@ export function useTaskCardController({
     for (const t of resolvedSubtasks) map.set(t.id, t);
     return map;
   }, [resolvedSubtasks]);
+  // Epic deck contents (FLUX-580): this epic's subtasks that share its column and aren't
+  // already folded into a PR deck (PR precedence). The card folds these into an indigo deck,
+  // mirroring the board's column exclusion (collectEpicFoldedIds) — same rule, no drift.
+  const prMemberIds = useAppSelector((s) => s.prMemberIds);
+  const epicFoldedSubtasks = useMemo(
+    () => (isEpic ? epicDeckSubtasks(task, resolvedSubtasks, prMemberIds) : EMPTY_SUBTASKS),
+    [isEpic, task, resolvedSubtasks, prMemberIds]
+  );
 
   // dnd-kit attributes/listeners/isDragging arrive from the <TaskCard> wrapper via args (above).
 
@@ -1047,6 +1056,7 @@ export function useTaskCardController({
     doneStatuses,
     subtaskDoneCount,
     subtaskTotal,
+    epicFoldedSubtasks,
     attributes, listeners, isDragging,
     style,
     snippet,

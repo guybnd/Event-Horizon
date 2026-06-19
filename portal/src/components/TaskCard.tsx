@@ -25,6 +25,7 @@ import { CardCommentPopover } from './task-card/CardCommentPopover';
 import { CardSubtaskPopover } from './task-card/CardSubtaskPopover';
 import { CardDescriptionPopup } from './task-card/CardDescriptionPopup';
 import { PrDeckSection } from './PrDeckCard';
+import { TaskDeck } from './TaskDeck';
 
 // Violet wash for PR cards — a translucent violet gradient layered over the eh-card bg
 // (inline so it beats eh-card's unlayered background). Module-level so it's allocated once,
@@ -223,6 +224,19 @@ export const TaskCardInner = memo(function TaskCardInner({
 
                 {c.isEpic && (
                   <CardSubtaskProgress c={c} />
+                )}
+
+                {/* Epic deck (FLUX-580): same-column subtasks fold under their epic, mirroring
+                    the PR members deck. Whole-epic progress (above) stays; this folds only the
+                    subtasks sharing this epic's column. Not on overlay/compact cards (a folded
+                    epic doesn't recurse into a nested deck). */}
+                {c.isEpic && !isOverlay && !compact && (
+                  <TaskDeck
+                    id={`epic-deck-${task.id}`}
+                    items={c.epicFoldedSubtasks}
+                    label={(n) => `${n} subtask${n === 1 ? '' : 's'}`}
+                    accent="indigo"
+                  />
                 )}
 
                 {!compact && <CardFooterRow task={task} isOverlay={isOverlay} c={c} />}

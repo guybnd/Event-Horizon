@@ -1,4 +1,4 @@
-import { uploadTaskAsset } from './api';
+import { uploadTaskAsset, type TaskAssetUploadResult } from './api';
 
 const SUPPORTED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/svg+xml']);
 const SUPPORTED_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.svg']);
@@ -39,6 +39,19 @@ function readFileAsBase64(file: File) {
 
     reader.readAsDataURL(file);
   });
+}
+
+/**
+ * FLUX-674: upload a single pasted/dropped image for the ticket chat composer. Returns the
+ * stored asset ({ url, path, fileName }) — the same shape the chat carries as a ChatAttachment.
+ * Throws on an unsupported file type so the composer can surface the reason.
+ */
+export async function uploadChatImage(taskId: string, file: File): Promise<TaskAssetUploadResult> {
+  if (!isSupportedImageFile(file)) {
+    throw new Error(buildUnsupportedImageMessage([file]));
+  }
+  const content = await readFileAsBase64(file);
+  return uploadTaskAsset(taskId, { fileName: file.name || 'image', mimeType: file.type, content });
 }
 
 export async function uploadTaskImageMarkdownLinks(taskId: string, files: File[]) {

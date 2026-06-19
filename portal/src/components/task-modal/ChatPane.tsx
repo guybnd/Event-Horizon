@@ -74,8 +74,10 @@ export function ChatPane({ task }: { task: Task }) {
         linkifyTickets
         onSend={chat.send}
         onStop={chat.stop}
+        onUploadImage={chat.uploadImage}
         questionPicker={<ChatQuestionPicker conversationId={task.id} />}
         actions={<TicketActionBar task={task} />}
+        diffBranch={task.branch}
       />
     </div>
   );

@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import type { JSX } from 'react';
-import { GitMerge, ChevronDown, ChevronRight, Check, X, Clock, AlertTriangle, Layers, ShieldCheck, Loader2, Bot, Wrench, RotateCcw, Undo2, Plus, Link2 } from 'lucide-react';
+import { GitMerge, Check, X, Clock, AlertTriangle, ShieldCheck, Loader2, Bot, Wrench, RotateCcw, Undo2, Plus, Link2 } from 'lucide-react';
 import type { Task } from '../types';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import type { TaskCardController } from '../hooks/useTaskCardController';
-import { TaskCard } from './TaskCard';
+import { TaskDeck } from './TaskDeck';
 import { mergePr, retryPr, updateTask, adoptPr } from '../api';
 import { launchPhaseDefault } from '../agentActions';
 import { resolveEffectiveAgent } from '../utils';
@@ -32,7 +32,6 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
   const taskById = useAppSelector((s) => s.taskById);
   const currentUser = useAppSelector((s) => s.currentUser);
   const config = useAppSelector((s) => s.config);
-  const [unwound, setUnwound] = useState(false);
   const [confirmMerge, setConfirmMerge] = useState(false);
   const [merging, setMerging] = useState(false);
   const [mergeErr, setMergeErr] = useState('');
@@ -195,27 +194,14 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
         )}
       </div>
 
-      {/* Deck — folded members */}
+      {/* Deck — folded members (FLUX-567 / FLUX-580 shared primitive) */}
       {memberCount > 0 ? (
-        <div className="mb-1">
-          <button
-            onClick={() => setUnwound((u) => !u)}
-            aria-expanded={unwound}
-            aria-controls={`pr-deck-${task.id}`}
-            className="flex w-full items-center gap-1.5 rounded-md px-1 py-1 text-left text-[11px] font-semibold text-violet-700 transition-colors hover:bg-violet-100/60 dark:text-violet-300 dark:hover:bg-violet-500/10"
-          >
-            {unwound ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-            <Layers className="h-3.5 w-3.5" />
-            {memberCount} ticket{memberCount === 1 ? '' : 's'} in this PR
-          </button>
-          {unwound && (
-            <div id={`pr-deck-${task.id}`} className="mt-1.5 border-l-2 border-violet-200 pl-2 dark:border-violet-500/30">
-              {members.map((m) => (
-                <TaskCard key={m.id} task={m} compact hideStatusBadge />
-              ))}
-            </div>
-          )}
-        </div>
+        <TaskDeck
+          id={`pr-deck-${task.id}`}
+          items={members}
+          label={(n) => `${n} ticket${n === 1 ? '' : 's'} in this PR`}
+          accent="violet"
+        />
       ) : continuing ? (
         // Unattached PR (FLUX-569): adopt an existing ticket or create a fresh one to hold the work.
         <div className="mb-1 border-t border-violet-200/60 pt-2 dark:border-violet-500/20">

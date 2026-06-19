@@ -72,6 +72,8 @@ Currently broadcast events:
 | `permission-resolved` | `permission-prompts.ts` (on resolve **or** 120s timeout) | yes — clears the resolved/expired approval from the prompt. Payload: `{ id }`. |
 | `ask-question` | `ask-questions.ts` (agent calls `ask_user_question`, FLUX-662) | yes — renders an interactive picker inline in the originating chat (`ChatQuestionPicker`, routed by `conversationId`) or a global overlay (`QuestionPrompts`) when unrouted. Payload: `{ id, questions, conversationId, createdAt }`. |
 | `ask-question-resolved` | `ask-questions.ts` (on answer **or** 4min timeout) | yes — clears the answered/expired question from the picker. Payload: `{ id }`. |
+| `board-rebase-proposed` | `board-rebase.ts` (orchestrator calls `propose_board_rebase`, FLUX-659) | yes — renders the batch-approval panel inline in the orchestrator dock (`ChatBoardRebasePanel`, routed by `conversationId`). Payload: `{ id, items, conversationId, createdAt }`. |
+| `board-rebase-resolved` | `board-rebase.ts` (on Apply approved / Dismiss) | yes — clears the resolved batch from the panel. Payload: `{ id, results: [{ id, kind, ok, message }] }`. |
 
 **Key consequence:** ticket-state freshness on the portal does *not* come from SSE today. It comes from polling (Channel 3). SSE is only used for high-frequency agent activity that would be wasteful to poll for.
 

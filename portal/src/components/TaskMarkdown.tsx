@@ -397,6 +397,22 @@ function linkifyTicketIds(children: ReactNode): ReactNode {
   });
 }
 
+/** Inline `code` renderer. When linkification is on and a code span's content is exactly a
+ *  single ticket id that resolves to a real ticket, render the enriched <TicketChip> instead
+ *  of the verbatim code box — covers backticked ids like `` `FLUX-630` `` (the common case
+ *  when the model formats ids as code). Resolution is checked at this component boundary
+ *  (unconditional useTaskById), so no conditional hooks; non-resolving spans stay code. */
+function MarkdownInlineCode({ children, linkify }: { children: ReactNode; linkify: boolean }) {
+  const candidate = linkify ? singleTicketId(children) : undefined;
+  const resolved = useTaskById(candidate);
+  if (candidate && resolved) return <TicketChip id={candidate} />;
+  return (
+    <code className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-800 dark:bg-black/30 dark:text-gray-100">
+      {children}
+    </code>
+  );
+}
+
 /** Markdown link renderer. When linkification is on and the link's visible text (or href)
  *  is a single ticket id that resolves to a real ticket, render the enriched <TicketChip>
  *  instead of a plain `<a>` — covers `[FLUX-586](…)`. Hooks live in TicketChip/useTaskById,
@@ -481,7 +497,7 @@ export const TaskMarkdown = memo(function TaskMarkdown({
             if (isBlock) {
               return <code className="block p-4 text-sm text-gray-100">{children}</code>;
             }
-            return <code className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-800 dark:bg-black/30 dark:text-gray-100">{children}</code>;
+            return <MarkdownInlineCode linkify={linkifyTickets}>{children}</MarkdownInlineCode>;
           },
           pre: ({ children }) => <pre className="mb-4 w-full overflow-x-auto rounded-lg bg-black/90 break-normal">{children}</pre>,
           blockquote: ({ children }) => (

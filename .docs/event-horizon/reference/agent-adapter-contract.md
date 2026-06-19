@@ -25,10 +25,13 @@ export interface AgentAdapter {
     message: string,
     user: string,
     workspaceRoot: string,
+    opts?: SendInputOptions, // FLUX-674: optional per-turn extras (image attachments)
   ): Promise<void>;
   stop(session: CliSessionRecord): void;
 }
 ```
+
+`SendInputOptions` carries optional per-turn extras: `{ attachments?: ChatAttachment[] }` (FLUX-674). `attachments` are pasted-image refs the chat composer uploaded; the Claude adapter resolves each to its absolute sidecar path and appends a Read-the-image instruction to the resumed prompt (the `claude` CLI is driven via `-p`, not a stream-json content-block stdin). Adapters that don't support image input ignore it — the param is optional, so their 4-arg implementations still satisfy the interface.
 
 Three adapters ship today: `ClaudeCodeAdapter`, `CopilotAdapter`, `GeminiAdapter`. They are registered by string id in [`agents/index.ts`](../../../engine/src/agents/index.ts):
 
@@ -125,6 +128,8 @@ Called when the user types into an active session. All three adapters forward to
 5. Broadcasts `taskUpdated`.
 
 For Claude Code's "resume" mode, `sendCliSessionInput` instead spawns a new `claude --resume <claudeSessionId>` process and re-attaches stream handlers.
+
+**Image attachments (FLUX-674).** When `opts.attachments` is present, `sendCliSessionInput` resolves each ref to its absolute path under the per-ticket asset sidecar (`resolveAttachmentAbsPaths`, guarded to stay inside the assets root), records the refs on the transcript user turn (so the bubble re-renders on reload), notes the filenames in the history comment, and appends `attachmentReadInstruction(...)` — a "view these with the Read tool" block listing the absolute paths — to the `-p` prompt. The opening turn takes the same treatment via the `/cli-session/start` route.
 
 ## Lifecycle: `stop`
 

@@ -47,6 +47,8 @@ export interface AppStoreState {
   taskById: Map<string, Task>;
   /** branch → PR ticket id, for the `→ PR-n` pile marker on linked-but-unfolded tickets. */
   prByBranch: Map<string, string>;
+  /** Ids folded into a PR deck (every PR's members) — PR membership wins over epic folding (FLUX-580). */
+  prMemberIds: Set<string>;
   /** Branches that currently have a live git worktree (FLUX-516) — powers badges + filter. */
   worktreeBranches: Set<string>;
   worktrees: WorktreeInfo[];
@@ -137,6 +139,7 @@ function createInitialState(): AppStoreState {
     tasks: [],
     taskById: new Map(),
     prByBranch: new Map(),
+    prMemberIds: new Set(),
     worktreeBranches: new Set(),
     worktrees: [],
     liveSessions: {},

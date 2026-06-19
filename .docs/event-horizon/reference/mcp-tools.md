@@ -42,6 +42,7 @@ Key properties:
 | [`list_tickets`](#list_tickets) | Read | — |
 | [`get_board_config`](#get_board_config) | Read | — |
 | [`get_board_state`](#get_board_state) | Read | — |
+| [`propose_board_rebase`](#propose_board_rebase) | Orchestrator (propose) | — |
 | [`get_project_group`](#get_project_group) | Read | — |
 | [`list_group_docs`](#list_group_docs) | Group docs — Read | — |
 | [`read_group_doc`](#read_group_doc) | Group docs — Read | — |
@@ -143,6 +144,23 @@ Live snapshot of board activity for the **orchestrator** (FLUX-604) — the *pul
 - `statusCounts` — `{ <status>: <count> }` over all cached tickets.
 
 Read-only and side-effect-free — a snapshot, not a subscription. The orchestrator calls it to see the field before dispatching work (`start_session`) or to check on running sessions.
+
+### `propose_board_rebase`
+
+The **board-rebase ritual** (FLUX-659) — the orchestrator's structured way to *propose* a batch of board restructurings the human approves in one pass, instead of mutating the board directly. **Hard rule: the orchestrator proposes, never silently restructures** — nothing applies until the user clicks *Apply approved*.
+
+**Input:** `{ items: Array<{ kind, targets, summary, rationale?, newStatus?, phase?, into? }> }`, where:
+
+- `kind ∈ promote | fold | archive | dispatch | status | leave` — `promote` extracts a chat/turns into a new card ([FLUX-656](../../../engine/src/board-rebase.ts) `extract_ticket`); `fold` merges a stream into another (FLUX-657 `merge_tickets`); `archive` retires the ticket(s); `dispatch` starts a phase session; `status` moves a ticket; `leave` keeps it in the orchestrator thread (the safe default — never drop an item).
+- `targets` — ticket id(s) the item acts on (for `fold`, the source stream(s)).
+- `summary` / `rationale` — shown in the approval panel; `rationale` is also recorded as a comment when applied.
+- `newStatus` (for `status`), `phase` (for `dispatch`), `into` (for `fold`).
+
+**Behavior:** **fire-then-resolve** — POSTs to [`/api/board/board-rebase`](rest-api.md), which **parks** the batch and broadcasts `board-rebase-proposed` ([realtime channels](realtime-channels.md)), then **returns immediately** (unlike [`permission_prompt`](#permission_prompt), which blocks the CLI synchronously). The portal renders the batch in the orchestrator dock with a per-item toggle (default-checked) + *Apply approved* / *Dismiss*; applying POSTs the approved subset to `/api/board/board-rebase-resolve`, which executes each approved item via the **verb registry** in [`engine/src/board-rebase.ts`](../../../engine/src/board-rebase.ts) and broadcasts `board-rebase-resolved`.
+
+**Verb registry (v1):** `leave` / `status` / `archive` / `dispatch` run live; `promote` / `fold` are *proposable and approvable now* but no-op with a clear `pending <ticket>` result until [FLUX-656](../architecture/code-map.md) / FLUX-657 register their executor (their turn-slicing rests on the FLUX-658 substrate).
+
+**Teeth:** the mutating verbs `change_status`, `archive_ticket`, and (speculatively) `extract_ticket` / `merge_tickets` are in the [`permission_prompt`](#permission_prompt) **Confirm** tier, so a *direct* orchestrator call to mutate is gated even if it bypasses this ritual — "never silently restructure" is enforced by the gate, not just the prompt.
 
 ### `get_project_group`
 
@@ -457,7 +475,7 @@ Create a child ticket and link it from the parent's `subtasks` array atomically.
 **Policy** (`permissionDecisionFor` in [`mcp-server.ts`](../../../engine/src/mcp-server.ts)):
 
 - **Auto-allow** — reads and safe tools (`get_ticket`, `list_tickets`, `get_board_config`, `Read`, `Glob`, `Grep`, `WebFetch`, …) and anything not in the confirm set.
-- **Confirm** — destructive ops `change_status`, `delete_branch`, `finish_ticket`, and `Bash` route through a human Allow/Deny round-trip: the tool POSTs to [`/api/board/permission-request`](rest-api.md), which parks the call until a human resolves it in the portal (or 120s elapses → auto-deny). The synchronous CLI contract is satisfied by holding the HTTP response open until resolution.
+- **Confirm** — destructive ops `change_status`, `delete_branch`, `finish_ticket`, `Bash`, and the restructuring verbs `archive_ticket` / `extract_ticket` / `merge_tickets` (FLUX-659 teeth — the last two speculative until FLUX-656/657 ship) route through a human Allow/Deny round-trip: the tool POSTs to [`/api/board/permission-request`](rest-api.md), which parks the call until a human resolves it in the portal (or 120s elapses → auto-deny). The synchronous CLI contract is satisfied by holding the HTTP response open until resolution.
 
 The confirm round-trip emits the `permission-request` / `permission-resolved` realtime events ([realtime channels](realtime-channels.md)) so the portal can show the approval prompt. Gating is per-session: see [permission mode](#permission-mode) below.
 
