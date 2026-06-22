@@ -1,7 +1,7 @@
 ---
 id: FLUX-366
 title: 'Phase 0: Adapter test safety net (parser + lifecycle + contract)'
-status: Todo
+status: In Progress
 priority: Medium
 effort: L
 assignee: unassigned
@@ -15,7 +15,18 @@ history:
   - type: activity
     user: Agent
     date: '2026-06-22T11:32:29.348Z'
+    comment: Created ticket.
+  - type: activity
+    user: Agent
+    date: '2026-06-22T11:32:29.348Z'
     comment: Created as subtask of FLUX-348.
+  - type: status_change
+    from: Todo
+    to: In Progress
+    user: Agent
+    date: '2026-06-22T11:33:14.368Z'
+branch: flux/FLUX-366-phase-0-adapter-test-safety-net-parser-lifecycle-contract
+baselineCommit: ded2315727d5169c9607dbfc21bd1f9edb1f02d0
 ---
 ## Problem
 
