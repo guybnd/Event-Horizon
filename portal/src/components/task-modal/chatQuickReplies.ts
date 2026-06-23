@@ -7,6 +7,10 @@ import type { QuickReply } from './ChatView';
 
 const MAX_QUICK_REPLIES = 4;
 
+// FLUX-649: obvious decline/destructive choices (skip / no / cancel / none / …) get tagged
+// `danger` so they render red in the chip row — the choice reads as destructive before tap.
+const DECLINE_RE = /^(skip|no|cancel|none|decline|abort|don'?t)\b/i;
+
 function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s;
 }
@@ -48,7 +52,7 @@ export function parseQuickReplies(task: Task, requireInputStatus: string): Quick
     // Skip lines too long to be a discrete choice, or duplicates.
     if (!label || label.length > 60 || seen.has(label.toLowerCase())) continue;
     seen.add(label.toLowerCase());
-    options.push({ label: truncate(label, 40), value: label });
+    options.push({ label: truncate(label, 40), value: label, tone: DECLINE_RE.test(label) ? 'danger' : undefined });
     if (options.length >= MAX_QUICK_REPLIES) break;
   }
 

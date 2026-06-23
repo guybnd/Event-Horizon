@@ -1,9 +1,13 @@
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { useDroppable } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { TaskCard } from './TaskCard';
+import { EpicStackDeck } from './EpicStackDeck';
 import type { ColumnLiveEvent, Task, TaskLiveEvent } from '../types';
-import { Plus, CirclePause, Bot, Clock, Terminal, GitPullRequest, HandHelping } from 'lucide-react';
+import type { CrossColumnCluster } from '../lib/decks';
+import { computeEpicRollup, getDoneStatuses } from '../lib/epics';
+import { Plus, CirclePause, Bot, Clock, Terminal, GitPullRequest, HandHelping, X } from 'lucide-react';
+import { updateTask } from '../api';
 import { useAppSelector, useAppActions, useLiveSession } from '../store/useAppSelector';
 import { getStatusTint, tintColumnWash } from '../statusStyles';
 import { isTaskAwaitingInput, needsAction } from '../workflow';
@@ -93,22 +97,61 @@ const ColumnLiveFooter = memo(function ColumnLiveFooter({ runningTasks }: { runn
   );
 });
 
+/**
+ * Proxy deck for a cross-column subtask cluster (FLUX-677). When ≥2 subtasks of one epic pile up
+ * in a column the epic isn't in, they group here under a reduced "mirror" of the epic card
+ * (icon · title · overall progress, click-through to the real epic), with the subtasks themselves
+ * grouped in the shared {@link EpicStackDeck} — collapsed they peek as a card stack, expanded they
+ * fan out as full TaskCards. The mirror reads as "these belong to that epic, which lives elsewhere".
+ */
+const ProxyDeck = memo(function ProxyDeck({ epic, subtasks, column, openEpic }: {
+  epic: Task;
+  subtasks: Task[];
+  column: string;
+  openEpic: (task: Task) => void;
+}) {
+  const taskById = useAppSelector((s) => s.taskById);
+  const config = useAppSelector((s) => s.config);
+  // The mirror shows the epic's OVERALL completion (all its subtasks), not just this column's
+  // cluster — shared with the board card + Epics screen via lib/epics, so the number never drifts.
+  const epicProgress = useMemo(() => {
+    const rollup = computeEpicRollup(epic, taskById, getDoneStatuses(config));
+    return { done: rollup.done, total: rollup.total };
+  }, [epic, taskById, config]);
+  return (
+    <EpicStackDeck
+      idPrefix={`epic-cluster-${epic.id}-${column}`}
+      items={subtasks}
+      epic={epic}
+      epicProgress={epicProgress}
+      openEpic={openEpic}
+    />
+  );
+});
+
 interface ColumnProps {
   id: string;
   title: string;
   tasks: Task[];
+  /** Cross-column epic clusters (FLUX-677) to render as proxy decks in this column. */
+  clusters?: CrossColumnCluster[];
+  /** Same-column epic decks (FLUX-699): epic id → its folded subtasks, rendered as a peeking
+   *  card stack directly below the epic card (the epic is the deck's top card). */
+  foldedByEpic?: Map<string, Task[]>;
   parentByChildId: Map<string, Task>;
   liveEvent?: ColumnLiveEvent;
   taskLiveEvents: Record<string, TaskLiveEvent>;
   getTaskTravelDirection: (taskId: string) => -1 | 0 | 1;
 }
 
-export const Column = memo(function Column({ id, title, tasks, parentByChildId, liveEvent, taskLiveEvents, getTaskTravelDirection }: ColumnProps) {
+export const Column = memo(function Column({ id, title, tasks, clusters, foldedByEpic, parentByChildId, liveEvent, taskLiveEvents, getTaskTravelDirection }: ColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id });
-  const { openTaskModal, markAllCommentsRead } = useAppActions();
+  const { openTask, openTaskModal, markAllCommentsRead } = useAppActions();
   const config = useAppSelector((s) => s.config);
   const readComments = useAppSelector((s) => s.readComments);
   const prByBranch = useAppSelector((s) => s.prByBranch);
+
+  const openTaskByMode = useCallback((task: Task) => openTask(task), [openTask]);
 
   const columnUnreadByTask = useMemo(() => tasks.map(task => {
     const readIds = new Set(readComments[task.id] ?? []);
@@ -130,6 +173,31 @@ export const Column = memo(function Column({ id, title, tasks, parentByChildId, 
   const showLiveFooter = runningTasks.length > 0 && tasks.length <= 4;
 
   const tint = getStatusTint(config, title);
+  const boardFx = config?.boardFx;
+  const allTasks = useAppSelector((s) => s.tasks);
+
+  const doneStreakCount = useMemo(() => {
+    if (boardFx?.doneStreak === false || id !== 'Done') return 0;
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayMs = todayStart.getTime();
+    let count = 0;
+    for (const task of allTasks) {
+      for (const e of task.history ?? []) {
+        if (e.type !== 'status_change') continue;
+        const to = (e as { to?: string }).to ?? '';
+        if (!/done/i.test(to)) continue;
+        if (new Date(e.date).getTime() >= todayMs) { count++; break; }
+      }
+    }
+    return count;
+  }, [allTasks, boardFx?.doneStreak, id]);
+
+  const streakTier = doneStreakCount >= 15 ? { icon: '💎', label: 'Diamond', cls: 'text-cyan-400' }
+    : doneStreakCount >= 10 ? { icon: '🏆', label: 'Platinum', cls: 'text-violet-400' }
+    : doneStreakCount >= 5  ? { icon: '🥇', label: 'Gold', cls: 'text-amber-400' }
+    : doneStreakCount >= 3  ? { icon: '🥉', label: 'Bronze', cls: 'text-orange-500' }
+    : null;
 
   return (
     <div className="flex flex-col w-[320px] min-w-[280px] flex-1 max-w-[420px]">
@@ -140,7 +208,15 @@ export const Column = memo(function Column({ id, title, tasks, parentByChildId, 
           <h2 className="text-sm font-bold uppercase tracking-[0.14em] text-gray-700 dark:text-gray-200">
             {title}
           </h2>
-          <span className={`bg-gray-200 dark:bg-white/10 text-gray-600 dark:text-gray-400 text-xs px-2.5 py-0.5 rounded-full font-medium ${liveEvent ? 'column-live-badge' : ''}`}>
+          <span className={`text-xs px-2.5 py-0.5 rounded-full font-medium ${liveEvent ? 'column-live-badge' : ''} ${
+            boardFx?.columnFire !== false && tasks.length >= 20
+              ? 'column-fire-3'
+              : boardFx?.columnFire !== false && tasks.length >= 13
+                ? 'column-fire-2'
+                : boardFx?.columnFire !== false && tasks.length >= 7
+                  ? 'column-fire-1'
+                  : 'bg-gray-200 text-gray-600 dark:bg-white/10 dark:text-gray-400'
+          }`}>
             {tasks.length}
           </span>
           {hasColumnUnread && (
@@ -152,13 +228,25 @@ export const Column = memo(function Column({ id, title, tasks, parentByChildId, 
             </button>
           )}
         </div>
-        {id === 'Done' && tasks.length > 0 && (
-          <button
-            onClick={() => window.dispatchEvent(new CustomEvent('flux:open-release-modal', { detail: { tasks } }))}
-            className="text-xs font-bold bg-primary/10 text-primary hover:bg-primary/20 px-2 py-1 rounded"
-          >
-            Release
-          </button>
+        {id === 'Done' && (
+          <div className="flex items-center gap-2">
+            {streakTier && (
+              <span
+                title={`${streakTier.label} streak — ${doneStreakCount} tickets done today`}
+                className={`select-none text-sm leading-none ${streakTier.cls}`}
+              >
+                {streakTier.icon} {doneStreakCount}
+              </span>
+            )}
+            {tasks.length > 0 && (
+              <button
+                onClick={() => window.dispatchEvent(new CustomEvent('flux:open-release-modal', { detail: { tasks } }))}
+                className="text-xs font-bold bg-primary/10 text-primary hover:bg-primary/20 px-2 py-1 rounded"
+              >
+                Release
+              </button>
+            )}
+          </div>
         )}
       </div>
       
@@ -167,7 +255,7 @@ export const Column = memo(function Column({ id, title, tasks, parentByChildId, 
         style={isOver ? undefined : { backgroundImage: tintColumnWash(tint, 0.08) }}
         className={`flex-1 flex flex-col rounded-2xl p-4 min-h-[500px] transition-all duration-200 border border-transparent ${
           isOver ? 'bg-primary/5 border-primary/20 shadow-[inset_0_0_0_1px_var(--eh-border-accent)]' : 'eh-column'
-        } ${liveEvent ? 'column-live-receiving' : ''}`}
+        } ${liveEvent ? 'column-live-receiving' : ''} ${boardFx?.idleDust !== false && tasks.length === 0 ? 'column-idle-dust' : ''}`}
       >
         {id === 'Grooming' && (
           <button 
@@ -177,6 +265,24 @@ export const Column = memo(function Column({ id, title, tasks, parentByChildId, 
             <Plus className="w-4 h-4" />
             New Task
           </button>
+        )}
+
+        {/* Cross-column subtask clusters (FLUX-677): same-epic subtasks (≥2) that piled up in a
+            column the epic ISN'T in, grouped under a reduced epic "mirror" deck. Rendered at the
+            TOP of the column (not buried below the column's own cards) and outside the
+            SortableContext, so they stay visible even in a busy column. */}
+        {clusters && clusters.length > 0 && (
+          <div className="mb-2">
+            {clusters.map((cluster) => (
+              <ProxyDeck
+                key={cluster.epic.id}
+                epic={cluster.epic}
+                subtasks={cluster.subtasks}
+                column={id}
+                openEpic={openTaskByMode}
+              />
+            ))}
+          </div>
         )}
 
         {tasks.length > 0 && (() => {
@@ -218,13 +324,24 @@ export const Column = memo(function Column({ id, title, tasks, parentByChildId, 
               />
             );
             const prLink = task.kind !== 'pr' && task.branch ? prByBranch.get(task.branch) : undefined;
-            if (!prLink) return <div key={task.id}>{card}</div>;
+            // FLUX-699: an epic's same-column subtasks render as a peeking deck directly BELOW its
+            // card — the epic card is the deck's top card. (A lone cross-column orphan subtask keeps
+            // only the amber `→ <epic>` chip from CardMetadataRow; ≥2 cross-column siblings are
+            // pulled into a ProxyDeck by the Board before they reach here.)
+            const epicDeck = task.kind !== 'pr' ? foldedByEpic?.get(task.id) : undefined;
+            const hasDeck = !!(epicDeck && epicDeck.length > 0);
+            if (!prLink && !hasDeck) return <div key={task.id}>{card}</div>;
             return (
               <div key={task.id}>
-                <div className="mb-0.5 ml-1 flex items-center gap-1 text-[10px] font-semibold text-violet-600 dark:text-violet-300" title={`Linked to ${prLink} (not folded — start work to fold it in)`}>
-                  <GitPullRequest className="h-2.5 w-2.5" /> linked to {prLink}
-                </div>
+                {prLink && (
+                  <div className="mb-0.5 ml-1 flex items-center gap-1 text-[10px] font-semibold text-violet-600 dark:text-violet-300" title={`Linked to ${prLink} (not folded — start work to fold it in)`}>
+                    <GitPullRequest className="h-2.5 w-2.5" /> linked to {prLink}
+                  </div>
+                )}
                 {card}
+                {hasDeck && (
+                  <EpicStackDeck idPrefix={`epic-deck-${task.id}`} items={epicDeck!} />
+                )}
               </div>
             );
           };
@@ -256,6 +373,14 @@ export const Column = memo(function Column({ id, title, tasks, parentByChildId, 
                     <HandHelping className="w-3 h-3 text-rose-500" />
                     <span className="text-[10px] font-semibold uppercase tracking-widest text-rose-500 dark:text-rose-400">Needs Action</span>
                     <div className="flex-1 h-px bg-rose-200 dark:bg-rose-800/40" />
+                    <button
+                      type="button"
+                      title="Dismiss all needs-action flags"
+                      onClick={() => needsActionTasks.forEach(t => updateTask(t.id, { needsAction: null } as any))}
+                      className="flex items-center justify-center rounded p-0.5 text-rose-400 hover:bg-rose-100 hover:text-rose-600 dark:hover:bg-rose-800/30 dark:hover:text-rose-300 transition-colors"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
                   </div>
                   <div className="rounded-lg border border-rose-200 dark:border-rose-800/40 bg-rose-50/50 dark:bg-rose-900/10 p-1.5 mb-1">
                     {needsActionTasks.map(renderTask)}

@@ -435,11 +435,31 @@ export function attachStdoutProcessing(
       if (!trimmed) continue;
       try {
         const evt = JSON.parse(trimmed);
-        // FLUX-602: tee every raw stream-json line to the durable per-ticket transcript.
-        appendTranscriptLine(taskId, trimmed);
         if (!session.claudeSessionId && evt.session_id) {
           session.claudeSessionId = evt.session_id;
         }
+        // FLUX-691: token-by-token live streaming. With `--include-partial-messages` the CLI
+        // emits `stream_event` lines wrapping the raw Anthropic SSE events. Surface text deltas
+        // as a lightweight `assistantDelta` SSE for the live chat node, then STOP: partial events
+        // must NOT be teed to the durable transcript (it stays complete-messages-only, so the
+        // taskUpdated/progress-driven refetch path is untouched) and must NOT touch the output
+        // buffers (the complete `assistant` message — handled below — still owns those).
+        if (evt.type === 'stream_event') {
+          const inner = evt.event;
+          if (inner?.type === 'content_block_delta'
+            && inner.delta?.type === 'text_delta'
+            && typeof inner.delta.text === 'string'
+            && inner.delta.text) {
+            broadcastEvent('assistantDelta', {
+              taskId,
+              sessionId: session.sessionHistoryEntry?.sessionId,
+              text: inner.delta.text,
+            });
+          }
+          continue;
+        }
+        // FLUX-602: tee every raw stream-json line to the durable per-ticket transcript.
+        appendTranscriptLine(taskId, trimmed);
         if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
           const toolBlock = evt.message.content.find((b: any) => b.type === 'tool_use');
           if (toolBlock) {
@@ -601,6 +621,8 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     '-p', initialPrompt,
     '--output-format', 'stream-json',
     '--verbose',
+    // FLUX-691: emit partial assistant deltas for token-by-token live streaming in the chat.
+    '--include-partial-messages',
     ...DISALLOW_NATIVE_ASK,
     ...permissionArgs(session),
     // Multi-repo group: put every checked-out member repo in scope (no-op single-repo).
@@ -958,9 +980,10 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   const task = tasksCache[id] as any;
   const moduleMcpArgs = buildSpawnMcpConfigArgs(session.phase, Array.isArray(task?.tags) ? task.tags : undefined);
   const meArgs = modelEffortArgs(session);
+  // FLUX-691: `--include-partial-messages` → token-by-token live streaming on the resume/send path.
   const resumeArgs = session.claudeSessionId
-    ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...memberScopeArgs, ...moduleMcpArgs]
-    : ['-p', safeMessage, '--output-format', 'stream-json', '--verbose', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...memberScopeArgs, ...moduleMcpArgs];
+    ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...memberScopeArgs, ...moduleMcpArgs]
+    : ['-p', safeMessage, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...memberScopeArgs, ...moduleMcpArgs];
 
   let replyProc: ReturnType<typeof spawn>;
   if (process.platform === 'win32') {
@@ -1112,13 +1135,20 @@ function wireBoardProc(proc: ReturnType<typeof spawn>, session: CliSessionRecord
   });
 }
 
-export async function startBoardSession(session: CliSessionRecord, firstMessage: string, workspaceRoot: string) {
+export async function startBoardSession(session: CliSessionRecord, firstMessage: string, workspaceRoot: string, opts?: SendInputOptions) {
   checkBinaryInstalled('claude');
   session.executionRoot = workspaceRoot;
+  // FLUX-676: pasted-image attachments on the opening orchestrator turn. Reference their
+  // absolute sidecar paths in the spawn prompt (the agent Reads them); keep the clean refs
+  // for the transcript so the bubble re-renders the thumbnail on reload / cold resume.
+  const attachments = opts?.attachments ?? [];
+  const attachmentAbsPaths = resolveAttachmentAbsPaths(attachments);
   const claudeArgs = [
-    '-p', buildBoardPrompt(firstMessage),
+    '-p', `${buildBoardPrompt(firstMessage)}${attachmentReadInstruction(attachmentAbsPaths)}`,
     '--output-format', 'stream-json',
     '--verbose',
+    // FLUX-691: token-by-token live streaming for the board orchestrator chat too.
+    '--include-partial-messages',
     // medium by default; the chat picker (FLUX-604) overrides via session.model/effortOverride.
     ...modelEffortArgs(session, 'medium'),
     ...DISALLOW_NATIVE_ASK,
@@ -1128,7 +1158,7 @@ export async function startBoardSession(session: CliSessionRecord, firstMessage:
   session.status = 'running';
   session.args = claudeArgs;
   // First turn: record the user message in the transcript (mirrors the per-ticket chat /start).
-  appendTranscriptEvent(BOARD_CONVERSATION_ID, { type: 'user', text: firstMessage, timestamp: session.startedAt });
+  appendTranscriptEvent(BOARD_CONVERSATION_ID, { type: 'user', text: firstMessage, attachments, timestamp: session.startedAt });
   const proc = spawnClaudeForBoard(claudeArgs, workspaceRoot);
   // Persistent conversation: a finished turn stays RESUMABLE (waiting-input), never
   // terminal. If it ended 'completed', the next message would spawn a fresh session
@@ -1136,22 +1166,28 @@ export async function startBoardSession(session: CliSessionRecord, firstMessage:
   wireBoardProc(proc, session, () => { session.status = 'waiting-input'; });
 }
 
-export async function sendBoardInput(session: CliSessionRecord, message: string, workspaceRoot: string) {
+export async function sendBoardInput(session: CliSessionRecord, message: string, workspaceRoot: string, opts?: SendInputOptions) {
   checkBinaryInstalled('claude');
   const inputAt = new Date().toISOString();
   session.lastInputAt = inputAt;
   session.status = 'running';
   session.pausedForInput = false;
-  appendTranscriptEvent(BOARD_CONVERSATION_ID, { type: 'user', text: message, timestamp: inputAt });
-  const safeMessage = message.replace(/\0/g, '');
+  // FLUX-676: pasted-image attachments for this turn. Resolve to absolute sidecar paths the
+  // agent can Read; keep the metadata on the transcript turn so the bubble re-renders.
+  const attachments = opts?.attachments ?? [];
+  const attachmentAbsPaths = resolveAttachmentAbsPaths(attachments);
+  appendTranscriptEvent(BOARD_CONVERSATION_ID, { type: 'user', text: message, attachments, timestamp: inputAt });
+  // Effective prompt to the CLI = the user's text + a Read-the-image instruction (FLUX-676).
+  const safeMessage = `${message.replace(/\0/g, '')}${attachmentReadInstruction(attachmentAbsPaths)}`;
   // Prepend the fresh triage digest to the prompt sent to claude — NOT to the transcript above,
   // which keeps the user's verbatim message (FLUX-659 push half).
   const digest = buildBoardDigest();
   const promptWithDigest = digest ? `${digest}\n\n${safeMessage}` : safeMessage;
   const meArgs = modelEffortArgs(session, 'medium');
+  // FLUX-691: `--include-partial-messages` → token-by-token live streaming on the board send path.
   const claudeArgs = session.claudeSessionId
-    ? ['-p', promptWithDigest, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...boardMcpArgs()]
-    : ['-p', promptWithDigest, '--output-format', 'stream-json', '--verbose', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...boardMcpArgs()];
+    ? ['-p', promptWithDigest, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...boardMcpArgs()]
+    : ['-p', promptWithDigest, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...boardMcpArgs()];
   session.args = claudeArgs;
   const proc = spawnClaudeForBoard(claudeArgs, session.executionRoot ?? workspaceRoot);
   wireBoardProc(proc, session, () => { session.status = 'waiting-input'; });

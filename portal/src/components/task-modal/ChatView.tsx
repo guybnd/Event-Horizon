@@ -1,10 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Send, Loader2, Square, Wrench, ChevronDown, ChevronRight, Check, CheckCircle2, ArrowDown, Cpu, Gauge, Shield, Paperclip, X } from 'lucide-react';
+import { Send, Loader2, Square, Wrench, ChevronDown, ChevronRight, Check, Clock, ArrowDown, Cpu, Gauge, Shield, Paperclip, X } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { fetchDiffFile, type TranscriptMessage, type ChatAttachment } from '../../api';
+import { fetchDiffFile, openWorkspaceEditor, type TranscriptMessage, type ChatAttachment } from '../../api';
 import { TaskMarkdown } from '../TaskMarkdown';
+import { CopyButton } from '../CopyButton';
 import { DiffLines } from '../DiffLines';
+import { searchTasks, getTaskActivityTimestamp } from '../../taskSearch';
+import { useTranscriptFind } from './useTranscriptFind';
+import { FindBar } from './FindBar';
+import type { Task } from '../../types';
 
 /** FLUX-643: a one-tap reply chip rendered above the composer. Selecting it sends
  *  `value` as the chat reply. `tone: 'danger'` paints it red (e.g. a "Skip" option). */
@@ -65,8 +70,9 @@ export interface ChatViewProps {
   /** Stop/interrupt the running turn. Shown while `working`. */
   onStop?: () => void | Promise<void>;
   /** FLUX-674: upload a pasted/dropped/picked image, returning its ref. When provided, the
-   *  composer enables image attachments (paste, drag-drop, file picker). Omit (e.g. the board
-   *  orchestrator chat, which has no ticket to attach to) to keep the composer text-only. */
+   *  composer enables image attachments (paste, drag-drop, file picker); omit to keep the
+   *  composer text-only. FLUX-676: the board orchestrator chat now supplies this too — its
+   *  images land in the `assets/__board__/` sidecar rather than a per-ticket one. */
   onUploadImage?: (file: File) => Promise<ChatAttachment>;
   /** Phase-aware action bar (FLUX-610) — rendered pinned above the composer. Optional so
    *  ChatView stays transport-free; callers build & pass `<TicketActionBar />`.
@@ -96,6 +102,18 @@ export interface ChatViewProps {
    *  (current cumulative diff vs base, via `fetchDiffFile(diffBranch, path)`). Omit (e.g. the
    *  branch-less orchestrator chat) to keep all tool rows label-only. */
   diffBranch?: string | null;
+  /** FLUX-694: board ticket list backing the composer's `#`/`FLUX-` autocomplete. Optional so
+   *  ChatView stays transport-free; callers pass the task list they already hold. Omit to disable
+   *  ticket autocomplete (no popover ever opens). */
+  tickets?: Task[];
+  /** FLUX-686: a quiet, right-aligned readout shown above the composer — e.g. the session's
+   *  cumulative token/cost meter. Optional so ChatView stays transport-free; callers build it
+   *  (`<SessionMeter session={…} config={…} />`) from data they already hold. */
+  meter?: ReactNode;
+  /** FLUX-691: in-progress assistant text for the current turn, streamed token-by-token. Rendered
+   *  as a cheap plain-text node OUTSIDE the memoized transcript (so a delta never re-parses the
+   *  whole markdown list); it disappears the instant the committed message lands in `messages`. */
+  liveText?: string;
 }
 
 /**
@@ -130,6 +148,9 @@ export function ChatView({
   draft,
   onDraftChange,
   diffBranch,
+  tickets,
+  meter,
+  liveText,
 }: ChatViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
@@ -139,6 +160,27 @@ export function ChatView({
   const [newCount, setNewCount] = useState(0);
   const prevLenRef = useRef(messages.length);
 
+  // FLUX-686: in-transcript find, scoped to this surface's scroll container. Opened with
+  // Cmd/Ctrl+F or `/` (see the root onKeyDown below); the bar handles next/prev + Esc itself.
+  const find = useTranscriptFind(scrollRef, messages);
+
+  // FLUX-695: unread-divider state. `lastSeenRef` is the count of messages the user has seen;
+  // `dividerIndex` is the boundary (first unseen index) where the "new messages" rule renders.
+  // `documentActiveRef` tracks whether this surface is actually attended (tab visible + window
+  // focused) — arrivals while unattended are what earn the divider. The chat is "viewed" (divider
+  // cleared) only when the user is attending AND scrolled to the live tail.
+  const lastSeenRef = useRef(messages.length);
+  const documentActiveRef = useRef(
+    typeof document === 'undefined' || (document.visibilityState === 'visible' && document.hasFocus()),
+  );
+  const [dividerIndex, setDividerIndex] = useState<number | null>(null);
+
+  // Mark everything seen and drop the divider — the user is looking at the live tail.
+  function markSeen() {
+    lastSeenRef.current = messages.length;
+    setDividerIndex(null);
+  }
+
   function handleScroll() {
     const el = scrollRef.current;
     if (!el) return;
@@ -146,7 +188,10 @@ export function ChatView({
     atBottomRef.current = atBottom;
     // setState bails out when the value is unchanged, so this is cheap per scroll tick.
     setShowJump(!atBottom);
-    if (atBottom) setNewCount(0);
+    if (atBottom) {
+      setNewCount(0);
+      if (documentActiveRef.current) markSeen(); // scrolled back to the tail while attending → caught up.
+    }
   }
 
   function scrollToBottom() {
@@ -156,12 +201,47 @@ export function ChatView({
     atBottomRef.current = true;
     setShowJump(false);
     setNewCount(0);
+    markSeen(); // an explicit jump-to-latest is a deliberate "I'm caught up".
   }
+
+  // FLUX-695: track tab visibility + window focus. When the surface becomes attended while the
+  // user is already at the bottom, the new messages are in view → mark them seen (clear divider).
+  useEffect(() => {
+    const sync = () => {
+      const active = document.visibilityState === 'visible' && document.hasFocus();
+      documentActiveRef.current = active;
+      if (active && atBottomRef.current) markSeen();
+    };
+    window.addEventListener('focus', sync);
+    window.addEventListener('blur', sync);
+    document.addEventListener('visibilitychange', sync);
+    return () => {
+      window.removeEventListener('focus', sync);
+      window.removeEventListener('blur', sync);
+      document.removeEventListener('visibilitychange', sync);
+    };
+    // markSeen closes over `messages.length`; re-bind so a late focus marks the right count.
+  }, [messages.length]);
 
   // Stick to bottom only when the user is already near the bottom — don't yank them down
   // while they've scrolled up to read. When detached, surface the new arrivals on the pill.
+  // FLUX-695: an arrival while the surface is unattended (tab hidden/blurred OR scrolled away)
+  // drops the unread divider at the boundary; an attended arrival just advances `lastSeen`.
   useEffect(() => {
     const grew = messages.length - prevLenRef.current;
+    if (grew < 0) {
+      // Transcript shrank/reset — rebaseline so a stale boundary can't point past the end.
+      lastSeenRef.current = messages.length;
+      setDividerIndex(null);
+    } else if (grew > 0) {
+      const attended = documentActiveRef.current && atBottomRef.current;
+      if (attended) {
+        lastSeenRef.current = messages.length;
+        setDividerIndex(null);
+      } else {
+        setDividerIndex((cur) => (cur === null ? lastSeenRef.current : cur));
+      }
+    }
     if (atBottomRef.current) {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
     } else if (grew > 0) {
@@ -170,6 +250,16 @@ export function ChatView({
     }
     prevLenRef.current = messages.length;
   }, [messages]);
+
+  // FLUX-691: keep the streaming live node pinned to the tail while the user is already there, so
+  // token-by-token output stays in view. Deltas don't change `messages`, so the effect above never
+  // fires for them; this one does — but only follows the tail when already at the bottom (never
+  // yanks a user who scrolled up to read), and never touches the unread divider / jump pill.
+  useEffect(() => {
+    if (liveText && atBottomRef.current) {
+      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+    }
+  }, [liveText]);
 
   // FLUX-639: elapsed timer for the current turn. Starts when `working` flips on, ticks each
   // second, resets when it flips off.
@@ -206,29 +296,30 @@ export function ChatView({
   // memoizing on `messages` also skips a rebuild when only the header activity ticks during
   // streaming. (FLUX-607 perf: long chats froze on every keystroke because the input state
   // re-reconciled the whole transcript subtree.)
-  const rows = useMemo(
-    () =>
-      messages.map((m, i) => {
-        if (m.role === 'tool') {
-          // FLUX-661: an edit-ish tool row carrying a file path becomes an expandable inline
-          // diff (when the chat knows the branch). Other tool rows stay the quiet label.
-          if (m.path && diffBranch) {
-            return <InlineEditDiff key={i} branch={diffBranch} path={m.path} label={m.text} />;
-          }
-          // Quiet, uniform tool row — muted icon (no per-row colored marker) + monospace,
-          // truncated so long file paths never blow out the width.
-          return (
-            <div key={i} className="flex min-w-0 items-center gap-1.5 px-0.5 text-[11px] text-[var(--eh-text-muted)]">
-              <Wrench className="h-3 w-3 flex-shrink-0" />
-              <span className="truncate font-mono">{m.text}</span>
-            </div>
-          );
+  // FLUX-680: render the transcript as segments rather than one row per message. A run of
+  // consecutive *plain* tool rows (no inline diff) folds into a single collapsed ToolGroup so a
+  // turn that fires many Read/Bash/grep calls doesn't bury the agent's prose in a wall of rows.
+  // Assistant/user turns — and edit-diff tool rows (which are individually meaningful and already
+  // expandable) — break a run and render inline as before.
+  const rows = useMemo(() => {
+    const isPlainTool = (m: TranscriptMessage) => m.role === 'tool' && !(m.path && diffBranch);
+
+    const renderMessage = (m: TranscriptMessage, i: number, live: boolean) => {
+      if (m.role === 'tool') {
+        // FLUX-661: an edit-ish tool row carrying a file path becomes an expandable inline
+        // diff (when the chat knows the branch). Other tool rows stay the quiet label.
+        if (m.path && diffBranch) {
+          return <InlineEditDiff key={i} branch={diffBranch} path={m.path} tool={m.tool} added={m.added} removed={m.removed} />;
         }
-        if (m.role === 'user') {
+        return <ToolRow key={i} text={m.text} openRef={diffBranch} />;
+      }
+      if (m.role === 'user') {
           // FLUX-674: a user turn may carry pasted images — render them inline above the text.
           const atts = m.attachments ?? [];
           return (
-            <div key={i} className="flex justify-end">
+            <div key={i} className="group flex items-end justify-end gap-2">
+              {/* FLUX-684: quiet hover-revealed timestamp, left of the right-aligned bubble. */}
+              <MessageTime ts={m.ts} />
               <div className="flex max-w-[80%] flex-col gap-1.5 rounded-2xl rounded-br-md border border-primary/15 bg-primary/10 px-3.5 py-2 text-[13px] text-[var(--eh-text-primary)]">
                 {atts.length > 0 && (
                   <div className="flex flex-wrap justify-end gap-1.5">
@@ -248,15 +339,60 @@ export function ChatView({
             </div>
           );
         }
-        // Assistant — no bubble: flowing markdown so code blocks / lists / links breathe.
-        return (
-          <div key={i} className="max-w-full text-[13px] leading-relaxed text-[var(--eh-text-primary)]">
+      // Assistant — no bubble: flowing markdown so code blocks / lists / links breathe.
+      // FLUX-693: a very long turn is clamped with a "Show more/less" toggle so one giant
+      // message can't blow out the scroll. The live trailing row (`live`) is never clamped —
+      // the user must see streaming output as it lands (coordinates with FLUX-691).
+      return (
+        <div key={i} className="group max-w-full text-[13px] leading-relaxed text-[var(--eh-text-primary)]">
+          <Clampable clamp={!live}>
             <TaskMarkdown body={m.text} compact linkifyTickets={linkifyTickets} />
+          </Clampable>
+          {/* FLUX-684/683: quiet hover-revealed footer — timestamp + a copy-message affordance. */}
+          <div className="mt-0.5 flex items-center gap-2">
+            <MessageTime ts={m.ts} />
+            <CopyButton
+              getText={() => m.text}
+              title="Copy message"
+              className="flex h-4 w-4 items-center justify-center rounded text-[var(--eh-text-muted)] opacity-0 transition-opacity hover:text-[var(--eh-text-secondary)] focus-visible:opacity-100 group-hover:opacity-100"
+            />
           </div>
-        );
-      }),
-    [messages, linkifyTickets, diffBranch],
-  );
+        </div>
+      );
+    };
+
+    // Walk the messages, batching maximal runs of plain tool rows into one ToolGroup. The
+    // trailing group stays open while the agent is working so a live turn keeps showing motion.
+    const out: ReactNode[] = [];
+    let dividerDone = false;
+    for (let i = 0; i < messages.length; i++) {
+      // FLUX-695: drop the "new messages" rule before the first unseen segment. We push it at the
+      // first segment whose start index reaches the boundary (a tool run straddling the boundary
+      // renders the rule just before the run — close enough, and never mid-fold).
+      if (dividerIndex !== null && !dividerDone && i >= dividerIndex) {
+        out.push(<UnreadDivider key="unread-divider" />);
+        dividerDone = true;
+      }
+      if (isPlainTool(messages[i])) {
+        const start = i;
+        const texts: string[] = [];
+        while (i < messages.length && isPlainTool(messages[i])) texts.push(messages[i++].text);
+        i--; // the for-loop's i++ will re-advance past the last consumed row
+        // A lone tool call isn't worth a fold — render it as a plain row. Two or more collapse.
+        if (texts.length === 1) {
+          out.push(<ToolRow key={`g${start}`} text={texts[0]} openRef={diffBranch} />);
+        } else {
+          const isTrailing = i === messages.length - 1;
+          out.push(<ToolGroup key={`g${start}`} texts={texts} defaultOpen={isTrailing && !!working} openRef={diffBranch} />);
+        }
+        continue;
+      }
+      // FLUX-693: the live trailing assistant row (last message while working) is rendered
+      // unclamped so streaming output stays fully visible.
+      out.push(renderMessage(messages[i], i, i === messages.length - 1 && !!working));
+    }
+    return out;
+  }, [messages, linkifyTickets, diffBranch, working, dividerIndex]);
 
   // The floating window owns its own title bar, so suppress the in-surface title there. The
   // "working" signal now lives in the WorkingStrip above the composer (FLUX-639), so the
@@ -265,20 +401,42 @@ export function ChatView({
   const showActions = !!actions && !working && !busy; // FLUX-622: only act when idle/pending.
 
   return (
-    <div className={`flex flex-col gap-3 ${fill ? 'h-full min-h-0' : ''}`}>
+    <div
+      className={`flex flex-col gap-3 ${fill ? 'h-full min-h-0' : ''}`}
+      // FLUX-686: open the in-transcript find. Cmd/Ctrl+F overrides the browser's native find for
+      // this surface; `/` opens it too, but only when focus isn't in a text field (so typing a
+      // slash in the composer is unaffected). Keydown bubbles here from the focused descendant.
+      onKeyDown={(e) => {
+        if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
+          e.preventDefault();
+          find.setOpen(true);
+        } else if (e.key === '/' && !find.open) {
+          const t = e.target as HTMLElement;
+          if (t.tagName !== 'INPUT' && t.tagName !== 'TEXTAREA' && !t.isContentEditable) {
+            e.preventDefault();
+            find.setOpen(true);
+          }
+        }
+      }}
+    >
       {showHeader && (
         <div className="flex items-center justify-between gap-2">
           <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">{title}</p>
         </div>
       )}
 
-      {/* Scroll region — wrapped in a relative box so the jump-to-bottom pill (FLUX-644) can
-          float over its bottom edge. */}
+      {/* Scroll region — wrapped in a relative box so the jump-to-bottom pill (FLUX-644) and the
+          find bar (FLUX-686) can float over its edges. */}
       <div className={`relative flex flex-col ${fill ? 'min-h-0 flex-1' : ''}`}>
+        {/* FLUX-686: in-transcript find overlay (top-right). Mounts only while open. */}
+        {find.open && <FindBar find={find} />}
         <div
           ref={scrollRef}
           onScroll={handleScroll}
-          className={`flex flex-col gap-3 overflow-y-auto pr-1 ${fill ? 'min-h-0 flex-1' : scrollMaxClass}`}
+          // tabIndex makes the transcript focusable so the `/` shortcut works after clicking it
+          // (not only while the composer holds focus); outline-none keeps the focus ring quiet.
+          tabIndex={0}
+          className={`flex flex-col gap-3 overflow-y-auto pr-1 outline-none ${fill ? 'min-h-0 flex-1' : scrollMaxClass}`}
         >
           {messages.length === 0 && (
             <>
@@ -289,6 +447,17 @@ export function ChatView({
             </>
           )}
           {rows}
+          {/* FLUX-691: the live streaming node — the current turn's assistant text rendered
+              token-by-token. It sits OUTSIDE the memoized `rows` (so each delta only re-renders
+              this node, never the markdown-heavy transcript) and is plain text, not markdown (no
+              per-delta re-parse). It clears the instant the committed message lands in the
+              transcript, at which point the memoized list renders the final, markdown-rendered
+              message in its place — no duplicate, no flicker. Never clamped (FLUX-693). */}
+          {liveText && (
+            <div className="group max-w-full whitespace-pre-wrap break-words text-[13px] leading-relaxed text-[var(--eh-text-primary)]">
+              {liveText}
+            </div>
+          )}
         </div>
 
         {/* FLUX-644: jump back to the live tail after scrolling up. */}
@@ -306,6 +475,10 @@ export function ChatView({
 
       {error && <p className="px-0.5 text-[11px] text-red-500">{error}</p>}
 
+      {/* FLUX-686: quiet caller-built meter (e.g. the session token/cost readout), right-aligned
+          just above the composer area so it's glanceable without competing with the transcript. */}
+      {meter && <div className="flex justify-end px-0.5">{meter}</div>}
+
       {/* FLUX-662: inline ask_user_question picker — sits right above the working strip so a
           parked question is impossible to miss, attached to the chat that asked it. */}
       {questionPicker}
@@ -322,6 +495,7 @@ export function ChatView({
               key={i}
               type="button"
               onClick={() => void onSend(q.value)}
+              title={q.value}
               className={`inline-flex max-w-full items-center rounded-md border px-2.5 py-1 text-[11px] font-semibold transition-colors ${
                 q.tone === 'danger'
                   ? 'border-red-500/30 text-red-500 hover:bg-red-500/10'
@@ -341,20 +515,233 @@ export function ChatView({
 
       {/* Composer lives in its own component so its per-keystroke input state never
           re-renders the transcript above it. */}
-      <Composer busy={busy} onSend={onSend} onUploadImage={onUploadImage} draft={draft} onDraftChange={onDraftChange} />
+      <Composer busy={busy} onSend={onSend} onUploadImage={onUploadImage} draft={draft} onDraftChange={onDraftChange} tickets={tickets} />
     </div>
   );
 }
 
 /**
- * FLUX-661: an edit-tool row rendered as an expandable inline diff. The collapsed row mirrors
- * the quiet tool row (wrench + monospace label) but is clickable; expanding lazily fetches the
- * file's current cumulative diff vs base (`fetchDiffFile(branch, path)`, the same endpoint the
- * ChatDiffPanel uses) and renders the syntax-highlighted hunk. v1 shows the file's *current*
- * diff, not a point-in-time hunk — consistent with the always-current diff panel (sibling
- * ticket); a true per-edit hunk is the documented follow-up.
+ * FLUX-695: the "new messages" rule rendered in the transcript at the boundary between what the
+ * user had already seen and what arrived while the chat was unattended (tab hidden/blurred or
+ * scrolled away). A thin accent line with a centered label; clears once the user views the tail.
  */
-function InlineEditDiff({ branch, path, label }: { branch: string; path: string; label: string }) {
+function UnreadDivider() {
+  return (
+    <div className="flex items-center gap-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary" aria-label="New messages">
+      <span className="h-px flex-1 bg-primary/30" aria-hidden="true" />
+      New
+      <span className="h-px flex-1 bg-primary/30" aria-hidden="true" />
+    </div>
+  );
+}
+
+/**
+ * FLUX-682: a repo-relative file path rendered as a link that opens the file in VS Code via
+ * `openWorkspaceEditor(path, ref)` (the same `code -g` bridge the uncommitted-changes panel uses).
+ * `openRef` is the diff/worktree branch so worktree checkouts open the right tree. Rendered as a
+ * focusable `role="link"` span (not a `<button>`) so it can safely nest inside the InlineEditDiff
+ * row's expand button without invalid button-in-button markup. Degrades gracefully: if the open
+ * call returns false (e.g. `code` not on PATH, or standalone browser) it no-ops and dims the link
+ * with an explanatory title rather than throwing.
+ */
+function FileLink({
+  path,
+  openRef,
+  className,
+  children,
+}: {
+  path: string;
+  openRef?: string | null;
+  className?: string;
+  children?: ReactNode;
+}) {
+  const [failed, setFailed] = useState(false);
+  const open = (e: { stopPropagation: () => void; preventDefault?: () => void }) => {
+    e.stopPropagation();
+    e.preventDefault?.();
+    openWorkspaceEditor(path, openRef ?? undefined)
+      .then((ok) => setFailed(!ok))
+      .catch(() => setFailed(true));
+  };
+  return (
+    <span
+      role="link"
+      tabIndex={0}
+      title={failed ? `Couldn't open ${path} — is the \`code\` CLI on PATH?` : `Open ${path} in VS Code`}
+      onClick={open}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') open(e);
+      }}
+      className={`cursor-pointer underline-offset-2 hover:underline ${failed ? 'opacity-50' : ''} ${className ?? ''}`}
+    >
+      {children ?? path}
+    </span>
+  );
+}
+
+// FLUX-682: conservative repo-relative path matcher for plain tool rows. Requires at least one
+// `dir/` segment and a file extension, and only matches at a boundary (start / whitespace / `·` /
+// `:`) — so bare words, flags, and mid-URL fragments (preceded by `/`) don't get linkified. We
+// prefer not-a-link over a wrong-link. First match wins.
+const REPO_PATH_RE = /(^|[\s·:])((?:[\w.@~-]+\/)+[\w.@~-]+\.[a-zA-Z][\w]{0,9})(?=$|[\s:·,)\]])/;
+function splitToolText(text: string): { before: string; path: string | null; after: string } {
+  const m = REPO_PATH_RE.exec(text);
+  if (!m) return { before: text, path: null, after: '' };
+  const start = m.index + m[1].length;
+  const path = m[2];
+  return { before: text.slice(0, start), path, after: text.slice(start + path.length) };
+}
+
+/** FLUX-693: collapsed height past which a turn is clamped (px). Tall enough that most turns are
+ *  never clamped; short enough that one giant message can't swallow the scroll. */
+const CLAMP_MAX_PX = 360;
+/** Bottom fade applied to the content itself (background-agnostic — masks the content rather than
+ *  painting a gradient over it, so it works on any theme surface) when clamped. */
+const CLAMP_FADE = 'linear-gradient(to bottom, #000 0, #000 calc(100% - 2.5rem), transparent 100%)';
+
+/**
+ * FLUX-693: clamps over-tall within-row content (assistant turns) to `maxPx` with a bottom
+ * fade + a "Show more / Show less" toggle. Cheap: the cap is pure CSS (`max-height` + overflow
+ * hidden + a mask fade); `scrollHeight` is read once per content change in a layout effect to
+ * decide whether the toggle is even needed — no per-render measurement loop.
+ *
+ * Expand state is local (mirrors ToolGroup / InlineEditDiff). Because each row is keyed stably
+ * in the transcript, that state survives re-renders during a session without having to thread it
+ * through the `rows` useMemo. `clamp={false}` (the live trailing/streaming row) renders the
+ * children verbatim — never clamped, never measured.
+ */
+function Clampable({ clamp = true, maxPx = CLAMP_MAX_PX, children }: { clamp?: boolean; maxPx?: number; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [needsClamp, setNeedsClamp] = useState(false);
+
+  // Measure once after layout, re-running only when the content (children) or cap changes — not
+  // every render. scrollHeight reports the full content height even while the element is capped.
+  useLayoutEffect(() => {
+    if (!clamp) {
+      setNeedsClamp(false); // setState bails when unchanged, so this is a no-op once cleared.
+      return;
+    }
+    const el = ref.current;
+    if (!el) return;
+    setNeedsClamp(el.scrollHeight > maxPx + 8);
+  }, [clamp, maxPx, children]);
+
+  if (!clamp) return <>{children}</>;
+
+  const collapsed = needsClamp && !expanded;
+  return (
+    <div>
+      <div
+        ref={ref}
+        className={collapsed ? 'overflow-hidden' : ''}
+        style={collapsed ? { maxHeight: maxPx, WebkitMaskImage: CLAMP_FADE, maskImage: CLAMP_FADE } : undefined}
+      >
+        {children}
+      </div>
+      {needsClamp && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          className="mt-0.5 flex items-center gap-1 rounded px-1 py-0.5 text-[11px] font-medium text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-secondary)] dark:hover:bg-white/5"
+        >
+          {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+          {expanded ? 'Show less' : 'Show more'}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Quiet, uniform tool row — muted wrench + monospace, truncated so long file paths never blow
+ *  out the width. Shared by the inline single-tool case and the expanded ToolGroup. FLUX-682: a
+ *  repo-relative path in the row text is linkified to open in VS Code. */
+function ToolRow({ text, openRef }: { text: string; openRef?: string | null }) {
+  const parts = useMemo(() => splitToolText(text), [text]);
+  return (
+    <div className="flex min-w-0 items-center gap-1.5 px-0.5 text-[11px] text-[var(--eh-text-muted)]">
+      <Wrench className="h-3 w-3 flex-shrink-0" />
+      <span className="truncate font-mono">
+        {parts.path ? (
+          <>
+            {parts.before}
+            <FileLink path={parts.path} openRef={openRef}>{parts.path}</FileLink>
+            {parts.after}
+          </>
+        ) : (
+          text
+        )}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * FLUX-680: a collapsed cluster of consecutive tool calls. Default-collapsed, the header reads
+ * "⚙ N tool calls · last: <action>" so you still get a "what did it just do" glance without
+ * expanding; clicking reveals the individual quiet ToolRows. The trailing group is opened by the
+ * caller while the agent is working so a live turn keeps showing motion.
+ */
+function ToolGroup({ texts, defaultOpen, openRef }: { texts: string[]; defaultOpen: boolean; openRef?: string | null }) {
+  const [open, setOpen] = useState(defaultOpen);
+  // FLUX-687: the group's key (`g${start}`) is stable, so React never remounts it to pick up a
+  // changed defaultOpen. Drive open from the prop so a group collapses once it stops being the
+  // live trailing run, while still letting the user manually toggle within a render cycle.
+  useEffect(() => setOpen(defaultOpen), [defaultOpen]);
+  const last = texts[texts.length - 1];
+  return (
+    <div className="min-w-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        title={open ? 'Hide tool calls' : 'Show tool calls'}
+        className="flex w-full min-w-0 items-center gap-1.5 rounded px-0.5 py-0.5 text-left text-[11px] text-[var(--eh-text-muted)] transition-colors hover:text-[var(--eh-text-secondary)]"
+      >
+        {open ? <ChevronDown className="h-3 w-3 flex-shrink-0" /> : <ChevronRight className="h-3 w-3 flex-shrink-0" />}
+        <Wrench className="h-3 w-3 flex-shrink-0" />
+        <span className="flex-shrink-0 font-medium">{texts.length} tool calls</span>
+        {!open && (
+          <>
+            <span className="flex-shrink-0 opacity-50">·</span>
+            <span className="truncate font-mono opacity-80">{last}</span>
+          </>
+        )}
+      </button>
+      {open && (
+        <div className="ml-3.5 flex flex-col gap-1 border-l border-[var(--eh-border)] pl-2">
+          {texts.map((t, i) => (
+            <ToolRow key={i} text={t} openRef={openRef} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * FLUX-661/688: an edit-tool row rendered as an expandable inline diff. The collapsed row reads
+ * like a real change line — verb (`edited`/`wrote`) + file basename + colored per-edit `+N −M`
+ * counts (FLUX-688: what *this* tool call changed, derived server-side from the tool input) —
+ * but is clickable; expanding lazily fetches the file's current cumulative diff vs base
+ * (`fetchDiffFile(branch, path)`, the same endpoint the ChatDiffPanel uses) and renders the
+ * syntax-highlighted hunk. Note the deliberate mismatch: the row counts describe this single
+ * edit, while the expanded diff is the file's *current* cumulative diff vs base — consistent
+ * with the always-current diff panel (sibling ticket). A true per-edit hunk is the follow-up.
+ */
+function InlineEditDiff({
+  branch,
+  path,
+  tool,
+  added,
+  removed,
+}: {
+  branch: string;
+  path: string;
+  tool?: string;
+  added?: number;
+  removed?: number;
+}) {
   const [open, setOpen] = useState(false);
   const [diff, setDiff] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -371,26 +758,82 @@ function InlineEditDiff({ branch, path, label }: { branch: string; path: string;
       .finally(() => { if (reqIdRef.current === reqId) setLoading(false); });
   }, [open, diff, loading, error, branch, path]);
 
+  // Repo-relative POSIX path → basename for the row; full path lives in the button title.
+  const base = path.split('/').pop() || path;
+  const verb = tool === 'Write' ? 'wrote' : 'edited';
   return (
     <div className="min-w-0">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        title={open ? 'Hide diff' : 'Show diff'}
+        title={path}
         className="flex w-full min-w-0 items-center gap-1.5 rounded px-0.5 py-0.5 text-left text-[11px] text-[var(--eh-text-muted)] transition-colors hover:text-[var(--eh-text-secondary)]"
       >
         {open ? <ChevronDown className="h-3 w-3 flex-shrink-0" /> : <ChevronRight className="h-3 w-3 flex-shrink-0" />}
         <Wrench className="h-3 w-3 flex-shrink-0" />
-        <span className="truncate font-mono">{label}</span>
+        <span className="flex-shrink-0">{verb}</span>
+        {/* FLUX-682: basename opens the file in VS Code; stopPropagation keeps the row's diff toggle
+            from also firing. Uses `branch` as the ref so worktree checkouts open the right tree. */}
+        <FileLink path={path} openRef={branch} className="truncate font-mono">{base}</FileLink>
+        {added !== undefined && removed !== undefined && (
+          <span className="flex-shrink-0 text-[10px]">
+            <span className="text-emerald-600 dark:text-emerald-400">+{added}</span>{' '}
+            <span className="text-red-500 dark:text-red-400">−{removed}</span>
+          </span>
+        )}
       </button>
       {open && (
         <div className="mb-1 ml-3.5 overflow-x-auto rounded border border-[var(--eh-border)] bg-black/[0.02] py-1 dark:bg-white/[0.02]">
           {loading && <p className="px-2 py-1 text-[11px] text-[var(--eh-text-muted)]">Loading…</p>}
-          {error && <p className="px-2 py-1 text-[11px] text-red-500">{error}</p>}
+          {error && (
+            <p className="px-2 py-1 text-[11px] text-red-500">
+              {error}{' '}
+              <button type="button" onClick={() => setError(null)} className="underline hover:no-underline">
+                Retry
+              </button>
+            </p>
+          )}
           {!loading && !error && diff !== null && <DiffLines content={diff} />}
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * FLUX-684: a quiet relative time for a chat turn — "now", "3m", "2h", then a short absolute
+ * date ("Jun 21") once past a day. Pure: re-derives on each render, no live ticker (the elapsed
+ * timer already drives re-renders during a turn; staleness between turns is acceptable at XS
+ * scope). Returns '' for a missing/unparseable `ts` so the caller can render nothing.
+ */
+function formatRelative(ts: string): string {
+  const then = new Date(ts).getTime();
+  if (Number.isNaN(then)) return '';
+  const s = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (s < 45) return 'now';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+/**
+ * FLUX-684: the muted, hover-revealed timestamp on a chat turn. Renders nothing when `ts` is
+ * absent/unparseable (optimistic/pending turns). The label is `opacity-0 group-hover:opacity-100`
+ * so it stays out of the way until you hover the row; its width is always reserved, so revealing
+ * it causes no layout shift. The absolute local time lives in the `title` tooltip.
+ */
+function MessageTime({ ts, className = '' }: { ts?: string; className?: string }) {
+  const rel = ts ? formatRelative(ts) : '';
+  if (!rel) return null;
+  return (
+    <span
+      title={new Date(ts!).toLocaleString()}
+      className={`select-none whitespace-nowrap text-[10px] text-[var(--eh-text-muted)] opacity-0 transition-opacity group-hover:opacity-100 ${className}`}
+    >
+      {rel}
+    </span>
   );
 }
 
@@ -454,6 +897,7 @@ function WorkingStrip({
               type="button"
               onClick={() => setExpanded((v) => !v)}
               title={expanded ? 'Hide steps' : 'Show steps'}
+              aria-expanded={expanded}
               className="flex flex-shrink-0 items-center gap-0.5 rounded px-1 py-0.5 text-[11px] text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-secondary)] dark:hover:bg-white/5"
             >
               {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
@@ -481,9 +925,12 @@ function WorkingStrip({
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
         className="flex w-full items-center gap-2 text-left"
       >
-        <CheckCircle2 className="h-3.5 w-3.5 flex-shrink-0 text-emerald-500" />
+        {/* FLUX-649: a neutral, muted clock — the strip only knows the trail, not the turn's
+            outcome, so it must not assert an emerald "✓ success" on a stopped/errored turn. */}
+        <Clock className="h-3.5 w-3.5 flex-shrink-0 text-[var(--eh-text-muted)]" />
         <span className="min-w-0 flex-1 truncate text-[11px] text-[var(--eh-text-muted)]">{summarizeTrail(trail)}</span>
         {trail.length > 1 &&
           (expanded ? (
@@ -511,6 +958,48 @@ function TrailList({ trail }: { trail: string[] }) {
   );
 }
 
+/** FLUX-694: a detected ticket-reference trigger ending at the caret — the token's start
+ *  offset in the input and the search query to fuzzy-match against the board. */
+interface TicketTrigger {
+  start: number;
+  query: string;
+}
+
+/** Max autocomplete suggestions shown at once. */
+const MENTION_LIMIT = 8;
+
+/**
+ * FLUX-694: detect a ticket-reference trigger ending at the caret. Two forms:
+ *  - `#query`   — explicit picker; `query` is the text typed after `#`.
+ *  - `FLUX-12`  — a typed project-id prefix (prefixes derived from the board's ticket ids).
+ * The trigger must sit at the start of the input or after whitespace / an opening bracket, so it
+ * never fires mid-word (`C#`, a URL fragment, an email). Returns the replaceable token's start
+ * offset + the search query, or `null` when the caret isn't inside a trigger.
+ *
+ * `@file` autocomplete is intentionally NOT handled here: the engine exposes no repo file-list
+ * endpoint/index to back it, so it's deferred per the FLUX-694 grooming gate. Add an `@` branch
+ * here (and an `@`-form clause to the popover) once such an index exists.
+ */
+function detectTicketTrigger(before: string, prefixes: string[]): TicketTrigger | null {
+  const hash = /(?:^|[\s([{<])#([\w-]*)$/.exec(before);
+  if (hash) {
+    const query = hash[1];
+    return { start: before.length - query.length - 1, query };
+  }
+  if (prefixes.length > 0) {
+    // Escape each prefix before interpolating — a ticket-id prefix carrying a regex metachar
+    // (possible for board/group projects) would otherwise throw on every keystroke (FLUX-677 review).
+    const escaped = prefixes.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    const re = new RegExp(`(?:^|[\\s([{<])((?:${escaped.join('|')})-\\d*)$`, 'i');
+    const m = re.exec(before);
+    if (m) {
+      const token = m[1];
+      return { start: before.length - token.length, query: token };
+    }
+  }
+  return null;
+}
+
 /**
  * Message composer — isolated from the transcript on purpose. Holds the input + the
  * model / effort / permission selections in local state, so typing only re-renders this
@@ -528,12 +1017,14 @@ function Composer({
   onUploadImage,
   draft,
   onDraftChange,
+  tickets,
 }: {
   busy: boolean;
   onSend: ChatViewProps['onSend'];
   onUploadImage?: (file: File) => Promise<ChatAttachment>;
   draft?: string;
   onDraftChange?: (text: string) => void;
+  tickets?: Task[];
 }) {
   const [internalInput, setInternalInput] = useState('');
   const [model, setModel] = useState('');
@@ -545,6 +1036,12 @@ function Composer({
   const [attachError, setAttachError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // FLUX-694: ticket autocomplete. `mention` is the active trigger at the caret (null when none);
+  // `mentionIdx` is the highlighted suggestion. `taRef` lets us read/restore the caret for
+  // mid-string insertion. The picker is keyboard-first (↑/↓/Enter/Tab/Esc).
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  const [mention, setMention] = useState<TicketTrigger | null>(null);
+  const [mentionIdx, setMentionIdx] = useState(0);
 
   // Controlled when the parent owns the draft; uncontrolled otherwise. A single value/setValue
   // pair keeps the textarea always-controlled (no controlled↔uncontrolled flip warning).
@@ -554,6 +1051,54 @@ function Composer({
 
   const canAttach = !!onUploadImage;
   const isUploading = uploading > 0;
+
+  // FLUX-694: distinct project-id prefixes present on the board (e.g. `FLUX`), so a typed
+  // `FLUX-12` opens the picker without hardcoding the project key. Empty ⇒ only `#` triggers.
+  const prefixes = useMemo(
+    () => Array.from(new Set((tickets ?? []).map((t) => t.id.split('-')[0]).filter(Boolean))),
+    [tickets],
+  );
+
+  // Suggestions for the active trigger: fuzzy-rank via the shared board search; an empty query
+  // (just typed `#`) falls back to the most-recently-active tickets so the picker is never blank.
+  const candidates = useMemo(() => {
+    if (!mention || !tickets || tickets.length === 0) return [];
+    if (mention.query) return searchTasks(tickets, mention.query, MENTION_LIMIT).map((r) => r.task);
+    return [...tickets]
+      .sort((a, b) => getTaskActivityTimestamp(b) - getTaskActivityTimestamp(a))
+      .slice(0, MENTION_LIMIT);
+  }, [mention, tickets]);
+
+  // Re-evaluate the trigger whenever the value or caret moves. Resets the highlight to the top.
+  function refreshMention(value: string, caret: number) {
+    if (!tickets || tickets.length === 0) {
+      if (mention) setMention(null);
+      return;
+    }
+    setMention(detectTicketTrigger(value.slice(0, caret), prefixes));
+    setMentionIdx(0);
+  }
+
+  // Splice the chosen ticket id (+ trailing space) over the trigger token, then restore focus and
+  // place the caret right after the inserted ref — works mid-string, not just at end-of-input.
+  function insertTicket(id: string) {
+    if (!mention) return;
+    const ta = taRef.current;
+    const caret = ta?.selectionStart ?? input.length;
+    const next = `${input.slice(0, mention.start)}${id} ${input.slice(caret)}`;
+    setValue(next);
+    setMention(null);
+    const pos = mention.start + id.length + 1;
+    requestAnimationFrame(() => {
+      const el = taRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(pos, pos);
+      }
+    });
+  }
+
+  const mentionOpen = !!mention && candidates.length > 0;
 
   // Upload a batch of image files in parallel, appending each successful ref to the chips.
   async function uploadFiles(files: File[]) {
@@ -612,10 +1157,46 @@ function Composer({
       onDrop={handleDrop}
       onDragOver={handleDragOver}
       onDragLeave={() => setDragging(false)}
-      className={`rounded-2xl border bg-[var(--eh-input-bg)] transition-colors focus-within:border-primary ${
+      className={`relative rounded-2xl border bg-[var(--eh-input-bg)] transition-colors focus-within:border-primary ${
         dragging ? 'border-primary border-dashed' : 'border-[var(--eh-border)]'
       }`}
     >
+      {/* FLUX-694: ticket autocomplete popover — floats above the composer (which sits at the
+          bottom of the window), reusing the ChipSelect `eh-border eh-surface` popover treatment.
+          Items use onMouseDown+preventDefault so clicking one doesn't blur the textarea before
+          the selection lands. Keyboard nav lives on the textarea's onKeyDown. */}
+      {mentionOpen && (
+        <div
+          role="listbox"
+          aria-label="Ticket suggestions"
+          className="eh-border eh-surface absolute bottom-full left-2 right-2 z-20 mb-1.5 max-h-60 overflow-y-auto rounded-lg border p-1 shadow-xl"
+        >
+          <div className="px-2 pb-1 pt-0.5 text-[9px] font-semibold uppercase tracking-wider text-[var(--eh-text-muted)]">
+            Reference a ticket
+          </div>
+          {candidates.map((t, i) => {
+            const selected = i === mentionIdx;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                role="option"
+                aria-selected={selected}
+                ref={selected ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
+                onMouseDown={(e) => e.preventDefault()}
+                onMouseEnter={() => setMentionIdx(i)}
+                onClick={() => insertTicket(t.id)}
+                className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] transition-colors ${
+                  selected ? 'bg-primary/10' : 'hover:bg-black/5 dark:hover:bg-white/5'
+                }`}
+              >
+                <span className="flex-shrink-0 font-mono text-[11px] font-semibold text-primary">{t.id}</span>
+                <span className="truncate text-[var(--eh-text-secondary)]">{t.title}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
       {/* FLUX-674: thumbnail chips for staged images, each removable before send. */}
       {(attachments.length > 0 || isUploading) && (
         <div className="flex flex-wrap items-center gap-2 px-3 pt-3">
@@ -646,10 +1227,40 @@ function Composer({
       )}
       {attachError && <p className="px-3.5 pt-2 text-[11px] text-red-500">{attachError}</p>}
       <textarea
+        ref={taRef}
         value={input}
-        onChange={(e) => setValue(e.target.value)}
+        onChange={(e) => {
+          setValue(e.target.value);
+          refreshMention(e.target.value, e.target.selectionStart ?? e.target.value.length);
+        }}
+        onSelect={(e) => refreshMention(e.currentTarget.value, e.currentTarget.selectionStart ?? 0)}
+        onBlur={() => setMention(null)}
         onPaste={handlePaste}
         onKeyDown={(e) => {
+          // FLUX-694: while the autocomplete is open, the arrow/Enter/Tab/Esc keys drive it
+          // instead of the textarea (Enter must not send, Esc must not blur).
+          if (mentionOpen) {
+            if (e.key === 'ArrowDown') {
+              e.preventDefault();
+              setMentionIdx((i) => (i + 1) % candidates.length);
+              return;
+            }
+            if (e.key === 'ArrowUp') {
+              e.preventDefault();
+              setMentionIdx((i) => (i - 1 + candidates.length) % candidates.length);
+              return;
+            }
+            if (e.key === 'Enter' || e.key === 'Tab') {
+              e.preventDefault();
+              insertTicket(candidates[mentionIdx].id);
+              return;
+            }
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              setMention(null);
+              return;
+            }
+          }
           if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             submit();

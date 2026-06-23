@@ -155,7 +155,10 @@ export async function readTranscript(taskId: string): Promise<string[]> {
 
 /** True iff a parsed line is a turn envelope (vs a bare legacy raw event). The trio of a
  *  string `turnId`, numeric `seq`, and a `raw` field never appears on raw stream-json or
- *  synthetic events, so the discriminator is unambiguous. */
+ *  synthetic events, so the discriminator is unambiguous and intentionally `v`-independent:
+ *  a future v2 envelope will still carry turnId+seq+raw, so the trio remains stable across
+ *  schema versions without a version-aware read branch. If a v2 shape ever removes one of
+ *  these three fields, add an explicit `o.v === ENVELOPE_VERSION` guard here. */
 function isEnvelope(o: any): boolean {
   return !!o && typeof o === 'object' && typeof o.turnId === 'string' && typeof o.seq === 'number' && 'raw' in o;
 }

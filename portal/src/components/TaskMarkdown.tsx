@@ -11,6 +11,7 @@ import { resolveEffectiveAgent } from '../utils';
 import { statusToPhase, phaseLaunchStatus, launchPhaseDefault, runAgentAction } from '../agentActions';
 import { StatusBadge } from './StatusBadge';
 import { TicketActionBar } from './TicketActionBar';
+import { CopyButton } from './CopyButton';
 
 type TaskMarkdownImageMode = 'inline' | 'comment';
 
@@ -258,6 +259,10 @@ function TicketChip({ id }: { id: string }) {
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
+          if (hoverTimer.current !== null) {
+            window.clearTimeout(hoverTimer.current);
+            hoverTimer.current = null;
+          }
           setHovering(false);
           setPinned((p) => !p);
         }}
@@ -282,7 +287,9 @@ function TicketChip({ id }: { id: string }) {
           <div
             ref={popoverRef}
             style={{ position: 'fixed', top: pos.top, left: pos.left, zIndex: 999999 }}
-            className="w-72 max-w-[90vw] rounded-xl border border-[var(--eh-border)] bg-white p-3 text-left shadow-2xl dark:bg-[#1a1b23]"
+            role="dialog"
+            aria-label={`${id} details`}
+            className="w-72 max-w-[90vw] rounded-xl border border-[var(--eh-border)] bg-[var(--eh-surface)] p-3 text-left shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between gap-2">
@@ -319,7 +326,7 @@ function TicketChip({ id }: { id: string }) {
         createPortal(
           <div
             style={{ position: 'fixed', top: pos.top, left: pos.left, zIndex: 999998 }}
-            className="pointer-events-none w-60 max-w-[80vw] rounded-lg border border-[var(--eh-border)] bg-white px-2.5 py-2 shadow-xl dark:bg-[#1a1b23]"
+            className="pointer-events-none w-60 max-w-[80vw] rounded-lg border border-[var(--eh-border)] bg-[var(--eh-surface)] px-2.5 py-2 shadow-xl"
           >
             {task.title && (
               <div className="text-xs font-semibold leading-snug text-[var(--eh-text-primary)]">{task.title}</div>
@@ -440,6 +447,35 @@ function MarkdownLink({
   );
 }
 
+/** Flatten the rendered text content of a node tree (strings + nested element children). Used
+ *  to recover a fenced block's source from the `pre`/`code` render tree for the copy button. */
+function extractText(node: ReactNode): string {
+  if (node == null || node === false || node === true) return '';
+  if (typeof node === 'string') return node;
+  if (typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(extractText).join('');
+  if (isValidElement(node)) return extractText((node.props as { children?: ReactNode }).children);
+  return '';
+}
+
+/** FLUX-683: fenced code block with a hover-revealed copy button. The `pre` is wrapped in a
+ *  positioned container so the button can pin to the top-right without scrolling away with the
+ *  (horizontally-scrollable) code. The source is recovered from the rendered children and the
+ *  single trailing newline react-markdown leaves on a fence is trimmed. */
+function CodeBlock({ children }: { children?: ReactNode }) {
+  const source = extractText(children).replace(/\n$/, '');
+  return (
+    <div className="group/code relative mb-4">
+      <pre className="w-full overflow-x-auto rounded-lg bg-black/90 break-normal">{children}</pre>
+      <CopyButton
+        getText={() => source}
+        title="Copy code"
+        className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-md bg-white/10 text-gray-300 opacity-0 transition-opacity hover:bg-white/20 hover:text-white focus-visible:opacity-100 group-hover/code:opacity-100"
+      />
+    </div>
+  );
+}
+
 export const TaskMarkdown = memo(function TaskMarkdown({
   body,
   taskId,
@@ -499,7 +535,7 @@ export const TaskMarkdown = memo(function TaskMarkdown({
             }
             return <MarkdownInlineCode linkify={linkifyTickets}>{children}</MarkdownInlineCode>;
           },
-          pre: ({ children }) => <pre className="mb-4 w-full overflow-x-auto rounded-lg bg-black/90 break-normal">{children}</pre>,
+          pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
           blockquote: ({ children }) => (
             <blockquote className="mb-4 border-l-4 border-primary/40 pl-4 italic text-gray-600 dark:text-gray-400">
               {lt(children)}

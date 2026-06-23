@@ -1,3 +1,35 @@
+export type RelationType =
+  | 'relates'
+  | 'blocks'
+  | 'blocked-by'
+  | 'retries'
+  | 'refactors'
+  | 'refactored-by'
+  | 'duplicates'
+  | 'duplicated-by';
+
+export const RELATION_TYPES = new Set<RelationType>([
+  'relates',
+  'blocks',
+  'blocked-by',
+  'retries',
+  'refactors',
+  'refactored-by',
+  'duplicates',
+  'duplicated-by',
+]);
+
+export const INVERSE_RELATION: Record<RelationType, RelationType> = {
+  'relates': 'relates',
+  'blocks': 'blocked-by',
+  'blocked-by': 'blocks',
+  'retries': 'retries',
+  'refactors': 'refactored-by',
+  'refactored-by': 'refactors',
+  'duplicates': 'duplicated-by',
+  'duplicated-by': 'duplicates',
+};
+
 export interface TicketValidationError {
   path: string;
   message: string;
@@ -102,6 +134,33 @@ export function validateSubtasks(subtasks: unknown): TicketValidationError[] {
   return errors;
 }
 
+export function validateLinks(links: unknown): TicketValidationError[] {
+  if (links == null) return [];
+  if (!Array.isArray(links)) {
+    return [{ path: 'links', message: 'links must be an array' }];
+  }
+  const errors: TicketValidationError[] = [];
+  for (let i = 0; i < links.length; i++) {
+    const entry = links[i];
+    const at = `links[${i}]`;
+    if (!entry || typeof entry !== 'object') {
+      errors.push({ path: at, message: `link must be an object, got ${typeof entry}` });
+      continue;
+    }
+    const e = entry as any;
+    if (!isNonEmptyString(e.type) || !RELATION_TYPES.has(e.type)) {
+      errors.push({ path: `${at}.type`, message: `link type must be one of: ${[...RELATION_TYPES].join(', ')}` });
+    }
+    if (!isNonEmptyString(e.target)) {
+      errors.push({ path: `${at}.target`, message: 'link target must be a non-empty string' });
+    }
+    if (e.label != null && typeof e.label !== 'string') {
+      errors.push({ path: `${at}.label`, message: 'link label must be a string when present' });
+    }
+  }
+  return errors;
+}
+
 export function validateTicketFrontmatter(fm: any): TicketValidationError[] {
   const errors: TicketValidationError[] = [];
 
@@ -137,6 +196,7 @@ export function validateTicketFrontmatter(fm: any): TicketValidationError[] {
   }
 
   errors.push(...validateSubtasks(fm.subtasks));
+  errors.push(...validateLinks(fm.links));
 
   return errors;
 }

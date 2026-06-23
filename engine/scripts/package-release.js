@@ -61,17 +61,49 @@ function pkg(target, outBase) {
   }
 }
 
+// Cross-platform zip helpers (FLUX-707). Windows has no `unzip`/`zip`, but its bundled
+// tar.exe (bsdtar, Win10+) both reads and writes zip archives. macOS/Linux keep the proven
+// `unzip`/`zip` CLIs so CI behavior is byte-for-byte unchanged.
+function extractZipMember(zipPath, member, destDir) {
+  fs.mkdirSync(destDir, { recursive: true });
+  const result = process.platform === 'win32'
+    ? spawnSync('tar', ['-xf', zipPath, '-C', destDir, member], { stdio: 'inherit' })
+    : spawnSync('unzip', ['-o', zipPath, member, '-d', destDir], { stdio: 'inherit' });
+  if (result.status !== 0) {
+    console.error(`Failed to extract ${member} from ${path.basename(zipPath)}`);
+    process.exit(result.status ?? 1);
+  }
+}
+
+// Zip a single file flattened to the archive root (matches `zip -j`).
+function createFlatZip(zipPath, filePath) {
+  fs.rmSync(zipPath, { force: true }); // start clean — don't append to a stale archive
+  if (process.platform === 'win32') {
+    // -C <dir> + basename stores the entry without its directory prefix (the flatten).
+    const result = spawnSync(
+      'tar', ['-a', '-cf', zipPath, '-C', path.dirname(filePath), path.basename(filePath)],
+      { stdio: 'inherit' }
+    );
+    if (result.status !== 0) {
+      console.error(`Failed to zip ${path.basename(filePath)}`);
+      process.exit(result.status ?? 1);
+    }
+  } else {
+    execFileSync('zip', ['-j', zipPath, filePath], { stdio: 'inherit' });
+  }
+}
+
 // ── Mac ───────────────────────────────────────────────────────────────────────
 
-// macOS/Linux only: buildMac and buildWin both call execFileSync('zip', ...) which requires
-// the `zip` CLI. This is not available on Windows by default — run from macOS or Linux.
+// buildMac cross-compiles a macOS binary via @yao-pkg/pkg, so it must run on macOS/Linux.
+// buildWin runs cross-platform — its zip/extract go through the platform-aware helpers (FLUX-707).
 function buildMac() {
   const tmpBin = path.join(distDir, 'event-horizon-macos');
   pkg('node22-macos-arm64', tmpBin);
 
   const zipName = `event-horizon-macos-${version}.zip`;
   const zipPath = path.join(releasesDir, zipName);
-  execFileSync('zip', ['-j', zipPath, tmpBin], { stdio: 'inherit' });
+  createFlatZip(zipPath, tmpBin);
   fs.rmSync(tmpBin, { force: true });
 
   console.log(`Mac artifact → releases/${zipName}`);
@@ -123,15 +155,7 @@ function buildWin() {
   }
 
   // 3. Extract node.exe from the zip
-  fs.mkdirSync(nodeExtractDir, { recursive: true });
-  const unzipResult = spawnSync(
-    'unzip', ['-o', nodeZipPath, `node-v${nodeVersion}-win-x64/node.exe`, '-d', nodeExtractDir],
-    { stdio: 'inherit' }
-  );
-  if (unzipResult.status !== 0) {
-    console.error('Failed to extract node.exe');
-    process.exit(unzipResult.status ?? 1);
-  }
+  extractZipMember(nodeZipPath, `node-v${nodeVersion}-win-x64/node.exe`, nodeExtractDir);
   const nodeExePath = path.join(nodeExtractDir, `node-v${nodeVersion}-win-x64`, 'node.exe');
 
   // 4. Copy node.exe → event-horizon.exe
@@ -162,7 +186,7 @@ function buildWin() {
   // 7. Zip
   const zipName = `event-horizon-win-${version}.zip`;
   const zipPath = path.join(releasesDir, zipName);
-  execFileSync('zip', ['-j', zipPath, tmpExe], { stdio: 'inherit' });
+  createFlatZip(zipPath, tmpExe);
   fs.rmSync(tmpExe, { force: true });
   fs.rmSync(blobPath, { force: true });
 

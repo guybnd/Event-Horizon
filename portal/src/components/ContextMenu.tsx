@@ -37,7 +37,7 @@ const PRIMARY_LABEL: Record<string, string> = {
 
 export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
   const {
-    triggerRefresh, markAllCommentsRead, openTaskModal, openTaskFullView,
+    triggerRefresh, markAllCommentsRead, openTask,
     refreshWorktrees, setFilterWorktree, setView, setChangesFocus,
   } = useAppActions();
   const config = useAppSelector((s) => s.config);
@@ -120,8 +120,6 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
   const commentIds = (task.history ?? []).filter((e) => e.type === 'comment' && e.id).map((e) => e.id!);
   const readIds = new Set(readComments[task.id] ?? []);
   const hasUnread = commentIds.some((id) => !readIds.has(id));
-  const boardCardOpenMode = config?.boardCardOpenMode || 'full';
-
   // ─── Phase templates (Launch agent flyout) ────────────────────────────────────
   const phaseTemplates = useMemo(
     () => (templates ?? []).filter((w) => w.phases?.[cardPhase as keyof typeof w.phases]),
@@ -146,8 +144,7 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
 
   // ─── Handlers ─────────────────────────────────────────────────────────────────
   const handleOpen = () => {
-    if (boardCardOpenMode === 'full') openTaskFullView(task);
-    else openTaskModal(task);
+    openTask(task);
     onClose();
   };
 
@@ -175,8 +172,7 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
   const handleTransition = async (status: string) => {
     onClose();
     if (isPromptableStatus(status, config)) {
-      if (boardCardOpenMode === 'full') openTaskFullView(task);
-      else openTaskModal(task);
+      openTask(task);
       return;
     }
     await updateTask(task.id, { status, updatedBy: currentUser });

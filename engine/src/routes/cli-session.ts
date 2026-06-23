@@ -334,7 +334,9 @@ router.post('/:id/cli-session/start', async (req, res) => {
   // FLUX-604: board-level orchestrator session — not bound to any ticket.
   if (id === BOARD_CONVERSATION_ID) {
     const firstMessage = typeof req.body?.appendPrompt === 'string' ? req.body.appendPrompt.trim() : '';
-    if (!firstMessage) return res.status(400).json({ error: 'appendPrompt (first message) is required for the orchestrator chat' });
+    // FLUX-676: the opening turn may carry pasted images; allow an image-only turn (empty text).
+    const chatAttachments = parseChatAttachments(req.body?.attachments);
+    if (!firstMessage && chatAttachments.length === 0) return res.status(400).json({ error: 'appendPrompt (first message) is required for the orchestrator chat' });
     const existingId = cliSessionIdByTaskId.get(BOARD_CONVERSATION_ID);
     const existing = existingId ? cliSessionsById.get(existingId) : undefined;
     // Block only while a turn is genuinely IN FLIGHT (a live proc is running). A session parked
@@ -383,7 +385,7 @@ router.post('/:id/cli-session/start', async (req, res) => {
       'board',
     );
     try {
-      await startBoardSession(boardSession, firstMessage, workspaceRoot!);
+      await startBoardSession(boardSession, firstMessage, workspaceRoot!, { attachments: chatAttachments });
       return res.status(201).json({ session: getCliSessionSummaryForTask(BOARD_CONVERSATION_ID) });
     } catch (error: any) {
       unregisterSession(BOARD_CONVERSATION_ID, boardSession.id);
@@ -757,7 +759,9 @@ router.post('/:id/cli-session/input', async (req, res) => {
   // FLUX-604: orchestrator follow-up turn.
   if (id === BOARD_CONVERSATION_ID) {
     const boardMessage = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
-    if (!boardMessage) return res.status(400).json({ error: 'message is required' });
+    // FLUX-676: a turn may carry pasted images; allow an image-only turn (empty text).
+    const boardAttachments = parseChatAttachments(req.body?.attachments);
+    if (!boardMessage && boardAttachments.length === 0) return res.status(400).json({ error: 'message is required' });
     const sid = cliSessionIdByTaskId.get(BOARD_CONVERSATION_ID);
     const boardSession = sid ? cliSessionsById.get(sid) : undefined;
     if (!boardSession) return res.status(409).json({ error: 'No orchestrator session — start one first' });
@@ -768,7 +772,7 @@ router.post('/:id/cli-session/input', async (req, res) => {
     if (typeof req.body?.effortOverride === 'string') boardSession.effortOverride = req.body.effortOverride.trim() || undefined;
     if (req.body?.permissionMode === 'gated' || req.body?.permissionMode === 'skip') boardSession.permissionMode = req.body.permissionMode;
     try {
-      await sendBoardInput(boardSession, boardMessage, workspaceRoot!);
+      await sendBoardInput(boardSession, boardMessage, workspaceRoot!, { attachments: boardAttachments });
       return res.json({ session: getCliSessionSummaryForTask(BOARD_CONVERSATION_ID) });
     } catch (error: any) {
       return res.status(500).json({ error: error.message || 'Failed to send message to orchestrator' });

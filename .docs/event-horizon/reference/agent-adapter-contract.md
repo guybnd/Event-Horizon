@@ -90,6 +90,8 @@ export const CLI_CAPABILITIES: Record<CliFramework, CliCapabilities> = {
 
 When you add a new framework, add a row here too.
 
+> **Known gaps in the current adapter layer** — the three shipping adapters do not yet agree on the full surface area implied by this contract (duplicated helpers, claude-only `EH_CONVERSATION_ID` env, claude-only `__board__` orchestrator, claude-only `--mcp-config` injection, claude-only `pausedForInput` flow, claude-only `permissionMode` honoring, claude-only image attachments). See the [Adapter Layer Audit](../architecture/adapter-layer-audit.md) (FLUX-700) for the full row-by-row inventory and the proposed disposition per row. New adapter work should land against the post-audit shape, not the current one.
+
 ## Lifecycle: `start`
 
 `start(session, task, appendPrompt, effortOverride, workspaceRoot)` is called once when a CLI session begins. The standard implementation in all three adapters is a thin wrapper around a shared `startCliSession(...)` helper that:
@@ -129,7 +131,7 @@ Called when the user types into an active session. All three adapters forward to
 
 For Claude Code's "resume" mode, `sendCliSessionInput` instead spawns a new `claude --resume <claudeSessionId>` process and re-attaches stream handlers.
 
-**Image attachments (FLUX-674).** When `opts.attachments` is present, `sendCliSessionInput` resolves each ref to its absolute path under the per-ticket asset sidecar (`resolveAttachmentAbsPaths`, guarded to stay inside the assets root), records the refs on the transcript user turn (so the bubble re-renders on reload), notes the filenames in the history comment, and appends `attachmentReadInstruction(...)` — a "view these with the Read tool" block listing the absolute paths — to the `-p` prompt. The opening turn takes the same treatment via the `/cli-session/start` route.
+**Image attachments (FLUX-674).** When `opts.attachments` is present, `sendCliSessionInput` resolves each ref to its absolute path under the per-ticket asset sidecar (`resolveAttachmentAbsPaths`, guarded to stay inside the assets root), records the refs on the transcript user turn (so the bubble re-renders on reload), notes the filenames in the history comment, and appends `attachmentReadInstruction(...)` — a "view these with the Read tool" block listing the absolute paths — to the `-p` prompt. The opening turn takes the same treatment via the `/cli-session/start` route. **FLUX-676:** the board orchestrator chat (`startBoardSession` / `sendBoardInput`, outside the `AgentAdapter` interface) accepts the same `SendInputOptions` and reuses `resolveAttachmentAbsPaths` + `attachmentReadInstruction`; its images live in the `assets/__board__/` sidecar rather than a per-ticket one, and it records the refs on the `__board__` transcript turn (no ticket history).
 
 ## Lifecycle: `stop`
 

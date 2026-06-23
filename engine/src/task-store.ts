@@ -717,10 +717,17 @@ export async function loadTask(filePath: string) {
       parsed = matter(content);
     } catch (yamlErr) {
       const msg = yamlErr instanceof Error ? yamlErr.message : String(yamlErr);
-      console.error(`\n[FLUX VALIDATION ERROR] ${filePath}\n  YAML frontmatter is invalid: ${msg}\n  The ticket has been removed from the board. Fix the frontmatter and save again.\n`);
       const id = path.basename(filePath, '.md');
+      // Common corruption mode: a sync merge committed unresolved git conflict
+      // markers into the frontmatter (FLUX-703 / FLUX-694). Surface that explicitly
+      // so the fix is obvious instead of a cryptic YAML "block mapping" error.
+      const hasConflictMarkers = /^<{7} /m.test(content) && /^>{7} /m.test(content);
+      const detail = hasConflictMarkers
+        ? `contains unresolved git conflict markers (<<<<<<< / ======= / >>>>>>>) — a sync merge committed an unresolved conflict. Resolve the markers (keep both history entries, chronological order) and save again.`
+        : `YAML frontmatter is invalid: ${msg}`;
+      console.error(`\n[FLUX VALIDATION ERROR] ${filePath}\n  ${detail}\n  The ticket has been removed from the board. Fix the frontmatter and save again.\n`);
       delete tasksCache[id];
-      parseErrors[id] = { id, path: filePath, error: `YAML frontmatter is invalid: ${msg}` };
+      parseErrors[id] = { id, path: filePath, error: detail };
       return;
     }
 

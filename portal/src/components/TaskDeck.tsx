@@ -39,7 +39,10 @@ export function TaskDeck({ id, items, label, accent = 'violet' }: {
   return (
     <div className="mb-1">
       <button
-        onClick={() => setUnwound((u) => !u)}
+        // Stop the click bubbling to the host card body (FLUX-677): the epic TaskCard opens its
+        // full view on body click, so without this the toggle both unwinds the deck AND opens the
+        // ticket. Harmless for the PR deck (its card body doesn't open a full view).
+        onClick={(e) => { e.stopPropagation(); setUnwound((u) => !u); }}
         aria-expanded={unwound}
         aria-controls={id}
         className={`flex w-full items-center gap-1.5 rounded-md px-1 py-1 text-left text-[11px] font-semibold transition-colors ${a.button}`}

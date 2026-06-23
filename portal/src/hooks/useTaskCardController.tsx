@@ -9,8 +9,9 @@ import { useAppSelector, useAppActions, useLiveSession, shallowEqual } from '../
 import { sendTaskCliInput, updateTask, fetchWorkflows, detachWorktree, type WorkflowTemplate } from '../api';
 import { runAgentAction, launchOrchestration, launchPhaseDefault, getOrchestrationMode, phaseCombiner, phaseLaunchStatus, resolvePhaseDefaultId, statusToPhase, type LaunchPhase } from '../agentActions';
 import { type OrchestrationLaunchPlan } from '../components/OrchestrationLauncher';
-import { getArchiveStatus, getReadyForMergeStatus, isPromptableStatus, isTaskAwaitingInput } from '../workflow';
+import { getReadyForMergeStatus, isPromptableStatus, isTaskAwaitingInput } from '../workflow';
 import { epicDeckSubtasks } from '../lib/decks';
+import { isEpic as isEpicTask, getDoneStatuses } from '../lib/epics';
 import { groupSessions, aggregateGroup, isGroupLive, isCombinerPending } from '../orchestration';
 import { resolveEffectiveAgent } from '../utils';
 import { useAnimationControls } from 'framer-motion';
@@ -64,7 +65,7 @@ export function useTaskCardController({
   isDragging = false,
 }: TaskCardControllerArgs) {
   const EFFORT_OPTIONS = ['None', 'XS', 'S', 'M', 'L', 'XL'];
-  const { openTaskModal, openTaskFullView, saveConfig, triggerRefresh, ensureReadStateLoaded, markCommentRead: ctxMarkCommentRead, markAllCommentsRead: ctxMarkAllCommentsRead, refreshWorktrees, setView, setChangesFocus } = useAppActions();
+  const { openTask, openTaskModal, openTaskFullView, saveConfig, triggerRefresh, ensureReadStateLoaded, markCommentRead: ctxMarkCommentRead, markAllCommentsRead: ctxMarkAllCommentsRead, refreshWorktrees, setView, setChangesFocus } = useAppActions();
   const config = useAppSelector((s) => s.config);
   const currentUser = useAppSelector((s) => s.currentUser);
   // Fine-grained slices (FLUX-625): select per-card derived values so a worktree or
@@ -121,13 +122,17 @@ export function useTaskCardController({
   const tagAreaHoverTimeout = useRef<number | null>(null);
 
   const subtaskIds = useMemo(() => task.subtasks?.map(normalizeSubtaskId) ?? [], [task.subtasks]);
-  const isEpic = subtaskIds.length > 0;
+  // Share the epic definition + done-status set with the Epics screen via lib/epics so the
+  // card and the roadmap view can never drift on what counts as done (FLUX-678).
+  const isEpic = isEpicTask(task);
 
-  const doneStatuses = useMemo(
-    () => new Set(['Done', 'Released', getArchiveStatus(config)].filter(Boolean)),
-    [config]
-  );
+  const doneStatuses = useMemo(() => getDoneStatuses(config), [config]);
 
+  // NOTE: this rollup arithmetic is intentionally duplicated from computeEpicRollup (lib/epics)
+  // rather than calling it — the card resolves subtasks through the memoized useAppSelector below
+  // for render perf. It MUST stay in lockstep with computeEpicRollup (same total = declared count,
+  // done = resolved-in-done-set, dangling = not-done); a divergence reintroduces the board↔Epics
+  // drift FLUX-678 eliminated. Only isEpic + getDoneStatuses are actually shared.
   const resolvedSubtasks = useAppSelector(
     (s) => (isEpic ? subtaskIds.map((id) => s.taskById.get(id)).filter((t): t is Task => !!t) : EMPTY_SUBTASKS),
     shallowEqual,
@@ -684,7 +689,6 @@ export function useTaskCardController({
   const allTags = config?.tags?.map((tag) => tag.name) || [];
   const visibleTitle = titleValue || 'Untitled Task';
   const visibleAssignee = assigneeName || 'unassigned';
-  const boardCardOpenMode = config?.boardCardOpenMode || 'full';
   const liveAnimationClass = !isOverlay && liveEvent
     ? liveEvent.kind === 'created'
       ? 'task-live-created'
@@ -717,14 +721,7 @@ export function useTaskCardController({
       }
     : {};
 
-  const openBoardTask = (nextTask: Task) => {
-    if (boardCardOpenMode === 'full') {
-      openTaskFullView(nextTask);
-      return;
-    }
-
-    openTaskModal(nextTask);
-  };
+  const openBoardTask = (nextTask: Task) => openTask(nextTask);
 
   const animationsEnabled = config?.animationsEnabled ?? true;
   const speedMap = { fast: 0.2, normal: 0.4, slow: 0.7 };

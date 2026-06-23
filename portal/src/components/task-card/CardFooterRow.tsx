@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { User, Bot, GitCompare } from 'lucide-react';
 import { motion } from 'framer-motion';
 import type { Task } from '../../types';
@@ -6,8 +7,28 @@ import { TokenBadge } from '../TokenBadge';
 import { CardChip, CARD_CHIP_BASE, CARD_CHIP_TEXT } from './CardChip';
 import { reporterInitials } from './reporterInitials';
 import type { TaskCardController } from '../../hooks/useTaskCardController';
+import { useAppSelector } from '../../store/useAppSelector';
+
+function useSpeedDemon(task: Task): boolean {
+  return useMemo(() => {
+    const history = task.history ?? [];
+    let inProgressAt: number | undefined;
+    let doneAt: number | undefined;
+    for (const e of history) {
+      if (e.type !== 'status_change') continue;
+      const to = (e as { to?: string }).to ?? '';
+      const t = new Date(e.date).getTime();
+      if (/in.?progress/i.test(to) && !inProgressAt) inProgressAt = t;
+      if (/done/i.test(to)) doneAt = t;
+    }
+    if (!inProgressAt || !doneAt) return false;
+    return (doneAt - inProgressAt) < 2 * 60 * 60 * 1000; // < 2 hours
+  }, [task.history]);
+}
 
 export function CardFooterRow({ task, isOverlay, c }: { task: Task; isOverlay?: boolean; c: TaskCardController }) {
+  const boardFx = useAppSelector((s) => s.config?.boardFx);
+  const isSpeedDemon = useSpeedDemon(task);
   const {
     tagMenuRef,
     tagAreaHoverTimeout,
@@ -137,6 +158,10 @@ export function CardFooterRow({ task, isOverlay, c }: { task: Task; isOverlay?: 
         variant="card"
         onToggle={config ? () => void saveConfig({ ...config, tokenDisplayMode: config.tokenDisplayMode === 'tokens' ? 'cost' : 'tokens' }) : undefined}
       />
+
+      {boardFx?.speedDemon !== false && isSpeedDemon && (
+        <span title="Completed in under 2 hours" className="select-none text-sm leading-none" aria-label="Speed demon">⚡</span>
+      )}
 
       {diffFocusKey && !isOverlay && (
         <button

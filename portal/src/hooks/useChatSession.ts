@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAppActions } from '../store/useAppSelector';
 import {
   startTaskCliSessionEx,
@@ -39,6 +39,13 @@ export interface UseChatSession {
   reset: () => Promise<void>;
   /** FLUX-674: upload one pasted/dropped image for this conversation, returning its ref. */
   uploadImage: (file: File) => Promise<ChatAttachment>;
+  /**
+   * FLUX-691: in-progress assistant text streamed token-by-token for the *current* turn, accrued
+   * from `assistantDelta` SSE events. Non-empty only while a turn is mid-stream; cleared the moment
+   * the committed message lands in the durable transcript (so the final, markdown-rendered message
+   * replaces it with no duplicate). The consumer renders this as a cheap plain-text live node.
+   */
+  liveText: string;
 }
 
 /**
@@ -57,6 +64,12 @@ export function useChatSession(conversationId: string, enabled = true): UseChatS
   const [error, setError] = useState<string | null>(null);
   const [pendingUser, setPendingUser] = useState<string | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
+  // FLUX-691: token-by-token live stream for the current turn (see `liveText` in UseChatSession).
+  const [liveText, setLiveText] = useState('');
+  // Mirror of `messages` so the event-driven `load()` can tell a real transcript change (the turn
+  // committed) from a no-op refetch (mid-turn activity/progress tick) without a stale closure.
+  const messagesRef = useRef<TranscriptMessage[]>([]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
 
   // Event-driven transcript sync (FLUX-611): fetch once on open, then refetch only when the
   // engine pushes an event for THIS conversation — no idle polling, so a parked chat (and N
@@ -69,9 +82,17 @@ export function useChatSession(conversationId: string, enabled = true): UseChatS
     const load = async () => {
       try {
         const msgs = await fetchTaskTranscript(conversationId);
-        // Keep the same array reference when nothing changed — avoids needless
-        // re-renders (and the scroll-jank they caused).
-        if (!cancelled) setMessages((prev) => (sameMessages(prev, msgs) ? prev : msgs));
+        if (cancelled) return;
+        // Keep the same array reference when nothing changed — avoids needless re-renders
+        // (and the scroll-jank they caused).
+        if (sameMessages(messagesRef.current, msgs)) return;
+        messagesRef.current = msgs;
+        setMessages(msgs);
+        // FLUX-691: the committed turn just landed in the durable transcript — drop the live
+        // streaming node so the final (markdown-rendered, memoized) message replaces it with no
+        // duplicate. Gated on a *real* change: mid-turn activity/progress refetches return the
+        // same transcript while text is still streaming, so they never clear/flicker the node.
+        setLiveText('');
       } catch {
         /* transient — keep last good */
       }
@@ -82,10 +103,18 @@ export function useChatSession(conversationId: string, enabled = true): UseChatS
       return !!o && (o.taskId === conversationId || o.id === conversationId);
     };
     const onEvent = (d: unknown) => { if (matches(d)) void load(); };
+    // FLUX-691: accrue token-by-token deltas for THIS conversation into the live node.
+    const onDelta = (d: unknown) => {
+      const o = d as { taskId?: string; text?: string } | null;
+      if (o && o.taskId === conversationId && typeof o.text === 'string' && o.text) {
+        setLiveText((prev) => prev + o.text);
+      }
+    };
     const unsubs = [
       subscribeToEvent('activity', onEvent),
       subscribeToEvent('progress', onEvent),
       subscribeToEvent('taskUpdated', onEvent),
+      subscribeToEvent('assistantDelta', onDelta),
     ];
     return () => { cancelled = true; unsubs.forEach((u) => u()); };
   }, [conversationId, enabled, subscribeToEvent]);
@@ -97,6 +126,7 @@ export function useChatSession(conversationId: string, enabled = true): UseChatS
     if ((!trimmed && attachments.length === 0) || busy) return;
     setBusy(true);
     setError(null);
+    setLiveText(''); // FLUX-691: fresh turn — drop any live node left over from a prior turn.
     setPendingUser(trimmed);
     setPendingAttachments(attachments);
     try {
@@ -182,11 +212,12 @@ export function useChatSession(conversationId: string, enabled = true): UseChatS
     try {
       await clearTaskTranscript(conversationId);
       setMessages([]);
+      setLiveText('');
       setPendingUser(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to reset conversation');
     }
   }
 
-  return { messages: merged, busy, error, send, stop, reset, uploadImage };
+  return { messages: merged, busy, error, send, stop, reset, uploadImage, liveText };
 }

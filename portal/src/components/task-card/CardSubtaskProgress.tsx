@@ -1,5 +1,6 @@
 import { MousePointerClick } from 'lucide-react';
 import type { TaskCardController } from '../../hooks/useTaskCardController';
+import { EpicProgressBar } from '../EpicProgressBar';
 
 export function CardSubtaskProgress({ c }: { c: TaskCardController }) {
   const {
@@ -47,12 +48,7 @@ export function CardSubtaskProgress({ c }: { c: TaskCardController }) {
       title="Click to view subtasks"
       className="flex items-center gap-2 mb-3 w-full group/progress cursor-pointer rounded-md px-1.5 py-1 -mx-1.5 hover:bg-indigo-50 dark:hover:bg-indigo-500/10 transition-colors ring-1 ring-transparent hover:ring-indigo-200 dark:hover:ring-indigo-500/30"
     >
-      <div className="flex-1 h-2 rounded-full bg-gray-200 dark:bg-white/10 overflow-hidden group-hover/progress:bg-gray-300 dark:group-hover/progress:bg-white/15 transition-colors">
-        <div
-          className="h-full rounded-full bg-emerald-500 dark:bg-emerald-400 transition-all"
-          style={{ width: `${subtaskTotal > 0 ? (subtaskDoneCount / subtaskTotal) * 100 : 0}%` }}
-        />
-      </div>
+      <EpicProgressBar done={subtaskDoneCount} total={subtaskTotal} />
       <span className="text-[10px] font-semibold text-gray-500 dark:text-gray-400 whitespace-nowrap group-hover/progress:text-indigo-600 dark:group-hover/progress:text-indigo-300 transition-colors flex items-center gap-1">
         {subtaskDoneCount}/{subtaskTotal} done
         <MousePointerClick className="w-3 h-3 opacity-0 group-hover/progress:opacity-100 transition-opacity" />

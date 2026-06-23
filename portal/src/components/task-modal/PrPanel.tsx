@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Check, X, Clock, GitPullRequest, GitMerge, Code2, GitCompare, ExternalLink, AlertTriangle, ArrowDown, RefreshCw, ShieldCheck } from 'lucide-react';
 import { useAppActions } from '../../store/useAppSelector';
-import { fetchPrStatus, raisePr, mergePr, openWorktreeWindow, fetchBranchStatus, updatePrBranch, fetchDiffOverview, type PrStatus } from '../../api';
+import { fetchPrStatus, raisePr, mergePr, MergeParkedError, openWorktreeWindow, fetchBranchStatus, updatePrBranch, fetchDiffOverview, type PrStatus } from '../../api';
 
 interface Props {
   taskId: string;
@@ -24,6 +24,7 @@ export function PrPanel({ taskId, branch, onSendForReview }: Props) {
   const [busy, setBusy] = useState<'raise' | 'merge' | 'open' | 'update' | null>(null);
   const [error, setError] = useState('');
   const [confirmMerge, setConfirmMerge] = useState(false);
+  const [parkedOwners, setParkedOwners] = useState<string[] | null>(null);
   const [behind, setBehind] = useState(0);
   const [collisions, setCollisions] = useState(0);
 
@@ -51,10 +52,17 @@ export function PrPanel({ taskId, branch, onSendForReview }: Props) {
     setError('');
     try {
       await fn();
+      setParkedOwners(null);
       await load();
       triggerRefresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Action failed');
+      if (err instanceof MergeParkedError) {
+        setParkedOwners(err.parkedOwners);
+        setError('');
+      } else {
+        setParkedOwners(null);
+        setError(err instanceof Error ? err.message : 'Action failed');
+      }
     } finally {
       setBusy(null);
       setConfirmMerge(false);
@@ -169,7 +177,26 @@ export function PrPanel({ taskId, branch, onSendForReview }: Props) {
 
         <div className="flex-1" />
 
-        {confirmMerge ? (
+        {parkedOwners ? (
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-amber-700 dark:text-amber-300">
+              {parkedOwners.length} parked session{parkedOwners.length > 1 ? 's' : ''} will be ended (warm resume lost; committed work safe).
+            </span>
+            <button
+              disabled={busy === 'merge'}
+              onClick={() => void run('merge', () => mergePr(taskId, { stopParkedSessions: true }))}
+              className="flex items-center gap-1.5 rounded-lg bg-amber-600 px-3 py-2 text-sm font-semibold text-white transition-colors hover:bg-amber-700 disabled:opacity-50"
+            >
+              <GitMerge className="h-4 w-4" /> {busy === 'merge' ? 'Stopping & merging…' : 'Stop & merge'}
+            </button>
+            <button
+              onClick={() => setParkedOwners(null)}
+              className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
+            >
+              Cancel
+            </button>
+          </div>
+        ) : confirmMerge ? (
           <div className="flex items-center gap-2">
             <span className="text-xs font-medium text-gray-600 dark:text-gray-300">Squash-merge & advance?</span>
             <button

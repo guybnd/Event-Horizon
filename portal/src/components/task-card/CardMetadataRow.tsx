@@ -1,10 +1,37 @@
+import { useMemo } from 'react';
 import { Layers } from 'lucide-react';
 import type { Task } from '../../types';
 import { StatusBadge } from '../StatusBadge';
 import { getStatusColorClass } from '../../statusStyles';
 import type { TaskCardController } from '../../hooks/useTaskCardController';
 
+
+function useTimeInColumn(task: Task): string | null {
+  return useMemo(() => {
+    const history = task.history ?? [];
+    // Walk backwards to find the most recent entry that moved us into the current status
+    let enteredAt: string | undefined;
+    for (let i = history.length - 1; i >= 0; i--) {
+      const e = history[i];
+      if (e.type === 'status_change' && (e as { to?: string }).to === task.status) {
+        enteredAt = e.date;
+        break;
+      }
+    }
+    if (!enteredAt) return null;
+    const ms = Date.now() - new Date(enteredAt).getTime();
+    if (ms < 60_000) return null; // less than 1 min — not worth showing
+    const mins = Math.floor(ms / 60_000);
+    const hours = Math.floor(mins / 60);
+    const days = Math.floor(hours / 24);
+    if (days >= 1) return `${days}d`;
+    if (hours >= 1) return `${hours}h`;
+    return `${mins}m`;
+  }, [task.history, task.status]);
+}
+
 export function CardMetadataRow({ task, isOverlay, c }: { task: Task; isOverlay?: boolean; c: TaskCardController }) {
+  const timeInColumn = useTimeInColumn(task);
   const {
     isEditingTitle,
     titleInputRef,
@@ -77,6 +104,14 @@ export function CardMetadataRow({ task, isOverlay, c }: { task: Task; isOverlay?
         <span className="text-[10px] font-bold tracking-wider text-gray-400 dark:text-gray-500">
           {task.id}
         </span>
+        {timeInColumn && !isOverlay && (
+          <span
+            title={`In "${task.status}" for ${timeInColumn}`}
+            className="rounded-full bg-gray-100 px-1.5 py-0.5 text-[9px] font-semibold tabular-nums text-gray-400 dark:bg-white/5 dark:text-gray-500"
+          >
+            {timeInColumn}
+          </span>
+        )}
         {/* Status badge is redundant under a column header on the board
             (the column conveys status + hue). Kept off-board: drag
             overlay, releases screen, swimlane reuse. */}

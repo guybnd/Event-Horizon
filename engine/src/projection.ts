@@ -65,6 +65,11 @@ export interface TranscriptMessage {
   path?: string;
   /** FLUX-674: images attached to a user turn — rendered inline in the user bubble. */
   attachments?: ChatAttachment[];
+  /** FLUX-688: per-edit line counts for an edit-ish tool row — how many lines *this* tool
+   *  call added/removed (from a line-level diff of its own input, NOT the file's cumulative
+   *  diff). Rendered as colored `+N −M` on the inline edit-diff row. */
+  added?: number;
+  removed?: number;
 }
 
 /** FLUX-661: file-mutating Claude Code tools whose rows get an expandable inline diff. */
@@ -106,6 +111,70 @@ function relativizeEditPath(filePath: unknown, taskId: string): string | undefin
   }
   if (best === undefined || best === '' || best.startsWith('..')) return undefined;
   return best.split(path.sep).join('/');
+}
+
+/**
+ * FLUX-688: split a string into content lines for line-counting. Empty string → 0 lines; a
+ * single trailing newline is ignored (so `"a\nb\n"` is two lines, not three) — otherwise every
+ * newline-terminated block would over-count by one.
+ */
+function splitLines(s: string): string[] {
+  if (s === '') return [];
+  const lines = s.split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  return lines;
+}
+
+/** FLUX-688: length of the longest common subsequence of two line arrays (classic O(m·n) DP).
+ *  Edit blocks are small, so the quadratic table is fine. */
+function lcsLength(a: string[], b: string[]): number {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0 || n === 0) return 0;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i]![j] = a[i - 1] === b[j - 1] ? dp[i - 1]![j - 1]! + 1 : Math.max(dp[i - 1]![j]!, dp[i]![j - 1]!);
+    }
+  }
+  return dp[m]![n]!;
+}
+
+/** FLUX-688: line-level added/removed between two strings via LCS — editing one line inside a
+ *  5-line block reports `+1 −1`, not `+5 −5`. Non-string inputs count as empty. */
+function diffStat(oldStr: unknown, newStr: unknown): { added: number; removed: number } {
+  const a = splitLines(typeof oldStr === 'string' ? oldStr : '');
+  const b = splitLines(typeof newStr === 'string' ? newStr : '');
+  const lcs = lcsLength(a, b);
+  return { added: b.length - lcs, removed: a.length - lcs };
+}
+
+/**
+ * FLUX-688: per-edit line counts for an edit-ish tool_use block, derived from the tool's own
+ * input (not the file's cumulative diff). `Edit` = line diff of `old_string`→`new_string`;
+ * `MultiEdit` = summed over `edits[]`; `Write`/`NotebookEdit` = `+<content lines> −0` (no prior
+ * content available in the tool input). Note: `Edit` with `replace_all` matching multiple sites
+ * is counted once (single old→new block) → under-counts; acceptable for v1.
+ */
+function editLineStat(block: any): { added: number; removed: number } {
+  const name = normalizeToolName(block);
+  const input = block?.input || {};
+  if (name === 'Edit') return diffStat(input.old_string, input.new_string);
+  if (name === 'MultiEdit') {
+    let added = 0;
+    let removed = 0;
+    if (Array.isArray(input.edits)) {
+      for (const e of input.edits) {
+        const s = diffStat(e?.old_string, e?.new_string);
+        added += s.added;
+        removed += s.removed;
+      }
+    }
+    return { added, removed };
+  }
+  if (name === 'Write') return { added: splitLines(String(input.content ?? '')).length, removed: 0 };
+  if (name === 'NotebookEdit') return { added: splitLines(String(input.new_source ?? '')).length, removed: 0 };
+  return { added: 0, removed: 0 };
 }
 
 /**
@@ -194,14 +263,19 @@ export function projectTranscript(turns: Turn[], _ops: CurationOp[] = []): Trans
     } else if (evt?.type === 'assistant' && Array.isArray(evt.message?.content)) {
       for (const b of evt.message.content) {
         if (b?.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
-          out.push({ role: 'assistant', text: b.text, ts: '' });
+          out.push({ role: 'assistant', text: b.text, ts: turn.ts });
         } else if (b?.type === 'tool_use') {
-          const msg: TranscriptMessage = { role: 'tool', text: toolLabel(b), ts: '' };
+          const msg: TranscriptMessage = { role: 'tool', text: toolLabel(b), ts: turn.ts };
           // FLUX-661: for edit-ish tools, attach the normalized name + repo-relative path so
           // the portal can render an expandable inline diff for that file. Other tools stay
           // label-only. The turn's streamId is the taskId the session ran under.
           const name = normalizeToolName(b);
           if (EDIT_TOOLS.has(name)) {
+            // FLUX-688: per-edit counts come from the tool input, so compute them regardless of
+            // path resolution; they only render on the diff row (which also needs `path`).
+            const { added, removed } = editLineStat(b);
+            msg.added = added;
+            msg.removed = removed;
             const rel = relativizeEditPath(b?.input?.file_path ?? b?.input?.notebook_path, turn.streamId);
             if (rel) {
               msg.tool = name;

@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import type { DraggableAttributes, DraggableSyntheticListeners } from '@dnd-kit/core';
@@ -12,6 +12,7 @@ import { resolveEffectiveAgent } from '../utils';
 import { createPortal } from 'react-dom';
 import type { StatusTint } from '../statusStyles';
 import { useTaskCardController } from '../hooks/useTaskCardController';
+import { useAppSelector } from '../store/useAppSelector';
 import { CardCommentBadge } from './task-card/CardCommentBadge';
 import { CardMetadataRow } from './task-card/CardMetadataRow';
 import { CardClusterPanel } from './task-card/CardClusterPanel';
@@ -25,7 +26,6 @@ import { CardCommentPopover } from './task-card/CardCommentPopover';
 import { CardSubtaskPopover } from './task-card/CardSubtaskPopover';
 import { CardDescriptionPopup } from './task-card/CardDescriptionPopup';
 import { PrDeckSection } from './PrDeckCard';
-import { TaskDeck } from './TaskDeck';
 
 // Violet wash for PR cards — a translucent violet gradient layered over the eh-card bg
 // (inline so it beats eh-card's unlayered background). Module-level so it's allocated once,
@@ -95,6 +95,29 @@ export const TaskCardInner = memo(function TaskCardInner({
 }: TaskCardInnerProps) {
   const c = useTaskCardController({ task, parentTask, isOverlay, liveEvent, travelDirection, columnTint, hideStatusBadge, attributes: dndAttributes, listeners: dndListeners, isDragging: dndIsDragging });
 
+  const boardFx = useAppSelector((s) => s.config?.boardFx);
+
+  // Deterministic hue from ticket ID — stable across renders, unique per ticket.
+  const foilHue = useMemo(() => {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < task.id.length; i++) { h ^= task.id.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+    return (h >>> 0) % 360;
+  }, [task.id]);
+
+  const rustClass = useMemo(() => {
+    if (boardFx?.ticketAgeRust === false || isOverlay || c.hasActiveCliSession) return '';
+    const lastEntry = task.history?.reduce<string | undefined>((latest, e) => {
+      if (!latest || e.date > latest) return e.date;
+      return latest;
+    }, undefined);
+    if (!lastEntry) return '';
+    const daysSince = (Date.now() - new Date(lastEntry).getTime()) / 86_400_000;
+    if (daysSince >= 14) return 'card-rust-3';
+    if (daysSince >= 7) return 'card-rust-2';
+    if (daysSince >= 4) return 'card-rust-1';
+    return '';
+  }, [boardFx?.ticketAgeRust, isOverlay, c.hasActiveCliSession, task.history]);
+
   const CardContainer = c.animationsEnabled && !c.isDragging && !isOverlay ? motion.div : 'div';
 
   // A PR ticket (FLUX-567) renders through this same card — inheriting session indicator,
@@ -117,7 +140,14 @@ export const TaskCardInner = memo(function TaskCardInner({
         c.setIsHovering(false);
       }}
     >
-      <motion.div {...c.contentAnimation} style={isPrTicket ? PR_CARD_STYLE : c.columnTintStyle} className={`eh-card relative flex flex-col rounded-xl border p-0 shadow-sm transition-all ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''} ${c.hasActiveCliSession ? 'border-emerald-400 dark:border-emerald-500/60' : isPrTicket ? 'border-violet-400 dark:border-violet-500/60' : c.isPromptStatus && !compact ? 'border-amber-300 dark:border-amber-500/40 ring-1 ring-amber-200/50 dark:ring-amber-500/20' : ''} ${c.liveAnimationClass} ${c.liveAccentClass} ${c.hasUnread && !c.liveAccentClass ? 'ring-2 ring-amber-400/60 dark:ring-amber-500/40' : ''} ${c.isEpic && !isPrTicket ? 'border-l-[3px] border-l-indigo-400 dark:border-l-indigo-500' : ''}`}>
+      <motion.div {...c.contentAnimation} style={isPrTicket ? PR_CARD_STYLE : c.columnTintStyle} className={`eh-card relative flex flex-col rounded-xl border p-0 shadow-sm transition-all ${rustClass} ${isOverlay ? 'shadow-2xl rotate-2 scale-105' : ''} ${c.hasActiveCliSession ? 'border-emerald-400 dark:border-emerald-500/60' : isPrTicket ? 'border-violet-400 dark:border-violet-500/60' : c.isPromptStatus && !compact ? 'border-amber-300 dark:border-amber-500/40 ring-1 ring-amber-200/50 dark:ring-amber-500/20' : ''} ${c.liveAnimationClass} ${c.liveAccentClass} ${c.hasUnread && !c.liveAccentClass ? 'ring-2 ring-amber-400/60 dark:ring-amber-500/40' : ''} ${c.isEpic && !isPrTicket ? 'border-l-[3px] border-l-indigo-400 dark:border-l-indigo-500' : ''}`}>
+        {boardFx?.ticketDna !== false && (
+          <div
+            className="card-foil pointer-events-none absolute inset-0 rounded-xl"
+            style={{ '--foil-hue': foilHue } as React.CSSProperties}
+            aria-hidden
+          />
+        )}
         {c.hasActiveCliSession && !isOverlay && (
           <div className="pointer-events-none absolute inset-0 rounded-xl bot-border-breathe" />
         )}
@@ -150,8 +180,10 @@ export const TaskCardInner = memo(function TaskCardInner({
               <GitPullRequest className="w-4 h-4" />
             </div>
           ) : compact ? (
-            /* Compact (in-deck) member: static type icon, no drag handle — folded members
-               aren't in any SortableContext so drag would be a no-op (FLUX-567 QA). */
+            /* Compact (PR deck) member: static type icon, no drag handle — PR members are owned by
+               the PR lifecycle, not drag-reordered. Epic-deck subtask cards (FLUX-699) deliberately
+               keep a LIVE grip: expanding one and dragging it is the intended way to move a
+               clustered subtask out of a foreign column (a deck card looks/behaves like any card). */
             <div className="w-8 flex items-start justify-center pt-3.5 shrink-0" title={c.isEpic ? 'Epic' : 'Ticket'}>
               {c.isEpic ? <Layers className="w-4 h-4 text-indigo-500 dark:text-indigo-300" /> : <Circle className="w-3 h-3 text-gray-300 dark:text-gray-600" />}
             </div>
@@ -225,19 +257,9 @@ export const TaskCardInner = memo(function TaskCardInner({
                 {c.isEpic && (
                   <CardSubtaskProgress c={c} />
                 )}
-
-                {/* Epic deck (FLUX-580): same-column subtasks fold under their epic, mirroring
-                    the PR members deck. Whole-epic progress (above) stays; this folds only the
-                    subtasks sharing this epic's column. Not on overlay/compact cards (a folded
-                    epic doesn't recurse into a nested deck). */}
-                {c.isEpic && !isOverlay && !compact && (
-                  <TaskDeck
-                    id={`epic-deck-${task.id}`}
-                    items={c.epicFoldedSubtasks}
-                    label={(n) => `${n} subtask${n === 1 ? '' : 's'}`}
-                    accent="indigo"
-                  />
-                )}
+                {/* The epic's subtask deck (the peeking card stack) renders BELOW this card at the
+                    column level (FLUX-699): the epic card IS the deck's top card, not a container
+                    for it. So nothing deck-related renders inside the card body here. */}
 
                 {!compact && <CardFooterRow task={task} isOverlay={isOverlay} c={c} />}
                 {/* member cards in a deck don't carry their own Finish/Review (compact) — the

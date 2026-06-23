@@ -122,12 +122,14 @@ describe('substrate vs projection (FLUX-658)', () => {
       { type: 'system' },
       { type: 'assistant', message: { content: [{ type: 'text', text: '   ' }] } },
     ];
-    const turns: Turn[] = raws.map((raw, seq) => ({ turnId: `${stream}:${seq}`, streamId: stream, seq, ts: '', role: 'unknown', raw }));
+    // Every turn carries the same envelope ts ('TENV'); assistant + tool turns now surface it
+    // (FLUX-684), while user / ask turns keep their own event timestamp.
+    const turns: Turn[] = raws.map((raw, seq) => ({ turnId: `${stream}:${seq}`, streamId: stream, seq, ts: 'TENV', role: 'unknown', raw }));
 
     expect(projectTranscript(turns)).toEqual([
       { role: 'user', text: 'hello', ts: 'T1' },
-      { role: 'assistant', text: 'hi there', ts: '' },
-      { role: 'tool', text: 'list_tickets', ts: '' },
+      { role: 'assistant', text: 'hi there', ts: 'TENV' },
+      { role: 'tool', text: 'list_tickets', ts: 'TENV' },
       { role: 'assistant', text: '❓ **H** — Q?\n- A\n- B', ts: 'T3' },
       { role: 'user', text: '✔ A', ts: 'T4' },
     ]);
@@ -157,6 +159,74 @@ describe('substrate vs projection (FLUX-658)', () => {
     ]);
   });
 
+  it('projectTranscript attaches per-edit line counts to edit-tool rows (FLUX-688)', () => {
+    const stream = freshStream();
+    // An Edit replacing one line inside a 3-line block → +1 −1 (line-level LCS, not +3 −3).
+    const editFile = path.join(root, 'a.ts');
+    const writeFile = path.join(root, 'b.ts');
+    const multiFile = path.join(root, 'c.ts');
+    const raws = [
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', name: 'Edit', input: { file_path: editFile, old_string: 'a\nb\nc', new_string: 'a\nB\nc' } },
+            // Write: + content lines, −0 (no prior content in the tool input).
+            { type: 'tool_use', name: 'Write', input: { file_path: writeFile, content: 'x\ny\nz\n' } },
+            // MultiEdit: summed across edits[] (here: +1−1 then +1−0 = +2 −1).
+            {
+              type: 'tool_use',
+              name: 'MultiEdit',
+              input: {
+                file_path: multiFile,
+                edits: [
+                  { old_string: 'one\ntwo', new_string: 'one\nTWO' },
+                  { old_string: 'tail', new_string: 'tail\nextra' },
+                ],
+              },
+            },
+          ],
+        },
+      },
+    ];
+    const turns: Turn[] = raws.map((raw, seq) => ({ turnId: `${stream}:${seq}`, streamId: stream, seq, ts: '', role: 'assistant', raw }));
+
+    const msgs = projectTranscript(turns);
+    // All three are edit rows under the workspace root, so they carry both tool/path and counts.
+    expect(msgs).toEqual([
+      { role: 'tool', text: 'Edit · ' + editFile.replace(/\s+/g, ' ').slice(0, 48), ts: '', added: 1, removed: 1, tool: 'Edit', path: 'a.ts' },
+      { role: 'tool', text: 'Write · ' + writeFile.replace(/\s+/g, ' ').slice(0, 48), ts: '', added: 3, removed: 0, tool: 'Write', path: 'b.ts' },
+      { role: 'tool', text: 'MultiEdit · ' + multiFile.replace(/\s+/g, ' ').slice(0, 48), ts: '', added: 2, removed: 1, tool: 'MultiEdit', path: 'c.ts' },
+    ]);
+  });
+
+  it('unparseable line round-trips as string-raw turn and is skipped by the projector (FLUX-671)', async () => {
+    const stream = freshStream();
+    // Append a good event, then simulate a corrupt/non-JSON line written directly to disk.
+    appendTranscriptEvent(stream, { type: 'user', text: 'before', timestamp: 'T0' });
+    await flushTranscript(stream);
+    await fs.appendFile(getTranscriptFile(stream), 'not-json-at-all\n', 'utf8');
+    appendTranscriptEvent(stream, { type: 'user', text: 'after', timestamp: 'T2' });
+    await flushTranscript(stream);
+
+    const turns = await readTurns(stream);
+    expect(turns).toHaveLength(3);
+
+    // Middle turn: raw is the original string, role is unknown.
+    const corrupt = turns[1]!;
+    expect(corrupt.raw).toBe('not-json-at-all');
+    expect(corrupt.role).toBe('unknown');
+    expect(corrupt.seq).toBe(1);
+    expect(corrupt.turnId).toBe(`${stream}:1`);
+
+    // projectTranscript skips it (string raw has no .type).
+    const msgs = projectTranscript(turns);
+    expect(msgs).toEqual([
+      { role: 'user', text: 'before', ts: 'T0' },
+      { role: 'user', text: 'after', ts: 'T2' },
+    ]);
+  });
+
   it('readTranscriptMessages routes legacy + enveloped turns through the projector identically', async () => {
     const stream = freshStream();
     // One legacy bare line, then one enveloped append — both must render through projection.
@@ -166,12 +236,12 @@ describe('substrate vs projection (FLUX-658)', () => {
       JSON.stringify({ type: 'user', text: 'legacy hi', timestamp: 'T0' }) + '\n',
       'utf8',
     );
-    appendTranscriptEvent(stream, { type: 'assistant', message: { content: [{ type: 'text', text: 'enveloped reply' }] } });
+    appendTranscriptEvent(stream, { type: 'assistant', message: { content: [{ type: 'text', text: 'enveloped reply' }] }, timestamp: 'T1' });
     await flushTranscript(stream);
 
     expect(await readTranscriptMessages(stream)).toEqual([
       { role: 'user', text: 'legacy hi', ts: 'T0' },
-      { role: 'assistant', text: 'enveloped reply', ts: '' },
+      { role: 'assistant', text: 'enveloped reply', ts: 'T1' },
     ]);
   });
 });

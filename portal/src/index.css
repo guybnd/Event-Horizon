@@ -1009,6 +1009,18 @@ button:not(:disabled):active {
   .eh-thinking-dot { opacity: 0.6; }
 }
 
+/* FLUX-686: in-transcript find highlights, painted via the CSS Custom Highlight API
+   (`CSS.highlights`). The ranges are computed from live DOM text nodes with no DOM mutation, so
+   the highlight never fights React's render of the markdown turns. `eh-find` washes every match;
+   `eh-find-active` marks the one the next/prev navigation is focused on. */
+::highlight(eh-find) {
+  background-color: rgba(250, 204, 21, 0.35); /* amber-400 wash */
+}
+::highlight(eh-find-active) {
+  background-color: rgba(249, 115, 22, 0.7); /* orange-500 — the focused match */
+  color: #fff;
+}
+
 .docs-editor-shell {
   @apply overflow-hidden;
 }
@@ -1125,4 +1137,209 @@ button:not(:disabled):active {
 .docs-editor-content p.is-editor-empty:first-child::before {
   content: attr(data-placeholder);
   @apply pointer-events-none float-left h-0 text-gray-400;
+}
+
+/* ─── Column fire badge ─────────────────────────────────────────────────── */
+@keyframes fire-flicker {
+  0%, 100% { text-shadow: 0 0 4px #f97316, 0 0 8px #ef4444; opacity: 1; }
+  25%       { text-shadow: 0 0 6px #fb923c, 0 0 14px #f97316, 0 0 20px #ef4444; opacity: 0.9; }
+  50%       { text-shadow: 0 0 3px #fbbf24, 0 0 10px #f97316; opacity: 1; }
+  75%       { text-shadow: 0 0 8px #ef4444, 0 0 18px #dc2626, 0 0 28px #f97316; opacity: 0.85; }
+}
+
+@keyframes fire-shake {
+  0%, 100% { transform: translateX(0) rotate(0deg); }
+  20%       { transform: translateX(-1px) rotate(-1deg); }
+  40%       { transform: translateX(1px) rotate(1deg); }
+  60%       { transform: translateX(-1px) rotate(0deg); }
+  80%       { transform: translateX(1px) rotate(-1deg); }
+}
+
+/* Level 1 — warm, subtle flicker */
+.column-fire-1 {
+  background: linear-gradient(135deg, #fef3c7, #fde68a) !important;
+  color: #92400e !important;
+  animation: fire-flicker 3s ease-in-out infinite;
+  border: 1px solid #fbbf24;
+}
+.dark .column-fire-1 {
+  background: linear-gradient(135deg, #78350f80, #92400e80) !important;
+  color: #fcd34d !important;
+  border-color: #f59e0b80;
+}
+
+/* Level 2 — orange, faster flicker */
+.column-fire-2 {
+  background: linear-gradient(135deg, #fed7aa, #fdba74) !important;
+  color: #7c2d12 !important;
+  animation: fire-flicker 1.8s ease-in-out infinite, fire-shake 2s ease-in-out infinite;
+  border: 1px solid #f97316;
+}
+.dark .column-fire-2 {
+  background: linear-gradient(135deg, #7c2d1280, #9a3412a0) !important;
+  color: #fb923c !important;
+  border-color: #ea580c80;
+}
+
+/* Level 3 — red hot, intense shake */
+.column-fire-3 {
+  background: linear-gradient(135deg, #fecaca, #fca5a5) !important;
+  color: #7f1d1d !important;
+  animation: fire-flicker 0.9s ease-in-out infinite, fire-shake 0.7s ease-in-out infinite;
+  border: 1px solid #ef4444;
+  font-weight: 800 !important;
+}
+.dark .column-fire-3 {
+  background: linear-gradient(135deg, #7f1d1d90, #991b1ba0) !important;
+  color: #fca5a5 !important;
+  border-color: #dc262680;
+}
+
+/* ─── Board FX: Ticket age rust ─────────────────────────────────────────── */
+/* Applied by TaskCardInner based on days since last history entry */
+.card-rust-1 {
+  filter: sepia(18%) saturate(80%);
+}
+.card-rust-2 {
+  filter: sepia(38%) saturate(65%) brightness(0.97);
+  opacity: 0.93;
+}
+.card-rust-3 {
+  filter: sepia(60%) saturate(50%) brightness(0.94);
+  opacity: 0.87;
+}
+
+/* ─── Board FX: Drag trail glow ─────────────────────────────────────────── */
+/* Applied to the DragOverlay wrapper — pure CSS, zero JS overhead */
+@keyframes drag-trail-pulse {
+  0%, 100% { box-shadow: 0 8px 32px rgba(99, 102, 241, 0.35), 0 2px 8px rgba(99, 102, 241, 0.2); }
+  50%       { box-shadow: 0 12px 48px rgba(139, 92, 246, 0.55), 0 4px 16px rgba(99, 102, 241, 0.35); }
+}
+.drag-trail-overlay {
+  animation: drag-trail-pulse 0.8s ease-in-out infinite;
+  border-radius: 12px;
+}
+
+/* ─── Board FX: Idle column dust ────────────────────────────────────────── */
+/* CSS-only particle simulation — no JS, no canvas */
+@keyframes dust-float-a {
+  0%   { transform: translate(0, 0) scale(1); opacity: 0; }
+  20%  { opacity: 0.25; }
+  80%  { opacity: 0.1; }
+  100% { transform: translate(18px, -60px) scale(0.4); opacity: 0; }
+}
+@keyframes dust-float-b {
+  0%   { transform: translate(0, 0) scale(1); opacity: 0; }
+  15%  { opacity: 0.2; }
+  85%  { opacity: 0.08; }
+  100% { transform: translate(-22px, -80px) scale(0.3); opacity: 0; }
+}
+@keyframes dust-float-c {
+  0%   { transform: translate(0, 0) scale(0.8); opacity: 0; }
+  25%  { opacity: 0.18; }
+  75%  { opacity: 0.06; }
+  100% { transform: translate(10px, -45px) scale(0.2); opacity: 0; }
+}
+
+.column-idle-dust {
+  position: relative;
+  overflow: visible;
+}
+.column-idle-dust::before,
+.column-idle-dust::after {
+  content: '';
+  position: absolute;
+  bottom: 20%;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--eh-text-muted);
+  pointer-events: none;
+}
+.column-idle-dust::before {
+  left: 25%;
+  animation: dust-float-a 6s ease-out infinite;
+  animation-delay: 1s;
+}
+.column-idle-dust::after {
+  left: 65%;
+  animation: dust-float-b 7.5s ease-out infinite;
+  animation-delay: 3.2s;
+}
+
+/* ─── Board FX: Agent heartbeat strip ──────────────────────────────────── */
+@keyframes heartbeat-pulse {
+  0%, 100% { opacity: 0.3; }
+  50%       { opacity: 1; }
+}
+.heartbeat-strip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--eh-accent), #a855f7, #06b6d4);
+  opacity: calc(0.3 + var(--hb-intensity, 0) * 0.7);
+  animation: heartbeat-pulse 1.2s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 10;
+}
+
+/* ─── Board FX: Column flow arrows ─────────────────────────────────────── */
+@keyframes flow-drift {
+  0%   { transform: translateY(0); opacity: 0; }
+  20%  { opacity: calc(var(--flow-alpha, 0.5)); }
+  80%  { opacity: calc(var(--flow-alpha, 0.5) * 0.6); }
+  100% { transform: translateY(12px); opacity: 0; }
+}
+@keyframes flow-drift-back {
+  0%   { transform: translateY(0); opacity: 0; }
+  20%  { opacity: calc(var(--flow-alpha, 0.5)); }
+  80%  { opacity: calc(var(--flow-alpha, 0.5) * 0.6); }
+  100% { transform: translateY(-12px); opacity: 0; }
+}
+.flow-arrow {
+  width: 2px;
+  height: 20px;
+  border-radius: 1px;
+  position: relative;
+}
+.flow-arrow::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 2px;
+  height: 100%;
+  border-radius: 1px;
+}
+.flow-arrow-fwd {
+  background: linear-gradient(to bottom, transparent, rgba(99,102,241, calc(var(--flow-alpha, 0.5))));
+  animation: flow-drift 2s ease-in-out infinite;
+}
+.flow-arrow-back {
+  background: linear-gradient(to top, transparent, rgba(251,146,60, calc(var(--flow-alpha, 0.5))));
+  animation: flow-drift-back 2.4s ease-in-out infinite;
+  animation-delay: 0.6s;
+}
+
+/* ─── Board FX: Card foil (ticket DNA) ─────────────────────────────────── */
+@keyframes foil-shimmer {
+  0%, 100% { opacity: 0.055; }
+  50%       { opacity: 0.10; }
+}
+.card-foil {
+  background: linear-gradient(
+    135deg,
+    transparent 0%,
+    hsl(var(--foil-hue, 220), 80%, 65%) 40%,
+    hsl(calc(var(--foil-hue, 220) + 40), 70%, 70%) 60%,
+    transparent 100%
+  );
+  animation: foil-shimmer 4s ease-in-out infinite;
+  mix-blend-mode: overlay;
+}
+.dark .card-foil {
+  mix-blend-mode: color-dodge;
+  animation: foil-shimmer 4s ease-in-out infinite;
 }

@@ -1,8 +1,50 @@
 import type { BoardCardOpenMode } from '../../types';
 import { THEMES, type AppTheme } from '../../AppContext';
 import { useAppSelector, useAppActions } from '../../store/useAppSelector';
+import { useDesktopNotifications } from '../../hooks/useDesktopNotifications';
 import { SettingToggleCard } from './shared';
 import { WorktreesPanel } from './WorktreesPanel';
+
+/**
+ * FLUX-695: toggle for OS notifications on turn completion in an unfocused chat. Self-contained —
+ * backed by `localStorage` + browser permission via `useDesktopNotifications` (a client/browser
+ * concern, not server config), so it needs no prop threading. Enabling requests browser permission;
+ * if the user denies/blocks it, the toggle snaps back off and the copy explains why.
+ */
+function DesktopNotificationsCard() {
+  const { enabled, permission, supported, native, enable, disable } = useDesktopNotifications();
+  const blocked = !native && supported && permission === 'denied';
+  const unsupported = !native && !supported;
+  const description = unsupported
+    ? 'Your browser does not support desktop notifications.'
+    : blocked
+      ? 'Notifications are blocked for this site. Allow them in your browser settings, then re-enable here.'
+      : 'Get an OS notification when an agent finishes a turn in a chat you are not currently looking at. Requires one-time browser permission. Inside the VS Code extension, the native notification surface is used automatically.';
+  return (
+    <SettingToggleCard
+      title="Desktop Notifications on Turn Completion"
+      description={description}
+      checked={enabled}
+      onChange={(v) => {
+        if (v) void enable();
+        else disable();
+      }}
+    />
+  );
+}
+
+interface BoardFxConfig {
+  columnFire?: boolean;
+  ticketAgeRust?: boolean;
+  dragTrail?: boolean;
+  idleDust?: boolean;
+  boardWeather?: boolean;
+  columnFlowArrows?: boolean;
+  heartbeat?: boolean;
+  speedDemon?: boolean;
+  doneStreak?: boolean;
+  ticketDna?: boolean;
+}
 
 interface PreferencesSectionProps {
   boardCardOpenMode: BoardCardOpenMode;
@@ -33,6 +75,8 @@ interface PreferencesSectionProps {
   setGenerateDistinctFiles: (v: boolean) => void;
   releaseNotesPath: string;
   setReleaseNotesPath: (v: string) => void;
+  boardFx: BoardFxConfig;
+  setBoardFx: (v: BoardFxConfig) => void;
 }
 
 export function PreferencesSection({
@@ -64,6 +108,8 @@ export function PreferencesSection({
   setGenerateDistinctFiles,
   releaseNotesPath,
   setReleaseNotesPath,
+  boardFx,
+  setBoardFx,
 }: PreferencesSectionProps) {
   const { setAppTheme } = useAppActions();
   const theme = useAppSelector(s => s.theme);
@@ -170,6 +216,74 @@ export function PreferencesSection({
         </div>
       </div>
 
+      {/* Board FX */}
+      <div className="space-y-4">
+        <div>
+          <h3 className="text-base font-bold text-gray-800 dark:text-gray-200 mb-1">Board FX</h3>
+          <p className="text-xs text-gray-500 mb-4 text-balance">Ambient visual effects that make the board feel alive. All purely cosmetic — disable any that distract.</p>
+        </div>
+        <SettingToggleCard
+          title="🔥 Column Fire"
+          description="The card-count pill on a column header ignites as tickets pile up — warm amber at 7+, orange at 13+, red-hot at 20+."
+          checked={boardFx.columnFire ?? true}
+          onChange={(v) => setBoardFx({ ...boardFx, columnFire: v })}
+        />
+        <SettingToggleCard
+          title="🟫 Ticket Age Rust"
+          description="Cards that haven't had any activity in 4+ days develop a subtle sepia tint that deepens over time. Active sessions never rust."
+          checked={boardFx.ticketAgeRust ?? true}
+          onChange={(v) => setBoardFx({ ...boardFx, ticketAgeRust: v })}
+        />
+        <SettingToggleCard
+          title="✨ Drag Trail Glow"
+          description="The card you're dragging emits a soft indigo light pulse. Pure CSS — zero runtime overhead."
+          checked={boardFx.dragTrail ?? true}
+          onChange={(v) => setBoardFx({ ...boardFx, dragTrail: v })}
+        />
+        <SettingToggleCard
+          title="🌫️ Idle Column Dust"
+          description="Empty columns show a faint drifting particle effect — a subtle 'cobwebs' hint that the column is waiting for work."
+          checked={boardFx.idleDust ?? true}
+          onChange={(v) => setBoardFx({ ...boardFx, idleDust: v })}
+        />
+        <SettingToggleCard
+          title="🌤️ Board Weather"
+          description="A weather icon in the header reflects board health — sunny when flow is good, cloudy when tickets are stacking, stormy when things are blocked."
+          checked={boardFx.boardWeather ?? true}
+          onChange={(v) => setBoardFx({ ...boardFx, boardWeather: v })}
+        />
+        <SettingToggleCard
+          title="➡️ Column Flow Arrows"
+          description="Thin animated arrows between column headers show where tickets have moved in the last 24h. Heavier arrow = more movement."
+          checked={boardFx.columnFlowArrows ?? true}
+          onChange={(v) => setBoardFx({ ...boardFx, columnFlowArrows: v })}
+        />
+        <SettingToggleCard
+          title="💓 Agent Heartbeat"
+          description="A 1px strip at the top of the viewport pulses with the running agent's live token throughput. Flatlines when idle."
+          checked={boardFx.heartbeat ?? true}
+          onChange={(v) => setBoardFx({ ...boardFx, heartbeat: v })}
+        />
+        <SettingToggleCard
+          title="⚡ Speed Demon Badge"
+          description="Tickets completed in under 2 hours earn a ⚡ badge on their Done card."
+          checked={boardFx.speedDemon ?? true}
+          onChange={(v) => setBoardFx({ ...boardFx, speedDemon: v })}
+        />
+        <SettingToggleCard
+          title="🔥 Done Streak"
+          description="Tracks tickets completed today. Bronze at 3, gold at 5, platinum at 10, diamond at 15."
+          checked={boardFx.doneStreak ?? true}
+          onChange={(v) => setBoardFx({ ...boardFx, doneStreak: v })}
+        />
+        <SettingToggleCard
+          title="🧬 Ticket DNA"
+          description="Each ticket shows a tiny unique waveform fingerprint derived from its ID — a visual identity so you recognise cards before reading them."
+          checked={boardFx.ticketDna ?? true}
+          onChange={(v) => setBoardFx({ ...boardFx, ticketDna: v })}
+        />
+      </div>
+
       <div className="space-y-4">
         <div className="rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -249,6 +363,8 @@ export function PreferencesSection({
           checked={commentHoverPreviewEnabled}
           onChange={setCommentHoverPreviewEnabled}
         />
+
+        <DesktopNotificationsCard />
 
         <SettingToggleCard
           title="Show Token Count Instead of Cost"

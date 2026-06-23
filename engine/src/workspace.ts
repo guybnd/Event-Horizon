@@ -28,9 +28,33 @@ export function setWorkspaceRoot(root: string) {
   workspaceRoot = root;
 }
 
-export function getFluxDir() { return path.join(workspaceRoot!, '.flux'); }
-export function getFluxStoreDir() { return path.join(workspaceRoot!, '.flux-store'); }
-export function isOrphanMode() { return existsSync(getFluxStoreDir()); }
+/**
+ * Resolve the active workspace root, or throw a clear, actionable error when none is
+ * bound (FLUX-705). The path getters used to dereference `workspaceRoot!`, so an unbound
+ * engine surfaced Node's cryptic `TypeError: The "path" argument must be of type string.
+ * Received null` from `path.join(null, …)` on the FIRST ticket write — sending agents
+ * chasing phantom "engine is down / worktree gone" theories. A workspace ends up unbound
+ * when startup finds no valid candidate (lost `lastWorkspace`, or the `.flux`/`.flux-store`
+ * store missing — e.g. the orphan-mode `.flux-store` worktree was removed during an update).
+ */
+export function requireWorkspaceRoot(): string {
+  if (!workspaceRoot) {
+    throw new Error(
+      'No active Event Horizon workspace is bound. The engine is running but has not loaded ' +
+      'a project folder — usually the saved workspace was lost or its store is missing after ' +
+      'an update or move (settings.json "lastWorkspace" empty, or the folder no longer contains ' +
+      'a .flux / .flux-store store; in orphan mode the .flux-store git worktree may have been ' +
+      'removed). Open the Event Horizon portal and re-select your project folder to rebind it.',
+    );
+  }
+  return workspaceRoot;
+}
+
+export function getFluxDir() { return path.join(requireWorkspaceRoot(), '.flux'); }
+export function getFluxStoreDir() { return path.join(requireWorkspaceRoot(), '.flux-store'); }
+// Boolean probe: must never throw when unbound — answer "not orphan" instead of letting
+// path.join(null, …) blow up (FLUX-705). Callers branch on this before resolving real paths.
+export function isOrphanMode() { return workspaceRoot != null && existsSync(path.join(workspaceRoot, '.flux-store')); }
 export function getActiveFluxDir() { return isOrphanMode() ? getFluxStoreDir() : getFluxDir(); }
 export function getConfigFile() {
   const storeConfig = path.join(getFluxStoreDir(), 'config.json');

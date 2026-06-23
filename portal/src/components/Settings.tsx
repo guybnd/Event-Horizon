@@ -80,6 +80,7 @@ export function Settings() {
   const [agentProgressDelay, setAgentProgressDelay] = useState(2);
   const [modules, setModules] = useState<ModuleDeclaration[]>([]);
   const [mcpServerPhases, setMcpServerPhases] = useState<Record<string, string[]>>({});
+  const [boardFx, setBoardFx] = useState<NonNullable<Config['boardFx']>>({ columnFire: true, ticketAgeRust: true, dragTrail: true, idleDust: true, boardWeather: true, columnFlowArrows: true, heartbeat: true, speedDemon: true, doneStreak: true, ticketDna: true });
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -126,6 +127,7 @@ export function Settings() {
       setAgentProgressDelay(config.agentProgress?.inlineDelay ?? 2);
       setModules(config.modules || []);
       setMcpServerPhases((config as ConfigWithMcpPhases).mcpServerPhases || {});
+      setBoardFx({ columnFire: true, ticketAgeRust: true, dragTrail: true, idleDust: true, boardWeather: true, columnFlowArrows: true, heartbeat: true, speedDemon: true, doneStreak: true, ticketDna: true, ...(config.boardFx ?? {}) });
     }
   }, [config]);
 
@@ -277,6 +279,7 @@ export function Settings() {
         },
         modules,
         mcpServerPhases,
+        boardFx,
       } as ConfigWithMcpPhases);
 
       triggerRefresh();
@@ -331,6 +334,7 @@ export function Settings() {
     setAgentProgressDelay(config.agentProgress?.inlineDelay ?? 2);
     setModules(config.modules || []);
     setMcpServerPhases((config as ConfigWithMcpPhases).mcpServerPhases || {});
+    setBoardFx({ columnFire: true, ticketAgeRust: true, dragTrail: true, idleDust: true, boardWeather: true, columnFlowArrows: true, heartbeat: true, speedDemon: true, doneStreak: true, ticketDna: true, ...(config.boardFx ?? {}) });
   };
 
   if (!config) return null;
@@ -554,6 +558,8 @@ export function Settings() {
                   setGenerateDistinctFiles={setGenerateDistinctFiles}
                   releaseNotesPath={releaseNotesPath}
                   setReleaseNotesPath={setReleaseNotesPath}
+                  boardFx={boardFx}
+                  setBoardFx={setBoardFx}
                 />
               )}
 

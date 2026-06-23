@@ -49,6 +49,12 @@ Tickets have these fields (relevant when calling `update_ticket` or reading `get
 
 History is an append-only event log (types: `comment`, `status_change`, `activity`, `agent_session`). You read it via `get_ticket` and append to it via `add_comment`, `change_status`, `log_progress`. Never construct history entries manually.
 
+`get_ticket` returns a digest: `agent_session` entries come back without their `progress[]` array (a `progressCount` is kept), and history is windowed to the most recent ~20 entries (`olderHistoryEntries` reports how many were omitted; pass `historyLimit` for more). Use `get_session_log` only when you need a specific prior session's raw progress.
+
+Older entries that carry an agent `summary` are shown **collapsed** — `{ type, user, date, summary, id, collapsed: true }` instead of the full text (`status_change` entries are dropped entirely). Read the summary first; only when it isn't enough, fetch the full text with `get_ticket(ticketId, expand: ["<id>"])` (avoid `fullHistory: true` — it re-inflates context). Recent comments, `pin`ned entries, and anything without a summary are never collapsed. When you write a substantial comment or `log_progress` note, pass a faithful `summary` (and `pin: true` for review handoffs / key decisions) so it stays cheap-but-recoverable for the next agent.
+
+**Delegating:** a delegate reads the ticket itself via `get_ticket` and gets the same collapsed digest. Put the task-relevant context in the delegation `task` string; if the delegate needs a specific collapsed comment, inline it (or its id) rather than making it hunt. Delegates can `expand` selectively.
+
 ## Working Surfaces
 
 - Ticket storage: `.flux/` (in-repo) or `.flux-store/` (orphan mode) — agents NEVER access these directly
@@ -103,13 +109,16 @@ The MCP tools handle schema validation, timestamps, history normalization, and p
 
 | Tool | Use When |
 |---|---|
-| `get_ticket` | Reading a ticket's full state (frontmatter + body + history) |
+| `get_ticket` | Reading a ticket (frontmatter + body + digested recent history) |
+| `get_session_log` | Reading one prior agent session's full progress log (rare — debugging only) |
 | `list_tickets` | Finding tickets by status, assignee, tag, or priority |
 | `get_board_config` | Checking valid statuses, tags, project key |
 | `create_ticket` | Creating a new ticket |
 | `create_subtask` | Creating a child ticket linked to a parent |
 | `update_ticket` | Changing metadata (title, priority, effort, tags, assignee, body) |
 | `change_status` | Moving to a new status (comment required for Require Input/Ready) |
+| `archive_ticket` | Safely removing a ticket from the active board (moves to `Archived`; reversible — there is no hard-delete tool) |
+| `unarchive_ticket` | Restoring an archived ticket to the active board (default `Todo`) |
 | `add_comment` | Adding a comment to ticket history |
 | `log_progress` | Logging a progress update |
 | `finish_ticket` | Completing a ticket (sets implementationLink + Done atomically) |
@@ -132,6 +141,7 @@ REST base: `http://localhost:3067`
 
 | Method | Endpoint | Purpose |
 |---|---|---|
+| `GET` | `/api/tasks/:id?view=agent` | Read a ticket — ALWAYS pass `view=agent` (digested surface; omitting it returns the full portal payload incl. raw session logs) |
 | `POST` | `/api/tasks` | Create a ticket |
 | `PUT` | `/api/tasks/:id` | Update a ticket (use `appendHistory` for comments) |
 | `POST` | `/api/tasks/:parentId/subtasks` | Create a linked subtask |
@@ -142,6 +152,7 @@ Ticket changes that only exist in chat or agent memory are **lost**. The engine 
 
 ## Critical Rules
 
+- **End every working turn on a board action (FLUX-651).** When you finish grooming/implementing/reviewing a ticket — including in a chat/discussion session — you MUST end the turn by moving the ticket to its next status (or `Require Input`, or creating subtasks). Never finish the work and just summarize it in chat: the engine flags such a ticket "Needs Action" on the board and notifies the user. "It was only a discussion turn" is not an exception.
 - NEVER use Write, Edit, or Bash to modify files in `.flux/` or `.flux-store/`. These paths are engine-managed.
 - Treat ticket files as schema-sensitive. The engine validates and rejects malformed writes.
 - Do not delete ticket history; append only.

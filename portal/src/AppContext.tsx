@@ -48,6 +48,7 @@ const VIEW_PATHS: Record<AppView, string> = {
   settings: '/settings',
   releases: '/releases',
   workflows: '/workflows',
+  epics: '/epics',
 };
 
 const LIVE_TASK_POLL_INTERVAL_MS = 3000;
@@ -71,6 +72,7 @@ function getViewFromLocation(): AppView {
   if (path === '/settings') return 'settings';
   if (path === '/releases') return 'releases';
   if (path === '/workflows') return 'workflows';
+  if (path === '/epics') return 'epics';
   return 'board';
 }
 
@@ -487,6 +489,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setOpenModalScrollToComments(options?.scrollToComments ?? false);
   };
 
+  const openTask = (task: Task) => {
+    if ((configRef.current?.boardCardOpenMode || 'full') === 'full') openTaskFullView(task);
+    else openTaskModal(task);
+  };
+
   const clearOpenModalScrollToComments = () => setOpenModalScrollToComments(false);
 
   const closeModal = () => {
@@ -777,11 +784,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!set) return;
       for (const h of set) { try { h(data); } catch { /* isolate subscriber errors */ } }
     };
-    for (const type of ['activity', 'progress', 'taskUpdated', 'permission-request', 'permission-resolved', 'ask-question', 'ask-question-resolved', 'board-rebase-proposed', 'board-rebase-resolved']) {
+    for (const type of ['activity', 'progress', 'assistantDelta', 'taskUpdated', 'permission-request', 'permission-resolved', 'ask-question', 'ask-question-resolved', 'board-rebase-proposed', 'board-rebase-resolved']) {
       es.addEventListener(type, (e: MessageEvent) => {
         try { forward(type, JSON.parse(e.data)); } catch { /* non-JSON payload — skip */ }
       });
     }
+    es.addEventListener('taskUpdated', () => {
+      void loadTasks();
+    });
     es.addEventListener('activity', (e: MessageEvent) => {
       const { taskId, activity } = JSON.parse(e.data) as { taskId: string; activity: string | null };
       // FLUX-626: write to the isolated `liveSessions` slice instead of churning the whole
@@ -943,7 +953,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setCurrentUser, setCurrentProject, setSearchQuery, setSortOption,
     setFilterAssignee, setFilterPriority, setFilterTag, setFilterUnreadOnly,
     setFilterWorktree, clearTaskFilters, setView, setSettingsTab, setModalTask,
-    pushOverlay, popOverlay, closeModal, openTaskModal, openTaskFullView,
+    pushOverlay, popOverlay, closeModal, openTaskModal, openTaskFullView, openTask,
     clearOpenModalScrollToComments, refreshWorktrees, setChangesFocus,
     triggerRefresh, subscribeToEvent, notifyWorkspaceSet, switchWorkspace,
     refreshWorkspaces, saveConfig, ensureReadStateLoaded, markCommentRead,
@@ -969,6 +979,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     closeModal: () => latest.current.closeModal(),
     openTaskModal: (t) => latest.current.openTaskModal(t),
     openTaskFullView: (t, o) => latest.current.openTaskFullView(t, o),
+    openTask: (t) => latest.current.openTask(t),
     clearOpenModalScrollToComments: () => latest.current.clearOpenModalScrollToComments(),
     refreshWorktrees: () => latest.current.refreshWorktrees(),
     setChangesFocus: (v) => latest.current.setChangesFocus(v),

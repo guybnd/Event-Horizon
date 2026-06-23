@@ -92,7 +92,7 @@ export function validateGitRemote(raw: unknown, opts: { allowLocal?: boolean | u
   // lighter shell-metachar screen.
   if (opts.allowLocal) {
     if (lowered.startsWith('file://')) return { ok: true };
-    if (path.isAbsolute(url) || url.startsWith('.')) {
+    if (path.isAbsolute(url) || path.win32.isAbsolute(url) || url.startsWith('.')) {
       if (/[;&|`$(){}<>^!*?"']/.test(url)) {
         return { ok: false, reason: 'remote contains illegal characters' };
       }

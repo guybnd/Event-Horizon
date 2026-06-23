@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState, memo } from 'react';
-import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, FileText, Tag, Plus, Workflow, Check, GitCompare } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react';
+import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, FileText, Tag, Plus, Workflow, Check, GitCompare, Target } from 'lucide-react';
 import { THEMES, type AppTheme, type AppView } from '../AppContext';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { NotificationPanel } from './NotificationPanel';
@@ -16,6 +16,7 @@ const NAV_TINTS: Record<AppView, string> = {
   board: '#10b981',     // emerald
   backlog: '#0ea5e9',   // sky
   changes: '#14b8a6',   // teal
+  epics: '#6366f1',     // indigo
   releases: '#f59e0b',  // amber
   docs: '#8b5cf6',      // violet
   workflows: '#ec4899', // pink
@@ -119,6 +120,72 @@ const Branding = memo(function Branding() {
   );
 });
 
+/**
+ * Board health weather icon. Derives a "weather" from:
+ *   - blocked/awaiting-input ratio  → stormy
+ *   - overloaded columns (>15 cards) → cloudy
+ *   - otherwise                      → sunny
+ */
+const BoardWeather = memo(function BoardWeather() {
+  const tasks = useAppSelector((s) => s.tasks);
+  const config = useAppSelector((s) => s.config);
+  const boardFx = config?.boardFx;
+
+  const { icon, label, color } = useMemo(() => {
+    if (!tasks.length) return { icon: '☀️', label: 'All clear', color: 'text-amber-500' };
+    const blocked = tasks.filter(t => t.swimlane === 'require-input' || t.cliSession?.status === 'waiting-input').length;
+    const blockedRatio = blocked / tasks.length;
+    const columnCounts = tasks.reduce<Record<string, number>>((acc, t) => { acc[t.status] = (acc[t.status] ?? 0) + 1; return acc; }, {});
+    const overloaded = Object.values(columnCounts).some(n => n > 15);
+    if (blockedRatio > 0.15 || blocked >= 3) return { icon: '⛈️', label: `${blocked} blocked`, color: 'text-red-500' };
+    if (overloaded || blockedRatio > 0.05) return { icon: '⛅', label: 'Some congestion', color: 'text-sky-500' };
+    return { icon: '☀️', label: 'Flow is good', color: 'text-amber-500' };
+  }, [tasks]);
+
+  if (boardFx?.boardWeather === false) return null;
+
+  return (
+    <span
+      title={`Board health: ${label}`}
+      className={`select-none text-base leading-none cursor-default ${color}`}
+      aria-label={`Board health: ${label}`}
+    >
+      {icon}
+    </span>
+  );
+});
+
+/**
+ * 1px heartbeat strip at the very top of the header.
+ * Pulses opacity in sync with live token throughput — brighter when the agent
+ * is writing fast, dim when idle, invisible when no session is running.
+ */
+const Heartbeat = memo(function Heartbeat() {
+  const tasks = useAppSelector((s) => s.tasks);
+  const config = useAppSelector((s) => s.config);
+
+  const totalOutputTokens = useMemo(() => {
+    return tasks.reduce((sum, t) => {
+      if (!t.cliSession || !['running', 'pending'].includes(t.cliSession.status)) return sum;
+      return sum + (t.cliSession.outputTokens ?? 0);
+    }, 0);
+  }, [tasks]);
+
+  const isRunning = useMemo(() => tasks.some(t => t.cliSession && ['running', 'pending'].includes(t.cliSession.status)), [tasks]);
+
+  if (config?.boardFx?.heartbeat === false || !isRunning) return null;
+
+  const intensity = Math.min(1, (totalOutputTokens % 1000) / 1000);
+
+  return (
+    <div
+      className="heartbeat-strip"
+      style={{ '--hb-intensity': intensity } as React.CSSProperties}
+      aria-hidden
+    />
+  );
+});
+
 export function Header() {
   const { setView, openTaskModal, refreshNotifications } = useAppActions();
   const view = useAppSelector((s) => s.view);
@@ -153,6 +220,7 @@ export function Header() {
 
   return (
     <header className="eh-header sticky top-0 z-50 border-b px-4 py-3">
+      <Heartbeat />
       <div className="relative flex items-center justify-between gap-3">
 
         {/* Left: branding + nav */}
@@ -166,6 +234,7 @@ export function Header() {
             <NavItem view={view} target="board" icon={<KanbanSquare className="w-4 h-4" />} label="Board" onClick={handleSetView} />
             <NavItem view={view} target="backlog" icon={<ListTodo className="w-4 h-4" />} label="Backlog" onClick={handleSetView} />
             <NavItem view={view} target="changes" icon={<GitCompare className="w-4 h-4" />} label="Changes" onClick={handleSetView} />
+            <NavItem view={view} target="epics" icon={<Target className="w-4 h-4" />} label="Epics" onClick={handleSetView} />
             <NavItem view={view} target="releases" icon={<Tag className="w-4 h-4" />} label="Releases" onClick={handleSetView} />
             <NavItem view={view} target="docs" icon={<FileText className="w-4 h-4" />} label="Docs" onClick={handleSetView} />
             <NavItem view={view} target="workflows" icon={<Workflow className="w-4 h-4" />} label="Workflows" onClick={handleSetView} />
@@ -190,6 +259,8 @@ export function Header() {
 
         {/* Right cluster */}
         <div className="flex shrink-0 items-center gap-2 justify-end">
+
+          <BoardWeather />
 
           {/* Sync status — global (orphan-branch store), so it lives in the top bar. */}
           <SyncStatusIndicator />

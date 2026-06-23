@@ -4,13 +4,14 @@ import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { useChatSession } from '../hooks/useChatSession';
 import { ChatView } from './task-modal/ChatView';
 import { ChatDiffPanel } from './task-modal/ChatDiffPanel';
-import { TicketContextCard, BoardSnapshotCard } from './task-modal/chatContext';
+import { TicketContextCard, BoardSnapshotCard, SessionMeter } from './task-modal/chatContext';
 import { parseQuickReplies } from './task-modal/chatQuickReplies';
 import { StatusBadge } from './StatusBadge';
 import { TicketActionBar } from './TicketActionBar';
 import { ChatQuestionPicker } from './AskQuestionPrompts';
 import { ChatBoardRebasePanel } from './BoardRebasePanel';
 import { useDock } from './DockProvider';
+import { fireDesktopNotification } from '../hooks/useDesktopNotifications';
 import { getStatusTint } from '../statusStyles';
 import { getRequireInputStatus } from '../workflow';
 import { BOARD_CONVERSATION_ID, fetchTaskCliSession, stopTaskCliSession, clearTaskTranscript, fetchBranchStatus, type BranchStatus } from '../api';
@@ -195,6 +196,34 @@ export function ChatDock() {
       ? boardSession?.lastOutputAt
       : allTasks.find((t) => t.id === id)?.cliSession?.lastOutputAt;
 
+  // FLUX-695: desktop notification on the busy→idle edge for an *unattended* chat. We diff each
+  // chat's session status against the previous render; a `running` → `completed`/`waiting-input`
+  // transition is a finished turn. A chat is "attended" only when its window is open AND the
+  // document is visible AND focused — otherwise (tabbed away, window minimized/closed) we fire an
+  // OS notification. The fire is itself gated on the user setting + permission inside the hook.
+  const prevStatusRef = useRef<Map<string, CliSessionStatus | undefined>>(new Map());
+  useEffect(() => {
+    const prev = prevStatusRef.current;
+    const isFinish = (s: CliSessionStatus | undefined) => s === 'completed' || s === 'waiting-input';
+    for (const [id, status] of statusOf) {
+      if (prev.get(id) === 'running' && isFinish(status)) {
+        const attended =
+          open.includes(id) &&
+          typeof document !== 'undefined' &&
+          document.visibilityState === 'visible' &&
+          document.hasFocus();
+        if (!attended) {
+          fireDesktopNotification({
+            title: `${titleOf(id)} — turn complete`,
+            body: status === 'waiting-input' ? 'The agent is waiting for your input.' : 'The agent finished its turn.',
+            tag: `eh-turn-${id}`,
+          });
+        }
+      }
+    }
+    prevStatusRef.current = new Map(statusOf);
+  }, [statusOf, open]);
+
   // Live cards: tickets with a surfaced session OR opened manually from a board element
   // (FLUX-603), minus any the user has retired. A manually-opened ticket with no session
   // renders as an `idle` card (cardState(undefined) === 'idle').
@@ -311,6 +340,9 @@ export function ChatDock() {
           id={id}
           orchestrator={id === BOARD_CONVERSATION_ID}
           task={allTasks.find((t) => t.id === id)}
+          // FLUX-686: session totals back the quiet token meter — orchestrator from boardSession,
+          // tickets from their own cliSession.
+          session={id === BOARD_CONVERSATION_ID ? boardSession : allTasks.find((t) => t.id === id)?.cliSession ?? null}
           anchorX={anchors[id]}
           working={statusOf.get(id) === 'running'}
           activity={activityOf(id)}
@@ -827,6 +859,7 @@ function ChatWindow({
   id,
   orchestrator,
   task,
+  session,
   anchorX,
   working,
   activity,
@@ -839,6 +872,8 @@ function ChatWindow({
   orchestrator: boolean;
   /** The ticket this window is bound to (absent for the orchestrator → no action bar). */
   task?: Task;
+  /** FLUX-686: the CLI session backing this conversation, for the quiet token/cost meter. */
+  session?: CliSessionSummary | null;
   anchorX?: number;
   working: boolean;
   activity: string | null;
@@ -1004,6 +1039,7 @@ function ChatWindow({
           title={orchestrator ? 'Board chat' : id}
           fill
           messages={chat.messages}
+          liveText={chat.liveText}
           busy={chat.busy}
           error={chat.error}
           working={working}
@@ -1016,7 +1052,7 @@ function ChatWindow({
           onDraftChange={onDraftChange}
           onSend={chat.send}
           onStop={chat.stop}
-          onUploadImage={orchestrator ? undefined : chat.uploadImage}
+          onUploadImage={chat.uploadImage}
           questionPicker={
             <>
               {orchestrator && <ChatBoardRebasePanel conversationId={id} />}
@@ -1024,6 +1060,8 @@ function ChatWindow({
             </>
           }
           diffBranch={task?.branch}
+          tickets={allTasks}
+          meter={<SessionMeter session={session} config={config} />}
           actions={
             orchestrator ? (
               <TriageAction busy={chat.busy || working} onTriage={() => void chat.send(TRIAGE_PROMPT)} />

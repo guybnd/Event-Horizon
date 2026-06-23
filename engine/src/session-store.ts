@@ -186,6 +186,24 @@ export function getActiveSessionsForTask(taskId: string): CliSessionRecord[] {
     .filter((s): s is CliSessionRecord => !!s && ['pending', 'running', 'waiting-input'].includes(s.status));
 }
 
+// Narrow selector for the merge guard: only sessions that are actively executing work.
+// Do NOT use this for file-lock / conflict checks — those must include waiting-input.
+export function getBlockingSessionsForTask(taskId: string): CliSessionRecord[] {
+  const ids = cliSessionsByTaskId.get(taskId);
+  if (!ids) return [];
+  return ids
+    .map(id => cliSessionsById.get(id))
+    .filter((s): s is CliSessionRecord => !!s && ['pending', 'running'].includes(s.status));
+}
+
+export function getParkedSessionsForTask(taskId: string): CliSessionRecord[] {
+  const ids = cliSessionsByTaskId.get(taskId);
+  if (!ids) return [];
+  return ids
+    .map(id => cliSessionsById.get(id))
+    .filter((s): s is CliSessionRecord => !!s && s.status === 'waiting-input');
+}
+
 // Return all sessions belonging to one orchestration run group, in launch order.
 export function getSessionGroup(taskId: string, groupId: string): CliSessionRecord[] {
   const ids = cliSessionsByTaskId.get(taskId);

@@ -8,7 +8,6 @@ import { z } from 'zod';
 import fs from 'fs/promises';
 import path from 'path';
 import matter from 'gray-matter';
-import { fileURLToPath } from 'url';
 
 import { tasksCache, serializeTaskForAgent, updateTaskWithHistory, activateWorkspace, workspaceActivating, readTaskFromDisk, docsCache, createTask, atomicWriteFile, type CreateTaskOptions } from './task-store.js';
 import { configCache, autoRegisterUnknownTags } from './config.js';
@@ -1480,14 +1479,10 @@ export async function handleMcpHttpRequest(req: IncomingMessage, res: ServerResp
   await transport.handleRequest(req, res);
 }
 
-// Auto-start only when this file is the direct entry point, not when imported as a module
-try {
-  if (process.argv[1] === fileURLToPath(import.meta.url)) {
-    startMcpServer().catch((err) => {
-      console.error('MCP server failed:', err);
-      process.exit(1);
-    });
-  }
-} catch {
-  // import.meta.url unavailable (e.g. inside pkg) — skip auto-start
-}
+// NOTE (FLUX-705): no self-start-on-direct-invocation block here. This module is now
+// statically imported by index.ts so the in-process HTTP MCP mount shares the engine's
+// live task-store (in SEA it was previously loaded as a SECOND bundle with its own,
+// never-activated task-store → "Received null" on write + a cache blind to new tickets).
+// A `process.argv[1] === import.meta.url` guard would misfire once bundled into index.js
+// and spawn a stdio server at engine startup. `--mcp` stdio mode is started explicitly by
+// index.ts's MCP_MODE handler instead.

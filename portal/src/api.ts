@@ -906,6 +906,10 @@ export interface TranscriptMessage {
   /** FLUX-661: repo-relative path of the file an edit tool touched. When present (and the
    *  chat knows the branch), the tool row renders an expandable inline diff of that file. */
   path?: string;
+  /** FLUX-688: per-edit line counts (what *this* tool call changed, not the file's cumulative
+   *  diff). Rendered as colored `+N −M` on the inline edit-diff row. */
+  added?: number;
+  removed?: number;
   /** FLUX-674: images attached to a user turn — rendered inline in the user bubble. */
   attachments?: ChatAttachment[];
 }
@@ -1373,20 +1377,34 @@ export interface MergePrResult {
   notificationId?: string;
 }
 
+export class MergeParkedError extends Error {
+  parkedOnly = true;
+  parkedOwners: string[];
+  constructor(message: string, parkedOwners: string[]) {
+    super(message);
+    this.name = 'MergeParkedError';
+    this.parkedOwners = parkedOwners;
+  }
+}
+
 /**
  * Squash-merge the branch's PR + run post-merge cleanup (advances all branch tickets). Pass
  * `force` to override the shared-PR guard (FLUX-569) when the branch bundles non-Done siblings
  * that would all advance to Done — the deck card confirms that explicitly before forcing.
+ * Pass `stopParkedSessions` to auto-end waiting-input sessions and proceed (FLUX-636).
  */
-export async function mergePr(taskId: string, opts?: { force?: boolean }): Promise<MergePrResult> {
+export async function mergePr(taskId: string, opts?: { force?: boolean; stopParkedSessions?: boolean }): Promise<MergePrResult> {
   const res = await fetch(`${API_URL}/tasks/${taskId}/pr/merge`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ force: opts?.force === true }),
+    body: JSON.stringify({ force: opts?.force === true, stopParkedSessions: opts?.stopParkedSessions === true }),
   });
   if (!res.ok) {
-    const err = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(err.error || 'Failed to merge PR');
+    const body = (await res.json().catch(() => ({}))) as { error?: string; parkedOnly?: boolean; parkedOwners?: string[] };
+    if (body.parkedOnly) {
+      throw new MergeParkedError(body.error || 'Parked sessions block merge', body.parkedOwners ?? []);
+    }
+    throw new Error(body.error || 'Failed to merge PR');
   }
   return res.json();
 }

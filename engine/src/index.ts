@@ -27,6 +27,12 @@ import { workspaceRoot, loadAppSettings, getCliWorkspace, resolvePortalDist, aut
 import { isPkg, isSea, isPackaged, ensureSeaAssetsExtracted, getSeaAsset, setEnginePort } from './packaged-mode.js';
 import { migrateFromLegacy, getBootStatus } from './global-settings.js';
 import { activateWorkspace, tasksCache } from './task-store.js';
+// FLUX-705: statically imported so the in-process HTTP MCP mount runs on THIS engine's
+// task-store (shared workspaceRoot/tasksCache/watchers). Bundling them together is what
+// makes the MCP tools and the engine one instance — in the packaged SEA build the old
+// lazy `seaRequire('mcp-server.js')` loaded a SECOND, never-activated task-store, so MCP
+// writes threw "Received null" and MCP reads were blind to tickets REST had written.
+import { handleMcpHttpRequest, startMcpServer } from './mcp-server.js';
 import { stopAllCliSessions, setAutoRestartCallback, getAllActiveSessions } from './session-store.js';
 import { requestApproval, resolveApproval, listPendingApprovals } from './permission-prompts.js';
 import { requestAnswer, resolveAnswer, listPendingQuestions } from './ask-questions.js';
@@ -71,6 +77,18 @@ function isValidWorkspaceRoot(dir: string): boolean {
   return existsSync(path.join(dir, '.flux')) || existsSync(path.join(dir, '.flux-store'));
 }
 
+/** Explain, for the engine log, why a workspace candidate can't be bound (FLUX-705). */
+function describeWorkspaceProblem(dir: string): string {
+  if (!existsSync(dir)) return 'folder does not exist (moved or deleted?)';
+  const hasFlux = existsSync(path.join(dir, '.flux'));
+  const hasStore = existsSync(path.join(dir, '.flux-store'));
+  if (!hasFlux && !hasStore) {
+    return 'no .flux or .flux-store store found — in orphan mode the .flux-store git worktree ' +
+      'may have been removed during an update (recover with: git worktree add .flux-store flux-data)';
+  }
+  return 'store present but rejected (unexpected)';
+}
+
 const app = express();
 app.use(cors());
 
@@ -83,14 +101,12 @@ app.use(cors());
 // lazily loads the MCP module (keeping the SDK out of the normal-mode path and resolving the
 // SEA-extracted asset) and delegates per-session transport routing to it.
 const handleMcp = (req: express.Request, res: express.Response) => {
-  loadMcpModule()
-    .then(({ handleMcpHttpRequest }) => handleMcpHttpRequest(req, res))
-    .catch((err) => {
-      console.error('[mcp-http] request failed:', err);
-      if (!res.headersSent) {
-        res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal error' }, id: null });
-      }
-    });
+  Promise.resolve(handleMcpHttpRequest(req, res)).catch((err) => {
+    console.error('[mcp-http] request failed:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal error' }, id: null });
+    }
+  });
 };
 app.post('/mcp', handleMcp);
 app.get('/mcp', handleMcp);
@@ -416,15 +432,40 @@ async function startServer() {
     const cliWorkspace = getCliWorkspace();
     const settings = await loadAppSettings();
     const cwdFallback = isValidWorkspaceRoot(process.cwd()) ? process.cwd() : null;
-    const initial = cliWorkspace || settings.workspace || cwdFallback;
+    // First valid entry in the registered list — recovers the common post-update failure
+    // where "lastWorkspace" was lost but the workspaces[] registry survived (FLUX-705),
+    // so the engine binds a real workspace instead of booting unbound (every write would
+    // otherwise throw the cryptic "Received null").
+    const registeredFallback = (settings.workspaces ?? [])
+      .map((w) => w.path)
+      .find((p) => isValidWorkspaceRoot(p)) ?? null;
 
-    if (initial && isValidWorkspaceRoot(initial)) {
+    const candidates: Array<[string, string | null]> = [
+      ['--workspace', cliWorkspace],
+      ['lastWorkspace', settings.workspace ?? null],
+      ['cwd', cwdFallback],
+      ['registered', registeredFallback],
+    ];
+    const picked = candidates.find(([, c]) => c && isValidWorkspaceRoot(c));
+
+    if (picked) {
+      const [source, initial] = picked as [string, string];
+      if (source !== '--workspace' && source !== 'lastWorkspace') {
+        console.warn(`[workspace] lastWorkspace unavailable — recovered via ${source} fallback: ${initial}`);
+      }
       await activateWorkspace(initial);
       await autoRegisterWorkspace(initial);
-    } else if (initial) {
-      console.warn(`Saved workspace not found: ${initial} — open the portal to select a folder.`);
     } else {
-      console.log('No workspace configured. Open the portal to select your project folder.');
+      const saved = cliWorkspace || settings.workspace;
+      if (saved) {
+        console.warn(`[workspace] Saved workspace "${saved}" is not loadable: ${describeWorkspaceProblem(saved)}`);
+      }
+      console.warn(
+        '[workspace] No active workspace bound — the board is read-only and ticket writes will ' +
+        'fail until you open the portal and select a project folder. Checked: ' +
+        `cli=${cliWorkspace ?? '-'}, lastWorkspace=${settings.workspace ?? '-'}, ` +
+        `cwd=${cwdFallback ?? 'invalid'}, registered=${registeredFallback ?? 'none valid'}.`,
+      );
     }
 
     if (isPackaged) {
@@ -523,36 +564,15 @@ process.on('unhandledRejection', (reason, promise) => {
   logCrash('unhandledRejection', reason);
 });
 
-// mcp-server.js is loaded lazily so its module-level code (and the MCP SDK) never runs in
-// normal server mode unless /mcp is actually hit.  In SEA mode it's embedded in the binary
-// and extracted to tmpdir on first run; we then load it from disk.  The SEA global require()
-// is Node's embedderRequire, which only resolves built-in modules — it CANNOT load a file
-// path.  createRequire() gives us a real filesystem-capable require rooted at the extract dir.
-// Shared by the `--mcp` headless stdio entry (startMcpServer) and the in-process
-// Streamable-HTTP mount (handleMcpHttpRequest, FLUX-645); the module is loaded at most once.
-let _mcpModulePromise: Promise<typeof import('./mcp-server.js')> | null = null;
-function loadMcpModule(): Promise<typeof import('./mcp-server.js')> {
-  if (!_mcpModulePromise) {
-    _mcpModulePromise = (async () => {
-      if (isSea) {
-        const extractDir = await ensureSeaAssetsExtracted();
-        const { createRequire } = await import('node:module');
-        const seaRequire = createRequire(path.join(extractDir, 'mcp-server.js'));
-        return seaRequire(path.join(extractDir, 'mcp-server.js')) as typeof import('./mcp-server.js');
-      }
-      return import('./mcp-server.js');
-    })();
-  }
-  return _mcpModulePromise;
-}
-
+// FLUX-705: the MCP server module is statically imported (see the import near the top of
+// this file), so the engine and the in-process HTTP mount share ONE task-store instance.
+// It is no longer lazy-loaded as a separate SEA bundle — that second instance, never
+// workspace-activated, was the root of the packaged-build "Received null" / blind-cache bug.
 if (MCP_MODE) {
-  loadMcpModule()
-    .then(({ startMcpServer }) => startMcpServer())
-    .catch(err => {
-      console.error('MCP server failed:', err);
-      process.exit(1);
-    });
+  startMcpServer().catch(err => {
+    console.error('MCP server failed:', err);
+    process.exit(1);
+  });
 } else {
   startServer().catch(err => {
     console.error('Failed to start Event Horizon:', err);

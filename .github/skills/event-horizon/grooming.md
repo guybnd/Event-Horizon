@@ -11,12 +11,16 @@ Scope: Interpret requirements, update frontmatter, and handle `.flux` metadata d
 
 # Event Horizon Agent — Grooming Skill
 
-Version: 2.3.0
+Version: 2.4.0
 
 ## When This Skill Applies
 
 Load this skill when a ticket's status is `Grooming` or `Require Input`.
 Refer to the orchestrator skill for the ticket model, APIs, and end-to-end checklist.
+
+## End-of-Turn Action Contract — CRITICAL (FLUX-651)
+
+**When you finish grooming, you MUST end the turn on a board action — never finish the plan and just summarize it in chat.** Grooming complete → `change_status` to `Todo`. Implementation-critical choice unresolved → `change_status` to `Require Input` with the question + a proposed default. Leaving the ticket parked in `Grooming` with only a chat summary gets flagged **"Needs Action"** on the board and notifies the user. "It was only a discussion turn" is not an exception.
 
 ## Grooming Workflow
 
@@ -50,3 +54,4 @@ All persistence uses MCP tools — see the orchestrator skill's "Persisting Chan
 
 - Keep comments factual and short. End input requests with a concrete question and proposed default.
 - Prefer comments that help the next agent continue without re-discovery.
+- **Substantial comments: add a faithful `summary`** on `add_comment` / `log_progress` (preserve the decision / why / actionable detail; concise but not lossy; length scales with importance — don't force one line; skip for short notes). Older summarized comments show collapsed in the agent digest; the full text stays fetchable via `get_ticket` with `expand: ["<id>"]`. Set `pin: true` on entries that must never collapse.

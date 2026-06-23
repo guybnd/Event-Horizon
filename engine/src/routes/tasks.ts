@@ -16,12 +16,12 @@ import {
   resolveSupportedImageExtension, sanitizeAssetBaseName, normalizeBase64Content,
   normalizeRelativePath, encodeAssetPath, createUniqueAssetFileName,
 } from '../file-utils.js';
-import { cliSessionIdByTaskId, cliSessionsById, stopAllSessionsForTask, getActiveSessionsForTask } from '../session-store.js';
+import { cliSessionIdByTaskId, cliSessionsById, stopAllSessionsForTask, getActiveSessionsForTask, getBlockingSessionsForTask, getParkedSessionsForTask } from '../session-store.js';
 import { getAdapter } from '../agents/index.js';
 import { computeAgentPayloadMetrics } from '../agent-payload-metrics.js';
 import { computeContextBudget } from '../context-budget-metrics.js';
 import { probeAllMcpSchemas } from '../mcp-schema-probe.js';
-import { getEffectiveSpawnServers } from '../agents/claude-code.js';
+import { getEffectiveSpawnServers, BOARD_CONVERSATION_ID } from '../agents/claude-code.js';
 import { diffFilesForBranch } from '../diff-aggregator.js';
 import { selectMembers, sharedNonDoneSiblings } from '../pr-tickets.js';
 import { execFile } from 'child_process';
@@ -458,6 +458,11 @@ router.put('/:id', async (req, res) => {
     if (frontmatter.tags && Array.isArray(frontmatter.tags)) {
       await autoRegisterUnknownTags(frontmatter.tags);
     }
+    // Any real status move is a board action — clear the "agent parked" flag (mirrors the
+    // updateTaskWithHistory path in task-store.ts:303-304 which the PUT handler bypasses).
+    if (task.status !== frontmatter.status && frontmatter.needsAction) {
+      frontmatter.needsAction = null;
+    }
     const fileContent = matter.stringify(body || '', frontmatter);
     await atomicWriteFile(_path, fileContent);
     tasksCache[id] = { ...frontmatter, body, id, _path };
@@ -548,6 +553,7 @@ router.put('/:id', async (req, res) => {
       }
     }
 
+    broadcastEvent('taskUpdated', { id });
     res.json(serializeTaskForApi(tasksCache[id]));
   } catch (err) {
     console.error('Failed to update task:', err);
@@ -643,9 +649,10 @@ export async function bulkRenameHandler(req: express.Request, res: express.Respo
 
 router.post('/:id/assets', async (req, res) => {
   const { id } = req.params;
-  const task = tasksCache[id];
-
-  if (!task) return res.status(404).json({ error: 'Task not found' });
+  // FLUX-676: the board orchestrator chat (__board__) is not a ticket, but pasted images
+  // still need a home. Allow its reserved id here; the bytes land under assets/__board__/
+  // alongside the per-ticket sidecars. Any other id must be a real task.
+  if (id !== BOARD_CONVERSATION_ID && !tasksCache[id]) return res.status(404).json({ error: 'Task not found' });
 
   const fileName = typeof req.body?.fileName === 'string' ? req.body.fileName.trim() : '';
   const mimeType = typeof req.body?.mimeType === 'string' ? req.body.mimeType.trim() : '';
@@ -947,12 +954,34 @@ router.post('/:id/pr/merge', async (req, res) => {
   // Branch-scoped: a merge advances ALL tickets sharing this branch.
   const sharedTickets = Object.values(tasksCache).filter((t: any) => t.branch === branch) as any[];
 
-  // Guard: any live session on a branch-sharing ticket owns the worktree.
-  const liveOwners = sharedTickets.filter((t) => getActiveSessionsForTask(t.id).length > 0);
-  if (liveOwners.length > 0) {
+  // Two-tier merge guard (FLUX-636):
+  // Tier 1 — hard block: pending/running sessions are actively executing; merging would clobber in-flight work.
+  const blockingOwners = sharedTickets.filter((t) => getBlockingSessionsForTask(t.id).length > 0);
+  if (blockingOwners.length > 0) {
     return res.status(409).json({
-      error: `Cannot merge — a live agent session owns this worktree (${liveOwners.map((t) => t.id).join(', ')}). Stop the session, then merge.`,
+      error: `Cannot merge — a live agent session owns this worktree (${blockingOwners.map((t) => t.id).join(', ')}). Stop the session, then merge.`,
     });
+  }
+
+  // Tier 2 — parked sessions (waiting-input): work is committed, safe to reclaim worktree.
+  // Without opt-in flag, return a distinct machine-readable 409 so the portal can render "Stop & merge".
+  const parkedOwners = sharedTickets.filter((t) => getParkedSessionsForTask(t.id).length > 0);
+  const stopParked = req.body?.stopParkedSessions === true;
+  if (parkedOwners.length > 0 && !stopParked) {
+    return res.status(409).json({
+      error: `${parkedOwners.length} parked session(s) will be ended (${parkedOwners.map((t) => t.id).join(', ')}). Stop & merge?`,
+      parkedOnly: true,
+      parkedOwners: parkedOwners.map((t) => t.id),
+    });
+  }
+  if (parkedOwners.length > 0 && stopParked) {
+    for (const t of parkedOwners) {
+      stopAllSessionsForTask(t.id, 'stop & merge');
+      await updateTaskWithHistory(t.id, {
+        updatedBy: 'Agent',
+        entries: [buildActivityEntry(`Parked session ended for merge of \`${branch}\`.`, 'Agent', new Date().toISOString())],
+      });
+    }
   }
 
   // Finish-on-shared-PR guard (FLUX-569, from the FLUX-556/PR#6 incident): a merge advances ALL

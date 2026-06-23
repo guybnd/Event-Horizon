@@ -15,6 +15,31 @@ function git(workspaceRoot: string, args: string[]) {
   return execFileAsync('git', ['-C', workspaceRoot, ...args], { windowsHide: true });
 }
 
+/**
+ * Whether a ticket has ALREADY reached Done at some point — its history records a status_change
+ * into Done, or a prior merge-cleanup "advanced to Done" comment. This is how the AUTOMATIC
+ * reconcile path tells a FRESH merge (ticket heading to Done for the first time → advance it) from
+ * a DELIBERATE reopen of an already-merged ticket (user moved it back off Done → leave it alone).
+ *
+ * `gh pr view <branch>` reports a merged branch as MERGED *forever* (the remote branch can even be
+ * deleted), so without this guard reconcile re-advances a reopened ticket to Done on every poll —
+ * spamming duplicate "advanced to Done" comments and making the reopen impossible to keep (FLUX-588).
+ * Explicit callers (finish_ticket, the "Clean up worktree" notification) pass auto=false and bypass
+ * this — an explicit finish must always land.
+ */
+function hasReachedDoneBefore(t: any): boolean {
+  const history = Array.isArray(t?.history) ? t.history : [];
+  return history.some(
+    (h: any) =>
+      // A prior transition into Done — the reliable signal: any advance to Done (merge cleanup,
+      // finish, or a manual move) emits a status_change (task-store updateTaskWithHistory).
+      (h?.type === 'status_change' && h?.to === DONE_STATUS) ||
+      // Backstop on this module's OWN merge comment, matched by its exact prefix so a user/agent
+      // comment that merely contains "advanced to Done" can't false-positive a fresh ticket.
+      (h?.type === 'comment' && typeof h?.comment === 'string' && h.comment.includes('PR squash-merged for branch')),
+  );
+}
+
 export interface CleanupResult {
   outcome: 'cleaned' | 'unsafe' | 'noop';
   branch: string;
@@ -72,7 +97,7 @@ export async function syncDefaultBranch(workspaceRoot: string): Promise<boolean>
  * Idempotent: safe to call repeatedly (reconcile poller) — already-Done tickets aren't
  * re-advanced, an already-removed worktree / deleted branch are no-ops.
  */
-export async function cleanupMergedBranch(workspaceRoot: string, branch: string): Promise<CleanupResult> {
+export async function cleanupMergedBranch(workspaceRoot: string, branch: string, opts: { auto?: boolean } = {}): Promise<CleanupResult> {
   const branchTickets = (Object.values(tasksCache) as any[]).filter((t) => t.branch === branch);
 
   // 1. Advance non-Done tickets → Done. Each is isolated: the squash-merge already landed
@@ -84,6 +109,11 @@ export async function cleanupMergedBranch(workspaceRoot: string, branch: string)
     // PR tickets (kind:'pr') are owned by syncPrTickets — it sets their prState (MERGED/CLOSED)
     // when resolving. Advancing them here would mark Done with a stale prState=OPEN (FLUX-587).
     if (t.kind === 'pr') continue;
+    // AUTO reconcile only (FLUX-588): a ticket the user has DELIBERATELY reopened (it reached Done
+    // before, now sits in a non-terminal status) must NOT be force-advanced back to Done. gh reports
+    // the merged branch as MERGED forever, so without this the 90s poller snaps the reopen back every
+    // tick and spams duplicate "advanced to Done" comments. A fresh, never-Done ticket still advances.
+    if (opts.auto && hasReachedDoneBefore(t)) continue;
     try {
       await updateTaskWithHistory(t.id, {
         updatedBy: 'Agent',
@@ -97,6 +127,16 @@ export async function cleanupMergedBranch(workspaceRoot: string, branch: string)
     } catch (err: any) {
       console.error(`[pr-cleanup] Failed to advance ${t.id} after merge of ${branch}:`, err?.message);
     }
+  }
+
+  // AUTO reconcile only (FLUX-588): if a deliberately-reopened ticket (previously Done, now back in
+  // a working status) still rides this branch, the merge was already reconciled and the user is
+  // actively working again — STOP. Don't stop their sessions, don't tear the worktree down, don't
+  // delete the branch out from under them. Explicit finish/cleanup (auto=false) is never short-
+  // circuited here. (A fresh sibling on the same branch was already advanced above; its branch just
+  // lingers until the reopened sibling also terminalises — correct, the branch is genuinely in use.)
+  if (opts.auto && branchTickets.some((t) => !TERMINAL_STATUSES.has(t.status) && hasReachedDoneBefore(t))) {
+    return { outcome: 'noop', branch, advanced, masterSynced: false, worktreeRemoved: false, branchDeleted: false, reason: 'reopened' };
   }
 
   // 2. Stop sessions on the worktree.
@@ -216,7 +256,9 @@ export async function reconcilePullRequests(workspaceRoot: string): Promise<void
         continue;
       }
       if (pr.state === 'MERGED') {
-        await cleanupMergedBranch(workspaceRoot, branch);
+        // auto:true → respect a deliberate reopen (don't snap it back to Done / don't prune its
+        // branch). The merge already landed; re-advancing a reopened ticket every poll is the bug.
+        await cleanupMergedBranch(workspaceRoot, branch, { auto: true });
       } else if (pr.state === 'CLOSED') {
         // Bounce Ready members (work done, awaiting merge) back to In Progress — the abandon
         // path. Gated on status===Ready (not the retired open-pr swimlane — FLUX-569): an
@@ -299,6 +341,15 @@ export async function pruneMergedBranches(workspaceRoot: string): Promise<void> 
   let cur = '';
   try { const { stdout } = await git(workspaceRoot, ['rev-parse', '--abbrev-ref', 'HEAD']); cur = stdout.trim(); } catch { /* ignore */ }
 
+  // 3b. Don't prune a branch a still-active (non-terminal) ticket rides — e.g. a deliberately
+  // reopened merged-PR ticket (FLUX-588). Its PR is MERGED on GitHub, but the user is working on it
+  // again; force-deleting the branch would pull live work out from under them. Once the ticket
+  // terminalises (Done/Archived/Released) the branch is eligible for the normal post-merge prune.
+  const activeBranches = new Set<string>();
+  for (const t of Object.values(tasksCache) as any[]) {
+    if (t.branch && !TERMINAL_STATUSES.has(t.status)) activeBranches.add(t.branch);
+  }
+
   // A previously-stuck branch that's now gone (deleted by hand / a later poll) drops its dedupe
   // entry so a future re-orphan can notify again.
   for (const b of [...notifiedStuckBranches]) {
@@ -306,7 +357,7 @@ export async function pruneMergedBranches(workspaceRoot: string): Promise<void> 
   }
 
   for (const branch of mergedSet) {
-    if (!existing.has(branch) || branch === cur) continue;
+    if (!existing.has(branch) || branch === cur || activeBranches.has(branch)) continue;
     // A worktree still holds it → leave it for cleanupMergedBranch's worktree-aware teardown.
     const wt = await findWorktreeForBranch(workspaceRoot, branch).catch(() => null);
     if (wt) continue;

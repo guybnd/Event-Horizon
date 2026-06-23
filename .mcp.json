@@ -17,10 +17,7 @@
       "args": [
         "basic-memory",
         "mcp"
-      ],
-      "env": {
-        "BASIC_MEMORY_HOME": "c:\\GitHub\\EventHorizon\\.flux-store/memory"
-      }
+      ]
     },
     "serena": {
       "command": "serena",

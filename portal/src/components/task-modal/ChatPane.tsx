@@ -3,12 +3,12 @@ import { Send, ExternalLink } from 'lucide-react';
 import { useChatSession } from '../../hooks/useChatSession';
 import { ChatView } from './ChatView';
 import { ChatDiffPanel } from './ChatDiffPanel';
-import { TicketContextCard } from './chatContext';
+import { TicketContextCard, SessionMeter } from './chatContext';
 import { parseQuickReplies } from './chatQuickReplies';
 import { TicketActionBar } from '../TicketActionBar';
 import { ChatQuestionPicker } from '../AskQuestionPrompts';
 import { useDockActions } from '../DockProvider';
-import { useConfig } from '../../store/useAppSelector';
+import { useAppSelector, useConfig } from '../../store/useAppSelector';
 import { getRequireInputStatus } from '../../workflow';
 import type { Task } from '../../types';
 
@@ -25,6 +25,8 @@ export function ChatPane({ task }: { task: Task }) {
   const chat = useChatSession(task.id, open);
   const { openChat } = useDockActions();
   const config = useConfig();
+  // FLUX-694: board task list backing the composer's ticket autocomplete.
+  const tickets = useAppSelector((s) => s.tasks) as Task[];
   const quickReplies = useMemo(
     () => parseQuickReplies(task, getRequireInputStatus(config)),
     [task, config],
@@ -64,6 +66,7 @@ export function ChatPane({ task }: { task: Task }) {
       <ChatView
         title="Chat (spike)"
         messages={chat.messages}
+        liveText={chat.liveText}
         busy={chat.busy}
         error={chat.error}
         working={task.cliSession?.status === 'running'}
@@ -78,6 +81,8 @@ export function ChatPane({ task }: { task: Task }) {
         questionPicker={<ChatQuestionPicker conversationId={task.id} />}
         actions={<TicketActionBar task={task} />}
         diffBranch={task.branch}
+        tickets={tickets}
+        meter={<SessionMeter session={task.cliSession} config={config} />}
       />
     </div>
   );

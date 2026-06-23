@@ -59,6 +59,12 @@ export function onSyncStatusChange(listener: (status: SyncStatus) => void): () =
   };
 }
 
+// Test-only: reset module-global sync state between vitest cases. Not used in production.
+export function _resetSyncStateForTests(): void {
+  pendingConflicts = null;
+  currentStatus = { state: 'idle' };
+}
+
 export function triggerSync(): void {
   if (!isOrphanMode()) return;
   const storeDir = getFluxStoreDir();
@@ -185,11 +191,58 @@ export async function resolveConflicts(
   }
 }
 
-async function runSync(storeDir: string, onFail?: () => void): Promise<void> {
+// True if the worktree has an in-progress merge (MERGE_HEAD) or any unmerged
+// (conflicted) paths. Used to refuse `git add -A`/commit while a merge is
+// unresolved, so conflict markers can never be committed into a ticket (FLUX-703).
+async function hasUnmergedState(storeDir: string): Promise<boolean> {
+  try {
+    await execFileAsync('git', ['-C', storeDir, 'rev-parse', '--verify', '--quiet', 'MERGE_HEAD']);
+    return true; // MERGE_HEAD resolves ⇒ a merge is in progress
+  } catch {
+    // no MERGE_HEAD — fall through to check for stray unmerged paths
+  }
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', storeDir, 'diff', '--name-only', '--diff-filter=U']);
+    return stdout.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+export async function runSync(storeDir: string, onFail?: () => void): Promise<void> {
   const workspaceRoot = path.dirname(storeDir);
+
+  // A conflict is already awaiting user resolution (in-memory fast path). Touching
+  // the repo now would let Step 1's `git add -A`/commit bake the conflict markers
+  // sitting in the worktree into a commit and corrupt the ticket YAML (FLUX-703).
+  // The marker write also fires the chokidar watcher, so without this the parked
+  // conflict self-triggers the very tick that commits it.
+  if (pendingConflicts && pendingConflicts.length > 0) {
+    updateStatus({ state: 'conflict', conflicts: pendingConflicts });
+    return;
+  }
+
   updateStatus({ state: 'syncing' });
 
   try {
+    // Guard (FLUX-703): never `git add -A`/commit on top of an in-progress or
+    // half-finished merge. A prior tick — or a crash/restart mid-merge — can leave
+    // conflict markers + MERGE_HEAD in the worktree; staging and committing them is
+    // exactly what corrupted FLUX-694. Re-surface the conflict instead of committing.
+    if (await hasUnmergedState(storeDir)) {
+      const conflicts = await detectMergeConflicts(storeDir);
+      if (conflicts.length > 0) {
+        pendingConflicts = conflicts;
+        updateStatus({ state: 'conflict', conflicts });
+        console.warn(`[sync-watcher] Unresolved merge state on entry (${conflicts.length} ticket conflict(s)) — awaiting resolution, not committing.`);
+        return;
+      }
+      // Merge in progress but nothing we can surface as a ticket-level conflict —
+      // abort it to recover a clean local tree, then sync normally.
+      console.warn('[sync-watcher] In-progress merge with no resolvable ticket conflicts — aborting merge to recover a clean tree.');
+      await execFileAsync('git', ['-C', storeDir, 'merge', '--abort']).catch(() => {});
+    }
+
     // Step 1: commit any pending local changes first
     let addAttempts = 0;
     while (addAttempts < 3) {

@@ -16,7 +16,7 @@ import { filterAndSortTasks } from '../taskSearch';
 import { getStatusColorClass } from '../statusStyles';
 import { ReleaseModal } from './ReleaseModal';
 import { getArchiveStatus, getRequireInputStatus } from '../workflow';
-import { collectPrMemberIds, collectEpicFoldedIds } from '../lib/decks';
+import { collectPrMemberIds, collectEpicFoldedIds, collectCrossColumnClusters } from '../lib/decks';
 import { ParseErrorButton } from './ParseErrorButton';
 import { BootstrapPreview } from './BootstrapPreview';
 import { ApprovalPrompts } from './ApprovalPrompts';
@@ -36,6 +36,7 @@ export function Board() {
   const taskLiveEvents = useAppSelector((s) => s.taskLiveEvents);
   const columnLiveEvents = useAppSelector((s) => s.columnLiveEvents);
   const config = useAppSelector((s) => s.config);
+  const boardFx = config?.boardFx;
   const currentUser = useAppSelector((s) => s.currentUser);
   const searchQuery = useAppSelector((s) => s.searchQuery);
   const sortOption = useAppSelector((s) => s.sortOption);
@@ -109,6 +110,24 @@ export function Board() {
   const hasSwimlanes = config?.swimlanes && config.swimlanes.length > 0;
   // Memoized so the filter (and the whole chain keyed off it) only re-runs when tasks/config
   // actually change — not on every Board re-render (e.g. each SSE activity tick). (FLUX-611)
+  // Flow arrows: count status_change history entries in last 24h for each column→column pair.
+  const columnFlowCounts = useMemo(() => {
+    if (boardFx?.columnFlowArrows === false) return null;
+    const cutoff = Date.now() - 86_400_000;
+    const counts: Record<string, number> = {};
+    for (const task of tasks) {
+      for (const entry of task.history ?? []) {
+        if (entry.type !== 'status_change') continue;
+        const from = (entry as { from?: string }).from;
+        const to = (entry as { to?: string }).to;
+        if (!from || !to || new Date(entry.date).getTime() < cutoff) continue;
+        const key = `${from}→${to}`;
+        counts[key] = (counts[key] ?? 0) + 1;
+      }
+    }
+    return counts;
+  }, [tasks, boardFx?.columnFlowArrows]);
+
   const boardTasks = useMemo(() => config ? tasks.filter((task) =>
     task.status !== 'Released' &&
     task.status !== archiveStatus &&
@@ -178,11 +197,45 @@ export function Board() {
     requireInputStatus: getRequireInputStatus(config),
   }) : [], [boardTasks, config, searchQuery, sortOption, filterAssignee, filterPriority, filterTag, filterUnreadOnly, filterWorktree, worktreeBranches, readComments]);
 
-  // Decked tasks (FLUX-567 PR members + FLUX-580 epic subtasks) fold INTO their parent card
-  // (deck-replace), so they don't render in their own columns. Memoized alongside the chain.
-  const deckedTasks = useMemo(() => deckedIds
-    ? visibleTasks.filter(t => !deckedIds.has(t.id))
-    : visibleTasks, [visibleTasks, deckedIds]);
+  // Cross-column subtask clusters (FLUX-677): ≥2 subtasks of one epic that piled up in a column
+  // the epic isn't in collapse under a proxy deck there. Computed over visibleTasks so search/
+  // filters apply, and excluding the same-column-folded set (epicFoldedIds) + PR members so a
+  // child can't both fold and cluster — shared rule with the column exclusion below, no drift.
+  const crossColumnClusters = useMemo(() => {
+    const byId = new Map(visibleTasks.map((t) => [t.id, t]));
+    return collectCrossColumnClusters(visibleTasks, byId, foldedMemberIds, epicFoldedIds);
+  }, [visibleTasks, foldedMemberIds, epicFoldedIds]);
+
+  // Decked tasks (FLUX-567 PR members + FLUX-580 epic subtasks + FLUX-677 cross-column clusters)
+  // fold INTO a deck, so they don't render as loose cards in their own columns. Memoized alongside
+  // the chain.
+  const deckedTasks = useMemo(() => {
+    const clustered = crossColumnClusters.clusteredIds;
+    if (!deckedIds && clustered.size === 0) return visibleTasks;
+    return visibleTasks.filter(t => !deckedIds?.has(t.id) && !clustered.has(t.id));
+  }, [visibleTasks, deckedIds, crossColumnClusters]);
+
+  // Same-column epic decks (FLUX-699): per epic, its same-column folded subtasks — rendered as a
+  // peeking card stack directly BELOW the epic card (the epic is the deck's top card, not a
+  // container). Resolved over visibleTasks so a filtered-out subtask's peek is hidden too; same
+  // `epicFoldedIds` set that excludes them from the column flow, so no drift. Keyed by epic id.
+  const foldedByEpic = useMemo(() => {
+    const m = new Map<string, Task[]>();
+    if (epicFoldedIds.size === 0) return m;
+    const byId = new Map(visibleTasks.map((t) => [t.id, t]));
+    for (const epic of visibleTasks) {
+      if (!epic.subtasks?.length) continue;
+      const kids: Task[] = [];
+      for (const entry of epic.subtasks) {
+        const cid = normalizeSubtaskId(entry);
+        if (!epicFoldedIds.has(cid)) continue;
+        const child = byId.get(cid);
+        if (child && child.status === epic.status) kids.push(child);
+      }
+      if (kids.length) m.set(epic.id, kids);
+    }
+    return m;
+  }, [visibleTasks, epicFoldedIds]);
 
   // Bucket tasks by column ONCE, instead of `deckedTasks.filter(...)` per-column on every
   // render (was O(columns × tasks) per render and handed Column a fresh array each time,
@@ -391,20 +444,49 @@ export function Board() {
           )}
           <DndContext onDragStart={handleDragStart} onDragEnd={handleDragEnd} collisionDetection={pointerWithin}>
             <div ref={scrollerRef} className="flex min-h-full gap-2 pb-4 items-stretch">
-              {allColumns.map(columnId => (
-                <Column
-                  key={columnId}
-                  id={columnId}
-                  title={columnId}
-                  tasks={columnTasksByStatus.get(columnId) ?? EMPTY_TASKS}
-                  parentByChildId={parentByChildId}
-                  liveEvent={columnLiveEvents[columnId]}
-                  taskLiveEvents={taskLiveEvents}
-                  getTaskTravelDirection={getTaskTravelDirection}
-                />
-              ))}
+              {allColumns.map((columnId, idx) => {
+                const prevCol = idx > 0 ? allColumns[idx - 1] : null;
+                const forwardCount = prevCol && columnFlowCounts ? (columnFlowCounts[`${prevCol}→${columnId}`] ?? 0) : 0;
+                const backCount = prevCol && columnFlowCounts ? (columnFlowCounts[`${columnId}→${prevCol}`] ?? 0) : 0;
+                const maxFlow = 10;
+                return (
+                  <div key={columnId} className="flex items-stretch gap-2">
+                    {prevCol && columnFlowCounts && (forwardCount > 0 || backCount > 0) && (
+                      <div className="flex flex-col items-center justify-start pt-6 gap-1 w-3 shrink-0" title={`${forwardCount} forward, ${backCount} back in last 24h`}>
+                        {forwardCount > 0 && (
+                          <div
+                            className="flow-arrow flow-arrow-fwd"
+                            style={{ '--flow-alpha': Math.min(1, 0.2 + (forwardCount / maxFlow) * 0.8) } as React.CSSProperties}
+                          />
+                        )}
+                        {backCount > 0 && (
+                          <div
+                            className="flow-arrow flow-arrow-back"
+                            style={{ '--flow-alpha': Math.min(1, 0.2 + (backCount / maxFlow) * 0.8) } as React.CSSProperties}
+                          />
+                        )}
+                      </div>
+                    )}
+                    <Column
+                      id={columnId}
+                      title={columnId}
+                      tasks={columnTasksByStatus.get(columnId) ?? EMPTY_TASKS}
+                      clusters={crossColumnClusters.byColumn.get(columnId)}
+                      foldedByEpic={foldedByEpic}
+                      parentByChildId={parentByChildId}
+                      liveEvent={columnLiveEvents[columnId]}
+                      taskLiveEvents={taskLiveEvents}
+                      getTaskTravelDirection={getTaskTravelDirection}
+                    />
+                  </div>
+                );
+              })}
             </div>
-            <DragOverlay>{activeTask ? <TaskCardInner task={activeTask} parentTask={parentByChildId.get(activeTask.id)} isOverlay /> : null}</DragOverlay>
+            <DragOverlay>
+              {activeTask
+                ? <div className={boardFx?.dragTrail !== false ? 'drag-trail-overlay' : undefined}><TaskCardInner task={activeTask} parentTask={parentByChildId.get(activeTask.id)} isOverlay /></div>
+                : null}
+            </DragOverlay>
           </DndContext>
         </div>
       </div>

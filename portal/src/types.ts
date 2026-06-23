@@ -64,9 +64,19 @@ export function normalizeSubtaskId(entry: string | InlineSubtask): string {
   return typeof entry === 'string' ? entry : entry.id;
 }
 
+export type RelationType =
+  | 'relates'
+  | 'blocks'
+  | 'blocked-by'
+  | 'retries'
+  | 'refactors'
+  | 'refactored-by'
+  | 'duplicates'
+  | 'duplicated-by';
+
 /** A typed relationship from one ticket to another (FLUX-593 / epic FLUX-596). */
 export interface TicketLink {
-  type: string; // 'retries' is the first type; the epic adds blocked-by/refactors/relates/…
+  type: RelationType;
   target: string; // target ticket id (e.g. 'PR-14' or 'FLUX-581')
   label?: string;
 }
@@ -321,5 +331,27 @@ export interface Config {
     ticketDefault?: 'gated' | 'skip';
   };
   modules?: ModuleDeclaration[];
+  boardFx?: {
+    /** Column count badge ignites as cards pile up */
+    columnFire?: boolean;
+    /** Old stale tickets develop a rust/sepia tint over time */
+    ticketAgeRust?: boolean;
+    /** Drag overlay card emits a trailing light glow */
+    dragTrail?: boolean;
+    /** Empty columns show a subtle drifting dust effect */
+    idleDust?: boolean;
+    /** Board health weather icon in the header */
+    boardWeather?: boolean;
+    /** Animated flow arrows between columns showing ticket movement */
+    columnFlowArrows?: boolean;
+    /** Token-rate heartbeat strip at top of viewport during agent runs */
+    heartbeat?: boolean;
+    /** ⚡ badge on tickets completed in under 2 hours */
+    speedDemon?: boolean;
+    /** Done-today streak counter in the Done column header */
+    doneStreak?: boolean;
+    /** Tiny generative waveform fingerprint on each card */
+    ticketDna?: boolean;
+  };
 }
 

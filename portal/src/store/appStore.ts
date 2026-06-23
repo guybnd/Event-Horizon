@@ -1,7 +1,7 @@
 import type { ColumnLiveEvent, Config, Task, TaskLiveEvent } from '../types';
 import type { ParseError, Notification, WorkspaceInfo, WorktreeInfo } from '../api';
 
-export type AppView = 'board' | 'backlog' | 'docs' | 'settings' | 'releases' | 'workflows' | 'changes';
+export type AppView = 'board' | 'backlog' | 'docs' | 'settings' | 'releases' | 'workflows' | 'changes' | 'epics';
 export type TaskSortOption = 'default' | 'priority' | 'updated' | 'assignee';
 export type AppTheme = 'light' | 'dark' | 'matrix' | 'cyber' | 'midnight';
 
@@ -101,6 +101,8 @@ export interface AppActions {
   closeModal: () => void;
   openTaskModal: (task?: Partial<Task>) => void;
   openTaskFullView: (task: Partial<Task>, options?: { scrollToComments?: boolean }) => void;
+  /** Open a task respecting the boardCardOpenMode preference (full view vs modal). */
+  openTask: (task: Task) => void;
   clearOpenModalScrollToComments: () => void;
   refreshWorktrees: () => void;
   setChangesFocus: (v: string | null) => void;

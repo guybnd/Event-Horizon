@@ -12,7 +12,7 @@
     "build": "npm run build -w portal && npm run build -w engine",
     "typecheck": "npm run typecheck -w portal && npm run typecheck -w engine",
     "lint": "npm run lint -w portal",
-    "check": "npm run typecheck && npm run lint",
+    "check": "npm run typecheck && npm run lint && npm run test -w engine",
     "init": "npm run init -w engine --",
     "init-group": "npm run init-group -w engine --",
     "package": "npm run build && npm run package -w engine",

@@ -11,6 +11,7 @@ import { ChatDock } from './components/ChatDock';
 import { DockProvider } from './components/DockProvider';
 import { Settings } from './components/Settings';
 import { ReleasesScreen } from './components/ReleasesScreen';
+import { EpicsScreen } from './components/EpicsScreen';
 import { WorkflowBuilder } from './components/WorkflowBuilder';
 import { WorkspaceSelector } from './components/WorkspaceSelector';
 import { OnboardingWizard } from './components/OnboardingWizard';
@@ -48,6 +49,7 @@ function AppContent() {
           {view === 'docs' && <DocsScreen />}
           {view === 'settings' && <Settings />}
           {view === 'releases' && <ReleasesScreen />}
+          {view === 'epics' && <EpicsScreen />}
           {view === 'workflows' && <WorkflowBuilder />}
         </main>
         <TaskModal />
