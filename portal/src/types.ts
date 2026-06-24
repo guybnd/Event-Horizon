@@ -207,7 +207,7 @@ export interface PriorityDef {
   originalName?: string;
 }
 
-export type BoardCardOpenMode = 'popup' | 'full';
+export type BoardCardOpenMode = 'popup' | 'full' | 'chat';
 
 export type DocsEditPermissions = 'all' | 'specified';
 

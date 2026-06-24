@@ -13,14 +13,15 @@ import { tasksCache, serializeTaskForAgent, updateTaskWithHistory, activateWorks
 import { configCache, autoRegisterUnknownTags } from './config.js';
 import { broadcastEvent } from './events.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
+import { extractTicket } from './extract.js';
 import { normalizeHistoryEntries, buildActivityEntry } from './history.js';
 import { getCliWorkspace, getActiveFluxDir, getWorkspacesList, workspaceRoot } from './workspace.js';
-import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, checkGhAuth, captureDiff, resolveCommit, getPullRequestStatus } from './branch-manager.js';
-import { createTaskWorktree, detachTaskWorktree, taskWorktreeDir } from './task-worktree.js';
+import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, checkGhAuth, captureDiff, resolveCommit, getPullRequestStatus, getDefaultBranch } from './branch-manager.js';
+import { createTaskWorktree, detachTaskWorktree, taskWorktreeDir, findWorktreeForBranch, worktreeChangeCount } from './task-worktree.js';
 import { cleanupMergedBranch } from './pr-cleanup.js';
 import { sharedNonDoneSiblings } from './pr-tickets.js';
 import { existsSync, statSync, readFileSync } from 'fs';
-import { getActiveSessionsForTask, stopAllSessionsForTask } from './session-store.js';
+import { getActiveSessionsForTask, stopAllSessionsForTask, reapStaleParkedSessions } from './session-store.js';
 import { generatePromptNotification, dismissNotificationsForTicket, addNotification } from './notifications.js';
 import { getGroupContext, getMemberBinding, groupDocsLabel, summarizeGroup, groupDocPathToStoreRelative, activeGroupDocsLabel } from './group.js';
 import { submitGroupEdit } from './group-edit.js';
@@ -285,6 +286,43 @@ export function buildMcpServer(): McpServer {
     },
   );
 
+  // FLUX-656: the `extract` curation verb — carve a topic-slice out of a conversation stream
+  // (the orchestrator thread `__board__` by default) into a NEW card. Gated in the CONFIRM
+  // tier (below) and surfaced via the board-rebase `promote` proposal — never auto-applied.
+  // It is additive (one op-log entry + a new ticket); the source turns are never moved.
+  server.tool(
+    'extract_ticket',
+    'Carve a topic-slice out of a conversation stream into a NEW ticket (the promotion gate). A chat starts as turns in the orchestrator thread and materializes into a card only when it crosses a threshold — promotion is EXTRACTION, not 1:1: address the slice by seq range on the source stream. Human-approved only (CONFIRM gate / board-rebase proposal); the source turns are never moved or copied — the new card re-derives the slice.',
+    {
+      from: z.string().optional().describe('Source stream id to carve from (default: __board__, the orchestrator thread).'),
+      fromSeq: z.number().int().describe('Inclusive start seq of the topic-slice on the source stream.'),
+      toSeq: z.number().int().describe('Inclusive end seq of the topic-slice on the source stream.'),
+      title: z.string().describe('Title for the new ticket.'),
+      priority: z.string().optional().describe('Priority (default: None).'),
+      effort: z.string().optional().describe('Effort estimate (default: None).'),
+      tags: z.array(z.string()).optional().describe('Tags array.'),
+      body: z.string().optional().describe('Markdown body for the new ticket.'),
+    },
+    async ({ from, fromSeq, toSeq, title, priority, effort, tags, body }) => {
+      if (workspaceActivating) return errorResult('Workspace is activating, please retry');
+      try {
+        const result = await extractTicket({
+          ...(from !== undefined ? { from } : {}),
+          fromSeq,
+          toSeq,
+          title,
+          ...(priority !== undefined ? { priority } : {}),
+          ...(effort !== undefined ? { effort } : {}),
+          ...(tags ? { tags } : {}),
+          ...(body !== undefined ? { body } : {}),
+        });
+        return jsonResult(result);
+      } catch (err: any) {
+        return errorResult(err.message || 'Failed to extract ticket');
+      }
+    },
+  );
+
   server.tool(
     'update_ticket',
     'Update ticket metadata — title, priority, effort, tags, assignee, or body. Does NOT change status (use change_status for that).',
@@ -431,14 +469,39 @@ export function buildMcpServer(): McpServer {
 
       // When moving to Ready with a branch, push and create a PR for review (FLUX-555).
       // The work MUST be committed before Ready — a branch with no commits ahead of base
-      // can't open a PR. Rather than fail silently in a buried activity line, surface it
-      // LOUDLY (notification + comment) so the user/agent knows to commit (FLUX-563).
+      // can't open a PR.
       if (newStatus === readyStatus && task.branch) {
+        const branchStatus = await getTicketBranchStatus(task.branch).catch(() => null);
+
+        // FLUX-730: ENFORCE commit-before-Ready for *worktree* branches. A dedicated worktree
+        // means an agent did (or should have done) real work in an isolated tree; reaching Ready
+        // with 0 commits ahead means it was never committed, so no PR can ever open and the work
+        // sits silently uncommitted (the FLUX-716/717/719 incident). Refuse the transition —
+        // don't just warn — so the agent is forced to commit. Git-only (no gh dependency), so it
+        // holds even when gh is unauthed. Scope: ONLY worktree branches. Plain-branch tickets and
+        // branchless tickets keep their existing behavior (branchless legitimately stays
+        // uncommitted until finish), so the refusal is gated on an actual worktree existing.
+        const worktreePath = await findWorktreeForBranch(workspaceRoot!, task.branch).catch(() => null);
+        if (worktreePath && branchStatus && branchStatus.exists && branchStatus.aheadCount === 0) {
+          const baseBranch = await getDefaultBranch().catch(() => 'master');
+          const changeCount = await worktreeChangeCount(worktreePath, baseBranch).catch(() => 0);
+          const didWork = changeCount > 0
+            ? `Its worktree has ${changeCount} uncommitted change${changeCount === 1 ? '' : 's'} — the work was done but never committed.`
+            : `Its worktree has no changes yet.`;
+          return errorResult(
+            `Cannot move ${ticketId} to ${readyStatus}: its worktree branch \`${task.branch}\` has no commits ahead of base. ${didWork} ` +
+              `Commit the worktree's work with a real message (in the worktree: \`git add -A && git commit\`), then retry the move to ${readyStatus} — that opens the PR for review. Status left unchanged.`,
+          );
+        }
+
+        // Rather than fail silently in a buried activity line, surface a no-commit branch
+        // LOUDLY (notification + comment) so the user/agent knows to commit (FLUX-563).
         const ghAvailable = await checkGhAuth();
         if (ghAvailable) {
-          const branchStatus = await getTicketBranchStatus(task.branch).catch(() => null);
           if (branchStatus && branchStatus.exists && branchStatus.aheadCount === 0) {
-            const msg = `${ticketId} moved to ${readyStatus} but its branch \`${task.branch}\` has no commits yet — commit the worktree's work to open a PR for review.`;
+            // Non-worktree (plain) branch with no commits: can't open a PR. Plain-branch tickets
+            // are NOT enforced (per scope) — keep the existing soft warning + notification.
+            const msg = `${ticketId} moved to ${readyStatus} but its branch \`${task.branch}\` has no commits yet — commit the work to open a PR for review.`;
             entries.push({ type: 'activity', user: 'Agent', comment: `⚠️ ${msg}`, date: new Date().toISOString() });
             addNotification({
               type: 'info',
@@ -463,6 +526,7 @@ export function buildMcpServer(): McpServer {
         }
       }
 
+      const prevStatus = task.status;
       const result = await updateTaskWithHistory(ticketId, {
         entries,
         updatedBy: 'Agent',
@@ -471,6 +535,21 @@ export function buildMcpServer(): McpServer {
       });
 
       if (!result) return errorResult(`Failed to update ${ticketId}`);
+
+      // FLUX-721: a forward transition abandons any session still parked (waiting-input) on an
+      // EARLIER phase — reap them so they don't linger as merge-gating (FLUX-636 Tier-2) or
+      // start-blocking (FLUX-667) zombies. The Require-Input branch above returns early (parking
+      // is legitimate there), so this runs only on forward moves; the helper preserves the live
+      // caller ('running') and the persistent per-ticket 'chat' session (FLUX-602).
+      if (newStatus !== prevStatus) {
+        const reaped = reapStaleParkedSessions(ticketId, `ticket moved to ${newStatus}`);
+        if (reaped.length > 0) {
+          await updateTaskWithHistory(ticketId, {
+            updatedBy: 'Agent',
+            entries: [{ type: 'activity', user: 'Agent', comment: `Reaped ${reaped.length} stale parked session${reaped.length > 1 ? 's' : ''} from an earlier phase on move to ${newStatus}.`, date: new Date().toISOString() }],
+          });
+        }
+      }
 
       broadcastEvent('taskUpdated', { id: ticketId });
       return textResult(`${ticketId} moved to ${newStatus}`);
@@ -513,6 +592,10 @@ export function buildMcpServer(): McpServer {
         ...(Object.keys(extraFields).length > 0 ? { extraFields } : {}),
       });
       if (!result) return errorResult(`Failed to archive ${ticketId}`);
+
+      // FLUX-721: an archived ticket is off the active board — reap any sessions still parked on
+      // an earlier phase so they don't linger as zombies. Preserves the persistent 'chat' session.
+      reapStaleParkedSessions(ticketId, `ticket archived → ${archiveStatus}`);
 
       broadcastEvent('taskUpdated', { id: ticketId });
       return textResult(`${ticketId} archived (moved to ${archiveStatus})`);
@@ -828,6 +911,16 @@ export function buildMcpServer(): McpServer {
       });
 
       if (!result) return errorResult(`Failed to finish ${ticketId}`);
+
+      // FLUX-721: now that the ticket is Done, reap any sessions still parked on an earlier phase
+      // so they don't linger as start-blocking zombies. Preserves the persistent 'chat' session.
+      const reapedOnFinish = reapStaleParkedSessions(ticketId, 'ticket finished → Done');
+      if (reapedOnFinish.length > 0) {
+        await updateTaskWithHistory(ticketId, {
+          updatedBy: 'Agent',
+          entries: [{ type: 'activity', user: 'Agent', comment: `Reaped ${reapedOnFinish.length} stale parked session${reapedOnFinish.length > 1 ? 's' : ''} from an earlier phase on finish.`, date: new Date().toISOString() }],
+        });
+      }
 
       // Post-merge cleanup — the SAME unified path as POST /:id/pr/merge (FLUX-574): for a
       // branch ticket, `cleanupMergedBranch` tears down the worktree (by branch, so shared
@@ -1195,6 +1288,9 @@ export function buildMcpServer(): McpServer {
         newStatus: z.string().optional().describe('For kind "status": the target status.'),
         phase: z.string().optional().describe('For kind "dispatch": the phase (grooming / implementation / review / finalize).'),
         into: z.string().optional().describe('For kind "fold": the destination ticket the sources merge into.'),
+        fromSeq: z.number().int().optional().describe('For kind "promote": inclusive start seq of the topic-slice on the source stream (targets[0], default __board__).'),
+        toSeq: z.number().int().optional().describe('For kind "promote": inclusive end seq of the topic-slice on the source stream.'),
+        title: z.string().optional().describe('For kind "promote": title for the new card the slice seeds (falls back to the summary).'),
       })).min(1).describe('The batch of proposed restructurings.'),
     },
     async ({ items }) => {

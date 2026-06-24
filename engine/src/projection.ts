@@ -70,6 +70,11 @@ export interface TranscriptMessage {
    *  diff). Rendered as colored `+N −M` on the inline edit-diff row. */
   added?: number;
   removed?: number;
+  /** FLUX-656: when this message's turn was carved from another stream (extract op), the
+   *  source stream id (e.g. `__board__`). Present only on FOREIGN turns gathered into a
+   *  card's view — set when `projectTranscript` is given a `homeStreamId` to compare against.
+   *  Powers an "from the orchestrator" attribution badge; absent for native turns. */
+  sourceStream?: string;
 }
 
 /** FLUX-661: file-mutating Claude Code tools whose rows get an expandable inline diff. */
@@ -216,11 +221,27 @@ function toolLabel(block: any): string {
  * per text block and a 'tool' message per tool_use block (so the user watches the agent
  * check the board / act). Empty thinking blocks, system, and result events are skipped.
  *
- * `ops` is the append-only curation op-log. No ops exist yet (the verbs are separate
- * tickets); the parameter is present so the projector consumes a log from day one.
+ * `ops` is the append-only curation op-log (FLUX-656 extract / FLUX-657 merge). The reader
+ * (`readTranscriptMessages`) resolves the cross-stream gather BEFORE calling here — it reads
+ * the op-log and prepends any extracted slice turns (which keep their own `streamId`) — so
+ * this projector stays PURE over the turn list it is handed. `ops` is still passed through
+ * for op kinds that affect rendering directly; today none do, so it is reserved.
+ *
+ * `homeStreamId` (FLUX-656): when set, any turn whose `streamId` differs from it is a FOREIGN
+ * turn gathered from another stream by an extract op; its projected messages carry
+ * `sourceStream` for an attribution badge. Omit it (the default) for a single-stream view and
+ * no message is tagged — fully backward compatible.
  */
-export function projectTranscript(turns: Turn[], _ops: CurationOp[] = []): TranscriptMessage[] {
+export function projectTranscript(
+  turns: Turn[],
+  _ops: CurationOp[] = [],
+  homeStreamId?: string,
+): TranscriptMessage[] {
   const out: TranscriptMessage[] = [];
+  const tag = (msg: TranscriptMessage, turn: Turn): TranscriptMessage => {
+    if (homeStreamId !== undefined && turn.streamId !== homeStreamId) msg.sourceStream = turn.streamId;
+    return msg;
+  };
   for (const turn of turns) {
     const evt = turn.raw;
     if (evt?.type === 'user' && typeof evt.text === 'string') {
@@ -233,7 +254,7 @@ export function projectTranscript(turns: Turn[], _ops: CurationOp[] = []): Trans
           .map((a: any) => ({ url: a.url, path: a.path, fileName: typeof a.fileName === 'string' ? a.fileName : 'image' }));
         if (atts.length) msg.attachments = atts;
       }
-      out.push(msg);
+      out.push(tag(msg, turn));
     } else if (evt?.type === 'ask-question' && Array.isArray(evt.questions)) {
       // FLUX-662: an agent asked the user a structured question. Render it as an assistant
       // turn so a cold resume shows the question that was posed.
@@ -246,24 +267,24 @@ export function projectTranscript(turns: Turn[], _ops: CurationOp[] = []): Trans
           return `**${q?.header || 'Question'}** — ${q?.question ?? ''}\n${opts}`;
         })
         .join('\n\n');
-      out.push({ role: 'assistant', text: `❓ ${md}`, ts });
+      out.push(tag({ role: 'assistant', text: `❓ ${md}`, ts }, turn));
     } else if (evt?.type === 'ask-answer') {
       // FLUX-662: the user's answer to a structured question. Render as a user turn so the
       // resolved selection is visible in history alongside the question above.
       const ts = typeof evt.timestamp === 'string' ? evt.timestamp : '';
       if (evt.unanswered) {
-        out.push({ role: 'user', text: '_(no answer — the question timed out)_', ts });
+        out.push(tag({ role: 'user', text: '_(no answer — the question timed out)_', ts }, turn));
       } else {
         const picks = Object.values(evt.answers || {})
           .map((a: any) => (Array.isArray(a) ? a.join(', ') : String(a)))
           .filter((s) => s.trim());
         const note = typeof evt.notes === 'string' && evt.notes.trim() ? ` — ${evt.notes.trim()}` : '';
-        out.push({ role: 'user', text: `✔ ${picks.join(' · ')}${note}`.trim(), ts });
+        out.push(tag({ role: 'user', text: `✔ ${picks.join(' · ')}${note}`.trim(), ts }, turn));
       }
     } else if (evt?.type === 'assistant' && Array.isArray(evt.message?.content)) {
       for (const b of evt.message.content) {
         if (b?.type === 'text' && typeof b.text === 'string' && b.text.trim()) {
-          out.push({ role: 'assistant', text: b.text, ts: turn.ts });
+          out.push(tag({ role: 'assistant', text: b.text, ts: turn.ts }, turn));
         } else if (b?.type === 'tool_use') {
           const msg: TranscriptMessage = { role: 'tool', text: toolLabel(b), ts: turn.ts };
           // FLUX-661: for edit-ish tools, attach the normalized name + repo-relative path so
@@ -282,7 +303,7 @@ export function projectTranscript(turns: Turn[], _ops: CurationOp[] = []): Trans
               msg.path = rel;
             }
           }
-          out.push(msg);
+          out.push(tag(msg, turn));
         }
       }
     }

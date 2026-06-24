@@ -1,21 +1,29 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Sparkles, MessageSquare, Minus, X, History, Square, RotateCcw, GitBranch, FolderGit2, GitPullRequest, ListChecks, Loader2 } from 'lucide-react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Sparkles, MessageSquare, Minus, X, History, Square, RotateCcw, GitBranch, FolderGit2, GitPullRequest, ListChecks, Loader2, MessageCircleQuestion, PanelRight, PanelRightClose, Maximize2, Tag, Link2, Gauge, Save, ChevronDown, Check } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
+import type { DragEndEvent } from '@dnd-kit/core';
+import { SortableContext, horizontalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { useChatSession } from '../hooks/useChatSession';
 import { ChatView } from './task-modal/ChatView';
 import { ChatDiffPanel } from './task-modal/ChatDiffPanel';
+import { TicketSideView } from './task-modal/TicketSideView';
+import { getPriorityIcon } from './task-modal/taskModalHelpers';
 import { TicketContextCard, BoardSnapshotCard, SessionMeter } from './task-modal/chatContext';
 import { parseQuickReplies } from './task-modal/chatQuickReplies';
-import { StatusBadge } from './StatusBadge';
-import { TicketActionBar } from './TicketActionBar';
-import { ChatQuestionPicker } from './AskQuestionPrompts';
-import { ChatBoardRebasePanel } from './BoardRebasePanel';
-import { useDock } from './DockProvider';
+import { TagSelector } from './TagSelector';
+import { TicketActions } from './ticket-actions/TicketActions';
+import { ChatPendingInteractions, PendingInteractionFallback, usePendingInteractions } from './pendingInteractions';
+import { useDock, MIN_SIDEVIEW_WIDTH, MAX_SIDEVIEW_WIDTH } from './DockProvider';
+import { useTicketSideView } from '../hooks/useTicketSideView';
 import { fireDesktopNotification } from '../hooks/useDesktopNotifications';
-import { getStatusTint } from '../statusStyles';
+import { getStatusTint, getStatusColorClass } from '../statusStyles';
 import { getRequireInputStatus } from '../workflow';
-import { BOARD_CONVERSATION_ID, fetchTaskCliSession, stopTaskCliSession, clearTaskTranscript, fetchBranchStatus, type BranchStatus } from '../api';
-import type { CliSessionStatus, CliSessionSummary, Task } from '../types';
+import { BOARD_CONVERSATION_ID, fetchTaskCliSession, fetchTaskTranscript, stopTaskCliSession, clearTaskTranscript, fetchBranchStatus, type BranchStatus } from '../api';
+import { setTranscript } from '../transcriptCache';
+import type { CliSessionStatus, CliSessionSummary, Config, Task } from '../types';
 
 /**
  * FLUX-607: the bottom chat dock as a proper, centered taskbar (Windows-taskbar feel).
@@ -111,9 +119,27 @@ export function ChatDock() {
   const { subscribeToEvent } = useAppActions();
   const tasks = useAppSelector((s) => s.tasks);
   const config = useAppSelector((s) => s.config);
+  // FLUX-720: conversations with an unresolved pending interaction (approval / question /
+  // board-rebase). Drives the hard-gated tab: a chat awaiting your answer is force-pinned with a
+  // distinct prompt icon and can't be closed/removed until it's resolved.
+  const { pendingPromptConversationIds } = usePendingInteractions();
   // Window/open state lives in the app-root DockProvider (FLUX-603) so a card can drive it
   // and it survives view switches. `anchors` records where each window should spawn from.
-  const { open, acked, dismissed, manuallyOpened, anchors, drafts, toggle, closeCard, reopenFromHistory, setDraft } = useDock();
+  const { open, acked, dismissed, manuallyOpened, anchors, drafts, order, sideviewOpen, sideviewWidth, toggle, closeCard, reopenFromHistory, setDraft, reorder, promoteToFront, toggleSideView, setSideviewWidth, seedSideviewWidth, openTicket } = useDock();
+
+  // FLUX-744: open-ticket bridge. `openTask` (AppContext, which lives ABOVE the DockProvider) can't
+  // call dock actions directly, so for the default 'chat' open mode it dispatches a `flux:open-ticket`
+  // window event; here — inside the dock — we open the chat window + sideview for that ticket. This is
+  // what makes "open a ticket from any surface" (cards already call openTicket directly; notifications,
+  // active-sessions, markdown links, search, etc. all flow through openTask) land in the chat view.
+  useEffect(() => {
+    const onOpenTicket = (e: Event) => {
+      const id = (e as CustomEvent<{ id?: string }>).detail?.id;
+      if (id) openTicket(id);
+    };
+    window.addEventListener('flux:open-ticket', onOpenTicket);
+    return () => window.removeEventListener('flux:open-ticket', onOpenTicket);
+  }, [openTicket]);
   const [showHistory, setShowHistory] = useState(false);
   const [boardSession, setBoardSession] = useState<CliSessionSummary | null>(null);
   // Right-click context menu (anchored at the cursor) for a single tab at a time.
@@ -224,54 +250,133 @@ export function ChatDock() {
     prevStatusRef.current = new Map(statusOf);
   }, [statusOf, open]);
 
+  // FLUX-750: keep the running-but-minimized conversation's transcript warm in the cache, so
+  // reopening a *live* session shows current committed state immediately (no stale-then-jump). The
+  // window's own `useChatSession` is destroyed on minimize, so without this the cache would freeze
+  // at the last state seen while the window was open and the reopen would pop forward on the first
+  // post-mount fetch. ChatDock is always mounted and already knows per-id running status (statusOf)
+  // and which windows are open, so it refetches the durable transcript on that id's events and
+  // writes it through. Bounded by design: only `running` conversations whose window is NOT mounted
+  // are kept warm — a mounted window owns its own fetch (no double-fetch), idle chats cost nothing,
+  // and usually at most one session runs at a time. No DOM, no per-idle-chat subscription.
+  const warmIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const [id, status] of statusOf) {
+      if (status === 'running' && !open.includes(id)) ids.push(id);
+    }
+    return ids;
+  }, [statusOf, open]);
+  // Stable key so the effect re-runs only when the warm *set* changes — not on every statusOf
+  // recompute (which churns on each board event). The handler reads the live set via the ref.
+  const warmKey = warmIds.join('|');
+  const warmIdsRef = useRef<string[]>(warmIds);
+  warmIdsRef.current = warmIds;
+  useEffect(() => {
+    const ids = warmIdsRef.current;
+    if (ids.length === 0) return;
+    let cancelled = false;
+    const warmOne = async (id: string) => {
+      try {
+        const msgs = await fetchTaskTranscript(id);
+        if (!cancelled) setTranscript(id, msgs);
+      } catch {
+        /* transient — keep last good */
+      }
+    };
+    // Prime once so a chat minimized while already running is warm before its next event arrives.
+    for (const id of ids) void warmOne(id);
+    const matchId = (d: unknown): string | null => {
+      const o = d as { taskId?: string; id?: string } | null;
+      const ev = o?.taskId ?? o?.id;
+      return ev && warmIdsRef.current.includes(ev) ? ev : null;
+    };
+    const on = (d: unknown) => { const id = matchId(d); if (id) void warmOne(id); };
+    const unsubs = [
+      subscribeToEvent('activity', on),
+      subscribeToEvent('progress', on),
+      subscribeToEvent('taskUpdated', on),
+    ];
+    return () => { cancelled = true; unsubs.forEach((u) => u()); };
+    // `warmKey` captures the warm-set identity; `warmIdsRef` supplies the live list inside.
+  }, [warmKey, subscribeToEvent]);
+
   // Live cards: tickets with a surfaced session OR opened manually from a board element
   // (FLUX-603), minus any the user has retired. A manually-opened ticket with no session
   // renders as an `idle` card (cardState(undefined) === 'idle').
+  // FLUX-720: a ticket with an unresolved pending prompt is *always* surfaced and overrides a
+  // prior dismissal — its tab must stay pinned (and un-closable) until the prompt is resolved.
   const activeTickets = allTasks.filter(
     (t) =>
-      !dismissed.includes(t.id) &&
-      ((t.cliSession && SURFACE_STATUSES.includes(t.cliSession.status)) || manuallyOpened.includes(t.id)),
+      pendingPromptConversationIds.has(t.id) ||
+      (!dismissed.includes(t.id) &&
+        ((t.cliSession && SURFACE_STATUSES.includes(t.cliSession.status)) || manuallyOpened.includes(t.id))),
   );
 
-  // While a tab's window is OPEN, freeze its sort weight so opening a card never makes it
-  // jump position. Without this, clicking a `finished`/`needs-input` card acks it, which
-  // demotes its weight and slides it rightward "out from under you". We keep recording each
-  // closed tab's live weight every render; an open tab reuses the weight it had just before
-  // it was opened, and only re-sorts once it's minimized (sent away).
-  const frozenWeightRef = useRef<Map<string, number>>(new Map());
+  // FLUX-727: manual, drag-imposed tab order (replaces the old attention-weight sort + the
+  // `frozenWeightRef` open-tab-jump hack). The persisted `order` is the source of truth; render
+  // it filtered to the active tickets and append any active id not yet in `order` (a brand-new
+  // tab on the render before the promotion effect runs) so nothing is ever dropped. Closing a
+  // tab no longer reshuffles the rest — they hold position.
+  const orderedTickets = useMemo(() => {
+    const byId = new Map(activeTickets.map((t) => [t.id, t]));
+    const activeIds = activeTickets.map((t) => t.id);
+    const activeSet = new Set(activeIds);
+    const known = order.filter((id) => activeSet.has(id));
+    const knownSet = new Set(known);
+    const appended = activeIds.filter((id) => !knownSet.has(id));
+    return [...known, ...appended].map((id) => byId.get(id) as Task);
+  }, [activeTickets, order]);
+  const orderedIds = useMemo(() => orderedTickets.map((t) => t.id), [orderedTickets]);
 
-  // Attention-first ordering: needs-input → error → working → finished → available → idle,
-  // so the tabs that want you sit at the front. Ties keep a stable id order.
-  const sortedTickets = useMemo(() => {
-    const weight: Record<CardState, number> = {
-      'needs-input': 0,
-      error: 1,
-      working: 2,
-      finished: 3,
-      available: 4,
-      idle: 5,
-    };
-    const frozen = frozenWeightRef.current;
-    const present = new Set(activeTickets.map((t) => t.id));
-    for (const key of [...frozen.keys()]) if (!present.has(key)) frozen.delete(key);
-    // Effective weight: closed tabs use their live weight (and keep it recorded); an open tab
-    // reuses the weight it carried just before opening, so it holds its spot until minimized.
-    const eff = new Map<string, number>();
+  // FLUX-727: event-driven promote-left. Only two transitions move a tab to the front — a NEW tab
+  // appearing, or a chat raising a prompt / entering needs-input. Every other change (turn
+  // finishing, idle, ack/open, output arriving, close) leaves the order alone. We diff against
+  // prev-render ref sets so it fires only on the true rising edges (guards the setState→re-render
+  // loop the risks note flagged), and run it in a layout effect so a new tab is promoted to the
+  // left BEFORE paint (no one-frame flash at the right). The first run only seeds the baseline —
+  // existing tabs on mount are NOT promoted, so the persisted order is respected.
+  const prevActiveRef = useRef<Set<string>>(new Set());
+  const prevPromptRef = useRef<Set<string>>(new Set());
+  const prevNeedsInputRef = useRef<Set<string>>(new Set());
+  const didSeedPromoteRef = useRef(false);
+  useLayoutEffect(() => {
+    const nextActive = new Set<string>();
+    const nextPrompt = new Set<string>();
+    const nextNeeds = new Set<string>();
+    const promote: string[] = [];
     for (const t of activeTickets) {
-      const live = weight[cardState(t.cliSession?.status, acked.includes(t.id), t.status === 'Require Input')];
-      if (open.includes(t.id)) {
-        eff.set(t.id, frozen.has(t.id) ? (frozen.get(t.id) as number) : live);
-      } else {
-        frozen.set(t.id, live);
-        eff.set(t.id, live);
+      nextActive.add(t.id);
+      const hasPrompt = pendingPromptConversationIds.has(t.id);
+      if (hasPrompt) nextPrompt.add(t.id);
+      const needsInput =
+        cardState(t.cliSession?.status, acked.includes(t.id), t.status === 'Require Input') === 'needs-input';
+      if (needsInput) nextNeeds.add(t.id);
+      if (didSeedPromoteRef.current) {
+        const isNew = !prevActiveRef.current.has(t.id);
+        const promptRose = hasPrompt && !prevPromptRef.current.has(t.id);
+        const needsRose = needsInput && !prevNeedsInputRef.current.has(t.id);
+        if (isNew || promptRose || needsRose) promote.push(t.id);
       }
     }
-    return [...activeTickets].sort((a, b) => {
-      const wa = eff.get(a.id) as number;
-      const wb = eff.get(b.id) as number;
-      return wa !== wb ? wa - wb : a.id.localeCompare(b.id);
-    });
-  }, [activeTickets, acked, open]);
+    prevActiveRef.current = nextActive;
+    prevPromptRef.current = nextPrompt;
+    prevNeedsInputRef.current = nextNeeds;
+    didSeedPromoteRef.current = true;
+    // Promote in reverse so the earliest-listed ends up leftmost when several rise at once.
+    for (let i = promote.length - 1; i >= 0; i--) promoteToFront(promote[i]);
+  }, [activeTickets, pendingPromptConversationIds, acked, promoteToFront]);
+
+  // Drag-to-reorder (FLUX-727). PointerSensor with a 5px activation distance so a plain click
+  // still opens the chat (and the hover-`x` / context menu still fire) — only a real drag reorders.
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+  const onDragEnd = (e: DragEndEvent) => {
+    const { active, over } = e;
+    if (!over || active.id === over.id) return;
+    const oldIndex = orderedIds.indexOf(active.id as string);
+    const newIndex = orderedIds.indexOf(over.id as string);
+    if (oldIndex === -1 || newIndex === -1) return;
+    reorder(arrayMove(orderedIds, oldIndex, newIndex));
+  };
 
   // Adaptive tab sizing (FLUX-603): give each ticket tab a slice of a horizontal budget so
   // the taskbar stays one row. With room, a tab shows `ID + title`; as tabs multiply the
@@ -334,6 +439,10 @@ export function ChatDock() {
 
   return (
     <>
+      {/* FLUX-720: no-orphans global fallback — pending prompts whose origin dock isn't open (or
+          whose conversationId is null) surface here; deduped against the inline panels. */}
+      <PendingInteractionFallback />
+
       {open.map((id) => (
         <ChatWindow
           key={id}
@@ -348,8 +457,22 @@ export function ChatDock() {
           activity={activityOf(id)}
           draft={drafts[id] ?? ''}
           onDraftChange={(t) => setDraft(id, t)}
+          // FLUX-734: ticket sideview toggle (ticket windows only — the orchestrator has no task).
+          sideViewOpen={sideviewOpen.includes(id)}
+          onToggleSideView={() => toggleSideView(id)}
+          // FLUX-740: live, persisted sideview width + setter for the chat↔panel resize divider.
+          sideviewWidth={sideviewWidth}
+          setSideviewWidth={setSideviewWidth}
+          // FLUX-744: seed a proportional (~45%) width from the chat column when the panel opens.
+          seedSideviewWidth={seedSideviewWidth}
           onMinimize={() => toggle(id)}
-          onClose={id === BOARD_CONVERSATION_ID ? undefined : () => closeCard(id)}
+          // FLUX-720: the window's close (X) is hidden while a prompt is pending, mirroring the
+          // tab gate — the chat can't be retired until you resolve it. Minimize stays available.
+          onClose={
+            id === BOARD_CONVERSATION_ID || pendingPromptConversationIds.has(id)
+              ? undefined
+              : () => closeCard(id)
+          }
         />
       ))}
 
@@ -365,6 +488,7 @@ export function ChatDock() {
           orchestrator
           open={open.includes(BOARD_CONVERSATION_ID)}
           state={cardState(boardSession?.status, acked.includes(BOARD_CONVERSATION_ID))}
+          pendingPrompt={pendingPromptConversationIds.has(BOARD_CONVERSATION_ID)}
           activity={boardSession?.currentActivity ?? null}
           onOpen={(el) => toggle(BOARD_CONVERSATION_ID, el)}
           onContextMenu={(e) => setMenu({ id: BOARD_CONVERSATION_ID, x: e.clientX, y: e.clientY })}
@@ -374,25 +498,38 @@ export function ChatDock() {
           <div className="h-7 w-px bg-[var(--eh-border)]" aria-hidden="true" />
         )}
 
+        {/* FLUX-727: drag-to-reorder strip. `autoScroll={false}` so dnd-kit's drag auto-scroll
+            doesn't fight the wheel-scroll listener on this overflow-x container. The orchestrator
+            (above) stays outside the SortableContext — pinned home, never draggable. */}
         <div ref={stripRef} className="flex items-center gap-1.5 overflow-x-auto px-1.5 py-2 -mx-1.5 -my-2">
-          {sortedTickets.map((t) => (
-            <ChatTab
-              key={t.id}
-              id={t.id}
-              title={t.title}
-              orchestrator={false}
-              open={open.includes(t.id)}
-              state={cardState(t.cliSession?.status, acked.includes(t.id), t.status === 'Require Input')}
-              statusTint={getStatusTint(config, t.status)}
-              activity={t.cliSession?.currentActivity ?? null}
-              unread={unreadOf(t.id)}
-              titleWidth={titleWidth}
-              compactId={compactId}
-              onOpen={(el) => toggle(t.id, el)}
-              onClose={() => closeCard(t.id)}
-              onContextMenu={(e) => setMenu({ id: t.id, x: e.clientX, y: e.clientY })}
-            />
-          ))}
+          <DndContext sensors={sensors} collisionDetection={closestCenter} autoScroll={false} onDragEnd={onDragEnd}>
+            <SortableContext items={orderedIds} strategy={horizontalListSortingStrategy}>
+              {orderedTickets.map((t) => {
+                const pendingPrompt = pendingPromptConversationIds.has(t.id);
+                return (
+                  <SortableChatTab
+                    key={t.id}
+                    id={t.id}
+                    title={t.title}
+                    orchestrator={false}
+                    open={open.includes(t.id)}
+                    state={cardState(t.cliSession?.status, acked.includes(t.id), t.status === 'Require Input')}
+                    pendingPrompt={pendingPrompt}
+                    statusTint={getStatusTint(config, t.status)}
+                    activity={t.cliSession?.currentActivity ?? null}
+                    unread={unreadOf(t.id)}
+                    titleWidth={titleWidth}
+                    compactId={compactId}
+                    onOpen={(el) => toggle(t.id, el)}
+                    // FLUX-720: hard-gate close while a prompt is pending — the tab can't be retired
+                    // until the user resolves it (minimize still works; resolve controls stay usable).
+                    onClose={pendingPrompt ? undefined : () => closeCard(t.id)}
+                    onContextMenu={(e) => setMenu({ id: t.id, x: e.clientX, y: e.clientY })}
+                  />
+                );
+              })}
+            </SortableContext>
+          </DndContext>
         </div>
 
         {/* History — always available (so it's discoverable even before anything is closed). */}
@@ -448,7 +585,8 @@ export function ChatDock() {
           title={titleOf(menu.id)}
           isOpen={open.includes(menu.id)}
           isWorking={statusOf.get(menu.id) === 'running'}
-          canClose={menu.id !== BOARD_CONVERSATION_ID}
+          // FLUX-720: a chat with a pending prompt can't be closed from the menu either.
+          canClose={menu.id !== BOARD_CONVERSATION_ID && !pendingPromptConversationIds.has(menu.id)}
           canReset={menu.id === BOARD_CONVERSATION_ID}
           onToggle={() => {
             toggle(menu.id);
@@ -492,6 +630,22 @@ function ThinkingDots() {
   );
 }
 
+/** FLUX-727: a ticket tab wired for drag-to-reorder. Wraps ChatTab with `useSortable` and hands it
+ *  the sortable node ref, the live transform, and the drag listeners. Ticket tabs only — the
+ *  orchestrator renders ChatTab directly (pinned home, never draggable, outside the SortableContext). */
+function SortableChatTab(props: React.ComponentProps<typeof ChatTab>) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: props.id });
+  const dragStyle: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.6 : undefined,
+    zIndex: isDragging ? 20 : undefined,
+  };
+  return (
+    <ChatTab {...props} dragRef={setNodeRef} dragStyle={dragStyle} dragHandleProps={{ ...attributes, ...listeners }} />
+  );
+}
+
 function ChatTab({
   id,
   label,
@@ -499,6 +653,7 @@ function ChatTab({
   orchestrator,
   open,
   state,
+  pendingPrompt = false,
   statusTint,
   activity,
   unread = false,
@@ -507,6 +662,9 @@ function ChatTab({
   onOpen,
   onClose,
   onContextMenu,
+  dragRef,
+  dragStyle,
+  dragHandleProps,
 }: {
   id: string;
   /** Orchestrator label ("Board"). */
@@ -516,6 +674,9 @@ function ChatTab({
   orchestrator: boolean;
   open: boolean;
   state: CardState;
+  /** FLUX-720: this chat has an unresolved pending interaction (approval / question / rebase).
+   *  Overlays a distinct prompt icon + pulse and outranks the live `state` for attention. */
+  pendingPrompt?: boolean;
   /** FLUX-648: ticket board-status tint for the tab surface (ticket tabs only). The live
    *  session-state dot/glow/badge stay layered on top as the fast-changing overlay. */
   statusTint?: { rgb: string };
@@ -530,10 +691,17 @@ function ChatTab({
   onOpen: (el: HTMLElement) => void;
   onClose?: () => void;
   onContextMenu?: (e: React.MouseEvent) => void;
+  /** FLUX-727: drag wiring from `useSortable` (ticket tabs only — supplied by SortableChatTab).
+   *  `dragRef` is the sortable node ref, `dragStyle` carries the live transform/transition, and
+   *  `dragHandleProps` are the pointer/keyboard drag listeners + a11y attributes spread on the tab. */
+  dragRef?: (el: HTMLElement | null) => void;
+  dragStyle?: React.CSSProperties;
+  dragHandleProps?: Record<string, unknown>;
 }) {
   const { short } = splitId(id);
-  const copy = STATE_COPY[state];
-  const badgeTone = BADGE_TONE[state];
+  const copy = pendingPrompt ? 'needs your answer' : STATE_COPY[state];
+  // A pending prompt overrides the `!` attention badge with its own prompt icon (below).
+  const badgeTone = pendingPrompt ? undefined : BADGE_TONE[state];
   const working = state === 'working';
   const fullLabel = orchestrator ? 'Orchestrator' : title ? `${id} — ${title}` : id;
 
@@ -570,15 +738,18 @@ function ChatTab({
   return (
     <button
       type="button"
+      ref={dragRef}
       onClick={(e) => onOpen(e.currentTarget)}
       onContextMenu={(e) => {
         e.preventDefault();
         onContextMenu?.(e);
       }}
-      style={ticketTintStyle}
+      // FLUX-727: ticket-tint fill/border composed with the live drag transform (transform wins).
+      style={{ ...ticketTintStyle, ...dragStyle }}
       aria-label={`${fullLabel} — ${copy}`}
       title={working && activity ? `${fullLabel} — ${activity}` : `${fullLabel} — ${copy}`}
-      className={base + surface + STATE_ANIM[state]}
+      className={base + surface + (pendingPrompt ? 'eh-taskcard-needs-input ' : STATE_ANIM[state])}
+      {...dragHandleProps}
     >
       {/* Leading: the orchestrator keeps its spark (warm-tinted with a soft glow so it pops on
           the gradient); a ticket gets a colored state dot. */}
@@ -616,8 +787,21 @@ function ChatTab({
         />
       )}
 
-      {/* Unread dot — agent said something you haven't opened (only when no `!` badge). */}
-      {unread && !badgeTone && (
+      {/* FLUX-720: pending-prompt badge — a distinct "this chat needs your answer" prompt icon
+          (+ pulse on the tab) that reads apart from the generic working/needs-input states and
+          is used identically for all three prompt types. Sits where the `!` badge would, and
+          takes precedence over it. */}
+      {pendingPrompt && (
+        <span
+          aria-hidden="true"
+          className="absolute -left-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-white shadow ring-2 ring-[var(--eh-surface)]"
+        >
+          <MessageCircleQuestion className="h-2.5 w-2.5" />
+        </span>
+      )}
+
+      {/* Unread dot — agent said something you haven't opened (only when no `!`/prompt badge). */}
+      {unread && !badgeTone && !pendingPrompt && (
         <span
           aria-hidden="true"
           className="absolute -left-1 -top-1 h-2.5 w-2.5 rounded-full bg-primary ring-2 ring-[var(--eh-surface)]"
@@ -736,17 +920,289 @@ function DockContextMenu({
   );
 }
 
-const CHAT_WINDOW_WIDTH = 480;
-const CHAT_WINDOW_HEIGHT = 520;
+// FLUX-727: the dock chat window spawns 2× wider / ~30% taller than the old 480×520 so a chat
+// opens roomy instead of cramped. Seeded clamped to the viewport (see ChatWindow) for small screens.
+const CHAT_WINDOW_WIDTH = 960;
+const CHAT_WINDOW_HEIGHT = 676;
 const MIN_WINDOW_WIDTH = 320;
 const MIN_WINDOW_HEIGHT = 280;
 
+// FLUX-740: effort estimate + effort-level (override) option sets — mirror MetadataPanel so the bar
+// and the legacy modal offer the same choices.
+const EFFORT_OPTIONS = ['None', 'XS', 'S', 'M', 'L', 'XL'];
+const EFFORT_LEVEL_OPTIONS: { value: string; label: string }[] = [
+  { value: '', label: 'Default effort level' },
+  { value: 'low', label: 'low' },
+  { value: 'medium', label: 'medium' },
+  { value: 'high', label: 'high' },
+  { value: 'xhigh', label: 'xhigh' },
+  { value: 'max', label: 'max' },
+];
+
+/** FLUX-740: a compact inline `<select>` styled to sit in the metadata bar (no label chrome — the
+ *  value reads as a pill). `onPointerDown` is stopped so opening it never starts a window drag. */
+function BarSelect({
+  value, onChange, options, title, className = '',
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: { value: string; label: string }[];
+  title: string;
+  className?: string;
+}) {
+  return (
+    <select
+      title={title}
+      value={value}
+      onPointerDown={(e) => e.stopPropagation()}
+      onChange={(e) => onChange(e.target.value)}
+      className={`flex-shrink-0 cursor-pointer rounded-md border px-1.5 py-0.5 text-[11px] font-medium outline-none transition-colors focus:border-primary ${className}`}
+    >
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>{o.label}</option>
+      ))}
+    </select>
+  );
+}
+
+/** FLUX-744: a small colored dot for a status, using the board's per-status tint accent. Lets the
+ *  status dropdown carry its board identity (native `<option>`s can't render color). */
+function StatusDot({ config, status }: { config: Config | null | undefined; status: string }) {
+  const tint = getStatusTint(config, status);
+  return <span className={`h-2 w-2 flex-shrink-0 rounded-full ${tint.accent}`} aria-hidden />;
+}
+
+interface BarDropdownOption {
+  value: string;
+  label: string;
+  /** Optional leading visual rendered before the label in each option row. */
+  leading?: ReactNode;
+}
+
+/** FLUX-744: a compact custom dropdown for the metadata bar that CAN render a per-option icon/dot
+ *  (unlike the native `<select>` of `BarSelect`, where `<option>`s are text-only). Reuses BarPopover's
+ *  open/close contract — outside-click + Escape close it, and `onPointerDown` is stopped so opening it
+ *  never starts a window drag — and adds listbox keyboard nav (↑/↓/Home/End move, Enter/click select).
+ *
+ *  The metadata bar has `overflow-x-auto`, which (per CSS) forces the cross axis to clip too — so the
+ *  menu MUST escape it. We position it with measured `position: fixed` coordinates from the trigger
+ *  rect (same approach as CardMenu) instead of `absolute`, so it overlays the chat window rather than
+ *  getting trapped under the bar's fold. */
+function BarDropdown({
+  value, onChange, options, title, className = '', triggerLeading,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: BarDropdownOption[];
+  title: string;
+  className?: string;
+  /** Optional leading visual for the trigger button (e.g. the selected priority icon / status dot). */
+  triggerLeading?: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const [coords, setCoords] = useState<{ left: number; top: number } | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const selected = options.find((o) => o.value === value);
+
+  // Measure the trigger and open the fixed-positioned menu just below it.
+  const toggleOpen = () => {
+    if (open) { setOpen(false); return; }
+    const r = triggerRef.current?.getBoundingClientRect();
+    if (r) setCoords({ left: r.left, top: r.bottom + 4 });
+    setOpen(true);
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    // Re-position on scroll/resize would be ideal, but the menu closes on any outside interaction,
+    // so a fixed snapshot taken at open time is sufficient.
+    window.addEventListener('pointerdown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('pointerdown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  // Move focus to the selected (or first) option when the listbox opens, so arrow keys work at once.
+  useEffect(() => {
+    if (!open) return;
+    const node = listRef.current?.querySelector<HTMLButtonElement>('[data-active="true"]')
+      ?? listRef.current?.querySelector<HTMLButtonElement>('[role="option"]');
+    node?.focus();
+  }, [open]);
+
+  const choose = (v: string) => { onChange(v); setOpen(false); };
+
+  const onListKeyDown = (e: React.KeyboardEvent) => {
+    const items = Array.from(listRef.current?.querySelectorAll<HTMLButtonElement>('[role="option"]') ?? []);
+    const idx = items.indexOf(document.activeElement as HTMLButtonElement);
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      items[Math.min(items.length - 1, idx + 1)]?.focus();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      items[Math.max(0, idx - 1)]?.focus();
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      items[0]?.focus();
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      items[items.length - 1]?.focus();
+    }
+  };
+
+  // Clamp the fixed menu into the viewport (the bar sits at the top of the window, so it opens down).
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1280;
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 800;
+  const menuLeft = coords ? Math.max(8, Math.min(coords.left, vw - 220)) : 0;
+  const menuTop = coords ? Math.max(8, Math.min(coords.top, vh - 280)) : 0;
+
+  return (
+    <div ref={ref} className="relative flex-shrink-0">
+      <button
+        ref={triggerRef}
+        type="button"
+        title={title}
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={toggleOpen}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className={`flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-medium outline-none transition-colors focus:border-primary ${className}`}
+      >
+        {triggerLeading}
+        <span className="truncate">{selected?.label ?? value}</span>
+        <ChevronDown className="h-3 w-3 flex-shrink-0 opacity-60" />
+      </button>
+      {open && coords && (
+        <div
+          ref={listRef}
+          role="listbox"
+          onPointerDown={(e) => e.stopPropagation()}
+          onKeyDown={onListKeyDown}
+          style={{ left: menuLeft, top: menuTop }}
+          className="eh-border eh-surface fixed z-[60] max-h-64 min-w-[140px] overflow-y-auto rounded-lg border p-1 shadow-2xl"
+        >
+          {options.map((o) => {
+            const active = o.value === value;
+            return (
+              <button
+                key={o.value}
+                type="button"
+                role="option"
+                aria-selected={active}
+                data-active={active}
+                onClick={() => choose(o.value)}
+                className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-[12px] outline-none transition-colors hover:bg-black/5 focus:bg-black/5 dark:hover:bg-white/5 dark:focus:bg-white/5 ${
+                  active ? 'font-semibold text-[var(--eh-text-primary)]' : 'text-[var(--eh-text-secondary)]'
+                }`}
+              >
+                {o.leading}
+                <span className="truncate">{o.label}</span>
+                {active && <Check className="ml-auto h-3 w-3 flex-shrink-0 text-primary" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** FLUX-740: a bar control that opens a small floating panel for fields that don't fit a one-line
+ *  pill (tags / implementation link / effort level). Closes on outside-click or Escape. Opens
+ *  downward (the bar sits at the top of the chat column).
+ *  FLUX-744: positioned with measured `position: fixed` (not `absolute`) so it escapes the metadata
+ *  bar's `overflow-x-auto` clip and overlays the chat window instead of getting trapped under the bar. */
+function BarPopover({
+  label, icon: Icon, active = false, title, children,
+}: {
+  label: string;
+  icon: LucideIcon;
+  active?: boolean;
+  title: string;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const [coords, setCoords] = useState<{ left: number; top: number } | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  const toggleOpen = () => {
+    if (open) { setOpen(false); return; }
+    const r = triggerRef.current?.getBoundingClientRect();
+    if (r) setCoords({ left: r.left, top: r.bottom + 4 });
+    setOpen(true);
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    window.addEventListener('pointerdown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('pointerdown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  // Clamp the fixed panel (w-64 = 256px) into the viewport; the bar opens it downward.
+  const vw = typeof window !== 'undefined' ? window.innerWidth : 1280;
+  const vh = typeof window !== 'undefined' ? window.innerHeight : 800;
+  const panelLeft = coords ? Math.max(8, Math.min(coords.left, vw - 272)) : 0;
+  const panelTop = coords ? Math.max(8, Math.min(coords.top, vh - 320)) : 0;
+
+  return (
+    <div ref={ref} className="relative flex-shrink-0">
+      <button
+        ref={triggerRef}
+        type="button"
+        title={title}
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={toggleOpen}
+        aria-expanded={open}
+        className={`flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-medium transition-colors ${
+          active
+            ? 'border-primary/40 bg-primary/10 text-primary'
+            : 'eh-border bg-[var(--eh-input-bg)] text-[var(--eh-text-muted)] hover:text-[var(--eh-text-primary)]'
+        }`}
+      >
+        <Icon className="h-3 w-3 flex-shrink-0" />
+        {label}
+      </button>
+      {open && coords && (
+        <div
+          onPointerDown={(e) => e.stopPropagation()}
+          style={{ left: panelLeft, top: panelTop }}
+          className="eh-border eh-surface fixed z-[60] w-64 rounded-lg border p-2.5 shadow-2xl"
+        >
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
- * FLUX-620: read-only ticket context strip under the dock chat window's title bar — id,
- * status pill, priority, and branch / worktree / PR info. Branch state is lazily fetched
- * only when the ticket has a branch. Ticket windows only (the orchestrator has no task).
+ * FLUX-620 / FLUX-740: the editable ticket metadata bar under the chat window's title bar — the
+ * "metadata cockpit". Holds ALL ticket fields: status / priority / assignee / effort as inline
+ * pills, and tags / implementation link / effort level as popovers, plus the read-only branch /
+ * worktree / PR display. Edits flow through the shared `useTicketSideView` controller (same
+ * `updateTask` write path as the sideview), and the unified dirty/save affordance lives here so it
+ * stays reachable even when the sideview panel is collapsed or closed. Ticket windows only.
  */
-function ChatContextStrip({ task }: { task: Task }) {
+function ChatMetadataBar({ c }: { c: ReturnType<typeof useTicketSideView> }) {
+  const task = c.task;
+  const config = c.config;
   const [branch, setBranch] = useState<BranchStatus | null>(null);
 
   useEffect(() => {
@@ -774,48 +1230,173 @@ function ChatContextStrip({ task }: { task: Task }) {
   const worktree = branch?.worktree ?? null;
 
   return (
-    <div className="eh-border-subtle flex items-center gap-2 overflow-x-auto border-b px-3.5 py-1.5 text-[11px]">
-      <span className="flex-shrink-0 font-mono text-[var(--eh-text-muted)]">{task.id}</span>
-      <StatusBadge status={task.status} className="flex-shrink-0 text-[10px]" />
-      {task.priority && task.priority !== 'None' && (
-        <span className="flex-shrink-0 text-[var(--eh-text-muted)]">{task.priority}</span>
-      )}
+    <>
+      <div className="eh-border-subtle flex items-center gap-1.5 overflow-x-auto border-b px-3 py-1.5 text-[11px]">
+        <span className="flex-shrink-0 font-mono text-[var(--eh-text-muted)]">{task.id}</span>
 
-      {branchName && (
-        <span
-          className="flex min-w-0 flex-shrink-0 items-center gap-1 text-[var(--eh-text-secondary)]"
-          title={branchName}
-        >
-          <GitBranch className="h-3 w-3 flex-shrink-0" />
-          <span className="max-w-[150px] truncate font-mono">{branchName}</span>
-          {(ahead > 0 || behind > 0) && (
-            <span
-              className="flex-shrink-0 text-[var(--eh-text-muted)]"
-              title={`${ahead} ahead, ${behind} behind master`}
-            >
-              {[ahead > 0 ? `↑${ahead}` : null, behind > 0 ? `↓${behind}` : null].filter(Boolean).join(' ')}
-            </span>
+        {/* Inline metadata pills. FLUX-744: status/priority/effort use BarDropdown so they keep their
+            board identity (priority icon, status color dot) — native <option>s can't render visuals.
+            Assignee stays a native select (variable-length user list, no per-option visual). */}
+        <BarDropdown
+          title="Status"
+          value={c.status}
+          onChange={c.setStatus}
+          options={c.allStatuses.map((s) => ({ value: s, label: s, leading: <StatusDot config={config} status={s} /> }))}
+          triggerLeading={<StatusDot config={config} status={c.status} />}
+          className={getStatusColorClass(config, c.status)}
+        />
+        <BarDropdown
+          title="Priority"
+          value={c.priority}
+          onChange={c.setPriority}
+          options={c.availablePriorities.map((p) => ({ value: p.name, label: p.name, leading: getPriorityIcon(p.name, config, 'h-3 w-3') }))}
+          triggerLeading={getPriorityIcon(c.priority, config, 'h-3 w-3')}
+          className="eh-border bg-[var(--eh-input-bg)] text-[var(--eh-text-secondary)]"
+        />
+        <BarSelect
+          title="Assignee"
+          value={c.assignee}
+          onChange={c.setAssignee}
+          options={[{ value: 'unassigned', label: 'Unassigned' }, ...c.allUsers.map((u) => ({ value: u, label: u }))]}
+          className="eh-border max-w-[120px] bg-[var(--eh-input-bg)] text-[var(--eh-text-secondary)]"
+        />
+        <BarDropdown
+          title="Effort"
+          value={c.effort}
+          onChange={c.setEffort}
+          options={EFFORT_OPTIONS.map((e) => ({ value: e, label: e }))}
+          className="eh-border bg-[var(--eh-input-bg)] text-[var(--eh-text-secondary)]"
+        />
+
+        {/* Popover fields — don't fit a one-line pill. */}
+        <BarPopover label={c.tags.length ? `Tags · ${c.tags.length}` : 'Tags'} icon={Tag} active={c.tags.length > 0} title="Edit tags">
+          {config && (
+            <TagSelector tags={c.tags} onChange={c.setTags} availableTags={c.allTags} configTags={config.tags} />
           )}
-        </span>
-      )}
-
-      {worktree && (
-        <span className="flex flex-shrink-0 items-center gap-1 text-[var(--eh-text-muted)]" title={worktree}>
-          <FolderGit2 className="h-3 w-3 flex-shrink-0" /> worktree
-        </span>
-      )}
-
-      {prUrl && (
-        <a
-          href={prUrl}
-          target="_blank"
-          rel="noreferrer"
-          onPointerDown={(e) => e.stopPropagation()}
-          className="ml-auto flex flex-shrink-0 items-center gap-1 font-semibold text-primary hover:underline"
+        </BarPopover>
+        <BarPopover label="Link" icon={Link2} active={!!c.implementationLink} title="Implementation link (PR / commit URL)">
+          <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">Implementation Link</label>
+          <input
+            value={c.implementationLink}
+            onChange={(e) => c.setImplementationLink(e.target.value)}
+            placeholder="https://github.com/..."
+            className="eh-border w-full rounded-md border bg-[var(--eh-input-bg)] px-2 py-1 text-[12px] outline-none focus:border-primary"
+          />
+        </BarPopover>
+        <BarPopover
+          label={c.effortLevel ? `Effort · ${c.effortLevel}` : 'Effort lvl'}
+          icon={Gauge}
+          active={!!c.effortLevel}
+          title="Agent effort level (overrides the global default)"
         >
-          <GitPullRequest className="h-3 w-3 flex-shrink-0" /> PR
-        </a>
+          <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">Effort Level</label>
+          <select
+            value={c.effortLevel}
+            onChange={(e) => c.setEffortLevel(e.target.value)}
+            className="eh-border w-full cursor-pointer rounded-md border bg-[var(--eh-input-bg)] px-2 py-1 text-[12px] outline-none focus:border-primary"
+          >
+            {EFFORT_LEVEL_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+        </BarPopover>
+
+        {/* Read-only branch / worktree display (kept from the original strip). */}
+        {branchName && (
+          <span
+            className="flex min-w-0 flex-shrink-0 items-center gap-1 text-[var(--eh-text-secondary)]"
+            title={branchName}
+          >
+            <GitBranch className="h-3 w-3 flex-shrink-0" />
+            <span className="max-w-[120px] truncate font-mono">{branchName}</span>
+            {(ahead > 0 || behind > 0) && (
+              <span
+                className="flex-shrink-0 text-[var(--eh-text-muted)]"
+                title={`${ahead} ahead, ${behind} behind master`}
+              >
+                {[ahead > 0 ? `↑${ahead}` : null, behind > 0 ? `↓${behind}` : null].filter(Boolean).join(' ')}
+              </span>
+            )}
+          </span>
+        )}
+        {worktree && (
+          <span className="flex flex-shrink-0 items-center gap-1 text-[var(--eh-text-muted)]" title={worktree}>
+            <FolderGit2 className="h-3 w-3 flex-shrink-0" /> worktree
+          </span>
+        )}
+
+        {/* FLUX-740: the unified dirty/save affordance — pinned right, reachable even with the
+            sideview collapsed. Falls back to the PR link when there's nothing to save. */}
+        {c.isDirty ? (
+          <div className="ml-auto flex flex-shrink-0 items-center gap-1 pl-1">
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={c.discard}
+              disabled={c.saving}
+              title="Discard unsaved changes"
+              className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-semibold text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-secondary)] disabled:opacity-50 dark:hover:bg-white/5"
+            >
+              <RotateCcw className="h-3 w-3" /> Discard
+            </button>
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => void c.save()}
+              disabled={c.saving}
+              title="Save changes"
+              className="flex items-center gap-1 rounded-md bg-primary px-2 py-0.5 text-[11px] font-semibold text-white shadow-sm transition-colors hover:bg-primary-hover disabled:opacity-50"
+            >
+              {c.saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+              {c.saving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        ) : prUrl ? (
+          <a
+            href={prUrl}
+            target="_blank"
+            rel="noreferrer"
+            onPointerDown={(e) => e.stopPropagation()}
+            className="ml-auto flex flex-shrink-0 items-center gap-1 font-semibold text-primary hover:underline"
+          >
+            <GitPullRequest className="h-3 w-3 flex-shrink-0" /> PR
+          </a>
+        ) : null}
+      </div>
+
+      {c.saveError && (
+        <div className="eh-border-subtle border-b border-red-500/20 bg-red-500/10 px-3 py-1 text-[11px] text-red-500">
+          {c.saveError}
+        </div>
       )}
+    </>
+  );
+}
+
+/** FLUX-740: instantiates the shared ticket controller for a ticket chat window and hands it to its
+ *  children (the editable metadata bar + the sideview) via a render prop, so both surfaces drive one
+ *  form state and one save flow. Only mounted for ticket windows (the orchestrator has no task). */
+function TicketControllerScope({
+  task, children,
+}: {
+  task: Task;
+  children: (c: ReturnType<typeof useTicketSideView>) => ReactNode;
+}) {
+  const c = useTicketSideView(task);
+  return <>{children(c)}</>;
+}
+
+/** FLUX-740: the draggable divider between the chat column and the ticket sideview. Dragging it
+ *  rebalances the two — `onResize` is fed the live pointer delta to redistribute width while keeping
+ *  the window's outer footprint fixed. */
+function SideviewDivider({ onResize }: { onResize: (e: React.PointerEvent) => void }) {
+  return (
+    <div
+      onPointerDown={onResize}
+      title="Drag to resize the ticket panel"
+      className="group/divider relative z-10 flex w-1.5 flex-shrink-0 cursor-col-resize items-stretch"
+    >
+      <span className="mx-auto w-px bg-[var(--eh-border)] transition-colors group-hover/divider:bg-primary" />
     </div>
   );
 }
@@ -836,7 +1417,7 @@ const TRIAGE_PROMPT =
  * Board-chat-only quick action (FLUX-637): one tap seeds the orchestrator with the canned
  * triage prompt and fires it immediately, returning a ranked/clustered prioritization of the
  * Todo column. Disabled while a turn is in flight so it can't double-send mid-turn. Styled to
- * match `TicketActionBar`'s default (engine-tone) button so the two action slots feel uniform.
+ * match the unified `TicketActions` default (engine-tone) button so the two action slots feel uniform.
  */
 function TriageAction({ busy, onTriage }: { busy: boolean; onTriage: () => void }) {
   return (
@@ -865,6 +1446,11 @@ function ChatWindow({
   activity,
   draft,
   onDraftChange,
+  sideViewOpen = false,
+  onToggleSideView,
+  sideviewWidth = MIN_SIDEVIEW_WIDTH,
+  setSideviewWidth,
+  seedSideviewWidth,
   onMinimize,
   onClose,
 }: {
@@ -880,13 +1466,28 @@ function ChatWindow({
   /** FLUX-623: persisted unsent composer text for this conversation (survives minimize). */
   draft: string;
   onDraftChange: (text: string) => void;
+  /** FLUX-734: whether the ticket sideview panel is expanded beside the chat (ticket windows only). */
+  sideViewOpen?: boolean;
+  /** FLUX-734: toggle the ticket sideview panel. Absent for the orchestrator (no bound task). */
+  onToggleSideView?: () => void;
+  /** FLUX-740: live, persisted width of the sideview panel (set by the chat↔panel divider). */
+  sideviewWidth?: number;
+  /** FLUX-740: commit a new sideview width (clamped + persisted in DockProvider). */
+  setSideviewWidth?: (width: number) => void;
+  /** FLUX-744: seed a proportional (~45%) sideview width from the chat column at open time, bounded
+   *  by `maxWidth` so the grown window fits the viewport (no-op once the user has set a width). */
+  seedSideviewWidth?: (chatWidth: number, maxWidth?: number) => void;
   onMinimize: () => void;
   /** Retire the card into History and close the window. Absent for the pinned orchestrator. */
   onClose?: () => void;
 }) {
-  const chat = useChatSession(id, true);
+  // FLUX-748: pass `working` (live running session) so the hook's message queue auto-dispatches
+  // on the turn-completion edge.
+  const chat = useChatSession(id, true, working);
   const allTasks = useAppSelector((s) => s.tasks) as Task[];
   const config = useAppSelector((s) => s.config);
+  // FLUX-744: open the legacy full-screen ticket modal from the chat header (collapsing the chat).
+  const { openTaskFullView } = useAppActions();
   const requireInputStatus = getRequireInputStatus(config);
   // FLUX-642/643: empty-chat context + Require-Input quick replies, built from data we already
   // hold and handed to the transport-free ChatView.
@@ -902,19 +1503,62 @@ function ChatWindow({
   const windowRef = useRef<HTMLDivElement>(null);
   // User-resizable footprint. The window is pinned bottom-left (see `bottom`/`left`), so
   // the grip lives at the top-right corner and grows the window up + right.
-  const [size, setSize] = useState({ w: CHAT_WINDOW_WIDTH, h: CHAT_WINDOW_HEIGHT });
+  // FLUX-727: seed the larger default clamped to the viewport so it never spawns off-screen on a
+  // small display (the resize maxW/maxH below keep it bounded once the user drags the grip).
+  const [size, setSize] = useState(() => ({
+    w: typeof window !== 'undefined' ? Math.min(CHAT_WINDOW_WIDTH, window.innerWidth - 16) : CHAT_WINDOW_WIDTH,
+    h: typeof window !== 'undefined' ? Math.min(CHAT_WINDOW_HEIGHT, window.innerHeight - 100) : CHAT_WINDOW_HEIGHT,
+  }));
   // Dragged position as a `{left, bottom}` pair (FLUX-603) — bottom-pinned like the spawn
   // default, so the existing top-right resize math is unchanged. `null` until first drag,
   // when it falls back to the anchored spawn position below.
   const [pos, setPos] = useState<{ left: number; bottom: number } | null>(null);
 
-  // Spawn the window "out of" the clicked card: center it on the click x, clamped to the
-  // viewport. No recorded anchor (e.g. unusual reopen) falls back to screen-center.
-  const viewportW = typeof window !== 'undefined' ? window.innerWidth : 1280;
-  const center = anchorX ?? viewportW / 2;
-  const anchoredLeft = Math.max(8, Math.min(center - size.w / 2, viewportW - size.w - 8));
-  const left = pos ? pos.left : anchoredLeft;
-  const bottom = pos ? pos.bottom : 84;
+  // FLUX-744: live viewport size, so the on-screen clamp below re-runs reactively on a window resize
+  // (a resize doesn't re-render React by itself). Updated only on resize — cheap.
+  const [viewport, setViewport] = useState(() => ({
+    w: typeof window !== 'undefined' ? window.innerWidth : 1280,
+    h: typeof window !== 'undefined' ? window.innerHeight : 800,
+  }));
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onResize = () => setViewport({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  // FLUX-734/740: the ticket sideview docks to the right of the chat column, growing the window's
+  // outer width by the (live, divider-set) `sideviewWidth`. The chat column keeps its own resizable
+  // `size.w`; all viewport clamping uses `outerW` so the expanded window never spills off-screen.
+  // Orchestrator windows have no task, so the sideview never applies there.
+  const showSideView = sideViewOpen && !!task && !orchestrator;
+  const outerW = size.w + (showSideView ? sideviewWidth : 0);
+
+  // FLUX-744: seed a proportional (~45%) sideview width from the live chat column when the panel
+  // opens. Keyed on the open transition only (size.w read via ref so a divider drag doesn't re-seed);
+  // the action itself no-ops once the user has set an explicit width.
+  const sizeRef = useRef(size);
+  sizeRef.current = size;
+  useEffect(() => {
+    if (!showSideView) return;
+    const chatW = sizeRef.current.w;
+    // Bound the seed so the grown window (chat + panel) still fits the viewport with an 8px gutter.
+    const vw = typeof window !== 'undefined' ? window.innerWidth : 1280;
+    seedSideviewWidth?.(chatW, vw - chatW - 16);
+  }, [showSideView, seedSideviewWidth]);
+
+  // Spawn the window "out of" the clicked card: center it on the click x. FLUX-744: clamp the rendered
+  // left/bottom UNCONDITIONALLY against the current outer width + (reactive) viewport — regardless of
+  // whether the position came from a drag (`pos`) or the anchored spawn — so opening the sideview
+  // (which grows `outerW`) or a viewport resize can no longer push the window off-screen. This is a
+  // pure derived value: no effect, and the persisted `pos` is left untouched.
+  const center = anchorX ?? viewport.w / 2;
+  const rawLeft = pos ? pos.left : center - outerW / 2;
+  const maxLeft = Math.max(8, viewport.w - outerW - 8);
+  const left = Math.max(8, Math.min(rawLeft, maxLeft));
+  const maxBottom = Math.max(8, viewport.h - size.h - 8);
+  const rawBottom = pos ? pos.bottom : 84;
+  const bottom = Math.max(8, Math.min(rawBottom, maxBottom));
 
   // Drag the title bar to move the window. Tracked as `{left, bottom}` (bottom-pinned) so it
   // composes with the bottom-pinned resize. Clamped to keep the window on screen.
@@ -927,7 +1571,7 @@ function ChatWindow({
     const baseLeft = rect?.left ?? left;
     const baseBottom = (typeof window !== 'undefined' ? window.innerHeight : 800) - (rect?.bottom ?? 0);
     const onMove = (ev: PointerEvent) => {
-      const maxLeft = (typeof window !== 'undefined' ? window.innerWidth : 1280) - size.w - 8;
+      const maxLeft = (typeof window !== 'undefined' ? window.innerWidth : 1280) - outerW - 8;
       const maxBottom = (typeof window !== 'undefined' ? window.innerHeight : 800) - size.h - 8;
       const nLeft = Math.max(8, Math.min(baseLeft + (ev.clientX - startX), maxLeft));
       const nBottom = Math.max(8, Math.min(baseBottom - (ev.clientY - startY), maxBottom));
@@ -950,7 +1594,7 @@ function ChatWindow({
     const startY = e.clientY;
     const startW = size.w;
     const startH = size.h;
-    const maxW = (typeof window !== 'undefined' ? window.innerWidth : 1280) - 16;
+    const maxW = (typeof window !== 'undefined' ? window.innerWidth : 1280) - 16 - (showSideView ? sideviewWidth : 0);
     const maxH = (typeof window !== 'undefined' ? window.innerHeight : 800) - 100;
     const onMove = (ev: PointerEvent) => {
       const w = Math.max(MIN_WINDOW_WIDTH, Math.min(startW + (ev.clientX - startX), maxW));
@@ -965,11 +1609,82 @@ function ChatWindow({
     window.addEventListener('pointerup', onUp);
   }
 
+  // FLUX-740: drag the divider between the chat column and the sideview to rebalance the two. We keep
+  // the window's outer footprint fixed: px taken from one side are handed to the other (drag left →
+  // sideview grows, chat shrinks; drag right → the reverse), clamped so neither drops below its min.
+  function startSideviewResize(e: React.PointerEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!setSideviewWidth) return;
+    const startX = e.clientX;
+    const startChatW = size.w;
+    const startSideview = sideviewWidth;
+    const onMove = (ev: PointerEvent) => {
+      const dx = ev.clientX - startX;
+      let nextSideview = Math.min(MAX_SIDEVIEW_WIDTH, Math.max(MIN_SIDEVIEW_WIDTH, startSideview - dx));
+      let nextChat = startChatW + (startSideview - nextSideview);
+      if (nextChat < MIN_WINDOW_WIDTH) {
+        nextChat = MIN_WINDOW_WIDTH;
+        nextSideview = startSideview + (startChatW - MIN_WINDOW_WIDTH);
+      }
+      setSize((s) => ({ ...s, w: nextChat }));
+      setSideviewWidth(nextSideview);
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  }
+
+  // The chat surface itself is identical for orchestrator + ticket windows; only the surrounding
+  // chrome (metadata bar, diff panel, sideview) differs, so it's built once and reused in both
+  // branches of the body below.
+  const chatViewEl = (
+    <ChatView
+      title={orchestrator ? 'Board chat' : id}
+      fill
+      // FLUX-727: dock windows open at the top of the final message, fully expanded.
+      openToLastMessage
+      messages={chat.messages}
+      liveText={chat.liveText}
+      loading={chat.loading}
+      busy={chat.busy}
+      error={chat.error}
+      working={working}
+      activity={activity}
+      emptyHint={orchestrator ? 'Talk to the board. I can see and dispatch work to tickets.' : `Chat about ${id}.`}
+      contextCard={contextCard}
+      quickReplies={quickReplies}
+      linkifyTickets
+      draft={draft}
+      onDraftChange={onDraftChange}
+      onSend={chat.send}
+      queued={chat.queued}
+      onEnqueue={chat.enqueue}
+      onDequeue={chat.dequeue}
+      onStop={chat.stop}
+      onUploadImage={chat.uploadImage}
+      questionPicker={<ChatPendingInteractions conversationId={id} />}
+      diffBranch={task?.branch}
+      tickets={allTasks}
+      meter={<SessionMeter session={session} config={config} />}
+      actions={
+        orchestrator ? (
+          <TriageAction busy={chat.busy || working} onTriage={() => void chat.send(TRIAGE_PROMPT)} />
+        ) : task ? (
+          <TicketActions task={task} variant="compact" />
+        ) : undefined
+      }
+    />
+  );
+
   return (
     <div
       ref={windowRef}
       className="eh-surface eh-border fixed z-50 flex flex-col overflow-hidden rounded-2xl border shadow-2xl"
-      style={{ bottom, left, width: size.w, height: size.h }}
+      style={{ bottom, left, width: outerW, height: size.h }}
     >
       {/* Resize grip — top-right corner; subtle bracket, grabs to grow up + right. */}
       <div
@@ -1010,6 +1725,34 @@ function ChatWindow({
               <RotateCcw className="h-3.5 w-3.5" />
             </button>
           )}
+          {/* FLUX-744: open the ticket in the legacy full-screen modal (ticket windows only). Opening it
+              collapses (minimizes) this chat so the two surfaces don't draw over each other. */}
+          {task && (
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={() => { openTaskFullView(task); onMinimize(); }}
+              title="Open in full view"
+              className="rounded-md p-1 text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5"
+            >
+              <Maximize2 className="h-3.5 w-3.5" />
+            </button>
+          )}
+          {/* FLUX-734: open/close the ticket sideview beside the chat (ticket windows only). */}
+          {task && onToggleSideView && (
+            <button
+              type="button"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={onToggleSideView}
+              title={sideViewOpen ? 'Hide ticket panel' : 'Show ticket panel'}
+              aria-pressed={sideViewOpen}
+              className={`rounded-md p-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 ${
+                sideViewOpen ? 'text-primary' : 'text-[var(--eh-text-muted)] hover:text-[var(--eh-text-primary)]'
+              }`}
+            >
+              {sideViewOpen ? <PanelRightClose className="h-3.5 w-3.5" /> : <PanelRight className="h-3.5 w-3.5" />}
+            </button>
+          )}
           <button
             type="button"
             onPointerDown={(e) => e.stopPropagation()}
@@ -1032,45 +1775,47 @@ function ChatWindow({
           )}
         </div>
       </div>
-      {task && <ChatContextStrip task={task} />}
-      {task && <ChatDiffPanel task={task} />}
-      <div className="flex min-h-0 flex-1 flex-col px-3 py-3">
-        <ChatView
-          title={orchestrator ? 'Board chat' : id}
-          fill
-          messages={chat.messages}
-          liveText={chat.liveText}
-          busy={chat.busy}
-          error={chat.error}
-          working={working}
-          activity={activity}
-          emptyHint={orchestrator ? 'Talk to the board. I can see and dispatch work to tickets.' : `Chat about ${id}.`}
-          contextCard={contextCard}
-          quickReplies={quickReplies}
-          linkifyTickets
-          draft={draft}
-          onDraftChange={onDraftChange}
-          onSend={chat.send}
-          onStop={chat.stop}
-          onUploadImage={chat.uploadImage}
-          questionPicker={
-            <>
-              {orchestrator && <ChatBoardRebasePanel conversationId={id} />}
-              <ChatQuestionPicker conversationId={id} />
-            </>
-          }
-          diffBranch={task?.branch}
-          tickets={allTasks}
-          meter={<SessionMeter session={session} config={config} />}
-          actions={
-            orchestrator ? (
-              <TriageAction busy={chat.busy || working} onTriage={() => void chat.send(TRIAGE_PROMPT)} />
-            ) : task ? (
-              <TicketActionBar task={task} />
-            ) : undefined
-          }
-        />
-      </div>
+      {/* FLUX-734/740: chat column on the left; the ticket sideview docks on the right when open. For
+          ticket windows the shared controller is lifted (TicketControllerScope) so the editable
+          metadata bar and the sideview drive one form state + one save flow. */}
+      {task ? (
+        <TicketControllerScope task={task}>
+          {(c) => (
+            <div className="flex min-h-0 flex-1 overflow-hidden">
+              <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+                <ChatMetadataBar c={c} />
+                <ChatDiffPanel task={task} />
+                <div className="flex min-h-0 flex-1 flex-col px-3 py-3">{chatViewEl}</div>
+              </div>
+              {/* FLUX-740/744: the ticket sideview + the draggable divider that rebalances it vs the
+                  chat. The wrapper is a flex item that STRETCHES to the body row's (definite) height,
+                  then becomes a `relative` positioning context. TicketSideView fills it via
+                  `absolute inset-0` (see below) instead of a flex-basis chain — that binds the scroll
+                  region's height DIRECTLY to this stretched box, so it no longer depends on `flex-1`
+                  propagating a definite height down two nested levels (the one structural difference
+                  from the chat column, which scrolls fine). Without this the column grew past the
+                  window and got clipped instead of scrolling (FLUX-744). */}
+              {showSideView && (
+                <>
+                  <SideviewDivider onResize={startSideviewResize} />
+                  <div
+                    className="relative flex-shrink-0 overflow-hidden"
+                    style={{ width: sideviewWidth }}
+                  >
+                    <TicketSideView c={c} />
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </TicketControllerScope>
+      ) : (
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+            <div className="flex min-h-0 flex-1 flex-col px-3 py-3">{chatViewEl}</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

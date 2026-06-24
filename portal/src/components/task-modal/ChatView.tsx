@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { Send, Loader2, Square, Wrench, ChevronDown, ChevronRight, Check, Clock, ArrowDown, Cpu, Gauge, Shield, Paperclip, X } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { fetchDiffFile, openWorkspaceEditor, type TranscriptMessage, type ChatAttachment } from '../../api';
+import type { QueuedMessage, ChatSendOptions } from '../../hooks/useChatSession';
 import { TaskMarkdown } from '../TaskMarkdown';
 import { CopyButton } from '../CopyButton';
 import { DiffLines } from '../DiffLines';
@@ -10,6 +11,7 @@ import { searchTasks, getTaskActivityTimestamp } from '../../taskSearch';
 import { useTranscriptFind } from './useTranscriptFind';
 import { FindBar } from './FindBar';
 import type { Task } from '../../types';
+import { formatRelative } from '../../lib/relativeTime';
 
 /** FLUX-643: a one-tap reply chip rendered above the composer. Selecting it sends
  *  `value` as the chat reply. `tone: 'danger'` paints it red (e.g. a "Skip" option). */
@@ -75,7 +77,7 @@ export interface ChatViewProps {
    *  images land in the `assets/__board__/` sidecar rather than a per-ticket one. */
   onUploadImage?: (file: File) => Promise<ChatAttachment>;
   /** Phase-aware action bar (FLUX-610) — rendered pinned above the composer. Optional so
-   *  ChatView stays transport-free; callers build & pass `<TicketActionBar />`.
+   *  ChatView stays transport-free; callers build & pass `<TicketActions variant="compact" />`.
    *  FLUX-622: suppressed while the chat is `working`/`busy` — only shown when idle/pending,
    *  so the user can't fire an action mid-turn. */
   actions?: ReactNode;
@@ -114,6 +116,24 @@ export interface ChatViewProps {
    *  as a cheap plain-text node OUTSIDE the memoized transcript (so a delta never re-parses the
    *  whole markdown list); it disappears the instant the committed message lands in `messages`. */
   liveText?: string;
+  /** FLUX-750: a genuine cold open is in flight (transcript never loaded / evicted from the cache,
+   *  nothing to show yet). Renders a spinner in place of the empty hint so a cold mount isn't a
+   *  blank pane. Suppressed the moment there are messages (a cache hit hydrates with `loading`
+   *  false, so the cached transcript renders immediately and this never shows). */
+  loading?: boolean;
+  /** FLUX-727: open the transcript at the TOP of the final message (not the bottom), rendered
+   *  fully expanded (no "Show more" on it). Set by the dock chat window; omitted by the task-modal
+   *  `ChatPane`, which keeps its bottom-anchored, clamp-all behavior. Only affects the first render
+   *  after (re)mount — once the user scrolls or a turn streams, normal stick-to-tail resumes. */
+  openToLastMessage?: boolean;
+  /** FLUX-748: messages parked while the agent was mid-turn, awaiting FIFO auto-dispatch. Rendered
+   *  as greyed "Queued · …" rows above the composer. Omit (with `onEnqueue`) to disable queueing —
+   *  the composer then falls back to the old gated behavior (send blocked while working). */
+  queued?: QueuedMessage[];
+  /** FLUX-748: queue a message instead of sending it (called by the composer when `working`/`busy`). */
+  onEnqueue?: (text: string, opts?: ChatSendOptions) => void;
+  /** FLUX-748: remove a still-queued message by id (the ✕ on a queued row). */
+  onDequeue?: (id: string) => void;
 }
 
 /**
@@ -151,9 +171,18 @@ export function ChatView({
   tickets,
   meter,
   liveText,
+  loading = false,
+  openToLastMessage = false,
+  queued,
+  onEnqueue,
+  onDequeue,
 }: ChatViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
+  // FLUX-727: one-shot guard so the "open at the top of the final message" scroll runs only on the
+  // first render with messages after (re)mount. ChatView re-mounts on each dock open (keyed in
+  // `open.map`), so this naturally resets per open.
+  const didInitialScrollRef = useRef(false);
   // FLUX-644: jump-to-bottom pill state — shown while the user has scrolled up; `newCount`
   // tallies messages that arrived since they detached from the bottom.
   const [showJump, setShowJump] = useState(false);
@@ -228,6 +257,25 @@ export function ChatView({
   // FLUX-695: an arrival while the surface is unattended (tab hidden/blurred OR scrolled away)
   // drops the unread divider at the boundary; an attended arrival just advances `lastSeen`.
   useEffect(() => {
+    // FLUX-727: on first open (dock window), land at the TOP of the final message — rendered
+    // unclamped (see the rows memo) — instead of snapping to the very bottom. One-shot per mount;
+    // this passive effect runs after all layout effects (Clampable measuring) have settled, so the
+    // final message is already at its true height when we measure. Skipped while a turn is streaming
+    // (`working`) so a live chat keeps stick-to-tail. Setting `atBottomRef=false` also stops
+    // `handleScroll` from snapping back / auto-marking-seen, leaving the unread divider intact.
+    if (openToLastMessage && !didInitialScrollRef.current && messages.length > 0) {
+      didInitialScrollRef.current = true;
+      if (!working) {
+        const el = scrollRef.current;
+        const last = el?.querySelector('[data-last-msg]') as HTMLElement | null;
+        if (el && last) {
+          el.scrollTop += last.getBoundingClientRect().top - el.getBoundingClientRect().top - 8;
+          atBottomRef.current = false;
+          prevLenRef.current = messages.length;
+          return;
+        }
+      }
+    }
     const grew = messages.length - prevLenRef.current;
     if (grew < 0) {
       // Transcript shrank/reset — rebaseline so a stale boundary can't point past the end.
@@ -249,7 +297,9 @@ export function ChatView({
       setShowJump(true);
     }
     prevLenRef.current = messages.length;
-  }, [messages]);
+    // `openToLastMessage`/`working` feed the one-shot initial scroll above; `didInitialScrollRef`
+    // guards re-runs so adding them can't double-fire the land-on-final-message behavior.
+  }, [messages, openToLastMessage, working]);
 
   // FLUX-691: keep the streaming live node pinned to the tail while the user is already there, so
   // token-by-token output stays in view. Deltas don't change `messages`, so the effect above never
@@ -304,6 +354,18 @@ export function ChatView({
   const rows = useMemo(() => {
     const isPlainTool = (m: TranscriptMessage) => m.role === 'tool' && !(m.path && diffBranch);
 
+    // FLUX-727: index of the final assistant turn (highest non-tool index, unless that turn is a
+    // trailing `user` message — i.e. mid-send — in which case there's no settled final reply).
+    // When `openToLastMessage` it renders unclamped and is tagged `data-last-msg` so the initial
+    // scroll can land on its top.
+    let lastAssistantIdx = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role !== 'tool') {
+        if (messages[i].role !== 'user') lastAssistantIdx = i;
+        break;
+      }
+    }
+
     const renderMessage = (m: TranscriptMessage, i: number, live: boolean) => {
       if (m.role === 'tool') {
         // FLUX-661: an edit-ish tool row carrying a file path becomes an expandable inline
@@ -343,9 +405,17 @@ export function ChatView({
       // FLUX-693: a very long turn is clamped with a "Show more/less" toggle so one giant
       // message can't blow out the scroll. The live trailing row (`live`) is never clamped —
       // the user must see streaming output as it lands (coordinates with FLUX-691).
+      // FLUX-727: the final assistant message is rendered fully (clamp off) when `openToLastMessage`,
+      // and tagged so the initial-scroll effect can position its top at the viewport top. Earlier
+      // long messages keep the clamp; the live trailing row stays unclamped as before.
+      const isLastAssistant = i === lastAssistantIdx;
       return (
-        <div key={i} className="group max-w-full text-[13px] leading-relaxed text-[var(--eh-text-primary)]">
-          <Clampable clamp={!live}>
+        <div
+          key={i}
+          data-last-msg={isLastAssistant ? '' : undefined}
+          className="group max-w-full text-[13px] leading-relaxed text-[var(--eh-text-primary)]"
+        >
+          <Clampable clamp={!live && !(openToLastMessage && isLastAssistant)}>
             <TaskMarkdown body={m.text} compact linkifyTickets={linkifyTickets} />
           </Clampable>
           {/* FLUX-684/683: quiet hover-revealed footer — timestamp + a copy-message affordance. */}
@@ -392,7 +462,7 @@ export function ChatView({
       out.push(renderMessage(messages[i], i, i === messages.length - 1 && !!working));
     }
     return out;
-  }, [messages, linkifyTickets, diffBranch, working, dividerIndex]);
+  }, [messages, linkifyTickets, diffBranch, working, dividerIndex, openToLastMessage]);
 
   // The floating window owns its own title bar, so suppress the in-surface title there. The
   // "working" signal now lives in the WorkingStrip above the composer (FLUX-639), so the
@@ -439,12 +509,21 @@ export function ChatView({
           className={`flex flex-col gap-3 overflow-y-auto pr-1 outline-none ${fill ? 'min-h-0 flex-1' : scrollMaxClass}`}
         >
           {messages.length === 0 && (
-            <>
-              {/* FLUX-642: caller-built context (last comment / board snapshot). May render
-                  null (e.g. a brand-new ticket), in which case only the hint shows. */}
-              {contextCard}
-              <p className="py-4 text-center text-[12px] text-[var(--eh-text-muted)]">{emptyHint || 'Send a message to start.'}</p>
-            </>
+            loading ? (
+              // FLUX-750: genuine cold open — transcript is being fetched with nothing cached to
+              // show. A quiet spinner instead of a blank pane (a cache hit skips this entirely).
+              <div className="flex items-center justify-center gap-2 py-8 text-[12px] text-[var(--eh-text-muted)]">
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                <span>Loading conversation…</span>
+              </div>
+            ) : (
+              <>
+                {/* FLUX-642: caller-built context (last comment / board snapshot). May render
+                    null (e.g. a brand-new ticket), in which case only the hint shows. */}
+                {contextCard}
+                <p className="py-4 text-center text-[12px] text-[var(--eh-text-muted)]">{emptyHint || 'Send a message to start.'}</p>
+              </>
+            )
           )}
           {rows}
           {/* FLUX-691: the live streaming node — the current turn's assistant text rendered
@@ -513,9 +592,41 @@ export function ChatView({
           Hidden mid-turn (FLUX-622) so the user can't act while the chat is working/busy. */}
       {showActions && <div className="px-0.5">{actions}</div>}
 
+      {/* FLUX-748: queued-message rows — messages the user submitted mid-turn, parked to
+          auto-dispatch FIFO when the turn finishes. Greyed/dashed to read as "pending", each
+          with a ✕ to cancel it before it sends. Sits right above the composer. */}
+      {queued && queued.length > 0 && (
+        <div className="flex flex-col gap-1 px-0.5">
+          {queued.map((q) => (
+            <div
+              key={q.id}
+              className="group flex items-center gap-2 rounded-lg border border-dashed border-[var(--eh-border)] bg-[var(--eh-input-bg)] px-2.5 py-1.5 text-[12px]"
+            >
+              <Clock className="h-3.5 w-3.5 flex-shrink-0 text-[var(--eh-text-muted)]" />
+              <span className="flex-shrink-0 text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">
+                Queued
+              </span>
+              <span className="truncate text-[var(--eh-text-secondary)]">
+                {q.text || (q.opts.attachments?.length ? `${q.opts.attachments.length} image(s)` : '')}
+              </span>
+              {onDequeue && (
+                <button
+                  type="button"
+                  onClick={() => onDequeue(q.id)}
+                  title="Remove from queue"
+                  className="ml-auto flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-md text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Composer lives in its own component so its per-keystroke input state never
           re-renders the transcript above it. */}
-      <Composer busy={busy} onSend={onSend} onUploadImage={onUploadImage} draft={draft} onDraftChange={onDraftChange} tickets={tickets} />
+      <Composer busy={busy} working={!!working} onSend={onSend} onEnqueue={onEnqueue} onUploadImage={onUploadImage} draft={draft} onDraftChange={onDraftChange} tickets={tickets} />
     </div>
   );
 }
@@ -801,24 +912,6 @@ function InlineEditDiff({
 }
 
 /**
- * FLUX-684: a quiet relative time for a chat turn — "now", "3m", "2h", then a short absolute
- * date ("Jun 21") once past a day. Pure: re-derives on each render, no live ticker (the elapsed
- * timer already drives re-renders during a turn; staleness between turns is acceptable at XS
- * scope). Returns '' for a missing/unparseable `ts` so the caller can render nothing.
- */
-function formatRelative(ts: string): string {
-  const then = new Date(ts).getTime();
-  if (Number.isNaN(then)) return '';
-  const s = Math.max(0, Math.floor((Date.now() - then) / 1000));
-  if (s < 45) return 'now';
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h`;
-  return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-}
-
-/**
  * FLUX-684: the muted, hover-revealed timestamp on a chat turn. Renders nothing when `ts` is
  * absent/unparseable (optimistic/pending turns). The label is `opacity-0 group-hover:opacity-100`
  * so it stays out of the way until you hover the row; its width is always reserved, so revealing
@@ -1013,14 +1106,23 @@ function detectTicketTrigger(before: string, prefixes: string[]): TicketTrigger 
  */
 function Composer({
   busy,
+  working,
   onSend,
+  onEnqueue,
   onUploadImage,
   draft,
   onDraftChange,
   tickets,
 }: {
   busy: boolean;
+  /** FLUX-714: the agent's turn is genuinely in flight (live `running` session). FLUX-748: this no
+   *  longer blocks submit — instead a mid-turn submit is QUEUED (via `onEnqueue`) and auto-sent when
+   *  the turn finishes. `busy` alone resets when the POST returns (~1s), long before the turn ends. */
+  working?: boolean;
   onSend: ChatViewProps['onSend'];
+  /** FLUX-748: queue a message instead of sending when `working`/`busy`. When absent the composer
+   *  keeps the old gated behavior (submit blocked mid-turn). */
+  onEnqueue?: (text: string, opts?: ChatSendOptions) => void;
   onUploadImage?: (file: File) => Promise<ChatAttachment>;
   draft?: string;
   onDraftChange?: (text: string) => void;
@@ -1145,11 +1247,19 @@ function Composer({
 
   function submit() {
     const text = input.trim();
-    if ((!text && attachments.length === 0) || busy || isUploading) return;
+    if ((!text && attachments.length === 0) || isUploading) return;
+    const opts: ChatSendOptions = { model, effort, permissionMode: permission, attachments };
+    // FLUX-748: mid-turn (working) or mid-POST (busy) → queue instead of erroring; it auto-dispatches
+    // when the turn finishes. When no queue is wired, keep the old gate (block while working/busy).
+    if (working || busy) {
+      if (!onEnqueue) return;
+      onEnqueue(text, opts);
+    } else {
+      void onSend(text, opts);
+    }
     setValue('');
     setAttachments([]);
     setAttachError(null);
-    void onSend(text, { model, effort, permissionMode: permission, attachments });
   }
 
   return (
@@ -1303,11 +1413,20 @@ function Composer({
         <button
           type="button"
           onClick={submit}
-          disabled={busy || isUploading || (!input.trim() && attachments.length === 0)}
-          title="Send"
+          // FLUX-748: stay clickable while working/busy so a follow-up can be QUEUED — only the
+          // legacy no-queue path (`!onEnqueue`) keeps the old hard gate. Empty input / uploads
+          // still disable it in either mode.
+          disabled={isUploading || (!input.trim() && attachments.length === 0) || ((busy || working) && !onEnqueue)}
+          title={
+            (working || busy) && onEnqueue
+              ? 'Queue message — sends when the current turn finishes'
+              : working
+                ? 'Wait for the current turn to finish'
+                : 'Send'
+          }
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-white transition-colors hover:bg-primary-hover disabled:opacity-40"
         >
-          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+          {(busy || working) && !onEnqueue ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
         </button>
       </div>
     </div>

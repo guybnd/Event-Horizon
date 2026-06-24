@@ -333,3 +333,27 @@ export async function diffFilesForBranch(
   const files = await changedFilesForRange(runner, workspaceRoot, range).catch(() => []);
   return { branch, worktree: null, base: range, files };
 }
+
+/**
+ * Files the DEFAULT branch changed UNDERNEATH a ticket branch (FLUX-655) — the master-side
+ * delta of the three-dot range `<branch>...<defaultBranch>`, i.e. everything master committed
+ * since the branch diverged (the merge-base). This is what "moved underneath you" while a
+ * resumed chat sat behind. Committed range only (a range has no untracked files); the read runs
+ * in the engine root since both refs live in the shared object store. Pure git read — never
+ * throws (an unknown branch or a bad git call yields no files).
+ */
+export async function changedFilesMasterSideOfBranch(
+  workspaceRoot: string,
+  branch: string,
+  opts: DiffOverviewOptions = {},
+): Promise<ChangedFile[]> {
+  const runner = opts.gitRunner ?? defaultGitRunner;
+  const defaultBranch = opts.baseBranch ?? (await resolveBaseBranch(runner, workspaceRoot));
+  try {
+    await runner(workspaceRoot, ['rev-parse', '--verify', '--quiet', branch]);
+  } catch {
+    return [];
+  }
+  // `A...B` diffs merge-base(A,B)..B, so `<branch>...<default>` is the default-branch-side delta.
+  return changedFilesForRange(runner, workspaceRoot, `${branch}...${defaultBranch}`).catch(() => []);
+}

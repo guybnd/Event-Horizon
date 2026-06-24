@@ -9,6 +9,7 @@ import { DocsScreen } from './components/DocsScreen';
 import { TaskModal } from './components/TaskModal';
 import { ChatDock } from './components/ChatDock';
 import { DockProvider } from './components/DockProvider';
+import { PendingInteractionsProvider } from './components/pendingInteractions';
 import { Settings } from './components/Settings';
 import { ReleasesScreen } from './components/ReleasesScreen';
 import { EpicsScreen } from './components/EpicsScreen';
@@ -63,7 +64,9 @@ function App() {
   return (
     <AppProvider>
       <DockProvider>
-        <AppContent />
+        <PendingInteractionsProvider>
+          <AppContent />
+        </PendingInteractionsProvider>
       </DockProvider>
     </AppProvider>
   );

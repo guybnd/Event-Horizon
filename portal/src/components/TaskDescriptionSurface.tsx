@@ -88,6 +88,7 @@ export function TaskDescriptionSurface({
   mode = 'popup',
   emptyMessage = 'No description yet.',
   compact = false,
+  hidePreviewHeader = false,
   placeholder = 'Click to edit description...',
   onSave,
   onCancel,
@@ -101,6 +102,10 @@ export function TaskDescriptionSurface({
   mode?: TaskDescriptionSurfaceMode;
   emptyMessage?: string;
   compact?: boolean;
+  /** FLUX-744: hide the non-editing "Rendered Markdown / Click description to edit" header bar. The
+   *  ticket sideview sets this — the bar is dead space there, and its save/dirty state is surfaced by
+   *  the shared metadata bar instead. Defaults to shown so the legacy modal views are unaffected. */
+  hidePreviewHeader?: boolean;
   placeholder?: string;
   onSave?: () => Promise<void> | void;
   onCancel?: () => void;
@@ -572,7 +577,7 @@ export function TaskDescriptionSurface({
           </div>
 
         </>
-      ) : (
+      ) : hidePreviewHeader ? null : (
         <div className="flex items-center justify-between gap-3 border-b border-gray-200 px-4 py-3 text-xs dark:border-white/10">
           <span className="font-bold uppercase tracking-wider text-gray-400">Rendered Markdown</span>
           <span className={`rounded-full px-3 py-1 font-semibold ${hasPendingLocalDraft ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/10 dark:text-amber-200' : 'bg-gray-100 text-gray-500 dark:bg-white/10 dark:text-gray-300'}`}>

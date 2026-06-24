@@ -49,7 +49,7 @@ export function Settings() {
   const [enableBacklog, setEnableBacklog] = useState(true);
   const [requireComment, setRequireComment] = useState(true);
   const [worktreeByDefault, setWorktreeByDefault] = useState(false);
-  const [boardCardOpenMode, setBoardCardOpenMode] = useState<BoardCardOpenMode>('full');
+  const [boardCardOpenMode, setBoardCardOpenMode] = useState<BoardCardOpenMode>('chat');
   const [animationsEnabled, setAnimationsEnabled] = useState(true);
   const [enableFireworks, setEnableFireworks] = useState(true);
   const [animationSpeed, setAnimationSpeed] = useState<'fast' | 'normal' | 'slow'>('normal');
@@ -94,7 +94,7 @@ export function Settings() {
       setEnableBacklog(config.enableBacklogScreen);
       setRequireComment(config.requireCommentOnStatusChange);
       setWorktreeByDefault(config.worktreeByDefault ?? false);
-      setBoardCardOpenMode(config.boardCardOpenMode || 'full');
+      setBoardCardOpenMode(config.boardCardOpenMode || 'chat');
       setAnimationsEnabled(config.animationsEnabled ?? true);
       setEnableFireworks(config.enableFireworks ?? true);
       setAnimationSpeed(config.animationSpeed || 'normal');
@@ -303,7 +303,7 @@ export function Settings() {
     setEnableBacklog(config.enableBacklogScreen);
     setRequireComment(config.requireCommentOnStatusChange);
     setWorktreeByDefault(config.worktreeByDefault ?? false);
-    setBoardCardOpenMode(config.boardCardOpenMode || 'full');
+    setBoardCardOpenMode(config.boardCardOpenMode || 'chat');
     setAnimationsEnabled(config.animationsEnabled ?? true);
     setEnableFireworks(config.enableFireworks ?? true);
     setAnimationSpeed(config.animationSpeed || 'normal');
@@ -391,7 +391,7 @@ export function Settings() {
     projects: config.projects,
     enableBacklogScreen: config.enableBacklogScreen,
     requireCommentOnStatusChange: config.requireCommentOnStatusChange,
-    boardCardOpenMode: config.boardCardOpenMode || 'full',
+    boardCardOpenMode: config.boardCardOpenMode || 'chat',
     worktreeByDefault: config.worktreeByDefault ?? false,
     animationsEnabled: config.animationsEnabled ?? true,
     enableFireworks: config.enableFireworks ?? true,

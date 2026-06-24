@@ -8,6 +8,7 @@ import {
   getFluxStoreDir,
   getActiveFluxDir,
   isOrphanMode,
+  requireWorkspaceRoot,
 } from './workspace.js';
 import { resolveTaskExecutionRoot } from './task-worktree.js';
 
@@ -69,5 +70,21 @@ describe('flux dir resolution is pinned to the engine workspace root (FLUX-520)'
     const execRoot = await resolveTaskExecutionRoot({ id: 'FLUX-1' }, engineRoot);
     expect(execRoot).toBe(engineRoot);
     expect(getActiveFluxDir().startsWith(engineRoot)).toBe(true);
+  });
+});
+
+/**
+ * FLUX-705 unbound-workspace contract. When no workspace is bound (workspaceRoot null),
+ * the path getters must throw a CLEAR error instead of `path.join(null, …)`'s cryptic
+ * "Received null", and isOrphanMode() must return false (a boolean probe must never throw).
+ */
+describe('unbound workspace contract (FLUX-705)', () => {
+  afterEach(() => setWorkspaceRoot(process.cwd())); // don't leak the null binding to later tests
+  it('requireWorkspaceRoot throws, isOrphanMode returns false, and path getters throw when unbound', () => {
+    setWorkspaceRoot(null as unknown as string);
+    expect(isOrphanMode()).toBe(false); // boolean probe — must NOT throw when unbound
+    expect(() => requireWorkspaceRoot()).toThrow(/no active.*workspace/i);
+    expect(() => getFluxDir()).toThrow(); // getters surface the clear error, not "Received null"
+    expect(() => getActiveFluxDir()).toThrow();
   });
 });

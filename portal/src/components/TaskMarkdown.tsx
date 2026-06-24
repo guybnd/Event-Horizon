@@ -1,16 +1,15 @@
 import { Children, Fragment, cloneElement, isValidElement, memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { ExternalLink, ImageIcon, Loader2, Play, X } from 'lucide-react';
+import { ImageIcon, MessageSquare, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { resolveTaskMarkdownHref } from '../taskMarkdownUtils';
-import { useTaskById, useConfig, useAppActions, useAppSelector } from '../store/useAppSelector';
+import { useTaskById, useConfig } from '../store/useAppSelector';
+import { useDockActions } from './DockProvider';
 import { getStatusTint, getStatusColorClass } from '../statusStyles';
-import { resolveEffectiveAgent } from '../utils';
-import { statusToPhase, phaseLaunchStatus, launchPhaseDefault, runAgentAction } from '../agentActions';
 import { StatusBadge } from './StatusBadge';
-import { TicketActionBar } from './TicketActionBar';
+import { TicketActions } from './ticket-actions/TicketActions';
 import { CopyButton } from './CopyButton';
 
 type TaskMarkdownImageMode = 'inline' | 'comment';
@@ -110,17 +109,19 @@ function MarkdownImage({
 
 /**
  * FLUX-641 / FLUX-653: inline ticket chip. Linkified `FLUX-\d+` references in assistant
- * output become a chip showing the ticket's live board-status dot, a clickable id, and a
- * ▸ launch button that dispatches the phase-default agent for the ticket's current status
- * (reusing the same `launchPhaseDefault` path as `TicketActionBar`, so the orchestrator
- * never has to spend a tool call to launch).
+ * output become a chip showing the ticket's live board-status dot and a clickable id.
+ *
+ * FLUX-715: the chip no longer carries a ▸ play button — silent fire-and-forget launching is
+ * gone. To act on the ticket you click the id to open the *mini-card*, which now embeds the
+ * full unified `<TicketActions variant="compact" />` (click = default launch, ▾ for templates,
+ * status-applicable transitions/PR actions) — the same registry the board card uses.
  *
  * FLUX-653 enriches it so you can read and act on the referenced ticket in place:
  *  - **Hover** the id → a lightweight, non-interactive tooltip (title + status) after a
  *    ~150ms intent delay, so scanning a line of chips doesn't flicker.
  *  - **Click** the id → a *pinned* popover (dismissed on outside-click / Esc) carrying the
- *    title/status/priority/effort, an embedded `<TicketActionBar />` (the whole point: zero
- *    new action logic), and an "Open full ticket" affordance for the modal.
+ *    title/status/priority/effort, the embedded `<TicketActions />`, and an "Open Ticket Chat"
+ *    affordance that opens the ticket's chat-aligned view (FLUX-744).
  * Both surfaces portal to `document.body` so the narrow chat scroll container can't clip them.
  *
  * Renders as plain text when the id doesn't resolve to a real ticket (guards against
@@ -131,9 +132,9 @@ const HOVER_INTENT_MS = 150;
 function TicketChip({ id }: { id: string }) {
   const task = useTaskById(id);
   const config = useConfig();
-  const { openTaskModal, triggerRefresh } = useAppActions();
-  const currentUser = useAppSelector((s) => s.currentUser);
-  const [launching, setLaunching] = useState(false);
+  // FLUX-744: inline ticket references open the chat-aligned view (with the ticket panel), matching
+  // the new default everywhere else — not the center modal.
+  const { openTicket } = useDockActions();
 
   const anchorRef = useRef<HTMLSpanElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -172,6 +173,9 @@ function TicketChip({ id }: { id: string }) {
     const onDown = (e: MouseEvent) => {
       const target = e.target as Node;
       if (popoverRef.current?.contains(target) || anchorRef.current?.contains(target)) return;
+      // FLUX-715: don't dismiss while the embedded TicketActions has opened a modal dialog
+      // (the orchestration launcher / start prompt may portal outside the popover's DOM).
+      if (target instanceof Element && target.closest('[role="dialog"]')) return;
       setPinned(false);
     };
     const onKey = (e: KeyboardEvent) => {
@@ -209,38 +213,6 @@ function TicketChip({ id }: { id: string }) {
     setHovering(false);
   };
 
-  const launch = async (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (launching) return;
-    setLaunching(true);
-    try {
-      const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
-      const phase = statusToPhase(task.status);
-      const launched = await launchPhaseDefault({
-        taskId: id,
-        framework,
-        phase,
-        currentUser,
-        phaseDefaults: config?.phaseDefaults,
-      });
-      if (!launched) {
-        const action =
-          phase === 'grooming'
-            ? ({ kind: 'command', verb: 'groom' } as const)
-            : phase === 'review'
-              ? ({ kind: 'prompt', appendPrompt: `review ${id}` } as const)
-              : ({ kind: 'command', verb: 'implement' } as const);
-        await runAgentAction({ taskId: id, framework, action, currentUser, preStatus: phaseLaunchStatus(phase), phase });
-      }
-      triggerRefresh();
-    } catch {
-      /* surfaced via board state; chip stays put */
-    } finally {
-      setLaunching(false);
-    }
-  };
-
   return (
     <span
       ref={anchorRef}
@@ -272,15 +244,6 @@ function TicketChip({ id }: { id: string }) {
       >
         {id}
       </button>
-      <button
-        type="button"
-        onClick={launch}
-        disabled={launching}
-        title={`Launch the agent for ${id} (${task.status})`}
-        className="flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center rounded text-[var(--eh-text-muted)] transition-colors hover:bg-primary/10 hover:text-primary disabled:opacity-50"
-      >
-        {launching ? <Loader2 className="h-2.5 w-2.5 animate-spin" /> : <Play className="h-2.5 w-2.5 fill-current" />}
-      </button>
 
       {pos && pinned &&
         createPortal(
@@ -306,17 +269,17 @@ function TicketChip({ id }: { id: string }) {
               </div>
             )}
             <div className="mt-2.5 border-t border-[var(--eh-border)] pt-2.5">
-              <TicketActionBar task={task} />
+              <TicketActions task={task} variant="compact" />
             </div>
             <button
               type="button"
               onClick={() => {
                 setPinned(false);
-                openTaskModal(task);
+                openTicket(task.id);
               }}
               className="mt-2.5 inline-flex items-center gap-1 text-[11px] font-semibold text-primary hover:underline"
             >
-              <ExternalLink className="h-3 w-3" /> Open full ticket
+              <MessageSquare className="h-3 w-3" /> Open Ticket Chat
             </button>
           </div>,
           document.body,

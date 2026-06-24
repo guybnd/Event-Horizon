@@ -8,13 +8,13 @@ Event Horizon includes an MCP (Model Context Protocol) server that exposes ticke
 
 ## Quick Start
 
-The MCP server is configured automatically by the workflow installer. To verify it works manually:
+The MCP server is configured automatically by the workflow installer (real installs connect to the running engine over the in-process HTTP `/mcp` mount — see [MCP Tools](reference/mcp-tools.md)). To smoke-test the headless **stdio** fallback manually:
 
 ```bash
-npx tsx engine/src/mcp-server.ts --workspace .
+npx tsx engine/src/index.ts --mcp --workspace .
 ```
 
-The server uses stdio transport — it reads JSON-RPC from stdin and writes responses to stdout.
+That headless entry reads JSON-RPC from stdin and writes responses to stdout. (Running `engine/src/mcp-server.ts` directly does nothing — it has no entry point of its own; the server is started by `index.ts`.)
 
 ## Architecture
 
@@ -86,7 +86,7 @@ The workflow installer (`engine/src/workflow-installer.ts`) generates MCP config
   "mcpServers": {
     "event-horizon": {
       "command": "npx",
-      "args": ["tsx", "engine/src/mcp-server.ts", "--workspace", "."]
+      "args": ["tsx", "engine/src/index.ts", "--mcp", "--workspace", "."]
     }
   }
 }
@@ -107,13 +107,7 @@ The workflow installer (`engine/src/workflow-installer.ts`) generates MCP config
 
 ## Build
 
-The MCP server is bundled as a separate entry point by esbuild:
-
-```
-engine/src/mcp-server.ts → engine/dist/mcp-server.js
-```
-
-This is built alongside `index.js` and `init.js` by `npm run build` in the engine directory.
+The MCP server ships **inside** `engine/dist/index.js`. `index.ts` statically imports it (FLUX-705), so `npm run build`'s esbuild pass inlines `mcp-server.ts` into the engine bundle — there is no separate `dist/mcp-server.js` artifact (FLUX-710). Both the HTTP `/mcp` mount and the `--mcp` stdio entry run from `index.js`.
 
 ## Relationship to REST API
 
@@ -129,7 +123,7 @@ The MCP tools and REST API coexist:
 
 - Verify the MCP config file exists in the correct location for your CLI
 - Check that `npx tsx` is available (requires Node.js and tsx installed)
-- Try running manually: `npx tsx engine/src/mcp-server.ts --workspace .` — should output nothing on stdout until it receives input
+- Try running the headless entry manually: `npx tsx engine/src/index.ts --mcp --workspace .` — should output nothing on stdout until it receives input
 
 **"Workspace is activating, please retry":**
 

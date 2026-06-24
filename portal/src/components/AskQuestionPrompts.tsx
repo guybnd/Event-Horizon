@@ -1,77 +1,15 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useState } from 'react';
 import { HelpCircle, Send, Plus } from 'lucide-react';
-import { useAppActions } from '../store/useAppSelector';
-import { fetchPendingQuestions, answerQuestion, type PendingQuestion, type AskQuestion } from '../api';
+import { usePendingInteractions } from './pendingInteractions';
+import { answerQuestion, type PendingQuestion, type AskQuestion } from '../api';
 
 /**
- * FLUX-662: surfaces an agent's `ask_user_question` call as an interactive picker and returns
- * the user's selection into the same agent turn (mirrors FLUX-605 / ApprovalPrompts). Two
- * surfaces share one picker:
- *  - <ChatQuestionPicker conversationId> renders inline in the originating chat pane (the
- *    preferred, routed surface). On mount it "claims" its conversationId so the global
- *    overlay won't also show its questions.
- *  - <QuestionPrompts/> is a global fallback overlay for questions that are unrouted
- *    (no conversationId) or whose conversation has no open chat to render them inline.
+ * FLUX-662 / FLUX-720: surfaces an agent's `ask_user_question` call as an interactive picker
+ * and returns the user's selection into the same agent turn. The pending queue is owned by
+ * `PendingInteractionsProvider` (one shared SSE subscription); this file renders the
+ * inline-in-chat picker + the card. Unrouted/closed-chat questions fall through to the unified
+ * global fallback (`PendingInteractionFallback`).
  */
-
-// ─── Shared pending-question store (one SSE subscription, many readers) ──────────
-// Tracks which conversationIds currently have an inline picker mounted, so the global
-// overlay can avoid double-rendering a question an inline picker is already handling.
-const claimed = new Map<string, number>(); // conversationId → mounted picker count
-const claimListeners = new Set<() => void>();
-let claimVersion = 0; // bumped on every claim change so external-store readers always re-read
-function emitClaims() { claimVersion++; claimListeners.forEach((l) => l()); }
-function claimConversation(id: string) {
-  claimed.set(id, (claimed.get(id) ?? 0) + 1);
-  emitClaims();
-}
-function releaseConversation(id: string) {
-  const n = (claimed.get(id) ?? 0) - 1;
-  if (n <= 0) claimed.delete(id); else claimed.set(id, n);
-  emitClaims();
-}
-function subscribeClaims(cb: () => void) {
-  claimListeners.add(cb);
-  return () => { claimListeners.delete(cb); };
-}
-function isClaimed(id: string | null): boolean {
-  return id != null && (claimed.get(id) ?? 0) > 0;
-}
-
-/** Maintains the live pending-question list from SSE (+ one catch-up fetch on mount). */
-function usePendingQuestions(): [PendingQuestion[], (id: string) => void] {
-  const { subscribeToEvent } = useAppActions();
-  const [pending, setPending] = useState<PendingQuestion[]>([]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const p = await fetchPendingQuestions();
-        if (!cancelled) setPending(p);
-      } catch {
-        /* ignore — SSE will deliver new ones */
-      }
-    })();
-    const onRequest = (d: unknown) => {
-      const req = d as PendingQuestion | null;
-      if (!req || !req.id) return;
-      setPending((prev) => (prev.some((p) => p.id === req.id) ? prev : [...prev, req]));
-    };
-    const onResolved = (d: unknown) => {
-      const id = (d as { id?: string } | null)?.id;
-      if (id) setPending((prev) => prev.filter((p) => p.id !== id));
-    };
-    const unsubs = [
-      subscribeToEvent('ask-question', onRequest),
-      subscribeToEvent('ask-question-resolved', onResolved),
-    ];
-    return () => { cancelled = true; unsubs.forEach((u) => u()); };
-  }, [subscribeToEvent]);
-
-  const remove = (id: string) => setPending((prev) => prev.filter((p) => p.id !== id));
-  return [pending, remove];
-}
 
 /**
  * Inline picker for one chat pane — rendered inside ChatView (between transcript and
@@ -79,50 +17,14 @@ function usePendingQuestions(): [PendingQuestion[], (id: string) => void] {
  * to the chat that asked.
  */
 export function ChatQuestionPicker({ conversationId }: { conversationId: string }) {
-  const [pending, remove] = usePendingQuestions();
-
-  // Claim this conversation while mounted so the global overlay defers to us.
-  useEffect(() => {
-    claimConversation(conversationId);
-    return () => releaseConversation(conversationId);
-  }, [conversationId]);
-
-  const mine = pending.filter((p) => p.conversationId === conversationId);
+  const { questions, removeQuestion } = usePendingInteractions();
+  const mine = questions.filter((p) => p.conversationId === conversationId);
   if (mine.length === 0) return null;
 
   return (
     <div className="flex flex-col gap-2">
       {mine.map((p) => (
-        <QuestionCard key={p.id} pending={p} onResolved={() => remove(p.id)} />
-      ))}
-    </div>
-  );
-}
-
-/**
- * Global fallback overlay — bottom-right floating stack. Shows questions that are unrouted
- * (no conversationId) or whose conversation has no inline picker mounted, so a question is
- * never lost when its chat window is closed.
- */
-export function QuestionPrompts() {
-  const [pending, remove] = usePendingQuestions();
-  // Re-render when inline pickers claim/release conversations.
-  useSyncExternalStore(subscribeClaims, () => claimVersion, () => 0);
-
-  const orphans = pending.filter((p) => !isClaimed(p.conversationId));
-  if (orphans.length === 0) return null;
-
-  return (
-    <div className="fixed bottom-24 right-4 z-[60] flex max-h-[80vh] w-[380px] flex-col gap-2 overflow-y-auto">
-      {orphans.map((p) => (
-        <div key={p.id} className="eh-border eh-surface rounded-xl border p-3 shadow-2xl">
-          {p.conversationId && (
-            <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">
-              {p.conversationId === '__board__' ? 'Board chat' : p.conversationId}
-            </div>
-          )}
-          <QuestionCard pending={p} onResolved={() => remove(p.id)} bare />
-        </div>
+        <QuestionCard key={p.id} pending={p} onResolved={() => removeQuestion(p.id)} />
       ))}
     </div>
   );
@@ -132,9 +34,9 @@ export function QuestionPrompts() {
  * The picker itself — renders each question's options as single- or multi-select chips with
  * an "Other" free-text affordance (parity with the native AskUserQuestion), plus an optional
  * note. Submitting POSTs the selection to the engine, which settles the parked agent call.
- * `bare` drops the card chrome (used by the overlay, which supplies its own).
+ * `bare` drops the card chrome (used by callers that supply their own).
  */
-function QuestionCard({
+export function QuestionCard({
   pending,
   onResolved,
   bare = false,

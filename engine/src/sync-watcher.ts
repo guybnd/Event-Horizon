@@ -126,7 +126,6 @@ export async function resolveConflicts(
   }
 
   const storeDir = getFluxStoreDir();
-  const workspaceRoot = path.dirname(storeDir);
 
   for (const resolution of resolutions) {
     const conflict = pendingConflicts.find(c => c.ticketId === resolution.ticketId)!;
@@ -210,8 +209,6 @@ async function hasUnmergedState(storeDir: string): Promise<boolean> {
 }
 
 export async function runSync(storeDir: string, onFail?: () => void): Promise<void> {
-  const workspaceRoot = path.dirname(storeDir);
-
   // A conflict is already awaiting user resolution (in-memory fast path). Touching
   // the repo now would let Step 1's `git add -A`/commit bake the conflict markers
   // sitting in the worktree into a commit and corrupt the ticket YAML (FLUX-703).
@@ -241,6 +238,26 @@ export async function runSync(storeDir: string, onFail?: () => void): Promise<vo
       // abort it to recover a clean local tree, then sync normally.
       console.warn('[sync-watcher] In-progress merge with no resolvable ticket conflicts — aborting merge to recover a clean tree.');
       await execFileAsync('git', ['-C', storeDir, 'merge', '--abort']).catch(() => {});
+
+      // FLUX-706: if unmerged paths PERSIST after the abort (e.g. unmerged index entries with
+      // no MERGE_HEAD — only reachable via manual external git surgery inside .flux-store), do
+      // NOT fall through to Step 1's `git add -A`, which would stage conflict-marked content.
+      // Hard-stop and surface an error instead of risking baking markers into a ticket. Fail
+      // CLOSED: if the probe itself can't be read, treat the tree as still-unmerged. (The error
+      // re-surfaces on each retry tick until a human cleans the worktree — that recurrence is
+      // intentional, not a spin: each tick terminates and the retry timer is debounced.)
+      let unmergedOut = '';
+      try {
+        ({ stdout: unmergedOut } = await execFileAsync('git', ['-C', storeDir, 'diff', '--name-only', '--diff-filter=U']));
+      } catch {
+        unmergedOut = 'probe-failed';
+      }
+      if (unmergedOut.trim()) {
+        console.error('[sync-watcher] Unmerged paths persist after `merge --abort` — refusing to `git add -A`. Resolve the .flux-store worktree manually.');
+        updateStatus({ state: 'error', error: 'Unmerged paths persist in .flux-store after merge --abort; refusing to commit to avoid baking conflict markers into a ticket.', errorType: 'unknown' });
+        onFail?.();
+        return;
+      }
     }
 
     // Step 1: commit any pending local changes first

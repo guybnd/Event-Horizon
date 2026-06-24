@@ -6,10 +6,7 @@ import { AlertCircle, GripVertical, GitPullRequest, Layers, Circle } from 'lucid
 import { motion } from 'framer-motion';
 import type { Task, TaskLiveEvent } from '../types';
 import { ContextMenu } from './ContextMenu';
-import { StartTaskPrompt } from './task-modal/StartTaskPrompt';
-import { OrchestrationLauncher } from './OrchestrationLauncher';
-import { resolveEffectiveAgent } from '../utils';
-import { createPortal } from 'react-dom';
+import { TicketActionsLaunchers } from './ticket-actions/TicketActions';
 import type { StatusTint } from '../statusStyles';
 import { useTaskCardController } from '../hooks/useTaskCardController';
 import { useAppSelector } from '../store/useAppSelector';
@@ -151,15 +148,13 @@ export const TaskCardInner = memo(function TaskCardInner({
         {c.hasActiveCliSession && !isOverlay && (
           <div className="pointer-events-none absolute inset-0 rounded-xl bot-border-breathe" />
         )}
-        {/* Comment indicator: normal cards show it in the footer (see CardFooterRow) so chat
-            can own the top-right corner. Compact (folded-deck) and PR cards have no standard
-            footer, so they keep the contained corner badge (FLUX-567). */}
-        {!isOverlay && (compact || isPrTicket) && (
-          <CardCommentBadge task={task} c={c} compact={compact} />
-        )}
-        {/* Chat — the card's primary action, owning the freed-up top-right corner. */}
-        {!isOverlay && !compact && !isPrTicket && (
-          <CardChatButton task={task} nudged={c.isPromptStatus} />
+        {/* Comment indicator: normal cards show it in the footer (CardFooterRow); compact
+            (folded-deck) cards show it inline in the body, PR cards inline in their status row —
+            all so the chat pill can own the top-right corner on every surface (FLUX-739). */}
+        {/* Chat — the card's primary action, owning the top-right corner on every surface incl.
+            PR cards and folded member subcards (FLUX-739). */}
+        {!isOverlay && (
+          <CardChatButton task={task} nudged={c.isPromptStatus && !compact} />
         )}
         {c.isPromptStatus && !compact && (
           <div className="absolute -top-1.5 -right-1.5 z-10">
@@ -207,9 +202,9 @@ export const TaskCardInner = memo(function TaskCardInner({
 
           <div
             className="flex-1 min-w-0 cursor-pointer p-3.5 pl-2.5 flex flex-col"
-            onClick={() => {
+            onClick={(e) => {
               if (!isOverlay) {
-                c.openBoardTask(task);
+                c.openBoardTask(task, e.currentTarget);
               }
             }}
           >
@@ -238,6 +233,15 @@ export const TaskCardInner = memo(function TaskCardInner({
                 <p className="eh-card-desc mb-3 text-xs leading-relaxed text-gray-600 line-clamp-3 dark:text-gray-400">
                   {c.snippet}
                 </p>
+
+                {/* Compact (folded-deck) member cards have no footer, so the comment badge that
+                    used to sit in the corner now renders inline here — the corner is the chat
+                    pill's (FLUX-739). Only when there are comments, to keep subcards tidy. */}
+                {compact && !isOverlay && c.comments.length > 0 && (
+                  <div className="mb-1 flex">
+                    <CardCommentBadge task={task} c={c} inline />
+                  </div>
+                )}
 
                 {c.clusterGroup && c.clusterAgg && !isOverlay && (
                   <CardClusterPanel c={c} />
@@ -284,31 +288,13 @@ export const TaskCardInner = memo(function TaskCardInner({
           task={task}
           position={c.contextMenuPos}
           onClose={() => c.setContextMenuPos(null)}
-          onLaunchAgent={(templateId) => c.openLauncherWithTemplate(templateId ?? c.singleDefaultId)}
+          onLaunchAgent={(templateId) => c.ticketActions.openLauncher(c.ticketActions.cardPhase, templateId ?? c.ticketActions.singleDefaultId)}
         />
       )}
 
-      {c.showStartPrompt && !isOverlay && createPortal(
-        <StartTaskPrompt
-          task={task}
-          onConfirm={(branch) => void c.handleStartPromptConfirm(branch)}
-          onCancel={() => c.setShowStartPrompt(false)}
-        />,
-        document.body
-      )}
-
-      {c.reviewModalOpen && !isOverlay && (
-        <OrchestrationLauncher
-          open={c.reviewModalOpen}
-          ticket={{ id: task.id, title: task.title || 'Untitled', status: task.status, branch: task.branch, effort: task.effort }}
-          framework={resolveEffectiveAgent(undefined, c.config?.defaultAgent)}
-          phase={c.launcherPhase}
-          initialTemplateId={c.launcherTemplateId}
-          onClose={() => c.setReviewModalOpen(false)}
-          onLaunch={c.handleCardReviewLaunch}
-          busy={c.reviewBusy}
-        />
-      )}
+      {/* FLUX-715: the orchestration launcher + Todo start-prompt portals, driven by the shared
+          ticket-action controller (same instance the card's action buttons use). */}
+      {!isOverlay && <TicketActionsLaunchers ctl={c.ticketActions} />}
     </CardContainer>
   );
 }, (prev, next) =>

@@ -65,35 +65,101 @@ export async function changeTaskStatus(
   });
 }
 
-export type TicketActionKind = 'engine' | 'agent' | 'link';
+// ── The unified ticket-action registry (FLUX-715) ───────────────────────────
+// One declarative status→actions map shared by every inline surface (board card,
+// chat mini-card, chat composer bar). Two orthogonal axes keep the model from
+// exploding as new actions land:
+//   • category (domain): WHAT the action touches.
+//   • kind (execution + render): HOW it runs and HOW the renderer draws it.
+// Adding an action ⇒ one entry here; adding a new `kind` ⇒ one extra arm in the
+// <TicketActions> renderer's kind-switch. Nothing is re-plumbed per surface.
+
+/** Domain an action operates on. Drives per-surface filtering, not rendering. */
+export type TicketActionCategory = 'transition' | 'workflow' | 'pr' | 'branch' | 'lifecycle';
+
+/**
+ * Execution + render shape:
+ *  • engine — direct REST (zero tokens, instant)
+ *  • agent  — tokenized session dispatch
+ *  • link   — open a url
+ *  • launch — split control: one-click default + a ▾ menu of launch templates
+ *  • picker — opens a small inline sub-UI (e.g. a reason textarea) before acting
+ */
+export type TicketActionKind = 'engine' | 'agent' | 'link' | 'launch' | 'picker';
 export type TicketActionTone = 'default' | 'primary' | 'danger';
+
+/** Which inline surfaces render an action. Defaults to both when omitted. */
+export type TicketActionSurface = 'card' | 'compact';
+
+/** Lucide glyph hint resolved by the renderer (keeps the registry import-free of icons). */
+export type TicketActionIcon = 'bot' | 'layers' | 'file' | 'play' | 'send' | 'undo' | 'sparkles' | 'external';
+
+/** A launch-template choice in a `kind:'launch'` action's ▾ menu. */
+export interface LaunchTemplateOption {
+  id: string;
+  /** Display name once the workflow catalog has loaded (undefined before). */
+  name?: string;
+  variant: 'single' | 'multi' | 'other';
+}
+
+/** A `kind:'picker'` action's inline sub-UI contract (the Return-reason textarea today). */
+export interface TicketActionPicker {
+  title: string;
+  placeholder: string;
+  submitLabel: string;
+  busyLabel: string;
+  onSubmit: (value: string) => void | Promise<void>;
+}
 
 export interface TicketAction {
   key: string;
   label: string;
-  /** engine = direct REST (zero tokens) · agent = tokenized session · link = open a url */
+  /** Domain axis — surface filtering / future grouping. */
+  category: TicketActionCategory;
+  /** Execution + render axis — the renderer switches on this. */
   kind: TicketActionKind;
   tone?: TicketActionTone;
-  /** For `link` actions. */
+  icon?: TicketActionIcon;
+  /** Surfaces that render this action (default: both). */
+  surfaces?: TicketActionSurface[];
+  /** `'confirm'` flags a destructive action (the runner self-guards today). */
+  guard?: 'confirm';
+  /** `link` actions. */
   href?: string;
-  /** For `engine` / `agent` actions. */
+  /** `engine` / `agent` / `launch` (one-click default) actions. */
   run?: () => void | Promise<void>;
+  /** `launch`: template options for the ▾ menu (the one-click default is `run`). */
+  templates?: LaunchTemplateOption[];
+  /** `launch`: open the full launcher pinned to a chosen template. */
+  onTemplate?: (templateId: string) => void;
+  /** `picker`: the inline sub-UI. */
+  picker?: TicketActionPicker;
 }
 
 /**
- * Imperative hooks the action bar provides; `actionsForStatus` closes over these so it can
- * stay a declarative status→actions map.
+ * Imperative hooks the host (useTicketActions) provides; `actionsForStatus` closes over
+ * these so it can stay a declarative status→actions map.
  */
 export interface TicketActionContext {
   config?: Config | null;
+  /** The launch phase the ticket's current status maps to. */
+  phase: LaunchPhase;
+  /** Resolved launch templates for the ticket's phase (single/multi/other). */
+  launchTemplates: LaunchTemplateOption[];
+  /** Resolved finalize templates for the Finish menu. */
+  finalizeTemplates: LaunchTemplateOption[];
   /** Engine status move. `needsComment` prompts for the Ready/Require Input comment. */
   changeStatus: (newStatus: string, opts?: { needsComment?: boolean }) => void | Promise<void>;
   /** Engine finish for branch/PR tickets — merge the open PR and advance to Done. */
   finishViaMerge: () => void | Promise<void>;
-  /** Agent dispatch in a phase (groom / implement / review). Tokenized. */
-  dispatchAgent: (phase: LaunchPhase) => void | Promise<void>;
   /** Agent `finish` — branchless tickets need a curated commit, so this is tokenized. */
   dispatchFinish: () => void | Promise<void>;
+  /** One-click launch of the phase default (StartPrompt for Todo-no-branch; launcher fallback). */
+  launchDefault: (phase: LaunchPhase) => void | Promise<void>;
+  /** Open the orchestration launcher pinned to a phase + template. */
+  openLauncher: (phase: LaunchPhase, templateId?: string) => void;
+  /** Return a Ready ticket to In Progress with a reason. */
+  returnToDev: (reason: string) => void | Promise<void>;
 }
 
 /** PR/commit url if it's an actual link (commit-hash implementationLinks aren't openable). */
@@ -102,9 +168,58 @@ function prLink(task: Task): string | undefined {
   return link && /^https?:\/\//.test(link) ? link : undefined;
 }
 
+// ── Declarative action builders (one place per shape) ───────────────────────
+
+function transition(
+  key: string,
+  label: string,
+  toStatus: string,
+  ctx: TicketActionContext,
+  opts?: { tone?: TicketActionTone; needsComment?: boolean; surfaces?: TicketActionSurface[]; icon?: TicketActionIcon },
+): TicketAction {
+  return {
+    key,
+    label,
+    category: 'transition',
+    kind: 'engine',
+    tone: opts?.tone,
+    icon: opts?.icon,
+    surfaces: opts?.surfaces,
+    run: () => ctx.changeStatus(toStatus, { needsComment: opts?.needsComment }),
+  };
+}
+
+function launchAction(
+  key: string,
+  label: string,
+  phase: LaunchPhase,
+  templates: LaunchTemplateOption[],
+  ctx: TicketActionContext,
+  opts?: { tone?: TicketActionTone; surfaces?: TicketActionSurface[]; icon?: TicketActionIcon },
+): TicketAction {
+  return {
+    key,
+    label,
+    category: 'workflow',
+    kind: 'launch',
+    tone: opts?.tone ?? 'primary',
+    icon: opts?.icon ?? 'bot',
+    surfaces: opts?.surfaces,
+    run: () => ctx.launchDefault(phase),
+    templates,
+    onTemplate: (id) => ctx.openLauncher(phase, id),
+  };
+}
+
+function openPrAction(href: string): TicketAction {
+  // The card never surfaced Open PR; it's a chat-bar affordance.
+  return { key: 'open-pr', label: 'Open PR', category: 'pr', kind: 'link', icon: 'external', href, surfaces: ['compact'] };
+}
+
 /**
- * The phase-aware action set for a ticket's current status. Single source of truth for the
- * chat action bar. Ordering is engine-first (free) then agent (tokenized) then link.
+ * The phase-aware action set for a ticket's current status. Single source of truth for ALL
+ * inline surfaces — the renderer filters by `surfaces`/`category` per variant, but the set is
+ * computed only here. Ordering puts the primary launch first, then transitions, then links.
  */
 export function actionsForStatus(task: Task, ctx: TicketActionContext): TicketAction[] {
   const status = (task.status || '').trim();
@@ -112,46 +227,75 @@ export function actionsForStatus(task: Task, ctx: TicketActionContext): TicketAc
   const requireInputStatus = getRequireInputStatus(ctx.config);
   const actions: TicketAction[] = [];
   const pr = prLink(task);
+  const tpl = ctx.launchTemplates;
 
   // Grooming / Require Input → plan it forward or hand to the grooming agent.
   if (/^groom/i.test(status) || status === requireInputStatus) {
-    actions.push({ key: 'to-todo', label: 'Move to Todo', kind: 'engine', run: () => ctx.changeStatus(TODO_STATUS) });
-    actions.push({ key: 'groom', label: 'Groom', kind: 'agent', run: () => ctx.dispatchAgent('grooming') });
+    actions.push(launchAction('groom', 'Start grooming', 'grooming', tpl, ctx));
+    actions.push(transition('to-todo', 'Move to Todo', TODO_STATUS, ctx, { surfaces: ['compact'] }));
     return actions;
   }
 
   if (status === TODO_STATUS) {
-    actions.push({ key: 'to-in-progress', label: 'Move to In Progress', kind: 'engine', run: () => ctx.changeStatus(IN_PROGRESS_STATUS) });
-    actions.push({ key: 'implement', label: 'Start', kind: 'agent', tone: 'primary', run: () => ctx.dispatchAgent('implementation') });
+    actions.push(launchAction('implement', 'Implement', 'implementation', tpl, ctx));
+    actions.push(transition('to-in-progress', 'Move to In Progress', IN_PROGRESS_STATUS, ctx, { surfaces: ['compact'] }));
     return actions;
   }
 
   if (status === IN_PROGRESS_STATUS) {
-    actions.push({ key: 'to-ready', label: 'Move to Ready', kind: 'engine', tone: 'primary', run: () => ctx.changeStatus(readyStatus, { needsComment: true }) });
-    actions.push({ key: 'require-input', label: 'Require Input', kind: 'engine', run: () => ctx.changeStatus(requireInputStatus, { needsComment: true }) });
-    if (pr) actions.push({ key: 'open-pr', label: 'Open PR', kind: 'link', href: pr });
+    actions.push(launchAction('continue', 'Continue', 'implementation', tpl, ctx));
+    actions.push(transition('to-ready', 'Move to Ready', readyStatus, ctx, { tone: 'primary', needsComment: true, surfaces: ['compact'] }));
+    actions.push(transition('require-input', 'Require Input', requireInputStatus, ctx, { needsComment: true, surfaces: ['compact'] }));
+    if (pr) actions.push(openPrAction(pr));
     return actions;
   }
 
   if (status === readyStatus) {
-    // Finish: branch/PR ticket → engine merge (zero tokens). Branchless → the commit needs
-    // curation, so dispatch the agent `finish` command (honestly tokenized).
-    if (task.branch) {
-      actions.push({ key: 'finish', label: 'Finish', kind: 'engine', tone: 'primary', run: () => ctx.finishViaMerge() });
-    } else {
-      actions.push({ key: 'finish', label: 'Finish', kind: 'agent', tone: 'primary', run: () => ctx.dispatchFinish() });
-    }
-    actions.push({ key: 'back-to-in-progress', label: 'Back to In Progress', kind: 'engine', run: () => ctx.changeStatus(IN_PROGRESS_STATUS) });
-    actions.push({ key: 'review', label: 'Review', kind: 'agent', run: () => ctx.dispatchAgent('review') });
-    if (pr) actions.push({ key: 'open-pr', label: 'Open PR', kind: 'link', href: pr });
+    actions.push(launchAction('review', 'Review', 'review', tpl, ctx, { tone: 'default' }));
+    // Return: card captures a reason (picker); the chat bar keeps its instant transition.
+    actions.push({
+      key: 'return',
+      label: 'Return',
+      category: 'lifecycle',
+      kind: 'picker',
+      icon: 'undo',
+      surfaces: ['card'],
+      picker: {
+        title: 'Return reason',
+        placeholder: 'What needs fixing?',
+        submitLabel: 'Return to dev',
+        busyLabel: 'Returning…',
+        onSubmit: ctx.returnToDev,
+      },
+    });
+    actions.push(transition('back-to-in-progress', 'Back to In Progress', IN_PROGRESS_STATUS, ctx, { surfaces: ['compact'] }));
+    // Finish: branch/PR ticket → engine merge (zero tokens); branchless → tokenized agent finish.
+    // The ▾ menu carries finalize templates either way.
+    actions.push({
+      key: 'finish',
+      label: 'Finish',
+      category: 'pr',
+      kind: 'launch',
+      tone: 'primary',
+      icon: 'send',
+      guard: task.branch ? 'confirm' : undefined,
+      run: () => (task.branch ? ctx.finishViaMerge() : ctx.dispatchFinish()),
+      templates: ctx.finalizeTemplates,
+      onTemplate: (id) => ctx.openLauncher('finalize', id),
+    });
+    if (pr) actions.push(openPrAction(pr));
     return actions;
   }
 
   if (/^done$/i.test(status)) {
-    actions.push({ key: 'reopen', label: 'Reopen', kind: 'engine', run: () => ctx.changeStatus(IN_PROGRESS_STATUS) });
-    if (pr) actions.push({ key: 'open-pr', label: 'Open PR', kind: 'link', href: pr });
+    // The card kept a launch affordance on Done (re-review); the chat bar offers Reopen.
+    actions.push(launchAction('launch', 'Launch', 'review', tpl, ctx, { tone: 'default', surfaces: ['card'] }));
+    actions.push(transition('reopen', 'Reopen', IN_PROGRESS_STATUS, ctx, { surfaces: ['compact'] }));
+    if (pr) actions.push(openPrAction(pr));
     return actions;
   }
 
+  // Custom statuses: the card keeps a generic Launch; the chat bar shows nothing.
+  actions.push(launchAction('launch', 'Launch', ctx.phase, tpl, ctx, { tone: 'default', surfaces: ['card'] }));
   return actions;
 }

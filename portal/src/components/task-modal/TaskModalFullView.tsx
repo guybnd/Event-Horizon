@@ -4,7 +4,6 @@ import {
   AlertCircle,
   ArrowLeft,
   MessageSquare,
-  Network,
   Save,
   Square,
   X,
@@ -22,7 +21,7 @@ import { HistoryList } from './HistoryList';
 import { PayloadSizePanel } from './PayloadSizePanel';
 import { ChatPane } from './ChatPane';
 import { getPriorityIcon } from './taskModalHelpers';
-import { statusToPhase } from '../../agentActions';
+import { TicketActions } from '../ticket-actions/TicketActions';
 import type { TaskModalController } from '../../hooks/useTaskModalController';
 import type { Task } from '../../types';
 
@@ -72,7 +71,6 @@ export function TaskModalFullView({
     cliSessionBusy,
     stopSession,
     openLauncher,
-    readyForMergeStatus,
     handleCloseAttempt,
     isTaskLoading,
     sidebarWidth,
@@ -183,18 +181,10 @@ export function TaskModalFullView({
                 </div>
               );
             }
-            return (
-              <button
-                type="button"
-                disabled={!modalTask?.id}
-                onClick={() => openLauncher(statusToPhase(status, { readyStatus: readyForMergeStatus }))}
-                title="Configure and launch agents for this ticket's phase"
-                className="eh-btn-accent flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors disabled:opacity-50"
-              >
-                <Network className="h-3.5 w-3.5" />
-                Launch Agent
-              </button>
-            );
+            // FLUX-717: the full-view modal launch surface renders the unified registry controls,
+            // so it offers the same status-aware actions (launch + transitions + PR link) as the
+            // board card and chat — instead of a single "Launch Agent" button.
+            return <TicketActions task={modalTask as Task} variant="compact" />;
           })()}
           <button onClick={handleCloseAttempt} className="rounded p-2 text-gray-400 transition-colors hover:bg-gray-200 hover:text-gray-700 dark:hover:bg-white/5 dark:hover:text-white">
             <X className="h-5 w-5" />

@@ -57,6 +57,30 @@ export function sharedNonDoneSiblings(tickets: any[], branch: string, selfId: st
   );
 }
 
+/** PR tickets (kind:'pr') that point at `branch` — pure + testable. */
+export function prTicketsOnBranch(tickets: any[], branch: string): any[] {
+  return tickets.filter((t) => t && t.kind === PR_KIND && t.branch === branch);
+}
+
+/**
+ * Resolve every PR ticket on `branch` to the terminal merged state immediately — the
+ * post-merge counterpart to syncPrTickets' stale-PR resolution. POST /:id/pr/merge calls this
+ * right after the squash-merge so a merged PR card flips to Done + MERGED at once instead of
+ * sitting OPEN until the next 90s reconciler poll (FLUX-588). cleanupMergedBranch deliberately
+ * skips kind:'pr' tickets (their state is owned here / by syncPrTickets — FLUX-587), so without
+ * this the card lingers for up to a poll interval. Best-effort per ticket (upsert only writes on
+ * a real change); broadcasts each update and returns the resolved PR-ticket ids.
+ */
+export async function resolveMergedPrTickets(branch: string): Promise<string[]> {
+  const resolved: string[] = [];
+  for (const t of prTicketsOnBranch(Object.values(tasksCache) as any[], branch)) {
+    await upsertManagedTicket(t.id, { status: 'Done', prState: 'MERGED', swimlane: null }).catch(() => {});
+    broadcastEvent('taskUpdated', { id: t.id });
+    resolved.push(t.id);
+  }
+  return resolved;
+}
+
 /** The slice of an existing PR ticket the field-mapper needs to decide status transitions. */
 export interface ExistingPrState {
   status?: string;

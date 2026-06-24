@@ -7,6 +7,7 @@ import {
   classifyRole,
   projectTranscript,
 } from './projection.js';
+import { readCurationOps } from './curation-ops.js';
 
 export type { Turn, TranscriptMessage } from './projection.js';
 
@@ -223,12 +224,40 @@ export async function sliceTurns(streamId: string, fromSeq?: number, toSeq?: num
 }
 
 /**
- * Parse the substrate into ordered chat messages for the portal. This is now a thin
- * adapter over the substrate→view projection (FLUX-658): read the turns, then run the
- * pure `projectTranscript`. The rendered transcript is provably a function of the
- * substrate, not an independent store — no user-visible change.
+ * Gather the full turn list for a stream's VIEW: its own substrate turns, plus any turns
+ * carved into it from another stream by an `extract` curation op (FLUX-656). The extracted
+ * slices are resolved here — `readCurationOps()` finds the ops whose `into === taskId`, and
+ * each referenced range is fetched via `sliceTurns(from, fromSeq, toSeq)` from its *source*
+ * stream's substrate. The gathered (foreign) turns keep their own `streamId` for attribution
+ * and are prepended in op order, ahead of the card's own turns.
+ *
+ * This is the cross-stream RESOLUTION layer (the real new work of FLUX-656). It lives in the
+ * reader so `projectTranscript` stays pure over a flat turn list; merge (FLUX-657) consumes
+ * exactly the same seam. Returns the gathered turns and the op-log (so the caller can hand
+ * both to the projector).
+ */
+export async function gatherTurnsForView(
+  taskId: string,
+): Promise<{ turns: Turn[]; ops: Awaited<ReturnType<typeof readCurationOps>> }> {
+  const ops = await readCurationOps();
+  const extractedHere = ops.filter((o) => o.op === 'extract' && o.into === taskId);
+  const gathered: Turn[] = [];
+  for (const op of extractedHere) {
+    const slice = await sliceTurns(op.from, op.fromSeq, op.toSeq);
+    gathered.push(...slice);
+  }
+  const own = await readTurns(taskId);
+  return { turns: [...gathered, ...own], ops };
+}
+
+/**
+ * Parse the substrate into ordered chat messages for the portal. A thin adapter over the
+ * substrate→view projection (FLUX-658): gather the turns (the card's own + any extracted
+ * slice, FLUX-656), then run the pure `projectTranscript`. `taskId` is passed as the home
+ * stream so foreign (extracted) turns render with a `sourceStream` attribution. The rendered
+ * transcript stays a function of the substrate + op-log, not an independent store.
  */
 export async function readTranscriptMessages(taskId: string): Promise<TranscriptMessage[]> {
-  const turns = await readTurns(taskId);
-  return projectTranscript(turns);
+  const { turns, ops } = await gatherTurnsForView(taskId);
+  return projectTranscript(turns, ops, taskId);
 }

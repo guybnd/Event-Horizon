@@ -1,5 +1,18 @@
-import { describe, it, expect } from 'vitest';
-import { selectMembers, prTicketFields, prTicketId, sharedNonDoneSiblings, membersToBounce } from './pr-tickets.js';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+// resolveMergedPrTickets touches the engine's task store + event bus; mock both so the unit test
+// asserts the resolution behavior without real disk writes or socket emits. The pure-logic tests
+// below don't use either, so the mocks are inert for them.
+vi.mock('./task-store.js', () => ({
+  tasksCache: {},
+  upsertManagedTicket: vi.fn().mockResolvedValue(undefined),
+  updateTaskWithHistory: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('./events.js', () => ({ broadcastEvent: vi.fn() }));
+
+import { tasksCache, upsertManagedTicket } from './task-store.js';
+import { broadcastEvent } from './events.js';
+import { selectMembers, prTicketFields, prTicketId, sharedNonDoneSiblings, membersToBounce, prTicketsOnBranch, resolveMergedPrTickets } from './pr-tickets.js';
 
 /** FLUX-566: work-gated PR membership + gh-state→ticket-field mapping (pure logic). */
 describe('selectMembers (work-gated membership)', () => {
@@ -140,5 +153,60 @@ describe('membersToBounce (changes-requested unwind idempotency)', () => {
   it('drops unknown member ids (a resolved ticket that is no longer a member)', () => {
     const tickets = [{ id: 'FLUX-1', status: 'Ready' }];
     expect(membersToBounce(tickets, ['FLUX-1', 'FLUX-GONE'])).toEqual(['FLUX-1']);
+  });
+});
+
+/** FLUX-591: the pure selection used by the immediate post-merge PR-ticket resolution. */
+describe('prTicketsOnBranch (pure selection)', () => {
+  const tickets = [
+    { id: 'PR-9', kind: 'pr', branch: 'feature/x' },
+    { id: 'PR-8', kind: 'pr', branch: 'feature/y' },   // different branch → excluded
+    { id: 'FLUX-1', branch: 'feature/x', status: 'Ready' }, // normal ticket → excluded
+    null,                                               // tolerate sparse cache entries
+  ];
+
+  it('selects only kind:pr tickets on the given branch', () => {
+    expect(prTicketsOnBranch(tickets, 'feature/x').map((t) => t.id)).toEqual(['PR-9']);
+  });
+
+  it('returns [] when no PR ticket points at the branch', () => {
+    expect(prTicketsOnBranch(tickets, 'feature/none')).toEqual([]);
+  });
+});
+
+/**
+ * FLUX-591 / FLUX-588: POST /:id/pr/merge calls resolveMergedPrTickets right after the squash-merge
+ * so a merged PR card flips to Done immediately, without waiting for the 90s syncPrTickets poll.
+ */
+describe('resolveMergedPrTickets (immediate post-merge PR resolution)', () => {
+  beforeEach(() => {
+    for (const k of Object.keys(tasksCache)) delete (tasksCache as Record<string, unknown>)[k];
+    vi.mocked(upsertManagedTicket).mockClear();
+    vi.mocked(broadcastEvent).mockClear();
+  });
+
+  it('resolves only the branch\'s PR tickets to Done + MERGED + swimlane:null, immediately', async () => {
+    Object.assign(tasksCache, {
+      'PR-9': { id: 'PR-9', kind: 'pr', branch: 'feature/x', status: 'Ready', prState: 'OPEN' },
+      'FLUX-1': { id: 'FLUX-1', branch: 'feature/x', status: 'Ready' }, // normal member → not this fn's job
+      'PR-8': { id: 'PR-8', kind: 'pr', branch: 'feature/y', status: 'Ready' }, // other branch → untouched
+    });
+
+    const resolved = await resolveMergedPrTickets('feature/x');
+
+    expect(resolved).toEqual(['PR-9']);
+    expect(vi.mocked(upsertManagedTicket)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(upsertManagedTicket)).toHaveBeenCalledWith('PR-9', { status: 'Done', prState: 'MERGED', swimlane: null });
+    expect(vi.mocked(broadcastEvent)).toHaveBeenCalledWith('taskUpdated', { id: 'PR-9' });
+  });
+
+  it('is a no-op when the merged branch carries no PR ticket', async () => {
+    Object.assign(tasksCache, { 'FLUX-1': { id: 'FLUX-1', branch: 'feature/x', status: 'Ready' } });
+
+    const resolved = await resolveMergedPrTickets('feature/x');
+
+    expect(resolved).toEqual([]);
+    expect(vi.mocked(upsertManagedTicket)).not.toHaveBeenCalled();
+    expect(vi.mocked(broadcastEvent)).not.toHaveBeenCalled();
   });
 });

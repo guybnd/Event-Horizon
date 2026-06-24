@@ -123,12 +123,9 @@ async function build() {
     outfile: path.join(outDir, 'init.js'),
   });
 
-  console.log('Building engine/src/mcp-server.ts → engine/dist/mcp-server.js …');
-  await esbuild.build({
-    ...sharedConfig,
-    entryPoints: [path.join(engineRoot, 'src', 'mcp-server.ts')],
-    outfile: path.join(outDir, 'mcp-server.js'),
-  });
+  // FLUX-705/FLUX-710: no separate mcp-server.js bundle. The MCP server is statically
+  // imported by index.ts, so esbuild inlines it into dist/index.js (one shared task-store).
+  // Both the in-process HTTP /mcp mount and `--mcp` stdio mode run from that single bundle.
 
   // Copy portal/dist into engine/dist/portal/dist so pkg can embed it as assets.
   try {
@@ -207,16 +204,8 @@ async function build() {
     }
   }
 
-  // Include mcp-server.js so the SEA binary can start in --mcp mode.
-  // The dynamic import('./mcp-server.js') in index.ts becomes require('./mcp-server.js')
-  // in the esbuild CJS output and resolves from disk — not from the SEA blob.  We
-  // extract it to tmpdir at startup so that require() path exists at runtime.
-  const mcpServerDist = path.join(outDir, 'mcp-server.js');
-  if (fs.existsSync(mcpServerDist)) {
-    const mcpKey = 'mcp-server.js';
-    seaAssets[mcpKey] = path.relative(engineRoot, mcpServerDist).replace(/\\/g, '/');
-    manifestKeys.push(mcpKey);
-  }
+  // FLUX-710: mcp-server is bundled into index.js (the SEA main) via a static import, so there
+  // is no longer a standalone dist/mcp-server.js to embed or extract.
 
   const manifest = { version: appVersion, keys: manifestKeys };
   const manifestPath = path.join(outDir, 'sea-manifest.json');

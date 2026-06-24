@@ -1,5 +1,5 @@
 import fs from 'fs/promises';
-import { renameSync } from 'fs';
+import { renameSync, realpathSync } from 'fs';
 import path from 'path';
 import matter from 'gray-matter';
 import chokidar from 'chokidar';
@@ -1264,9 +1264,17 @@ export async function startGroupDocsWatcher() {
 }
 
 
-export async function activateWorkspace(newRoot: string) {
+export async function activateWorkspace(newRoot: string): Promise<string> {
   workspaceActivating = true;
   try {
+    // Normalize to the canonical long-path form before anything else uses it. On Windows an 8.3
+    // short-name path — e.g. a user profile containing a space, "Guy Razer" → GUYRAZ~1 — handed to
+    // chokidar makes libuv abort the whole process (fs-event.c `_wcsnicmp` assertion). realpath.native
+    // resolves the short name (and symlinks); it's a no-op for already-canonical paths. We REASSIGN
+    // `newRoot` so every downstream consumer (watchers, worktrees, group binding) AND the returned
+    // value share the one canonical form — callers persist/compare that, so the registry "active"
+    // flag can't diverge for a short/symlinked root (FLUX-711). Throws if missing, so guard it.
+    try { newRoot = realpathSync.native(newRoot); } catch { /* missing/unresolvable — keep as given */ }
     setWorkspaceRoot(newRoot);
     tasksCache = {};
     docsCache = {};
@@ -1300,6 +1308,7 @@ export async function activateWorkspace(newRoot: string) {
     seedPromptNotifications();
     const modulesToProbe = Array.isArray((configCache as any).modules) ? (configCache as any).modules : [];
     probeAllEnabled(modulesToProbe).catch(() => {});
+    return newRoot; // the canonical bound root — callers persist/respond with THIS (FLUX-711)
   } finally {
     workspaceActivating = false;
   }

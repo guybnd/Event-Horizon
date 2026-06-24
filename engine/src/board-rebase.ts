@@ -3,6 +3,7 @@ import { broadcastEvent } from './events.js';
 import { tasksCache, updateTaskWithHistory } from './task-store.js';
 import { configCache } from './config.js';
 import { getEnginePort } from './packaged-mode.js';
+import { extractTicket } from './extract.js';
 
 /**
  * FLUX-659: the board-rebase ritual. The orchestrator proposes a BATCH of restructurings via
@@ -43,6 +44,12 @@ export interface RebaseItem {
   phase?: string;
   /** kind === 'fold': destination ticket the sources merge into. */
   into?: string;
+  /** kind === 'promote' (FLUX-656): inclusive seq range of the topic-slice on the source
+   *  stream (`targets[0]`, default `__board__`) to carve into a new card. */
+  fromSeq?: number;
+  toSeq?: number;
+  /** kind === 'promote': title for the new card the slice seeds. */
+  title?: string;
 }
 
 export interface PendingBatch {
@@ -205,13 +212,32 @@ function registerDefaults(): void {
     }
   });
 
-  // Pending verbs — proposable and approvable now; the executor registers when the verb lands.
-  // Replaced by registerVerb('promote'/'fold', …) from FLUX-656 / FLUX-657 (turn slicing rests
-  // on the FLUX-658 substrate). Until then, applying such an item is a clear no-op, never a crash.
-  registerVerb('promote', async () => ({
-    ok: false,
-    message: 'promote pending — extract_ticket (FLUX-656) not yet built',
-  }));
+  // `promote` (FLUX-656) — carve a topic-slice out of a stream into a new card. Shares the
+  // engine `extractTicket()` with the `extract_ticket` MCP tool, so the slice→card path
+  // exists once. `targets[0]` is the source stream (default `__board__`); `fromSeq`/`toSeq`
+  // address the slice; `title` (or the item summary) names the new card. Additive + un-doable.
+  registerVerb('promote', async (item) => {
+    const from = item.targets[0] || '__board__';
+    const title = item.title || item.summary;
+    if (typeof item.fromSeq !== 'number' || typeof item.toSeq !== 'number') {
+      return { ok: false, message: 'promote: fromSeq and toSeq are required to carve the slice' };
+    }
+    try {
+      const r = await extractTicket({
+        from,
+        fromSeq: item.fromSeq,
+        toSeq: item.toSeq,
+        title,
+        ...(item.rationale ? { body: item.rationale } : {}),
+      });
+      return { ok: true, message: `extracted ${r.id} (${r.turnsExtracted} turns from ${from})` };
+    } catch (err: any) {
+      return { ok: false, message: `promote: ${err?.message || 'extract failed'}` };
+    }
+  });
+
+  // Pending verb — proposable and approvable now; the executor registers when FLUX-657 lands.
+  // Until then, applying a fold item is a clear no-op, never a crash.
   registerVerb('fold', async () => ({
     ok: false,
     message: 'fold pending — merge_tickets (FLUX-657) not yet built',

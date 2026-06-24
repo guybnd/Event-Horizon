@@ -37,6 +37,7 @@ import {
   checkPathConflicts,
   validatePatternSupport,
   stopAllSessionsForTask,
+  reapStaleParkedSessions,
 } from './session-store.js';
 import type { CliSessionRecord } from './agents/types.js';
 
@@ -219,6 +220,45 @@ describe('session-store', () => {
       const result = getActiveSessionsForTask('FLUX-1');
       expect(result).toHaveLength(2);
       expect(result.map(s => s.id).sort()).toEqual(['sess-a', 'sess-c']);
+    });
+  });
+
+  describe('reapStaleParkedSessions', () => {
+    it('cancels parked phase sessions but leaves running, pending, and chat sessions', () => {
+      const grooming = createMockSession({ id: 'sess-groom', taskId: 'FLUX-1', status: 'waiting-input', phase: 'grooming' });
+      const planner = createMockSession({ id: 'sess-plan', taskId: 'FLUX-1', status: 'waiting-input', phase: 'implementation', role: 'planner' });
+      const chat = createMockSession({ id: 'sess-chat', taskId: 'FLUX-1', status: 'waiting-input', phase: 'chat' });
+      const running = createMockSession({ id: 'sess-run', taskId: 'FLUX-1', status: 'running', phase: 'review' });
+      const pending = createMockSession({ id: 'sess-pend', taskId: 'FLUX-1', status: 'pending', phase: 'grooming' });
+      for (const s of [grooming, planner, chat, running, pending]) {
+        cliSessionsById.set(s.id, s);
+        registerSession('FLUX-1', s.id);
+      }
+
+      const reaped = reapStaleParkedSessions('FLUX-1', 'test');
+
+      expect(reaped.map(s => s.id).sort()).toEqual(['sess-groom', 'sess-plan']);
+      expect(grooming.status).toBe('cancelled');
+      expect(grooming.requestedStop).toBe(true);
+      expect(grooming.endedAt).toBeTruthy();
+      expect(planner.status).toBe('cancelled');
+      // Preserved: persistent chat conversation + live sessions.
+      expect(chat.status).toBe('waiting-input');
+      expect(running.status).toBe('running');
+      expect(pending.status).toBe('pending');
+    });
+
+    it('is idempotent — a second call reaps nothing', () => {
+      const grooming = createMockSession({ id: 'sess-groom', taskId: 'FLUX-1', status: 'waiting-input', phase: 'grooming' });
+      cliSessionsById.set('sess-groom', grooming);
+      registerSession('FLUX-1', 'sess-groom');
+
+      expect(reapStaleParkedSessions('FLUX-1', 'test')).toHaveLength(1);
+      expect(reapStaleParkedSessions('FLUX-1', 'test')).toHaveLength(0);
+    });
+
+    it('returns empty for a task with no sessions', () => {
+      expect(reapStaleParkedSessions('FLUX-UNKNOWN', 'test')).toEqual([]);
     });
   });
 

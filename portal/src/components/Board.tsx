@@ -19,8 +19,6 @@ import { getArchiveStatus, getRequireInputStatus } from '../workflow';
 import { collectPrMemberIds, collectEpicFoldedIds, collectCrossColumnClusters } from '../lib/decks';
 import { ParseErrorButton } from './ParseErrorButton';
 import { BootstrapPreview } from './BootstrapPreview';
-import { ApprovalPrompts } from './ApprovalPrompts';
-import { QuestionPrompts } from './AskQuestionPrompts';
 
 // Stable empty array so columns with no tasks get a referentially-stable prop (memo-friendly).
 const EMPTY_TASKS: Task[] = [];
@@ -127,6 +125,26 @@ export function Board() {
     }
     return counts;
   }, [tasks, boardFx?.columnFlowArrows]);
+
+  // Done-streak count (tickets that reached a done-ish status today). A board-level aggregate —
+  // computed ONCE here instead of inside every Column via a whole-`s.tasks` subscription that
+  // re-rendered all columns on any task change (FLUX-724). Only the Done column renders it.
+  const doneStreakCount = useMemo(() => {
+    if (boardFx?.doneStreak === false) return 0;
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayMs = todayStart.getTime();
+    let count = 0;
+    for (const task of tasks) {
+      for (const entry of task.history ?? []) {
+        if (entry.type !== 'status_change') continue;
+        const to = (entry as { to?: string }).to ?? '';
+        if (!/done/i.test(to)) continue;
+        if (new Date(entry.date).getTime() >= todayMs) { count++; break; }
+      }
+    }
+    return count;
+  }, [tasks, boardFx?.doneStreak]);
 
   const boardTasks = useMemo(() => config ? tasks.filter((task) =>
     task.status !== 'Released' &&
@@ -413,9 +431,7 @@ export function Board() {
 
   return (
     <>
-      <ApprovalPrompts />
-      <QuestionPrompts />
-      <div className="flex h-full min-h-0 flex-col gap-4">
+      <div className="flex h-full min-h-0 flex-col gap-0">
         <div className="flex items-center gap-3">
           <div className="flex-1">
             <TaskViewControls
@@ -446,39 +462,30 @@ export function Board() {
             <div ref={scrollerRef} className="flex min-h-full gap-2 pb-4 items-stretch">
               {allColumns.map((columnId, idx) => {
                 const prevCol = idx > 0 ? allColumns[idx - 1] : null;
-                const forwardCount = prevCol && columnFlowCounts ? (columnFlowCounts[`${prevCol}→${columnId}`] ?? 0) : 0;
-                const backCount = prevCol && columnFlowCounts ? (columnFlowCounts[`${columnId}→${prevCol}`] ?? 0) : 0;
-                const maxFlow = 10;
+                const nextCol = idx < allColumns.length - 1 ? allColumns[idx + 1] : null;
+                // Outbound flow in the last 24h: tickets that moved back to the previous column
+                // (left) vs forward to the next column (right) — chips flanking the title (FLUX-723).
+                const flowLeft = prevCol && columnFlowCounts ? (columnFlowCounts[`${columnId}→${prevCol}`] ?? 0) : 0;
+                const flowRight = nextCol && columnFlowCounts ? (columnFlowCounts[`${columnId}→${nextCol}`] ?? 0) : 0;
+                // Uniform hue-bar width across all columns ≈ the widest title (FLUX-723).
+                const maxTitleChars = Math.max(1, ...allColumns.map((c) => c.length));
                 return (
-                  <div key={columnId} className="flex items-stretch gap-2">
-                    {prevCol && columnFlowCounts && (forwardCount > 0 || backCount > 0) && (
-                      <div className="flex flex-col items-center justify-start pt-6 gap-1 w-3 shrink-0" title={`${forwardCount} forward, ${backCount} back in last 24h`}>
-                        {forwardCount > 0 && (
-                          <div
-                            className="flow-arrow flow-arrow-fwd"
-                            style={{ '--flow-alpha': Math.min(1, 0.2 + (forwardCount / maxFlow) * 0.8) } as React.CSSProperties}
-                          />
-                        )}
-                        {backCount > 0 && (
-                          <div
-                            className="flow-arrow flow-arrow-back"
-                            style={{ '--flow-alpha': Math.min(1, 0.2 + (backCount / maxFlow) * 0.8) } as React.CSSProperties}
-                          />
-                        )}
-                      </div>
-                    )}
-                    <Column
-                      id={columnId}
-                      title={columnId}
-                      tasks={columnTasksByStatus.get(columnId) ?? EMPTY_TASKS}
-                      clusters={crossColumnClusters.byColumn.get(columnId)}
-                      foldedByEpic={foldedByEpic}
-                      parentByChildId={parentByChildId}
-                      liveEvent={columnLiveEvents[columnId]}
-                      taskLiveEvents={taskLiveEvents}
-                      getTaskTravelDirection={getTaskTravelDirection}
-                    />
-                  </div>
+                  <Column
+                    key={columnId}
+                    id={columnId}
+                    title={columnId}
+                    tasks={columnTasksByStatus.get(columnId) ?? EMPTY_TASKS}
+                    clusters={crossColumnClusters.byColumn.get(columnId)}
+                    foldedByEpic={foldedByEpic}
+                    parentByChildId={parentByChildId}
+                    liveEvent={columnLiveEvents[columnId]}
+                    taskLiveEvents={taskLiveEvents}
+                    getTaskTravelDirection={getTaskTravelDirection}
+                    flowLeft={flowLeft}
+                    flowRight={flowRight}
+                    titleChars={maxTitleChars}
+                    doneStreakCount={doneStreakCount}
+                  />
                 );
               })}
             </div>

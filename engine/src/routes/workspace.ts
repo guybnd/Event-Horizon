@@ -73,10 +73,10 @@ router.post('/', async (req, res) => {
   }
 
   try {
-    await activateWorkspace(newRoot);
-    await saveAppSettings({ workspace: newRoot });
-    await autoRegisterWorkspace(newRoot);
-    res.json({ ok: true, path: newRoot });
+    const bound = await activateWorkspace(newRoot); // canonical bound root (FLUX-711)
+    await saveAppSettings({ workspace: bound });
+    await autoRegisterWorkspace(bound);
+    res.json({ ok: true, path: bound });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

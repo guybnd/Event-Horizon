@@ -154,7 +154,7 @@ The engine serves the portal at `http://localhost:3067`. Set `PORT=<n>` to overr
 
 ## MCP Server — How Agents Connect
 
-Event Horizon exposes ticket operations as **MCP tools** over stdio. When the workflow installer runs, it writes an MCP config file into your project so agents discover the tools automatically.
+Event Horizon exposes ticket operations as **MCP tools**, served in-process over loopback HTTP by the running engine (with a headless stdio fallback). When the workflow installer runs, it writes an MCP config file into your project so agents discover the tools automatically.
 
 ### Available Tools
 
@@ -177,14 +177,15 @@ Event Horizon exposes ticket operations as **MCP tools** over stdio. When the wo
 {
   "mcpServers": {
     "event-horizon": {
-      "command": "npx",
-      "args": ["tsx", "engine/src/mcp-server.ts", "--workspace", "."]
+      "type": "http",
+      "url": "http://127.0.0.1:3067/mcp",
+      "alwaysLoad": true
     }
   }
 }
 ```
 
-Config is placed at the framework-appropriate path (`.mcp.json`, `.cursor/mcp.json`, `.gemini/settings.json`, etc.) during skill installation.
+The installer renders this in-process HTTP entry (FLUX-645) so every session shares the running engine's task-store; the URL's port tracks the engine. Config is placed at the framework-appropriate path (`.mcp.json`, `.cursor/mcp.json`, `.gemini/settings.json`, etc.) during skill installation.
 
 ### Relationship to REST API
 

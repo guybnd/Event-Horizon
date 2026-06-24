@@ -18,6 +18,7 @@ import { getModulePromptFragments, getModuleMcpServers, getActiveModules, getWor
 import { getProbeStatus } from '../module-probe.js';
 import { getSharedServerUrl, isSharedHttpPlatformProven } from '../shared-mcp-server.js';
 import { buildBoardDigest } from '../board-digest.js';
+import { buildResumePreamble } from '../resume-preamble.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest, CliFramework, SendInputOptions } from './types.js';
 import type { ChatAttachment } from '../projection.js';
 
@@ -948,6 +949,9 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   checkBinaryInstalled(binaryName);
 
   const inputAt = new Date().toISOString();
+  // FLUX-655: "since you last spoke" basis for the resume preamble — captured BEFORE we overwrite
+  // lastInputAt below, so it reflects the PRIOR turn (last agent output, else last user input).
+  const sinceIso = session.lastOutputAt ?? session.lastInputAt;
   session.lastInputAt = inputAt;
   session.status = 'running';
   session.pausedForInput = false;
@@ -959,6 +963,26 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   // agent can Read; keep the metadata for the durable transcript so the bubble re-renders.
   const attachments = opts?.attachments ?? [];
   const attachmentAbsPaths = resolveAttachmentAbsPaths(attachments);
+
+  const task = tasksCache[id] as any;
+
+  // FLUX-655: on a RESUMED turn, re-ground the agent in the moved tree. If the world actually
+  // changed (branch fell behind, master rewrote files underneath us, sibling tickets merged), build
+  // a compact situational update to prepend to the prompt below. Computed BEFORE the user event is
+  // recorded so the `resume-preamble` transcript event is ordered ahead of the `user` event for this
+  // turn (FLUX-716 item 3). Fully best-effort: a null assemble (no delta / git hiccup) is a no-op.
+  let resumePreamble: string | null = null;
+  if (session.claudeSessionId) {
+    resumePreamble = await buildResumePreamble({
+      taskId: id,
+      branch: typeof task?.branch === 'string' ? task.branch : undefined,
+      workspaceRoot: canonicalWorkspaceRoot ?? workspaceRoot,
+      sinceIso,
+    });
+    if (resumePreamble) {
+      appendTranscriptEvent(id, { type: 'resume-preamble', text: resumePreamble, timestamp: inputAt });
+    }
+  }
 
   // FLUX-602: record the user's turn in the durable transcript (raw tier). The image refs ride
   // on the turn (FLUX-674) so a reload / cold resume re-presents them.
@@ -977,13 +1001,19 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   // Effective prompt to the CLI = the user's text + a Read-the-image instruction (FLUX-674).
   const safeMessage = `${message.replace(/\0/g, '')}${attachmentReadInstruction(attachmentAbsPaths)}`;
   const memberScopeArgs = [...buildMemberScopeArgs(), ...buildGroupDocsScopeArg(workspaceRoot)];
-  const task = tasksCache[id] as any;
+
+  // FLUX-655: prepend the situational update (computed above) to the prompt sent to the CLI. The CLI
+  // takes a single `-p` and with --resume there is no separate system channel, so prepending is the
+  // mechanism. The preamble is recorded as its OWN durable transcript event above (NOT folded into
+  // the user's message — FLUX-716 item 3 orders it before the user event).
+  const promptForCli = resumePreamble ? `${resumePreamble}\n\n---\n\n${safeMessage}` : safeMessage;
+
   const moduleMcpArgs = buildSpawnMcpConfigArgs(session.phase, Array.isArray(task?.tags) ? task.tags : undefined);
   const meArgs = modelEffortArgs(session);
   // FLUX-691: `--include-partial-messages` → token-by-token live streaming on the resume/send path.
   const resumeArgs = session.claudeSessionId
-    ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...memberScopeArgs, ...moduleMcpArgs]
-    : ['-p', safeMessage, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...memberScopeArgs, ...moduleMcpArgs];
+    ? ['-p', promptForCli, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...memberScopeArgs, ...moduleMcpArgs]
+    : ['-p', promptForCli, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...memberScopeArgs, ...moduleMcpArgs];
 
   let replyProc: ReturnType<typeof spawn>;
   if (process.platform === 'win32') {
@@ -1169,6 +1199,9 @@ export async function startBoardSession(session: CliSessionRecord, firstMessage:
 export async function sendBoardInput(session: CliSessionRecord, message: string, workspaceRoot: string, opts?: SendInputOptions) {
   checkBinaryInstalled('claude');
   const inputAt = new Date().toISOString();
+  // FLUX-655: capture the "since you last spoke" basis BEFORE overwriting lastInputAt (see the
+  // per-ticket path). Board scope has no branch, so the preamble degrades to ticket-movement only.
+  const sinceIso = session.lastOutputAt ?? session.lastInputAt;
   session.lastInputAt = inputAt;
   session.status = 'running';
   session.pausedForInput = false;
@@ -1176,18 +1209,36 @@ export async function sendBoardInput(session: CliSessionRecord, message: string,
   // agent can Read; keep the metadata on the transcript turn so the bubble re-renders.
   const attachments = opts?.attachments ?? [];
   const attachmentAbsPaths = resolveAttachmentAbsPaths(attachments);
+  // FLUX-655: on a RESUMED board turn, build the situational update (ticket-movement only at board
+  // scope). Computed BEFORE the user event is recorded so the `resume-preamble` transcript event is
+  // ordered ahead of the `user` event for this turn (FLUX-716 item 3). Best-effort: a null assemble
+  // (no delta / git hiccup) is a no-op.
+  let resumePreamble: string | null = null;
+  if (session.claudeSessionId) {
+    resumePreamble = await buildResumePreamble({
+      workspaceRoot: canonicalWorkspaceRoot ?? workspaceRoot,
+      sinceIso,
+    });
+    if (resumePreamble) {
+      appendTranscriptEvent(BOARD_CONVERSATION_ID, { type: 'resume-preamble', text: resumePreamble, timestamp: inputAt });
+    }
+  }
   appendTranscriptEvent(BOARD_CONVERSATION_ID, { type: 'user', text: message, attachments, timestamp: inputAt });
   // Effective prompt to the CLI = the user's text + a Read-the-image instruction (FLUX-676).
   const safeMessage = `${message.replace(/\0/g, '')}${attachmentReadInstruction(attachmentAbsPaths)}`;
   // Prepend the fresh triage digest to the prompt sent to claude — NOT to the transcript above,
   // which keeps the user's verbatim message (FLUX-659 push half).
   const digest = buildBoardDigest();
-  const promptWithDigest = digest ? `${digest}\n\n${safeMessage}` : safeMessage;
+  let promptForCli = digest ? `${digest}\n\n${safeMessage}` : safeMessage;
+  // FLUX-655: prepend the situational update (computed above) — same contract as the per-ticket chat.
+  if (resumePreamble) {
+    promptForCli = `${resumePreamble}\n\n---\n\n${promptForCli}`;
+  }
   const meArgs = modelEffortArgs(session, 'medium');
   // FLUX-691: `--include-partial-messages` → token-by-token live streaming on the board send path.
   const claudeArgs = session.claudeSessionId
-    ? ['-p', promptWithDigest, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...boardMcpArgs()]
-    : ['-p', promptWithDigest, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...boardMcpArgs()];
+    ? ['-p', promptForCli, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...boardMcpArgs()]
+    : ['-p', promptForCli, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...boardMcpArgs()];
   session.args = claudeArgs;
   const proc = spawnClaudeForBoard(claudeArgs, session.executionRoot ?? workspaceRoot);
   wireBoardProc(proc, session, () => { session.status = 'waiting-input'; });

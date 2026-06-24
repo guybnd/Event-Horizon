@@ -57,7 +57,7 @@ export async function getDefaultBranch(): Promise<string> {
   }
 }
 
-export async function getTicketBranchStatus(name: string): Promise<{ exists: boolean; aheadCount: number; behindCount: number }> {
+export async function getTicketBranchStatus(name: string, base?: string): Promise<{ exists: boolean; aheadCount: number; behindCount: number }> {
   try {
     await git(['rev-parse', '--verify', name]);
   } catch {
@@ -65,8 +65,10 @@ export async function getTicketBranchStatus(name: string): Promise<{ exists: boo
   }
 
   try {
-    const base = await getDefaultBranch();
-    const { stdout } = await git(['rev-list', '--left-right', '--count', `${base}...${name}`]);
+    // FLUX-716: accept a pre-resolved default branch so a caller that already knows it (the resume
+    // preamble resolves it once per turn) doesn't pay a second `getDefaultBranch()` git spawn.
+    const baseBranch = base ?? await getDefaultBranch();
+    const { stdout } = await git(['rev-list', '--left-right', '--count', `${baseBranch}...${name}`]);
     const parts = stdout.trim().split(/\s+/);
     const behindCount = parseInt(parts[0] ?? '0', 10) || 0;
     const aheadCount = parseInt(parts[1] ?? '0', 10) || 0;

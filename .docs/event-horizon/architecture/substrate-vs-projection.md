@@ -43,8 +43,9 @@ the design *reconciles* them rather than inventing a new one:
 
 1. **Raw substrate (this file).** `agents/claude-code.ts` tees every raw stream-json
    line from the `claude` CLI into it; `routes/cli-session.ts` + `ask-questions.ts`
-   append synthetic `user` / `ask-question` / `ask-answer` events. This is the source
-   of truth.
+   append synthetic `user` / `ask-question` / `ask-answer` events, and `claude-code.ts`
+   appends a synthetic `resume-preamble` event on a warm-resumed turn (FLUX-655 — see
+   below). This is the source of truth.
 2. **The ticket-history `agent_session.progress[]`** (in `<taskId>.md` frontmatter, via
    `task-store.ts` + `history.ts`) is **already a projection** — `compactSessionProgress()`
    drops raw text, keeps tool/info entries + the last two text chunks, sets
@@ -99,6 +100,30 @@ The grooming open question (content-hash vs monotonic seq) is resolved in favour
 stream-json events have no reliable timestamp, so the envelope stamps wall-clock at
 append time. Ordering of record is always `seq`, never `ts`.
 
+### 4.2 Synthetic `resume-preamble` event (FLUX-655)
+
+On a **warm-resumed** turn (the session already has a `claudeSessionId`), `claude-code.ts`
+re-grounds the agent in the moved working tree by prepending a compact *situational update*
+to the CLI prompt — only when the world actually moved (branch fell behind, the default
+branch rewrote files underneath the branch, or sibling tickets reached a terminal/merged
+status). When there is no delta, nothing is injected (no wasted tokens).
+
+The injected context is recorded as its **own** durable substrate event so it is
+reconstructable and the user's raw message stays clean (the preamble is **never** folded
+into the `user` event):
+
+```jsonc
+{ "type": "resume-preamble", "text": "```situational-update …```", "timestamp": "2026-06-23T…Z" }
+```
+
+`classifyRole` maps it to `unknown` and `projectTranscript` currently skips it, so it does
+not render as a chat bubble — a subtle "context update" chip in `ChatPane` is optional
+follow-up polish. The assembler (`engine/src/resume-preamble.ts` → `buildResumePreamble`)
+is standalone and side-effect-free beyond git/`tasksCache` reads, so the cold-resume
+re-prime path (FLUX-602) can reuse it. It is size-capped (~1–2k chars; file/ticket lists
+truncated with a "+N more" tail) and fully best-effort (any git hiccup ⇒ `null` ⇒ the turn
+proceeds with the prompt untouched).
+
 ## 5. Backward compatibility — legacy lines
 
 Live transcripts written before this ticket contain bare raw events (no envelope). The
@@ -152,6 +177,43 @@ the safety guarantee the epic rests on. The concrete op vocabulary is each verb'
 ticket; only the *seam* (a trailing `ops` parameter and the addressable turn ids the ops
 reference) is fixed here.
 
+### 6.2 The op-log STORE and the `extract` op (FLUX-656)
+
+FLUX-658 fixed only the projection *seam*; it did not read or write a log. **FLUX-656 adds
+the store** — an append-only JSONL at `<fluxDir>/transcripts/_curation-ops.jsonl`
+(`engine/src/curation-ops.ts`), with `appendCurationOp(op)` / `readCurationOps()`, serialized
+behind a write-queue exactly like the transcript substrate. This is the **shared** log: merge
+([[merge-verb-fold-chats]], FLUX-657) reuses the same file, helpers, and source-attribution
+convention so `board-rebase.ts` drives both verbs uniformly.
+
+The first concrete op is **`extract`** — the promotion gate. A chat starts as turns in the
+orchestrator thread (`__board__`); it materializes into a card only when a topic-slice is
+**carved** out of the stream:
+
+```jsonc
+{ "op": "extract", "id": "<uuid>", "into": "FLUX-700", "from": "__board__",
+  "fromSeq": 12, "toSeq": 20, "by": "Agent", "ts": "..." }
+```
+
+- `into` = the new ticket the slice seeds; `from` = the source stream; `fromSeq`/`toSeq` =
+  the inclusive seq range of the topic-slice.
+- **Reference, not copy.** The sliced `__board__` turns stay in their immutable substrate.
+  The new card's view is RE-DERIVED: `readTranscriptMessages(into)` reads the op-log, finds
+  ops whose `into` matches, gathers each `sliceTurns(from, fromSeq, toSeq)`, prepends them
+  (in op order, ahead of the card's own turns), and projects. Remove the op → the view
+  reverts. The source substrate is **byte-for-byte unchanged**.
+- **Cross-stream resolution lives in the reader, not the projector.** `projectTranscript`
+  stays pure over the flat turn list it is handed; `transcript.ts`'s `gatherTurnsForView`
+  does the op-log read + slice-gather. Gathered (foreign) turns keep their own `streamId`;
+  passing the card's id as `projectTranscript`'s `homeStreamId` tags those messages with
+  `sourceStream` for an attribution badge. This is the same seam merge consumes.
+- **Engine entrypoint + gating.** `extractTicket(opts)` (`engine/src/extract.ts`) is the one
+  shared path behind both the `extract_ticket` MCP tool and the board-rebase `promote`
+  executor. It validates the range/source (inverted range, unknown stream, empty slice →
+  clear error, no ticket created) BEFORE `createTask`, so there is no partial state. Extract
+  is never auto-applied: it reaches the engine only via the human-approved board-rebase
+  ritual or a direct call that hits the FLUX-605 CONFIRM gate.
+
 ## 7. Authored vs projected — field map
 
 | Concern | Classification | Notes |
@@ -180,3 +242,8 @@ projection equivalence.
 merge [[merge-verb-fold-chats]], archive, board-rebase [[orchestrator-triage-board-rebase]])
 — this ticket only fixes the op-log seam and slice primitives they call. Resume preamble
 ([[FLUX-655]]) is independent.
+
+> **Update (FLUX-656, shipped):** the op-log STORE and the **`extract`** verb now exist —
+> see §6.2. FLUX-656 created `engine/src/curation-ops.ts` (the shared append-only op-log) and
+> `engine/src/extract.ts` (`extractTicket`), wired the board-rebase `promote` executor, and
+> registered the `extract_ticket` MCP tool. Merge (FLUX-657) reuses the same store.

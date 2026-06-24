@@ -11,12 +11,20 @@ Scope: Write code, validate logic, format commits, and close tickets during the 
 
 # Event Horizon Agent — Implementation Skill
 
-Version: 2.5.0
+Version: 2.6.0
 
 ## When This Skill Applies
 
 Load this skill when a ticket's status is `Todo` or `In Progress`.
 Refer to the orchestrator skill for the ticket model, APIs, and end-to-end checklist.
+
+## Commit-Before-Ready — CRITICAL (FLUX-730)
+
+**If the ticket has a branch or worktree, you MUST `git commit` your work BEFORE moving it to `Ready`.** Moving to `Ready` is what opens the PR for review, and a branch with **no commits ahead of base cannot open a PR** — so reaching `Ready` uncommitted means the work sits silently in the worktree and no review ever happens (the FLUX-716/717/719 incident).
+
+- **The engine now ENFORCES this for worktree branches.** `change_status → Ready` is **refused** (status unchanged, an error returned) when a worktree branch has 0 commits ahead of base. You will *not* reach `Ready`; you'll get an error telling you to commit and retry. Don't fight it — commit, then retry the move.
+- Do **not** confuse this with the branchless flow below. **Branch/worktree ticket → commit, THEN `Ready`.** Branchless ticket → stay uncommitted until `finish`. These are opposite; never apply the branchless "don't commit yet" habit to a branch/worktree ticket.
+- One focused commit with a real message ("Add X", not "wip"). The engine pushes it for you when you move to `Ready`; `finish` then merges the resulting PR.
 
 ## End-of-Turn Action Contract — CRITICAL (FLUX-651)
 
@@ -30,7 +38,7 @@ If you leave the ticket parked in a working status (`Grooming` / `In Progress`) 
 ## Implementation Workflow
 
 1. Use `get_ticket` to read the full ticket, including all history, before touching any file.
-2. **Check for a branch.** Call `get_branch` on the ticket. If `branch` is set, run `git fetch origin <branch>` then `git checkout <branch>` before making any changes (the branch is created remotely via the portal and may not exist locally yet). If no branch is set, proceed on the current branch (the user chose "start normally" at task start). **Exception — dedicated worktree:** if your working directory is already inside `.eh-worktrees/` (an Event Horizon task worktree), you are ALREADY checked out on the ticket branch in an isolated tree — do **not** `git checkout` (it's unnecessary, and you must never switch the worktree's branch). Just work in place.
+2. **Check for a branch.** Call `get_branch` on the ticket. If `branch` is set, run `git fetch origin <branch>` then `git checkout <branch>` before making any changes (the branch is created remotely via the portal and may not exist locally yet). If no branch is set, proceed on the current branch (the user chose "start normally" at task start). **Exception — dedicated worktree:** if your working directory is already inside `.eh-worktrees/` (an Event Horizon task worktree), you are ALREADY checked out on the ticket branch in an isolated tree — do **not** `git checkout` (it's unnecessary, and you must never switch the worktree's branch). Just work in place — and remember you **MUST `git commit` in the worktree before `Ready`** (the engine refuses the `Ready` move otherwise — see "Commit-Before-Ready" above).
 3. For M+ effort tickets, check `.docs/INDEX.md` for relevant docs. Read nearby implementation files. Prefer the smallest owning surface.
 4. Use `add_comment` to post your implementation plan before substantial work.
 5. Use `change_status` with `newStatus: 'In Progress'` before the first substantive code change.
@@ -38,7 +46,7 @@ If you leave the ticket parked in a working status (`Grooming` / `In Progress`) 
 7. Use `log_progress` to record progress when scope changes, validation fails, or the user redirects.
 8. If clarification is needed, use `change_status` with `newStatus: 'Require Input'` and a `comment` — do not ask only in chat.
 9. When moving to `Ready`: use `change_status` with `newStatus: 'Ready'` and a `comment` summarizing what was implemented, validated, and any caveats.
-   - **Branch / worktree tickets (PR flow):** **commit your work BEFORE moving to `Ready`** (one focused commit; the engine pushes it for you). Moving to `Ready` with a branch opens a PR for review, and a branch with **no commits ahead of base can't open a PR** — an uncommitted branch ticket is flagged with a notification telling you to commit. Never leave the work uncommitted in the worktree at `Ready`.
+   - **Branch / worktree tickets (PR flow):** **commit your work BEFORE moving to `Ready`** — see "Commit-Before-Ready" above. For a worktree branch the engine **refuses** the `Ready` move with 0 commits ahead (status unchanged); commit, then retry. Moving to `Ready` then opens the PR for review.
    - **Branchless tickets (direct flow):** keep code files uncommitted at this stage; the commit happens at `finish`.
 10. **Before `Ready` or `Done`, update `.docs/` so the docs match the new behavior.** This is part of the ticket, not a follow-up. Check first:
     - `.docs/event-horizon/reference/*` — if you changed ticket schema, MCP tools, REST endpoints, realtime channels, or the agent-adapter contract, the matching reference page MUST be updated.

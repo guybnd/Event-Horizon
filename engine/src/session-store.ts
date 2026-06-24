@@ -525,3 +525,31 @@ export function stopAllSessionsForTask(taskId: string, reason: string) {
     }
   }
 }
+
+// Terminalize STALE PARKED PHASE sessions for a task (status 'waiting-input', phase !== 'chat').
+// A parked phase session waits for input relevant to the ticket's PRIOR status; once the ticket
+// advances (by another actor or a sibling session), that question is abandoned and the session
+// would otherwise linger forever — "active" enough to gate merges (FLUX-636 Tier-2) and 409 new
+// starts (FLUX-667). Unlike stopAllSessionsForTask this is deliberately narrow:
+//   • only 'waiting-input' → never kills the live calling agent / an active group (they're 'running').
+//   • only phase !== 'chat' → the persistent per-ticket chat conversation (FLUX-602) must survive
+//     status changes; it is not bound to a single phase.
+// Idempotent: reaped sessions are no longer 'waiting-input', so a second call is a no-op.
+// Returns the sessions it terminalized so callers can record an activity note (FLUX-721).
+export function reapStaleParkedSessions(taskId: string, reason: string): CliSessionRecord[] {
+  const reaped = getParkedSessionsForTask(taskId).filter(s => s.phase !== 'chat');
+  const now = new Date().toISOString();
+  for (const session of reaped) {
+    session.requestedStop = true;
+    session.status = 'cancelled';
+    session.endedAt = now;
+    if (session.proc) {
+      try {
+        session.proc.kill('SIGTERM');
+      } catch (error) {
+        console.warn(`Failed to reap stale parked session ${session.id} for task ${taskId} during ${reason}:`, error);
+      }
+    }
+  }
+  return reaped;
+}

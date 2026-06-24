@@ -78,6 +78,8 @@ export function StartTaskPrompt({ task, onConfirm, onCancel }: StartTaskPromptPr
   return (
     <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onCancel}>
       <div
+        role="dialog"
+        aria-modal="true"
         className="w-80 rounded-xl border border-gray-200 bg-white p-5 shadow-2xl dark:border-white/10 dark:bg-[#1a1b23]"
         onClick={(e) => e.stopPropagation()}
       >

@@ -289,9 +289,16 @@ export function PreferencesSection({
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <span className="block text-sm font-bold text-gray-800 dark:text-gray-200 mb-0.5">Board Card Click Behavior</span>
-              <span className="text-xs text-gray-500">Choose whether clicking a board card opens the full ticket view or the popup editor. The shipped default is full view.</span>
+              <span className="text-xs text-gray-500">Choose what opening a ticket (board card, search, notifications, links) does: the chat-aligned view with the ticket panel, the full ticket view, or the popup editor. The default is chat view.</span>
             </div>
             <div className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white p-1 dark:border-white/10 dark:bg-black/20">
+              <button
+                type="button"
+                onClick={() => setBoardCardOpenMode('chat')}
+                className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${boardCardOpenMode === 'chat' ? 'bg-primary text-white shadow-sm' : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/5'}`}
+              >
+                Chat View
+              </button>
               <button
                 type="button"
                 onClick={() => setBoardCardOpenMode('full')}

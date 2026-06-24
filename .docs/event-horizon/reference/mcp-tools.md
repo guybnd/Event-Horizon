@@ -31,7 +31,7 @@ Key properties:
 
 ### Stdio (headless `--mcp` fallback)
 
-`startMcpServer()` keeps the original stdio behaviour for the headless entry point (`engine/src/index.ts --mcp`, also reachable via `npx tsx engine/src/mcp-server.ts --workspace /path/to/project`). It calls the same `buildMcpServer()` then connects a `StdioServerTransport`. Logs go to stderr so they never corrupt protocol framing on stdout. The worktree-redirect machinery (`EH_CANONICAL_WORKSPACE` / `resolveMainWorktree`) that lets a stdio server in a worktree bind to the canonical store is retained for this path (its broader fate is tracked in FLUX-646).
+`startMcpServer()` keeps the original stdio behaviour for the headless entry point (`engine/src/index.ts --mcp --workspace /path/to/project`). It calls the same `buildMcpServer()` then connects a `StdioServerTransport`. Logs go to stderr so they never corrupt protocol framing on stdout. The worktree-redirect machinery (`EH_CANONICAL_WORKSPACE` / `resolveMainWorktree`) that lets a stdio server in a worktree bind to the canonical store is retained for this path (its broader fate is tracked in FLUX-646).
 
 ## Tool index
 
@@ -48,6 +48,7 @@ Key properties:
 | [`read_group_doc`](#read_group_doc) | Group docs — Read | — |
 | [`submit_group_doc`](#submit_group_doc) | Group docs — Write | yes |
 | [`delete_group_doc`](#delete_group_doc) | Group docs — Write | yes |
+| [`extract_ticket`](#extract_ticket) | Mutation (gated) | yes (CONFIRM) |
 | [`update_ticket`](#update_ticket) | Mutation | yes |
 | [`change_status`](#change_status) | Mutation | yes (enforced) |
 | [`archive_ticket`](#archive_ticket) | Mutation | yes |
@@ -277,6 +278,39 @@ Create a new ticket.
 
 **Errors:** `Workspace is activating, please retry`; `Schema validation failed: …`.
 
+### `extract_ticket`
+
+The **promotion gate** (FLUX-656). Carve a topic-slice out of a conversation stream — the
+orchestrator thread `__board__` by default — into a NEW ticket. A chat starts as turns in the
+orchestrator thread and *materializes into a card only when it crosses a threshold*; promotion
+is **extraction, not 1:1** — address the slice by `seq` range on the source stream.
+
+| Input | Type | Required | Default |
+|-------|------|----------|---------|
+| `from` | string | no | `__board__` |
+| `fromSeq` | number (int) | yes | — |
+| `toSeq` | number (int) | yes | — |
+| `title` | string | yes | — |
+| `priority` | string | no | `None` |
+| `effort` | string | no | `None` |
+| `tags` | string[] | no | `[]` |
+| `body` | string | no | `''` |
+
+**Output:** `{ id, title, turnsExtracted }`.
+
+**Side effects:** creates the new ticket (`create_ticket` path) and appends one `extract` op to
+the curation op-log (`<fluxDir>/transcripts/_curation-ops.jsonl`). The source turns are **never
+moved or copied** — the new card's transcript re-derives the slice from substrate + op-log, so
+extract is additive and un-doable (remove the op → the view reverts).
+
+**Gating (human-approval invariant):** `extract_ticket` is in the **CONFIRM** permission tier
+— a direct call by a gated session prompts the human. The orchestrator does not call it
+autonomously; it proposes a `promote` item via [`propose_board_rebase`](#propose_board_rebase),
+and the approved item runs through the same `extractTicket()` engine path.
+
+**Errors** (validated before any ticket is created — no partial state): inverted range
+(`fromSeq > toSeq`), non-finite seqs, unknown source stream, or an empty slice → `extract: …`.
+
 ### `update_ticket`
 
 Update metadata. Does **not** change status — use `change_status` for that.
@@ -306,12 +340,15 @@ Move a ticket to a new status.
 
 - Transitioning **to** `Require Input` requires `comment` (the question to ask the user).
 - Transitioning **to** `Ready` requires `comment` (the completion summary), unless `config.requireCommentOnStatusChange === false`.
+- **Commit-before-Ready for worktree branches (FLUX-730).** Transitioning **to** `Ready` is **refused** (error result, status unchanged) when the ticket's branch has a dedicated worktree **and** the branch has **0 commits ahead** of the default branch — an uncommitted worktree can never open a PR, so the move would land a silent "Ready, no PR". The error distinguishes "work done but uncommitted" (worktree has changes) from "no changes yet" and tells the agent to commit then retry. **Scoped to worktree branches only:** plain-branch tickets keep the soft warning (notification + activity, move still proceeds), and branchless tickets are unaffected (they legitimately stay uncommitted until `finish`). On a successful `Ready` move for a branch with commits, the engine pushes and opens the PR (`implementationLink` + `open-pr` swimlane).
 - The `Require Input` / `Ready` status names are read from `configCache.requireInputStatus` / `readyForMergeStatus` and may be renamed in board config.
 - **Scatter-gather guard:** If the ticket has 2+ active sessions where at least one has `patternPosition: 'step'`, status changes are rejected unless `callerRole` is `'orchestrator'` or `'lead'`. This prevents individual reviewers from moving the ticket while peers are still reviewing. Affected sessions should use `add_comment` instead.
 
 **Output:** `<id> moved to <status>`.
 
 **Side effects:** appends a `comment` entry when one is provided, plus a `status_change` entry recording the transition.
+
+- **Stale parked-session reaping (FLUX-721).** On a genuine **forward** transition (any `newStatus` other than `Require Input`, where parking is legitimate), the ticket's sessions still parked at `waiting-input` on an **earlier phase** are terminalized (`reapStaleParkedSessions`). This prevents grooming/implementation sessions left parked after the ticket advances from lingering as zombies that gate merges (the [`POST /:id/pr/merge`](rest-api.md) Tier-2 guard) or 409 new session starts. The live calling agent (`running`) and the persistent per-ticket **`chat`** session (`phase: 'chat'`) are preserved. An `activity` entry records any reap.
 
 ### `archive_ticket`
 
@@ -322,7 +359,7 @@ Safely remove a ticket from the active board by moving it to the **Archived** st
 | `ticketId` | string | yes | |
 | `comment` | string | no | Reason for archiving (recorded as a `comment` entry) |
 
-**Behavior:** no-op-safe — returns `<id> is already <Archived>` if the ticket is already archived. Clears any active swimlane (and dismisses its notifications) so the archived ticket doesn't carry a stale blocked flag.
+**Behavior:** no-op-safe — returns `<id> is already <Archived>` if the ticket is already archived. Clears any active swimlane (and dismisses its notifications) so the archived ticket doesn't carry a stale blocked flag. Reaps stale parked **phase** sessions (`waiting-input`, non-`chat`) so an archived ticket leaves no session zombies behind (FLUX-721).
 
 **Output:** `<id> archived (moved to <Archived>)`.
 
@@ -389,6 +426,7 @@ Atomic close-out: set `implementationLink`, append a completion comment, move st
 - **Shared-PR guard (FLUX-569):** finishing one member of a branch shared by **non-terminal sibling tickets** is refused — merging would advance them all to Done as a one-way door (the FLUX-556/PR#6 incident). The error names the siblings; either finish/close them first, merge via the PR ticket, or re-run with `force: true` to land the whole shared PR. **PR tickets (`kind:'pr'`) are exempt** — merging a PR ticket to advance its members is the sanctioned shared-merge surface.
 - No commits ahead / merge failure / `gh` unavailable → bounces the ticket back to In Progress with an actionable comment (no partial Done).
 - Writes status + link + comment in one disk write — no partial state on failure.
+- Reaps stale parked **phase** sessions (`waiting-input`, non-`chat`) once the ticket is Done, so a finished ticket leaves no session zombies behind (FLUX-721).
 
 ---
 

@@ -6,14 +6,14 @@ import type { Task, TaskLiveEvent, AgentSessionEntry, AgentSessionProgress } fro
 import { isAgentSession, normalizeSubtaskId } from '../types';
 import { AlertCircle, ChevronUp, ChevronDown, Equal } from 'lucide-react';
 import { useAppSelector, useAppActions, useLiveSession, shallowEqual } from '../store/useAppSelector';
-import { sendTaskCliInput, updateTask, fetchWorkflows, detachWorktree, type WorkflowTemplate } from '../api';
-import { runAgentAction, launchOrchestration, launchPhaseDefault, getOrchestrationMode, phaseCombiner, phaseLaunchStatus, resolvePhaseDefaultId, statusToPhase, type LaunchPhase } from '../agentActions';
-import { type OrchestrationLaunchPlan } from '../components/OrchestrationLauncher';
+import { useDockActions } from '../components/DockProvider';
+import { sendTaskCliInput, updateTask, detachWorktree } from '../api';
+import { useTicketActions } from './useTicketActions';
+import { type LaunchPhase } from '../agentActions';
 import { getReadyForMergeStatus, isPromptableStatus, isTaskAwaitingInput } from '../workflow';
 import { epicDeckSubtasks } from '../lib/decks';
 import { isEpic as isEpicTask, getDoneStatuses } from '../lib/epics';
 import { groupSessions, aggregateGroup, isGroupLive, isCombinerPending } from '../orchestration';
-import { resolveEffectiveAgent } from '../utils';
 import { useAnimationControls } from 'framer-motion';
 import { tintFill, type StatusTint } from '../statusStyles';
 
@@ -66,6 +66,9 @@ export function useTaskCardController({
 }: TaskCardControllerArgs) {
   const EFFORT_OPTIONS = ['None', 'XS', 'S', 'M', 'L', 'XL'];
   const { openTask, openTaskModal, openTaskFullView, saveConfig, triggerRefresh, ensureReadStateLoaded, markCommentRead: ctxMarkCommentRead, markAllCommentsRead: ctxMarkAllCommentsRead, refreshWorktrees, setView, setChangesFocus } = useAppActions();
+  // FLUX-744: opening a ticket from a card now lands in the chat-aligned view with its sideview open
+  // (via the dock) instead of the center modal — see `openBoardTask`.
+  const { openTicket } = useDockActions();
   const config = useAppSelector((s) => s.config);
   const currentUser = useAppSelector((s) => s.currentUser);
   // Fine-grained slices (FLUX-625): select per-card derived values so a worktree or
@@ -218,8 +221,6 @@ export function useTaskCardController({
         setIsEditingTitle(false);
         setTitleValue(task.title || '');
         setContextMenuPos(null);
-        setReviewSelectorOpen(false);
-        setReturnPromptOpen(false);
       }
     };
 
@@ -288,24 +289,13 @@ export function useTaskCardController({
   const isPromptStatus = isPromptableStatus(task.status, config) || isTaskAwaitingInput(task);
   const readyForMergeStatus = getReadyForMergeStatus(config);
   const isReadyForMerge = task.status === readyForMergeStatus;
-  const [finishBusy, setFinishBusy] = useState(false);
-  const [actionBusy, setActionBusy] = useState(false);
-  const [reviewSelectorOpen, setReviewSelectorOpen] = useState(false);
-  const [reviewModalOpen, setReviewModalOpen] = useState(false);
-  const [launcherPhase, setLauncherPhase] = useState<LaunchPhase>('review');
-  const [launcherTemplateId, setLauncherTemplateId] = useState<string | undefined>(undefined);
-  const [reviewBusy, setReviewBusy] = useState(false);
-  const [returnPromptOpen, setReturnPromptOpen] = useState(false);
-  const [returnReason, setReturnReason] = useState('');
-  const [returnBusy, setReturnBusy] = useState(false);
-  const [showStartPrompt, setShowStartPrompt] = useState(false);
+  // FLUX-715: the launch/dispatch/transition slice now lives in the shared useTicketActions hook.
+  // The card renders its buttons from `ticketActions` (via <TicketActionsView variant="card">) and
+  // the launcher + start-prompt portals via <TicketActionsLaunchers>. Only branch-copy and the
+  // "is an action menu open" flag (for hover-popup suppression) stay card-local.
+  const ticketActions = useTicketActions(task);
   const [branchCopied, setBranchCopied] = useState(false);
-  const [agentMenuOpen, setAgentMenuOpen] = useState(false);
-  const [finishMenuOpen, setFinishMenuOpen] = useState(false);
-  const [phaseTemplates, setPhaseTemplates] = useState<WorkflowTemplate[] | null>(null);
-  const agentMenuRef = useRef<HTMLDivElement | null>(null);
-  const finishMenuRef = useRef<HTMLDivElement | null>(null);
-  const reviewSelectorRef = useRef<HTMLDivElement | null>(null);
+  const [actionMenuActive, setActionMenuActive] = useState(false);
   const comments = task.history?.filter(e => e.type === 'comment') ?? [];
   const topLevelComments = [...comments.filter(c => !c.replyTo)].reverse();
   const repliesByParentId = new Map<string, typeof comments>();
@@ -349,77 +339,6 @@ export function useTaskCardController({
     }
   };
 
-  const sendFinishCommand = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setFinishBusy(true);
-    try {
-      const command = `finish ${task.id}`;
-      if (hasActiveCliSession) {
-        await sendTaskCliInput(task.id, command, currentUser);
-      } else {
-        const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
-        await runAgentAction({
-          taskId: task.id,
-          framework,
-          action: { kind: 'command', verb: 'finish' },
-          currentUser,
-          phase: 'finalize',
-        });
-      }
-      triggerRefresh();
-    } finally {
-      setFinishBusy(false);
-    }
-  };
-
-  const statusActionMap: Record<string, { label: string; verb: 'groom' | 'implement' | 'finish' }> = {
-    'Grooming': { label: 'Start grooming', verb: 'groom' },
-    'Todo': { label: 'Implement', verb: 'implement' },
-    'In Progress': { label: 'Continue', verb: 'implement' },
-  };
-  const statusAction = !hasActiveCliSession && !isReadyForMerge ? statusActionMap[task.status] : null;
-
-  // Returns false if no persona could be resolved (caller should fall back to the launcher UI).
-  const launchPhaseSession = async (phase: LaunchPhase): Promise<boolean> => {
-    const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
-    const result = await launchPhaseDefault({
-      taskId: task.id,
-      framework,
-      phase,
-      currentUser,
-      phaseDefaults: config?.phaseDefaults,
-    });
-    return result !== null;
-  };
-
-  const sendStatusAction = async (e: React.MouseEvent, skipBranchPrompt = false) => {
-    e.stopPropagation();
-    if (!statusAction) return;
-    if (task.status === 'Todo' && !task.branch && !skipBranchPrompt) {
-      setShowStartPrompt(true);
-      return;
-    }
-    setActionBusy(true);
-    try {
-      const phase: LaunchPhase = statusAction.verb === 'groom' ? 'grooming' : 'implementation';
-      await launchPhaseSession(phase);
-      triggerRefresh();
-    } finally {
-      setActionBusy(false);
-    }
-  };
-
-  const handleStartPromptConfirm = async (_branch: string | null) => {
-    setShowStartPrompt(false);
-    setActionBusy(true);
-    try {
-      await launchPhaseSession('implementation');
-      triggerRefresh();
-    } finally {
-      setActionBusy(false);
-    }
-  };
-
   // Inline "close worktree" (detach): removes the dedicated worktree but keeps the
   // branch, surfacing any uncommitted work back onto the main tree. Optimistic —
   // refreshes worktrees + tasks so the badge clears without a manual page reload.
@@ -443,163 +362,10 @@ export function useTaskCardController({
     }
   };
 
-  const openAgentLauncher = (variant: 'single' | 'multi') => {
-    const phase = statusToPhase(task.status, { readyStatus: readyForMergeStatus });
-    setLauncherPhase(phase);
-    setLauncherTemplateId(`builtin-${phase}-${variant}`);
-    setReviewModalOpen(true);
-  };
-
-  const cardPhase = statusToPhase(task.status, { readyStatus: readyForMergeStatus });
-
-  // Lazily load templates the first time the agent menu is opened.
-  const toggleAgentMenu = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setAgentMenuOpen((open) => !open);
-    if (phaseTemplates === null) {
-      fetchWorkflows().then(setPhaseTemplates).catch(() => setPhaseTemplates([]));
-    }
-  };
-
-  // Templates that configure the current phase.
-  const templatesForCardPhase = useMemo(
-    () => (phaseTemplates ?? []).filter((w) => w.phases?.[cardPhase as keyof typeof w.phases]),
-    [phaseTemplates, cardPhase],
-  );
-  const singleDefaultId = resolvePhaseDefaultId(config?.phaseDefaults, cardPhase, 'single');
-  const multiDefaultId = resolvePhaseDefaultId(config?.phaseDefaults, cardPhase, 'multi');
-  const singleDefaultName = templatesForCardPhase.find((w) => w.id === singleDefaultId)?.name;
-  const multiDefaultName = templatesForCardPhase.find((w) => w.id === multiDefaultId)?.name;
-  const otherCardTemplates = templatesForCardPhase.filter(
-    (w) => w.id !== singleDefaultId && w.id !== multiDefaultId,
-  );
-
-  const openLauncherWithTemplate = (templateId: string) => {
-    setAgentMenuOpen(false);
-    setLauncherPhase(cardPhase);
-    setLauncherTemplateId(templateId);
-    setReviewModalOpen(true);
-  };
-
-  // Open the launcher pinned to an explicit phase (FLUX-568). The PR deck's Review and
-  // Continue-development buttons both route through here so the phase is set deterministically
-  // — relying on the default launcherPhase ('review') would leave it stale after a
-  // Continue-development ('implementation') open, mislabelling the next Review.
-  const openLauncherInPhase = (phase: LaunchPhase, templateId?: string) => {
-    setLauncherPhase(phase);
-    setLauncherTemplateId(templateId);
-    setReviewModalOpen(true);
-  };
-
-  // Finalize templates (docs check / commit / ticket tidy / merge PR) for the Finish menu.
-  const finalizeTemplates = useMemo(
-    () => (phaseTemplates ?? []).filter((w) => w.phases?.finalize),
-    [phaseTemplates],
-  );
-  const finalizeSingleId = resolvePhaseDefaultId(config?.phaseDefaults, 'finalize', 'single');
-  const finalizeMultiId = resolvePhaseDefaultId(config?.phaseDefaults, 'finalize', 'multi');
-  const finalizeSingleName = finalizeTemplates.find((w) => w.id === finalizeSingleId)?.name;
-  const finalizeMultiName = finalizeTemplates.find((w) => w.id === finalizeMultiId)?.name;
-  const otherFinalizeTemplates = finalizeTemplates.filter(
-    (w) => w.id !== finalizeSingleId && w.id !== finalizeMultiId,
-  );
-
-  const toggleFinishMenu = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setFinishMenuOpen((open) => !open);
-    if (phaseTemplates === null) {
-      fetchWorkflows().then(setPhaseTemplates).catch(() => setPhaseTemplates([]));
-    }
-  };
-
-  // Open the launcher in the finalize phase (independent of the card's status phase).
-  const openFinalizeLauncher = (templateId: string) => {
-    setFinishMenuOpen(false);
-    setLauncherPhase('finalize');
-    setLauncherTemplateId(templateId);
-    setReviewModalOpen(true);
-  };
-
-  // Primary one-click: launch the phase's single default.
-  const launchSingleDefault = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setAgentMenuOpen(false);
-    if (task.status === 'Todo' && !task.branch) { setShowStartPrompt(true); return; }
-    setReviewBusy(true);
-    try {
-      const launched = await launchPhaseSession(cardPhase);
-      if (!launched) { openAgentLauncher('single'); return; }
-      triggerRefresh();
-    } finally {
-      setReviewBusy(false);
-    }
-  };
-
-  const handleCardReviewLaunch = async (plan: OrchestrationLaunchPlan) => {
-    setReviewModalOpen(false);
-    setReviewBusy(true);
-    try {
-      const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
-      // A single selected agent launches standalone — bypass orchestration gating entirely.
-      if (plan.personas.length === 1) {
-        await runAgentAction({
-          taskId: task.id,
-          framework,
-          action: { kind: 'persona', personaId: plan.personas[0].id, focusComment: plan.comment || undefined },
-          currentUser,
-          effortOverride: plan.effort,
-          preStatus: phaseLaunchStatus(launcherPhase),
-          phase: launcherPhase,
-        });
-        triggerRefresh();
-        return;
-      }
-      const def = getOrchestrationMode(plan.mode);
-      const participants = plan.personas.map(p => ({
-        role: `${launcherPhase}:${p.id}`,
-        label: p.label,
-        personaId: p.id,
-        focusComment: plan.comment || undefined,
-      }));
-      // Combiner/lead persona: use explicit lead from plan (supervisor picker), else phase default.
-      const combiner = plan.leadPersona
-        ? { personaId: plan.leadPersona.id, label: plan.leadPersona.label }
-        : phaseCombiner(launcherPhase, plan.mode);
-      const lead = def.hasLead && combiner
-        ? { role: combiner.personaId, label: combiner.label, personaId: combiner.personaId }
-        : undefined;
-      await launchOrchestration({
-        taskId: task.id,
-        framework,
-        mode: plan.mode,
-        participants,
-        lead,
-        currentUser,
-        effortOverride: plan.effort,
-        preStatus: phaseLaunchStatus(launcherPhase),
-        phase: launcherPhase,
-      });
-      triggerRefresh();
-    } finally {
-      setReviewBusy(false);
-    }
-  };
-
-  const sendReturn = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!returnReason.trim()) return;
-    setReturnBusy(true);
-    try {
-      const comment = returnReason.trim();
-      const newHistory = [...(task.history || []), { type: 'comment' as const, user: currentUser, date: new Date().toISOString(), comment }];
-      await updateTask(task.id, { status: 'In Progress', history: newHistory, updatedBy: currentUser } as Partial<Task>);
-      triggerRefresh();
-      setReturnPromptOpen(false);
-      setReturnReason('');
-    } finally {
-      setReturnBusy(false);
-    }
-  };
+  // PR-deck launch shortcuts (FLUX-568) route through the shared launcher with an explicit phase
+  // so the phase is set deterministically (the board default would mislabel the next Review).
+  const openLauncherInPhase = (phase: LaunchPhase, templateId?: string) =>
+    ticketActions.openLauncher(phase, templateId);
 
   const getTagColor = (tagName: string) => {
     const tagObj = config?.tags?.find(t => t.name === tagName);
@@ -721,7 +487,16 @@ export function useTaskCardController({
       }
     : {};
 
-  const openBoardTask = (nextTask: Task) => openTask(nextTask);
+  // FLUX-744: open a ticket honoring the boardCardOpenMode preference (default 'chat'). In chat mode we
+  // open the chat-aligned view with its sideview, anchored to spawn from the clicked card. 'full'/'popup'
+  // keep opening the center modal. A task with no id (a not-yet-created draft) always uses the modal.
+  const openBoardTask = (nextTask: Task, from?: HTMLElement | null) => {
+    if (!nextTask.id) { openTask(nextTask); return; }
+    const mode = config?.boardCardOpenMode || 'chat';
+    if (mode === 'full') openTaskFullView(nextTask);
+    else if (mode === 'popup') openTaskModal(nextTask);
+    else openTicket(nextTask.id, from);
+  };
 
   const animationsEnabled = config?.animationsEnabled ?? true;
   const speedMap = { fast: 0.2, normal: 0.4, slow: 0.7 };
@@ -758,13 +533,13 @@ export function useTaskCardController({
   // Immediately dismiss any pending/visible description popup when a blocking overlay or the
   // agent dropdown opens, so it can never appear on top of (or be triggered through) them.
   useEffect(() => {
-    if (!isOverlayOpen && !agentMenuOpen && !finishMenuOpen && !reviewSelectorOpen && !returnPromptOpen) return;
+    if (!isOverlayOpen && !actionMenuActive && !ticketActions.launcherOpen && !ticketActions.startPromptOpen) return;
     if (hoverTimeout.current !== null) {
       window.clearTimeout(hoverTimeout.current);
       hoverTimeout.current = null;
     }
     setIsHovering(false);
-  }, [isOverlayOpen, agentMenuOpen, finishMenuOpen, reviewSelectorOpen, returnPromptOpen]);
+  }, [isOverlayOpen, actionMenuActive, ticketActions.launcherOpen, ticketActions.startPromptOpen]);
 
   useEffect(() => {
     if (isHovering && popupRef.current) {
@@ -822,7 +597,7 @@ export function useTaskCardController({
     if (isDragging) return;
     if (isOverlayOpen) return;
     if (priorityMenuOpen || effortMenuOpen || assigneeMenuOpen || tagMenuOpen || isEditingTitle) return;
-    if (agentMenuOpen || finishMenuOpen || reviewSelectorOpen || returnPromptOpen || reviewModalOpen || showStartPrompt) return;
+    if (actionMenuActive || ticketActions.launcherOpen || ticketActions.startPromptOpen) return;
     // If comment popover is open and was opened by a click (not hover), don't start description timer
     if (commentPopoverOpen && !commentOpenedByHover.current) return;
     // Don't trigger the description popup when the mouse enters via the comment badge
@@ -868,7 +643,7 @@ export function useTaskCardController({
   const startDescriptionTimer = () => {
     if (!config?.hoverPopupsEnabled || isDragging || !lastCardRectRef.current) return;
     if (isOverlayOpen) return;
-    if (agentMenuOpen || finishMenuOpen || reviewSelectorOpen || returnPromptOpen || reviewModalOpen || showStartPrompt) return;
+    if (actionMenuActive || ticketActions.launcherOpen || ticketActions.startPromptOpen) return;
     if (hoverTimeout.current !== null) window.clearTimeout(hoverTimeout.current);
     const delay = config?.hoverPopupDelay ?? 1500;
     hoverTimeout.current = window.setTimeout(() => {
@@ -925,40 +700,6 @@ export function useTaskCardController({
     document.addEventListener('mousedown', handlePointerDown);
     return () => document.removeEventListener('mousedown', handlePointerDown);
   }, [subtaskPopoverOpen]);
-
-  useEffect(() => {
-    if (!reviewSelectorOpen && !returnPromptOpen) return undefined;
-    const handlePointerDown = (e: MouseEvent) => {
-      if (reviewSelectorRef.current && !reviewSelectorRef.current.contains(e.target as Node)) {
-        setReviewSelectorOpen(false);
-        setReturnPromptOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handlePointerDown);
-    return () => document.removeEventListener('mousedown', handlePointerDown);
-  }, [reviewSelectorOpen, returnPromptOpen]);
-
-  useEffect(() => {
-    if (!agentMenuOpen) return undefined;
-    const handlePointerDown = (e: MouseEvent) => {
-      if (agentMenuRef.current && !agentMenuRef.current.contains(e.target as Node)) {
-        setAgentMenuOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handlePointerDown);
-    return () => document.removeEventListener('mousedown', handlePointerDown);
-  }, [agentMenuOpen]);
-
-  useEffect(() => {
-    if (!finishMenuOpen) return undefined;
-    const handlePointerDown = (e: MouseEvent) => {
-      if (finishMenuRef.current && !finishMenuRef.current.contains(e.target as Node)) {
-        setFinishMenuOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handlePointerDown);
-    return () => document.removeEventListener('mousedown', handlePointerDown);
-  }, [finishMenuOpen]);
 
   useEffect(() => {
     const el = tagPreviewRowRef.current;
@@ -1067,52 +808,20 @@ export function useTaskCardController({
     shouldShowProgress,
     isPromptStatus,
     isReadyForMerge,
-    finishBusy,
-    actionBusy,
-    reviewSelectorOpen, setReviewSelectorOpen,
-    reviewModalOpen, setReviewModalOpen,
-    launcherPhase,
-    launcherTemplateId,
-    reviewBusy,
-    returnPromptOpen, setReturnPromptOpen,
-    returnReason, setReturnReason,
-    returnBusy,
-    showStartPrompt, setShowStartPrompt,
     branchCopied, setBranchCopied,
-    agentMenuOpen,
-    finishMenuOpen,
-    agentMenuRef,
-    finishMenuRef,
-    reviewSelectorRef,
     comments,
     topLevelComments,
     repliesByParentId,
     unreadComments,
     hasUnread,
     submitPopoverReply,
-    sendFinishCommand,
-    statusAction,
-    sendStatusAction,
-    handleStartPromptConfirm,
     handleCardDetach,
-    toggleAgentMenu,
-    singleDefaultId,
-    multiDefaultId,
-    singleDefaultName,
-    multiDefaultName,
-    otherCardTemplates,
-    openLauncherWithTemplate,
+    // FLUX-715: the unified ticket-action controller (drives <TicketActionsView variant="card">
+    // + <TicketActionsLaunchers>). `actionMenuActive` flags an open launch menu/picker for
+    // hover-popup suppression; `openLauncherInPhase` is the PR-deck shortcut.
+    ticketActions,
+    actionMenuActive, setActionMenuActive,
     openLauncherInPhase,
-    finalizeSingleId,
-    finalizeMultiId,
-    finalizeSingleName,
-    finalizeMultiName,
-    otherFinalizeTemplates,
-    toggleFinishMenu,
-    openFinalizeLauncher,
-    launchSingleDefault,
-    handleCardReviewLaunch,
-    sendReturn,
     getTagColor,
     getPriorityIcon,
     handlePriorityChange,

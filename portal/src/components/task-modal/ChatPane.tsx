@@ -5,8 +5,8 @@ import { ChatView } from './ChatView';
 import { ChatDiffPanel } from './ChatDiffPanel';
 import { TicketContextCard, SessionMeter } from './chatContext';
 import { parseQuickReplies } from './chatQuickReplies';
-import { TicketActionBar } from '../TicketActionBar';
-import { ChatQuestionPicker } from '../AskQuestionPrompts';
+import { TicketActions } from '../ticket-actions/TicketActions';
+import { ChatPendingInteractions } from '../pendingInteractions';
 import { useDockActions } from '../DockProvider';
 import { useAppSelector, useConfig } from '../../store/useAppSelector';
 import { getRequireInputStatus } from '../../workflow';
@@ -22,7 +22,9 @@ import type { Task } from '../../types';
  */
 export function ChatPane({ task }: { task: Task }) {
   const [open, setOpen] = useState(false);
-  const chat = useChatSession(task.id, open);
+  // FLUX-748: pass `working` (live running session) into the hook so its queue auto-dispatches on
+  // the turn-completion edge.
+  const chat = useChatSession(task.id, open, task.cliSession?.status === 'running');
   const { openChat } = useDockActions();
   const config = useConfig();
   // FLUX-694: board task list backing the composer's ticket autocomplete.
@@ -76,10 +78,13 @@ export function ChatPane({ task }: { task: Task }) {
         quickReplies={quickReplies}
         linkifyTickets
         onSend={chat.send}
+        queued={chat.queued}
+        onEnqueue={chat.enqueue}
+        onDequeue={chat.dequeue}
         onStop={chat.stop}
         onUploadImage={chat.uploadImage}
-        questionPicker={<ChatQuestionPicker conversationId={task.id} />}
-        actions={<TicketActionBar task={task} />}
+        questionPicker={<ChatPendingInteractions conversationId={task.id} />}
+        actions={<TicketActions task={task} variant="compact" />}
         diffBranch={task.branch}
         tickets={tickets}
         meter={<SessionMeter session={task.cliSession} config={config} />}

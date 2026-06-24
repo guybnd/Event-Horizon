@@ -61,16 +61,20 @@ function pkg(target, outBase) {
   }
 }
 
-// Cross-platform zip helpers (FLUX-707). Windows has no `unzip`/`zip`, but its bundled
-// tar.exe (bsdtar, Win10+) both reads and writes zip archives. macOS/Linux keep the proven
-// `unzip`/`zip` CLIs so CI behavior is byte-for-byte unchanged.
+// Cross-platform zip helpers (FLUX-707/FLUX-708). Windows has no `unzip`/`zip`; we drive the
+// System32 bsdtar by ABSOLUTE PATH. A bare `tar` on a Git-for-Windows box resolves to GNU tar
+// (`C:\Program Files\Git\usr\bin\tar.exe`), which cannot read/write zips and fails on the
+// absolute C:\ paths this script uses ("Cannot connect to C: resolve failed"), so package:win
+// would break from a Git-Bash shell. macOS/Linux keep the proven `unzip`/`zip` CLIs unchanged.
+const WIN_BSDTAR = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
+
 function extractZipMember(zipPath, member, destDir) {
   fs.mkdirSync(destDir, { recursive: true });
   const result = process.platform === 'win32'
-    ? spawnSync('tar', ['-xf', zipPath, '-C', destDir, member], { stdio: 'inherit' })
+    ? spawnSync(WIN_BSDTAR, ['-xf', zipPath, '-C', destDir, member], { stdio: 'inherit' })
     : spawnSync('unzip', ['-o', zipPath, member, '-d', destDir], { stdio: 'inherit' });
-  if (result.status !== 0) {
-    console.error(`Failed to extract ${member} from ${path.basename(zipPath)}`);
+  if (result.error || result.status !== 0) {
+    console.error(`Failed to extract ${member} from ${path.basename(zipPath)}${result.error ? `: ${result.error.message}` : ''}`);
     process.exit(result.status ?? 1);
   }
 }
@@ -81,11 +85,11 @@ function createFlatZip(zipPath, filePath) {
   if (process.platform === 'win32') {
     // -C <dir> + basename stores the entry without its directory prefix (the flatten).
     const result = spawnSync(
-      'tar', ['-a', '-cf', zipPath, '-C', path.dirname(filePath), path.basename(filePath)],
+      WIN_BSDTAR, ['-a', '-cf', zipPath, '-C', path.dirname(filePath), path.basename(filePath)],
       { stdio: 'inherit' }
     );
-    if (result.status !== 0) {
-      console.error(`Failed to zip ${path.basename(filePath)}`);
+    if (result.error || result.status !== 0) {
+      console.error(`Failed to zip ${path.basename(filePath)}${result.error ? `: ${result.error.message}` : ''}`);
       process.exit(result.status ?? 1);
     }
   } else {

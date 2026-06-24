@@ -271,6 +271,9 @@ export interface HistoryListProps {
   onReplyPaste: (event: React.ClipboardEvent<HTMLTextAreaElement>) => void;
   onReplyDragOver: (event: React.DragEvent<HTMLTextAreaElement>) => void;
   onReplyDrop: (event: React.DragEvent<HTMLTextAreaElement>) => void;
+  /** FLUX-744: how many (newest-first) entries to show before the "Show more" cutoff. Defaults to 30;
+   *  the ticket sideview's Activity pane passes 3 so it opens as a compact preview. */
+  initialVisibleCount?: number;
 }
 
 const INITIAL_VISIBLE_COUNT = 30;
@@ -281,8 +284,9 @@ export const HistoryList = memo(function HistoryList({
   isRequireInput, taskId, config, replyTextareaRef,
   onMarkCommentRead, onToggleReply, onSetReplyDraft, onClearReplyAssetError,
   onToggleCollapsed, onSendReply, onCancelReply, onReplyPaste, onReplyDragOver, onReplyDrop,
+  initialVisibleCount = INITIAL_VISIBLE_COUNT,
 }: HistoryListProps) {
-  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE_COUNT);
+  const [visibleCount, setVisibleCount] = useState(initialVisibleCount);
   const reversedEntries = useMemo(() => [...topLevelEntries].reverse(), [topLevelEntries]);
   const visibleEntries = reversedEntries.length > visibleCount ? reversedEntries.slice(0, visibleCount) : reversedEntries;
   const hiddenCount = reversedEntries.length - visibleEntries.length;

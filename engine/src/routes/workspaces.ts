@@ -118,12 +118,12 @@ router.post('/switch', async (req, res) => {
   }
 
   try {
-    await activateWorkspace(resolved);
+    const bound = await activateWorkspace(resolved); // canonical bound root (FLUX-711)
     const settings = await loadAppSettings();
-    settings.workspace = resolved;
+    settings.workspace = bound;
     await saveAppSettings(settings);
-    await autoRegisterWorkspace(resolved);
-    res.json({ ok: true, path: resolved });
+    await autoRegisterWorkspace(bound);
+    res.json({ ok: true, path: bound });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

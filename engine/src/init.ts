@@ -99,7 +99,7 @@ function buildDefaultConfig(projectKey: string) {
     requireInputStatus: 'Require Input',
     readyForMergeStatus: 'Ready',
     archiveStatus: 'Archived',
-    boardCardOpenMode: 'full',
+    boardCardOpenMode: 'chat',
     animationsEnabled: true,
     enableFireworks: true,
   };

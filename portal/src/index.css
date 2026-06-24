@@ -1285,42 +1285,31 @@ button:not(:disabled):active {
   z-index: 10;
 }
 
-/* ─── Board FX: Column flow arrows ─────────────────────────────────────── */
-@keyframes flow-drift {
-  0%   { transform: translateY(0); opacity: 0; }
-  20%  { opacity: calc(var(--flow-alpha, 0.5)); }
-  80%  { opacity: calc(var(--flow-alpha, 0.5) * 0.6); }
-  100% { transform: translateY(12px); opacity: 0; }
+/* ─── Board FX: column flow pips (horizontal, under the column title — FLUX-723) ── */
+@keyframes flow-pip-fwd {
+  0%, 100% { transform: translateX(0); }
+  50%      { transform: translateX(2px); }
 }
-@keyframes flow-drift-back {
-  0%   { transform: translateY(0); opacity: 0; }
-  20%  { opacity: calc(var(--flow-alpha, 0.5)); }
-  80%  { opacity: calc(var(--flow-alpha, 0.5) * 0.6); }
-  100% { transform: translateY(-12px); opacity: 0; }
+@keyframes flow-pip-back {
+  0%, 100% { transform: translateX(0); }
+  50%      { transform: translateX(-2px); }
 }
-.flow-arrow {
-  width: 2px;
-  height: 20px;
-  border-radius: 1px;
-  position: relative;
+.flow-pip-fwd { animation: flow-pip-fwd 2s ease-in-out infinite; }
+.flow-pip-back { animation: flow-pip-back 2.4s ease-in-out infinite; animation-delay: 0.6s; }
+@media (prefers-reduced-motion: reduce) {
+  .flow-pip-fwd, .flow-pip-back { animation: none; }
 }
-.flow-arrow::after {
-  content: '';
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 2px;
-  height: 100%;
-  border-radius: 1px;
+
+/* ─── Board FX: Done-column release pulse — the Done title glows (farther the more tickets are
+   waiting) to advertise that hovering it reveals "Release" (FLUX-723). --done-pulse scales the
+   glow radius with the ticket count; --done-glow is the column's hue. ──────────────────────── */
+@keyframes done-pulse {
+  0%, 100% { transform: scale(1);    box-shadow: 0 0 4px 0 var(--done-glow, rgba(16, 185, 129, 0.5)); }
+  50%      { transform: scale(1.04); box-shadow: 0 0 calc(4px + var(--done-pulse, 0px)) 1px var(--done-glow, rgba(16, 185, 129, 0.95)); }
 }
-.flow-arrow-fwd {
-  background: linear-gradient(to bottom, transparent, rgba(99,102,241, calc(var(--flow-alpha, 0.5))));
-  animation: flow-drift 2s ease-in-out infinite;
-}
-.flow-arrow-back {
-  background: linear-gradient(to top, transparent, rgba(251,146,60, calc(var(--flow-alpha, 0.5))));
-  animation: flow-drift-back 2.4s ease-in-out infinite;
-  animation-delay: 0.6s;
+.done-pulse { animation: done-pulse 1.5s ease-in-out infinite; transform-origin: center; }
+@media (prefers-reduced-motion: reduce) {
+  .done-pulse { animation: none; box-shadow: 0 0 5px 0 var(--done-glow, rgba(16, 185, 129, 0.6)); }
 }
 
 /* ─── Board FX: Card foil (ticket DNA) ─────────────────────────────────── */
@@ -1336,10 +1325,10 @@ button:not(:disabled):active {
     hsl(calc(var(--foil-hue, 220) + 40), 70%, 70%) 60%,
     transparent 100%
   );
+  /* FLUX-724: was `mix-blend-mode: overlay/color-dodge`, which forced a per-frame backdrop
+     re-blend (a paint, not a compositor op) on EVERY card — N cards × a perpetual blended
+     animation drained GPU/paint even when idle. Dropping the blend mode makes the shimmer a
+     pure-opacity, compositor-only animation; `will-change` promotes it to its own layer. */
   animation: foil-shimmer 4s ease-in-out infinite;
-  mix-blend-mode: overlay;
-}
-.dark .card-foil {
-  mix-blend-mode: color-dodge;
-  animation: foil-shimmer 4s ease-in-out infinite;
+  will-change: opacity;
 }

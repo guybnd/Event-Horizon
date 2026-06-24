@@ -985,6 +985,22 @@ export interface BoardRebaseItemResult {
   message: string;
 }
 
+/**
+ * FLUX-729: a client-side snapshot of the FAILED items from a resolved board-rebase batch.
+ * The engine broadcasts `board-rebase-resolved` synchronously on resolve, which drops the batch
+ * from the pending queue (unmounting its card) — so per-item failures would vanish if held only
+ * in the card. This snapshot lives in its own provider queue so failures stay visible (and
+ * dismissable) after the pending batch is gone. `items` is the original batch (joined by id to
+ * give each failed result its summary/targets context); `failed` is the `ok === false` subset.
+ */
+export interface BoardRebaseFailure {
+  batchId: string;
+  conversationId: string | null;
+  createdAt: string;
+  items: BoardRebaseItem[];
+  failed: BoardRebaseItemResult[];
+}
+
 export async function fetchPendingBoardRebases(): Promise<PendingBoardRebase[]> {
   const res = await fetch(`${API_URL}/board/board-rebase`);
   if (!res.ok) return [];

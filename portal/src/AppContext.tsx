@@ -403,10 +403,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      tasksRef.current = fetchedTasks;
+      // Preserve object identity for unchanged tasks (FLUX-724). `fetchedTasks` is a fresh
+      // JSON parse, so every element is a new reference; handing that straight to `setTasks`
+      // gives EVERY card a new `task` prop and breaks `TaskCardInner`'s `prev.task === next.task`
+      // memo — the whole board re-renders on each poll/SSE diff (continuous during a live session,
+      // since cliSession activity + tokenMetadata churn `tasksEqual`). Reuse the previous object
+      // wherever it's value-equal so only genuinely-changed cards get a new ref and re-render.
+      const nextTasks = fetchedTasks.map((task) => {
+        const previousTask = previousTasksById.get(task.id);
+        return previousTask && tasksEqual(previousTask, task) ? previousTask : task;
+      });
+      tasksRef.current = nextTasks;
       startTransition(() => {
         setTasksLoading(false);
-        setTasks(fetchedTasks);
+        setTasks(nextTasks);
         setLastRefreshAt(Date.now());
         if (shouldEmitLiveEvents) {
           applyLiveEvents(nextTaskEvents, nextColumnEvents);
@@ -490,8 +500,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const openTask = (task: Task) => {
-    if ((configRef.current?.boardCardOpenMode || 'full') === 'full') openTaskFullView(task);
-    else openTaskModal(task);
+    // FLUX-744: the default open mode is now 'chat' — open the ticket in the chat-aligned view with
+    // its sideview. The dock lives BELOW this provider, so we hand off via a window event that ChatDock
+    // listens for (it calls the dock's `openTicket`). 'full'/'popup' keep opening the center modal.
+    const mode = configRef.current?.boardCardOpenMode || 'chat';
+    if (mode === 'full') { openTaskFullView(task); return; }
+    if (mode === 'popup') { openTaskModal(task); return; }
+    if (task.id) {
+      window.dispatchEvent(new CustomEvent('flux:open-ticket', { detail: { id: task.id } }));
+    } else {
+      // A not-yet-created draft has no chat to open — fall back to the popup editor.
+      openTaskModal(task);
+    }
   };
 
   const clearOpenModalScrollToComments = () => setOpenModalScrollToComments(false);

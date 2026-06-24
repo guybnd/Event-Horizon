@@ -97,9 +97,9 @@ app.use(cors());
 // — main checkout or an `.eh-worktrees/*` worktree — connects to ONE URL and shares this
 // engine's task-store cache + watchers (no per-session stdio process). Registered BEFORE
 // express.json so the raw JSON-RPC request stream reaches the MCP transport unparsed —
-// express.json would otherwise consume the body and the transport would hang. The handler
-// lazily loads the MCP module (keeping the SDK out of the normal-mode path and resolving the
-// SEA-extracted asset) and delegates per-session transport routing to it.
+// express.json would otherwise consume the body and the transport would hang. handleMcpHttpRequest
+// is statically imported (FLUX-705), so it runs on the engine's own task-store and routes each
+// session's StreamableHTTP transport in-process.
 const handleMcp = (req: express.Request, res: express.Response) => {
   Promise.resolve(handleMcpHttpRequest(req, res)).catch((err) => {
     console.error('[mcp-http] request failed:', err);
@@ -432,13 +432,16 @@ async function startServer() {
     const cliWorkspace = getCliWorkspace();
     const settings = await loadAppSettings();
     const cwdFallback = isValidWorkspaceRoot(process.cwd()) ? process.cwd() : null;
-    // First valid entry in the registered list — recovers the common post-update failure
-    // where "lastWorkspace" was lost but the workspaces[] registry survived (FLUX-705),
-    // so the engine binds a real workspace instead of booting unbound (every write would
-    // otherwise throw the cryptic "Received null").
-    const registeredFallback = (settings.workspaces ?? [])
+    // Recover the common post-update failure where "lastWorkspace" was lost but the
+    // workspaces[] registry survived (FLUX-705) — bind a real workspace instead of booting
+    // unbound (every write would otherwise throw the cryptic "Received null"). Only auto-bind
+    // when the registry is UNAMBIGUOUS (exactly one valid entry); with several we can't know
+    // which board the user wants, so stay unbound and let the portal prompt rather than
+    // silently bind the wrong one (FLUX-712).
+    const validRegistered = (settings.workspaces ?? [])
       .map((w) => w.path)
-      .find((p) => isValidWorkspaceRoot(p)) ?? null;
+      .filter((p) => isValidWorkspaceRoot(p));
+    const registeredFallback = validRegistered.length === 1 ? validRegistered[0]! : null;
 
     const candidates: Array<[string, string | null]> = [
       ['--workspace', cliWorkspace],
@@ -453,8 +456,8 @@ async function startServer() {
       if (source !== '--workspace' && source !== 'lastWorkspace') {
         console.warn(`[workspace] lastWorkspace unavailable — recovered via ${source} fallback: ${initial}`);
       }
-      await activateWorkspace(initial);
-      await autoRegisterWorkspace(initial);
+      const bound = await activateWorkspace(initial);
+      await autoRegisterWorkspace(bound); // register the canonical bound path, not the raw input (FLUX-711)
     } else {
       const saved = cliWorkspace || settings.workspace;
       if (saved) {
@@ -464,7 +467,7 @@ async function startServer() {
         '[workspace] No active workspace bound — the board is read-only and ticket writes will ' +
         'fail until you open the portal and select a project folder. Checked: ' +
         `cli=${cliWorkspace ?? '-'}, lastWorkspace=${settings.workspace ?? '-'}, ` +
-        `cwd=${cwdFallback ?? 'invalid'}, registered=${registeredFallback ?? 'none valid'}.`,
+        `cwd=${cwdFallback ?? 'invalid'}, registered=${registeredFallback ?? (validRegistered.length > 1 ? `${validRegistered.length} valid (ambiguous — refusing to guess)` : 'none valid')}.`,
       );
     }
 

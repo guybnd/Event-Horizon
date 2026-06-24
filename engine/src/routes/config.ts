@@ -55,7 +55,11 @@ router.put('/', async (req, res) => {
     const prevModules: any[] = Array.isArray((configCache as any).modules) ? (configCache as any).modules : [];
     const prevEnabledIds = new Set(prevModules.filter(m => m.enabled && m.mcpServer).map((m: any) => m.id));
 
-    await saveConfig(req.body);
+    // FLUX-744: merge over the existing config rather than replacing it wholesale, so engine-managed
+    // fields the portal doesn't echo back (e.g. the `chatOpenDefaultMigrated` migration marker) survive
+    // a Settings save. The portal always sends complete values for the fields it owns, so a shallow
+    // merge is equivalent for those and only ADDS preservation of engine-only keys.
+    await saveConfig({ ...configCache, ...req.body });
 
     const nextModules: any[] = Array.isArray((configCache as any).modules) ? (configCache as any).modules : [];
     const newlyEnabled = nextModules.filter(m => m.enabled && m.mcpServer && !prevEnabledIds.has(m.id));

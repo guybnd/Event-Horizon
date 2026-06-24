@@ -8,15 +8,10 @@ import {
 import type { Task } from '../types';
 import { normalizeSubtaskId } from '../types';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
-import {
-  deleteTask, updateTask, openWorktreeWindow, detachWorktree, joinWorktree,
-  setTicketBranch, attachParent, fetchBranches, fetchWorkflows, raisePr, mergePr,
-  type BranchOption, type WorkflowTemplate,
-} from '../api';
-import { launchPhaseDefault, statusToPhase, resolvePhaseDefaultId } from '../agentActions';
-import { getArchiveStatus, getReadyForMergeStatus, isPromptableStatus } from '../workflow';
+import { fetchBranches, type BranchOption } from '../api';
+import { getArchiveStatus, getReadyForMergeStatus } from '../workflow';
 import { searchTasks } from '../taskSearch';
-import { resolveEffectiveAgent } from '../utils';
+import { useTicketActions } from '../hooks/useTicketActions';
 
 interface Props {
   task: Task;
@@ -36,12 +31,8 @@ const PRIMARY_LABEL: Record<string, string> = {
 };
 
 export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
-  const {
-    triggerRefresh, markAllCommentsRead, openTask,
-    refreshWorktrees, setFilterWorktree, setView, setChangesFocus,
-  } = useAppActions();
+  const { setFilterWorktree, setView, setChangesFocus } = useAppActions();
   const config = useAppSelector((s) => s.config);
-  const currentUser = useAppSelector((s) => s.currentUser);
   const readComments = useAppSelector((s) => s.readComments);
   const worktrees = useAppSelector((s) => s.worktrees);
   const worktreeBranches = useAppSelector((s) => s.worktreeBranches);
@@ -56,20 +47,19 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
   const [actionError, setActionError] = useState('');
   const [prBusy, setPrBusy] = useState(false);
   const [mergePrBusy, setMergePrBusy] = useState(false);
-  const [templates, setTemplates] = useState<WorkflowTemplate[] | null>(null);
   const [branches, setBranches] = useState<BranchOption[] | null>(null);
 
-  const effectiveAgent = resolveEffectiveAgent(undefined, config?.defaultAgent);
+  // FLUX-717: the menu binds every transition/launch/pr/branch/lifecycle action to the unified
+  // ticket-action registry instead of hand-rolling its own handlers. (Launcher-opening stays
+  // parent-owned via onLaunchAgent so it survives the menu closing; view/nav stays surface-local.)
+  const ctl = useTicketActions(task);
+  const cardPhase = ctl.cardPhase;
   const hasWorktree = !!task.branch && worktreeBranches.has(task.branch);
-  const cardPhase = statusToPhase(task.status, { readyStatus: getReadyForMergeStatus(config) });
 
-  // Lazy-load the phase templates for the "Launch agent" flyout.
+  // Warm the launch-template catalog so the "Launch agent" flyout shows names without a click.
   useEffect(() => {
-    let cancelled = false;
-    fetchWorkflows()
-      .then((t) => { if (!cancelled) setTemplates(t); })
-      .catch(() => { if (!cancelled) setTemplates([]); });
-    return () => { cancelled = true; };
+    ctl.loadTemplates();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Lazy-load branches when the "Attach to branch" picker first opens (guarded so
@@ -120,16 +110,8 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
   const commentIds = (task.history ?? []).filter((e) => e.type === 'comment' && e.id).map((e) => e.id!);
   const readIds = new Set(readComments[task.id] ?? []);
   const hasUnread = commentIds.some((id) => !readIds.has(id));
-  // ─── Phase templates (Launch agent flyout) ────────────────────────────────────
-  const phaseTemplates = useMemo(
-    () => (templates ?? []).filter((w) => w.phases?.[cardPhase as keyof typeof w.phases]),
-    [templates, cardPhase],
-  );
-  const singleId = resolvePhaseDefaultId(config?.phaseDefaults, cardPhase, 'single');
-  const multiId = resolvePhaseDefaultId(config?.phaseDefaults, cardPhase, 'multi');
-  const singleTpl = phaseTemplates.find((w) => w.id === singleId);
-  const multiTpl = phaseTemplates.find((w) => w.id === multiId);
-  const otherTpls = phaseTemplates.filter((w) => w.id !== singleId && w.id !== multiId);
+  // ─── Phase templates (Launch agent flyout) — from the registry's resolved single/multi/other set ─
+  const launchTemplates = ctl.launchTemplates;
 
   const primaryLabel = PRIMARY_LABEL[task.status]
     ?? (cardPhase === 'review' ? 'Send for review' : cardPhase === 'grooming' ? 'Start grooming' : 'Launch agent');
@@ -142,11 +124,8 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
     );
   }, [taskById, task.id, task.subtasks, task.parentId]);
 
-  // ─── Handlers ─────────────────────────────────────────────────────────────────
-  const handleOpen = () => {
-    openTask(task);
-    onClose();
-  };
+  // ─── Handlers ─── thin wrappers over the registry ops; presentation (confirm/busy/error) is local.
+  const handleOpen = () => { ctl.ops.openTicket(); onClose(); };
 
   const handlePrimary = async () => {
     onClose();
@@ -156,12 +135,8 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
       return;
     }
     try {
-      const result = await launchPhaseDefault({
-        taskId: task.id, framework: effectiveAgent, phase: cardPhase,
-        currentUser, phaseDefaults: config?.phaseDefaults,
-      });
-      if (result === null) { onLaunchAgent(); return; } // no default persona → open launcher
-      triggerRefresh();
+      const launched = await ctl.tryLaunchPhaseDefault(cardPhase);
+      if (!launched) onLaunchAgent(); // no default persona → open launcher
     } catch (err) {
       console.error('Failed to launch phase agent:', err instanceof Error ? err.message : err);
     }
@@ -169,67 +144,39 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
 
   const launchTemplate = (templateId?: string) => { onClose(); onLaunchAgent(templateId); };
 
-  const handleTransition = async (status: string) => {
-    onClose();
-    if (isPromptableStatus(status, config)) {
-      openTask(task);
-      return;
-    }
-    await updateTask(task.id, { status, updatedBy: currentUser });
-    triggerRefresh();
-  };
+  const handleTransition = (status: string) => { onClose(); void ctl.ops.moveToStatus(status); };
+  const handleArchive = () => { onClose(); void ctl.ops.archive(); };
+  const handleDelete = () => { onClose(); void ctl.ops.deleteTicket(); };
+  const handleMarkRead = () => { ctl.ops.markCommentsRead(); onClose(); };
+  const handleClearSwimlane = () => { onClose(); void ctl.ops.clearSwimlane(); };
 
-  const handleArchive = async () => {
-    onClose();
-    await updateTask(task.id, { status: archiveStatus, updatedBy: currentUser });
-    triggerRefresh();
-  };
-
-  const handleDelete = async () => {
-    onClose();
-    await deleteTask(task.id);
-    triggerRefresh();
-  };
-
-  const handleMarkRead = () => {
-    markAllCommentsRead(task.id, commentIds);
-    onClose();
-  };
-
-  // Worktree actions — refresh board state then close. On failure, surface the message
-  // in the menu (it stays open) instead of failing silently (FLUX-561).
-  const runWorktree = async (fn: () => Promise<unknown>) => {
+  // Worktree/PR actions — run the registry op (which refreshes), then close. On failure, surface
+  // the message in the menu (it stays open) instead of failing silently (FLUX-561).
+  const runOp = async (fn: () => Promise<unknown>) => {
     setActionError('');
-    try {
-      await fn();
-      refreshWorktrees();
-      triggerRefresh();
-      onClose();
-    } catch (err) {
+    try { await fn(); onClose(); }
+    catch (err) {
       const msg = err instanceof Error ? err.message : 'Action failed';
-      console.error('Worktree action failed:', msg);
+      console.error('Ticket action failed:', msg);
       setActionError(msg);
     }
   };
-  const handleOpenVSCode = () => runWorktree(async () => {
-    const r = await openWorktreeWindow(task.id);
-    if (!r.opened) await navigator.clipboard.writeText(r.worktree).catch(() => {});
-  });
-  const handleDetach = () => runWorktree(() => detachWorktree(task.id));
+  const handleOpenVSCode = () => runOp(() => ctl.ops.openInVSCode());
+  const handleDetach = () => runOp(() => ctl.ops.detachWorktree());
   const handleRaisePr = async () => {
     setPrBusy(true);
-    try { await runWorktree(() => raisePr(task.id)); } finally { setPrBusy(false); }
+    try { await runOp(() => ctl.ops.raisePr()); } finally { setPrBusy(false); }
   };
   // PR tickets (kind:'pr') are engine-managed but their In Progress ↔ Ready review state is
   // human-driven (syncPrTickets preserves it), so allow moving between those + a guarded Merge.
-  const movePrStatus = (status: string) => runWorktree(() => updateTask(task.id, { status, updatedBy: currentUser } as Partial<Task>));
+  const movePrStatus = (status: string) => runOp(() => ctl.ops.setStatusRaw(status));
   const handleMergePr = async () => {
     setMergePrBusy(true);
-    try { await runWorktree(() => mergePr(task.id)); } finally { setMergePrBusy(false); }
+    try { await runOp(() => ctl.ops.mergePrNow()); } finally { setMergePrBusy(false); }
   };
-  const handleAttachWorktree = (branch: string) => runWorktree(() => joinWorktree(task.id, branch));
-  const handleAttachBranch = (branch: string) => runWorktree(() => setTicketBranch(task.id, branch, currentUser));
-  const handleAttachParent = (parentId: string) => runWorktree(() => attachParent(task.id, parentId, currentUser));
+  const handleAttachWorktree = (branch: string) => runOp(() => ctl.ops.joinWorktree(branch));
+  const handleAttachBranch = (branch: string) => runOp(() => ctl.ops.attachBranch(branch));
+  const handleAttachParent = (parentId: string) => runOp(() => ctl.ops.attachParent(parentId));
 
   const setFilter = (v: string) => { onClose(); setFilterWorktree(v); };
 
@@ -309,27 +256,20 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
         open={openTop === 'launch'}
         onToggle={() => setOpenTop(openTop === 'launch' ? null : 'launch')}
       >
-        {singleTpl && (
-          <MenuItem onClick={() => launchTemplate(singleTpl.id)}>
-            <span className="flex-1 truncate">{singleTpl.name}</span>
-            <span className="ml-2 text-[10px] text-gray-400">1 agent</span>
-          </MenuItem>
-        )}
-        {multiTpl && (
-          <MenuItem onClick={() => launchTemplate(multiTpl.id)}>
-            <span className="flex-1 truncate">{multiTpl.name}</span>
-            <span className="ml-2 text-[10px] text-gray-400">team</span>
-          </MenuItem>
-        )}
-        {(singleTpl || multiTpl) && otherTpls.length > 0 && <Divider />}
-        {otherTpls.map((t) => (
-          <MenuItem key={t.id} onClick={() => launchTemplate(t.id)}>
-            <span className="flex-1 truncate">{t.name}</span>
-          </MenuItem>
-        ))}
-        {templates !== null && phaseTemplates.length === 0 && (
-          <div className="px-3 py-1.5 text-[11px] italic text-gray-400">No templates for this phase</div>
-        )}
+        {launchTemplates.map((t, i) => {
+          const firstOther = launchTemplates.findIndex((x) => x.variant === 'other');
+          const label = t.variant === 'single' ? (t.name ?? 'Single') : t.variant === 'multi' ? (t.name ?? 'Multi') : (t.name ?? t.id);
+          const badge = t.variant === 'single' ? '1 agent' : t.variant === 'multi' ? 'team' : null;
+          return (
+            <div key={t.id} className="contents">
+              {i === firstOther && firstOther > 0 && <Divider />}
+              <MenuItem onClick={() => launchTemplate(t.id)}>
+                <span className="flex-1 truncate">{label}</span>
+                {badge && <span className="ml-2 text-[10px] text-gray-400">{badge}</span>}
+              </MenuItem>
+            </div>
+          );
+        })}
         <Divider />
         <MenuItem onClick={() => launchTemplate()}>Open launcher…</MenuItem>
       </Flyout>
@@ -495,11 +435,7 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
         <MenuItem icon={<MessageCircle className="h-3.5 w-3.5" />} onClick={handleMarkRead}>Mark comments as read</MenuItem>
       )}
       {task.swimlane && (
-        <MenuItem icon={<CircleX className="h-3.5 w-3.5" />} onClick={async () => {
-          onClose();
-          await updateTask(task.id, { swimlane: null, updatedBy: currentUser });
-          triggerRefresh();
-        }}>Clear Swimlane</MenuItem>
+        <MenuItem icon={<CircleX className="h-3.5 w-3.5" />} onClick={handleClearSwimlane}>Clear Swimlane</MenuItem>
       )}
 
       <Divider />

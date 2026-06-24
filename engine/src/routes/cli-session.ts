@@ -765,6 +765,12 @@ router.post('/:id/cli-session/input', async (req, res) => {
     const sid = cliSessionIdByTaskId.get(BOARD_CONVERSATION_ID);
     const boardSession = sid ? cliSessionsById.get(sid) : undefined;
     if (!boardSession) return res.status(409).json({ error: 'No orchestrator session — start one first' });
+    // FLUX-714: a turn already in flight must not be double-sent. A second resume against the same
+    // claudeSessionId spawns a concurrent `claude --resume` that races the first on the session
+    // JSONL and loses turns. Mirror the start-path guard (line ~347): 409 while genuinely running.
+    if (boardSession.status === 'running' || boardSession.status === 'pending') {
+      return res.status(409).json({ error: 'Orchestrator is mid-turn — wait for the current turn to finish.', session: getCliSessionSummaryForTask(BOARD_CONVERSATION_ID) });
+    }
     if (!boardSession.claudeSessionId) {
       return res.status(409).json({ error: 'Session ID not yet available — wait for the initial response to complete' });
     }

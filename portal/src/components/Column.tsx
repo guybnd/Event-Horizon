@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useDroppable } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { TaskCard } from './TaskCard';
@@ -6,7 +6,7 @@ import { EpicStackDeck } from './EpicStackDeck';
 import type { ColumnLiveEvent, Task, TaskLiveEvent } from '../types';
 import type { CrossColumnCluster } from '../lib/decks';
 import { computeEpicRollup, getDoneStatuses } from '../lib/epics';
-import { Plus, CirclePause, Bot, Clock, Terminal, GitPullRequest, HandHelping, X } from 'lucide-react';
+import { Plus, CirclePause, Bot, Clock, Terminal, GitPullRequest, HandHelping, X, ArrowRight, ArrowLeft, Rocket } from 'lucide-react';
 import { updateTask } from '../api';
 import { useAppSelector, useAppActions, useLiveSession } from '../store/useAppSelector';
 import { getStatusTint, tintColumnWash } from '../statusStyles';
@@ -142,9 +142,19 @@ interface ColumnProps {
   liveEvent?: ColumnLiveEvent;
   taskLiveEvents: Record<string, TaskLiveEvent>;
   getTaskTravelDirection: (taskId: string) => -1 | 0 | 1;
+  /** FLUX-723: outbound ticket flow in the last 24h — moved back to the previous column (left)
+   *  vs forward to the next column (right). Rendered as chips flanking the column title. */
+  flowLeft?: number;
+  flowRight?: number;
+  /** FLUX-723: character length of the widest column title, so every column's hue accent bar
+   *  renders at the same width (≈ the widest title) rather than the full column width. */
+  titleChars?: number;
+  /** FLUX-724: board-level done-streak count (tickets that reached Done today), computed once in
+   *  Board so columns no longer each subscribe to the whole task list. Only the Done column uses it. */
+  doneStreakCount?: number;
 }
 
-export const Column = memo(function Column({ id, title, tasks, clusters, foldedByEpic, parentByChildId, liveEvent, taskLiveEvents, getTaskTravelDirection }: ColumnProps) {
+export const Column = memo(function Column({ id, title, tasks, clusters, foldedByEpic, parentByChildId, liveEvent, taskLiveEvents, getTaskTravelDirection, flowLeft = 0, flowRight = 0, titleChars = 8, doneStreakCount = 0 }: ColumnProps) {
   const { setNodeRef, isOver } = useDroppable({ id });
   const { openTask, openTaskModal, markAllCommentsRead } = useAppActions();
   const config = useAppSelector((s) => s.config);
@@ -174,25 +184,10 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
 
   const tint = getStatusTint(config, title);
   const boardFx = config?.boardFx;
-  const allTasks = useAppSelector((s) => s.tasks);
 
-  const doneStreakCount = useMemo(() => {
-    if (boardFx?.doneStreak === false || id !== 'Done') return 0;
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const todayMs = todayStart.getTime();
-    let count = 0;
-    for (const task of allTasks) {
-      for (const e of task.history ?? []) {
-        if (e.type !== 'status_change') continue;
-        const to = (e as { to?: string }).to ?? '';
-        if (!/done/i.test(to)) continue;
-        if (new Date(e.date).getTime() >= todayMs) { count++; break; }
-      }
-    }
-    return count;
-  }, [allTasks, boardFx?.doneStreak, id]);
-
+  // doneStreakCount is computed once at the Board level (FLUX-724) and passed in — the Done column
+  // is the only consumer. Previously every Column subscribed to the whole `s.tasks` array here,
+  // re-rendering all columns on any task change.
   const streakTier = doneStreakCount >= 15 ? { icon: '💎', label: 'Diamond', cls: 'text-cyan-400' }
     : doneStreakCount >= 10 ? { icon: '🏆', label: 'Platinum', cls: 'text-violet-400' }
     : doneStreakCount >= 5  ? { icon: '🥇', label: 'Gold', cls: 'text-amber-400' }
@@ -200,61 +195,94 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
     : null;
 
   return (
-    <div className="flex flex-col w-[320px] min-w-[280px] flex-1 max-w-[420px]">
-      <div className="flex items-center justify-between mb-4 px-1">
-        <div className="flex items-center gap-2.5">
-          {/* Column identity: hue accent bar + pronounced title */}
-          <span className={`h-5 w-1 shrink-0 rounded-full ${tint.accent}`} aria-hidden />
-          <h2 className="text-sm font-bold uppercase tracking-[0.14em] text-gray-700 dark:text-gray-200">
-            {title}
-          </h2>
-          <span className={`text-xs px-2.5 py-0.5 rounded-full font-medium ${liveEvent ? 'column-live-badge' : ''} ${
-            boardFx?.columnFire !== false && tasks.length >= 20
-              ? 'column-fire-3'
-              : boardFx?.columnFire !== false && tasks.length >= 13
-                ? 'column-fire-2'
-                : boardFx?.columnFire !== false && tasks.length >= 7
-                  ? 'column-fire-1'
-                  : 'bg-gray-200 text-gray-600 dark:bg-white/10 dark:text-gray-400'
-          }`}>
-            {tasks.length}
-          </span>
-          {hasColumnUnread && (
-            <button
-              onClick={() => columnUnreadByTask.forEach(({ taskId, ids }) => markAllCommentsRead(taskId, ids))}
-              className="text-[10px] font-semibold text-amber-500 hover:text-amber-600 dark:text-amber-400 dark:hover:text-amber-300 transition-colors"
-            >
-              Mark all read
-            </button>
-          )}
-        </div>
-        {id === 'Done' && (
-          <div className="flex items-center gap-2">
-            {streakTier && (
-              <span
-                title={`${streakTier.label} streak — ${doneStreakCount} tickets done today`}
-                className={`select-none text-sm leading-none ${streakTier.cls}`}
-              >
-                {streakTier.icon} {doneStreakCount}
+    <div className="flex flex-col w-[320px] min-w-[280px] flex-1 max-w-[420px] rounded-2xl eh-column" style={{ backgroundImage: tintColumnWash(tint, 0.08) }}>
+      <div className="px-4 pt-3 pb-1">
+        {/* Title bar — one fixed-height row: status slot · centered title · count pill. Flow + hue
+            live on the row below, and nothing here is conditional-height, so every column header is
+            identical and the cards line up (FLUX-723). */}
+        <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-1">
+          {/* LEFT: the Done streak ribbon (inline, no height shift). */}
+          <span className="flex items-center justify-start">
+            {id === 'Done' && streakTier && (
+              <span title={`${streakTier.label} streak — ${doneStreakCount} done today`} className={`select-none whitespace-nowrap text-[11px] leading-none ${streakTier.cls}`}>
+                {streakTier.icon}{doneStreakCount}
               </span>
             )}
-            {tasks.length > 0 && (
+          </span>
+
+          {/* CENTER: title, centered over the hue bar. On Done it doubles as the Release button. */}
+          {id === 'Done' && tasks.length > 0 ? (
+            <button
+              type="button"
+              onClick={() => window.dispatchEvent(new CustomEvent('flux:open-release-modal', { detail: { tasks } }))}
+              title={`Release ${tasks.length} done ticket${tasks.length === 1 ? '' : 's'}`}
+              className="done-pulse group inline-flex items-center gap-1.5 whitespace-nowrap rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-sm font-bold uppercase tracking-[0.14em] text-emerald-700 transition-colors hover:bg-emerald-500/20 dark:text-emerald-300"
+              style={{ ['--done-pulse']: `${Math.min(6, tasks.length * 0.6)}px`, ['--done-glow']: `rgba(${tint.rgb}, 0.85)` } as CSSProperties}
+            >
+              <Rocket className="h-3 w-3 shrink-0" />
+              <span className="group-hover:hidden">{title}</span>
+              <span className="hidden group-hover:inline">Release</span>
+            </button>
+          ) : (
+            <h2 className="truncate text-sm font-bold uppercase tracking-[0.14em] text-gray-700 dark:text-gray-200">
+              {title}
+            </h2>
+          )}
+
+          {/* RIGHT: unread badge (click to mark all read) + ticket count — grouped so the unread
+              indicator clearly belongs to THIS column, not the neighbour. */}
+          <span className="flex items-center justify-end gap-1.5">
+            {hasColumnUnread && (
               <button
-                onClick={() => window.dispatchEvent(new CustomEvent('flux:open-release-modal', { detail: { tasks } }))}
-                className="text-xs font-bold bg-primary/10 text-primary hover:bg-primary/20 px-2 py-1 rounded"
+                type="button"
+                onClick={() => columnUnreadByTask.forEach(({ taskId, ids }) => markAllCommentsRead(taskId, ids))}
+                title={`${columnUnreadByTask.length} ticket${columnUnreadByTask.length === 1 ? '' : 's'} with unread comments · mark all read`}
+                className="flex items-center gap-1 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-amber-600 transition-colors hover:bg-amber-500/30 dark:text-amber-400"
               >
-                Release
+                <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                {columnUnreadByTask.length}
               </button>
             )}
-          </div>
-        )}
+            <span className={`shrink-0 text-xs px-2.5 py-0.5 rounded-full font-medium ${liveEvent ? 'column-live-badge' : ''} ${
+              boardFx?.columnFire !== false && tasks.length >= 20
+                ? 'column-fire-3'
+                : boardFx?.columnFire !== false && tasks.length >= 13
+                  ? 'column-fire-2'
+                  : boardFx?.columnFire !== false && tasks.length >= 7
+                    ? 'column-fire-1'
+                    : 'bg-gray-200 text-gray-600 dark:bg-white/10 dark:text-gray-400'
+            }`}>
+              {tasks.length}
+            </span>
+          </span>
+        </div>
+
+        {/* Flow + identity row — back-flow · hue bar · forward-flow. The flow slots are height-
+            reserved (h-3) so the row is the same height with or without movement: no clipping, no
+            board misalignment. The hue bar is the same fixed width on every column. */}
+        <div className="mt-1 grid grid-cols-[1fr_auto_1fr] items-center gap-1.5">
+          <span className="flex h-3 items-center justify-end text-[9px] font-semibold tabular-nums text-amber-600 dark:text-amber-400">
+            {flowLeft > 0 && (
+              <span className="flex items-center gap-0.5" style={{ opacity: 0.55 + Math.min(1, flowLeft / 10) * 0.45 }} title={`${flowLeft} moved back to the previous column in the last 24h`}>
+                <ArrowLeft className="h-2.5 w-2.5 flow-pip-back" />{flowLeft}
+              </span>
+            )}
+          </span>
+          <span className={`block h-1 rounded-full ${tint.accent}`} style={{ width: `${Math.round(titleChars * 10.5)}px` }} aria-hidden />
+          <span className="flex h-3 items-center justify-start text-[9px] font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
+            {flowRight > 0 && (
+              <span className="flex items-center gap-0.5" style={{ opacity: 0.55 + Math.min(1, flowRight / 10) * 0.45 }} title={`${flowRight} moved forward to the next column in the last 24h`}>
+                {flowRight}<ArrowRight className="h-2.5 w-2.5 flow-pip-fwd" />
+              </span>
+            )}
+          </span>
+        </div>
       </div>
       
       <div
         ref={setNodeRef}
-        style={isOver ? undefined : { backgroundImage: tintColumnWash(tint, 0.08) }}
-        className={`flex-1 flex flex-col rounded-2xl p-4 min-h-[500px] transition-all duration-200 border border-transparent ${
-          isOver ? 'bg-primary/5 border-primary/20 shadow-[inset_0_0_0_1px_var(--eh-border-accent)]' : 'eh-column'
+        className={`flex-1 flex flex-col rounded-2xl px-4 pb-4 pt-1 min-h-[500px] transition-all duration-200 border border-transparent ${
+          isOver ? 'bg-primary/5 border-primary/20 shadow-[inset_0_0_0_1px_var(--eh-border-accent)]' : ''
         } ${liveEvent ? 'column-live-receiving' : ''} ${boardFx?.idleDust !== false && tasks.length === 0 ? 'column-idle-dust' : ''}`}
       >
         {id === 'Grooming' && (

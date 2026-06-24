@@ -35,12 +35,11 @@ let _seaExtractDir: string | null = null;
 /**
  * Returns the extracted-asset directory.
  *
- * mcp-server.js is a separate esbuild bundle and therefore carries its own
- * instance of this module — its `_seaExtractDir` is independent of the one in
- * index.js.  In SEA mode the path is deterministic (`tmpdir/event-horizon-<v>`)
- * and index.js always runs ensureSeaAssetsExtracted() (which writes the files to
- * disk) before loading mcp-server, so when this module's own singleton is unset
- * we can safely re-derive the path from the embedded manifest.
+ * Defensive: in SEA mode the path is deterministic (`tmpdir/event-horizon-<v>`), so if this is
+ * ever called before ensureSeaAssetsExtracted() has populated the singleton, re-derive the path
+ * from the embedded manifest rather than throwing. (Pre-FLUX-705 this also guarded a second
+ * module instance from the standalone mcp-server.js bundle; that bundle is now inlined into
+ * index.js, so there is only one instance — the re-derivation is kept purely as a safety net.)
  */
 export function getSeaExtractDir(): string {
   if (_seaExtractDir) return _seaExtractDir;

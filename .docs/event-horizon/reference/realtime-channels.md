@@ -68,12 +68,14 @@ Currently broadcast events:
 | `notification` | `notifications.ts`, notification routes | yes — updates notification panel + unread count |
 | `taskCreated` | MCP `create_ticket` / `create_subtask` | **no** — emitted but the portal does not subscribe |
 | `taskUpdated` | every MCP mutation tool | **no** — emitted but the portal does not subscribe |
-| `permission-request` | `permission-prompts.ts` (gated confirm tier, FLUX-605) | yes — adds a pending approval to the chat's Allow/Deny prompt (`ApprovalPrompts`). Payload: `{ id, toolName, input, conversationId, createdAt }`. |
+| `permission-request` | `permission-prompts.ts` (gated confirm tier, FLUX-605) | yes — adds a pending approval to the unified pending-interactions store (FLUX-720), rendered as an Allow/Deny card **inline in the originating chat** (`ChatApprovalPanel`, routed by `conversationId`) or the global fallback (`PendingInteractionFallback`) when its dock is closed/unrouted. Payload: `{ id, toolName, input, conversationId, createdAt }`. |
 | `permission-resolved` | `permission-prompts.ts` (on resolve **or** 120s timeout) | yes — clears the resolved/expired approval from the prompt. Payload: `{ id }`. |
-| `ask-question` | `ask-questions.ts` (agent calls `ask_user_question`, FLUX-662) | yes — renders an interactive picker inline in the originating chat (`ChatQuestionPicker`, routed by `conversationId`) or a global overlay (`QuestionPrompts`) when unrouted. Payload: `{ id, questions, conversationId, createdAt }`. |
+| `ask-question` | `ask-questions.ts` (agent calls `ask_user_question`, FLUX-662) | yes — renders an interactive picker **inline in the originating chat** (`ChatQuestionPicker`, routed by `conversationId`) or the global fallback (`PendingInteractionFallback`) when its dock is closed/unrouted. Payload: `{ id, questions, conversationId, createdAt }`. |
 | `ask-question-resolved` | `ask-questions.ts` (on answer **or** 4min timeout) | yes — clears the answered/expired question from the picker. Payload: `{ id }`. |
-| `board-rebase-proposed` | `board-rebase.ts` (orchestrator calls `propose_board_rebase`, FLUX-659) | yes — renders the batch-approval panel inline in the orchestrator dock (`ChatBoardRebasePanel`, routed by `conversationId`). Payload: `{ id, items, conversationId, createdAt }`. |
+| `board-rebase-proposed` | `board-rebase.ts` (orchestrator calls `propose_board_rebase`, FLUX-659) | yes — renders the batch-approval panel **inline in the originating chat** (`ChatBoardRebasePanel`, routed by `conversationId`; FLUX-720 un-gated this from orchestrator-only, so a proposal made from a ticket chat reaches that chat) or the global fallback (`PendingInteractionFallback`) when its dock is closed/unrouted. Payload: `{ id, items, conversationId, createdAt }`. |
 | `board-rebase-resolved` | `board-rebase.ts` (on Apply approved / Dismiss) | yes — clears the resolved batch from the panel. Payload: `{ id, results: [{ id, kind, ok, message }] }`. |
+
+All three pending-prompt feeds share one SSE subscription via `PendingInteractionsProvider` (`portal/src/components/pendingInteractions.tsx`, FLUX-720); its derived `pendingPromptConversationIds` hard-gates the dock taskbar tab of any chat awaiting input (force-pinned, un-closable, distinct prompt icon) until the prompt is resolved.
 
 **Key consequence:** ticket-state freshness on the portal does *not* come from SSE today. It comes from polling (Channel 3). SSE is only used for high-frequency agent activity that would be wasteful to poll for.
 

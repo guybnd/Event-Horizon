@@ -80,11 +80,13 @@ This page is the quick orientation guide for where behavior lives today — file
 
 -   **Adapter-layer audit (FLUX-700).** The board orchestrator above, the three CLI adapters under `engine/src/agents/` (claude-code/copilot/gemini), and ~50 leakage points across routes / MCP server / portal / config are catalogued row-by-row in [Adapter Layer Audit](./adapter-layer-audit.md) — what is claude-hardcoded today, why, severity, and proposed disposition. Read this before adding a fourth adapter or before touching anything that says `framework === 'claude'`, `claudeSessionId`, `BOARD_CONVERSATION_ID`, or `EH_CONVERSATION_ID`.
 
--   **Substrate vs projection (FLUX-658).** `engine/src/transcript.ts` is the immutable, append-only **RAW substrate of record** — one JSONL file per stream at `<fluxDir>/transcripts/<streamId>.jsonl`. Since FLUX-658 each appended line is a **turn envelope** `{ v, turnId, streamId, seq, ts, role, raw }`: `raw` is the original stream-json / synthetic event stored verbatim, wrapped with a monotonic per-stream `seq` (== line position, seeded by `countLines` on first append so it survives restarts and continues past legacy lines) and `turnId = ${streamId}:${seq}`. This makes turns **addressable + sliceable** via `readTurns(streamId)` and `sliceTurns(streamId, fromSeq, toSeq)` (inclusive, open-ended bounds) — the primitives the future curation verbs (extract/merge) will call. Legacy pre-envelope lines read losslessly: `readTurns` wraps them on the fly (`seq` = line index), discriminating an envelope from a bare event by the `turnId`+`seq`+`raw` trio. The board **view** is a re-derivable **projection** of the substrate, not an independent store: `engine/src/projection.ts` owns the pure `projectTranscript(turns, ops?)` (no IO; owns the `Turn`/`TranscriptMessage` types + `classifyRole`), and `readTranscriptMessages` is now a thin `readTurns → projectTranscript` adapter (no behaviour change). The trailing `ops` param is the **seam** for the append-only curation op-log (`view = project(substrate, ops)`) — the verbs themselves are deferred to their own tickets. Design: [substrate-vs-projection.md](./substrate-vs-projection.md). Authored (kept verbatim) vs projected (re-derivable) field map lives in §7 of that doc.
+-   **Substrate vs projection (FLUX-658).** `engine/src/transcript.ts` is the immutable, append-only **RAW substrate of record** — one JSONL file per stream at `<fluxDir>/transcripts/<streamId>.jsonl`. Since FLUX-658 each appended line is a **turn envelope** `{ v, turnId, streamId, seq, ts, role, raw }`: `raw` is the original stream-json / synthetic event stored verbatim, wrapped with a monotonic per-stream `seq` (== line position, seeded by `countLines` on first append so it survives restarts and continues past legacy lines) and `turnId = ${streamId}:${seq}`. This makes turns **addressable + sliceable** via `readTurns(streamId)` and `sliceTurns(streamId, fromSeq, toSeq)` (inclusive, open-ended bounds) — the primitives the future curation verbs (extract/merge) will call. Legacy pre-envelope lines read losslessly: `readTurns` wraps them on the fly (`seq` = line index), discriminating an envelope from a bare event by the `turnId`+`seq`+`raw` trio. The board **view** is a re-derivable **projection** of the substrate, not an independent store: `engine/src/projection.ts` owns the pure `projectTranscript(turns, ops?)` (no IO; owns the `Turn`/`TranscriptMessage` types + `classifyRole`), and `readTranscriptMessages` is now a thin `readTurns → projectTranscript` adapter (no behaviour change). The trailing `ops` param is the **seam** for the append-only curation op-log (`view = project(substrate, ops)`). **FLUX-656 ships the op-log STORE and the first verb:** `engine/src/curation-ops.ts` is the shared append-only log at `<fluxDir>/transcripts/_curation-ops.jsonl` (`appendCurationOp`/`readCurationOps`, write-queue serialized like the substrate), and `engine/src/extract.ts`'s `extractTicket(opts)` is the **promotion gate** — carve a `[fromSeq..toSeq]` slice of a source stream (default `__board__`) into a new card via one `extract` op, never copying or moving the source turns. The cross-stream gather lives in the reader (`transcript.ts`'s `gatherTurnsForView`: read ops → `sliceTurns` each `into===taskId` op → prepend, keeping foreign `streamId`) so `projectTranscript` stays pure; a `homeStreamId` arg tags foreign messages with `sourceStream`. `extractTicket` is the one path behind both the `extract_ticket` MCP tool (CONFIRM-gated) and the board-rebase `promote` executor; merge (FLUX-657) reuses the same store. Design: [substrate-vs-projection.md](./substrate-vs-projection.md) §6.2. Authored (kept verbatim) vs projected (re-derivable) field map lives in §7 of that doc.
 
--   `engine/src/ask-questions.ts` is the **land-here-first** module for **agent → user structured questions** (FLUX-662) — the working substitute for the native `AskUserQuestion`, which can't be fulfilled in EH's `claude -p` print-mode spawns (no interactive TTY; see the ticket's step-1 spike). It mirrors `permission-prompts.ts` exactly (a `Map` of parked Promises): `requestAnswer(questions, conversationId)` parks + broadcasts `ask-question`, `resolveAnswer(id, result)` settles + broadcasts `ask-question-resolved`, `listPendingQuestions()` is the reload catch-up; the timeout is 4 min (deliberative, but held under undici's 300s `headersTimeout` so the MCP tool's long-poll fetch stays deliverable — see FLUX-662 review M1) and resolves an `unanswered` sentinel rather than crashing the turn. It also writes `ask-question` / `ask-answer` events into the durable transcript (rendered by `transcript.ts`'s `readTranscriptMessages` as an assistant "❓" turn + a user "✔" turn) so a cold resume sees the round-trip. The agent path is the `ask_user_question` MCP tool (`mcp-server.ts`) → `POST /api/board/ask-question` (held open) → `POST /api/board/ask-question/:id/answer` (resolve) / `GET /api/board/pending-questions` (all in `index.ts`), with `conversationId` carried via `EH_CONVERSATION_ID` (set in `claude-code.ts`'s `cleanChildEnv`). Native `AskUserQuestion` is hard-disabled in chat + board spawns via `--disallowed-tools AskUserQuestion` so it can't be silently denied; chat/board prompts steer toward the MCP tool. Portal surface: `portal/src/components/AskQuestionPrompts.tsx` — `ChatQuestionPicker` (inline in the originating chat, routed by `conversationId`, claims its conversation so the overlay defers) + `QuestionPrompts` (global fallback overlay for unrouted/closed-chat questions); wired into `ChatView` via the `questionPicker` prop (passed by `ChatPane` + `ChatDock`) and mounted globally in `Board.tsx`.
+-   `engine/src/ask-questions.ts` is the **land-here-first** module for **agent → user structured questions** (FLUX-662) — the working substitute for the native `AskUserQuestion`, which can't be fulfilled in EH's `claude -p` print-mode spawns (no interactive TTY; see the ticket's step-1 spike). It mirrors `permission-prompts.ts` exactly (a `Map` of parked Promises): `requestAnswer(questions, conversationId)` parks + broadcasts `ask-question`, `resolveAnswer(id, result)` settles + broadcasts `ask-question-resolved`, `listPendingQuestions()` is the reload catch-up; the timeout is 4 min (deliberative, but held under undici's 300s `headersTimeout` so the MCP tool's long-poll fetch stays deliverable — see FLUX-662 review M1) and resolves an `unanswered` sentinel rather than crashing the turn. It also writes `ask-question` / `ask-answer` events into the durable transcript (rendered by `transcript.ts`'s `readTranscriptMessages` as an assistant "❓" turn + a user "✔" turn) so a cold resume sees the round-trip. The agent path is the `ask_user_question` MCP tool (`mcp-server.ts`) → `POST /api/board/ask-question` (held open) → `POST /api/board/ask-question/:id/answer` (resolve) / `GET /api/board/pending-questions` (all in `index.ts`), with `conversationId` carried via `EH_CONVERSATION_ID` (set in `claude-code.ts`'s `cleanChildEnv`). Native `AskUserQuestion` is hard-disabled in chat + board spawns via `--disallowed-tools AskUserQuestion` so it can't be silently denied; chat/board prompts steer toward the MCP tool. Portal surface (FLUX-720): `portal/src/components/AskQuestionPrompts.tsx` exports `ChatQuestionPicker` (inline in the originating chat, routed by `conversationId`) + the `QuestionCard`; the live pending-question queue is owned by the **unified** `PendingInteractionsProvider` (`pendingInteractions.tsx`), not a per-component SSE hook. See the unified pending-interactions entry below for the shared routing/fallback model.
 
--   `engine/src/board-rebase.ts` is the **land-here-first** module for the **board-rebase ritual** (FLUX-659) — the orchestrator's *propose-never-mutate* triage layer. It mirrors `permission-prompts.ts` / `ask-questions.ts` (a `Map` of parked batches) but is **batch + fire-then-resolve**: `proposeBoardRebase(items, conversationId)` parks a batch (assigning a per-item id) and broadcasts `board-rebase-proposed`, then returns immediately (it does **not** block a tool call the way `permission_prompt` does); `resolveBoardRebase(id, approvedItemIds)` executes the approved subset through a **verb registry** (`kind → executor`) and broadcasts `board-rebase-resolved`; `listPendingBoardRebases()` is the reload catch-up. The registry is verb-agnostic: v1 wires `leave` (no-op), `status` (`updateTaskWithHistory`), `archive` (→ Archived), and `dispatch` (self-`fetch` of `/api/tasks/:id/cli-session/start`); `promote` (FLUX-656 `extract_ticket`) and `fold` (FLUX-657 `merge_tickets`) are *proposable now* but no-op with a `pending <ticket>` result until those tickets call `registerVerb(...)` — their turn-slicing rests on the FLUX-658 substrate. The agent path is the `propose_board_rebase` MCP tool (`mcp-server.ts`, SAFE tier) → `POST /api/board/board-rebase` → panel → `POST /api/board/board-rebase-resolve` / `GET /api/board/board-rebase` (all in `index.ts`), `conversationId` via `EH_CONVERSATION_ID`. **Teeth:** the mutating verbs (`change_status`, `archive_ticket`, speculatively `extract_ticket`/`merge_tickets`) are in `mcp-server.ts`'s `CONFIRM_PERMISSION_TOOLS` so a direct call is gated even outside the ritual. The **push half** is `engine/src/board-digest.ts` (`buildBoardDigest()` — terse status counts + active sessions + needs-attention + since-last-turn delta, prepended to the board turn in `claude-code.ts`'s `buildBoardPrompt`/`sendBoardInput`). Portal surface: `portal/src/components/BoardRebasePanel.tsx` (`ChatBoardRebasePanel`, per-item toggles + Apply approved/Dismiss, SSE-subscribed), mounted in the orchestrator window via `ChatDock.tsx`'s `questionPicker` slot.
+-   `engine/src/board-rebase.ts` is the **land-here-first** module for the **board-rebase ritual** (FLUX-659) — the orchestrator's *propose-never-mutate* triage layer. It mirrors `permission-prompts.ts` / `ask-questions.ts` (a `Map` of parked batches) but is **batch + fire-then-resolve**: `proposeBoardRebase(items, conversationId)` parks a batch (assigning a per-item id) and broadcasts `board-rebase-proposed`, then returns immediately (it does **not** block a tool call the way `permission_prompt` does); `resolveBoardRebase(id, approvedItemIds)` executes the approved subset through a **verb registry** (`kind → executor`) and broadcasts `board-rebase-resolved`; `listPendingBoardRebases()` is the reload catch-up. The registry is verb-agnostic: v1 wires `leave` (no-op), `status` (`updateTaskWithHistory`), `archive` (→ Archived), and `dispatch` (self-`fetch` of `/api/tasks/:id/cli-session/start`); `promote` (FLUX-656) now calls `extractTicket()` to carve a slice into a new card (item carries `fromSeq`/`toSeq`/`title`, `targets[0]` = source stream); `fold` (FLUX-657 `merge_tickets`) is still *proposable now* but no-ops with a `pending <ticket>` result until that ticket calls `registerVerb(...)`. The agent path is the `propose_board_rebase` MCP tool (`mcp-server.ts`, SAFE tier) → `POST /api/board/board-rebase` → panel → `POST /api/board/board-rebase-resolve` / `GET /api/board/board-rebase` (all in `index.ts`), `conversationId` via `EH_CONVERSATION_ID`. **Teeth:** the mutating verbs (`change_status`, `archive_ticket`, `extract_ticket` (FLUX-656, live), and speculatively `merge_tickets`) are in `mcp-server.ts`'s `CONFIRM_PERMISSION_TOOLS` so a direct call is gated even outside the ritual. The **push half** is `engine/src/board-digest.ts` (`buildBoardDigest()` — terse status counts + active sessions + needs-attention + since-last-turn delta, prepended to the board turn in `claude-code.ts`'s `buildBoardPrompt`/`sendBoardInput`). Portal surface (FLUX-720): `portal/src/components/BoardRebasePanel.tsx` exports `ChatBoardRebasePanel` (per-item toggles + Apply approved/Dismiss) + the `RebaseCard`, routed by `conversationId` and mounted **in every dock** (no longer orchestrator-only) via `ChatDock.tsx`'s `questionPicker` slot, so a proposal made from a ticket chat reaches that chat. The live batch queue is owned by the unified `PendingInteractionsProvider` — see the entry below.
+
+-   `portal/src/components/pendingInteractions.tsx` is the **land-here-first** module for **routing every "the agent is waiting on you" prompt** (FLUX-720). `PendingInteractionsProvider` (mounted at app root in `App.tsx`, inside `DockProvider`) holds one shared SSE subscription for all three pending queues — approvals (`permission-request`/`-resolved`, FLUX-605), questions (`ask-question`/`-resolved`, FLUX-662), and board-rebase batches (`board-rebase-proposed`/`-resolved`, FLUX-659) — plus one catch-up fetch each on mount. It exposes `usePendingInteractions()`: the three lists, per-type `remove*` (optimistic local clear), a refcounted `claim`/`release`/`isClaimed` (an inline surface claims its `conversationId` while mounted so the fallback defers — inline XOR fallback), and the derived `pendingPromptConversationIds: Set<string>`. `ChatPendingInteractions({conversationId})` is the **unified inline surface** (renders `ChatApprovalPanel` + `ChatBoardRebasePanel` + `ChatQuestionPicker` for one chat and claims it) — mounted in the dock + task-modal chat via `ChatView`'s `questionPicker` slot, replacing the per-component picker composition. `PendingInteractionFallback` is the single **no-orphans global overlay** (bottom-right, mounted once in `ChatDock`) rendering any prompt whose dock isn't open / `conversationId` is null, with an "open chat" affordance. The dock taskbar (`ChatDock.tsx`) reads `pendingPromptConversationIds` to **hard-gate** the originating chat's tab: force-pinned (overrides dismissal), un-closable (tab `x`, window header `x`, and context-menu Close all hidden), sorted above `needs-input`, with a distinct `MessageCircleQuestion` prompt icon + pulse — until the prompt resolves (minimize and the resolve controls themselves are never gated). `conversationId` arrives via `EH_CONVERSATION_ID` (set in `claude-code.ts`'s `cleanChildEnv` for every ticket + board spawn).
 
 -   `engine/src/orchestration-personas.ts` is the **land-here-first** module for
 	reviewer/orchestrator persona prompts. It owns the built-in persona catalog
@@ -124,7 +126,12 @@ This page is the quick orientation guide for where behavior lives today — file
     
 -   `portal/src/AppContext.tsx` coordinates view state, routing-like context,
 	and the shared live task polling plus change-event state used by board,
-	backlog, and header surfaces.
+	backlog, and header surfaces. **Invariant (FLUX-724):** `loadTasks` reuses the
+	previous `Task` object reference for any task that is value-equal (`tasksEqual`)
+	to its prior snapshot, so a poll/SSE diff only churns the references that actually
+	changed. The whole memoized card layer (`TaskCardInner` keys its memo on
+	`prev.task === next.task`) depends on this — don't replace it with a wholesale
+	`setTasks(freshlyParsedArray)`, which re-renders every card on every tick.
     
 -   `portal/src/api.ts` is the portal's client for engine endpoints.
 
@@ -142,16 +149,33 @@ This page is the quick orientation guide for where behavior lives today — file
 	presets over it. Add new launch entry points here, not by calling
 	`startTaskCliSessionEx` directly.
 
--   `portal/src/lib/ticketActions.ts` is the **single source of truth for the
-	phase-aware chat action bar** (FLUX-610): `actionsForStatus(task, ctx)` maps a
-	ticket's status to the right `TicketAction[]`, split by `kind` — `engine`
-	(direct REST status move / merge, zero tokens), `agent` (tokenized dispatch via
-	`agentActions`), `link` (open PR). It also owns `buildStatusChangeHistory` /
-	`changeTaskStatus`, the shared status-move history builder used by **both**
-	`Board.tsx` and the bar so the `status_change` entry is constructed in one
-	place. `portal/src/components/TicketActionBar.tsx` renders it and is passed into
-	the dumb `ChatView` via its `actions` slot by `ChatPane` (modal) and the dock
-	`ChatWindow`.
+-   `portal/src/lib/ticketActions.ts` is the **single unified ticket-action registry**
+	(FLUX-715, generalizing the FLUX-610 chat bar): `actionsForStatus(task, ctx)` maps a
+	ticket's status to a `TicketAction[]` over **two orthogonal axes** so the model doesn't
+	explode as new actions land — `category` (domain: `transition` · `workflow` · `pr` ·
+	`branch` · `lifecycle`) and `kind` (execution + render: `engine` direct-REST · `agent`
+	tokenized · `link` url · `launch` split-default-plus-▾-template-menu · `picker` inline
+	sub-UI like the Ready "Return" reason). Each action carries a `surfaces` hint
+	(`card`/`compact`) so a surface filters what it shows without the set being recomputed
+	anywhere else. **Adding an action ⇒ one entry here; adding a new `kind` ⇒ one extra arm
+	in the renderer's kind-switch** — nothing is re-plumbed per surface. It also owns
+	`buildStatusChangeHistory` / `changeTaskStatus`, the shared status-move history builder
+	used by **both** `Board.tsx` and the registry so the `status_change` entry is built in
+	one place. The imperative side lives in **`portal/src/hooks/useTicketActions.tsx`** (the
+	host hook — status moves, agent dispatch, phase launches, PR merge, Return-to-dev, the
+	launch-template catalog + the orchestration-launcher modal + Todo start-prompt state;
+	this is the launch slice lifted out of `useTaskCardController`). **`portal/src/components/ticket-actions/TicketActions.tsx`**
+	is the one renderer: `<TicketActions task variant="card"|"compact">` (self-contained:
+	hook + buttons + launcher portals) for the chat surfaces, plus the lower-level
+	`<TicketActionsView ctl variant>` (buttons only) and `<TicketActionsLaunchers ctl>`
+	(launcher + start-prompt portals) that the **board card** drives from its controller's
+	shared `useTicketActions` instance. It drives **three inline surfaces today** — the
+	board card (`task-card/CardActionButtons.tsx` → thin `<TicketActionsView variant="card">`),
+	the chat **mini-card** (`TaskMarkdown.tsx` `TicketChip` popover — whose old ▸ play button
+	is removed; no more silent fire-and-forget launching), and the chat **composer bar**
+	(`ChatPane` modal + `ChatDock` dock, via `ChatView`'s `actions` slot). The right-click
+	`ContextMenu` + the `TaskModal` launch button are the **fast-follow** (subtask FLUX-717),
+	designed to slot onto the same `category`/`kind` vocabulary without rework.
 
 -   `portal/src/components/OrchestrationLauncher.tsx` is the **generic
 	pattern-first launch modal**: pick an orchestration pattern (Scatter-gather /
@@ -220,12 +244,18 @@ This page is the quick orientation guide for where behavior lives today — file
 	grow past the card edge.
 	All card logic/state lives in **`portal/src/hooks/useTaskCardController.tsx`** — that
 	is the **land-here-first** file for card-level interactions (drag/drop, inline edit,
-	popovers, hover-description, agent launching, worktree detach) and the create/move
-	animation treatment for live board updates (FLUX-345). Every card (and the "Ready"
-	column) exposes **Single** / **Multi** agent controls that map the ticket status to a
-	launch phase (`statusToPhase`) and open `OrchestrationLauncher` pre-set to
-	`builtin-<phase>-single` / `builtin-<phase>-multi`; the multi launch adds the phase
-	combiner (`planner` for grooming, else `orchestrator`).
+	popovers, hover-description, worktree detach) and the create/move animation treatment
+	for live board updates (FLUX-345). The card's **action controls** (status-aware launch
+	split-buttons, the Ready Review/Return/Finish cluster, template menus) are no longer
+	hand-rolled here (FLUX-715): the controller holds a shared `ticketActions` =
+	`useTicketActions(task)` instance, `CardActionButtons` renders `<TicketActionsView
+	variant="card">` from it, and `TaskCard` renders `<TicketActionsLaunchers>` (the
+	`OrchestrationLauncher` + Todo start-prompt portals) from the same instance — so the
+	board card, chat mini-card and chat composer bar share **one** status→action registry
+	(see `lib/ticketActions.ts`). The controller keeps only `actionMenuActive` (an open-menu
+	flag for hover-popup suppression) and the PR-deck `openLauncherInPhase` shortcut. Launch
+	phase resolution (`statusToPhase` → `builtin-<phase>-single`/`-multi`, phase combiner) now
+	lives in the hook/registry.
     
 -   `portal/src/components/TaskModal.tsx` is now a **thin layout** (~328 lines): it assembles
 	the typed prop bundles and renders `task-modal/TaskModalFullView.tsx` /
@@ -236,6 +266,39 @@ This page is the quick orientation guide for where behavior lives today — file
 	expose their full state to children via a `c={c}` prop today; concern-scoped sub-hooks
 	and a typed context are tracked follow-ups (FLUX-572 / FLUX-573).
     
+-   `portal/src/components/task-modal/TicketSideView.tsx` is the **chat-native** full-ticket
+	surface (FLUX-734): a slide-out panel that docks to the right of a `ChatDock` chat window
+	(toggled from the window title bar; open-state + width persisted in `DockProvider` under
+	`sideviewOpen` / `sideviewWidth`, and per-section collapse under `sectionOpen`). It reuses the
+	modal's leaf panels (`SubtasksPanel`, `HistoryList`, `CommentBox`, `ActivityFilterTabs`,
+	`TaskDescriptionSurface`) arranged via an extensible **section registry**, fed by
+	**`portal/src/hooks/useTicketSideView.ts`** — a compact, *task-scoped* sibling of
+	`useTaskModalController` (intentionally separate so the legacy modal can't regress) that
+	persists through the same `updateTask` write path. **FLUX-740:** the controller is *lifted* to
+	the chat window (`ChatDock`'s `TicketControllerScope`) and shared with the **editable metadata
+	bar** (`ChatMetadataBar`, formerly the read-only `ChatContextStrip`) that sits above the chat —
+	the bar now owns ALL ticket metadata (status/priority/assignee/effort + tags/link/effort-level)
+	and hosts the unified dirty/save affordance, so the former `MetadataPanel`-backed "Details"
+	section was dropped from the registry and the sideview header keeps only the editable title.
+	A draggable divider between the chat column and the panel rebalances the two (`sideviewWidth`).
+	The **land-here-first** file when extending the in-chat ticket surface. Full extraction of a
+	shared controller core + retiring the legacy `TaskModal` + rewiring all `openTaskModal`
+	entry points to this surface is the tracked follow-up.
+
+-   `portal/src/transcriptCache.ts` is the **land-here-first** module for **chat transcript render
+	latency across minimize/reopen** (FLUX-750). A module-level LRU (`Map`, insertion order = recency,
+	cap 12) keyed by `conversationId` with `getTranscript` / `hasTranscript` / `setTranscript`. The
+	dock minimizes a chat by *unmounting* its `<ChatWindow>`, which destroys `useChatSession`'s local
+	`messages` state — so a reopen used to cold-fetch from disk and flash blank. The hook now
+	lazy-hydrates `messages` from this cache on mount (instant render, SWR-revalidated by the existing
+	mount fetch) and writes through on every successful fetch; a true cache miss flips a `loading` flag
+	that drives the cold-open spinner in `ChatView`. `ChatDock` keeps the cache fresh for a *running
+	but minimized* conversation via a bounded warm subscription (only `running` ids not in `open`, no
+	DOM, no per-idle-chat cost) so reopening a live session shows current committed state with no
+	stale-then-jump. Pure module scope (no React) → survives unmount, resets on full reload — the same
+	lifetime as `DockProvider`'s in-memory `drafts` map. `liveText` mid-stream tokens are intentionally
+	NOT cached (the durable transcript via the warm-sub satisfies "current committed state immediately").
+
 -   `portal/src/components/DocsScreen.tsx` is the primary docs workspace.
     
 -   `portal/src/components/DocsSidebar.tsx` owns docs tree navigation.

@@ -23,7 +23,7 @@ import { computeContextBudget } from '../context-budget-metrics.js';
 import { probeAllMcpSchemas } from '../mcp-schema-probe.js';
 import { getEffectiveSpawnServers, BOARD_CONVERSATION_ID } from '../agents/claude-code.js';
 import { diffFilesForBranch } from '../diff-aggregator.js';
-import { selectMembers, sharedNonDoneSiblings } from '../pr-tickets.js';
+import { selectMembers, sharedNonDoneSiblings, resolveMergedPrTickets } from '../pr-tickets.js';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 
@@ -1019,10 +1019,7 @@ router.post('/:id/pr/merge', async (req, res) => {
   // skips them (their state is owned by syncPrTickets — FLUX-587), which left the merged PR
   // card sitting OPEN until the next 90s poll ("nothing happened" for a long minute — FLUX-588).
   // The merge just succeeded here, so move them to Done immediately instead of waiting.
-  for (const t of sharedTickets.filter((t) => (t as any).kind === 'pr')) {
-    await upsertManagedTicket(t.id, { status: 'Done', prState: 'MERGED', swimlane: null }).catch(() => {});
-    broadcastEvent('taskUpdated', { id: t.id });
-  }
+  await resolveMergedPrTickets(branch);
 
   res.json({ merged: true, ...cleanup });
 });

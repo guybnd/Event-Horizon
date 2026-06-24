@@ -81,7 +81,7 @@ const config = {
   ],
   enableBacklogScreen: true,
   requireCommentOnStatusChange: true,
-  boardCardOpenMode: 'full',
+  boardCardOpenMode: 'chat',
   animationsEnabled: true,
   enableFireworks: true,
   requireInputStatus: 'Require Input',

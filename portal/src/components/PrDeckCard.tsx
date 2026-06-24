@@ -5,7 +5,8 @@ import type { Task } from '../types';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import type { TaskCardController } from '../hooks/useTaskCardController';
 import { TaskDeck } from './TaskDeck';
-import { mergePr, retryPr, updateTask, adoptPr } from '../api';
+import { CardCommentBadge } from './task-card/CardCommentBadge';
+import { mergePr, retryPr, updateTask, adoptPr, MergeParkedError } from '../api';
 import { launchPhaseDefault } from '../agentActions';
 import { resolveEffectiveAgent } from '../utils';
 
@@ -21,8 +22,8 @@ const PR_BTN_VIOLET = `${PR_BTN} border border-violet-200 text-violet-700 hover:
 /**
  * The PR-specific BODY of a PR ticket's card (FLUX-567). Rendered INSIDE TaskCard when
  * `kind:'pr'`, so the PR card inherits the whole TaskCard shell — running-agent indicator,
- * right-click context menu, comment badge, and the review launcher (we reuse the
- * controller's `reviewModalOpen`). This section adds only the PR bits: state/review chips,
+ * right-click context menu, comment badge, and the review launcher (we reuse the controller's
+ * shared `ticketActions.openLauncher` via `openLauncherInPhase`). This section adds only the PR bits: state/review chips,
  * the folded-members deck (unwind → real compact member cards), and the PR action bar
  * (Review → launcher · Merge → squash-merge+advance · Open → full surface). The deck/fold
  * mechanic here is the primitive epics (FLUX-580) will reuse.
@@ -35,6 +36,10 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
   const [confirmMerge, setConfirmMerge] = useState(false);
   const [merging, setMerging] = useState(false);
   const [mergeErr, setMergeErr] = useState('');
+  // Parked sessions blocking the merge (FLUX-739). When set, the confirm bar swaps to a
+  // "Stop & merge" affordance instead of dead-ending on the error string (the bug this card had —
+  // the working pattern already lived in PrPanel.tsx).
+  const [parkedOwners, setParkedOwners] = useState<string[] | null>(null);
   // Retry-PR prompt (FLUX-593) — shown on a merged/closed PR card.
   const [retrying, setRetrying] = useState(false);
   const [retryReason, setRetryReason] = useState('');
@@ -70,21 +75,32 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
   // so it never shows on a still-active card.
   const canRetry = task.status === 'Done';
 
-  const doMerge = async () => {
+  // force:true — the confirm step below already shows which non-Done members get swept to Done,
+  // so this IS the explicit confirmation the shared-PR guard asks for (FLUX-569). A parked-session
+  // block (FLUX-636) is NOT covered by force — it needs stopParkedSessions, so on MergeParkedError
+  // we keep the bar open and surface a "Stop & merge" retry rather than a dead-end error (FLUX-739).
+  const runMerge = async (stopParkedSessions: boolean) => {
     setMerging(true);
     setMergeErr('');
     try {
-      // force:true — the confirm step below already shows which non-Done members get swept to
-      // Done, so this click IS the explicit confirmation the shared-PR guard asks for (FLUX-569).
-      await mergePr(task.id, { force: true });
+      await mergePr(task.id, { force: true, stopParkedSessions });
+      setParkedOwners(null);
+      setConfirmMerge(false);
       triggerRefresh();
     } catch (e) {
-      setMergeErr(e instanceof Error ? e.message : 'Merge failed');
+      if (e instanceof MergeParkedError) {
+        setParkedOwners(e.parkedOwners);
+      } else {
+        setMergeErr(e instanceof Error ? e.message : 'Merge failed');
+        setConfirmMerge(false);
+      }
     } finally {
       setMerging(false);
-      setConfirmMerge(false);
     }
   };
+  const doMerge = () => runMerge(false);
+  const doStopAndMerge = () => runMerge(true);
+  const cancelMerge = () => { setConfirmMerge(false); setParkedOwners(null); };
 
   // Continue development on an unattached (zero-member) PR (FLUX-569): adopt an existing ticket
   // or create a fresh one, bound to this PR's branch, so the work has a home that folds in.
@@ -173,8 +189,10 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
 
   return (
     <div onClick={(e) => e.stopPropagation()}>
-      {/* Status chips */}
-      <div className="mb-2 flex flex-wrap items-center gap-1.5">
+      {/* Status chips. pr-8 reserves the top-right corner for the chat pill (TaskCard renders it
+          absolutely there — FLUX-739); the comment badge lives inline here (ml-auto) instead of the
+          corner, so chat and comment never collide. */}
+      <div className="mb-2 flex flex-wrap items-center gap-1.5 pr-8">
         {prStateChip(task.prState)}
         {changesRequested && (
           <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-semibold text-red-700 dark:bg-red-500/15 dark:text-red-300">
@@ -192,6 +210,11 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
             <Bot className="h-3 w-3" /> {task.cliSession.label}{c.currentActivity ? ` · ${c.currentActivity}` : ''}
           </span>
         )}
+        {/* Comment badge — moved out of the corner into the status row so the chat pill owns the
+            corner (FLUX-739). Inline chip, right-aligned. */}
+        <div className="ml-auto">
+          <CardCommentBadge task={task} c={c} inline />
+        </div>
       </div>
 
       {/* Deck — folded members (FLUX-567 / FLUX-580 shared primitive) */}
@@ -282,22 +305,39 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
       ) : (
         <div className={`flex items-center gap-1 border-violet-200/60 transition-all duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] dark:border-violet-500/20 ${confirmMerge ? 'mt-2 max-h-40 overflow-visible border-t pt-2 opacity-100' : 'mt-0 max-h-0 overflow-hidden opacity-0 group-hover:mt-2 group-hover:max-h-20 group-hover:overflow-visible group-hover:border-t group-hover:pt-2 group-hover:opacity-100'}`}>
           {confirmMerge ? (
-            <>
-              <span className="mr-auto text-[11px] font-medium text-gray-600 dark:text-gray-300">
-                {nonDoneMembers.length > 0
-                  ? `Merge & advance ${nonDoneMembers.length} unfinished ticket(s) (${nonDoneMembers.map((m) => m.id).join(', ')}) to Done?`
-                  : 'Merge & advance?'}
-              </span>
-              <button
-                disabled={merging}
-                onClick={doMerge}
-                className="flex items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1 text-[11px] font-semibold text-white transition-colors hover:bg-emerald-700 disabled:opacity-50"
-              >
-                {merging ? <Loader2 className="h-3 w-3 animate-spin" /> : <GitMerge className="h-3 w-3" />}
-                {merging ? 'Merging…' : 'Confirm'}
-              </button>
-              <button disabled={merging} onClick={() => setConfirmMerge(false)} className="rounded-md px-2 py-1 text-[11px] font-medium text-gray-500 hover:bg-gray-100 disabled:opacity-50 dark:hover:bg-white/5">Cancel</button>
-            </>
+            parkedOwners ? (
+              <>
+                <span className="mr-auto text-[11px] font-medium text-amber-700 dark:text-amber-300">
+                  {parkedOwners.length} parked session{parkedOwners.length > 1 ? 's' : ''} will be ended (warm resume lost; committed work safe).
+                </span>
+                <button
+                  disabled={merging}
+                  onClick={doStopAndMerge}
+                  className="flex items-center gap-1 rounded-md bg-amber-600 px-2.5 py-1 text-[11px] font-semibold text-white transition-colors hover:bg-amber-700 disabled:opacity-50"
+                >
+                  {merging ? <Loader2 className="h-3 w-3 animate-spin" /> : <GitMerge className="h-3 w-3" />}
+                  {merging ? 'Stopping & merging…' : 'Stop & merge'}
+                </button>
+                <button disabled={merging} onClick={cancelMerge} className="rounded-md px-2 py-1 text-[11px] font-medium text-gray-500 hover:bg-gray-100 disabled:opacity-50 dark:hover:bg-white/5">Cancel</button>
+              </>
+            ) : (
+              <>
+                <span className="mr-auto text-[11px] font-medium text-gray-600 dark:text-gray-300">
+                  {nonDoneMembers.length > 0
+                    ? `Merge & advance ${nonDoneMembers.length} unfinished ticket(s) (${nonDoneMembers.map((m) => m.id).join(', ')}) to Done?`
+                    : 'Merge & advance?'}
+                </span>
+                <button
+                  disabled={merging}
+                  onClick={doMerge}
+                  className="flex items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1 text-[11px] font-semibold text-white transition-colors hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  {merging ? <Loader2 className="h-3 w-3 animate-spin" /> : <GitMerge className="h-3 w-3" />}
+                  {merging ? 'Merging…' : 'Confirm'}
+                </button>
+                <button disabled={merging} onClick={cancelMerge} className="rounded-md px-2 py-1 text-[11px] font-medium text-gray-500 hover:bg-gray-100 disabled:opacity-50 dark:hover:bg-white/5">Cancel</button>
+              </>
+            )
           ) : (
             <>
               {/* State-aware actions (FLUX-568/593):

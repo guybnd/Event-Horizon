@@ -9,12 +9,8 @@ export function CardDescriptionPopup({ task, isOverlay, c }: { task: Task; isOve
     isHovering,
     isThisTaskOpen,
     isOverlayOpen,
-    agentMenuOpen,
-    finishMenuOpen,
-    reviewSelectorOpen,
-    returnPromptOpen,
-    reviewModalOpen,
-    showStartPrompt,
+    actionMenuActive,
+    ticketActions,
     contextMenuPos,
     popupRef,
     popupPos,
@@ -24,7 +20,7 @@ export function CardDescriptionPopup({ task, isOverlay, c }: { task: Task; isOve
 
   return createPortal(
     <AnimatePresence>
-      {isHovering && !contextMenuPos && !isOverlay && !isThisTaskOpen && !isOverlayOpen && !agentMenuOpen && !finishMenuOpen && !reviewSelectorOpen && !returnPromptOpen && !reviewModalOpen && !showStartPrompt && task.body?.trim() && (
+      {isHovering && !contextMenuPos && !isOverlay && !isThisTaskOpen && !isOverlayOpen && !actionMenuActive && !ticketActions.launcherOpen && !ticketActions.startPromptOpen && task.body?.trim() && (
         <motion.div
           ref={popupRef}
           key={`popup-${task.id}`}

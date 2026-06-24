@@ -30,7 +30,7 @@ export let configCache: any = {
   ],
   enableBacklogScreen: true,
   requireCommentOnStatusChange: true,
-  boardCardOpenMode: 'full',
+  boardCardOpenMode: 'chat',
   animationsEnabled: true,
   enableFireworks: true,
   requireInputStatus: 'Require Input',
@@ -129,6 +129,21 @@ export async function loadConfig() {
     } else {
       console.error('Failed to load config:', error);
     }
+  }
+
+  // FLUX-744: one-time migration of the board-open default. The default changed from 'full' to 'chat',
+  // but existing boards eagerly persisted the OLD 'full' default (saveConfig writes the whole config),
+  // so without this an updating user would keep opening cards in the modal. Flip a persisted 'full'
+  // (or an absent value) to 'chat' exactly ONCE, recorded via `chatOpenDefaultMigrated` so a later
+  // DELIBERATE 'full'/'popup' choice is preserved and never re-flipped. The PUT /api/config handler
+  // merges over configCache, so this marker survives portal Settings saves (which don't echo it back).
+  if (!configCache.chatOpenDefaultMigrated) {
+    if (!configCache.boardCardOpenMode || configCache.boardCardOpenMode === 'full') {
+      configCache.boardCardOpenMode = 'chat';
+    }
+    configCache.chatOpenDefaultMigrated = true;
+    await saveConfig(configCache);
+    console.log('[config] applied chat-open-default migration (boardCardOpenMode →', configCache.boardCardOpenMode + ')');
   }
 }
 

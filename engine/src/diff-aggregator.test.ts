@@ -5,7 +5,7 @@ import os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { createTaskWorktree, listTaskWorktrees } from './task-worktree.js';
-import { buildDiffOverview, diffFileContent, diffFilesForBranch, computeCollisions, type DiffGroup } from './diff-aggregator.js';
+import { buildDiffOverview, diffFileContent, diffFilesForBranch, changedFilesMasterSideOfBranch, computeCollisions, type DiffGroup } from './diff-aggregator.js';
 
 const execFileAsync = promisify(execFile);
 const git = (cwd: string, args: string[]) => execFileAsync('git', args, { cwd, windowsHide: true });
@@ -156,6 +156,28 @@ describe('diff-aggregator', () => {
     const summary = await diffFilesForBranch(repo, 'flux/does-not-exist');
     expect(summary.worktree).toBeNull();
     expect(summary.files).toEqual([]);
+  });
+
+  it('changedFilesMasterSideOfBranch lists what master changed underneath a branch (FLUX-655)', async () => {
+    // Branch diverges from master at the init commit; master then advances with a new file.
+    await git(repo, ['branch', 'flux/FLUX-9-x']);
+    await fs.writeFile(path.join(repo, 'on-master.txt'), 'm\n', 'utf8');
+    await git(repo, ['add', 'on-master.txt']);
+    await git(repo, ['commit', '-m', 'master advances']);
+
+    const files = await changedFilesMasterSideOfBranch(repo, 'flux/FLUX-9-x');
+    const byFile = Object.fromEntries(files.map((f) => [f.file, f.status]));
+    expect(byFile['on-master.txt']).toBe('added');
+  });
+
+  it('changedFilesMasterSideOfBranch is empty when the branch is up to date with master (FLUX-655)', async () => {
+    // A branch at the master tip has no master-side delta.
+    await git(repo, ['branch', 'flux/FLUX-9-y']);
+    expect(await changedFilesMasterSideOfBranch(repo, 'flux/FLUX-9-y')).toEqual([]);
+  });
+
+  it('changedFilesMasterSideOfBranch returns [] for an unknown branch (FLUX-655)', async () => {
+    expect(await changedFilesMasterSideOfBranch(repo, 'flux/does-not-exist')).toEqual([]);
   });
 
   it('computeCollisions lists only multi-group files and annotates collidesWith', () => {
