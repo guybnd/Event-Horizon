@@ -12,6 +12,58 @@ export const SUPPORTED_IMAGE_TYPES = new Map<string, string>([
 
 export const SUPPORTED_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.svg']);
 
+// ─── Onboarding image allowlist (FLUX-760) ─────────────────────────────────────
+//
+// SEPARATE, gif-AWARE allowlist used ONLY by the dev-only onboarding-asset route.
+// It deliberately does NOT widen the chat SUPPORTED_IMAGE_TYPES/EXTENSIONS above
+// (those exclude gif on purpose so animated gifs never enter chat). Onboarding
+// images are committed assets that ship in portal/public/onboarding-assets/ and
+// are rendered by the wizard, so animated gif support is required here.
+export const ONBOARDING_IMAGE_TYPES = new Map<string, string>([
+  ['image/png', '.png'],
+  ['image/jpeg', '.jpg'],
+  ['image/svg+xml', '.svg'],
+  ['image/gif', '.gif'],
+  // FLUX-763: looping-video onboarding media. .mov is render/delete-aware (in
+  // EXTENSIONS below) but deliberately NOT in this upload-ACCEPT map — it is large +
+  // less web-friendly (video/quicktime). Recommend authoring H.264 mp4 as primary.
+  ['video/mp4', '.mp4'],
+  ['video/webm', '.webm'],
+]);
+
+export const ONBOARDING_IMAGE_EXTENSIONS = new Set([
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.svg',
+  '.gif',
+  '.mp4',
+  '.webm',
+  '.mov',
+]);
+
+/**
+ * Resolve the on-disk extension for an onboarding image, MIME-first then falling
+ * back to the client-supplied filename's extension. Returns null when neither
+ * resolves to an allowed onboarding image type (caller responds 400). The
+ * extension is what makes express.static/Vite serve the correct Content-Type
+ * (e.g. .gif → image/gif), so it must come from this validated allowlist and
+ * NEVER be trusted raw from the client name without validation.
+ */
+export function resolveOnboardingImageExtension(fileName: string, mimeType: string) {
+  const normalizedMimeType = typeof mimeType === 'string' ? mimeType.trim().toLowerCase() : '';
+  if (ONBOARDING_IMAGE_TYPES.has(normalizedMimeType)) {
+    return ONBOARDING_IMAGE_TYPES.get(normalizedMimeType)!;
+  }
+
+  const extension = getExtensionFromFileName(fileName);
+  if (ONBOARDING_IMAGE_EXTENSIONS.has(extension)) {
+    return extension === '.jpeg' ? '.jpg' : extension;
+  }
+
+  return null;
+}
+
 export interface DocRecord {
   path: string;
   title: string;

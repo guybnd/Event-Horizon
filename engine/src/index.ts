@@ -61,6 +61,10 @@ import workflowsRouter from './routes/workflows.js';
 import agentsRouter from './routes/agents.js';
 import bootstrapRouter from './routes/bootstrap.js';
 import groupRouter from './routes/group.js';
+import devOnboardingRouter from './routes/dev-onboarding.js';
+import devOnboardingFlowRouter from './routes/dev-onboarding-flow.js';
+import devOnboardingAssetsRouter from './routes/dev-onboarding-assets.js';
+import devOnboardingDraftRouter from './routes/dev-onboarding-draft.js';
 import { checkForUpdate, getCachedUpdateInfo, getLocalVersion } from './update-check.js';
 import { checkGhAuth } from './branch-manager.js';
 import { reconcilePullRequests, pruneMergedBranches } from './pr-cleanup.js';
@@ -112,7 +116,16 @@ app.post('/mcp', handleMcp);
 app.get('/mcp', handleMcp);
 app.delete('/mcp', handleMcp);
 
-app.use(express.json({ limit: '10mb' }));
+// Prod-wide JSON body limit stays 10mb (FLUX-760: do NOT widen this — large onboarding
+// gif uploads get a dedicated 64mb parser scoped to the dev-only asset route instead).
+// The dev onboarding-asset route is EXEMPTED here so the global 10mb parser does not
+// consume/413 its body first; its own express.json({limit:'64mb'}) (inside the router)
+// then parses it. This exemption is inert in prod because the route is never mounted there.
+const globalJsonParser = express.json({ limit: '10mb' });
+app.use((req, res, next) => {
+  if (req.path === '/api/dev/onboarding-asset') return next();
+  return globalJsonParser(req, res, next);
+});
 
 // ─── API routes ───────────────────────────────────────────────────────────────
 
@@ -138,6 +151,30 @@ app.use('/api/workflows', requireWorkspace, workflowsRouter);
 app.use('/api/agents', requireWorkspace, agentsRouter);
 app.use('/api/bootstrap', requireWorkspace, bootstrapRouter);
 app.use('/api/group', requireWorkspace, groupRouter);
+
+// FLUX-755: dev-only onboarding-features editor endpoints. Mounted WITHOUT
+// requireWorkspace (the config file is repo-relative, not workspace-relative) and
+// ONLY in dev — isPackaged is true in pkg/SEA/electron prod binaries, so the router
+// never mounts when shipped. Each handler also re-checks DEV and 404s as a backstop.
+const DEV = !isPackaged && process.env.NODE_ENV !== 'production';
+if (DEV) app.use('/api/dev', devOnboardingRouter);
+// FLUX-759: dev-only onboarding-FLOW editor endpoints (sibling of the features route
+// above). Same /api/dev prefix, distinct sub-path (/onboarding-flow), same DEV-only
+// + no-requireWorkspace posture. Targets portal/src/config/onboardingFlow.json.
+if (DEV) app.use('/api/dev', devOnboardingFlowRouter);
+// FLUX-760: dev-only onboarding-IMAGE upload endpoint (POST/DELETE /onboarding-asset).
+// Same /api/dev prefix + DEV-only + no-requireWorkspace posture as the two routes
+// above. Writes committed bytes to portal/public/onboarding-assets/ (served by
+// express.static below in dev AND prod). Carries its OWN express.json({limit:'64mb'})
+// internally, so it does NOT widen the prod-wide 10mb /api limit at line 117.
+if (DEV) app.use('/api/dev', devOnboardingAssetsRouter);
+// FLUX-763 Phase 4: dev-only onboarding DRAFT store + PUBLISH. Routine Studio Save now
+// writes the gitignored *.draft.json (GET/PUT onboarding-{flow,features}-draft, seeded
+// from committed on first read); POST onboarding-publish is the ONLY path that writes
+// the committed onboardingFlow.json/onboardingFeatures.json. Same /api/dev prefix +
+// DEV-only + no-requireWorkspace posture as the routes above; small JSON bodies fit the
+// prod-wide 10mb limit, so no body-parser exemption is needed.
+if (DEV) app.use('/api/dev', devOnboardingDraftRouter);
 
 // FLUX-604: live board snapshot for the orchestrator — active sessions + status counts.
 app.get('/api/board/state', requireWorkspace, (_req, res) => {

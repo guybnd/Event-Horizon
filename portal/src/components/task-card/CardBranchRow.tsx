@@ -1,6 +1,20 @@
 import { Undo2, GitBranch, FolderGit2, Copy, Check, X, Loader2 } from 'lucide-react';
 import type { Task } from '../../types';
 import type { TaskCardController } from '../../hooks/useTaskCardController';
+import { TutorialPopover } from '../common/TutorialPopover';
+import type { TutorialTrigger } from '../common/TutorialPopover';
+
+// FLUX-762 — concrete in-board reuse of the generic TutorialPopover: the
+// worktree/branch glyph becomes a "what is this?" trigger that opens the bigger
+// tutorial panel on hover/focus. Proves genericity — the render-prop injects
+// ref + handlers onto the EXISTING <span> with no wrapper/box-model drift, and
+// the panel portals + clamps to the viewport exactly as it does for a feature
+// card. Details-only here (no gif asset bundled for this glyph yet); a future
+// data-driven BoardTutorial registry can swap in media unchanged.
+const WORKTREE_TUTORIAL_DETAILS =
+  'Each ticket can run in an isolated git worktree so parallel agents never ' +
+  "clobber each other's files. Commit before Ready to open the PR — a worktree " +
+  'branch with no commits ahead cannot open one.';
 
 export function CardBranchRow({ task, c }: { task: Task; c: TaskCardController }) {
   const {
@@ -25,9 +39,30 @@ export function CardBranchRow({ task, c }: { task: Task; c: TaskCardController }
         <span className="min-w-0 flex-1 truncate text-primary/80">{detachMsg}</span>
       ) : (
         <>
-          {hasWorktree
-            ? <FolderGit2 className="h-2.5 w-2.5 shrink-0" />
-            : <GitBranch className="h-2.5 w-2.5 shrink-0 text-gray-400" />}
+          <TutorialPopover
+            title={hasWorktree ? 'Worktrees' : 'Branches'}
+            details={WORKTREE_TUTORIAL_DETAILS}
+            placement="bottom"
+            panelClassName="w-[320px] max-w-[calc(100vw-16px)] rounded-2xl border border-gray-200/80 bg-white/95 p-4 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:bg-[#1a1b23]/95"
+          >
+            {(t: TutorialTrigger) => (
+              <span
+                ref={t.ref as React.Ref<HTMLSpanElement>}
+                aria-describedby={t['aria-describedby']}
+                onMouseEnter={t.onMouseEnter}
+                onMouseLeave={t.onMouseLeave}
+                onFocus={t.onFocus}
+                onBlur={t.onBlur}
+                onKeyDown={t.onKeyDown}
+                tabIndex={0}
+                className="inline-flex shrink-0 cursor-help items-center rounded outline-none focus-visible:ring-1 focus-visible:ring-primary/50"
+              >
+                {hasWorktree
+                  ? <FolderGit2 className="h-2.5 w-2.5 shrink-0" />
+                  : <GitBranch className="h-2.5 w-2.5 shrink-0 text-gray-400" />}
+              </span>
+            )}
+          </TutorialPopover>
           <span className="min-w-0 flex-1 truncate">{task.branch}</span>
           {hasWorktree && worktreeChangedFiles > 0 && (
             <button

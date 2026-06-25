@@ -375,6 +375,14 @@ router.put('/:id', async (req, res) => {
   }
 
   const readyStatus = configCache.readyForMergeStatus || 'Ready';
+  // FLUX-730/FLUX-731: INTENTIONAL asymmetry — unlike the MCP `change_status` path, this PUT
+  // route does NOT enforce commit-before-Ready for worktree branches. Dragging a card to Ready
+  // in the portal is a deliberate human action (the human can see the board and choose to move
+  // it), distinct from the silent agent failure FLUX-730 targets (an agent reaching Ready with
+  // uncommitted worktree work and no PR ever opening). PR creation here is still guarded
+  // separately by the Raise-PR route (`POST /:id/pr`), which refuses aheadCount===0 — so a
+  // drag-to-Ready with no commits cannot silently open an empty PR either. If this ever needs to
+  // refuse, reuse `evaluateWorktreeReadyRefusal` from mcp-server.ts rather than duplicating it.
   if (updates.status === readyStatus && task.status !== readyStatus) {
     const submittedHistory: any[] = Array.isArray(updates.history) ? updates.history : [];
     const existingLen = (task.history || []).length;
@@ -974,20 +982,13 @@ router.post('/:id/pr/merge', async (req, res) => {
       parkedOwners: parkedOwners.map((t) => t.id),
     });
   }
-  if (parkedOwners.length > 0 && stopParked) {
-    for (const t of parkedOwners) {
-      stopAllSessionsForTask(t.id, 'stop & merge');
-      await updateTaskWithHistory(t.id, {
-        updatedBy: 'Agent',
-        entries: [buildActivityEntry(`Parked session ended for merge of \`${branch}\`.`, 'Agent', new Date().toISOString())],
-      });
-    }
-  }
-
   // Finish-on-shared-PR guard (FLUX-569, from the FLUX-556/PR#6 incident): a merge advances ALL
   // branch tickets → Done. When non-terminal siblings are bundled in, that's a one-way door, so
   // require explicit confirmation (`force:true`) and surface exactly who would be swept along.
   // The PR deck card lists them in its merge confirm and then re-sends with force.
+  // FLUX-747: this rejection MUST run BEFORE the parked-stop side effect below — otherwise a
+  // request with stopParkedSessions:true but no force would kill the parked sessions (losing the
+  // warm --resume) and *then* 409 with requiresForce, costing the resume without the merge.
   const force = req.body?.force === true;
   if (!force) {
     const nonDone = sharedNonDoneSiblings(Object.values(tasksCache) as any[], branch, id);
@@ -996,6 +997,16 @@ router.post('/:id/pr/merge', async (req, res) => {
         error: `Merging \`${branch}\` would advance ${nonDone.length} unfinished ticket(s) to Done: ${nonDone.map((t) => `${t.id} (${t.status})`).join(', ')}. Confirm to merge the whole shared PR anyway.`,
         sharedNonDone: nonDone.map((t) => ({ id: t.id, status: t.status, title: t.title })),
         requiresForce: true,
+      });
+    }
+  }
+
+  if (parkedOwners.length > 0 && stopParked) {
+    for (const t of parkedOwners) {
+      stopAllSessionsForTask(t.id, 'stop & merge');
+      await updateTaskWithHistory(t.id, {
+        updatedBy: 'Agent',
+        entries: [buildActivityEntry(`Parked session ended for merge of \`${branch}\`.`, 'Agent', new Date().toISOString())],
       });
     }
   }

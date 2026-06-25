@@ -39,6 +39,7 @@ export function EpicStackDeck({
   openEpic?: (task: Task) => void;
 }) {
   const [open, setOpen] = useState<Set<string>>(() => new Set());
+  const [ctxPos, setCtxPos] = useState<{ task: Task; x: number; y: number } | null>(null);
   const config = useAppSelector((s) => s.config);
   if (items.length === 0) return null;
 
@@ -115,7 +116,8 @@ export function EpicStackDeck({
               <button
                 type="button"
                 onClick={() => toggleOne(t.id)}
-                title={`${t.id} · ${t.status} — click to expand`}
+                onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setCtxPos({ task: t, x: e.clientX, y: e.clientY }); }}
+                title={`${t.id} · ${t.status} — click to expand (right-click for actions)`}
                 className="flex w-full items-center gap-1.5 rounded-lg rounded-b-md border border-indigo-200/70 bg-white px-2 py-[5px] text-left shadow-sm transition-all duration-150 group-hover/peek:-translate-y-[2px] group-hover/peek:border-indigo-300 group-hover/peek:py-1.5 group-hover/peek:shadow-md dark:border-indigo-500/25 dark:bg-[#1c1d26] dark:group-hover/peek:border-indigo-500/50"
               >
                 <span className={`h-2 w-2 shrink-0 rounded-full ${statusDot(getStatusColorClass(config, t.status))}`} aria-hidden />
@@ -130,6 +132,21 @@ export function EpicStackDeck({
           );
         })}
       </div>
+      {ctxPos && (
+        // Right-click on a collapsed peek acts on that subtask (status, priority, assignee, archive,
+        // …); "launch" ensures the subtask is expanded so its inline TaskCard launcher takes over,
+        // mirroring how the ghost card routes launch to opening the epic (FLUX-701).
+        <ContextMenu
+          task={ctxPos.task}
+          position={{ x: ctxPos.x, y: ctxPos.y }}
+          onClose={() => setCtxPos(null)}
+          onLaunchAgent={() => {
+            const id = ctxPos.task.id;
+            setCtxPos(null);
+            setOpen((prev) => new Set(prev).add(id));
+          }}
+        />
+      )}
     </div>
   );
 }

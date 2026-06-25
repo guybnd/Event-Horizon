@@ -155,8 +155,20 @@ function registerDefaults(): void {
     if (!ticketId) return { ok: false, message: 'status: no target ticket' };
     if (!item.newStatus) return { ok: false, message: `status: no newStatus for ${ticketId}` };
     if (!tasksCache[ticketId]) return { ok: false, message: `status: ${ticketId} not found` };
+    // FLUX-672: this executor writes through updateTaskWithHistory directly (the post-approval
+    // path deliberately skips change_status's CONFIRM gate), but it must NOT skip the
+    // comment-required rule. Mirror how change_status resolves the comment-required statuses
+    // (Require Input + Ready/readyForMerge). If the target is one of them and the rationale is
+    // blank, synthesize a minimal comment so the history entry the rule demands still exists.
+    const requireInputStatus = configCache.requireInputStatus || 'Require Input';
+    const readyStatus = configCache.readyForMergeStatus || 'Ready';
+    const commentRequired = item.newStatus === requireInputStatus || item.newStatus === readyStatus;
+    let entries = commentEntry(item.rationale);
+    if (commentRequired && entries.length === 0) {
+      entries = [{ type: 'comment', user: 'Agent', comment: `Moved to ${item.newStatus} via board-rebase.`, date: new Date().toISOString() }];
+    }
     const result = await updateTaskWithHistory(ticketId, {
-      entries: commentEntry(item.rationale),
+      entries,
       updatedBy: 'Agent',
       nextStatus: item.newStatus,
     });
@@ -168,10 +180,16 @@ function registerDefaults(): void {
   // `archive` — retire ticket(s) to the Archived status (FLUX-616's archive_ticket, which exists).
   registerVerb('archive', async (item) => {
     const archiveStatus = configCache.archiveStatus || 'Archived';
+    // FLUX-672: a multi-target archive previously early-returned on the first failure, leaving
+    // targets 1..N-1 already archived but reporting only the failure (silent partial state). Now
+    // we run the whole loop, collect succeeded vs failed ids, and enumerate both in the message.
+    // `ok` is true only when EVERY target succeeded; a single failure flips it false but the
+    // message still names what actually changed (no rollback — archive is reversible via unarchive).
     const done: string[] = [];
+    const failed: string[] = [];
     for (const ticketId of item.targets) {
       const task = tasksCache[ticketId];
-      if (!task) return { ok: false, message: `archive: ${ticketId} not found` };
+      if (!task) { failed.push(`${ticketId} (not found)`); continue; }
       if (task.status === archiveStatus) { done.push(`${ticketId} (already)`); continue; }
       const extraFields: Record<string, any> = {};
       if (task.swimlane) extraFields.swimlane = null;
@@ -181,11 +199,15 @@ function registerDefaults(): void {
         nextStatus: archiveStatus,
         ...(Object.keys(extraFields).length > 0 ? { extraFields } : {}),
       });
-      if (!result) return { ok: false, message: `archive: failed to update ${ticketId}` };
+      if (!result) { failed.push(`${ticketId} (update failed)`); continue; }
       broadcastEvent('taskUpdated', { id: ticketId });
       done.push(ticketId);
     }
-    return { ok: true, message: `archived ${done.join(', ')}` };
+    const parts: string[] = [];
+    if (done.length > 0) parts.push(`archived ${done.join(', ')}`);
+    if (failed.length > 0) parts.push(`failed ${failed.join(', ')}`);
+    const message = parts.join('; ') || 'archive: no targets';
+    return { ok: failed.length === 0, message };
   });
 
   // `dispatch` — start a phase session on a ticket (FLUX-606 start_session). Self-fetches the

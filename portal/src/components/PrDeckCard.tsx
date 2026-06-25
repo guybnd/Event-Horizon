@@ -65,8 +65,12 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
   const members = (task.members ?? []).map((id) => taskById.get(id)).filter((t): t is Task => !!t);
   const memberCount = members.length;
   // Members a merge would sweep to Done that aren't finished yet (drives the merge-confirm warning
-  // + the shared-PR force — FLUX-569).
-  const nonDoneMembers = members.filter((m) => m.status !== 'Done');
+  // + the shared-PR force — FLUX-569). Match the engine's terminal-status set (Done/Released/
+  // Archived — see TERMINAL_TICKET_STATUSES in engine/src/schema.ts) so this confirm-text count
+  // agrees with what the server actually advances (FLUX-650). Members are folded normal tickets
+  // (never kind:'pr'), so the engine's kind!=='pr' guard doesn't apply here.
+  const TERMINAL_MEMBER_STATUSES = new Set(['Done', 'Released', 'Archived']);
+  const nonDoneMembers = members.filter((m) => !TERMINAL_MEMBER_STATUSES.has(m.status));
   const changesRequested = task.swimlane === 'changes-requested';
   // Hide the open action bar (Review/Merge) once the PR is merged/closed OR the card is Done.
   const isResolved = task.prState === 'MERGED' || task.prState === 'CLOSED' || task.status === 'Done';
@@ -230,8 +234,8 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
         <div className="mb-1 border-t border-violet-200/60 pt-2 dark:border-violet-500/20">
           <p className="mb-1.5 text-[10px] font-bold uppercase tracking-wider text-violet-600 dark:text-violet-400">Continue development</p>
           <div className="mb-1.5 flex items-center gap-1 rounded-md bg-violet-50/60 p-0.5 text-[11px] dark:bg-violet-500/10">
-            <button onClick={() => setContinueMode('create')} className={`flex-1 rounded px-2 py-0.5 font-semibold transition-colors ${continueMode === 'create' ? 'bg-violet-600 text-white' : 'text-violet-700 hover:bg-violet-100/60 dark:text-violet-300'}`}>Create ticket</button>
-            <button onClick={() => setContinueMode('adopt')} className={`flex-1 rounded px-2 py-0.5 font-semibold transition-colors ${continueMode === 'adopt' ? 'bg-violet-600 text-white' : 'text-violet-700 hover:bg-violet-100/60 dark:text-violet-300'}`}>Adopt existing</button>
+            <button aria-pressed={continueMode === 'create'} onClick={() => setContinueMode('create')} className={`flex-1 rounded px-2 py-0.5 font-semibold transition-colors ${continueMode === 'create' ? 'bg-violet-600 text-white' : 'text-violet-700 hover:bg-violet-100/60 dark:text-violet-300'}`}>Create ticket</button>
+            <button aria-pressed={continueMode === 'adopt'} onClick={() => setContinueMode('adopt')} className={`flex-1 rounded px-2 py-0.5 font-semibold transition-colors ${continueMode === 'adopt' ? 'bg-violet-600 text-white' : 'text-violet-700 hover:bg-violet-100/60 dark:text-violet-300'}`}>Adopt existing</button>
           </div>
           {continueMode === 'create' ? (
             <input

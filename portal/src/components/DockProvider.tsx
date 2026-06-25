@@ -4,6 +4,9 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState, type R
 const DISMISSED_KEY = 'eh-dock-dismissed';
 /** FLUX-727: localStorage key for the manual tab order (left→right). */
 const ORDER_KEY = 'eh-dock-order';
+/** FLUX-728: cap on the manual tab order — applied to both the in-memory state and the localStorage
+ *  write so inactive remembered ids can't accumulate unboundedly. */
+const ORDER_CAP = 50;
 /** FLUX-734: localStorage key for the per-chat ticket-sideview open set. */
 const SIDEVIEW_KEY = 'eh-dock-sideview';
 /** FLUX-740: localStorage key for the (global) sideview panel width, set by the chat↔panel divider. */
@@ -89,6 +92,15 @@ function readBoolRecord(key: string): Record<string, boolean> {
  * full state via `useDock()`.
  */
 
+/** FLUX-666: a conversation's persisted composer chip selections (model / effort / permission).
+ *  Each is the chip's `value` ('' = the chip's "Default" option); an all-empty object is pruned
+ *  from the `selections` map, mirroring how an empty text draft is pruned from `drafts`. */
+export interface ComposerSelections {
+  model?: string;
+  effort?: string;
+  permission?: string;
+}
+
 export interface DockActions {
   /** Open a chat window for `id` and surface its card even with no active session.
    *  `from` (the clicked element) anchors where the window spawns. */
@@ -106,6 +118,10 @@ export interface DockActions {
   /** FLUX-623: persist a conversation's unsent composer text so minimizing (which unmounts
    *  the window) no longer discards it. Keyed per conversation id. */
   setDraft: (id: string, text: string) => void;
+  /** FLUX-666: persist a conversation's composer model/effort/permission chip selections so
+   *  minimizing (which unmounts the window) no longer resets them. Keyed per conversation id;
+   *  mirrors `setDraft` — an all-default selection is pruned from the map. */
+  setSelections: (id: string, selections: ComposerSelections) => void;
   /** FLUX-727: commit a new left→right tab order after a drag. The dragged arrangement becomes
    *  the front of the persisted order; any ids it omits (e.g. inactive-but-remembered) are kept,
    *  appended after, so a drag is never lossy. */
@@ -159,6 +175,9 @@ export interface DockState {
    *  `seenRef` baselines in ChatDock); survives minimize/reopen + view switches because the dock
    *  state is app-root-scoped. Pruned in `closeCard` when a chat is retired to History. */
   drafts: Record<string, string>;
+  /** FLUX-666: per-conversation composer chip selections (model/effort/permission). Same lifecycle
+   *  as `drafts` — in-memory, survives minimize/reopen, pruned on `closeCard` and on send. */
+  selections: Record<string, ComposerSelections>;
 }
 
 const DockActionsContext = createContext<DockActions | null>(null);
@@ -188,6 +207,9 @@ export function DockProvider({ children }: { children: ReactNode }) {
   // FLUX-623: per-conversation unsent composer text, so minimizing a chat (which unmounts its
   // window subtree) no longer discards what the user typed.
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  // FLUX-666: per-conversation composer chip selections (model/effort/permission), so minimizing
+  // (which unmounts the window subtree) no longer resets them. Mirrors `drafts`.
+  const [selections, setSelections] = useState<Record<string, ComposerSelections>>({});
 
   // FLUX-635: persist dismissals on change. Cap to bound growth (History only shows HISTORY_CAP).
   useEffect(() => {
@@ -201,7 +223,7 @@ export function DockProvider({ children }: { children: ReactNode }) {
   // FLUX-727: persist the manual tab order on change. Capped like `dismissed` to bound growth.
   useEffect(() => {
     try {
-      localStorage.setItem(ORDER_KEY, JSON.stringify(order.slice(0, 50)));
+      localStorage.setItem(ORDER_KEY, JSON.stringify(order.slice(0, ORDER_CAP)));
     } catch {
       /* quota exceeded / private mode — order just won't persist this load */
     }
@@ -304,6 +326,13 @@ export function DockProvider({ children }: { children: ReactNode }) {
           delete next[id];
           return next;
         });
+        // FLUX-666: likewise clear its composer chip selections — reopening starts at the defaults.
+        setSelections((prev) => {
+          if (!(id in prev)) return prev;
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
       },
       // FLUX-623: prune empty drafts so an emptied composer doesn't linger in the map.
       setDraft: (id, text) =>
@@ -314,16 +343,37 @@ export function DockProvider({ children }: { children: ReactNode }) {
           delete next[id];
           return next;
         }),
+      // FLUX-666: prune an all-default selection so a reset-to-defaults composer doesn't linger
+      // in the map (mirrors the empty-draft prune above). A no-op write (unchanged values) keeps
+      // the same object identity so consumers don't churn.
+      setSelections: (id, sel) =>
+        setSelections((prev) => {
+          const model = sel.model ?? '';
+          const effort = sel.effort ?? '';
+          const permission = sel.permission ?? '';
+          if (!model && !effort && !permission) {
+            if (!(id in prev)) return prev;
+            const next = { ...prev };
+            delete next[id];
+            return next;
+          }
+          const cur = prev[id];
+          if (cur && cur.model === model && cur.effort === effort && cur.permission === permission) return prev;
+          return { ...prev, [id]: { model, effort, permission } };
+        }),
       // FLUX-727: the dragged arrangement leads; ids it omits (inactive-but-remembered) trail it.
+      // FLUX-728: cap the in-memory order at 50 (same bound as the localStorage write) so inactive
+      // remembered ids can't accumulate unboundedly in state.
       reorder: (ids) =>
         setOrder((prev) => {
           const set = new Set(ids);
           const leftover = prev.filter((x) => !set.has(x));
-          return [...ids, ...leftover];
+          return [...ids, ...leftover].slice(0, ORDER_CAP);
         }),
       // FLUX-727: prepend (dedup). Bail when already front so idempotent calls don't churn state.
+      // FLUX-728: cap at 50 (matching the storage write) to bound in-memory growth.
       promoteToFront: (id) =>
-        setOrder((prev) => (prev[0] === id ? prev : [id, ...prev.filter((x) => x !== id)])),
+        setOrder((prev) => (prev[0] === id ? prev : [id, ...prev.filter((x) => x !== id)].slice(0, ORDER_CAP))),
       // FLUX-734: flip the ticket sideview panel for a chat window.
       toggleSideView: (id) =>
         setSideviewOpen((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id])),
@@ -351,8 +401,8 @@ export function DockProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const state = useMemo<DockState>(
-    () => ({ open, acked, dismissed, manuallyOpened, anchors, drafts, order, sideviewOpen, sideviewWidth, sideviewWidthUserSet, sectionOpen }),
-    [open, acked, dismissed, manuallyOpened, anchors, drafts, order, sideviewOpen, sideviewWidth, sideviewWidthUserSet, sectionOpen],
+    () => ({ open, acked, dismissed, manuallyOpened, anchors, drafts, selections, order, sideviewOpen, sideviewWidth, sideviewWidthUserSet, sectionOpen }),
+    [open, acked, dismissed, manuallyOpened, anchors, drafts, selections, order, sideviewOpen, sideviewWidth, sideviewWidthUserSet, sectionOpen],
   );
 
   return (

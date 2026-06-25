@@ -2,6 +2,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { tasksCache, upsertManagedTicket, updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
+import { TERMINAL_TICKET_STATUSES } from './schema.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -20,6 +21,7 @@ interface GhPr {
   headRefName: string;
   reviewDecision: string | null; // APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | null
   isDraft: boolean;
+  body: string; // the PR description (markdown) — pulled into the PR card body (FLUX-751)
 }
 
 export function prTicketId(n: number): string {
@@ -38,10 +40,6 @@ export function selectMembers(tickets: any[], branch: string): string[] {
     .map((t) => t.id)
     .sort();
 }
-
-// A merge advances every ticket on the branch → Done; these statuses are already terminal, so a
-// sibling in one of them has no live work a merge would silently sweep along.
-const TERMINAL_TICKET_STATUSES = new Set(['Done', 'Released', 'Archived']);
 
 /**
  * Sibling tickets sharing `branch` (excluding `selfId` and PR tickets) that are NOT terminal —
@@ -171,7 +169,7 @@ async function listOpenPrs(workspaceRoot: string): Promise<GhPr[]> {
   try {
     const { stdout } = await execFileAsync(
       'gh',
-      ['pr', 'list', '--state', 'open', '--json', 'number,title,url,state,headRefName,reviewDecision,isDraft'],
+      ['pr', 'list', '--state', 'open', '--json', 'number,title,url,state,headRefName,reviewDecision,isDraft,body'],
       { cwd: workspaceRoot, windowsHide: true },
     );
     const arr = JSON.parse(stdout);
@@ -204,7 +202,11 @@ export async function syncPrTickets(workspaceRoot: string): Promise<void> {
     const existing = tasksCache[id] as any;
     const members = membersForBranch(pr.headRefName);
     const fields = prTicketFields(pr, members, existing ?? null);
-    await upsertManagedTicket(id, fields).catch(() => {});
+    // Pull the gh PR description into the card's markdown body (FLUX-751). Passed as the
+    // separate 3rd arg (NOT a frontmatter field); upsert rewrites only when it actually
+    // differs, so a null/empty description coerces to '' and never churns.
+    const body = pr.body ?? '';
+    await upsertManagedTicket(id, fields, body).catch(() => {});
     // Review-fail bounce (FLUX-569 / decision #3): when a PR has changes requested, unwind its
     // worked members back to In Progress so they're directly workable again (the deck stays,
     // unwind to fix; a push re-folds + re-reviews). Idempotent — only Ready members move, and

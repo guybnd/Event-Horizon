@@ -49,6 +49,7 @@ const VIEW_PATHS: Record<AppView, string> = {
   releases: '/releases',
   workflows: '/workflows',
   epics: '/epics',
+  'dev-onboarding': '/dev/onboarding',
 };
 
 const LIVE_TASK_POLL_INTERVAL_MS = 3000;
@@ -73,6 +74,9 @@ function getViewFromLocation(): AppView {
   if (path === '/releases') return 'releases';
   if (path === '/workflows') return 'workflows';
   if (path === '/epics') return 'epics';
+  // Dev-only editor route (FLUX-755). Gated by import.meta.env.DEV so that in a
+  // production build a hand-typed /dev/onboarding falls through to the board.
+  if (import.meta.env.DEV && path === '/dev/onboarding') return 'dev-onboarding';
   return 'board';
 }
 
@@ -231,6 +235,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
   const [restartPending, setRestartPending] = useState(false);
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
+  // FLUX-758: reactive mirror of the onboarding-complete localStorage flag. App
+  // gates the wizard on this store field, so flipping it dismisses the wizard
+  // immediately (no manual reload), while localStorage remains the persistence layer.
+  const [onboardingComplete, setOnboardingComplete] = useState(
+    () => localStorage.getItem('eh-onboarding-complete') === '1',
+  );
   const readCommentsLoadedRef = useRef(false);
   const configRef = useRef<Config | null>(null);
   const tasksRef = useRef<Task[]>([]);
@@ -669,6 +679,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     fetchWorkspaces().then(setWorkspaces).catch(() => {});
   }, []);
 
+  // FLUX-758: owns the onboarding-complete localStorage write AND flips the
+  // reactive store field so App re-renders and dismisses the wizard at once.
+  const markOnboardingComplete = useCallback(() => {
+    localStorage.setItem('eh-onboarding-complete', '1');
+    setOnboardingComplete(true);
+  }, []);
+
   const notifyWorkspaceSet = useCallback(() => {
     fetchWorkspace()
       .then(({ configured, path: wp }) => {
@@ -978,6 +995,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     triggerRefresh, subscribeToEvent, notifyWorkspaceSet, switchWorkspace,
     refreshWorkspaces, saveConfig, ensureReadStateLoaded, markCommentRead,
     markAllCommentsRead, setAppTheme, toggleTheme, refreshNotifications,
+    markOnboardingComplete,
   };
 
   const actions = useMemo<AppActions>(() => ({
@@ -1015,6 +1033,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setAppTheme: (t) => latest.current.setAppTheme(t),
     toggleTheme: () => latest.current.toggleTheme(),
     refreshNotifications: () => latest.current.refreshNotifications(),
+    markOnboardingComplete: () => latest.current.markOnboardingComplete(),
   }), []);
 
   // Snapshot mirrored into the external store. Memoized sub-objects (taskById,
@@ -1034,6 +1053,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     config, readComments, totalUnreadCount,
     theme, parseErrors, parseErrorsLoading,
     notifications, notificationUnreadCount, restartPending,
+    onboardingComplete,
   };
 
   // Seed the store during the first render, before children mount and subscribe,

@@ -5,6 +5,7 @@ import { ChatView } from './ChatView';
 import { ChatDiffPanel } from './ChatDiffPanel';
 import { TicketContextCard, SessionMeter } from './chatContext';
 import { parseQuickReplies } from './chatQuickReplies';
+import { ChatRequireInputBanner } from './ChatRequireInputBanner';
 import { TicketActions } from '../ticket-actions/TicketActions';
 import { ChatPendingInteractions } from '../pendingInteractions';
 import { useDockActions } from '../DockProvider';
@@ -33,6 +34,9 @@ export function ChatPane({ task }: { task: Task }) {
     () => parseQuickReplies(task, getRequireInputStatus(config)),
     [task, config],
   );
+  // FLUX-752: surface a board Require-Input prompt in the chat — status OR the require-input
+  // swimlane, matching the full modal's `isRequireInput` predicate.
+  const isRequireInput = task.status === getRequireInputStatus(config) || task.swimlane === 'require-input';
 
   if (!open) {
     return (
@@ -83,6 +87,7 @@ export function ChatPane({ task }: { task: Task }) {
         onDequeue={chat.dequeue}
         onStop={chat.stop}
         onUploadImage={chat.uploadImage}
+        awaitingInputBanner={isRequireInput ? <ChatRequireInputBanner task={task} /> : undefined}
         questionPicker={<ChatPendingInteractions conversationId={task.id} />}
         actions={<TicketActions task={task} variant="compact" />}
         diffBranch={task.branch}

@@ -112,6 +112,9 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
   const hasUnread = commentIds.some((id) => !readIds.has(id));
   // ─── Phase templates (Launch agent flyout) — from the registry's resolved single/multi/other set ─
   const launchTemplates = ctl.launchTemplates;
+  // Hoisted once (the way TemplateMenu does it) — the index of the first "other" template, so the
+  // map can drop a divider between the single/multi defaults and the rest.
+  const firstOther = launchTemplates.findIndex((x) => x.variant === 'other');
 
   const primaryLabel = PRIMARY_LABEL[task.status]
     ?? (cardPhase === 'review' ? 'Send for review' : cardPhase === 'grooming' ? 'Start grooming' : 'Launch agent');
@@ -256,12 +259,14 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
         open={openTop === 'launch'}
         onToggle={() => setOpenTop(openTop === 'launch' ? null : 'launch')}
       >
+        {launchTemplates.every((t) => !t.name) && (
+          <div className="px-3 py-1.5 text-[11px] italic text-gray-400">No templates for this phase</div>
+        )}
         {launchTemplates.map((t, i) => {
-          const firstOther = launchTemplates.findIndex((x) => x.variant === 'other');
           const label = t.variant === 'single' ? (t.name ?? 'Single') : t.variant === 'multi' ? (t.name ?? 'Multi') : (t.name ?? t.id);
           const badge = t.variant === 'single' ? '1 agent' : t.variant === 'multi' ? 'team' : null;
           return (
-            <div key={t.id} className="contents">
+            <div key={`${t.variant}:${t.id ?? i}`} className="contents">
               {i === firstOther && firstOther > 0 && <Divider />}
               <MenuItem onClick={() => launchTemplate(t.id)}>
                 <span className="flex-1 truncate">{label}</span>

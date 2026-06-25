@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, lazy, Suspense } from 'react';
 import { AppProvider } from './AppContext';
 import { useAppSelector } from './store/useAppSelector';
 import { Header } from './components/Header';
@@ -19,10 +19,20 @@ import { OnboardingWizard } from './components/OnboardingWizard';
 import { FirstBootDialog } from './components/FirstBootDialog';
 import { RestartBanner } from './components/RestartBanner';
 
+// Dev-only Onboarding Studio (FLUX-759, extends the FLUX-755 editor). The lazy()
+// — and thus the dynamic import() — lives inside an `import.meta.env.DEV` branch
+// that is statically `false` in a production build, so the bundler dead-code-
+// eliminates the import and never emits the Studio chunk into prod dist at all
+// (not even as an unreachable async chunk).
+const OnboardingStudioScreen = import.meta.env.DEV
+  ? lazy(() => import('./components/dev/OnboardingStudioScreen').then((m) => ({ default: m.OnboardingStudioScreen })))
+  : null;
+
 function AppContent() {
   const view = useAppSelector(s => s.view);
   const workspaceConfigured = useAppSelector(s => s.workspaceConfigured);
   const isConnected = useAppSelector(s => s.isConnected);
+  const onboardingComplete = useAppSelector(s => s.onboardingComplete);
   const [bootComplete, setBootComplete] = useState(false);
 
   const handleBootComplete = useCallback(() => setBootComplete(true), []);
@@ -31,10 +41,19 @@ function AppContent() {
     return <FirstBootDialog onComplete={handleBootComplete} />;
   }
 
-  const showOnboarding = isConnected && !localStorage.getItem('eh-onboarding-complete');
-  if (showOnboarding) return <OnboardingWizard />;
+  // FLUX-755: let the dev-only /dev/onboarding editor bypass the onboarding gate.
+  // A dev iterating on the wizard typically CLEARS `eh-onboarding-complete` to re-test
+  // it — for them this early return would otherwise win before the Header (dev nav link)
+  // or the `view === 'dev-onboarding'` branch ever render, making the editor unreachable
+  // even by hand-typing /dev/onboarding. The exception is import.meta.env.DEV-gated and
+  // statically false in a prod build, so it cannot widen the onboarding gate when shipped.
+  const showOnboarding = isConnected && !onboardingComplete;
+  if (showOnboarding && !(import.meta.env.DEV && view === 'dev-onboarding')) return <OnboardingWizard />;
 
-  if (!workspaceConfigured && isConnected) {
+  // The dev editor reads a repo-relative config file (not the workspace), so it must
+  // also clear the workspace gate — otherwise a dev with no workspace configured would
+  // get the selector instead of the editor. import.meta.env.DEV-gated (prod no-op).
+  if (!workspaceConfigured && isConnected && !(import.meta.env.DEV && view === 'dev-onboarding')) {
     return <WorkspaceSelector />;
   }
 
@@ -52,6 +71,11 @@ function AppContent() {
           {view === 'releases' && <ReleasesScreen />}
           {view === 'epics' && <EpicsScreen />}
           {view === 'workflows' && <WorkflowBuilder />}
+          {import.meta.env.DEV && view === 'dev-onboarding' && OnboardingStudioScreen && (
+            <Suspense fallback={null}>
+              <OnboardingStudioScreen />
+            </Suspense>
+          )}
         </main>
         <TaskModal />
         <ChatDock />

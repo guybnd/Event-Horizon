@@ -1,9 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Sparkles, MessageSquare, Minus, X, History, Square, RotateCcw, GitBranch, FolderGit2, GitPullRequest, ListChecks, Loader2, MessageCircleQuestion, PanelRight, PanelRightClose, Maximize2, Tag, Link2, Gauge, Save, ChevronDown, Check } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { DndContext, closestCenter, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
+import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
-import { SortableContext, horizontalListSortingStrategy, useSortable, arrayMove } from '@dnd-kit/sortable';
+import { SortableContext, horizontalListSortingStrategy, sortableKeyboardCoordinates, useSortable, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { useChatSession } from '../hooks/useChatSession';
@@ -13,10 +13,11 @@ import { TicketSideView } from './task-modal/TicketSideView';
 import { getPriorityIcon } from './task-modal/taskModalHelpers';
 import { TicketContextCard, BoardSnapshotCard, SessionMeter } from './task-modal/chatContext';
 import { parseQuickReplies } from './task-modal/chatQuickReplies';
+import { ChatRequireInputBanner } from './task-modal/ChatRequireInputBanner';
 import { TagSelector } from './TagSelector';
 import { TicketActions } from './ticket-actions/TicketActions';
 import { ChatPendingInteractions, PendingInteractionFallback, usePendingInteractions } from './pendingInteractions';
-import { useDock, MIN_SIDEVIEW_WIDTH, MAX_SIDEVIEW_WIDTH } from './DockProvider';
+import { useDock, MIN_SIDEVIEW_WIDTH, MAX_SIDEVIEW_WIDTH, DEFAULT_SIDEVIEW_WIDTH, type ComposerSelections } from './DockProvider';
 import { useTicketSideView } from '../hooks/useTicketSideView';
 import { fireDesktopNotification } from '../hooks/useDesktopNotifications';
 import { getStatusTint, getStatusColorClass } from '../statusStyles';
@@ -125,7 +126,7 @@ export function ChatDock() {
   const { pendingPromptConversationIds } = usePendingInteractions();
   // Window/open state lives in the app-root DockProvider (FLUX-603) so a card can drive it
   // and it survives view switches. `anchors` records where each window should spawn from.
-  const { open, acked, dismissed, manuallyOpened, anchors, drafts, order, sideviewOpen, sideviewWidth, toggle, closeCard, reopenFromHistory, setDraft, reorder, promoteToFront, toggleSideView, setSideviewWidth, seedSideviewWidth, openTicket } = useDock();
+  const { open, acked, dismissed, manuallyOpened, anchors, drafts, selections, order, sideviewOpen, sideviewWidth, toggle, closeCard, reopenFromHistory, setDraft, setSelections, reorder, promoteToFront, toggleSideView, setSideviewWidth, seedSideviewWidth, openTicket } = useDock();
 
   // FLUX-744: open-ticket bridge. `openTask` (AppContext, which lives ABOVE the DockProvider) can't
   // call dock actions directly, so for the default 'chat' open mode it dispatches a `flux:open-ticket`
@@ -305,11 +306,21 @@ export function ChatDock() {
   // renders as an `idle` card (cardState(undefined) === 'idle').
   // FLUX-720: a ticket with an unresolved pending prompt is *always* surfaced and overrides a
   // prior dismissal — its tab must stay pinned (and un-closable) until the prompt is resolved.
-  const activeTickets = allTasks.filter(
-    (t) =>
-      pendingPromptConversationIds.has(t.id) ||
-      (!dismissed.includes(t.id) &&
-        ((t.cliSession && SURFACE_STATUSES.includes(t.cliSession.status)) || manuallyOpened.includes(t.id))),
+  // FLUX-728: memoized so its array identity is stable across renders. A bare `.filter()` produced
+  // a new array every render, which fired the promote-left layout effect (its deps include this
+  // list) on every render and defeated the downstream `orderedTickets`/`orderedIds` memos that key
+  // off it. The deps cover every input the predicate reads, so it still recomputes whenever the
+  // ticket list / dismissals / manual-opens / pending prompts actually change. Behavior is
+  // identical — only identity stability changes.
+  const activeTickets = useMemo(
+    () =>
+      allTasks.filter(
+        (t) =>
+          pendingPromptConversationIds.has(t.id) ||
+          (!dismissed.includes(t.id) &&
+            ((t.cliSession && SURFACE_STATUSES.includes(t.cliSession.status)) || manuallyOpened.includes(t.id))),
+      ),
+    [allTasks, pendingPromptConversationIds, dismissed, manuallyOpened],
   );
 
   // FLUX-727: manual, drag-imposed tab order (replaces the old attention-weight sort + the
@@ -368,7 +379,13 @@ export function ChatDock() {
 
   // Drag-to-reorder (FLUX-727). PointerSensor with a 5px activation distance so a plain click
   // still opens the chat (and the hover-`x` / context menu still fire) — only a real drag reorders.
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+  // FLUX-728: a KeyboardSensor (with dnd-kit's standard sortable coordinate getter) makes the tab
+  // strip keyboard-reorderable for a11y — focus a tab, Space/Enter to lift, arrows to move, Space to
+  // drop. The tab is already focusable (it's a <button> spread with the sortable a11y attributes).
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
   const onDragEnd = (e: DragEndEvent) => {
     const { active, over } = e;
     if (!over || active.id === over.id) return;
@@ -457,6 +474,10 @@ export function ChatDock() {
           activity={activityOf(id)}
           draft={drafts[id] ?? ''}
           onDraftChange={(t) => setDraft(id, t)}
+          // FLUX-666: persist the composer's model/effort/permission chip selections across
+          // minimize/reopen, the same per-id way the text draft is persisted.
+          selections={selections[id]}
+          onSelectionsChange={(s) => setSelections(id, s)}
           // FLUX-734: ticket sideview toggle (ticket windows only — the orchestrator has no task).
           sideViewOpen={sideviewOpen.includes(id)}
           onToggleSideView={() => toggleSideView(id)}
@@ -1121,23 +1142,28 @@ function BarDropdown({
  *  FLUX-744: positioned with measured `position: fixed` (not `absolute`) so it escapes the metadata
  *  bar's `overflow-x-auto` clip and overlays the chat window instead of getting trapped under the bar. */
 function BarPopover({
-  label, icon: Icon, active = false, title, children,
+  label, icon: Icon, active = false, title, children, align = 'left',
 }: {
   label: string;
   icon: LucideIcon;
   active?: boolean;
   title: string;
   children: ReactNode;
+  /** FLUX-742: anchor the panel's left edge to the trigger's left ('left', default) or its right edge
+   *  to the trigger's right ('right'). Right-align the rightmost popover(s) so a w-64 panel can't clip
+   *  off the chat column's right edge. */
+  align?: 'left' | 'right';
 }) {
   const [open, setOpen] = useState(false);
-  const [coords, setCoords] = useState<{ left: number; top: number } | null>(null);
+  // FLUX-742: capture both edges of the trigger so we can left- OR right-align the fixed panel.
+  const [coords, setCoords] = useState<{ left: number; right: number; top: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
   const toggleOpen = () => {
     if (open) { setOpen(false); return; }
     const r = triggerRef.current?.getBoundingClientRect();
-    if (r) setCoords({ left: r.left, top: r.bottom + 4 });
+    if (r) setCoords({ left: r.left, right: r.right, top: r.bottom + 4 });
     setOpen(true);
   };
 
@@ -1156,9 +1182,13 @@ function BarPopover({
   }, [open]);
 
   // Clamp the fixed panel (w-64 = 256px) into the viewport; the bar opens it downward.
+  // FLUX-742: when align='right', anchor the panel's RIGHT edge to the trigger's right edge so a
+  // rightmost control's panel grows leftward and can't clip off the chat column's right edge.
+  const PANEL_WIDTH = 256;
   const vw = typeof window !== 'undefined' ? window.innerWidth : 1280;
   const vh = typeof window !== 'undefined' ? window.innerHeight : 800;
-  const panelLeft = coords ? Math.max(8, Math.min(coords.left, vw - 272)) : 0;
+  const desiredLeft = coords ? (align === 'right' ? coords.right - PANEL_WIDTH : coords.left) : 0;
+  const panelLeft = coords ? Math.max(8, Math.min(desiredLeft, vw - 272)) : 0;
   const panelTop = coords ? Math.max(8, Math.min(coords.top, vh - 320)) : 0;
 
   return (
@@ -1231,7 +1261,11 @@ function ChatMetadataBar({ c }: { c: ReturnType<typeof useTicketSideView> }) {
 
   return (
     <>
-      <div className="eh-border-subtle flex items-center gap-1.5 overflow-x-auto border-b px-3 py-1.5 text-[11px]">
+      {/* FLUX-742: only the metadata pills scroll horizontally (inner overflow-x-auto, flex-1). The
+          Save/Discard (or PR) cluster is a sibling that does NOT scroll, so it stays pinned and
+          reachable at the right edge even when the chat column is narrow and the pills overflow. */}
+      <div className="eh-border-subtle flex items-center gap-1.5 border-b px-3 py-1.5 text-[11px]">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto">
         <span className="flex-shrink-0 font-mono text-[var(--eh-text-muted)]">{task.id}</span>
 
         {/* Inline metadata pills. FLUX-744: status/priority/effort use BarDropdown so they keep their
@@ -1288,6 +1322,7 @@ function ChatMetadataBar({ c }: { c: ReturnType<typeof useTicketSideView> }) {
           icon={Gauge}
           active={!!c.effortLevel}
           title="Agent effort level (overrides the global default)"
+          align="right"
         >
           <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">Effort Level</label>
           <select
@@ -1324,11 +1359,13 @@ function ChatMetadataBar({ c }: { c: ReturnType<typeof useTicketSideView> }) {
             <FolderGit2 className="h-3 w-3 flex-shrink-0" /> worktree
           </span>
         )}
+        </div>
 
         {/* FLUX-740: the unified dirty/save affordance — pinned right, reachable even with the
-            sideview collapsed. Falls back to the PR link when there's nothing to save. */}
+            sideview collapsed. Falls back to the PR link when there's nothing to save.
+            FLUX-742: sibling of the scroll region (not inside it), so it never scrolls out of view. */}
         {c.isDirty ? (
-          <div className="ml-auto flex flex-shrink-0 items-center gap-1 pl-1">
+          <div className="flex flex-shrink-0 items-center gap-1 pl-1">
             <button
               type="button"
               onPointerDown={(e) => e.stopPropagation()}
@@ -1357,7 +1394,7 @@ function ChatMetadataBar({ c }: { c: ReturnType<typeof useTicketSideView> }) {
             target="_blank"
             rel="noreferrer"
             onPointerDown={(e) => e.stopPropagation()}
-            className="ml-auto flex flex-shrink-0 items-center gap-1 font-semibold text-primary hover:underline"
+            className="flex flex-shrink-0 items-center gap-1 font-semibold text-primary hover:underline"
           >
             <GitPullRequest className="h-3 w-3 flex-shrink-0" /> PR
           </a>
@@ -1446,9 +1483,11 @@ function ChatWindow({
   activity,
   draft,
   onDraftChange,
+  selections,
+  onSelectionsChange,
   sideViewOpen = false,
   onToggleSideView,
-  sideviewWidth = MIN_SIDEVIEW_WIDTH,
+  sideviewWidth = DEFAULT_SIDEVIEW_WIDTH,
   setSideviewWidth,
   seedSideviewWidth,
   onMinimize,
@@ -1466,6 +1505,10 @@ function ChatWindow({
   /** FLUX-623: persisted unsent composer text for this conversation (survives minimize). */
   draft: string;
   onDraftChange: (text: string) => void;
+  /** FLUX-666: persisted composer chip selections (model/effort/permission) for this
+   *  conversation (survives minimize, alongside the text draft). */
+  selections?: ComposerSelections;
+  onSelectionsChange: (selections: ComposerSelections) => void;
   /** FLUX-734: whether the ticket sideview panel is expanded beside the chat (ticket windows only). */
   sideViewOpen?: boolean;
   /** FLUX-734: toggle the ticket sideview panel. Absent for the orchestrator (no bound task). */
@@ -1500,6 +1543,11 @@ function ChatWindow({
     () => (task ? parseQuickReplies(task, requireInputStatus) : []),
     [task, requireInputStatus],
   );
+  // FLUX-752: surface a board Require-Input prompt in the dock chat — guarded on a bound ticket
+  // (the orchestrator board chat has none), status OR the require-input swimlane, matching the full
+  // modal's `isRequireInput` predicate.
+  const isRequireInput =
+    !orchestrator && !!task && (task.status === requireInputStatus || task.swimlane === 'require-input');
   const windowRef = useRef<HTMLDivElement>(null);
   // User-resizable footprint. The window is pinned bottom-left (see `bottom`/`left`), so
   // the grip lives at the top-right corner and grows the window up + right.
@@ -1546,6 +1594,25 @@ function ChatWindow({
     const vw = typeof window !== 'undefined' ? window.innerWidth : 1280;
     seedSideviewWidth?.(chatW, vw - chatW - 16);
   }, [showSideView, seedSideviewWidth]);
+
+  // FLUX-736: when the sideview OPENS, re-clamp a dragged position so the window can't spill off the
+  // right edge. The render-derived `left` (below) is already clamped, but the *persisted* `pos.left`
+  // is not — opening the panel grows `outerW` to the right without re-clamping the stored value. We
+  // pin it to the same bound the drag/resize handlers use (`window.innerWidth - outerW - 8`), so the
+  // stored state stays correct (not just the derived render). Keyed on the open transition only;
+  // `outerW` is read via a ref so a divider-drag width change doesn't re-trigger it. Untouched windows
+  // (no drag yet, `pos === null`) keep the anchored path — only a dragged `pos` is re-clamped.
+  const outerWRef = useRef(outerW);
+  outerWRef.current = outerW;
+  useEffect(() => {
+    if (!showSideView) return;
+    const vw = typeof window !== 'undefined' ? window.innerWidth : 1280;
+    const maxLeft = Math.max(8, vw - outerWRef.current - 8);
+    setPos((prev) => {
+      if (!prev || prev.left <= maxLeft) return prev;
+      return { ...prev, left: maxLeft };
+    });
+  }, [showSideView]);
 
   // Spawn the window "out of" the clicked card: center it on the click x. FLUX-744: clamp the rendered
   // left/bottom UNCONDITIONALLY against the current outer width + (reactive) viewport — regardless of
@@ -1660,12 +1727,15 @@ function ChatWindow({
       linkifyTickets
       draft={draft}
       onDraftChange={onDraftChange}
+      selections={selections}
+      onSelectionsChange={onSelectionsChange}
       onSend={chat.send}
       queued={chat.queued}
       onEnqueue={chat.enqueue}
       onDequeue={chat.dequeue}
       onStop={chat.stop}
       onUploadImage={chat.uploadImage}
+      awaitingInputBanner={isRequireInput && task ? <ChatRequireInputBanner task={task} /> : undefined}
       questionPicker={<ChatPendingInteractions conversationId={id} />}
       diffBranch={task?.branch}
       tickets={allTasks}

@@ -52,6 +52,7 @@ export function QuestionCard({
   const [otherText, setOtherText] = useState<Record<number, string>>({});
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   function toggleOption(qi: number, label: string, multi: boolean) {
     setChoices((prev) => {
@@ -82,6 +83,14 @@ export function QuestionCard({
     return q.multiSelect ? labels : labels[0];
   }
 
+  // FLUX-664: UI selection state above (choices/otherOn/otherText) is keyed by question INDEX, so
+  // two questions with identical `question` text never collide in the picker. The wire payload,
+  // however, MUST stay keyed by question text: the engine's AnswerResult.answers is
+  // Record<questionText, label(s)> and the ask_user_question MCP tool returns that object verbatim
+  // to the agent (engine/src/ask-questions.ts, mcp-server.ts). Re-keying by index here would
+  // require an engine + tool-contract change, which is out of scope. Residual constraint: if an
+  // agent poses two questions with byte-identical text, the later answer overwrites the earlier on
+  // the wire — that's an agent-authoring smell (give questions distinct text), not a picker bug.
   const answers: Record<string, string | string[]> = {};
   let complete = true;
   questions.forEach((q, qi) => {
@@ -93,15 +102,18 @@ export function QuestionCard({
   async function submit() {
     if (!complete || submitting) return;
     setSubmitting(true);
+    setError(null);
     try {
       await answerQuestion(pending.id, answers, notes.trim() || undefined);
       // Remove only after the engine accepted the answer. (The engine also broadcasts
       // ask-question-resolved, which removes it via SSE too — idempotent.) Resolving up front
       // would strand the agent if the POST failed: the picker vanishes for this client but the
-      // engine stays parked until timeout. (FLUX-662 review m1.)
+      // engine stays parked until timeout. (FLUX-662 review m1 / FLUX-664.)
       onResolved();
-    } catch {
-      // POST failed — keep the picker so the user can retry; the engine is still parked.
+    } catch (err) {
+      // POST failed (or the question is no longer pending) — keep the picker so the user can
+      // retry, and surface the error. The engine is still parked until a successful answer.
+      setError(err instanceof Error ? err.message : 'Failed to submit answer.');
       setSubmitting(false);
     }
   }
@@ -171,13 +183,18 @@ export function QuestionCard({
           placeholder="Add a note (optional)…"
           className="eh-border w-full rounded-lg border bg-[var(--eh-input-bg)] px-2.5 py-1.5 text-[12px] text-[var(--eh-text-primary)] placeholder:text-[var(--eh-text-muted)] focus:border-primary focus:outline-none"
         />
+        {error && (
+          <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-2.5 py-1.5 text-[11px] text-red-500">
+            {error} — your selection was kept; please try again.
+          </div>
+        )}
         <button
           type="button"
           onClick={() => void submit()}
           disabled={!complete || submitting}
           className="flex items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-[12px] font-semibold text-white transition-colors hover:bg-primary-hover disabled:opacity-40"
         >
-          <Send className="h-3.5 w-3.5" /> Send answer
+          <Send className="h-3.5 w-3.5" /> {submitting ? 'Sending…' : 'Send answer'}
         </button>
       </div>
     </div>

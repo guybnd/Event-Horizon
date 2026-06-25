@@ -116,9 +116,13 @@ into the `user` event):
 { "type": "resume-preamble", "text": "```situational-update …```", "timestamp": "2026-06-23T…Z" }
 ```
 
-`classifyRole` maps it to `unknown` and `projectTranscript` currently skips it, so it does
-not render as a chat bubble — a subtle "context update" chip in `ChatPane` is optional
-follow-up polish. The assembler (`engine/src/resume-preamble.ts` → `buildResumePreamble`)
+`classifyRole` maps the envelope to `unknown` (ordering metadata only). It is deliberately
+**not** a chat bubble: `projectTranscript` projects it to a non-bubble `note` row tagged
+`kind: 'context-update'` (FLUX-745), and the portal (`ChatView.tsx → ContextUpdateChip`)
+renders that as a subtle, collapsible "⟳ context update" chip carrying the situational-update
+text — visually distinct from user/assistant turns. This is pure projection + rendering off
+the `text` + `timestamp` the event already carries (no schema change). The assembler
+(`engine/src/resume-preamble.ts` → `buildResumePreamble`)
 is standalone and side-effect-free beyond git/`tasksCache` reads, so the cold-resume
 re-prime path (FLUX-602) can reuse it. It is size-capped (~1–2k chars; file/ticket lists
 truncated with a "+N more" tail) and fully best-effort (any git hiccup ⇒ `null` ⇒ the turn

@@ -16,8 +16,9 @@ function truncate(s: string, n: number): string {
 }
 
 /** Pull the latest agent question text from the ticket history (the comment / session that
- *  asked for input). */
-function latestQuestionText(task: Task): string | null {
+ *  asked for input). Exported so the Require-Input banner (FLUX-752) reuses the exact same
+ *  extraction the quick-reply parser uses, keeping banner text and chip parsing in sync. */
+export function latestQuestionText(task: Task): string | null {
   const history: HistoryEntry[] = task.history ?? [];
   for (let i = history.length - 1; i >= 0; i--) {
     const entry = history[i]!;

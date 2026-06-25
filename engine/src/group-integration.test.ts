@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
@@ -17,7 +17,15 @@ import { GROUP_DOCS_BRANCH, getGroupStoreDir, type GroupContext, type ResolvedMe
  *   - FLUX-396 fan-out: canonical worktree → commit → push to a member remote
  *   - FLUX-397 push-through-parent: a sub-repo edit re-fans-out to members
  *   - fan-out safety: a diverged member branch is reported, never force-pushed
+ *
+ * These cases perform real git ops (clone/fetch/push to local file:// remotes)
+ * which are slow on Windows under parallel suite load, so vitest's default
+ * 5000ms testTimeout intermittently overruns when the full engine suite runs
+ * concurrently (FLUX-749). Raise the per-test timeout file-wide to a generous
+ * value so concurrent Windows git ops don't flake the `check` gate.
  */
+
+vi.setConfig({ testTimeout: 30000, hookTimeout: 30000 });
 
 const execFileAsync = promisify(execFile);
 const git = (cwd: string, args: string[]) => execFileAsync('git', args, { cwd, windowsHide: true });

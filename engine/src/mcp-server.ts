@@ -83,6 +83,42 @@ export function resolveMainWorktree(dir: string): string | null {
   }
 }
 
+/**
+ * FLUX-730/FLUX-731: the commit-before-Ready refusal *decision*, factored out of the
+ * `change_status` handler so it can be unit-tested without an MCP-handler harness. Pure:
+ * inputs in, decision out — no I/O.
+ *
+ * Refuse ONLY a worktree branch that exists and has 0 commits ahead of base — a dedicated
+ * worktree means an agent did (or should have done) real work in an isolated tree, so 0
+ * commits ahead means it was never committed and no PR can ever open (the FLUX-716/717/719
+ * incident). Everything else allows: a worktree branch with commits ahead (falls through to
+ * PR), a plain (non-worktree) branch with 0 commits ahead (kept as a soft warning per scope),
+ * and branchless tickets (which legitimately stay uncommitted until finish).
+ */
+export function evaluateWorktreeReadyRefusal(input: {
+  worktreePath: string | null;
+  branchStatus: { exists: boolean; aheadCount: number } | null;
+  ticketId: string;
+  branch: string;
+  readyStatus: string;
+  /** Uncommitted change count in the worktree vs base, used only to phrase the message. */
+  changeCount?: number;
+}): { refuse: boolean; message?: string } {
+  const { worktreePath, branchStatus, ticketId, branch, readyStatus, changeCount = 0 } = input;
+  if (!(worktreePath && branchStatus && branchStatus.exists && branchStatus.aheadCount === 0)) {
+    return { refuse: false };
+  }
+  const didWork = changeCount > 0
+    ? `Its worktree has ${changeCount} uncommitted change${changeCount === 1 ? '' : 's'} — the work was done but never committed.`
+    : `Its worktree has no changes yet.`;
+  return {
+    refuse: true,
+    message:
+      `Cannot move ${ticketId} to ${readyStatus}: its worktree branch \`${branch}\` has no commits ahead of base. ${didWork} ` +
+      `Commit the worktree's work with a real message (in the worktree: \`git add -A && git commit\`), then retry the move to ${readyStatus} — that opens the PR for review. Status left unchanged.`,
+  };
+}
+
 export async function startMcpServer(): Promise<void> {
   // MCP uses stdout for protocol messages — redirect all logging to stderr
   const originalLog = console.log;
@@ -485,13 +521,15 @@ export function buildMcpServer(): McpServer {
         if (worktreePath && branchStatus && branchStatus.exists && branchStatus.aheadCount === 0) {
           const baseBranch = await getDefaultBranch().catch(() => 'master');
           const changeCount = await worktreeChangeCount(worktreePath, baseBranch).catch(() => 0);
-          const didWork = changeCount > 0
-            ? `Its worktree has ${changeCount} uncommitted change${changeCount === 1 ? '' : 's'} — the work was done but never committed.`
-            : `Its worktree has no changes yet.`;
-          return errorResult(
-            `Cannot move ${ticketId} to ${readyStatus}: its worktree branch \`${task.branch}\` has no commits ahead of base. ${didWork} ` +
-              `Commit the worktree's work with a real message (in the worktree: \`git add -A && git commit\`), then retry the move to ${readyStatus} — that opens the PR for review. Status left unchanged.`,
-          );
+          const decision = evaluateWorktreeReadyRefusal({
+            worktreePath,
+            branchStatus,
+            ticketId,
+            branch: task.branch,
+            readyStatus,
+            changeCount,
+          });
+          if (decision.refuse) return errorResult(decision.message!);
         }
 
         // Rather than fail silently in a buried activity line, surface a no-commit branch
@@ -1107,7 +1145,7 @@ export function buildMcpServer(): McpServer {
     'list_available_agents',
     'List available agent personas that can be delegated to. Returns id, label, description, role (lead/worker/flex), and phases for each.',
     {
-      phase: z.string().optional().describe('Filter by phase (grooming, implementation, review, release). Omit to see all.'),
+      phase: z.string().optional().describe('Filter by phase (grooming, implementation, review, finalize). Omit to see all.'),
     },
     async ({ phase }) => {
       try {

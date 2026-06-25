@@ -13,7 +13,8 @@ import {
 } from './transcript.js';
 import { projectTranscript } from './projection.js';
 import { extractTicket } from './extract.js';
-import { readCurationOps } from './curation-ops.js';
+import { readCurationOps, getCurationOpsFile } from './curation-ops.js';
+import { tasksCache } from './task-store.js';
 import { proposeBoardRebase, resolveBoardRebase } from './board-rebase.js';
 
 /**
@@ -124,6 +125,29 @@ describe('extract verb (FLUX-656)', () => {
       await seedBoard(3);
       await expectRejected(extractTicket({ from: '__board__', fromSeq: 0, toSeq: 1, title: '   ' }));
     });
+  });
+
+  it('FLUX-738: if persisting the extract op fails, the just-created card is removed (no orphan)', async () => {
+    await seedBoard(3);
+    const before = await fs.readFile(getTranscriptFile('__board__'), 'utf8');
+    const cardsBefore = Object.keys(tasksCache).length;
+
+    // Force appendCurationOp to throw a real I/O error of the class FLUX-738 protects against:
+    // create the op-log PATH as a directory so the internal fs.appendFile rejects (EISDIR).
+    await fs.mkdir(getCurationOpsFile(), { recursive: true });
+
+    await expect(
+      extractTicket({ from: '__board__', fromSeq: 0, toSeq: 1, title: 'doomed' }),
+    ).rejects.toThrow();
+
+    // The card created mid-flight was compensated away — no orphan left in the cache.
+    // The source substrate is still byte-for-byte untouched.
+    expect(Object.keys(tasksCache).length).toBe(cardsBefore);
+    expect(await fs.readFile(getTranscriptFile('__board__'), 'utf8')).toBe(before);
+
+    // Remove the blocker dir, then confirm no extract op was ever persisted (no orphan ref).
+    await fs.rm(getCurationOpsFile(), { recursive: true, force: true });
+    expect(await readCurationOps()).toHaveLength(0);
   });
 
   it('the board-rebase promote executor drives the same extract path', async () => {

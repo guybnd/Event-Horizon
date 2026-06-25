@@ -30,6 +30,15 @@ engine/vitest.config.d.ts.map
 # orphan worktree directory (managed by git worktree, not committed to master)
 .flux-store/
 
+# FLUX-763 Phase 4: onboarding Studio draft store. Routine Studio Save writes these
+# gitignored drafts (never the committed onboardingFlow.json/onboardingFeatures.json),
+# so merely opening + saving in the Studio leaves `git status` clean and never blocks
+# `git pull`. Only an explicit Publish writes the committed configs. The wizard never
+# imports *.draft.json, so drafts never enter the prod bundle. *.tmp covers the atomic
+# temp-sibling writes (draft AND committed) so a crashed write can't leak a stray file.
+portal/src/config/*.draft.json
+portal/src/config/*.tmp
+
 # Throwaway file-locking debug scratch at the repo root — keep `git add -A` from
 # sweeping it back in if the experiment is ever re-run (FLUX-508).
 /keep-open.js

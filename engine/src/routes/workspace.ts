@@ -57,6 +57,101 @@ router.post('/pick', async (_req, res) => {
   }
 });
 
+/**
+ * Enumerate Windows drive letters that are currently accessible (FLUX-758).
+ * Returns absolute root paths like "C:\\". Falls back to ["C:\\"] if probing
+ * yields nothing so the in-app browser always has somewhere to start.
+ */
+async function listWindowsDrives(): Promise<string[]> {
+  const drives: string[] = [];
+  await Promise.all(
+    Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i)).map(async (letter) => {
+      const root = `${letter}:\\`;
+      try {
+        await fs.access(root);
+        drives.push(root);
+      } catch {
+        /* drive not present / not ready — skip */
+      }
+    }),
+  );
+  drives.sort();
+  return drives.length ? drives : ['C:\\'];
+}
+
+interface DirEntry {
+  name: string;
+  path: string;
+}
+
+/**
+ * Read-only directory browser backing the in-app folder picker (FLUX-758).
+ * Mounted under /api/workspace (no requireWorkspace), so it works during
+ * onboarding before any workspace is set.
+ *
+ *   GET /api/workspace/browse           → roots (drives on win32, home elsewhere)
+ *   GET /api/workspace/browse?path=<abs> → immediate child directories of <path>
+ *
+ * Response: { path, parent, entries: [{ name, path }], roots? }
+ *   - `path`   : the resolved directory being listed ('' when listing roots).
+ *   - `parent` : parent directory, or null at a root / when listing roots.
+ *   - `entries`: immediate child directories (sorted, hidden dotfiles skipped).
+ *   - `roots`  : present only when listing roots; the available top-level roots.
+ */
+router.get('/browse', async (req, res) => {
+  const raw = typeof req.query.path === 'string' ? req.query.path.trim() : '';
+
+  // No path → return the roots so the picker has a starting point.
+  if (!raw) {
+    try {
+      const home = os.homedir();
+      if (process.platform === 'win32') {
+        const drives = await listWindowsDrives();
+        const entries: DirEntry[] = drives.map((d) => ({ name: d, path: d }));
+        // Surface the home folder as a convenient first entry too.
+        entries.unshift({ name: `Home (${path.basename(home) || home})`, path: home });
+        return res.json({ path: '', parent: null, entries, roots: drives });
+      }
+      // *nix: start at home, expose filesystem root as an additional root.
+      const entries: DirEntry[] = [
+        { name: `Home (${path.basename(home) || home})`, path: home },
+        { name: '/', path: '/' },
+      ];
+      return res.json({ path: '', parent: null, entries, roots: [home, '/'] });
+    } catch (err: any) {
+      return res.status(400).json({ error: err?.message || 'Failed to list roots' });
+    }
+  }
+
+  const resolved = path.resolve(raw);
+  try {
+    const dirents = await fs.readdir(resolved, { withFileTypes: true });
+    const entries: DirEntry[] = dirents
+      .filter((d) => {
+        if (!d.isDirectory()) return false;
+        if (d.name.startsWith('.')) return false; // skip hidden dotfiles
+        return true;
+      })
+      .map((d) => ({ name: d.name, path: path.join(resolved, d.name) }))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+
+    const parentDir = path.dirname(resolved);
+    // At a filesystem/drive root, dirname returns the path unchanged → no parent.
+    const parent = parentDir === resolved ? null : parentDir;
+
+    res.json({ path: resolved, parent, entries });
+  } catch (err: any) {
+    const code = err?.code;
+    const msg =
+      code === 'ENOENT'
+        ? `Folder not found: ${resolved}`
+        : code === 'EACCES' || code === 'EPERM'
+          ? `Can't read this folder (permission denied): ${resolved}`
+          : err?.message || `Can't read this folder: ${resolved}`;
+    res.status(400).json({ error: msg });
+  }
+});
+
 router.get('/', (_req, res) => {
   res.json({ configured: workspaceRoot !== null, path: workspaceRoot });
 });

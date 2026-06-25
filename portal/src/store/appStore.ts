@@ -1,7 +1,7 @@
 import type { ColumnLiveEvent, Config, Task, TaskLiveEvent } from '../types';
 import type { ParseError, Notification, WorkspaceInfo, WorktreeInfo } from '../api';
 
-export type AppView = 'board' | 'backlog' | 'docs' | 'settings' | 'releases' | 'workflows' | 'changes' | 'epics';
+export type AppView = 'board' | 'backlog' | 'docs' | 'settings' | 'releases' | 'workflows' | 'changes' | 'epics' | 'dev-onboarding';
 export type TaskSortOption = 'default' | 'priority' | 'updated' | 'assignee';
 export type AppTheme = 'light' | 'dark' | 'matrix' | 'cyber' | 'midnight';
 
@@ -75,6 +75,9 @@ export interface AppStoreState {
   notifications: Notification[];
   notificationUnreadCount: number;
   restartPending: boolean;
+  /** Reactive mirror of the `eh-onboarding-complete` localStorage flag (FLUX-758).
+   *  App gates the wizard on this so Skip/Complete dismiss without a manual reload. */
+  onboardingComplete: boolean;
 }
 
 /**
@@ -118,6 +121,8 @@ export interface AppActions {
   setAppTheme: (theme: AppTheme) => void;
   toggleTheme: () => void;
   refreshNotifications: () => void;
+  /** Persist the onboarding-complete flag and flip the reactive store field (FLUX-758). */
+  markOnboardingComplete: () => void;
 }
 
 function createInitialState(): AppStoreState {
@@ -165,6 +170,8 @@ function createInitialState(): AppStoreState {
     notifications: [],
     notificationUnreadCount: 0,
     restartPending: false,
+    onboardingComplete:
+      typeof localStorage !== 'undefined' && localStorage.getItem('eh-onboarding-complete') === '1',
   };
 }
 

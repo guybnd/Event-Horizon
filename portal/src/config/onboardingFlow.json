@@ -1,0 +1,142 @@
+{
+  "version": 2,
+  "pages": [
+    {
+      "id": "welcome",
+      "kind": "widget",
+      "title": "Welcome to Event Horizon",
+      "widget": "pick-folder",
+      "subtitle": "Let's get you set up. First, pick the project folder you want to track. The wizard will create a .flux/ (or .flux-store/) directory automatically if it doesn't exist. You can also run event-horizon init manually as an alternative.",
+      "icon": "FolderOpen",
+      "system": true,
+      "required": true,
+      "locked": true,
+      "dependsOn": []
+    },
+    {
+      "id": "features",
+      "kind": "content",
+      "title": "What you can do",
+      "subtitle": "A quick tour of (just some of) what Event Horizon brings to your workflow.",
+      "icon": "Rocket",
+      "ctas": [
+        {
+          "label": "Continue →",
+          "action": "advance"
+        }
+      ],
+      "features": {
+        "ref": "onboardingFeatures",
+        "layout": "grid"
+      }
+    },
+    {
+      "id": "storage-mode",
+      "kind": "widget",
+      "title": "Choose your storage mode",
+      "widget": "storage-mode",
+      "subtitle": "Pick how Event Horizon stores your tickets. You can change this later in Settings.",
+      "icon": "HardDrive",
+      "system": true,
+      "required": true,
+      "locked": true,
+      "dependsOn": [
+        "pick-folder"
+      ]
+    },
+    {
+      "id": "pick-assistant",
+      "kind": "widget",
+      "title": "Pick your AI assistant",
+      "widget": "pick-assistant",
+      "subtitle": "Event Horizon installs a workflow skill into your AI coding assistant so it can manage tickets automatically.\n(Currently only Claude Code is fully tested and supported)",
+      "icon": "Users",
+      "system": true,
+      "required": true,
+      "locked": true,
+      "dependsOn": [
+        "pick-folder"
+      ]
+    },
+    {
+      "id": "install-skill",
+      "kind": "widget",
+      "title": "Install the integration",
+      "widget": "install-skill",
+      "subtitle": "This copies the Event Horizon workflow skill into your workspace so the agent knows how to manage your tickets.",
+      "icon": "Terminal",
+      "system": true,
+      "required": false,
+      "locked": true,
+      "dependsOn": [
+        "pick-folder",
+        "pick-assistant"
+      ]
+    },
+    {
+      "id": "path-setup",
+      "kind": "widget",
+      "title": "Add to PATH",
+      "widget": "path-setup",
+      "subtitle": "Run event-horizon from any terminal without typing its full path.",
+      "icon": "Terminal",
+      "system": true,
+      "required": false,
+      "locked": true,
+      "dependsOn": [
+        "pick-folder"
+      ]
+    },
+    {
+      "id": "docs",
+      "kind": "content",
+      "title": "Explore the docs",
+      "subtitle": "Event Horizon ships with built-in documentation covering workflow setup, ticket management, and the agent integration. Worth a quick look before diving in.",
+      "icon": "BookOpen",
+      "ctas": [
+        {
+          "label": "Open the docs",
+          "action": "open-docs"
+        },
+        {
+          "label": "I'll check later",
+          "action": "advance"
+        }
+      ]
+    },
+    {
+      "id": "bootstrap",
+      "kind": "widget",
+      "title": "Import from your project",
+      "widget": "bootstrap",
+      "subtitle": "Let's check if your project has docs or tasks we can import.",
+      "icon": "Package",
+      "system": true,
+      "required": false,
+      "locked": true,
+      "dependsOn": [
+        "pick-folder"
+      ]
+    },
+    {
+      "id": "all-set",
+      "kind": "widget",
+      "title": "You're all set!",
+      "widget": "completion",
+      "subtitle": "Your workspace is ready. Create your first ticket, assign it to your AI assistant, and watch it take off.",
+      "icon": "PartyPopper",
+      "ctas": [
+        {
+          "label": "Try your first ticket",
+          "action": "first-ticket"
+        }
+      ],
+      "system": true,
+      "required": true,
+      "locked": true,
+      "dependsOn": [
+        "pick-folder"
+      ]
+    }
+  ]
+}

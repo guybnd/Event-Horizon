@@ -6,6 +6,7 @@ import { addNotification } from './notifications.js';
 import { stopAllSessionsForTask } from './session-store.js';
 import { tasksCache, updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
+import { TERMINAL_TICKET_STATUSES } from './schema.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -135,7 +136,7 @@ export async function cleanupMergedBranch(workspaceRoot: string, branch: string,
   // delete the branch out from under them. Explicit finish/cleanup (auto=false) is never short-
   // circuited here. (A fresh sibling on the same branch was already advanced above; its branch just
   // lingers until the reopened sibling also terminalises — correct, the branch is genuinely in use.)
-  if (opts.auto && branchTickets.some((t) => !TERMINAL_STATUSES.has(t.status) && hasReachedDoneBefore(t))) {
+  if (opts.auto && branchTickets.some((t) => !TERMINAL_TICKET_STATUSES.has(t.status) && hasReachedDoneBefore(t))) {
     return { outcome: 'noop', branch, advanced, masterSynced: false, worktreeRemoved: false, branchDeleted: false, reason: 'reopened' };
   }
 
@@ -203,8 +204,6 @@ export async function cleanupMergedBranch(workspaceRoot: string, branch: string,
   return { outcome: 'cleaned', branch, advanced, masterSynced, worktreeRemoved, branchDeleted };
 }
 
-const TERMINAL_STATUSES = new Set([DONE_STATUS, 'Archived', 'Released']);
-
 /**
  * Clear a stale `open-pr` swimlane across the tickets sharing a branch — quietly (no history
  * entry) and ONLY when set. The PR-as-ticket model (FLUX-565) makes the `PR-<n>` deck card the
@@ -241,7 +240,7 @@ export async function reconcilePullRequests(workspaceRoot: string): Promise<void
   // CLOSED→In Progress bounce mangle them (a closed PR ticket stuck In Progress — FLUX-598).
   const byBranch = new Map<string, any[]>();
   for (const t of Object.values(tasksCache) as any[]) {
-    if (!t.branch || t.kind === 'pr' || TERMINAL_STATUSES.has(t.status)) continue;
+    if (!t.branch || t.kind === 'pr' || TERMINAL_TICKET_STATUSES.has(t.status)) continue;
     const arr = byBranch.get(t.branch) ?? [];
     arr.push(t);
     byBranch.set(t.branch, arr);
@@ -347,7 +346,7 @@ export async function pruneMergedBranches(workspaceRoot: string): Promise<void> 
   // terminalises (Done/Archived/Released) the branch is eligible for the normal post-merge prune.
   const activeBranches = new Set<string>();
   for (const t of Object.values(tasksCache) as any[]) {
-    if (t.branch && !TERMINAL_STATUSES.has(t.status)) activeBranches.add(t.branch);
+    if (t.branch && !TERMINAL_TICKET_STATUSES.has(t.status)) activeBranches.add(t.branch);
   }
 
   // A previously-stuck branch that's now gone (deleted by hand / a later poll) drops its dedupe

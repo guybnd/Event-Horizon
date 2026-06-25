@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { broadcastEvent } from './events.js';
-import { createTask } from './task-store.js';
+import { createTask, deleteTask } from './task-store.js';
 import { sliceTurns } from './transcript.js';
 import { appendCurationOp, type ExtractOp } from './curation-ops.js';
 
@@ -87,7 +87,17 @@ export async function extractTicket(opts: ExtractTicketOptions): Promise<Extract
     by,
     ts: new Date().toISOString(),
   };
-  await appendCurationOp(op);
+  // FLUX-738: the card now exists but nothing references it yet. If persisting the
+  // `extract` op fails (disk full, EACCES, …) the card would be ORPHANED — present on the
+  // board but with an empty re-derived view, the slice silently lost. Compensate by
+  // hard-deleting the just-created card before rethrowing, leaving zero partial state
+  // (safe: no op references it, so a plain delete fully reverts the createTask above).
+  try {
+    await appendCurationOp(op);
+  } catch (err) {
+    await deleteTask(id).catch(() => {});
+    throw err;
+  }
 
   // The new card's transcript view now re-derives the slice from substrate + op-log.
   broadcastEvent('taskUpdated', { id });

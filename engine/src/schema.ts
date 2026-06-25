@@ -30,6 +30,12 @@ export const INVERSE_RELATION: Record<RelationType, RelationType> = {
   'duplicated-by': 'duplicates',
 };
 
+// Terminal ticket statuses — a ticket in one of these has no live work a branch merge would
+// silently sweep along (merge advances every ticket on the branch → Done). Single source of
+// truth for the shared-PR merge guard (pr-tickets) and post-merge / reconcile cleanup
+// (pr-cleanup), which previously each kept their own copy of this set (FLUX-650).
+export const TERMINAL_TICKET_STATUSES: ReadonlySet<string> = new Set(['Done', 'Released', 'Archived']);
+
 export interface TicketValidationError {
   path: string;
   message: string;

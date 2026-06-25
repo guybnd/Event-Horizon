@@ -135,6 +135,26 @@ describe('substrate vs projection (FLUX-658)', () => {
     ]);
   });
 
+  it('projectTranscript renders a resume-preamble as a system context-update note row (FLUX-745)', () => {
+    const stream = 'RP';
+    const raws = [
+      { type: 'user', text: 'continue', timestamp: 'T1' },
+      // FLUX-655: the warm-resume situational update is its own durable event. It must NOT be a
+      // chat bubble — it projects to a non-bubble `note` row tagged `context-update`.
+      { type: 'resume-preamble', text: '```situational-update\nbranch moved\n```', timestamp: 'T2' },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'on it' }] } },
+      // An empty/whitespace preamble is skipped (defensive — same as empty assistant text).
+      { type: 'resume-preamble', text: '   ', timestamp: 'T3' },
+    ];
+    const turns: Turn[] = raws.map((raw, seq) => ({ turnId: `${stream}:${seq}`, streamId: stream, seq, ts: 'TENV', role: 'unknown', raw }));
+
+    expect(projectTranscript(turns)).toEqual([
+      { role: 'user', text: 'continue', ts: 'T1' },
+      { role: 'note', kind: 'context-update', text: '```situational-update\nbranch moved\n```', ts: 'T2' },
+      { role: 'assistant', text: 'on it', ts: 'TENV' },
+    ]);
+  });
+
   it('projectTranscript carries pasted-image attachments onto the user turn (FLUX-674)', () => {
     const stream = 'IMG';
     const raws = [

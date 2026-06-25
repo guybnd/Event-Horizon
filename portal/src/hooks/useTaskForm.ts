@@ -93,23 +93,44 @@ export function useTaskForm(modalTask: Task | Partial<Task> | null | undefined) 
       setSubtasks((modalTask.subtasks || []).map(normalizeSubtaskId));
       setParentId(nextParentId);
     } else {
-      setTitle((prev) => (prev !== nextTitle ? nextTitle : prev));
-      setBody((prev) => (prev !== nextBody ? nextBody : prev));
-      setStatus((prev) => (prev !== nextStatus ? nextStatus : prev));
-      setAssignee((prev) => (prev !== nextAssignee ? nextAssignee : prev));
-      setTags((prev) => {
-        const next = modalTask.tags || [];
-        return prev.length !== next.length || prev.some((t, i) => t !== next[i]) ? next : prev;
-      });
-      setPriority((prev) => (prev !== nextPriority ? nextPriority : prev));
-      setEffort((prev) => (prev !== nextEffort ? nextEffort : prev));
-      setEffortLevel((prev) => (prev !== nextThinkingBudget ? nextThinkingBudget : prev));
-      setImplementationLink((prev) => (prev !== nextLink ? nextLink : prev));
-      setSubtasks((prev) => {
-        const next = (modalTask.subtasks || []).map(normalizeSubtaskId);
-        return prev.length !== next.length || prev.some((s, i) => s !== next[i]) ? next : prev;
-      });
-      setParentId((prev) => (prev !== nextParentId ? nextParentId : prev));
+      // FLUX-736: a same-id re-sync (the sideview re-fetches on every refreshTrigger, and the sibling
+      // chat agent fires refreshes while the user edits) must NOT clobber unsaved field edits. If the
+      // live form has diverged from the baseline captured at the last sync, the form is dirty — skip
+      // the field reconciliation entirely so the user's in-flight edits survive the refresh. We compute
+      // dirtiness here against the live field values (closed over from the render that triggered this
+      // same-id modalTask change) rather than reading the derived `isDirty` (computed after this effect
+      // runs). When NOT dirty, behavior is unchanged: fields reconcile to the latest server values. The
+      // cross-id switch path (isNewTicket above) is untouched and still fully resets.
+      const liveDirty =
+        baselinePayloadRef.current !== null &&
+        serializeTaskFormValues({
+          title, body, status, assignee, tags, priority, effort, effortLevel, implementationLink, subtasks, parentId,
+        }) !== baselinePayloadRef.current;
+      if (!liveDirty) {
+        setTitle((prev) => (prev !== nextTitle ? nextTitle : prev));
+        setBody((prev) => (prev !== nextBody ? nextBody : prev));
+        setStatus((prev) => (prev !== nextStatus ? nextStatus : prev));
+        setAssignee((prev) => (prev !== nextAssignee ? nextAssignee : prev));
+        setTags((prev) => {
+          const next = modalTask.tags || [];
+          return prev.length !== next.length || prev.some((t, i) => t !== next[i]) ? next : prev;
+        });
+        setPriority((prev) => (prev !== nextPriority ? nextPriority : prev));
+        setEffort((prev) => (prev !== nextEffort ? nextEffort : prev));
+        setEffortLevel((prev) => (prev !== nextThinkingBudget ? nextThinkingBudget : prev));
+        setImplementationLink((prev) => (prev !== nextLink ? nextLink : prev));
+        setSubtasks((prev) => {
+          const next = (modalTask.subtasks || []).map(normalizeSubtaskId);
+          return prev.length !== next.length || prev.some((s, i) => s !== next[i]) ? next : prev;
+        });
+        setParentId((prev) => (prev !== nextParentId ? nextParentId : prev));
+      } else {
+        // Dirty: leave user-edited fields intact and DON'T refresh the baseline — the edits stay
+        // measured against the baseline the user started from, so `isDirty` stays true and the
+        // pending save survives. Bail before the baseline rewrite below.
+        syncedTaskIdRef.current = modalTask.id;
+        return;
+      }
     }
 
     baselinePayloadRef.current = serializeTaskFormValues({
@@ -130,6 +151,10 @@ export function useTaskForm(modalTask: Task | Partial<Task> | null | undefined) 
       openedTaskIdRef.current = modalTask.id;
     }
     syncedTaskIdRef.current = modalTask.id;
+  // FLUX-736: the live field values read inside (for the dirty check) are deliberately NOT deps — the
+  // sync must run only when `modalTask` changes, never re-fire on a keystroke; the closed-over values
+  // reflect the render that triggered this re-sync, which is exactly the dirty snapshot we want.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modalTask]);
 
   const currentPayload = useMemo(() => serializeTaskFormValues({

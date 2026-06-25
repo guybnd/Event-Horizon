@@ -55,9 +55,14 @@ export interface ChatAttachment {
 }
 
 export interface TranscriptMessage {
-  role: 'user' | 'assistant' | 'tool';
+  /** FLUX-745: `note` is a non-bubble system/automated row (rendered as a quiet chip, not a
+   *  user/assistant bubble) — used for the resume-preamble "context update". */
+  role: 'user' | 'assistant' | 'tool' | 'note';
   text: string;
   ts: string;
+  /** FLUX-745: subkind of a `note` row so the portal can pick the right chip. Currently only
+   *  `'context-update'` (the warm-resume situational update, FLUX-655/FLUX-745). */
+  kind?: 'context-update';
   /** FLUX-661: normalized tool name for a tool row (e.g. `Edit`, `list_tickets`). */
   tool?: string;
   /** FLUX-661: repo-relative path of the file an edit-ish tool touched, when resolvable.
@@ -255,6 +260,12 @@ export function projectTranscript(
         if (atts.length) msg.attachments = atts;
       }
       out.push(tag(msg, turn));
+    } else if (evt?.type === 'resume-preamble' && typeof evt.text === 'string' && evt.text.trim()) {
+      // FLUX-745: the warm-resume situational update (FLUX-655). It is NOT a chat bubble — emit a
+      // non-bubble `note` row so the portal can render it as a subtle "⟳ context update" chip. The
+      // event already carries its own `text` + `timestamp` (pure projection, no schema change).
+      const ts = typeof evt.timestamp === 'string' ? evt.timestamp : turn.ts;
+      out.push(tag({ role: 'note', kind: 'context-update', text: evt.text, ts }, turn));
     } else if (evt?.type === 'ask-question' && Array.isArray(evt.questions)) {
       // FLUX-662: an agent asked the user a structured question. Render it as an assistant
       // turn so a cold resume shows the question that was posed.

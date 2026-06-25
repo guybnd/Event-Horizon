@@ -300,6 +300,37 @@ export async function pickWorkspaceFolder(): Promise<string | null> {
   return data.path ?? null;
 }
 
+// ─── In-app directory browser (FLUX-758) ────────────────────────────────────
+
+export interface DirEntry {
+  name: string;
+  path: string;
+}
+
+export interface BrowseResult {
+  /** Resolved directory being listed; '' when listing roots. */
+  path: string;
+  /** Parent directory, or null at a root / when listing roots. */
+  parent: string | null;
+  /** Immediate child directories (hidden dotfiles skipped, sorted). */
+  entries: DirEntry[];
+  /** Present only when listing roots; the available top-level roots. */
+  roots?: string[];
+}
+
+/**
+ * List the immediate child directories of an absolute path, or the available
+ * roots when `path` is omitted. Backs the in-app folder picker that replaces
+ * the native OS dialog during onboarding.
+ */
+export async function browseDirectory(path?: string): Promise<BrowseResult> {
+  const qs = path ? `?path=${encodeURIComponent(path)}` : '';
+  const res = await fetch(`${API_URL}/workspace/browse${qs}`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to read folder');
+  return data;
+}
+
 // ─── Workspaces (multi-project) ─────────────────────────────────────────────
 
 export interface WorkspaceGroupInfo {
@@ -898,9 +929,14 @@ export interface ChatAttachment {
 
 /** FLUX-602: a parsed chat message from a ticket's durable transcript. */
 export interface TranscriptMessage {
-  role: 'user' | 'assistant' | 'tool';
+  /** FLUX-745: `note` is a non-bubble system/automated row, rendered as a quiet chip (e.g. the
+   *  resume-preamble "⟳ context update") rather than a user/assistant bubble. */
+  role: 'user' | 'assistant' | 'tool' | 'note';
   text: string;
   ts: string;
+  /** FLUX-745: subkind of a `note` row. Currently only `'context-update'` (warm-resume
+   *  situational update, FLUX-655/FLUX-745). */
+  kind?: 'context-update';
   /** FLUX-661: normalized tool name for an edit-ish tool row (`Edit`, `Write`, …). */
   tool?: string;
   /** FLUX-661: repo-relative path of the file an edit tool touched. When present (and the
@@ -1055,11 +1091,20 @@ export async function answerQuestion(
   answers: Record<string, string | string[]>,
   notes?: string,
 ): Promise<void> {
-  await fetch(`${API_URL}/board/ask-question/${id}/answer`, {
+  // FLUX-664: MUST throw on a failed POST. The picker resolves/removes the card only after this
+  // resolves; if we swallowed a failure the await would "succeed", the card would vanish, yet the
+  // engine would stay parked until timeout — stranding the agent. Surface the failure so the
+  // caller keeps the card for a retry. The endpoint also returns HTTP 200 with `{ ok: false }`
+  // when there was no parked question to resolve (already answered / timed out), so treat that as
+  // a failure too — removing the card on `ok:false` would silently lose the user's selection.
+  const res = await fetch(`${API_URL}/board/ask-question/${id}/answer`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ answers, notes }),
   });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(payload.error || 'Failed to submit answer');
+  if (payload.ok === false) throw new Error('Question is no longer pending (already answered or timed out)');
 }
 
 export async function sendTaskCliInput(taskId: string, message: string, user: string, opts?: { model?: string; effort?: string; permissionMode?: string; attachments?: ChatAttachment[] }): Promise<CliSessionSummary> {
@@ -2046,5 +2091,245 @@ export async function updateGroupDocsLabel(label: string): Promise<void> {
     let message = 'Failed to update docs label';
     try { const payload = await res.json(); if (payload.error) message = payload.error; } catch {}
     throw new Error(message);
+  }
+}
+
+// ─── Dev-only onboarding-features editor (FLUX-755) ───────────────────────────
+//
+// Read/write the committed config that drives the onboarding wizard's "What you
+// can do" step. These hit the engine's dev-only /api/dev router, which is mounted
+// solely under `npm run dev` (never in a packaged build). The editor UI that calls
+// them is itself import.meta.env.DEV-gated, so this code never runs in production.
+
+import type { OnboardingFeaturesConfig } from './config/onboardingFeatures';
+
+/** GET the live onboarding-features config from the engine (reads the committed file). */
+export async function fetchOnboardingFeatures(): Promise<OnboardingFeaturesConfig> {
+  const res = await fetch(`${API_URL}/dev/onboarding-features`);
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to fetch onboarding features');
+  }
+  return res.json();
+}
+
+/** PUT the onboarding-features config to the engine (writes the committed file). Returns the saved config. */
+export async function saveOnboardingFeatures(data: OnboardingFeaturesConfig): Promise<OnboardingFeaturesConfig> {
+  const res = await fetch(`${API_URL}/dev/onboarding-features`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to save onboarding features');
+  }
+  return res.json();
+}
+
+// ─── Dev-only onboarding-FLOW editor (FLUX-759) ───────────────────────────────
+//
+// Read/write the committed config that drives the onboarding wizard's PAGE SEQUENCE
+// (portal/src/config/onboardingFlow.json), distinct from the feature-panel seed
+// above. These hit the engine's dev-only /api/dev router (sub-path /onboarding-flow),
+// mounted solely under `npm run dev` (never in a packaged build). They are referenced
+// ONLY from the dev Studio chunk so they tree-shake out of the prod bundle.
+
+import type { OnboardingFlowConfig } from './config/onboardingFlow';
+
+/** GET the live onboarding-flow config from the engine (reads the committed file). */
+export async function fetchOnboardingFlow(): Promise<OnboardingFlowConfig> {
+  const res = await fetch(`${API_URL}/dev/onboarding-flow`);
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to fetch onboarding flow');
+  }
+  return res.json();
+}
+
+/** PUT the onboarding-flow config to the engine (writes the committed file). Returns the saved config. */
+export async function saveOnboardingFlow(data: OnboardingFlowConfig): Promise<OnboardingFlowConfig> {
+  const res = await fetch(`${API_URL}/dev/onboarding-flow`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to save onboarding flow');
+  }
+  return res.json();
+}
+
+// ─── Dev-only onboarding DRAFT store + PUBLISH (FLUX-763 Phase 4) ─────────────
+//
+// THE HEADLINE FIX. Routine Studio Save now writes the gitignored DRAFT files
+// (onboardingFlow.draft.json / onboardingFeatures.draft.json) instead of the committed
+// configs, so opening + saving in the Studio leaves `git status` clean and never blocks
+// `git pull`. A single explicit publishOnboarding() is the ONLY path that writes the
+// committed onboardingFlow.json / onboardingFeatures.json. These hit the engine's
+// dev-only /api/dev/onboarding-*-draft + /onboarding-publish routes and are referenced
+// ONLY from the dev Studio chunk, so they tree-shake out of the prod bundle.
+
+/** A single validation/warning entry returned by the publish backstop. */
+export interface OnboardingValidationIssue {
+  code: string;
+  message: string;
+  pageId?: string;
+}
+
+/** GET the live onboarding-flow DRAFT (engine seeds it from the committed file on first read). */
+export async function fetchOnboardingFlowDraft(): Promise<OnboardingFlowConfig> {
+  const res = await fetch(`${API_URL}/dev/onboarding-flow-draft`);
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to fetch onboarding flow draft');
+  }
+  return res.json();
+}
+
+/** PUT the onboarding-flow DRAFT (the gitignored Save target — never the committed file). */
+export async function saveOnboardingFlowDraft(data: OnboardingFlowConfig): Promise<OnboardingFlowConfig> {
+  const res = await fetch(`${API_URL}/dev/onboarding-flow-draft`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to save onboarding flow draft');
+  }
+  return res.json();
+}
+
+/** GET the live onboarding-features DRAFT (engine seeds it from the committed file on first read). */
+export async function fetchOnboardingFeaturesDraft(): Promise<OnboardingFeaturesConfig> {
+  const res = await fetch(`${API_URL}/dev/onboarding-features-draft`);
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to fetch onboarding features draft');
+  }
+  return res.json();
+}
+
+/** PUT the onboarding-features DRAFT (the gitignored Save target — never the committed file). */
+export async function saveOnboardingFeaturesDraft(
+  data: OnboardingFeaturesConfig,
+): Promise<OnboardingFeaturesConfig> {
+  const res = await fetch(`${API_URL}/dev/onboarding-features-draft`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to save onboarding features draft');
+  }
+  return res.json();
+}
+
+/** Thrown by publishOnboarding when the engine backstop returns 422 (blocking errors, nothing written). */
+export class OnboardingPublishError extends Error {
+  errors: OnboardingValidationIssue[];
+  constructor(errors: OnboardingValidationIssue[]) {
+    super('Publish blocked by validation errors');
+    this.name = 'OnboardingPublishError';
+    this.errors = errors;
+  }
+}
+
+export interface OnboardingPublishResult {
+  published: true;
+  warnings: OnboardingValidationIssue[];
+}
+
+/**
+ * Publish the current drafts to the committed configs — THE ONLY committed write. The
+ * engine re-reads both drafts from disk, runs its structural backstop + asset-existence
+ * check, and on pass atomically writes flow draft → onboardingFlow.json AND features
+ * draft → onboardingFeatures.json. On 422 it writes nothing and throws an
+ * OnboardingPublishError carrying { errors }. On success returns { published, warnings }.
+ */
+export async function publishOnboarding(): Promise<OnboardingPublishResult> {
+  const res = await fetch(`${API_URL}/dev/onboarding-publish`, { method: 'POST' });
+  if (res.status === 422) {
+    const payload = await res.json().catch(() => ({ errors: [] as OnboardingValidationIssue[] }));
+    throw new OnboardingPublishError(Array.isArray(payload.errors) ? payload.errors : []);
+  }
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to publish onboarding config');
+  }
+  return res.json();
+}
+
+/** Discard unpublished edits — overwrite both drafts from the committed configs. */
+export async function discardOnboardingDraft(): Promise<{
+  flow: OnboardingFlowConfig;
+  features: OnboardingFeaturesConfig;
+}> {
+  const res = await fetch(`${API_URL}/dev/onboarding-discard`, { method: 'POST' });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to discard onboarding drafts');
+  }
+  return res.json();
+}
+
+// ─── Dev-only onboarding-IMAGE upload (FLUX-760) ──────────────────────────────
+//
+// Uploads a committed onboarding image (page/feature) to the engine's dev-only
+// /api/dev/onboarding-asset route. The engine writes raw bytes (NO re-encode, gif
+// animation preserved) into portal/public/onboarding-assets/<kind>-<id>.<ext> and
+// returns the root-absolute URL to drop into image.src. The Studio then Saves the
+// config so the reference lands in committed JSON. Mirrors uploadTaskAsset above.
+// Referenced ONLY from the dev Studio chunk, so it tree-shakes out of prod.
+
+export interface OnboardingAssetUploadResult {
+  url: string;
+  fileName: string;
+}
+
+/**
+ * Upload an onboarding image. The server DERIVES the stored filename from kind + id
+ * (the client fileName is used only to infer the extension when mimeType is absent),
+ * so re-uploading the same kind+id overwrites in place. Returns { url, fileName }.
+ */
+export async function uploadOnboardingAsset(
+  kind: 'page' | 'feature',
+  id: string,
+  payload: { fileName: string; mimeType: string; content: string },
+): Promise<OnboardingAssetUploadResult> {
+  const res = await fetch(`${API_URL}/dev/onboarding-asset`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind, id, ...payload }),
+  });
+
+  if (!res.ok) {
+    let message = 'Failed to upload onboarding image';
+    try {
+      const errorPayload = await res.json();
+      if (typeof errorPayload?.error === 'string' && errorPayload.error.trim()) {
+        message = errorPayload.error.trim();
+      }
+    } catch {
+      // Ignore JSON parse failures and fall back to the default message.
+    }
+    throw new Error(message);
+  }
+
+  return res.json();
+}
+
+/** Delete the committed onboarding image for a kind+id (idempotent — missing file is success). */
+export async function deleteOnboardingAsset(kind: 'page' | 'feature', id: string): Promise<void> {
+  const params = new URLSearchParams({ kind, id });
+  const res = await fetch(`${API_URL}/dev/onboarding-asset?${params.toString()}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to delete onboarding image');
   }
 }

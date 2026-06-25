@@ -472,6 +472,22 @@ export async function createTask(options: CreateTaskOptions): Promise<CreateTask
   return { id: nextId, task: tasksCache[nextId] };
 }
 
+/**
+ * Hard-delete a task: remove its `.md` file from disk and drop it from the cache.
+ * Mirrors the inline deletion in the DELETE /api/tasks/:id route, but WITHOUT any
+ * worktree/branch teardown — this primitive is for tickets that were never given a
+ * branch (e.g. a freshly created card we need to roll back). Best-effort and quiet:
+ * a missing file/cache entry is not an error (the caller may be compensating). Used by
+ * `extractTicket` (FLUX-738) to remove an orphan card when the curation op fails to persist.
+ */
+export async function deleteTask(id: string): Promise<void> {
+  const task = tasksCache[id];
+  delete tasksCache[id];
+  if (task?._path) {
+    await fs.unlink(task._path).catch(() => {});
+  }
+}
+
 
 /**
  * Engine-managed upsert for synthetic, non-hand-authored tickets — the PR tickets EH
@@ -487,7 +503,12 @@ export async function upsertManagedTicket(
   body = '',
 ): Promise<{ task: any; created: boolean; changed: boolean }> {
   const existing = tasksCache[id];
-  const changed = !existing || Object.entries(fields).some(([k, v]) => JSON.stringify(existing[k]) !== JSON.stringify(v));
+  const fieldsChanged = !existing || Object.entries(fields).some(([k, v]) => JSON.stringify(existing[k]) !== JSON.stringify(v));
+  // A non-empty `body` that differs forces a rewrite (e.g. a gh PR description changed but no
+  // field did — FLUX-751). An empty `body` arg never marks changed: it means "keep existing
+  // body", so the many callers that omit body don't churn every managed ticket each poll.
+  const bodyChanged = body !== '' && body !== (existing?.body ?? '');
+  const changed = !existing || fieldsChanged || bodyChanged;
   if (existing && !changed) return { task: existing, created: false, changed: false };
 
   const filePath = existing?._path || path.join(getActiveFluxDir(), `${id}.md`);

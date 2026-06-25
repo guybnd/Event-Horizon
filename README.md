@@ -89,6 +89,38 @@ touching the core.
 
 ---
 
+## See it in action
+
+Short demos straight from the in-product onboarding tour (the "What you can do" step). Each one is a committed asset in `portal/public/onboarding-assets/`.
+
+**Each ticket is an AI chat-box**
+
+<video src="https://github.com/guybnd/Event-Horizon/raw/master/portal/public/onboarding-assets/each-ticket-chat.mp4" width="640" muted autoplay loop playsinline controls><a href="https://github.com/guybnd/Event-Horizon/raw/master/portal/public/onboarding-assets/each-ticket-chat.mp4">Watch the demo</a></video>
+
+**Isolated agent runs (one git worktree per ticket)**
+
+<video src="https://github.com/guybnd/Event-Horizon/raw/master/portal/public/onboarding-assets/isolated-agent-runs.mp4" width="640" muted autoplay loop playsinline controls><a href="https://github.com/guybnd/Event-Horizon/raw/master/portal/public/onboarding-assets/isolated-agent-runs.mp4">Watch the demo</a></video>
+
+**Inline PRs**
+
+<video src="https://github.com/guybnd/Event-Horizon/raw/master/portal/public/onboarding-assets/feature-prs-workflows.mp4" width="640" muted autoplay loop playsinline controls><a href="https://github.com/guybnd/Event-Horizon/raw/master/portal/public/onboarding-assets/feature-prs-workflows.mp4">Watch the demo</a></video>
+
+**Multi-agent orchestration**
+
+<video src="https://github.com/guybnd/Event-Horizon/raw/master/portal/public/onboarding-assets/multi-agent.mp4" width="640" muted autoplay loop playsinline controls><a href="https://github.com/guybnd/Event-Horizon/raw/master/portal/public/onboarding-assets/multi-agent.mp4">Watch the demo</a></video>
+
+**Design your own workflows**
+
+<video src="https://github.com/guybnd/Event-Horizon/raw/master/portal/public/onboarding-assets/feature-feature-9.mp4" width="640" muted autoplay loop playsinline controls><a href="https://github.com/guybnd/Event-Horizon/raw/master/portal/public/onboarding-assets/feature-feature-9.mp4">Watch the demo</a></video>
+
+**Docs and shared workspace**
+
+<video src="https://github.com/guybnd/Event-Horizon/raw/master/portal/public/onboarding-assets/feature-docs-shared-workspace.mp4" width="640" muted autoplay loop playsinline controls><a href="https://github.com/guybnd/Event-Horizon/raw/master/portal/public/onboarding-assets/feature-docs-shared-workspace.mp4">Watch the demo</a></video>
+
+> These clips resolve once the current source (including `portal/public/onboarding-assets/`) is pushed to the public repo on a release. If GitHub doesn't auto-play the embeds, the same clips can be drag-dropped into a GitHub comment to mint `user-attachments` URLs (the method the feature clips above use).
+
+---
+
 ## Core Principles
 
 - **Filesystem as Database:** Tickets are plain Markdown files with YAML frontmatter in `.flux/`. Version-controlled alongside your code. Editable in any text editor.

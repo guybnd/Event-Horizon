@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Send, Loader2, Square, Wrench, ChevronDown, ChevronRight, Check, Clock, ArrowDown, Cpu, Gauge, Shield, Paperclip, X } from 'lucide-react';
+import { Send, Loader2, Square, Wrench, ChevronDown, ChevronRight, Check, Clock, ArrowDown, Cpu, Gauge, Shield, Paperclip, X, RefreshCw } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { fetchDiffFile, openWorkspaceEditor, type TranscriptMessage, type ChatAttachment } from '../../api';
 import type { QueuedMessage, ChatSendOptions } from '../../hooks/useChatSession';
@@ -11,6 +11,7 @@ import { searchTasks, getTaskActivityTimestamp } from '../../taskSearch';
 import { useTranscriptFind } from './useTranscriptFind';
 import { FindBar } from './FindBar';
 import type { Task } from '../../types';
+import type { ComposerSelections } from '../DockProvider';
 import { formatRelative } from '../../lib/relativeTime';
 
 /** FLUX-643: a one-tap reply chip rendered above the composer. Selecting it sends
@@ -94,11 +95,22 @@ export interface ChatViewProps {
    *  transcript and the composer. Caller builds it (`<ChatQuestionPicker conversationId>`) so
    *  ChatView stays transport-free. */
   questionPicker?: ReactNode;
+  /** FLUX-752: a compact, display-only "Awaiting your input" banner shown just above the
+   *  questionPicker/working strip when the bound ticket sits in Require Input (status or
+   *  swimlane). Caller builds it (`<ChatRequireInputBanner task>`) and decides when to pass it
+   *  so ChatView stays transport-free; omit for the orchestrator board chat (no bound ticket). */
+  awaitingInputBanner?: ReactNode;
   /** FLUX-623: controlled composer draft. When `onDraftChange` is provided the composer's
    *  text is driven by `draft` (so the dock can persist it across minimize/reopen); omit both
    *  to keep the composer's internal uncontrolled state (the task-modal `ChatPane` path). */
   draft?: string;
   onDraftChange?: (text: string) => void;
+  /** FLUX-666: controlled composer chip selections (model/effort/permission). When
+   *  `onSelectionsChange` is provided the chips are driven by `selections` (so the dock can persist
+   *  them across minimize/reopen alongside the text draft); omit both to keep the composer's internal
+   *  uncontrolled selection state (the task-modal `ChatPane` path, which never unmounts). */
+  selections?: ComposerSelections;
+  onSelectionsChange?: (selections: ComposerSelections) => void;
   /** FLUX-661: branch/ref whose file diffs back the inline per-edit diffs. When set, a tool
    *  row carrying a `path` (edit-ish tools) becomes an expandable inline diff of that file
    *  (current cumulative diff vs base, via `fetchDiffFile(diffBranch, path)`). Omit (e.g. the
@@ -165,8 +177,11 @@ export function ChatView({
   quickReplies,
   linkifyTickets = false,
   questionPicker,
+  awaitingInputBanner,
   draft,
   onDraftChange,
+  selections,
+  onSelectionsChange,
   diffBranch,
   tickets,
   meter,
@@ -401,6 +416,11 @@ export function ChatView({
             </div>
           );
         }
+      // FLUX-745: a system/automated note (the warm-resume situational update). Not a bubble — a
+      // subtle, collapsible "⟳ context update" chip, visually distinct from user/assistant turns.
+      if (m.role === 'note') {
+        return <ContextUpdateChip key={i} text={m.text} ts={m.ts} />;
+      }
       // Assistant — no bubble: flowing markdown so code blocks / lists / links breathe.
       // FLUX-693: a very long turn is clamped with a "Show more/less" toggle so one giant
       // message can't blow out the scroll. The live trailing row (`live`) is never clamped —
@@ -412,7 +432,7 @@ export function ChatView({
       return (
         <div
           key={i}
-          data-last-msg={isLastAssistant ? '' : undefined}
+          data-last-msg={openToLastMessage && isLastAssistant ? '' : undefined}
           className="group max-w-full text-[13px] leading-relaxed text-[var(--eh-text-primary)]"
         >
           <Clampable clamp={!live && !(openToLastMessage && isLastAssistant)}>
@@ -558,6 +578,12 @@ export function ChatView({
           just above the composer area so it's glanceable without competing with the transcript. */}
       {meter && <div className="flex justify-end px-0.5">{meter}</div>}
 
+      {/* FLUX-752: display-only "Awaiting your input" banner for a board Require-Input ticket —
+          sits just above the question picker / working strip where the user's eyes already are.
+          Complementary to the FLUX-643 quick-reply chips below; the reply itself goes through the
+          composer/chips, not here. */}
+      {awaitingInputBanner && <div className="px-0.5">{awaitingInputBanner}</div>}
+
       {/* FLUX-662: inline ask_user_question picker — sits right above the working strip so a
           parked question is impossible to miss, attached to the chat that asked it. */}
       {questionPicker}
@@ -626,7 +652,7 @@ export function ChatView({
 
       {/* Composer lives in its own component so its per-keystroke input state never
           re-renders the transcript above it. */}
-      <Composer busy={busy} working={!!working} onSend={onSend} onEnqueue={onEnqueue} onUploadImage={onUploadImage} draft={draft} onDraftChange={onDraftChange} tickets={tickets} />
+      <Composer busy={busy} working={!!working} onSend={onSend} onEnqueue={onEnqueue} onUploadImage={onUploadImage} draft={draft} onDraftChange={onDraftChange} selections={selections} onSelectionsChange={onSelectionsChange} tickets={tickets} />
     </div>
   );
 }
@@ -784,6 +810,38 @@ function ToolRow({ text, openRef }: { text: string; openRef?: string | null }) {
           text
         )}
       </span>
+    </div>
+  );
+}
+
+/**
+ * FLUX-745: a subtle, collapsible "⟳ context update" chip for a `note` transcript row (the
+ * warm-resume situational update injected by FLUX-655). It is deliberately NOT a chat bubble —
+ * a quiet, full-width meta row (muted refresh glyph + label + hover-revealed timestamp) that
+ * reads as a system/automated note. Default-collapsed so the (often multi-paragraph) situational
+ * update never buries the actual conversation; expanding renders the text as markdown.
+ */
+function ContextUpdateChip({ text, ts }: { text: string; ts?: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="group min-w-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        title={open ? 'Hide context update' : 'Show context update'}
+        className="flex w-full min-w-0 items-center gap-1.5 rounded-md border border-dashed border-[var(--eh-border)] bg-[var(--eh-input-bg)] px-2 py-1 text-left text-[11px] text-[var(--eh-text-muted)] transition-colors hover:text-[var(--eh-text-secondary)]"
+      >
+        {open ? <ChevronDown className="h-3 w-3 flex-shrink-0" /> : <ChevronRight className="h-3 w-3 flex-shrink-0" />}
+        <RefreshCw className="h-3 w-3 flex-shrink-0" />
+        <span className="flex-shrink-0 font-medium uppercase tracking-wide">Context update</span>
+        <MessageTime ts={ts} className="ml-auto" />
+      </button>
+      {open && (
+        <div className="mt-1 rounded-md border border-[var(--eh-border)] bg-black/[0.02] px-3 py-2 text-[12px] leading-relaxed text-[var(--eh-text-secondary)] dark:bg-white/[0.02]">
+          <TaskMarkdown body={text} compact />
+        </div>
+      )}
     </div>
   );
 }
@@ -1101,8 +1159,12 @@ function detectTicketTrigger(before: string, prefixes: string[]): TicketTrigger 
  * FLUX-623: the text draft is *optionally* controlled. When `onDraftChange` is provided the
  * value comes from the `draft` prop (so the dock can persist it across minimize/reopen, which
  * unmounts this subtree); otherwise it falls back to internal `useState` (the task-modal
- * `ChatPane` path, which never unmounts). Model/effort/permission stay local either way —
- * persisting those is out of scope (see the ticket's Risks note).
+ * `ChatPane` path, which never unmounts).
+ *
+ * FLUX-666: the model/effort/permission chip selections are optionally controlled the SAME way.
+ * When `onSelectionsChange` is provided they come from the `selections` prop (so the dock persists
+ * them across minimize/reopen alongside the text draft); otherwise they fall back to internal
+ * `useState` (the never-unmounting `ChatPane` path).
  */
 function Composer({
   busy,
@@ -1112,6 +1174,8 @@ function Composer({
   onUploadImage,
   draft,
   onDraftChange,
+  selections,
+  onSelectionsChange,
   tickets,
 }: {
   busy: boolean;
@@ -1126,12 +1190,15 @@ function Composer({
   onUploadImage?: (file: File) => Promise<ChatAttachment>;
   draft?: string;
   onDraftChange?: (text: string) => void;
+  selections?: ComposerSelections;
+  onSelectionsChange?: (selections: ComposerSelections) => void;
   tickets?: Task[];
 }) {
   const [internalInput, setInternalInput] = useState('');
-  const [model, setModel] = useState('');
-  const [effort, setEffort] = useState('');
-  const [permission, setPermission] = useState('');
+  // FLUX-666: internal chip-selection state — used only on the uncontrolled (ChatPane) path.
+  const [internalModel, setInternalModel] = useState('');
+  const [internalEffort, setInternalEffort] = useState('');
+  const [internalPermission, setInternalPermission] = useState('');
   // FLUX-674: pasted/dropped/picked images staged for the next turn, plus upload state.
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [uploading, setUploading] = useState(0);
@@ -1150,6 +1217,24 @@ function Composer({
   const controlled = onDraftChange !== undefined;
   const input = controlled ? draft ?? '' : internalInput;
   const setValue = controlled ? onDraftChange! : setInternalInput;
+
+  // FLUX-666: chip selections are optionally controlled the same way as the text draft. When the
+  // parent owns them (`onSelectionsChange` provided — the dock path), the values come from the
+  // `selections` prop and each setter folds the one changed field into a fresh selections object
+  // the parent persists; otherwise they're internal `useState` (the never-unmounting ChatPane path).
+  const selectionsControlled = onSelectionsChange !== undefined;
+  const model = selectionsControlled ? selections?.model ?? '' : internalModel;
+  const effort = selectionsControlled ? selections?.effort ?? '' : internalEffort;
+  const permission = selectionsControlled ? selections?.permission ?? '' : internalPermission;
+  const setModel = selectionsControlled
+    ? (v: string) => onSelectionsChange!({ model: v, effort, permission })
+    : setInternalModel;
+  const setEffort = selectionsControlled
+    ? (v: string) => onSelectionsChange!({ model, effort: v, permission })
+    : setInternalEffort;
+  const setPermission = selectionsControlled
+    ? (v: string) => onSelectionsChange!({ model, effort, permission: v })
+    : setInternalPermission;
 
   const canAttach = !!onUploadImage;
   const isUploading = uploading > 0;
@@ -1258,6 +1343,17 @@ function Composer({
       void onSend(text, opts);
     }
     setValue('');
+    // FLUX-666: reset the chip selections after a send, consistent with clearing the text draft.
+    // On the controlled (dock) path one write to all-empty prunes the persisted entry; on the
+    // uncontrolled path reset the three internal states directly (calling the per-field controlled
+    // setters in sequence would each see a stale closure of the other two).
+    if (selectionsControlled) {
+      onSelectionsChange!({});
+    } else {
+      setInternalModel('');
+      setInternalEffort('');
+      setInternalPermission('');
+    }
     setAttachments([]);
     setAttachError(null);
   }

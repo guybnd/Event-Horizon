@@ -10,9 +10,17 @@ vi.mock('./task-store.js', () => ({
 }));
 vi.mock('./events.js', () => ({ broadcastEvent: vi.fn() }));
 
+// syncPrTickets shells out to `gh` via promisify(execFile); mock child_process so the test feeds
+// a canned `gh pr list --json …` payload (FLUX-751: asserting the PR body is threaded through).
+const ghState = vi.hoisted(() => ({ stdout: '[]' }));
+vi.mock('child_process', () => ({
+  execFile: (_file: string, _args: string[], _opts: unknown, cb: (e: unknown, r: { stdout: string; stderr: string }) => void) =>
+    cb(null, { stdout: ghState.stdout, stderr: '' }),
+}));
+
 import { tasksCache, upsertManagedTicket } from './task-store.js';
 import { broadcastEvent } from './events.js';
-import { selectMembers, prTicketFields, prTicketId, sharedNonDoneSiblings, membersToBounce, prTicketsOnBranch, resolveMergedPrTickets } from './pr-tickets.js';
+import { selectMembers, prTicketFields, prTicketId, sharedNonDoneSiblings, membersToBounce, prTicketsOnBranch, resolveMergedPrTickets, syncPrTickets } from './pr-tickets.js';
 
 /** FLUX-566: work-gated PR membership + gh-state→ticket-field mapping (pure logic). */
 describe('selectMembers (work-gated membership)', () => {
@@ -48,7 +56,7 @@ describe('selectMembers (work-gated membership)', () => {
 });
 
 describe('prTicketFields (state mapping)', () => {
-  const base = { number: 9, title: 'Add thing', url: 'https://gh/pr/9', state: 'OPEN', headRefName: 'feature/x', reviewDecision: null, isDraft: false };
+  const base = { number: 9, title: 'Add thing', url: 'https://gh/pr/9', state: 'OPEN', headRefName: 'feature/x', reviewDecision: null, isDraft: false, body: 'The PR description.' };
 
   it('a NEW open PR lands in Ready with kind:pr + metadata', () => {
     const f = prTicketFields(base, ['FLUX-1'], null);
@@ -208,5 +216,36 @@ describe('resolveMergedPrTickets (immediate post-merge PR resolution)', () => {
     expect(resolved).toEqual([]);
     expect(vi.mocked(upsertManagedTicket)).not.toHaveBeenCalled();
     expect(vi.mocked(broadcastEvent)).not.toHaveBeenCalled();
+  });
+});
+
+/** FLUX-751: syncPrTickets pulls the gh PR description into the card body (3rd upsert arg). */
+describe('syncPrTickets (PR body carried into the card)', () => {
+  beforeEach(() => {
+    for (const k of Object.keys(tasksCache)) delete (tasksCache as Record<string, unknown>)[k];
+    vi.mocked(upsertManagedTicket).mockClear();
+  });
+
+  it('threads the gh PR description through as the upsert body (3rd arg)', async () => {
+    ghState.stdout = JSON.stringify([
+      { number: 9, title: 'Add thing', url: 'https://gh/pr/9', state: 'OPEN', headRefName: 'feature/x', reviewDecision: null, isDraft: false, body: 'The PR description.' },
+    ]);
+
+    await syncPrTickets('/repo');
+
+    expect(vi.mocked(upsertManagedTicket)).toHaveBeenCalledWith('PR-9', expect.any(Object), 'The PR description.');
+    // body is the markdown carrier, NOT a frontmatter field.
+    const fields = vi.mocked(upsertManagedTicket).mock.calls[0]![1];
+    expect('body' in fields).toBe(false);
+  });
+
+  it('coerces a null/missing PR description to an empty body (no crash)', async () => {
+    ghState.stdout = JSON.stringify([
+      { number: 10, title: 'No desc', url: 'https://gh/pr/10', state: 'OPEN', headRefName: 'feature/y', reviewDecision: null, isDraft: false, body: null },
+    ]);
+
+    await syncPrTickets('/repo');
+
+    expect(vi.mocked(upsertManagedTicket)).toHaveBeenCalledWith('PR-10', expect.any(Object), '');
   });
 });

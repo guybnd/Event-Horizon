@@ -296,7 +296,7 @@ function TemplateMenu({ templates, onPick }: { templates: LaunchTemplateOption[]
         const Icon = t.variant === 'single' ? Bot : t.variant === 'multi' ? Layers : FileText;
         const label = t.variant === 'single' ? `Single${t.name ? ` · ${t.name}` : ''}` : t.variant === 'multi' ? `Multi${t.name ? ` · ${t.name}` : ''}` : t.name ?? t.id;
         return (
-          <div key={t.id} className="contents">
+          <div key={`${t.variant}:${t.id ?? i}`} className="contents">
             {i === firstOther && firstOther > 0 && <div className="my-1 border-t border-[var(--eh-border)]" />}
             <button
               type="button"

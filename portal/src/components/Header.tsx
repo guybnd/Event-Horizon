@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react';
-import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, FileText, Tag, Plus, Workflow, Check, GitCompare, Target } from 'lucide-react';
+import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, FileText, Tag, Plus, Workflow, Check, GitCompare, Target, FlaskConical } from 'lucide-react';
 import { THEMES, type AppTheme, type AppView } from '../AppContext';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { NotificationPanel } from './NotificationPanel';
@@ -21,6 +21,7 @@ const NAV_TINTS: Record<AppView, string> = {
   docs: '#8b5cf6',      // violet
   workflows: '#ec4899', // pink
   settings: '#64748b',  // slate
+  'dev-onboarding': '#f43f5e', // rose — dev-only, never rendered in prod nav
 };
 
 const NavItem = memo(function NavItem({
@@ -239,6 +240,11 @@ export function Header() {
             <NavItem view={view} target="docs" icon={<FileText className="w-4 h-4" />} label="Docs" onClick={handleSetView} />
             <NavItem view={view} target="workflows" icon={<Workflow className="w-4 h-4" />} label="Workflows" onClick={handleSetView} />
             <NavItem view={view} target="settings" icon={<SettingsIcon className="w-4 h-4" />} label="Settings" onClick={handleSetView} />
+            {/* Dev-only onboarding editor (FLUX-755). import.meta.env.DEV is statically
+                false in a production build, so the bundler dead-code-eliminates this link. */}
+            {import.meta.env.DEV && (
+              <NavItem view={view} target="dev-onboarding" icon={<FlaskConical className="w-4 h-4" />} label="Onboarding" onClick={handleSetView} />
+            )}
           </div>
         </div>
 
