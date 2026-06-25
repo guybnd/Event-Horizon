@@ -21,6 +21,10 @@ own git worktree** off to the side, concurrent agents never clobber each other a
 stays clean.
 
 
+
+https://github.com/user-attachments/assets/2ce3e8f7-97b2-4c15-ae9a-925068bf48fb
+
+
 > [](https://github.com/user-attachments/assets/e6b539f4-c082-4f2f-8b8b-2020c8c5c5dd)
 
 
