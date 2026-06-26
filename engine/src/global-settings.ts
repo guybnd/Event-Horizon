@@ -6,13 +6,11 @@ import os from 'os';
 export interface GlobalSettings {
   workspaces: WorkspaceEntry[];
   lastWorkspace?: string;
-  theme?: 'light' | 'dark' | 'system';
   defaultUser?: string;
   preferredFramework?: string;
   defaultAgent?: string;
   port?: number;
   dataDir?: string;
-  boardClickBehavior?: 'modal' | 'expand';
   animations?: boolean;
   timeouts?: {
     syncDebounceMs?: number;

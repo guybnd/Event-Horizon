@@ -11,7 +11,7 @@ Scope: Write code, validate logic, format commits, and close tickets during the 
 
 # Event Horizon Agent — Implementation Skill
 
-Version: 2.6.0
+Version: 2.7.0
 
 ## When This Skill Applies
 
@@ -33,7 +33,9 @@ Refer to the orchestrator skill for the ticket model, APIs, and end-to-end check
 - Implementation complete and validated → `change_status` to `Ready` (with a completion summary). If blocked on a decision → `change_status` to `Require Input` with the question + a proposed default.
 - Cannot decide whether to proceed → that *is* a `Require Input`. Raise it; do not leave the decision only in your final chat message.
 
-If you leave the ticket parked in a working status (`Grooming` / `In Progress`) without an action, the engine flags it **"Needs Action"** on the board and notifies the user (the backstop exists precisely because narrating-and-stopping was a recurring defect). Do not rely on the backstop — take the action yourself.
+**Any decision or question goes through a structured surface — `ask_user_question` or `Require Input` — regardless of ticket status, never prose (FLUX-826).** This includes a ticket that is already **Done / Ready / Todo / Backlog / Released / Archived**: if you're working a closed ticket (a PR follow-up, a backfill, a "should I commit this / file a ticket / leave it?" call) and need the user to decide, raise `ask_user_question`. A decision typed only into chat on a resting ticket has no board flag and no notification — it is silently lost the moment the user looks away. `Require Input` is status-coupled (it parks the *current* status, wrong for a Done ticket); on a resting ticket prefer `ask_user_question`, which surfaces a picker and — if it times out unanswered — leaves a persistent **"Needs Action"** flag on that ticket.
+
+If you leave the ticket parked in a working status (`Grooming` / `In Progress`) without an action, the engine flags it **"Needs Action"** on the board and notifies the user (the backstop exists precisely because narrating-and-stopping was a recurring defect). On a **resting/terminal** status, a softer backstop also fires: if you end a turn having posted a fresh comment but taken no board action and raised no structured prompt, the engine surfaces a needs-action nudge so a decision buried in a comment on a closed ticket isn't lost (FLUX-826). Do not rely on either backstop — route the decision yourself.
 
 ## Implementation Workflow
 
@@ -57,7 +59,7 @@ If you leave the ticket parked in a working status (`Grooming` / `In Progress`) 
     - **Branchless tickets:** stage all relevant files (code + docs), create the commit, then use `finish_ticket` with `implementationLink` (commit hash) and `completionComment`. Status moves to Done atomically.
     - **Branch / worktree tickets:** the implementation commit already exists (made before `Ready`) and a PR is open. `finish_ticket` merges the PR and advances to Done — the PR URL is the `implementationLink`. If you made further changes (e.g. docs) after `Ready`, commit + `git push origin <branch>` first so the PR updates, then `finish_ticket`.
     The completion comment should name the docs you updated, or state why none were needed.
-12. **Never end a session with a blocking decision only in your final chat message.** If you cannot safely finish (e.g. the branch bundles other tickets' work / an integration PR, or the merge is an irreversible one-way door you're unsure about), move the ticket to **Require Input** with the decision + options and stop — a question left only in your final message is invisible on the board and will be missed (FLUX-570).
+12. **Never end a session with a blocking decision only in your final chat message — on any status.** If you cannot safely finish (e.g. the branch bundles other tickets' work / an integration PR, or the merge is an irreversible one-way door you're unsure about), move the ticket to **Require Input** with the decision + options and stop — a question left only in your final message is invisible on the board and will be missed (FLUX-570). This applies just as much when the ticket is already **Done/Ready/closed**: route the decision through `ask_user_question` (the status-independent picker), not chat prose, so it's caught even if the user isn't watching the live chat (FLUX-826).
 13. **Shared-PR finish guard (FLUX-569).** `finish_ticket` **refuses** to finish a member ticket whose branch is shared by **non-Done sibling tickets** — merging would advance them all to Done as a one-way door (the FLUX-556/PR#6 incident). When you hit this: either finish/close the siblings first, merge the whole branch via the **PR ticket's** Merge action, or — only if you genuinely intend to land the entire shared PR — re-run with `force: true`. Don't reflexively force; if it's a real decision, route it through Require Input (per #12). PR tickets (`kind:'pr'`) are exempt — merging one to advance its members is the sanctioned shared-merge surface.
 
 ## Branch Rules
@@ -108,3 +110,4 @@ Use MCP tools for all ticket interactions. Use Read for source code only.
 - Prefer comments that help the next agent continue without re-discovery.
 - **Substantial comments: add a faithful `summary`.** When `add_comment` / `log_progress` carries a long or verbose note, pass a `summary` — capture the decision, the why, and anything a future agent must act on. As concise as it can be WITHOUT losing substance; length scales with importance — do **not** force one line. Skip it for short, already-dense notes. Once the note ages past the recent window the agent digest shows the summary in place of the full text (the full text stays fetchable via `get_ticket` with `expand: ["<id>"]`). A too-short summary makes the next agent expand everything — err toward robust.
 - **Pin critical entries:** set `pin: true` on review handoffs and key decisions so they are NEVER collapsed in the digest.
+- **Supersede dead decisions:** when a comment reverses or replaces an earlier decision in *this* ticket (e.g. "abandoned approach A, going with B"), pass `supersedes: ["<id>"]` on `add_comment` / `log_progress` pointing at the now-dead entry — don't just append and leave the stale one to confuse the next session. The superseded entry then collapses to a one-line marker in the agent digest (still recoverable via `expand`), so a later agent reads the *live* decision, not the abandoned plan. Do **NOT** supersede a still-valid entry; superseding a `pin: true` or user-authored entry is **advisory-only** — the engine keeps it full (it will not bury human intent on an agent's say-so).

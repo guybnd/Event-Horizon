@@ -159,6 +159,28 @@ export function digestHistoryForAgent(
   }
 
   const expandSet = new Set(opts.expand ?? []);
+
+  // Temporal supersession (FLUX-811): map each entry id → the LATER entry that
+  // explicitly supersedes it (`supersedes: [ids]`). A supersession only counts
+  // when the superseder sits after its target in history — recency is the whole
+  // point. We keep the superseder's id (for the marker) and its author (for the
+  // authority guardrail). The latest superseder wins if several point at one id.
+  const positionById = new Map<string, number>();
+  material.forEach((entry, i) => {
+    if (entry && typeof entry === 'object' && typeof entry.id === 'string') positionById.set(entry.id, i);
+  });
+  const supersededBy = new Map<string, { by: string; byUser: unknown }>();
+  material.forEach((entry, i) => {
+    if (!entry || typeof entry !== 'object' || !Array.isArray(entry.supersedes)) return;
+    const supersederId = typeof entry.id === 'string' ? entry.id : '(superseded)';
+    for (const targetId of entry.supersedes) {
+      if (typeof targetId !== 'string') continue;
+      const targetPos = positionById.get(targetId);
+      if (targetPos == null || targetPos >= i) continue; // superseder must be later
+      supersededBy.set(targetId, { by: supersederId, byUser: entry.user });
+    }
+  });
+
   // Summary-gated collapse (FLUX-501/503): within the window, replace OLDER
   // entries that carry an agent-written `summary` AND an `id` (to expand by)
   // with just that summary + metadata + id. Kept FULL: the last `keepRecent`,
@@ -169,6 +191,32 @@ export function digestHistoryForAgent(
   let collapsedCount = 0;
   const collapsedHistory = windowed.map((entry, i) => {
     if (!entry || typeof entry !== 'object') return entry;
+
+    // Temporal supersession (FLUX-811) — checked BEFORE the recent-window: a dead
+    // decision should collapse even if it's recent, so the next session reads the
+    // live state, not the abandoned plan. Authority-before-recency guardrail (the
+    // paper's #1 finding): an AGENT's supersession must NEVER bury a pinned or
+    // user-authored target — keep it full with an advisory annotation instead.
+    // Same exemptions as the summary-collapse path below. Still recoverable via
+    // expand:[id] like any collapse.
+    const superseder = entry.id ? supersededBy.get(entry.id) : undefined;
+    if (superseder && !(entry.id && expandSet.has(entry.id))) {
+      const protectedTarget = !!entry.pin || !isAgentAuthor(entry.user);
+      if (protectedTarget && isAgentAuthor(superseder.byUser)) {
+        return { ...entry, supersededByAdvisory: superseder.by };       // advisory only → full
+      }
+      collapsedCount++;
+      return {
+        type: entry.type,
+        ...(entry.user ? { user: entry.user } : {}),
+        date: entry.date,
+        supersededBy: superseder.by,
+        ...(typeof entry.summary === 'string' && entry.summary.trim() ? { summary: entry.summary } : {}),
+        ...(entry.id ? { id: entry.id } : {}),
+        collapsed: true,
+      };
+    }
+
     if (i >= recentStart) return entry;                                  // recent → full
     if (entry.pin) return entry;                                          // pinned → full
     if (entry.id && expandSet.has(entry.id)) return entry;               // explicitly expanded → full
@@ -394,6 +442,18 @@ export function normalizeHistoryEntries(history: any[] = []) {
   let changed = false;
   const usedIds = new Set<string>();
 
+  // FLUX-811: the set of ids already present in the input — supersession links
+  // may only reference an EXISTING entry. Built from input ids (a freshly
+  // assigned id can't be a supersede target: nothing could have referenced it
+  // when the link was written), so this naturally drops dangling/forward-to-new
+  // and self references without a positional scan.
+  const existingIds = new Set<string>();
+  for (const entry of history) {
+    if (entry && typeof entry === 'object' && typeof entry.id === 'string' && entry.id.trim()) {
+      existingIds.add(entry.id.trim());
+    }
+  }
+
   const normalized = history.map((entry, index) => {
     if (!entry || typeof entry !== 'object') return entry;
 
@@ -422,6 +482,34 @@ export function normalizeHistoryEntries(history: any[] = []) {
         const seed = nextEntry.date || `${Date.now()}-${index + 1}`;
         nextEntry.id = buildCommentId(seed, usedIds, nextEntry.type === 'activity' ? 'a' : 'c');
         changed = true;
+      }
+
+      // FLUX-811: temporal supersession links. Coerce `supersedes` to a string[]
+      // of EXISTING entry ids — drop non-strings, self-references, and danglers
+      // so the digest never points at a missing target. Empty ⇒ field removed.
+      if ('supersedes' in nextEntry) {
+        const raw = Array.isArray(nextEntry.supersedes)
+          ? nextEntry.supersedes
+          : typeof nextEntry.supersedes === 'string'
+            ? [nextEntry.supersedes]
+            : [];
+        const cleaned = Array.from(
+          new Set(
+            raw
+              .filter((id: unknown): id is string => typeof id === 'string' && id.trim() !== '')
+              .map((id: string) => id.trim())
+              .filter((id: string) => id !== nextEntry.id && existingIds.has(id)),
+          ),
+        );
+        if (cleaned.length > 0) {
+          if (!valuesMatch(cleaned, nextEntry.supersedes)) {
+            nextEntry.supersedes = cleaned;
+            changed = true;
+          }
+        } else {
+          delete nextEntry.supersedes;
+          changed = true;
+        }
       }
     }
 

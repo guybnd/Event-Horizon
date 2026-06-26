@@ -2,7 +2,6 @@ import { useMemo } from 'react';
 import { User, Bot, GitCompare } from 'lucide-react';
 import { motion } from 'framer-motion';
 import type { Task } from '../../types';
-import { CardCommentBadge } from './CardCommentBadge';
 import { TokenBadge } from '../TokenBadge';
 import { CardChip, CARD_CHIP_BASE, CARD_CHIP_TEXT } from './CardChip';
 import { reporterInitials } from './reporterInitials';
@@ -150,7 +149,7 @@ export function CardFooterRow({ task, isOverlay, c }: { task: Task; isOverlay?: 
         )}
       </div>
 
-      {/* Meta row: cost · diffs · reporter · assignee · comments on one aligned, non-wrapping line. */}
+      {/* Meta row: cost · diffs · reporter · assignee on one aligned, non-wrapping line. */}
       <div className="flex min-w-0 items-center gap-2">
       <TokenBadge
         data={task.tokenMetadata}
@@ -227,14 +226,6 @@ export function CardFooterRow({ task, isOverlay, c }: { task: Task; isOverlay?: 
           </div>
         )}
       </div>
-
-      {/* Comment section — pushed to the far right of the footer (reporter + assignee sit to its
-          left). Relocated here from the card's top-right corner so chat can own that spot. */}
-      {!isOverlay && (
-        <div className="ml-auto flex items-center">
-          <CardCommentBadge task={task} c={c} inline />
-        </div>
-      )}
       </div>
     </div>
   );

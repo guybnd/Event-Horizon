@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, Square, Bot } from 'lucide-react';
 import type { CliSessionSummary, Config } from '../../types';
 import { FRAMEWORK_ICONS } from '../../constants';
 import { OrchestrationTopology } from '../OrchestrationTopology';
+import { OutputTail } from './OutputTail';
 import { TokenBadge } from '../TokenBadge';
 import {
   type SessionGroup,
@@ -87,9 +88,7 @@ function SessionRow({ session, config, busy, onStop }: {
         <p className="px-2.5 pb-1.5 pl-9 text-[11px] text-gray-500 dark:text-gray-400">{session.currentActivity}</p>
       )}
       {open && hasOutput && (
-        <pre className="mx-2.5 mb-2.5 max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded-lg bg-gray-900 p-2 text-[10px] leading-relaxed text-gray-200 dark:bg-black/60">
-          {session.liveOutput}
-        </pre>
+        <OutputTail text={session.liveOutput!} className="mx-2.5 mb-2.5" />
       )}
       {(session.inputTokens != null || session.outputTokens != null || session.costUSD != null) && (
         <div className="px-2.5 pb-2 pl-9">

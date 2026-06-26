@@ -3,6 +3,7 @@ import {
   getNotifications,
   getUnreadCount,
   markRead,
+  markUnread,
   markAllRead,
   dismissNotification,
   getNotificationById,
@@ -41,6 +42,12 @@ router.post('/check-health', async (req, res) => {
 
 router.post('/:id/read', (req, res) => {
   const success = markRead(req.params.id);
+  if (!success) return res.status(404).json({ error: 'Notification not found' });
+  res.json({ ok: true });
+});
+
+router.post('/:id/unread', (req, res) => {
+  const success = markUnread(req.params.id);
   if (!success) return res.status(404).json({ error: 'Notification not found' });
   res.json({ ok: true });
 });

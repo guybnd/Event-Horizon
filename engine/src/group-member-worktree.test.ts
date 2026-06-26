@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
@@ -12,6 +12,11 @@ import {
   buildGroupDocsScopeArg,
 } from './group-member-worktree.js';
 import { GROUP_DOCS_BRANCH, GROUP_STORE_DIRNAME } from './group.js';
+
+// Real git worktree ops are slow on Windows under parallel suite load — the default 5000ms
+// testTimeout intermittently overruns when the full engine suite runs concurrently (FLUX-749).
+// Raise it file-wide so these don't flake the `check` gate (mirrors group-integration.test.ts).
+vi.setConfig({ testTimeout: 30000, hookTimeout: 30000 });
 
 const execFileAsync = promisify(execFile);
 

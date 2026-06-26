@@ -36,7 +36,7 @@ This is your primary workspace configuration file. It is tracked in your reposit
 | `animationsEnabled` | `boolean` | Toggles micro-animations on the board interface. |
 | `docsRoot` | `string` | The directory relative to the workspace root where documentation is stored (default: `.docs`). |
 | `defaultAgent` | `string` | Which agent framework to use by default when launching sessions from the portal. Options: `claude`, `gemini`, `copilot`. |
-| `worktreeByDefault` | `boolean` | Default state of the per-launch "dedicated worktree" choice (default `false`). When on, creating a ticket branch also creates a git worktree so the agent runs isolated from `master` (FLUX-516). A per-launch `worktree` param on `create_branch` / `POST /:id/branch` overrides it. |
+| `worktreeByDefault` | `boolean` | Default state of the **portal/human** "dedicated worktree" choice on `POST /:id/branch` (default `false`). When on, the human "Start task" path also creates a git worktree so the agent runs isolated from `master` (FLUX-516). **Note (FLUX-741):** the **agent** `create_branch` MCP tool no longer reads this — agent branch sessions are worktree-isolated **by default** regardless of this setting (pass `worktree: false` to opt a single agent session out into the shared main tree). This flag now governs only the human-manual portal path. A per-launch `worktree` param overrides it on either path. |
 | `effortLevel` | `string` | Global effort level for agent sessions. Options: `low`, `medium`, `high`, `xhigh`, `max`. Can be overridden per-ticket or per-session. |
 | `permissions` | `object` | Default permission mode per session surface — the workspace "risk tolerance" (FLUX-605, see below). |
 | `integrations` | `object` | Per-framework agent configuration (see below). |

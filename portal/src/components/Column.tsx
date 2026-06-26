@@ -195,7 +195,7 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
     : null;
 
   return (
-    <div className="flex flex-col w-[320px] min-w-[280px] flex-1 max-w-[420px] rounded-2xl eh-column" style={{ backgroundImage: tintColumnWash(tint, 0.08) }}>
+    <div className="flex flex-col w-[320px] min-w-[280px] flex-1 max-w-[440px] xl:max-w-[520px] 2xl:max-w-[620px] min-[2560px]:max-w-[780px] rounded-2xl eh-column" style={{ backgroundImage: tintColumnWash(tint, 0.08) }}>
       <div className="px-4 pt-3 pb-1">
         {/* Title bar — one fixed-height row: status slot · centered title · count pill. Flow + hue
             live on the row below, and nothing here is conditional-height, so every column header is

@@ -36,6 +36,10 @@ export interface ChangedFile {
   status: ChangeStatus;
   /** Other group refs (branch name or 'main') that also touch this file (FLUX-529). */
   collidesWith?: string[];
+  /** Worktree groups only: true when this file is committed-ahead of the merge-base
+   *  (in `<mergeBase>..HEAD`), false/absent when it's purely loose/untracked (FLUX-582).
+   *  A file both committed-ahead AND further modified loose is `true`. */
+  committed?: boolean;
 }
 
 export interface DiffGroup {
@@ -165,6 +169,24 @@ async function changedFilesAgainst(runner: GitRunner, cwd: string, base: string)
   return [...byFile.values()].sort((a, b) => a.file.localeCompare(b.file));
 }
 
+/**
+ * The set of paths committed-ahead of `mergeBase` in `cwd` (i.e. present in
+ * `git diff --name-only <mergeBase>..HEAD`), normalized through `normalizeRenamePath`
+ * so they align with `changedFilesAgainst`'s file list. Best-effort: a failed git call
+ * yields an empty set, never throws (FLUX-582).
+ */
+async function committedAheadPaths(runner: GitRunner, cwd: string, mergeBase: string): Promise<Set<string>> {
+  const stdout = await runner(cwd, ['diff', '--name-only', `${mergeBase}..HEAD`])
+    .then((r) => r.stdout)
+    .catch(() => '');
+  const set = new Set<string>();
+  for (const raw of stdout.split('\n')) {
+    const file = normalizeRenamePath(raw.replace(/\r$/, '').trim());
+    if (file) set.add(file);
+  }
+  return set;
+}
+
 // ─── Collision radar (FLUX-529) ────────────────────────────────────────────────
 
 /** Group ref used in collisions: the branch for a worktree, or 'main' for the main tree. */
@@ -220,6 +242,13 @@ export async function buildDiffOverview(workspaceRoot: string, opts: DiffOvervie
     // matching the main group — not the branch's full divergence from master.
     const base = opts.uncommittedOnly ? 'HEAD' : await mergeBaseOrBranch(runner, wt.path, defaultBranch);
     const files = await changedFilesAgainst(runner, wt.path, base).catch(() => []);
+    // Default (full-divergence) mode: tag which files are committed-ahead of the merge-base
+    // so the portal can split committed vs loose (FLUX-582). One extra cheap name-only pass.
+    // Skipped in uncommittedOnly mode (every file there is loose by construction).
+    if (!opts.uncommittedOnly) {
+      const committedSet = await committedAheadPaths(runner, wt.path, base);
+      for (const f of files) if (committedSet.has(f.file)) f.committed = true;
+    }
     groups.push({ kind: 'worktree', path: wt.path, files, ...(wt.branch ? { branch: wt.branch } : {}) });
   }
 

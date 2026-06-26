@@ -2,6 +2,13 @@ import type { CliSessionSummary, CliSessionStatus, ExecutionPattern, GroupVarian
 
 export const ACTIVE_SESSION_STATUSES: CliSessionStatus[] = ['pending', 'running', 'waiting-input'];
 
+/** FLUX-803: normalized names of the MCP tools that spawn a subagent group. Mirrors the engine's
+ *  `DELEGATION_TOOLS` (projection.ts) — the projector tags these tool rows with `tool`, and the
+ *  chat keys off that to find the spawn point + render the inline orchestration block in its place.
+ *  Only the group-forming delegate tools belong here; `start_session` is excluded because it spawns
+ *  a standalone, ungrouped session that never resolves into a 2+ run group (see projection.ts). */
+export const DELEGATION_TOOLS = new Set(['delegate_parallel', 'delegate_to_agent']);
+
 export function isActiveSession(s: Pick<CliSessionSummary, 'status'>): boolean {
   return ACTIVE_SESSION_STATUSES.includes(s.status);
 }
@@ -184,6 +191,48 @@ export function groupAggregateLine(group: SessionGroup, agg: GroupAggregate): st
   // swarm
   const peersDone = group.sessions.filter(s => !isActiveSession(s)).length;
   return agg.done ? `All ${agg.total} agents done` : `${peersDone} of ${agg.total} agents done`;
+}
+
+/**
+ * FLUX-803: pick the orchestration run group to surface inside a ticket chat, or null when there's
+ * nothing to show. A run is "the chat lead delegated to ≥1 subagent": the group sharing the current
+ * chat session's groupId with **2+** sessions (lead + at least one delegate). A solo chat — even one
+ * stamped with a supervisor groupId but no delegates — yields null, so the rail/block never appear
+ * for the common single-session case (the `isMulti` flag is supervisor-true even when solo, so it is
+ * deliberately NOT used here). When the current chat session isn't itself a 2+ group lead, falls back
+ * to the newest 2+ group that is still LIVE — so a live run still resolves, but a stale completed run
+ * from a prior phase never surfaces as a surprise block on an unrelated later chat.
+ */
+export function selectChatRunGroup(
+  task: { cliSession?: CliSessionSummary | null; cliSessions?: CliSessionSummary[] },
+): SessionGroup | null {
+  const groups = groupSessions(task.cliSessions);
+  const gid = task.cliSession?.groupId;
+  const byLead = gid ? groups.find((g) => g.groupId === gid && g.sessions.length >= 2) : undefined;
+  if (byLead) return byLead;
+  return groups.find((g) => g.sessions.length >= 2 && g.sessions.some(isActiveSession)) ?? null;
+}
+
+/** Minimal shape of the FLUX-626 live-session slice this module reads (avoids a store import). */
+export interface LiveSessionActivity {
+  currentActivity?: string;
+  progressBySession?: Record<string, Array<{ message: string }>>;
+}
+
+/**
+ * FLUX-803: freshest activity verb for a session, preferring the real-time FLUX-626 live slice over
+ * the poll-cadence `currentActivity` on the summary. Delegates stream their progress keyed by their
+ * own session id (`progressBySession[id]`); the chat lead's coarse verb arrives on the slice's
+ * top-level `currentActivity` (keyed by task id). Returns undefined when nothing is known yet.
+ */
+export function liveActivityFor(
+  session: CliSessionSummary,
+  isLead: boolean,
+  live: LiveSessionActivity | undefined,
+): string | undefined {
+  const prog = live?.progressBySession?.[session.id];
+  const lastProg = prog && prog.length > 0 ? prog[prog.length - 1]!.message : undefined;
+  return lastProg ?? (isLead ? live?.currentActivity : undefined) ?? session.currentActivity;
 }
 
 /** Tailwind text-color class for a session status dot. */

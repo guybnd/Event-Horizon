@@ -5,7 +5,7 @@ import os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { setWorkspaceRoot } from './workspace.js';
-import { deleteTicketBranch } from './branch-manager.js';
+import { deleteTicketBranch, planFinishPr, type PrStatus } from './branch-manager.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -102,5 +102,92 @@ describe('deleteTicketBranch', () => {
     await expect(deleteTicketBranch(BRANCH, false)).rejects.toThrow();
     // The refused `-d` leaves the local branch intact (no data loss).
     expect(await localBranchExists(BRANCH)).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FLUX-741 — planFinishPr: finish must never merge onto a DEAD (MERGED/CLOSED) PR.
+// Incident FLUX-656: a commit pushed after a PR merged hit `gh pr merge` on the dead PR,
+// which throws "already merged" and strands the commit. planFinishPr opens a fresh PR for
+// any non-OPEN (or absent) PR, and routes a 0-commits-ahead branch to Require Input instead.
+// Pure: deps are injected, so no gh/git is exercised here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function prStatus(state: string): PrStatus {
+  return {
+    number: 7,
+    state,
+    url: `https://example.test/pr/7`,
+    title: 'old',
+    reviewDecision: null,
+    mergeable: 'MERGEABLE',
+    checks: { total: 0, passed: 0, failed: 0, pending: 0 },
+  };
+}
+
+describe('planFinishPr (FLUX-741 / FLUX-656)', () => {
+  const ahead = async () => ({ exists: true, aheadCount: 2, behindCount: 0 });
+  const noneAhead = async () => ({ exists: true, aheadCount: 0, behindCount: 0 });
+
+  it('reuses an OPEN PR (no fresh PR opened)', async () => {
+    let created = false;
+    const plan = await planFinishPr('flux/x', 'T', 'B', {
+      getStatus: async () => prStatus('OPEN'),
+      getBranchStatus: ahead,
+      createPr: async () => { created = true; return 'new'; },
+    });
+    expect(plan.action).toBe('reuse');
+    expect(plan.url).toBe('https://example.test/pr/7');
+    expect(created).toBe(false);
+  });
+
+  it('opens a FRESH PR when the prior PR is MERGED (the FLUX-656 dead-PR case)', async () => {
+    const plan = await planFinishPr('flux/x', 'T', 'B', {
+      getStatus: async () => prStatus('MERGED'),
+      getBranchStatus: ahead,
+      createPr: async (b, t) => `https://example.test/pr/new?${b}-${t}`,
+    });
+    expect(plan.action).toBe('created');
+    expect(plan.url).toContain('pr/new');
+  });
+
+  it('opens a FRESH PR when the prior PR is CLOSED', async () => {
+    const plan = await planFinishPr('flux/x', 'T', 'B', {
+      getStatus: async () => prStatus('CLOSED'),
+      getBranchStatus: ahead,
+      createPr: async () => 'https://example.test/pr/new',
+    });
+    expect(plan.action).toBe('created');
+  });
+
+  it('opens a FRESH PR when there is no PR at all but the branch has commits', async () => {
+    const plan = await planFinishPr('flux/x', 'T', 'B', {
+      getStatus: async () => null,
+      getBranchStatus: ahead,
+      createPr: async () => 'https://example.test/pr/new',
+    });
+    expect(plan.action).toBe('created');
+  });
+
+  it('blocks (→ Require Input) a MERGED PR whose branch has no new commits ahead', async () => {
+    let created = false;
+    const plan = await planFinishPr('flux/x', 'T', 'B', {
+      getStatus: async () => prStatus('MERGED'),
+      getBranchStatus: noneAhead,
+      createPr: async () => { created = true; return 'new'; },
+    });
+    expect(plan.action).toBe('blocked');
+    expect(plan.reason).toMatch(/MERGED/);
+    expect(created).toBe(false); // never opens an empty PR
+  });
+
+  it('blocks when there is no PR and no commits yet', async () => {
+    const plan = await planFinishPr('flux/x', 'T', 'B', {
+      getStatus: async () => null,
+      getBranchStatus: noneAhead,
+      createPr: async () => 'new',
+    });
+    expect(plan.action).toBe('blocked');
+    expect(plan.reason).toMatch(/no commits/i);
   });
 });

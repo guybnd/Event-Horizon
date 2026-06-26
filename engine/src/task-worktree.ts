@@ -382,6 +382,40 @@ async function dropStashBySha(runner: GitRunner, workspaceRoot: string, sha: str
   }
 }
 
+export interface StashGuardResult {
+  /** True when the tree was dirty and its changes were stashed before the caller proceeded. */
+  stashed: boolean;
+  /** The stash commit SHA when changes were stashed — surface it so work stays recoverable. */
+  stashRef?: string;
+}
+
+/**
+ * Dirty-tree backstop for engine-driven destructive git ops that MUST proceed on a tree the
+ * engine owns — chiefly the post-merge cleanup that switches/resets the MAIN tree off a merged
+ * branch (FLUX-741, incident FLUX-734). Worktree paths are already guarded
+ * ({@link removeTaskWorktree}/{@link detachTaskWorktree}); this protects the root/main tree,
+ * whose switch/`merge --ff-only` would otherwise silently discard uncommitted work.
+ *
+ * If `treeDir` has uncommitted or untracked changes, stash them (incl. untracked) and capture
+ * the stash SHA so nothing is lost — the work stays recoverable via `git stash apply <sha>`.
+ * Reuses {@link detachTaskWorktree}'s stash pattern but does NOT apply onto master (the caller
+ * is about to switch the tree, not abandon a worktree). Clean tree → no-op `{ stashed: false }`.
+ */
+export async function stashDirtyTree(
+  treeDir: string,
+  opts: { reason?: string; gitRunner?: GitRunner } = {},
+): Promise<StashGuardResult> {
+  const runner = opts.gitRunner ?? defaultGitRunner;
+  const { stdout: status } = await runner(treeDir, ['status', '--porcelain']).catch(() => ({ stdout: '' }));
+  if (status.trim().length === 0) return { stashed: false };
+
+  const label = opts.reason ?? 'EH auto-stash (dirty-tree backstop)';
+  await runner(treeDir, ['stash', 'push', '--include-untracked', '-m', label]);
+  const { stdout: shaOut } = await runner(treeDir, ['rev-parse', 'stash@{0}']).catch(() => ({ stdout: '' }));
+  const stashRef = shaOut.trim() || undefined;
+  return stashRef ? { stashed: true, stashRef } : { stashed: true };
+}
+
 /**
  * Prune git's records of task worktrees whose directories were removed out of
  * band (manual delete, crash). Safe to call on engine startup.

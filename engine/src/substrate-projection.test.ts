@@ -155,6 +155,41 @@ describe('substrate vs projection (FLUX-658)', () => {
     ]);
   });
 
+  it('projectTranscript renders a phase-launch action as a quiet action note row (FLUX-794)', () => {
+    const stream = 'ACT';
+    const raws = [
+      // FLUX-794: the pressed non-chat phase action lands as a durable `action` event. It projects
+      // to a non-bubble `note` row tagged `action` so the popped-in chat shows which button started
+      // the session, in order before the agent's first response. With a focus, the label carries it.
+      { type: 'action', phase: 'implementation', focus: 'land the engine seam', timestamp: 'T1' },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'on it' }] } },
+      // No focus → bare label. Unknown phase → generic fallback label.
+      { type: 'action', phase: 'review', timestamp: 'T2' },
+      { type: 'action', phase: 'mystery', timestamp: 'T3' },
+      // FLUX-798: a delegated/supervisor launch carries the multi-line `rosterContext` markdown
+      // boilerplate as its focus. The chip must show a clean single line (first non-empty line,
+      // leading markdown stripped), not a raw markdown dump.
+      {
+        type: 'action',
+        phase: 'implementation',
+        focus: '## Dynamic Delegation\n\nUse `list_available_agents` to discover specialists, then delegate as needed.',
+        timestamp: 'T4',
+      },
+      // A chat user turn is unaffected — it still renders as a user bubble (no double-marker).
+      { type: 'user', text: 'hello', timestamp: 'T5' },
+    ];
+    const turns: Turn[] = raws.map((raw, seq) => ({ turnId: `${stream}:${seq}`, streamId: stream, seq, ts: 'TENV', role: 'unknown', raw }));
+
+    expect(projectTranscript(turns)).toEqual([
+      { role: 'note', kind: 'action', text: 'Implementation session started — land the engine seam', ts: 'T1' },
+      { role: 'assistant', text: 'on it', ts: 'TENV' },
+      { role: 'note', kind: 'action', text: 'Review session started', ts: 'T2' },
+      { role: 'note', kind: 'action', text: 'Session started', ts: 'T3' },
+      { role: 'note', kind: 'action', text: 'Implementation session started — Dynamic Delegation', ts: 'T4' },
+      { role: 'user', text: 'hello', ts: 'T5' },
+    ]);
+  });
+
   it('projectTranscript carries pasted-image attachments onto the user turn (FLUX-674)', () => {
     const stream = 'IMG';
     const raws = [

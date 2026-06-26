@@ -4,13 +4,24 @@
     {
       "id": "in-app-chat",
       "icon": "MessageSquare",
-      "title": "Each ticket an AI chat-box",
-      "desc": "Chat with your agent right in the dock, with the active ticket’s context attached.",
+      "title": "Each ticket an AI chat",
+      "desc": "Chat with your agent right in the dock, with the active ticket’s context attached. Never lose track of your progress. ",
       "image": {
         "src": "/onboarding-assets/each-ticket-chat.mp4",
         "alt": "Opening a ticket’s chat with its context already attached"
       },
       "details": "Every ticket carries its own chat. Open it and the agent already has the ticket’s full context — description, history, branch and attachments — so you never re-explain. Minimise it to the dock and it keeps running in the background while you work elsewhere."
+    },
+    {
+      "id": "isolated-worktrees",
+      "icon": "GitBranch",
+      "title": "Isolated Agent runs",
+      "desc": "Run each ticket in its own git branched worktree - parallel work has never been easier.",
+      "image": {
+        "src": "/onboarding-assets/isolated-agent-runs.mp4",
+        "alt": "Running a ticket in its own isolated worktree branch"
+      },
+      "details": "Each ticket runs in its own git worktree on its own branch, so two agents can work different tickets at the same time with zero file collisions. Commit before Ready and Event Horizon opens the PR for you."
     },
     {
       "id": "multi-agent",
@@ -34,41 +45,33 @@
       "details": "Use various orchestration types, and add Agent personas that are tailor made to your product or workflows."
     },
     {
-      "id": "isolated-worktrees",
-      "icon": "GitBranch",
-      "title": "Isolated Agent runs",
-      "desc": "Run each ticket in its own git branched worktree - parallel work has never been easier.",
-      "image": {
-        "src": "/onboarding-assets/isolated-agent-runs.mp4",
-        "alt": "Running a ticket in its own isolated worktree branch"
-      },
-      "details": "Each ticket runs in its own git worktree on its own branch, so two agents can work different tickets at the same time with zero file collisions. Commit before Ready and Event Horizon opens the PR for you."
-    },
-    {
       "id": "prs-workflows",
       "icon": "GitPullRequest",
       "title": "Inline PRs",
       "desc": "Finish a ticket and Event Horizon opens a PR for you; review it, then lets you merge straight to Done.",
-      "details": "Move a ticket to Ready and its branch is pushed and a pull request opened automatically. Review the diff on GitHub, then ‘finish’ squash-merges it and advances the ticket to Done — no terminal, no manual git dance.",
       "image": {
         "src": "/onboarding-assets/feature-prs-workflows.mp4"
-      }
+      },
+      "details": "Move a ticket to Ready and its branch is pushed and a pull request opened automatically. Review the diff on GitHub, then ‘finish’ squash-merges it and advances the ticket to Done — no terminal, no manual git dance."
     },
     {
       "id": "docs-shared-workspace",
       "icon": "BookOpen",
       "title": "Docs & shared workspace",
       "desc": "Built-in markdown docs, plus group docs shared across every repo in a multi-repo group.",
-      "details": "Project docs live as plain markdown in your repo and render right in the portal. Link several repos into a group and a shared knowledge base fans out to every member, so cross-repo work has one source of truth.",
       "image": {
         "src": "/onboarding-assets/feature-docs-shared-workspace.mp4"
-      }
+      },
+      "details": "Project docs live as plain markdown in your repo and render right in the portal. Link several repos into a group and a shared knowledge base fans out to every member, so cross-repo work has one source of truth."
     },
     {
       "id": "multi-repo-groups",
       "icon": "Layers",
       "title": "Multi-repo groups",
       "desc": "Link several repos into one product and map features across them.",
+      "image": {
+        "src": "/onboarding-assets/feature-multi-repo-groups.png"
+      },
       "details": "Bind several repositories into a single product. Map how a feature crosses repo boundaries, share docs and context across all of them, and orchestrate work spanning the whole group from one board."
     },
     {
@@ -76,6 +79,9 @@
       "icon": "Tag",
       "title": "Version Control, Release Notes",
       "desc": "Release new versions, create changelogs and more straight from the board.",
+      "image": {
+        "src": "/onboarding-assets/feature-feature-6.png"
+      },
       "details": "Cut releases straight from the board: gather what shipped, auto-generate a changelog from your Done tickets, and tag a version — your release history without ever leaving Event Horizon."
     },
     {
@@ -83,6 +89,9 @@
       "icon": "WandSparkles",
       "title": "Board Orchestrator",
       "desc": "Talk to the orchestrator about your project and board, coordinating the nitty gritty from a centralized location.",
+      "image": {
+        "src": "/onboarding-assets/feature-feature-7.png"
+      },
       "details": "Talk to the orchestrator about your whole project — it triages the board, breaks big asks into tickets, dispatches the right agents, and keeps the nitty-gritty coordinated from one place."
     },
     {

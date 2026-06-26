@@ -1,16 +1,19 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Send, ExternalLink } from 'lucide-react';
 import { useChatSession } from '../../hooks/useChatSession';
 import { ChatView } from './ChatView';
 import { ChatDiffPanel } from './ChatDiffPanel';
+import { ChatPresenceRail, ChatOrchestrationBlock } from './ChatOrchestration';
 import { TicketContextCard, SessionMeter } from './chatContext';
 import { parseQuickReplies } from './chatQuickReplies';
 import { ChatRequireInputBanner } from './ChatRequireInputBanner';
 import { TicketActions } from '../ticket-actions/TicketActions';
 import { ChatPendingInteractions } from '../pendingInteractions';
 import { useDockActions } from '../DockProvider';
-import { useAppSelector, useConfig } from '../../store/useAppSelector';
+import { useAppActions, useAppSelector, useConfig } from '../../store/useAppSelector';
 import { getRequireInputStatus } from '../../workflow';
+import { selectChatRunGroup, isActiveSession } from '../../orchestration';
+import { stopTaskCliSession } from '../../api';
 import type { Task } from '../../types';
 
 /**
@@ -27,7 +30,18 @@ export function ChatPane({ task }: { task: Task }) {
   // the turn-completion edge.
   const chat = useChatSession(task.id, open, task.cliSession?.status === 'running');
   const { openChat } = useDockActions();
+  const { openTaskFullView } = useAppActions();
   const config = useConfig();
+
+  // FLUX-803: the live subagent run group for this chat (lead + ≥1 delegate sharing a groupId).
+  // Null for an ordinary single-session chat, so both orchestration surfaces stay absent.
+  const runGroup = useMemo(() => selectChatRunGroup(task), [task]);
+  const runActive = !!runGroup && runGroup.sessions.some(isActiveSession);
+  const openRun = useCallback(() => openTaskFullView(task), [openTaskFullView, task]);
+  const stopOne = useCallback((sessionId: string) => { void stopTaskCliSession(task.id, { sessionId }); }, [task.id]);
+  const stopAll = useCallback(() => {
+    if (runGroup) void stopTaskCliSession(task.id, { groupId: runGroup.groupId });
+  }, [task.id, runGroup]);
   // FLUX-694: board task list backing the composer's ticket autocomplete.
   const tickets = useAppSelector((s) => s.tasks) as Task[];
   const quickReplies = useMemo(
@@ -93,6 +107,12 @@ export function ChatPane({ task }: { task: Task }) {
         diffBranch={task.branch}
         tickets={tickets}
         meter={<SessionMeter session={task.cliSession} config={config} />}
+        presenceRail={runActive ? (
+          <ChatPresenceRail group={runGroup!} taskId={task.id} onOpenRun={openRun} onStopSession={stopOne} />
+        ) : undefined}
+        orchestrationBlock={runGroup ? (
+          <ChatOrchestrationBlock group={runGroup} taskId={task.id} onOpenRun={openRun} onStopSession={stopOne} onStopAll={stopAll} />
+        ) : undefined}
       />
     </div>
   );

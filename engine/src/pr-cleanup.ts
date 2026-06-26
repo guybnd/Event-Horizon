@@ -1,6 +1,6 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { findWorktreeForBranch, removeTaskWorktree, detachTaskWorktree } from './task-worktree.js';
+import { findWorktreeForBranch, removeTaskWorktree, detachTaskWorktree, stashDirtyTree } from './task-worktree.js';
 import { getDefaultBranch, deleteTicketBranch, getPullRequestStatus } from './branch-manager.js';
 import { addNotification } from './notifications.js';
 import { stopAllSessionsForTask } from './session-store.js';
@@ -14,6 +14,31 @@ const DONE_STATUS = 'Done';
 
 function git(workspaceRoot: string, args: string[]) {
   return execFileAsync('git', ['-C', workspaceRoot, ...args], { windowsHide: true });
+}
+
+/**
+ * Dirty-root backstop (FLUX-741, incident FLUX-734): before the engine switches/resets the MAIN
+ * tree off a merged branch (post-merge cleanup MUST proceed), stash any uncommitted work so the
+ * switch can't silently discard it, and surface the recoverable stash ref so the work isn't merely
+ * "safe but invisible". Best-effort: never throws — a notification failure must not abort cleanup.
+ */
+async function backstopDirtyRoot(workspaceRoot: string, branch: string, reason: string): Promise<void> {
+  try {
+    const guard = await stashDirtyTree(workspaceRoot, { reason: `EH ${reason} ${branch}` });
+    if (!guard.stashed) return;
+    const refHint = guard.stashRef ? guard.stashRef.slice(0, 10) : 'stash@{0}';
+    addNotification({
+      type: 'info',
+      title: 'Uncommitted root changes stashed',
+      message:
+        `The main checkout had uncommitted changes when cleaning up \`${branch}\`. ` +
+        `They were stashed (not lost) before the engine switched the tree — recover with ` +
+        `\`git stash apply ${guard.stashRef ?? 'stash@{0}'}\` (or see \`git stash list\` for \`${refHint}\`).`,
+      actions: [{ label: 'Dismiss', actionId: 'dismiss' }],
+    });
+  } catch {
+    /* best-effort — durability is the stash; the notification is a courtesy */
+  }
 }
 
 /**
@@ -67,6 +92,10 @@ export async function syncDefaultBranch(workspaceRoot: string): Promise<boolean>
     await git(workspaceRoot, ['fetch', 'origin']);
     const { stdout: cur } = await git(workspaceRoot, ['rev-parse', '--abbrev-ref', 'HEAD']);
     if (cur.trim() === def) {
+      // The ff-merge updates working-tree files; a fast-forward that touches a locally-modified
+      // file would abort (or, worse, the surrounding cleanup would later clobber it). Stash any
+      // dirty root work first so nothing is lost (FLUX-741) before fast-forwarding in place.
+      await backstopDirtyRoot(workspaceRoot, def, 'pre-sync');
       await git(workspaceRoot, ['merge', '--ff-only', `origin/${def}`]);
     } else {
       await git(workspaceRoot, ['fetch', 'origin', `${def}:${def}`]);
@@ -185,6 +214,10 @@ export async function cleanupMergedBranch(workspaceRoot: string, branch: string,
     const { stdout: cur } = await git(workspaceRoot, ['rev-parse', '--abbrev-ref', 'HEAD']);
     if (cur.trim() === branch) {
       const def = await getDefaultBranch();
+      // Dirty-root backstop (FLUX-741, FLUX-734): the main tree is on the merged branch and is
+      // about to be switched off it — `git checkout <def>` would silently discard uncommitted
+      // root edits (the FLUX-739 loss). Stash them first (recoverable) and surface the ref.
+      await backstopDirtyRoot(workspaceRoot, branch, 'pre-cleanup');
       await git(workspaceRoot, ['checkout', def]);
       await git(workspaceRoot, ['merge', '--ff-only', `origin/${def}`]).catch(() => {});
     }

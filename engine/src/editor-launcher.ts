@@ -11,6 +11,15 @@ const execFileAsync = promisify(execFile);
  * VS Code-specific by design (the `code` CLI); other editors aren't auto-opened.
  */
 
+// FLUX-789: the spawns below use { shell: true } (the `code` CLI is a .cmd shim on Windows that
+// Node won't spawn without a shell). That makes any path with shell metacharacters an injection
+// sink — so we refuse to spawn one. Rejects &, |, ;, backtick, $, <, >, ^, quotes, and newlines;
+// legit path characters (drive letters, backslashes, spaces, parentheses) are allowed.
+const SHELL_METACHAR = /[&|;`$<>^"'\r\n]/;
+export function isShellSafePath(p: string): boolean {
+  return typeof p === 'string' && p.length > 0 && !SHELL_METACHAR.test(p);
+}
+
 /** True when the VS Code CLI (`code`) is resolvable on PATH. */
 export async function isEditorAvailable(): Promise<boolean> {
   const probe = process.platform === 'win32' ? 'where' : 'which';
@@ -28,6 +37,10 @@ export async function isEditorAvailable(): Promise<boolean> {
  * {@link isEditorAvailable} first to report whether it actually launched.
  */
 export function openEditorWindow(dir: string): void {
+  if (!isShellSafePath(dir)) {
+    console.error('[editor-launcher] refusing to open a path with shell metacharacters:', dir);
+    return;
+  }
   // `code` is a .cmd shim on Windows → needs a shell to resolve.
   const cmd = process.platform === 'win32' ? 'code.cmd' : 'code';
   const child = spawn(cmd, ['--new-window', dir], {
@@ -45,6 +58,10 @@ export function openEditorWindow(dir: string): void {
  * when one is open. Fire-and-forget; check {@link isEditorAvailable} first.
  */
 export function openEditorFile(filePath: string): void {
+  if (!isShellSafePath(filePath)) {
+    console.error('[editor-launcher] refusing to open a path with shell metacharacters:', filePath);
+    return;
+  }
   const cmd = process.platform === 'win32' ? 'code.cmd' : 'code';
   const child = spawn(cmd, ['-g', filePath], {
     shell: true,

@@ -367,11 +367,32 @@ async function installMcpConfig(targetDir: string, sourceRoot: string, framework
   const configPath = mcpConfigPathFor(targetDir, framework);
   const serverEntry = buildMcpServerEntry();
 
+  // Read and parse SEPARATELY. A single empty catch here used to swallow a
+  // JSON.parse failure too, leaving existing={} so the unconditional write below
+  // replaced the user's entire .mcp.json with just our entry — silently deleting
+  // every other MCP server they configured (FLUX-782). Now: ENOENT → fresh {};
+  // a malformed/unreadable EXISTING file → leave it untouched and skip our entry.
   let existing: any = {};
   try {
     const raw = await fs.readFile(configPath, 'utf-8');
-    existing = JSON.parse(raw);
-  } catch {}
+    try {
+      existing = JSON.parse(raw);
+    } catch (parseErr: any) {
+      console.error(`[installer] ${configPath} is not valid JSON (${parseErr?.message || parseErr}); leaving it UNTOUCHED and skipping the event-horizon MCP entry. Fix the JSON and restart to register it.`);
+      return;
+    }
+  } catch (readErr: any) {
+    if (readErr?.code !== 'ENOENT') {
+      console.error(`[installer] Could not read ${configPath} (${readErr?.message || readErr}); leaving it untouched and skipping the event-horizon MCP entry.`);
+      return;
+    }
+    // ENOENT: no file yet — start from an empty config (legitimate fresh install).
+  }
+  // A parsed-but-non-object value (e.g. "[]" / "null") would lose data on the spread/write below.
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+    console.error(`[installer] ${configPath} did not contain a JSON object; leaving it untouched and skipping the event-horizon MCP entry.`);
+    return;
+  }
   existing.mcpServers = existing.mcpServers || {};
   existing.mcpServers['event-horizon'] = serverEntry;
 

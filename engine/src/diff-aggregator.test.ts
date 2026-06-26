@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
@@ -6,6 +6,11 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { createTaskWorktree, listTaskWorktrees } from './task-worktree.js';
 import { buildDiffOverview, diffFileContent, diffFilesForBranch, changedFilesMasterSideOfBranch, computeCollisions, type DiffGroup } from './diff-aggregator.js';
+
+// Real git worktree ops are slow on Windows under parallel suite load — the default 5000ms
+// testTimeout intermittently overruns when the full engine suite runs concurrently (FLUX-749).
+// Raise it file-wide so these don't flake the `check` gate (mirrors group-integration.test.ts).
+vi.setConfig({ testTimeout: 30000, hookTimeout: 30000 });
 
 const execFileAsync = promisify(execFile);
 const git = (cwd: string, args: string[]) => execFileAsync('git', args, { cwd, windowsHide: true });
@@ -60,6 +65,23 @@ describe('diff-aggregator', () => {
     expect(byFile['committed.txt']).toBe('added');
     expect(byFile['README.md']).toBe('modified');
     expect(byFile['untracked.txt']).toBe('untracked');
+  });
+
+  it('flags committed-ahead files with committed:true and leaves loose files falsy (FLUX-582)', async () => {
+    const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1-c', { linkDependencies: false });
+    // committed-ahead on the branch
+    await fs.writeFile(path.join(wt, 'committed.txt'), 'a\n', 'utf8');
+    await git(wt, ['add', 'committed.txt']);
+    await git(wt, ['commit', '-m', 'add committed']);
+    // a purely-loose untracked file (never committed)
+    await fs.writeFile(path.join(wt, 'loose.txt'), 'u\n', 'utf8');
+
+    const { groups } = await buildDiffOverview(repo);
+    const g = groups.find((x) => x.kind === 'worktree' && x.branch === 'flux/FLUX-1-c');
+    expect(g).toBeTruthy();
+    const byFile = Object.fromEntries(g!.files.map((f) => [f.file, f]));
+    expect(byFile['committed.txt']!.committed).toBe(true);
+    expect(byFile['loose.txt']!.committed).toBeFalsy();
   });
 
   it('reports the main tree’s uncommitted + untracked changes in a main group', async () => {

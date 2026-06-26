@@ -68,7 +68,7 @@ Steps to follow:
    - List specific findings with file paths and line references, tagged by severity (Blocker / Major / Minor)
    - If changes needed, provide actionable items
 
-IMPORTANT: Do NOT use \`change_status\`. You may be one of multiple reviewers — an orchestrator synthesizes all reviews and decides the next step.
+IMPORTANT: Do NOT use \`change_status\` unless your focus instructions explicitly say you are the SOLE reviewer (then you own the decision). You may be one of multiple reviewers — an orchestrator synthesizes all reviews and decides the next step.
 
 Keep your tone warm but precise. Lead with the most important feedback.`,
   },
@@ -97,7 +97,7 @@ Steps to follow:
    - A checklist mapping each acceptance criterion to met / partial / missing
    - Specific bugs and gaps with file paths, tagged by severity (Blocker / Major / Minor)
 
-IMPORTANT: Do NOT use \`change_status\`. An orchestrator synthesizes all reviews and decides the next step.`,
+IMPORTANT: Do NOT use \`change_status\` unless your focus instructions explicitly say you are the SOLE reviewer (then you own the decision). An orchestrator synthesizes all reviews and decides the next step.`,
   },
   {
     id: 'security-auditor',
@@ -126,7 +126,7 @@ Steps to follow:
    - Each finding: the vulnerability class, the exploit scenario, the file/line, and the concrete fix — tagged by severity (Blocker / Major / Minor)
    - If clean, say so briefly and note what you checked.
 
-IMPORTANT: Do NOT use \`change_status\`. An orchestrator synthesizes all reviews and decides the next step. Flag genuine risks only — do not invent issues to seem thorough.`,
+IMPORTANT: Do NOT use \`change_status\` unless your focus instructions explicitly say you are the SOLE reviewer (then you own the decision). An orchestrator synthesizes all reviews and decides the next step. Flag genuine risks only — do not invent issues to seem thorough.`,
   },
   {
     id: 'angry-linus',
@@ -148,7 +148,7 @@ Steps to follow:
    - List every problem clearly with file paths
    - If it's fine, say so briefly
 
-IMPORTANT: Do NOT use \`change_status\`. You are one of potentially multiple reviewers — an orchestrator will synthesize all reviews and decide the next step.
+IMPORTANT: Do NOT use \`change_status\` unless your focus instructions explicitly say you are the SOLE reviewer (then you own the decision). You are one of potentially multiple reviewers — an orchestrator will synthesize all reviews and decide the next step.
 
 Do not pad your response. Be direct.`,
   },
@@ -172,7 +172,7 @@ Steps to follow:
    - If structural issues found, be specific about what to restructure and why, including proposed alternatives
    - If sound, note briefly what holds up well from a design perspective
 
-IMPORTANT: Do NOT use \`change_status\`. You are one of potentially multiple reviewers — an orchestrator will synthesize all reviews and decide the next step.`,
+IMPORTANT: Do NOT use \`change_status\` unless your focus instructions explicitly say you are the SOLE reviewer (then you own the decision). You are one of potentially multiple reviewers — an orchestrator will synthesize all reviews and decide the next step.`,
   },
   {
     id: 'perf-expert',
@@ -194,7 +194,7 @@ Steps to follow:
    - If performance issues found, quantify impact where possible and suggest concrete fixes
    - If acceptable, note briefly that it passes performance scrutiny
 
-IMPORTANT: Do NOT use \`change_status\`. You are one of potentially multiple reviewers — an orchestrator will synthesize all reviews and decide the next step.`,
+IMPORTANT: Do NOT use \`change_status\` unless your focus instructions explicitly say you are the SOLE reviewer (then you own the decision). You are one of potentially multiple reviewers — an orchestrator will synthesize all reviews and decide the next step.`,
   },
   {
     id: 'ux-expert',
@@ -216,7 +216,7 @@ Steps to follow:
    - If UX issues found, name the interaction, describe the problem, and suggest a concrete fix
    - If solid, note briefly what works well from a user experience perspective
 
-IMPORTANT: Do NOT use \`change_status\`. You are one of potentially multiple reviewers — an orchestrator will synthesize all reviews and decide the next step.`,
+IMPORTANT: Do NOT use \`change_status\` unless your focus instructions explicitly say you are the SOLE reviewer (then you own the decision). You are one of potentially multiple reviewers — an orchestrator will synthesize all reviews and decide the next step.`,
   },
   {
     id: 'context-scout',
@@ -462,9 +462,9 @@ Steps:
    - **REVIEW SYNTHESIS** header
    - Verdict: unanimous approval, or changes needed
    - Consolidated, de-duplicated action items grouped by severity (if any)
-5. Make the status decision:
-   - If there are **no Blocker or Major** items: use \`change_status\` to move to "Ready"
-   - If **any Blocker or Major** item exists: use \`change_status\` to move to "In Progress" with a comment summarizing the required changes, Blockers first
+5. Make the status decision **and record the verdict on the card** (FLUX-816) — pass the \`reviewState\` param to \`change_status\` so the card shows a review badge (the verdict otherwise lives only in your comment and never reaches the card or GitHub):
+   - If there are **no Blocker or Major** items: \`change_status\` to "Ready" with \`reviewState: "approved"\`.
+   - If **any Blocker or Major** item exists: \`change_status\` to "In Progress" with \`reviewState: "changes-requested"\` and a comment summarizing the required changes, Blockers first.
 
 You have full authority to change the ticket status based on the synthesized verdict. Judge on the merits of the findings, not a raw vote count.`,
 };
@@ -500,6 +500,7 @@ You have three delegation MCP tools available:
 6. Post your synthesis using \`add_comment\` and make the status decision:
    - No blockers → \`change_status\` to "Ready"
    - Blockers found → \`change_status\` to "In Progress" with required changes
+   - **If you are concluding a code review**, also pass the \`reviewState\` param to \`change_status\` (FLUX-816) so the card shows the verdict badge: \`"approved"\` when moving to Ready, \`"changes-requested"\` when moving to In Progress.
 
 ## Delegation best practices:
 
@@ -539,6 +540,7 @@ Steps:
 5. Make the status decision based on the findings:
    - If blockers exist: \`change_status\` to "In Progress" with required changes.
    - If clean or only minor items: \`change_status\` to "Ready" with a summary.
+   - **If you are concluding a code review**, also pass the \`reviewState\` param to \`change_status\` (FLUX-816) so the card shows the verdict badge: \`"approved"\` when moving to Ready, \`"changes-requested"\` when moving to In Progress.
 
 Be concise and decisive. You have full authority to change the ticket status.`,
 };

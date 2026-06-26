@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Sparkles, MessageSquare, Minus, X, History, Square, RotateCcw, GitBranch, FolderGit2, GitPullRequest, ListChecks, Loader2, MessageCircleQuestion, PanelRight, PanelRightClose, Maximize2, Tag, Link2, Gauge, Save, ChevronDown, Check } from 'lucide-react';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
+import { Sparkles, MessageSquare, Minus, X, History, Square, RotateCcw, GitBranch, FolderGit2, GitPullRequest, ListChecks, Loader2, MessageCircleQuestion, PanelRight, PanelRightClose, Maximize2, Tag, Link2, Gauge, Save, ChevronDown, Check, Inbox, CircleHelp, TriangleAlert, Circle } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
@@ -8,6 +9,8 @@ import { CSS } from '@dnd-kit/utilities';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { useChatSession } from '../hooks/useChatSession';
 import { ChatView } from './task-modal/ChatView';
+import { ChatPresenceRail, ChatOrchestrationBlock } from './task-modal/ChatOrchestration';
+import { selectChatRunGroup, isActiveSession } from '../orchestration';
 import { ChatDiffPanel } from './task-modal/ChatDiffPanel';
 import { TicketSideView } from './task-modal/TicketSideView';
 import { getPriorityIcon } from './task-modal/taskModalHelpers';
@@ -17,7 +20,7 @@ import { ChatRequireInputBanner } from './task-modal/ChatRequireInputBanner';
 import { TagSelector } from './TagSelector';
 import { TicketActions } from './ticket-actions/TicketActions';
 import { ChatPendingInteractions, PendingInteractionFallback, usePendingInteractions } from './pendingInteractions';
-import { useDock, MIN_SIDEVIEW_WIDTH, MAX_SIDEVIEW_WIDTH, DEFAULT_SIDEVIEW_WIDTH, type ComposerSelections } from './DockProvider';
+import { useDock, MIN_SIDEVIEW_WIDTH, MAX_SIDEVIEW_WIDTH, DEFAULT_SIDEVIEW_WIDTH, type ComposerSelections, type AnchorRect } from './DockProvider';
 import { useTicketSideView } from '../hooks/useTicketSideView';
 import { fireDesktopNotification } from '../hooks/useDesktopNotifications';
 import { getStatusTint, getStatusColorClass } from '../statusStyles';
@@ -30,8 +33,9 @@ import type { CliSessionStatus, CliSessionSummary, Config, Task } from '../types
  * FLUX-607: the bottom chat dock as a proper, centered taskbar (Windows-taskbar feel).
  * The orchestrator is pinned "home" at the left of the bar; every ticket with a
  * live/recent session surfaces as a card showing at-a-glance state — pulsing while an
- * agent works, a colored glow + `!` badge when a chat finished or wants input (distinct
- * treatment per state). A hover-only `x` retires a card into the always-available History
+ * agent works, a per-state glyph + colored glow when a chat finished or wants input
+ * (colorblind-safe: shape carries the state, color reinforces it — FLUX-819). A hover-only
+ * `x` retires a card into the always-available History
  * popover (which lists chats by title) so a finished or blocked chat is never lost and can
  * be reopened. Clicking a card toggles its floating window, which spawns anchored to the
  * clicked card's x position (FLUX-603 behavior, kept). Native-to-EH; iterate freely.
@@ -87,15 +91,9 @@ const STATE_ANIM: Record<CardState, string> = {
   idle: '',
 };
 
-/** `!` badge tone per attention state (working/idle show no badge). */
-const BADGE_TONE: Partial<Record<CardState, string>> = {
-  'needs-input': 'bg-amber-500 text-white',
-  finished: 'bg-emerald-500 text-white',
-  error: 'bg-red-500 text-white',
-};
-
-/** Leading state dot per tab — a compact at-a-glance status (the box-shadow glow
- *  animations still carry the live "working"/attention emphasis on top of this). */
+/** Leading state color per tab — a compact at-a-glance tint. Used as the `text-` color
+ *  of the per-state glyph below (the box-shadow glow animations still carry the live
+ *  "working"/attention emphasis on top of this). */
 const STATE_DOT: Record<CardState, string> = {
   working: 'bg-blue-500',
   'needs-input': 'bg-amber-500',
@@ -103,6 +101,20 @@ const STATE_DOT: Record<CardState, string> = {
   error: 'bg-red-500',
   available: 'bg-slate-400',
   idle: 'bg-gray-300 dark:bg-gray-600',
+};
+
+/** FLUX-819: colorblind-safe leading glyph per state. Shape carries the meaning so the
+ *  state is legible without relying on color (WCAG 1.4.1); the per-state `STATE_DOT` tint
+ *  and the `STATE_ANIM` glow stay as reinforcing — not sole — channels. The critical split
+ *  is `Check` (finished) vs `TriangleAlert` (error): circle-vs-triangle is the standard
+ *  accessible substitute for the green/red collision. */
+const STATE_GLYPH: Record<CardState, LucideIcon> = {
+  working: Loader2,
+  'needs-input': CircleHelp,
+  finished: Check,
+  error: TriangleAlert,
+  available: Circle,
+  idle: Circle,
 };
 
 function dedupe(ids: string[]): string[] {
@@ -123,10 +135,12 @@ export function ChatDock() {
   // FLUX-720: conversations with an unresolved pending interaction (approval / question /
   // board-rebase). Drives the hard-gated tab: a chat awaiting your answer is force-pinned with a
   // distinct prompt icon and can't be closed/removed until it's resolved.
-  const { pendingPromptConversationIds } = usePendingInteractions();
+  // FLUX-809: `pendingCount` (total pending prompts) + the manual-open machinery back the pinned
+  // Pending tab — always present, loud when prompts wait, toggles/raises the pending window.
+  const { pendingPromptConversationIds, pendingCount, pendingPanelOpen, togglePendingPanel } = usePendingInteractions();
   // Window/open state lives in the app-root DockProvider (FLUX-603) so a card can drive it
   // and it survives view switches. `anchors` records where each window should spawn from.
-  const { open, acked, dismissed, manuallyOpened, anchors, drafts, selections, order, sideviewOpen, sideviewWidth, toggle, closeCard, reopenFromHistory, setDraft, setSelections, reorder, promoteToFront, toggleSideView, setSideviewWidth, seedSideviewWidth, openTicket } = useDock();
+  const { open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, toggle, closeCard, reopenFromHistory, setDraft, setSelections, reorder, promoteToFront, toggleSideView, setSideviewWidth, seedSideviewWidth, openTicket, raise } = useDock();
 
   // FLUX-744: open-ticket bridge. `openTask` (AppContext, which lives ABOVE the DockProvider) can't
   // call dock actions directly, so for the default 'chat' open mode it dispatches a `flux:open-ticket`
@@ -460,12 +474,18 @@ export function ChatDock() {
           whose conversationId is null) surface here; deduped against the inline panels. */}
       <PendingInteractionFallback />
 
+      {/* FLUX-801: AnimatePresence gives each window an exit animation (shrink back toward its
+          origin card) when it leaves `open`. mode defaults to "sync" so multiple windows coexist. */}
+      <AnimatePresence>
       {open.map((id) => (
         <ChatWindow
           key={id}
           id={id}
           orchestrator={id === BOARD_CONVERSATION_ID}
           task={allTasks.find((t) => t.id === id)}
+          // FLUX-801: the clicked card's rect (pop-open origin) + bring-to-front on focus.
+          originRect={anchorRects[id]}
+          onRaise={() => raise(id)}
           // FLUX-686: session totals back the quiet token meter — orchestrator from boardSession,
           // tickets from their own cliSession.
           session={id === BOARD_CONVERSATION_ID ? boardSession : allTasks.find((t) => t.id === id)?.cliSession ?? null}
@@ -496,6 +516,7 @@ export function ChatDock() {
           }
         />
       ))}
+      </AnimatePresence>
 
       {/* Flat, Windows-taskbar-style strip: the orchestrator pinned "home", then one tab per
           chat. Each tab carries a fuller label (id + title) that shrinks as tabs multiply
@@ -511,9 +532,15 @@ export function ChatDock() {
           state={cardState(boardSession?.status, acked.includes(BOARD_CONVERSATION_ID))}
           pendingPrompt={pendingPromptConversationIds.has(BOARD_CONVERSATION_ID)}
           activity={boardSession?.currentActivity ?? null}
+          unread={unreadOf(BOARD_CONVERSATION_ID)}
           onOpen={(el) => toggle(BOARD_CONVERSATION_ID, el)}
           onContextMenu={(e) => setMenu({ id: BOARD_CONVERSATION_ID, x: e.clientX, y: e.clientY })}
         />
+
+        {/* FLUX-809: pinned Pending tab — always present, immediately right of the Orchestrator.
+            Shows the live count of pending prompts (loud amber + pulse when >0), and toggles /
+            brings the pending window on-screen. Outside the SortableContext: not draggable. */}
+        <PendingTab count={pendingCount} open={pendingPanelOpen} onToggle={togglePendingPanel} />
 
         {activeTickets.length > 0 && (
           <div className="h-7 w-px bg-[var(--eh-border)]" aria-hidden="true" />
@@ -667,6 +694,49 @@ function SortableChatTab(props: React.ComponentProps<typeof ChatTab>) {
   );
 }
 
+/** FLUX-809: the pinned Pending tab — sits immediately right of the Orchestrator, always present.
+ *  Carries the live count of pending prompts the agent is waiting on; loud (amber fill + count
+ *  badge + attention pulse) when count > 0, subdued at 0. Clicking it toggles the pending fallback
+ *  window and brings it on-screen (re-clamped). Like the orchestrator tab it's pinned — not in the
+ *  drag SortableContext, never retirable. */
+function PendingTab({ count, open, onToggle }: { count: number; open: boolean; onToggle: () => void }) {
+  const loud = count > 0;
+  const base =
+    'group relative flex h-9 flex-shrink-0 items-center gap-1.5 rounded-lg border pl-2 pr-2.5 text-left shadow-sm transition-all duration-150 ';
+  const surface = loud
+    ? 'border-amber-400/70 bg-amber-400/15 text-amber-700 dark:text-amber-300 eh-taskcard-needs-input '
+    : open
+      ? 'border-gray-300 bg-gray-100 text-gray-700 dark:border-white/20 dark:bg-white/15 dark:text-gray-200 '
+      : 'border-gray-200 bg-white text-gray-500 hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-400 dark:hover:bg-white/10 ';
+  const copy = loud
+    ? `${count} pending item${count === 1 ? '' : 's'} waiting on you`
+    : 'No pending items';
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-label={`Pending — ${copy}`}
+      title={copy}
+      className={base + surface}
+    >
+      <Inbox className={`h-4 w-4 flex-shrink-0 ${loud ? 'text-amber-500' : ''}`} />
+      <span className="text-xs font-semibold leading-none tracking-tight">Pending</span>
+      {count > 0 && (
+        <span className="ml-0.5 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-bold leading-none text-white">
+          {count}
+        </span>
+      )}
+      {/* Windows-style open indicator bar (mirrors ChatTab). */}
+      {open && (
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute bottom-0 left-1/2 h-[2px] w-3/4 -translate-x-1/2 rounded-full bg-amber-500"
+        />
+      )}
+    </button>
+  );
+}
+
 function ChatTab({
   id,
   label,
@@ -721,9 +791,9 @@ function ChatTab({
 }) {
   const { short } = splitId(id);
   const copy = pendingPrompt ? 'needs your answer' : STATE_COPY[state];
-  // A pending prompt overrides the `!` attention badge with its own prompt icon (below).
-  const badgeTone = pendingPrompt ? undefined : BADGE_TONE[state];
   const working = state === 'working';
+  // FLUX-819: per-state glyph carries the state shape on the leading indicator (below).
+  const StateGlyph = STATE_GLYPH[state];
   const fullLabel = orchestrator ? 'Orchestrator' : title ? `${id} — ${title}` : id;
 
   // Horizontal "chrome tab" — short, flat, label-bearing (vs the old square card).
@@ -761,6 +831,13 @@ function ChatTab({
       type="button"
       ref={dragRef}
       onClick={(e) => onOpen(e.currentTarget)}
+      onMouseDown={(e) => {
+        // FLUX-757: middle-click attempts to close the tab — a no-op when onClose is absent
+        // (the pinned orchestrator tab and prompt-gated chats), so the existing close-gating is
+        // reused unchanged. preventDefault suppresses the browser autoscroll cursor; the
+        // button===1 guard leaves left-click open, drag-to-reorder, and right-click untouched.
+        if (e.button === 1) { e.preventDefault(); onClose?.(); }
+      }}
       onContextMenu={(e) => {
         e.preventDefault();
         onContextMenu?.(e);
@@ -773,11 +850,13 @@ function ChatTab({
       {...dragHandleProps}
     >
       {/* Leading: the orchestrator keeps its spark (warm-tinted with a soft glow so it pops on
-          the gradient); a ticket gets a colored state dot. */}
+          the gradient); a ticket gets a per-state glyph (FLUX-819) whose silhouette is unique
+          so the state reads without color — tinted with the same per-state color as a
+          redundant cue. The label/title already carry the state for screen readers. */}
       {orchestrator ? (
         <Sparkles className="h-4 w-4 flex-shrink-0 text-amber-200 drop-shadow-[0_0_4px_rgba(253,230,138,0.55)]" />
       ) : (
-        <span className={`h-2 w-2 flex-shrink-0 rounded-full ${STATE_DOT[state]}`} aria-hidden="true" />
+        <StateGlyph className={`h-3 w-3 flex-shrink-0 ${STATE_DOT[state].replace(/bg-/g, 'text-')}${working ? ' animate-spin' : ''}`} aria-hidden="true" />
       )}
 
       {/* Label: id (full, or just the number when crowded) + the real title. We no longer
@@ -821,22 +900,15 @@ function ChatTab({
         </span>
       )}
 
-      {/* Unread dot — agent said something you haven't opened (only when no `!`/prompt badge). */}
-      {unread && !badgeTone && !pendingPrompt && (
+      {/* Unread dot — agent said something you haven't opened since. FLUX-819: now the sole
+          corner marker (the per-state `!` badge was retired — the leading glyph carries state
+          shape, so the corner is free to mean purely "new since you last looked"). Suppressed
+          only when the pending-prompt badge already owns this corner. */}
+      {unread && !pendingPrompt && (
         <span
           aria-hidden="true"
           className="absolute -left-1 -top-1 h-2.5 w-2.5 rounded-full bg-primary ring-2 ring-[var(--eh-surface)]"
         />
-      )}
-
-      {/* Attention `!` badge — distinct tone per state (top-left, out of the x's way). */}
-      {badgeTone && (
-        <span
-          aria-hidden="true"
-          className={`absolute -left-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full text-[9px] font-bold leading-none shadow ${badgeTone}`}
-        >
-          !
-        </span>
       )}
 
       {/* Hover-only close (`x`) — retires the tab into History. Orchestrator is permanent. */}
@@ -1479,6 +1551,8 @@ function ChatWindow({
   task,
   session,
   anchorX,
+  originRect,
+  onRaise,
   working,
   activity,
   draft,
@@ -1500,6 +1574,11 @@ function ChatWindow({
   /** FLUX-686: the CLI session backing this conversation, for the quiet token/cost meter. */
   session?: CliSessionSummary | null;
   anchorX?: number;
+  /** FLUX-801: the clicked card's on-screen rect, captured at open time — the pop-open animation
+   *  grows the window out of it (and shrinks back to it on close). Absent → a plain scale/fade. */
+  originRect?: AnchorRect;
+  /** FLUX-801: bring this window to the front of the dock paint order (called on mousedown). */
+  onRaise?: () => void;
   working: boolean;
   activity: string | null;
   /** FLUX-623: persisted unsent composer text for this conversation (survives minimize). */
@@ -1627,6 +1706,38 @@ function ChatWindow({
   const rawBottom = pos ? pos.bottom : 84;
   const bottom = Math.max(8, Math.min(rawBottom, maxBottom));
 
+  // FLUX-801: pop-open / shrink-close animation. Gated on `animationsEnabled` (default true) AND
+  // prefers-reduced-motion, matching the TaskCard/TaskModal precedent. When off, the window renders
+  // statically (no initial/animate/exit) — zero behavior change from before.
+  const animationsEnabled = config?.animationsEnabled ?? true;
+  const reduceMotion = useReducedMotion();
+  const animateWindow = animationsEnabled && !reduceMotion;
+  const speedMap = { fast: 0.2, normal: 0.4, slow: 0.7 };
+  const duration = speedMap[config?.animationSpeed || 'normal'];
+  // Transform that visually places the (full-size) window at the clicked card: shrink to ~card width
+  // and translate so the scaled window centers on the card. Pure transforms (x/y/scale) layered over
+  // the fixed left/bottom positioning, so they never fight Rnd-style left/top math or the drag/resize
+  // handlers (which run only after the animation settles back to the identity transform).
+  const originTransform = useMemo(() => {
+    if (!originRect) return null;
+    const restingTop = viewport.h - bottom - size.h;
+    const dx = originRect.left + originRect.width / 2 - (left + outerW / 2);
+    const dy = originRect.top + originRect.height / 2 - (restingTop + size.h / 2);
+    const scale = Math.max(0.1, Math.min(1, originRect.width / outerW));
+    return { x: dx, y: dy, scale, opacity: 0 };
+    // `left`/`bottom`/`outerW`/`size.h`/viewport are intentional deps so a re-clamp keeps the origin
+    // honest; `initial` is only read on mount so this only matters for the exit snapshot.
+  }, [originRect, left, bottom, outerW, size.h, viewport.h]);
+  // Fallback when there's no source rect (e.g. reopened without an element): a gentle scale/fade.
+  const restState = { scale: 0.94, opacity: 0, y: 16 };
+  const motionProps = animateWindow
+    ? {
+        initial: originTransform ?? restState,
+        animate: { x: 0, y: 0, scale: 1, opacity: 1, transition: { type: 'spring' as const, duration, bounce: 0.22 } },
+        exit: { ...(originTransform ?? restState), transition: { duration: duration * 0.7, ease: 'easeIn' as const } },
+      }
+    : {};
+
   // Drag the title bar to move the window. Tracked as `{left, bottom}` (bottom-pinned) so it
   // composes with the bottom-pinned resize. Clamped to keep the window on screen.
   function startDrag(e: React.PointerEvent) {
@@ -1705,6 +1816,14 @@ function ChatWindow({
     window.addEventListener('pointerup', onUp);
   }
 
+  // FLUX-803: live subagent run group for this ticket window (no task → orchestrator board chat,
+  // which has no per-ticket cliSessions, so it stays null and both surfaces are absent).
+  const runGroup = useMemo(() => (task ? selectChatRunGroup(task) : null), [task]);
+  const runActive = !!runGroup && runGroup.sessions.some(isActiveSession);
+  const openRun = () => { if (task) openTaskFullView(task); };
+  const stopOne = (sessionId: string) => { void stopTaskCliSession(id, { sessionId }); };
+  const stopAll = () => { if (runGroup) void stopTaskCliSession(id, { groupId: runGroup.groupId }); };
+
   // The chat surface itself is identical for orchestrator + ticket windows; only the surrounding
   // chrome (metadata bar, diff panel, sideview) differs, so it's built once and reused in both
   // branches of the body below.
@@ -1740,6 +1859,12 @@ function ChatWindow({
       diffBranch={task?.branch}
       tickets={allTasks}
       meter={<SessionMeter session={session} config={config} />}
+      presenceRail={runActive ? (
+        <ChatPresenceRail group={runGroup!} taskId={id} onOpenRun={openRun} onStopSession={stopOne} />
+      ) : undefined}
+      orchestrationBlock={runGroup ? (
+        <ChatOrchestrationBlock group={runGroup} taskId={id} onOpenRun={openRun} onStopSession={stopOne} onStopAll={stopAll} />
+      ) : undefined}
       actions={
         orchestrator ? (
           <TriageAction busy={chat.busy || working} onTriage={() => void chat.send(TRIAGE_PROMPT)} />
@@ -1751,8 +1876,11 @@ function ChatWindow({
   );
 
   return (
-    <div
+    <motion.div
       ref={windowRef}
+      // FLUX-801: bring this window above its siblings when the user interacts with it.
+      onMouseDown={onRaise}
+      {...motionProps}
       className="eh-surface eh-border fixed z-50 flex flex-col overflow-hidden rounded-2xl border shadow-2xl"
       style={{ bottom, left, width: outerW, height: size.h }}
     >
@@ -1886,6 +2014,6 @@ function ChatWindow({
           </div>
         </div>
       )}
-    </div>
+    </motion.div>
   );
 }

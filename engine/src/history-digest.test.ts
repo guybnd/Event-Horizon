@@ -220,6 +220,99 @@ describe('activity entry ids + collapse (FLUX-526)', () => {
   });
 });
 
+describe('temporal supersession (FLUX-811)', () => {
+  const agentC = (text: string, date: string, extra: Record<string, any> = {}) =>
+    ({ type: 'comment', user: 'Agent', comment: text, date, id: `c-${date}`, ...extra });
+  const userC = (text: string, date: string, extra: Record<string, any> = {}) =>
+    ({ type: 'comment', user: 'guybnd', comment: text, date, id: `c-${date}`, ...extra });
+
+  it('collapses a superseded agent entry to a marker even when recent (window-independent)', () => {
+    const entries = [
+      agentC('use approach A', '2026-06-01T00:00:00.000Z'),
+      agentC('abandoned A, going with B', '2026-06-02T00:00:00.000Z', { supersedes: ['c-2026-06-01T00:00:00.000Z'] }),
+    ];
+    // keepRecent=3 ⇒ both entries are "recent"; supersession still collapses the dead one.
+    const { history, collapsedCount } = digestHistoryForAgent(entries, 20, 3);
+    expect(collapsedCount).toBe(1);
+    expect(history[0]).toMatchObject({ supersededBy: 'c-2026-06-02T00:00:00.000Z', collapsed: true, id: 'c-2026-06-01T00:00:00.000Z' });
+    expect(history[0].comment).toBeUndefined(); // dead body dropped
+    expect(history[1].comment).toBe('abandoned A, going with B'); // live entry full
+  });
+
+  it('keeps the marker carrying the superseded entry summary when present', () => {
+    const entries = [
+      agentC('long dead plan '.repeat(20), '2026-06-01T00:00:00.000Z', { summary: 'plan A' }),
+      agentC('replacing it', '2026-06-02T00:00:00.000Z', { supersedes: ['c-2026-06-01T00:00:00.000Z'] }),
+    ];
+    const { history } = digestHistoryForAgent(entries, 20, 3);
+    expect(history[0]).toMatchObject({ collapsed: true, summary: 'plan A' });
+    expect(history[0].comment).toBeUndefined();
+  });
+
+  it('keeps a superseded USER comment full with an advisory (authority before recency)', () => {
+    const entries = [
+      userC('do it this way', '2026-06-01T00:00:00.000Z'),
+      agentC('I think this is now wrong', '2026-06-02T00:00:00.000Z', { supersedes: ['c-2026-06-01T00:00:00.000Z'] }),
+    ];
+    const { history, collapsedCount } = digestHistoryForAgent(entries, 20, 3);
+    expect(collapsedCount).toBeUndefined(); // user target not collapsed
+    expect(history[0].comment).toBe('do it this way');
+    expect(history[0].collapsed).toBeUndefined();
+    expect(history[0].supersededByAdvisory).toBe('c-2026-06-02T00:00:00.000Z');
+  });
+
+  it('keeps a superseded PINNED agent entry full with an advisory', () => {
+    const entries = [
+      agentC('pinned key decision', '2026-06-01T00:00:00.000Z', { pin: true }),
+      agentC('trying to supersede the pin', '2026-06-02T00:00:00.000Z', { supersedes: ['c-2026-06-01T00:00:00.000Z'] }),
+    ];
+    const { history, collapsedCount } = digestHistoryForAgent(entries, 20, 3);
+    expect(collapsedCount).toBeUndefined();
+    expect(history[0].comment).toBe('pinned key decision');
+    expect(history[0].collapsed).toBeUndefined();
+    expect(history[0].supersededByAdvisory).toBe('c-2026-06-02T00:00:00.000Z');
+  });
+
+  it('expand:[id] recovers a superseded entry full text', () => {
+    const entries = [
+      agentC('the original detailed plan', '2026-06-01T00:00:00.000Z'),
+      agentC('replaced', '2026-06-02T00:00:00.000Z', { supersedes: ['c-2026-06-01T00:00:00.000Z'] }),
+    ];
+    const { history } = digestHistoryForAgent(entries, 20, 3, { expand: ['c-2026-06-01T00:00:00.000Z'] });
+    expect(history[0].comment).toBe('the original detailed plan');
+    expect(history[0].collapsed).toBeUndefined();
+  });
+
+  it('ignores a supersedes link that points forward (not yet superseded)', () => {
+    // entry references a LATER id — never collapses the future entry.
+    const entries = [
+      agentC('first', '2026-06-01T00:00:00.000Z', { supersedes: ['c-2026-06-02T00:00:00.000Z'] }),
+      agentC('second', '2026-06-02T00:00:00.000Z'),
+    ];
+    const { history, collapsedCount } = digestHistoryForAgent(entries, 20, 3);
+    expect(collapsedCount).toBeUndefined();
+    expect(history[1].comment).toBe('second');
+  });
+
+  it('normalizeHistoryEntries coerces a string supersedes and drops dangling ids', () => {
+    const { history, changed } = normalizeHistoryEntries([
+      { type: 'comment', user: 'Agent', comment: 'x', date: '2026-06-01T00:00:00.000Z', id: 'c-a' },
+      { type: 'comment', user: 'Agent', comment: 'y', date: '2026-06-02T00:00:00.000Z', id: 'c-b', supersedes: 'c-a' as any },
+      { type: 'comment', user: 'Agent', comment: 'z', date: '2026-06-03T00:00:00.000Z', id: 'c-c', supersedes: ['c-a', 'ghost', 'c-c'] },
+    ]);
+    expect(changed).toBe(true);
+    expect(history[1].supersedes).toEqual(['c-a']);      // string coerced to array
+    expect(history[2].supersedes).toEqual(['c-a']);      // 'ghost' (dangling) + self-ref dropped
+  });
+
+  it('normalizeHistoryEntries removes supersedes entirely when no id matches', () => {
+    const { history } = normalizeHistoryEntries([
+      { type: 'comment', user: 'Agent', comment: 'y', date: '2026-06-02T00:00:00.000Z', id: 'c-b', supersedes: ['ghost'] },
+    ]);
+    expect(history[0].supersedes).toBeUndefined();
+  });
+});
+
 describe('digestTerminalSessionProgress', () => {
   it('strips progress from terminal sessions but keeps active sessions streaming', () => {
     const active = { ...sessionEntry('s-active', 40), status: 'active' };

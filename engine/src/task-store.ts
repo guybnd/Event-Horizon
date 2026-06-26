@@ -208,12 +208,17 @@ export async function updateAgentSession(taskId: string, sessionId: string, upda
   if (sess?.status && sess.status !== 'active' && sess.finalMessage && !surfacedFinalMessages.has(sessionId)) {
     const fm = String(sess.finalMessage);
     const needsInput = /\?|\breply\b|\bwhich\b|\bconfirm\b|\bchoose\b|\bdecision\b|\blet me know\b|\bproceed\b/i.test(fm);
+    // FLUX-777: a "looks done" guard so a completion/merge summary (which often contains words like
+    // "proceed" or a "?") is NOT mis-flagged as a pending question (the false-positive bug). A real
+    // escaped question is high-pertinence — an agent blocked on you — so this is Action-needed
+    // ('prompt'), above a Ready hand-off.
+    const looksDone = /\b(done|completed?|finished|merged|shipped)\b|moved to done|implementation link|no further action|nothing (?:more |else )?(?:needed|to do|required)/i.test(fm);
     const properlyRouted = frontmatter.swimlane === 'require-input';
-    if (needsInput && !properlyRouted) {
+    if (needsInput && !looksDone && !properlyRouted) {
       surfacedFinalMessages.add(sessionId);
       addNotification({
-        type: 'info',
-        title: `${taskId}: agent session ended with a question`,
+        type: 'prompt',
+        title: `${taskId}: agent may need your input`,
         message: fm.length > 280 ? fm.slice(0, 280) + '…' : fm,
         ticketId: taskId,
         actions: [{ label: 'View ticket', actionId: 'view' }],
@@ -259,6 +264,11 @@ export function updateTaskWithHistory(taskId: string, options: {
   updatedBy?: string;
   nextStatus?: string;
   extraFields?: Record<string, any>;
+  // FLUX-788: opt-in title/body replacement so metadata-edit callers (update_ticket) can route
+  // through this locked + atomic path. Both default to "keep what's on disk" — existing callers
+  // are unaffected. `newTitle` is honored here because extraFields deliberately strips `title`.
+  newTitle?: string;
+  newBody?: string;
   tokenMetadata?: { inputTokens: number; outputTokens: number; costUSD: number; costIsEstimated: boolean; cacheReadTokens?: number; cacheCreationTokens?: number } | undefined;
 }) {
   return serializeTicketWrite(taskId, () => updateTaskWithHistoryLocked(taskId, options));
@@ -269,6 +279,8 @@ async function updateTaskWithHistoryLocked(taskId: string, options: {
   updatedBy?: string;
   nextStatus?: string;
   extraFields?: Record<string, any>;
+  newTitle?: string;
+  newBody?: string;
   tokenMetadata?: { inputTokens: number; outputTokens: number; costUSD: number; costIsEstimated: boolean; cacheReadTokens?: number; cacheCreationTokens?: number } | undefined;
 }) {
   const task = tasksCache[taskId];
@@ -318,6 +330,11 @@ async function updateTaskWithHistoryLocked(taskId: string, options: {
     }
   }
 
+  // FLUX-788: explicit title replacement (extraFields strips `title` to prevent accidental loss).
+  if (options.newTitle !== undefined) frontmatter.title = options.newTitle;
+  // FLUX-788: explicit body replacement; otherwise keep whatever was on disk.
+  const useBody = options.newBody !== undefined ? options.newBody : body;
+
   if (options.tokenMetadata) {
     frontmatter.tokenMetadata = options.tokenMetadata;
   }
@@ -330,10 +347,10 @@ async function updateTaskWithHistoryLocked(taskId: string, options: {
     return null;
   }
 
-  const fileContent = matter.stringify(body || '', frontmatter);
+  const fileContent = matter.stringify(useBody || '', frontmatter);
   recentEngineWrites.add(_path);
   await atomicWriteFile(_path, fileContent);
-  tasksCache[taskId] = { ...frontmatter, body, id: taskId, _path };
+  tasksCache[taskId] = { ...frontmatter, body: useBody, id: taskId, _path };
 
   if (options.nextStatus) {
     const requireInputStatus = configCache.requireInputStatus || 'Require Input';
@@ -486,6 +503,9 @@ export async function deleteTask(id: string): Promise<void> {
   if (task?._path) {
     await fs.unlink(task._path).catch(() => {});
   }
+  // FLUX-753: tell connected portals to drop the card. Without this, the extractTicket
+  // compensation path (and any other deleteTask caller) left a phantom card until reload.
+  if (task) broadcastEvent('taskDeleted', { id });
 }
 
 
@@ -1236,7 +1256,11 @@ export async function startWatchers() {
         delete tasksCache[id];
         console.log(`Removed task: ${id}`);
       }
-    });
+    })
+    // FLUX-784: without this, an unhandled chokidar 'error' (e.g. inotify ENOSPC/EMFILE, or a
+    // Windows AV briefly locking a ticket file) rethrows and the uncaughtException handler exits
+    // the whole engine. Degrade to "file-sync paused" instead of crashing the board.
+    .on('error', (err) => console.error('[watcher:flux] file-sync paused:', err));
 
   activeDocsWatcher = chokidar.watch(getDocsDir(), {
     ignored: (filePath: string) => {
@@ -1254,7 +1278,8 @@ export async function startWatchers() {
     .on('unlink', (filePath) => {
       const docPath = getDocPathFromFile(filePath);
       if (docPath) { delete docsCache[docPath]; console.log(`Removed doc: ${docPath}`); }
-    });
+    })
+    .on('error', (err) => console.error('[watcher:docs] file-sync paused:', err)); // FLUX-784
 }
 
 /**
@@ -1281,7 +1306,8 @@ export async function startGroupDocsWatcher() {
     .on('unlink', (filePath) => {
       const docPath = groupDocPathFromFile(storeDir, filePath);
       if (docPath) { delete docsCache[docPath]; console.log(`Removed group doc: ${docPath}`); }
-    });
+    })
+    .on('error', (err) => console.error('[watcher:group-docs] file-sync paused:', err)); // FLUX-784
 }
 
 

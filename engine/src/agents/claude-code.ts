@@ -10,7 +10,7 @@ import { isPathInsideRoot } from '../file-utils.js';
 import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
 import { appendTranscriptLine, appendTranscriptEvent } from '../transcript.js';
-import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
+import { checkFrameworkHealth, checkSkillStaleness, generateOrchestratorReplyNotification } from '../notifications.js';
 import { captureTurnStartState, clearNeedsActionIfSet, flagIfParked } from '../parked-ticket.js';
 import { buildMemberScopeArgs } from '../group.js';
 import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
@@ -332,7 +332,8 @@ export function buildInitialPrompt(task: any, appendPrompt: string, opts?: { dif
             `- Implemented it → change_status to "${readyStatus}" with a completion summary (or "Require Input" if blocked).\n` +
             `- Reviewed it → change_status to "${readyStatus}", or back to "In Progress" with what to fix, or create_subtask for follow-ups, or "Require Input".\n` +
             `Leaving the ticket parked in a working status with only a chat summary is a defect: the board flags it "Needs Action" and the user is notified. If you genuinely cannot decide, that itself is a "Require Input" — raise it, don't sit on it.\n\n` +
-            `To ask the user a structured question mid-turn, call the ask_user_question tool — it shows an interactive picker in this chat and returns their choice so you continue immediately. Never assume when a quick question would resolve ambiguity; ask.\n\n` +
+            `To ask the user a structured question mid-turn, call the ask_user_question tool — it shows an interactive picker in this chat and returns their choice so you continue immediately. Never assume when a quick question would resolve ambiguity; ask.\n` +
+            `This holds REGARDLESS of the ticket's status (FLUX-826): even on a Done/Ready/closed ticket, any decision ("file a ticket / commit / leave it?") goes through ask_user_question — never as chat prose. A decision typed only into chat on a resting ticket has no picker, no notification, and no board flag, so it is lost if the user isn't watching live. (If ask_user_question times out unanswered on a ticket, the engine now leaves a persistent "Needs Action" flag as a backstop — but route it structurally, don't rely on the backstop.)\n\n` +
             mcpNote;
         case 'grooming':
           return `## Your Mission: GROOM this ticket\n\n` +
@@ -1160,6 +1161,10 @@ function wireBoardProc(proc: ReturnType<typeof spawn>, session: CliSessionRecord
       session.endedAt = new Date().toISOString();
     } else {
       onExitStatus();
+      // FLUX-810: a clean board turn === the orchestrator answered the user. This is the only
+      // self-noise-free hook (stopped/non-zero/crashed turns are handled above), so emit the
+      // "Orchestrator replied" notification-bar entry here and nowhere else.
+      generateOrchestratorReplyNotification();
     }
     broadcastEvent('taskUpdated', { id: BOARD_CONVERSATION_ID });
   });

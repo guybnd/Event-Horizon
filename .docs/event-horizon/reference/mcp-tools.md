@@ -84,6 +84,7 @@ Read a ticket by ID. Returns an **agent digest**, not the raw file: history is d
 - `status_change` entries are dropped from the digest (the current status is already in the frontmatter); `comment` and `activity` entries pass through.
 - **Summary-gated collapse:** older `comment`/`activity` entries that carry an agent-written `summary` **and an `id`** are returned collapsed — `{ type, user, date, summary, id, collapsed: true }` instead of the full body. Kept full: the last `commentDigest.keepRecent` (config, default 3) entries, any `pin: true` entry, any entry without a summary (never force-truncated), and any entry without an `id` (couldn't be recovered). `collapsedCount` reports how many were collapsed; fetch a collapsed entry's full text with `expand: ["<id>"]` (or `fullHistory: true`).
 - Older `agent_session` entries are likewise collapsed to their `outcome` (shown as `summary`), keeping `sessionId` — recover the full session via [`get_session_log`](#get_session_log)`(ticketId, sessionId)`, **not** `expand` (collapsed sessions carry `sessionId`, not `id`).
+- **Temporal supersession collapse** (FLUX-811): a `comment`/`activity` entry explicitly superseded by a **later** entry (via that entry's `supersedes: ["<id>"]`) collapses to `{ type, user, date, supersededBy: "<superseder-id>", summary?, id, collapsed: true }` — **independent of the recent-window** (it collapses even when recent, because a dead decision is noise regardless of age), recoverable via `expand: ["<id>"]`. **Guardrail:** an *agent*-authored supersession never collapses a `pin: true` or user-authored target; that target stays full and instead gains an advisory `supersededByAdvisory: "<superseder-id>"` flag. See [ticket-schema → supersedes](ticket-schema.md#per-type-fields).
 - Only the most recent `historyLimit` entries are returned; when older ones are omitted, the response includes `olderHistoryEntries: <count>`.
 - Attached `cliSession`/`cliSessions` summaries are the list-scoped set with `liveOutput` truncated to a short tail, and slimmed for agents: `args` (which embeds the full launch prompt — i.e. the ticket body again), `command`, and `pid` are dropped; `argsChars` preserves a size hint.
 - **Recent user comments are always surfaced** (FLUX-480): a top-level `recentUserComments` array holds the last `commentDigest.recentUserComments` (config, default 3) **user-authored** `comment` entries — scanned from the *full* history, so a user comment that aged past the window is never silently dropped. Authorship is heuristic: agents write `user: 'Agent'` (the canonical marker) or a model/framework display name; everything else is treated as a user (the bias is to never hide user intent). Cheap flags `hasUserComments` (always present) and `lastUserCommentAt` accompany it so routing/preview consumers can read them without pulling history.
@@ -335,12 +336,14 @@ Move a ticket to a new status.
 | `newStatus` | string | yes |
 | `comment` | string | conditional — see enforcement |
 | `callerRole` | string | no — set to `"orchestrator"` or `"lead"` to bypass scatter-gather restriction |
+| `reviewState` | `'approved'` \| `'changes-requested'` \| null | no — **FLUX-816.** Records the EH review verdict on the card (persisted as the [`reviewState`](ticket-schema.md) frontmatter field). A review lead passes `"approved"` when moving to `Ready` and `"changes-requested"` when moving back to `In Progress`; `null` clears it. Surfaces a review badge; distinct from the GitHub-synced `reviewDecision`. |
 
 **Enforcement:**
 
 - Transitioning **to** `Require Input` requires `comment` (the question to ask the user).
 - Transitioning **to** `Ready` requires `comment` (the completion summary), unless `config.requireCommentOnStatusChange === false`.
 - **Commit-before-Ready for worktree branches (FLUX-730).** Transitioning **to** `Ready` is **refused** (error result, status unchanged) when the ticket's branch has a dedicated worktree **and** the branch has **0 commits ahead** of the default branch — an uncommitted worktree can never open a PR, so the move would land a silent "Ready, no PR". The error distinguishes "work done but uncommitted" (worktree has changes) from "no changes yet" and tells the agent to commit then retry. **Scoped to worktree branches only:** plain-branch tickets keep the soft warning (notification + activity, move still proceeds), and branchless tickets are unaffected (they legitimately stay uncommitted until `finish`). On a successful `Ready` move for a branch with commits, the engine pushes and opens the PR (`implementationLink` + `open-pr` swimlane).
+- **Dirty-root backstop for engine-driven switches (FLUX-741).** Sibling to the commit-before-Ready discipline, but for the **main/root checkout** rather than worktrees. Whenever the engine *must* switch or fast-forward the root tree off a branch during post-merge cleanup (`cleanupMergedBranch`'s `git checkout <default>` and `syncDefaultBranch`'s in-place `merge --ff-only`), it first **stashes any uncommitted/untracked root work** (`stashDirtyTree`, reusing the detach stash pattern) so the switch can never silently discard it — the root-clobber that lost work in the FLUX-734/739 incidents. The stashed work stays recoverable (`git stash apply <ref>`) and the ref is surfaced in a notification. Worktree mutation points are already guarded (`removeTaskWorktree` refuses a dirty tree; `detachTaskWorktree` stashes); this closes the gap on the root tree only. The complementary fix is **worktree-by-default** (see `create_branch`): isolating agent sessions in their own worktree means the shared root is rarely the place edits live in the first place.
 - The `Require Input` / `Ready` status names are read from `configCache.requireInputStatus` / `readyForMergeStatus` and may be renamed in board config.
 - **Scatter-gather guard:** If the ticket has 2+ active sessions where at least one has `patternPosition: 'step'`, status changes are rejected unless `callerRole` is `'orchestrator'` or `'lead'`. This prevents individual reviewers from moving the ticket while peers are still reviewing. Affected sessions should use `add_comment` instead.
 
@@ -387,6 +390,7 @@ Append a comment to history.
 | `user` | string | no — defaults to `Agent` |
 | `summary` | string | no — a faithful one-paragraph summary; shown in the agent digest once the comment ages past the recent window (full text via `get_ticket` `expand`). Provide for substantial comments; keep it concise but lossless. |
 | `pin` | boolean | no — never collapse this comment in the agent digest (review handoffs / key decisions). |
+| `supersedes` | string[] | no — ids of earlier history entries this comment makes obsolete (a decision reversed/replaced). The superseded entries collapse to a one-line marker in the agent digest (still recoverable via `expand`). A `pin: true`/user-authored target is advisory-only (kept full). Set ONLY when genuinely retiring a now-wrong entry. |
 
 **Output:** `Comment added to <id>`.
 
@@ -400,6 +404,7 @@ Append an `activity` entry (different from a comment — used for "agent did X" 
 | `message` | string | yes |
 | `summary` | string | no — faithful summary shown in the agent digest once this note ages past the recent window (full text via `get_ticket` `expand`). |
 | `pin` | boolean | no — never collapse this note in the agent digest. |
+| `supersedes` | string[] | no — ids of earlier history entries this note makes obsolete. The superseded entries collapse to a one-line marker in the agent digest (recoverable via `expand`); a `pin: true`/user-authored target is advisory-only (kept full). |
 
 **Output:** `Progress logged on <id>`.
 
@@ -409,7 +414,7 @@ Append an `activity` entry (different from a comment — used for "agent did X" 
 
 ### `finish_ticket`
 
-Atomic close-out: set `implementationLink`, append a completion comment, move status to `Done`. For a **branch ticket** (with `gh` authenticated) it **merges the branch's PR** (squash) and then runs the shared post-merge cleanup (advance + master fast-forward + worktree/branch teardown, FLUX-574). The PR is normally opened at the Ready transition; if none exists at finish, finish **opens it first** (FLUX-578) — or, if the branch has **no commits**, bounces the ticket to In Progress with an actionable "commit first" message instead of failing on a raw merge error.
+Atomic close-out: set `implementationLink`, append a completion comment, move status to `Done`. For a **branch ticket** (with `gh` authenticated) it **merges the branch's PR** (squash) and then runs the shared post-merge cleanup (advance + master fast-forward + worktree/branch teardown, FLUX-574). The PR is normally opened at the Ready transition; if none exists at finish, finish **opens it first** (FLUX-578). Critically, if the branch's prior PR is already **MERGED or CLOSED** (a dead PR — e.g. a commit pushed *after* that PR merged, FLUX-656), finish does **not** merge onto the dead PR (which would throw "already merged" and strand the commit) — it opens a **fresh** PR and merges that instead (FLUX-741, `planFinishPr`). Only when the branch has **no commits ahead** of its base (nothing to merge) does it route the ticket to **Require Input** rather than failing on a raw merge error.
 
 | Input | Type | Required |
 |-------|------|----------|
@@ -422,9 +427,9 @@ Atomic close-out: set `implementationLink`, append a completion comment, move st
 
 **Side effects:**
 
-- For a branch ticket: ensures a PR exists (opens one if missing), squash-merges it, then runs the unified post-merge cleanup (`cleanupMergedBranch` — advance branch tickets, fast-forward master, remove worktree + delete branch, clear the `open-pr` swimlane).
+- For a branch ticket: ensures an **OPEN** PR exists (opens a fresh one if missing **or if the existing PR is MERGED/CLOSED** — FLUX-741), squash-merges it, then runs the unified post-merge cleanup (`cleanupMergedBranch` — advance branch tickets, fast-forward master, remove worktree + delete branch, clear the `open-pr` swimlane). The post-merge cleanup stashes any **uncommitted work on the main/root checkout** before switching/fast-forwarding it, so an engine-driven branch switch can never silently discard root edits (FLUX-741, incident FLUX-734) — the work is surfaced as a recoverable stash via a notification.
 - **Shared-PR guard (FLUX-569):** finishing one member of a branch shared by **non-terminal sibling tickets** is refused — merging would advance them all to Done as a one-way door (the FLUX-556/PR#6 incident). The error names the siblings; either finish/close them first, merge via the PR ticket, or re-run with `force: true` to land the whole shared PR. **PR tickets (`kind:'pr'`) are exempt** — merging a PR ticket to advance its members is the sanctioned shared-merge surface.
-- No commits ahead / merge failure / `gh` unavailable → bounces the ticket back to In Progress with an actionable comment (no partial Done).
+- Merge failure / `gh` unavailable → bounces the ticket back to In Progress with an actionable comment (no partial Done). A branch with **no commits ahead** of its base routes to **Require Input** (FLUX-741) — there is genuinely nothing to merge, so it surfaces as a blocker rather than looping.
 - Writes status + link + comment in one disk write — no partial state on failure.
 - Reaps stale parked **phase** sessions (`waiting-input`, non-`chat`) once the ticket is Done, so a finished ticket leaves no session zombies behind (FLUX-721).
 
@@ -440,11 +445,11 @@ These wrap git operations through [`branch-manager.ts`](../../../engine/src/bran
 |-------|------|----------|---------|
 | `ticketId` | string | yes | — |
 | `baseBranch` | string | no | `master` |
-| `worktree` | boolean | no | config `worktreeByDefault` (off) |
+| `worktree` | boolean | no | **`true`** (agent sessions are worktree-isolated by default, FLUX-741) |
 
 **Output:** `{ branch: "<name>", worktree?: "<path>", worktreeError?: "<msg>" }`.
 
-When `worktree` is `true` (or omitted with `worktreeByDefault` enabled), a dedicated git worktree is created for the branch at `<repoParent>/.eh-worktrees/<repo>-<id>` and the agent runs isolated there (FLUX-516). The branch is always created first, so a worktree failure (e.g. concurrency cap) is reported in `worktreeError` without failing the call. See [`task-worktree.ts`](../../../engine/src/task-worktree.ts).
+**Worktree-by-default (FLUX-741).** This tool is the **agent** branch-creation path, so it **defaults `worktree` to `true`** — every agent branch session lands in its own dedicated git worktree at `<repoParent>/.eh-worktrees/<repo>-<id>` and runs isolated there (FLUX-516), so two parallel ticket sessions never share one checkout (the FLUX-734/739 root-clobber class of bug). The escape for **single-checkout / human-manual** branch work is to pass **`worktree: false`** explicitly — the agent then runs in the shared main tree. (The portal/human "Start task" path — `POST /:id/branch` — is *separate* and keeps its own default off, governed by the workspace `worktreeByDefault` setting; this default flip is agent-only.) The branch is always created first, so a worktree failure (e.g. hitting the concurrency cap of 4) is reported in `worktreeError` without failing the call. See [`task-worktree.ts`](../../../engine/src/task-worktree.ts).
 
 **Errors:** ticket not found; `Ticket <id> already has branch: <name>`; git failure.
 
@@ -542,7 +547,7 @@ Ask the user a **structured multiple-choice question** and block until they answ
 
 **Behavior:** the handler POSTs to [`/api/board/ask-question`](rest-api.md) with the questions + the session's `EH_CONVERSATION_ID`, and **blocks on the held-open HTTP response** until the user answers in the portal (or a 4-minute timeout — held under undici's 300s `headersTimeout` so the long-poll fetch doesn't abort before the park resolves). The reuse of the FLUX-605 round-trip is exact; the only difference is the payload — chosen option label(s) + an optional note, not allow/deny. It emits the `ask-question` / `ask-question-resolved` realtime events ([realtime channels](realtime-channels.md)) so the portal can render the picker inline in the originating chat (or a global overlay when unrouted).
 
-**Output:** `{ answers: { [questionText]: chosenLabel | chosenLabel[] }, notes? }` (JSON text). On timeout the agent receives a plain-text "the user did not answer in time — proceed with your best judgment" so a parked question never crashes the turn.
+**Output:** `{ answers: { [questionText]: chosenLabel | chosenLabel[] }, notes? }` (JSON text). On timeout the agent receives a plain-text "the user did not answer in time — proceed with your best judgment" so a parked question never crashes the turn. **FLUX-826:** a timeout on a ticket-bound question (the `EH_CONVERSATION_ID` is a real ticket id) also raises a persistent **"Needs Action"** flag + notification on that ticket, so a missed question survives even when the user wasn't watching the live picker — this is what makes the structured route safe on a resting/terminal ticket where `Require Input` (status-coupled) doesn't fit.
 
 ---
 

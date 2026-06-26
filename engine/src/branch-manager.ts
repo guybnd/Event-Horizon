@@ -198,6 +198,69 @@ export async function getPullRequestStatus(branch: string): Promise<PrStatus | n
   }
 }
 
+/** How {@link finish_ticket} should obtain a mergeable PR for a branch (FLUX-741). */
+export interface FinishPrPlan {
+  /** 'reuse' = an OPEN PR already exists; 'created' = a fresh PR was opened; 'blocked' = can't open one (route to Require Input). */
+  action: 'reuse' | 'created' | 'blocked';
+  /** PR url for 'reuse'/'created'. */
+  url?: string;
+  /** Why we couldn't open a PR (for the Require Input message) when action === 'blocked'. */
+  reason?: string;
+}
+
+/** Injectable deps so {@link planFinishPr} is unit-testable without gh/git. */
+export interface FinishPrDeps {
+  getStatus?: (branch: string) => Promise<PrStatus | null>;
+  getBranchStatus?: (branch: string) => Promise<{ exists: boolean; aheadCount: number; behindCount: number }>;
+  createPr?: (branch: string, title: string, body: string) => Promise<string>;
+}
+
+/**
+ * Decide how `finish_ticket` should land `branch` (FLUX-741, incident FLUX-656). The old finish
+ * path only special-cased "no PR at all" (`if (!existingPr)`) and otherwise fell straight through
+ * to `gh pr merge` — so a branch whose PR was already **MERGED/CLOSED** (e.g. a commit pushed after
+ * the prior PR merged, FLUX-656) hit `gh pr merge` on a dead PR, which throws "already merged" and
+ * strands the commit. This unifies the decision:
+ *
+ *  - OPEN PR            → reuse it (merge proceeds as before).
+ *  - MERGED/CLOSED, or no PR at all → the old PR is dead; open a FRESH one via {@link createPullRequest}
+ *    (its OPEN-only reuse logic already declines to reuse a dead PR), then merge that.
+ *  - branch has 0 commits ahead of its base → a PR genuinely can't be opened (nothing to merge) →
+ *    `blocked`; the caller routes to Require Input instead of throwing onto a dead branch.
+ *
+ * Never merges a non-OPEN PR. Deps are injectable for tests; defaults hit the real gh/git layer.
+ */
+export async function planFinishPr(
+  branch: string,
+  title: string,
+  body: string,
+  deps: FinishPrDeps = {},
+): Promise<FinishPrPlan> {
+  const getStatus = deps.getStatus ?? getPullRequestStatus;
+  const getBranchStatus = deps.getBranchStatus ?? getTicketBranchStatus;
+  const createPr = deps.createPr ?? createPullRequest;
+
+  const existing = await getStatus(branch).catch(() => null);
+  if (existing && existing.state === 'OPEN') {
+    return { action: 'reuse', ...(existing.url ? { url: existing.url } : {}) };
+  }
+
+  // No PR, or a dead (MERGED/CLOSED) one → we need a fresh PR. Guard on commits-ahead first:
+  // opening a PR with nothing ahead of the base fails, so route those to Require Input.
+  const bs = await getBranchStatus(branch).catch(() => null);
+  if (bs && bs.exists && bs.aheadCount === 0) {
+    return {
+      action: 'blocked',
+      reason: existing
+        ? `the previous PR for \`${branch}\` is ${existing.state} and the branch has no new commits ahead of its base — nothing to merge.`
+        : `branch \`${branch}\` has no commits yet.`,
+    };
+  }
+
+  const url = await createPr(branch, title, body);
+  return { action: 'created', url };
+}
+
 export async function getCurrentCommit(): Promise<string | null> {
   try {
     const { stdout } = await git(['rev-parse', 'HEAD']);

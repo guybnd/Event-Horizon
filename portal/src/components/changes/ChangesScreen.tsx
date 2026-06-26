@@ -24,6 +24,8 @@ interface FileRow {
   deletions: number;
   status: FileStatus | null;
   collidesWith?: string[];
+  /** Worktree files only: committed-ahead of master (true) vs loose/uncommitted (false). */
+  committed?: boolean;
 }
 
 type FetchSource = { kind: 'live'; ref: string } | { kind: 'done'; ticketId: string };
@@ -124,6 +126,7 @@ export function ChangesScreen() {
         files: g.files.map((f) => ({
           file: f.file, additions: f.additions, deletions: f.deletions, status: f.status,
           ...(f.collidesWith ? { collidesWith: f.collidesWith } : {}),
+          ...(f.committed ? { committed: true } : {}),
         })),
         source: { kind: 'live', ref: fetchRef },
       });
@@ -227,6 +230,58 @@ export function ChangesScreen() {
     if (s.files.length === 0) return true;
     const inSet = collapsed.has(s.key);
     return s.kind === 'done' ? !inSet : inSet;
+  };
+
+  // A single selectable file row (status letter + path + collision flag + ± counts),
+  // shared by flat sections and the worktree committed/loose sub-groups (FLUX-582).
+  const renderFileRow = (s: Section, f: FileRow) => {
+    const isSel = selected?.sectionKey === s.key && selected?.path === f.file;
+    const badge = f.status ? STATUS_BADGE[f.status] : null;
+    return (
+      <button
+        key={f.file}
+        onClick={() => setSelected({ sectionKey: s.key, path: f.file, label: s.label, source: s.source })}
+        className={`flex w-full items-center gap-2 rounded-md py-1 pl-8 pr-2 text-left text-[11px] transition-colors ${isSel ? 'bg-primary/10 text-primary' : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/5'}`}
+      >
+        {badge
+          ? <span className={`flex-none font-mono font-bold ${badge.cls}`} title={badge.title}>{badge.letter}</span>
+          : <span className="w-[1ch] flex-none" />}
+        <span className="min-w-0 flex-1 truncate font-mono" title={f.file}>{f.file}</span>
+        {f.collidesWith && f.collidesWith.length > 0 && (
+          <span className="flex-none" title={`Also changed in: ${f.collidesWith.join(', ')}`}>
+            <AlertTriangle className="h-3 w-3 text-amber-500" />
+          </span>
+        )}
+        {f.status !== 'untracked' && (
+          <span className="flex-none font-mono text-[10px] tabular-nums text-gray-400">
+            <span className="text-emerald-500">+{f.additions}</span>{' '}
+            <span className="text-red-500">−{f.deletions}</span>
+          </span>
+        )}
+      </button>
+    );
+  };
+
+  // Worktree sections split into committed-ahead-of-master vs still-loose files (FLUX-582).
+  const renderWorktreeSplit = (s: Section) => {
+    const committed = s.files.filter((f) => f.committed);
+    const loose = s.files.filter((f) => !f.committed);
+    const subGroup = (title: string, hint: string, files: FileRow[]) =>
+      files.length === 0 ? null : (
+        <div key={title}>
+          <div className="flex items-center gap-1.5 px-2 pt-1.5 pb-0.5 pl-8 text-[9px] font-semibold uppercase tracking-wider text-gray-400" title={hint}>
+            <span>{title}</span>
+            <span className="rounded-full bg-gray-100 px-1.5 text-[9px] font-medium text-gray-500 dark:bg-white/10 dark:text-gray-400">{files.length}</span>
+          </div>
+          {files.map((f) => renderFileRow(s, f))}
+        </div>
+      );
+    return (
+      <>
+        {subGroup('Committed (ahead of master)', 'Committed on this branch, ahead of master', committed)}
+        {subGroup('Uncommitted (loose)', 'Not yet committed in this worktree', loose)}
+      </>
+    );
   };
 
   return (
@@ -336,39 +391,20 @@ export function ChangesScreen() {
                   {s.idLabel && (
                     <span className="flex-none font-mono text-[9px] font-normal text-gray-400">{s.idLabel}</span>
                   )}
+                  {s.kind === 'worktree' && (
+                    <span className="flex-none rounded px-1 text-[9px] font-medium text-gray-400" title="Changes shown are this worktree's full divergence from master">vs master</span>
+                  )}
                   <span className="flex-1" />
                   {s.status && s.kind !== 'main' && (
                     <span className="flex-none rounded px-1 text-[9px] font-medium text-gray-400">{s.status}</span>
                   )}
                   <span className="flex-none rounded-full bg-gray-100 px-1.5 text-[10px] font-medium text-gray-500 dark:bg-white/10 dark:text-gray-400">{s.files.length}</span>
                 </button>
-                {!sectionCollapsed && s.files.map((f) => {
-                  const isSel = selected?.sectionKey === s.key && selected?.path === f.file;
-                  const badge = f.status ? STATUS_BADGE[f.status] : null;
-                  return (
-                    <button
-                      key={f.file}
-                      onClick={() => setSelected({ sectionKey: s.key, path: f.file, label: s.label, source: s.source })}
-                      className={`flex w-full items-center gap-2 rounded-md py-1 pl-8 pr-2 text-left text-[11px] transition-colors ${isSel ? 'bg-primary/10 text-primary' : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-white/5'}`}
-                    >
-                      {badge
-                        ? <span className={`flex-none font-mono font-bold ${badge.cls}`} title={badge.title}>{badge.letter}</span>
-                        : <span className="w-[1ch] flex-none" />}
-                      <span className="min-w-0 flex-1 truncate font-mono" title={f.file}>{f.file}</span>
-                      {f.collidesWith && f.collidesWith.length > 0 && (
-                        <span className="flex-none" title={`Also changed in: ${f.collidesWith.join(', ')}`}>
-                          <AlertTriangle className="h-3 w-3 text-amber-500" />
-                        </span>
-                      )}
-                      {f.status !== 'untracked' && (
-                        <span className="flex-none font-mono text-[10px] tabular-nums text-gray-400">
-                          <span className="text-emerald-500">+{f.additions}</span>{' '}
-                          <span className="text-red-500">−{f.deletions}</span>
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
+                {!sectionCollapsed && (
+                  s.kind === 'worktree'
+                    ? renderWorktreeSplit(s)
+                    : s.files.map((f) => renderFileRow(s, f))
+                )}
               </div>
             );
           })}

@@ -3,6 +3,8 @@ import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, FileTex
 import { THEMES, type AppTheme, type AppView } from '../AppContext';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { NotificationPanel } from './NotificationPanel';
+import { notificationCategory } from './notificationCategory';
+import { useNotificationPrefs, isNotificationVisible } from '../hooks/useNotificationPrefs';
 import { AnimatePresence } from 'framer-motion';
 import { GlobalSearch } from './GlobalSearch';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
@@ -192,27 +194,33 @@ export function Header() {
   const view = useAppSelector((s) => s.view);
   const isConnected = useAppSelector((s) => s.isConnected);
   const notifications = useAppSelector((s) => s.notifications);
-  const notificationUnreadCount = useAppSelector((s) => s.notificationUnreadCount);
+
+  // FLUX-726: the bell's headline reflects unread *Action-needed* notifications (prompt/error),
+  // not total unread — Updates (completion/info) are FYI and don't drive the badge or pulse.
+  const { prefs } = useNotificationPrefs();
+  const actionableUnread = notifications.filter(
+    (n) => !n.read && !n.dismissed && notificationCategory(n.type) === 'action' && isNotificationVisible(n, prefs),
+  ).length;
 
   const [isPromptPulseActive, setIsPromptPulseActive] = useState(false);
   const [isNotificationPanelOpen, setIsNotificationPanelOpen] = useState(false);
 
-  const previousUnreadRef = useRef(notificationUnreadCount);
+  const previousUnreadRef = useRef(actionableUnread);
 
   useEffect(() => {
-    if (notificationUnreadCount === previousUnreadRef.current) {
+    if (actionableUnread === previousUnreadRef.current) {
       return;
     }
 
-    previousUnreadRef.current = notificationUnreadCount;
-    if (notificationUnreadCount > 0) {
+    previousUnreadRef.current = actionableUnread;
+    if (actionableUnread > 0) {
       setIsPromptPulseActive(true);
       const timeoutId = window.setTimeout(() => {
         setIsPromptPulseActive(false);
       }, 1600);
       return () => { window.clearTimeout(timeoutId); };
     }
-  }, [notificationUnreadCount]);
+  }, [actionableUnread]);
 
   const handleCloseNotificationPanel = useCallback(() => setIsNotificationPanelOpen(false), []);
   const handleSetView = useCallback((v: AppView) => setView(v), [setView]);
@@ -274,11 +282,12 @@ export function Header() {
           {/* Notifications dropdown */}
           <div className="relative">
             <button
+              data-notif-toggle
               onClick={toggleNotificationPanel}
               className={`group flex shrink-0 cursor-pointer items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-left transition-all duration-200 overflow-hidden ${
                 notifications.some(n => n.type === 'error' && !n.read)
                   ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300'
-                  : notificationUnreadCount > 0
+                  : actionableUnread > 0
                     ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300'
                     : 'border-gray-200 bg-white/60 text-gray-500 dark:border-white/10 dark:bg-white/5 dark:text-gray-400'
               } ${isPromptPulseActive ? 'header-live-prompts' : ''} ${isNotificationPanelOpen ? 'ring-2 ring-primary/30' : ''}`}
@@ -286,9 +295,9 @@ export function Header() {
             >
               <div className="relative shrink-0">
                 <Bell className="h-3.5 w-3.5" />
-                {notificationUnreadCount > 0 && <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-amber-500" />}
+                {actionableUnread > 0 && <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-amber-500" />}
               </div>
-              <span className="text-sm font-semibold leading-none">{notificationUnreadCount}</span>
+              <span className="text-sm font-semibold leading-none">{actionableUnread}</span>
               <span className="max-w-0 overflow-hidden opacity-0 whitespace-nowrap text-[10px] font-bold uppercase tracking-wider transition-all duration-200 group-hover:max-w-[80px] group-hover:opacity-100 group-hover:ml-0.5">
                 Alerts
               </span>

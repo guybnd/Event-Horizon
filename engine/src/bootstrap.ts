@@ -26,6 +26,12 @@ export async function bootstrapNewWorkspace(): Promise<void> {
       configCache.users = [{ name: global.defaultUser }, ...configCache.users];
     }
   }
+  // FLUX-785: guarantee a human entry even when no global defaultUser is set, so a skip-name /
+  // WorkspaceSelector first run never leaves config.users as [Agent]-only ("No users configured").
+  // 'You' is a filterable placeholder — OnboardingWizard replaces it when a real name is entered.
+  if (!configCache.users.some((u: any) => u.name && u.name !== 'Agent')) {
+    configCache.users = [{ name: 'You' }, ...configCache.users];
+  }
   if (!configCache.users.some((u: any) => u.name === 'Agent')) {
     configCache.users.push({ name: 'Agent' });
   }

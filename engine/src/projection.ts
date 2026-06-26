@@ -60,9 +60,10 @@ export interface TranscriptMessage {
   role: 'user' | 'assistant' | 'tool' | 'note';
   text: string;
   ts: string;
-  /** FLUX-745: subkind of a `note` row so the portal can pick the right chip. Currently only
-   *  `'context-update'` (the warm-resume situational update, FLUX-655/FLUX-745). */
-  kind?: 'context-update';
+  /** FLUX-745: subkind of a `note` row so the portal can pick the right chip.
+   *  `'context-update'` = the warm-resume situational update (FLUX-655/FLUX-745);
+   *  `'action'` = the pressed phase-launch action (FLUX-794, e.g. "▶ Implementation session started"). */
+  kind?: 'context-update' | 'action';
   /** FLUX-661: normalized tool name for a tool row (e.g. `Edit`, `list_tickets`). */
   tool?: string;
   /** FLUX-661: repo-relative path of the file an edit-ish tool touched, when resolvable.
@@ -84,6 +85,40 @@ export interface TranscriptMessage {
 
 /** FLUX-661: file-mutating Claude Code tools whose rows get an expandable inline diff. */
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+
+/** FLUX-803: orchestration tools that spawn a subagent group. Their projected tool rows carry the
+ *  normalized `tool` name so the chat can find the *spawn point* in the transcript and anchor the
+ *  inline orchestration block there (the row itself is suppressed by the block). Only the
+ *  group-forming delegate tools belong here: they auto-inherit the chat lead's `groupId` so the run
+ *  resolves to a 2+ group. `start_session` is deliberately excluded — it spawns a standalone,
+ *  ungrouped phase session (no `groupId`), so it never forms a group and tagging it would only
+ *  suppress its transcript row with no block to stand in for it. */
+const DELEGATION_TOOLS = new Set(['delegate_parallel', 'delegate_to_agent']);
+
+/** FLUX-794: phase → chip label for the synthetic `action` turn recorded when a non-chat
+ *  phase session is launched (the pressed Groom / Implement / Review / Finalize button). */
+const PHASE_LABELS: Record<string, string> = {
+  grooming: 'Grooming session started',
+  implementation: 'Implementation session started',
+  review: 'Review session started',
+  finalize: 'Finalize session started',
+};
+
+/** FLUX-798: derive a clean one-line chip suffix from a launch `focus`. A plain phase-button
+ *  press carries an empty focus, but a delegated/supervisor launch passes the `rosterContext`
+ *  boilerplate (markdown headings, code-fenced `list_available_agents`, etc.). Take the first
+ *  non-empty line and strip leading markdown markers so the chip reads as a clean single line
+ *  instead of dumping raw, truncated markdown into the chat stream. */
+function sanitizeActionFocus(focus: string): string {
+  const firstLine = focus.split('\n').find((line) => line.trim()) ?? '';
+  return firstLine
+    .trim()
+    .replace(/^#{1,6}\s+/, '') // ATX heading markers
+    .replace(/^[-*+]\s+/, '') // list bullets
+    .replace(/`/g, '') // inline code backticks
+    .replace(/^\*\*|\*\*$/g, '') // wrapping bold
+    .trim();
+}
 
 /** Normalize a tool_use block's name, unwrapping the `mcp__server__tool` prefix. */
 function normalizeToolName(block: any): string {
@@ -266,6 +301,18 @@ export function projectTranscript(
       // event already carries its own `text` + `timestamp` (pure projection, no schema change).
       const ts = typeof evt.timestamp === 'string' ? evt.timestamp : turn.ts;
       out.push(tag({ role: 'note', kind: 'context-update', text: evt.text, ts }, turn));
+    } else if (evt?.type === 'action' && typeof evt.phase === 'string') {
+      // FLUX-794: the user pressed a non-chat phase action (Groom / Implement / Review / Finalize)
+      // and the chat popped in. Emit a non-bubble `note` row so the portal renders it as a quiet
+      // "▶ <phase> session started" chip, in chronological order before the agent's first response.
+      // Like the resume-preamble note, it is display-only (no token/turn accounting, no "user replied").
+      const label = PHASE_LABELS[evt.phase] ?? 'Session started';
+      // FLUX-798: sanitize the focus to a clean single line — a delegated launch carries the
+      // multi-line `rosterContext` markdown blob, which would otherwise dump into the chip.
+      const focus = typeof evt.focus === 'string' ? sanitizeActionFocus(evt.focus) : '';
+      const text = focus ? `${label} — ${focus}` : label;
+      const ts = typeof evt.timestamp === 'string' ? evt.timestamp : turn.ts;
+      out.push(tag({ role: 'note', kind: 'action', text, ts }, turn));
     } else if (evt?.type === 'ask-question' && Array.isArray(evt.questions)) {
       // FLUX-662: an agent asked the user a structured question. Render it as an assistant
       // turn so a cold resume shows the question that was posed.
@@ -313,6 +360,10 @@ export function projectTranscript(
               msg.tool = name;
               msg.path = rel;
             }
+          } else if (DELEGATION_TOOLS.has(name)) {
+            // FLUX-803: tag the spawn-point row (no `path`, so it stays a plain row — the chat
+            // suppresses it and renders the inline orchestration block in its place).
+            msg.tool = name;
           }
           out.push(tag(msg, turn));
         }

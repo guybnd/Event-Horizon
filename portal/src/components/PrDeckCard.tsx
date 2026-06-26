@@ -1,11 +1,11 @@
 import { useState } from 'react';
 import type { JSX } from 'react';
-import { GitMerge, Check, X, Clock, AlertTriangle, ShieldCheck, Loader2, Bot, Wrench, RotateCcw, Undo2, Plus, Link2 } from 'lucide-react';
+import { GitMerge, AlertTriangle, ShieldCheck, Loader2, Bot, Wrench, RotateCcw, Undo2, Plus, Link2 } from 'lucide-react';
 import type { Task } from '../types';
+import { reviewChip } from './ReviewChip';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import type { TaskCardController } from '../hooks/useTaskCardController';
 import { TaskDeck } from './TaskDeck';
-import { CardCommentBadge } from './task-card/CardCommentBadge';
 import { mergePr, retryPr, updateTask, adoptPr, MergeParkedError } from '../api';
 import { launchPhaseDefault } from '../agentActions';
 import { resolveEffectiveAgent } from '../utils';
@@ -193,9 +193,8 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
 
   return (
     <div onClick={(e) => e.stopPropagation()}>
-      {/* Status chips. pr-8 reserves the top-right corner for the chat pill (TaskCard renders it
-          absolutely there — FLUX-739); the comment badge lives inline here (ml-auto) instead of the
-          corner, so chat and comment never collide. */}
+      {/* Status chips. pr-8 reserves the top-right corner for the comment badge (TaskCard renders
+          it absolutely there — FLUX-804), so the chips never run under it. */}
       <div className="mb-2 flex flex-wrap items-center gap-1.5 pr-8">
         {prStateChip(task.prState)}
         {changesRequested && (
@@ -203,9 +202,18 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
             <AlertTriangle className="h-3 w-3" /> Changes requested
           </span>
         )}
-        {/* Drop the redundant CHANGES_REQUESTED review chip when the dedicated "Changes
-            requested" pill above already conveys it (FLUX-594) — keep any other decision. */}
-        {reviewChip(changesRequested && task.reviewDecision === 'CHANGES_REQUESTED' ? null : (task.reviewDecision ?? null))}
+        {/* Review badge from EITHER source (FLUX-816): GitHub `reviewDecision` wins when present,
+            internal `reviewState` fills the gap so an internally-approved PR isn't shown as
+            unreviewed just because GitHub was never told. Drop the redundant changes-requested
+            chip when the dedicated "Changes requested" pill above already conveys it (FLUX-594). */}
+        {(() => {
+          // reviewDecision is stored as "" (not null) when GitHub has no review, so `??`
+          // would treat it as "present" and never fall through. Use `||` so an empty GitHub
+          // decision yields to the internal EH reviewState (FLUX-816 intent).
+          const signal = task.reviewDecision || task.reviewState || null;
+          if (changesRequested && (signal === 'CHANGES_REQUESTED' || signal === 'changes-requested')) return null;
+          return reviewChip(signal);
+        })()}
         {/* Single-session running badge — when an agent (e.g. a review) runs ON the PR but
             isn't a live orchestration (no CardClusterPanel). Multi/orchestration sessions show
             the full HAND-OFF panel above instead. FLUX-567 regression fix. */}
@@ -214,11 +222,6 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
             <Bot className="h-3 w-3" /> {task.cliSession.label}{c.currentActivity ? ` · ${c.currentActivity}` : ''}
           </span>
         )}
-        {/* Comment badge — moved out of the corner into the status row so the chat pill owns the
-            corner (FLUX-739). Inline chip, right-aligned. */}
-        <div className="ml-auto">
-          <CardCommentBadge task={task} c={c} inline />
-        </div>
       </div>
 
       {/* Deck — folded members (FLUX-567 / FLUX-580 shared primitive) */}
@@ -467,18 +470,3 @@ function prStateChip(state?: string) {
   return <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${m.cls}`}>{m.icon}{m.label}</span>;
 }
 
-function reviewChip(decision: string | null) {
-  if (!decision) return null;
-  const map: Record<string, { cls: string; icon: JSX.Element }> = {
-    APPROVED: { cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300', icon: <Check className="h-3 w-3" /> },
-    CHANGES_REQUESTED: { cls: 'bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300', icon: <X className="h-3 w-3" /> },
-    REVIEW_REQUIRED: { cls: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300', icon: <Clock className="h-3 w-3" /> },
-  };
-  const m = map[decision];
-  if (!m) return null;
-  return (
-    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold capitalize ${m.cls}`}>
-      {m.icon}{decision.replace(/_/g, ' ').toLowerCase()}
-    </span>
-  );
-}

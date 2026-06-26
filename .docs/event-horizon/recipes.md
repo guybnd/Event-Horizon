@@ -65,7 +65,7 @@ Goal: expose a new capability to agents (e.g. `archive_ticket`).
 Goal: add a new column to the board, optionally with a required-comment rule on entry.
 
 1. **Board config** — done at runtime, not in code.
-   - `PUT /api/config` with the new status added to `statuses[]`. Or use the portal's Settings → Statuses UI.
+   - `PUT /api/config` with the new status added to `statuses[]`. (As of FLUX-770 the portal's Settings → Board editor is **recolor-only** — statuses can't be added or renamed from the UI, because the workflow engine and agent instructions are written around the canonical set. Adding one is an advanced API/config operation, and agent flows have no defined behavior for a non-canonical status — it renders as a plain lane.)
    - If the new status is hidden (Backlog/Released style), add it to `hiddenStatuses[]`.
 2. **Enforcement** — [`engine/src/mcp-server.ts`](../../engine/src/mcp-server.ts) and [`engine/src/routes/tasks.ts`](../../engine/src/routes/tasks.ts)
    - The current required-comment rules look up `config.requireInputStatus` and `config.readyForMergeStatus`. If your new status should require a comment, the simplest path is to make it one of those two and rename the existing one. Otherwise, extend the check to accept a list.

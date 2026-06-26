@@ -1,16 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { DndContext, DragOverlay, pointerWithin } from '@dnd-kit/core';
 import type { DragEndEvent, DragStartEvent } from '@dnd-kit/core';
 import { arrayMove } from '@dnd-kit/sortable';
 import { Column } from './Column';
 import { StatusBadge } from './StatusBadge';
 import { TaskCardInner } from './TaskCard';
-import { updateTask } from '../api';
+import { createTask, updateTask } from '../api';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { buildStatusChangeHistory } from '../lib/ticketActions';
 import type { Task } from '../types';
 import { normalizeSubtaskId } from '../types';
-import { Loader2, Upload } from 'lucide-react';
+import { Loader2, Upload, Sparkles } from 'lucide-react';
 import { TaskViewControls } from './TaskViewControls';
 import { filterAndSortTasks } from '../taskSearch';
 import { getStatusColorClass } from '../statusStyles';
@@ -23,12 +23,39 @@ import { BootstrapPreview } from './BootstrapPreview';
 // Stable empty array so columns with no tasks get a referentially-stable prop (memo-friendly).
 const EMPTY_TASKS: Task[] = [];
 
+// FLUX-795: per-session opt-out for the PROACTIVE "add a note?" status-change prompt. Stored in
+// sessionStorage so it lasts the browser session and resets on reload. Only suppresses the
+// proactive prompt (config.requireCommentOnStatusChange) — a backend-mandated note (Ready /
+// Require Input) still prompts reactively.
+const STATUS_NOTE_SKIP_KEY = 'eh-skip-status-note';
+function skipStatusNote(): boolean {
+  try { return sessionStorage.getItem(STATUS_NOTE_SKIP_KEY) === '1'; } catch { return false; }
+}
+function setSkipStatusNote(v: boolean): void {
+  try {
+    if (v) sessionStorage.setItem(STATUS_NOTE_SKIP_KEY, '1');
+    else sessionStorage.removeItem(STATUS_NOTE_SKIP_KEY);
+  } catch { /* sessionStorage unavailable — non-fatal */ }
+}
+
+// FLUX-786: mission body for the "Bootstrap with AI" starter ticket. The user launches a grooming/
+// implementation agent on it; the agent scans the repo and creates the proposed tickets as subtasks.
+const BOOTSTRAP_TICKET_BODY = `## Bootstrap my board
+
+This is a starter ticket. **Launch an agent on it** (Grooming or Implementation) to populate your board automatically.
+
+**Mission for the agent:** Scan this project — source layout, \`README\`, docs, config, dependencies, and any \`TODO\`/\`FIXME\` markers — and propose **5–8 high-value starter tickets** you'd recommend tackling first: setup gaps, quick wins, bugs, and the most valuable next features. Create each as a **subtask of this ticket** (use your ticket tools) with a clear title, a 1–2 sentence problem/why, and an effort estimate. Finish with a short summary of what you found and why you picked these.
+
+_Created by the "Bootstrap with AI" action on the empty board. Delete this ticket once your board is populated._`;
+
 export function Board() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [activeTask, setActiveTask] = useState<Task | null>(null);
   const [releaseModalTasks, setReleaseModalTasks] = useState<Task[] | null>(null);
   const [showBootstrap, setShowBootstrap] = useState(false);
-  const { triggerRefresh } = useAppActions();
+  const { triggerRefresh, openTaskModal } = useAppActions();
+  const currentProject = useAppSelector((s) => s.currentProject);
+  const [bootstrapping, setBootstrapping] = useState(false);
   const liveTasks = useAppSelector((s) => s.tasks);
   const tasksLoading = useAppSelector((s) => s.tasksLoading);
   const taskLiveEvents = useAppSelector((s) => s.taskLiveEvents);
@@ -37,6 +64,9 @@ export function Board() {
   const boardFx = config?.boardFx;
   const currentUser = useAppSelector((s) => s.currentUser);
   const searchQuery = useAppSelector((s) => s.searchQuery);
+  // FLUX-791: defer the query feeding the filter/sort memo so typing in the board filter stays
+  // responsive — the heavy filterAndSortTasks pass + board re-render runs as a non-urgent update.
+  const deferredSearchQuery = useDeferredValue(searchQuery);
   const sortOption = useAppSelector((s) => s.sortOption);
   const filterAssignee = useAppSelector((s) => s.filterAssignee);
   const filterPriority = useAppSelector((s) => s.filterPriority);
@@ -49,10 +79,34 @@ export function Board() {
 
   const scrollerRef = useRef<HTMLDivElement>(null);
 
+  // FLUX-786: seed a "Bootstrap my board" Grooming ticket and open it. The user launches an agent
+  // on it to scan the repo and propose starter tickets — we don't auto-spawn an agent from a click.
+  const handleBootstrapWithAi = useCallback(async () => {
+    if (bootstrapping) return;
+    setBootstrapping(true);
+    try {
+      const task = await createTask({
+        projectKey: currentProject || 'PROJECT',
+        author: currentUser,
+        title: 'Bootstrap my board',
+        status: 'Grooming',
+        body: BOOTSTRAP_TICKET_BODY,
+        assignee: 'Agent',
+      });
+      triggerRefresh();
+      openTaskModal(task);
+    } catch (err) {
+      console.error('[bootstrap] failed to create starter ticket:', err);
+    } finally {
+      setBootstrapping(false);
+    }
+  }, [bootstrapping, currentProject, currentUser, triggerRefresh, openTaskModal]);
+
   const [pendingStatusChange, setPendingStatusChange] = useState<{taskId: string, newStatus: string, oldStatus: string} | null>(null);
   const [movingTaskIds, setMovingTaskIds] = useState<Set<string>>(new Set());
   const [optimisticTasks, setOptimisticTasks] = useState<Record<string, Task>>({});
   const [commentText, setCommentText] = useState('');
+  const [skipFutureNotes, setSkipFutureNotes] = useState(false); // FLUX-795: modal checkbox
 
   // Sync local tasks with liveTasks + optimistic overrides.
   // FLUX-619 / drag perf: while a drag is in progress, DON'T re-sync — a poll/SSE update
@@ -203,7 +257,7 @@ export function Board() {
   // Filter + sort once per input change (was recomputed on EVERY render — incl. each SSE
   // activity/progress tick during agent sessions, the main board-sluggishness cause). (FLUX-611)
   const visibleTasks = useMemo(() => config ? filterAndSortTasks(boardTasks, config, {
-    searchQuery,
+    searchQuery: deferredSearchQuery,
     sortOption,
     filterAssignee,
     filterPriority,
@@ -213,7 +267,7 @@ export function Board() {
     worktreeBranches,
     readComments,
     requireInputStatus: getRequireInputStatus(config),
-  }) : [], [boardTasks, config, searchQuery, sortOption, filterAssignee, filterPriority, filterTag, filterUnreadOnly, filterWorktree, worktreeBranches, readComments]);
+  }) : [], [boardTasks, config, deferredSearchQuery, sortOption, filterAssignee, filterPriority, filterTag, filterUnreadOnly, filterWorktree, worktreeBranches, readComments]);
 
   // Cross-column subtask clusters (FLUX-677): ≥2 subtasks of one epic that piled up in a column
   // the epic isn't in collapse under a proxy deck there. Computed over visibleTasks so search/
@@ -317,7 +371,7 @@ export function Board() {
     if (activeTaskObj.status !== targetStatus) {
       // Respect the config setting for status change comments.
       // If disabled, we try to move silently and only prompt if the backend requires it (e.g. for Ready/Require Input)
-      if (config.requireCommentOnStatusChange) {
+      if (config.requireCommentOnStatusChange && !skipStatusNote()) {
         setPendingStatusChange({ taskId: activeTaskId, newStatus: targetStatus, oldStatus: activeTaskObj.status });
         return;
       }
@@ -427,6 +481,7 @@ export function Board() {
     }
     setPendingStatusChange(null);
     setCommentText('');
+    setSkipFutureNotes(false);
   };
 
   return (
@@ -449,13 +504,26 @@ export function Board() {
           {boardTasks.length === 0 && !tasksLoading && (
             <div className="flex flex-col items-center justify-center gap-4 py-16">
               <p className="text-sm text-gray-500 dark:text-gray-400">No tickets yet.</p>
-              <button
-                onClick={() => setShowBootstrap(true)}
-                className="board-accent-button flex items-center gap-2 rounded-2xl bg-primary px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:bg-primary-hover"
-              >
-                <Upload className="h-4 w-4" />
-                Import from project
-              </button>
+              <div className="flex flex-col items-center gap-2">
+                <button
+                  onClick={handleBootstrapWithAi}
+                  disabled={bootstrapping}
+                  className="board-accent-button flex items-center gap-2 rounded-2xl bg-primary px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-all hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {bootstrapping ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                  Bootstrap with AI
+                </button>
+                <button
+                  onClick={() => setShowBootstrap(true)}
+                  className="flex items-center gap-2 rounded-2xl border border-gray-200 bg-white px-5 py-2 text-sm font-medium text-gray-700 transition-all hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300 dark:hover:bg-white/10"
+                >
+                  <Upload className="h-4 w-4" />
+                  Import from project
+                </button>
+                <p className="mt-1 max-w-xs text-center text-xs text-gray-400">
+                  Bootstrap creates a starter ticket; launch an agent on it to scan your repo and propose tickets.
+                </p>
+              </div>
             </div>
           )}
           <DndContext onDragStart={handleDragStart} onDragEnd={handleDragEnd} collisionDetection={pointerWithin}>
@@ -517,15 +585,30 @@ export function Board() {
               placeholder="Optional comment..."
               value={commentText} onChange={e => setCommentText(e.target.value)}
             />
-            <div className="flex justify-end gap-3">
-              <button
-                onClick={() => setPendingStatusChange(null)}
-                className="px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-100 dark:hover:bg-white/5 cursor-pointer transition-colors"
-              >Cancel</button>
-              <button
-                onClick={() => applyStatusChange(pendingStatusChange.taskId, pendingStatusChange.newStatus, pendingStatusChange.oldStatus, commentText)}
-                className="board-accent-button px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium cursor-pointer transition-colors"
-              >Save Update</button>
+            <div className="flex items-center justify-between gap-3">
+              <label className="flex items-center gap-2 text-xs text-gray-500 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={skipFutureNotes}
+                  onChange={e => setSkipFutureNotes(e.target.checked)}
+                  className="h-3.5 w-3.5 rounded border-gray-300 text-primary focus:ring-primary cursor-pointer"
+                />
+                Don't ask again this session
+              </label>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => { setPendingStatusChange(null); setSkipFutureNotes(false); setCommentText(''); }}
+                  className="px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-100 dark:hover:bg-white/5 cursor-pointer transition-colors"
+                >Cancel</button>
+                <button
+                  onClick={() => {
+                    // FLUX-795: persist the opt-out for the session before applying this move.
+                    if (skipFutureNotes) setSkipStatusNote(true);
+                    applyStatusChange(pendingStatusChange.taskId, pendingStatusChange.newStatus, pendingStatusChange.oldStatus, commentText);
+                  }}
+                  className="board-accent-button px-4 py-2 bg-primary hover:bg-primary-hover text-white rounded-lg text-sm font-medium cursor-pointer transition-colors"
+                >Save Update</button>
+              </div>
             </div>
           </div>
         </div>

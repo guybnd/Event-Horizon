@@ -95,6 +95,12 @@ export interface Task {
   prNumber?: number;
   prState?: string;
   reviewDecision?: string | null;
+  /** FLUX-816: the outcome of an EH (non-GitHub) review — set by the review orchestrator when it
+   *  concludes (approve→Ready, changes-requested→In Progress) or set/cleared manually by a human.
+   *  Surfaces a review badge on the card. Distinct from `reviewDecision` (GitHub-synced, PR-only,
+   *  uppercase enum); on PR cards the badge falls back to this when `reviewDecision` is absent.
+   *  null = never reviewed (no badge — never a false "approved"). No stale-review auto-invalidation. */
+  reviewState?: 'approved' | 'changes-requested' | null;
   isDraft?: boolean;
   members?: string[];
   /** Typed relationships to other tickets (FLUX-593 'retries'; generalized by epic FLUX-596). */

@@ -24,11 +24,20 @@ const SWATCH_COLORS: Record<string, string> = {
   red: '#ef4444',
   orange: '#f97316',
   amber: '#f59e0b',
+  yellow: '#eab308',
+  lime: '#84cc16',
+  green: '#22c55e',
   emerald: '#10b981',
-  blue: '#3b82f6',
+  teal: '#14b8a6',
+  cyan: '#06b6d4',
   sky: '#0ea5e9',
-  purple: '#8b5cf6',
+  blue: '#3b82f6',
+  indigo: '#6366f1',
+  violet: '#8b5cf6',
+  purple: '#a855f7',
+  fuchsia: '#d946ef',
   pink: '#ec4899',
+  rose: '#f43f5e',
 };
 
 function getPaletteSwatchColor(colorClass: string) {
@@ -158,7 +167,22 @@ export const TagEditor = ({ items, setItems }: { items: TagDef[]; setItems: (ite
   );
 };
 
-export const StatusEditor = ({ items, setItems, placeholder, sortable = false }: { items: StatusDef[]; setItems: (items: StatusDef[]) => void; placeholder: string; sortable?: boolean }) => {
+type StatusRoleBadge = { label: string; tone: 'role' | 'system' | 'legacy' };
+
+function StatusRolePill({ role }: { role: StatusRoleBadge }) {
+  const tone = role.tone === 'role'
+    ? 'bg-primary/10 text-primary'
+    : role.tone === 'legacy'
+      ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+      : 'bg-gray-200/70 text-gray-600 dark:bg-white/10 dark:text-gray-300';
+  return (
+    <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${tone}`}>
+      {role.label}
+    </span>
+  );
+}
+
+export const StatusEditor = ({ items, setItems, placeholder, sortable = false, locked = false, roleOf }: { items: StatusDef[]; setItems: (items: StatusDef[]) => void; placeholder: string; sortable?: boolean; locked?: boolean; roleOf?: (name: string) => StatusRoleBadge }) => {
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
   const handleDragEnd = (event: DragEndEvent) => {
@@ -173,6 +197,7 @@ export const StatusEditor = ({ items, setItems, placeholder, sortable = false }:
   };
 
   const rows = items.map((item, idx) => {
+    const role = roleOf?.(item.name);
     const row = (
       <div className="flex flex-1 min-w-0 gap-3 items-center bg-gray-50 dark:bg-black/10 p-2 rounded-xl border border-gray-100 dark:border-white/5">
         <StatusColorPicker
@@ -184,13 +209,16 @@ export const StatusEditor = ({ items, setItems, placeholder, sortable = false }:
             setItems(newArr);
           }}
         />
-        <input
-          value={item.name}
-          onChange={e => { const newArr = [...items]; newArr[idx].name = e.target.value; setItems(newArr); }}
-          className="min-w-0 flex-1 bg-white dark:bg-black/40 border border-gray-200 dark:border-white/10 rounded-lg px-3 py-1.5 outline-none focus:border-primary text-sm font-medium"
-          placeholder={placeholder}
-        />
-        <button onClick={() => setItems(items.filter((_, i) => i !== idx))} className="p-1.5 ml-auto text-gray-400 hover:text-red-500 rounded"><X className="w-4 h-4" /></button>
+        {!locked && (
+          <input
+            value={item.name}
+            onChange={e => { const newArr = [...items]; newArr[idx].name = e.target.value; setItems(newArr); }}
+            className="min-w-0 flex-1 bg-white dark:bg-black/40 border border-gray-200 dark:border-white/10 rounded-lg px-3 py-1.5 outline-none focus:border-primary text-sm font-medium"
+            placeholder={placeholder}
+          />
+        )}
+        {role && <span className="ml-auto shrink-0"><StatusRolePill role={role} /></span>}
+        {!locked && <button onClick={() => setItems(items.filter((_, i) => i !== idx))} className="p-1.5 shrink-0 text-gray-400 hover:text-red-500 rounded"><X className="w-4 h-4" /></button>}
       </div>
     );
 
@@ -210,9 +238,13 @@ export const StatusEditor = ({ items, setItems, placeholder, sortable = false }:
 
   return (
     <div className="space-y-3">
-      <p className="text-[11px] text-gray-500 dark:text-gray-400">Click a status badge to change its color.</p>
+      <p className="text-[11px] text-gray-500 dark:text-gray-400">
+        Click a status badge to change its color.{locked ? ' Statuses are system-managed — recolor only.' : ''}
+      </p>
       {content}
-      <button onClick={() => setItems([...items, { name: '', color: STATUS_COLOR_PALETTE[0] }])} className="flex items-center gap-1 text-xs font-bold text-primary hover:text-primary-hover px-2 py-1"><Plus className="w-3 h-3" /> Add Status</button>
+      {!locked && (
+        <button onClick={() => setItems([...items, { name: '', color: STATUS_COLOR_PALETTE[0] }])} className="flex items-center gap-1 text-xs font-bold text-primary hover:text-primary-hover px-2 py-1"><Plus className="w-3 h-3" /> Add Status</button>
+      )}
     </div>
   );
 };

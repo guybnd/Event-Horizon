@@ -1,22 +1,41 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
-import { Save } from 'lucide-react';
-import { bulkRename } from '../api';
+import { Save, Check, AlertTriangle } from 'lucide-react';
+import { bulkRename, fetchGlobalSettings, updateGlobalSettings } from '../api';
 import type { TagDef, StatusDef, UserDef, PriorityDef, DocsEditPermissions, BoardCardOpenMode, CliFramework } from '../types';
 import { DEFAULT_READY_FOR_MERGE_STATUS, DEFAULT_REQUIRE_INPUT_STATUS, DEFAULT_ARCHIVE_STATUS } from '../workflow';
 import { StopServiceButton } from './StopServiceButton';
 import { WorkflowSection } from './settings/WorkflowSection';
+import { BoardBehaviorSection } from './settings/BoardBehaviorSection';
 import { AttributesSection } from './settings/AttributesSection';
+import { AppearanceSection } from './settings/AppearanceSection';
 import { WorkspaceSection } from './settings/WorkspaceSection';
-import { PreferencesSection } from './settings/PreferencesSection';
+import { WorktreeSection } from './settings/WorktreeSection';
+import { ReleaseNotesSection } from './settings/ReleaseNotesSection';
 import { AgentSection } from './settings/AgentSection';
+import { AgentProgressSection } from './settings/AgentProgressSection';
+import { CostTokensSection } from './settings/CostTokensSection';
 import { ModulesSection } from './settings/ModulesSection';
 import { McpPhasesSection } from './settings/McpPhasesSection';
-import { GlobalSection } from './settings/GlobalSection';
+import { GeneralSection } from './settings/GeneralSection';
 import type { Config, ModuleDeclaration } from '../types';
 
 /** Runtime config carries a per-phase MCP server map that isn't yet on the `Config` type. */
 type ConfigWithMcpPhases = Config & { mcpServerPhases?: Record<string, string[]> };
+
+type SettingsTab = 'board' | 'appearance' | 'attributes' | 'workspace' | 'agents' | 'modules' | 'general';
+
+const TAB_ORDER: SettingsTab[] = ['board', 'appearance', 'attributes', 'workspace', 'agents', 'modules', 'general'];
+
+const TAB_LABELS: Record<SettingsTab, string> = {
+  board: 'Board',
+  appearance: 'Appearance',
+  attributes: 'Attributes',
+  workspace: 'Workspace',
+  agents: 'Agents',
+  modules: 'Modules',
+  general: 'General',
+};
 
 /** Drop the UI-only `originalName` field before an item is persisted. */
 function stripOriginalName<T extends { originalName?: string }>(item: T): Omit<T, 'originalName'> {
@@ -31,13 +50,13 @@ export function Settings() {
   const workspacePath = useAppSelector(s => s.workspacePath);
   const settingsTab = useAppSelector(s => s.settingsTab);
 
-  const [activeTab, setActiveTab] = useState<'workflow' | 'attributes' | 'workspace' | 'preferences' | 'agent' | 'modules' | 'global'>('workflow');
+  const [activeTab, setActiveTab] = useState<SettingsTab>('board');
 
   // Honor a requested tab from elsewhere (e.g. the header user menu's "Manage users"),
   // then clear it so a later manual tab change isn't overridden.
   useEffect(() => {
     if (!settingsTab) return;
-    setActiveTab(settingsTab as typeof activeTab);
+    if ((TAB_ORDER as string[]).includes(settingsTab)) setActiveTab(settingsTab as SettingsTab);
     setSettingsTab(null);
   }, [settingsTab, setSettingsTab]);
   const [columns, setColumns] = useState<StatusDef[]>([]);
@@ -82,6 +101,35 @@ export function Settings() {
   const [mcpServerPhases, setMcpServerPhases] = useState<Record<string, string[]>>({});
   const [boardFx, setBoardFx] = useState<NonNullable<Config['boardFx']>>({ columnFire: true, ticketAgeRust: true, dragTrail: true, idleDust: true, boardWeather: true, columnFlowArrows: true, heartbeat: true, speedDemon: true, doneStreak: true, ticketDna: true });
   const [saving, setSaving] = useState(false);
+  const [toast, setToast] = useState<{ kind: 'success' | 'error'; message: string } | null>(null);
+
+  // Global (cross-workspace) settings — lifted here so they save through the single Save bar.
+  const [globalDefaultUser, setGlobalDefaultUser] = useState('');
+  const [globalPreferredFramework, setGlobalPreferredFramework] = useState('');
+  const [globalPort, setGlobalPort] = useState(3067);
+  const [globalLoading, setGlobalLoading] = useState(true);
+  const [globalError, setGlobalError] = useState<string | null>(null);
+  const [globalMigratedFrom, setGlobalMigratedFrom] = useState<string | undefined>(undefined);
+  // Snapshot of the global values as last loaded/saved, for dirty comparison + discard.
+  const [loadedGlobal, setLoadedGlobal] = useState({ defaultUser: '', preferredFramework: '', port: 3067 });
+
+  useEffect(() => {
+    let cancelled = false;
+    setGlobalLoading(true);
+    fetchGlobalSettings()
+      .then((s) => {
+        if (cancelled) return;
+        const next = { defaultUser: s.defaultUser ?? '', preferredFramework: s.preferredFramework ?? '', port: s.port ?? 3067 };
+        setGlobalDefaultUser(next.defaultUser);
+        setGlobalPreferredFramework(next.preferredFramework);
+        setGlobalPort(next.port);
+        setGlobalMigratedFrom(s.migratedFrom);
+        setLoadedGlobal(next);
+      })
+      .catch((err) => { if (!cancelled) setGlobalError(err instanceof Error ? err.message : 'Failed to load global settings'); })
+      .finally(() => { if (!cancelled) setGlobalLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     if (config) {
@@ -134,33 +182,14 @@ export function Settings() {
   const normalizedRequireInputStatus = requireInputStatus.trim() || DEFAULT_REQUIRE_INPUT_STATUS;
   const normalizedReadyForMergeStatus = readyForMergeStatus.trim() || DEFAULT_READY_FOR_MERGE_STATUS;
   const normalizedArchiveStatus = archiveStatus.trim() || DEFAULT_ARCHIVE_STATUS;
-  const statusOptions = Array.from(
-    new Set([...columns, ...hiddenStatuses].map((item) => item.name.trim()).filter(Boolean))
-  );
-  const isRequireInputStatusMissing = !statusOptions.includes(normalizedRequireInputStatus);
-  const isReadyForMergeStatusMissing = !statusOptions.includes(normalizedReadyForMergeStatus);
 
-  const getWorkflowStatusLocation = (statusName: string) => {
-    if (columns.some((item) => item.name === statusName)) return 'Board';
-    if (hiddenStatuses.some((item) => item.name === statusName)) return 'Hidden';
-    return 'Missing';
-  };
+  const toastTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => { if (toastTimer.current !== undefined) window.clearTimeout(toastTimer.current); }, []);
 
-  const restoreWorkflowStatusToBoard = (statusName: string) => {
-    const normalizedStatusName = statusName.trim();
-    if (!normalizedStatusName) return;
-
-    setHiddenStatuses((current) => current.filter((item) => item.name !== normalizedStatusName));
-    setColumns((current) => {
-      if (current.some((item) => item.name === normalizedStatusName)) {
-        return current;
-      }
-      const next = [...current];
-      const doneIndex = next.findIndex((item) => item.name === 'Done');
-      const insertIndex = doneIndex === -1 ? next.length : doneIndex;
-      next.splice(insertIndex, 0, { name: normalizedStatusName });
-      return next;
-    });
+  const showToast = (kind: 'success' | 'error', message: string) => {
+    setToast({ kind, message });
+    if (toastTimer.current !== undefined) window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 3000);
   };
 
   const handleSave = async () => {
@@ -282,11 +311,29 @@ export function Settings() {
         boardFx,
       } as ConfigWithMcpPhases);
 
+      // Global (cross-workspace) settings travel through the same Save action.
+      // Send the actual strings (NOT `value || undefined`): JSON.stringify drops undefined keys,
+      // so coalescing an emptied field to undefined makes the engine keep the old value — the
+      // field could never be cleared and the General tab stayed dirty forever (FLUX-770 review).
+      // Snapshot loadedGlobal from the submitted values so the dirty compare always converges.
+      if (isGeneralDirty) {
+        await updateGlobalSettings({
+          defaultUser: globalDefaultUser,
+          preferredFramework: globalPreferredFramework,
+          port: globalPort,
+        });
+        setLoadedGlobal({
+          defaultUser: globalDefaultUser,
+          preferredFramework: globalPreferredFramework,
+          port: globalPort,
+        });
+      }
+
       triggerRefresh();
-      alert('Settings & Global Renames saved successfully!');
+      showToast('success', 'Settings saved');
     } catch (err) {
       console.error(err);
-      alert('Failed to save settings');
+      showToast('error', 'Failed to save settings');
     } finally {
       setSaving(false);
     }
@@ -335,97 +382,143 @@ export function Settings() {
     setModules(config.modules || []);
     setMcpServerPhases((config as ConfigWithMcpPhases).mcpServerPhases || {});
     setBoardFx({ columnFire: true, ticketAgeRust: true, dragTrail: true, idleDust: true, boardWeather: true, columnFlowArrows: true, heartbeat: true, speedDemon: true, doneStreak: true, ticketDna: true, ...(config.boardFx ?? {}) });
+    // Global settings back to last loaded snapshot.
+    setGlobalDefaultUser(loadedGlobal.defaultUser);
+    setGlobalPreferredFramework(loadedGlobal.preferredFramework);
+    setGlobalPort(loadedGlobal.port);
   };
 
   if (!config) return null;
 
-  const currentSavedPayload = JSON.stringify({
-    columns: columns.filter(c => c.name.trim()).map(stripOriginalName),
-    hiddenStatuses: hiddenStatuses.filter(c => c.name.trim()).map(stripOriginalName),
-    users: users.filter(c => c.name.trim()).map(stripOriginalName),
-    tags: tags.filter(c => c.name.trim()).map(stripOriginalName),
-    priorities: priorities.filter(p => p.name.trim()).map(stripOriginalName),
-    projects: projects.split(',').map(s => s.trim()).filter(Boolean),
-    enableBacklogScreen: enableBacklog,
-    requireCommentOnStatusChange: requireComment,
-    boardCardOpenMode,
-    worktreeByDefault,
-    animationsEnabled,
-    enableFireworks,
-    animationSpeed,
-    requireInputStatus: normalizedRequireInputStatus,
-    readyForMergeStatus: normalizedReadyForMergeStatus,
-    archiveStatus: normalizedArchiveStatus,
-    docsEditPermissions,
-    docsAllowedUsers: docsEditPermissions === 'specified' ? docsAllowedUsers : [],
-    docsRoot,
-    hoverPopupsEnabled,
-    hoverPopupDelay,
-    commentHoverPreviewEnabled,
-    tokenDisplayMode,
-    tokenCostThresholds,
-    effortLevel,
-    defaultAgent,
-    boardPermissionDefault,
-    ticketPermissionDefault,
-    groomingModel,
-    implementationModel,
-    geminiGroomingModel,
-    geminiImplementationModel,
-    generateDistinctFiles,
-    releaseNotesPath,
-    syncDebounceMs,
-    syncMaxWaitMs,
-    agentProgressEnabled,
-    agentProgressDelay,
-    modules,
-    mcpServerPhases,
-  });
+  // ── Dirty tracking, grouped by tab ─────────────────────────────────────────
+  // Each tab compares its own slice of current state against the saved config so the
+  // sidebar can show exactly which tab carries unsaved changes (and the Save bar appears
+  // whenever any tab is dirty). The theme picker + browser notifications save instantly,
+  // so they are intentionally excluded from this comparison.
+  const currentByTab: Record<SettingsTab, unknown> = {
+    board: {
+      columns: columns.filter(c => c.name.trim()).map(stripOriginalName),
+      hiddenStatuses: hiddenStatuses.filter(c => c.name.trim()).map(stripOriginalName),
+      requireInputStatus: normalizedRequireInputStatus,
+      readyForMergeStatus: normalizedReadyForMergeStatus,
+      archiveStatus: normalizedArchiveStatus,
+      boardCardOpenMode,
+      requireCommentOnStatusChange: requireComment,
+      enableBacklogScreen: enableBacklog,
+      hoverPopupsEnabled,
+      hoverPopupDelay,
+      commentHoverPreviewEnabled,
+    },
+    appearance: {
+      animationsEnabled,
+      animationSpeed,
+      enableFireworks,
+      boardFx,
+    },
+    attributes: {
+      tags: tags.filter(c => c.name.trim()).map(stripOriginalName),
+      priorities: priorities.filter(p => p.name.trim()).map(stripOriginalName),
+    },
+    workspace: {
+      users: users.filter(c => c.name.trim()).map(stripOriginalName),
+      projects: projects.split(',').map(s => s.trim()).filter(Boolean),
+      docsEditPermissions,
+      docsAllowedUsers: docsEditPermissions === 'specified' ? docsAllowedUsers : [],
+      docsRoot,
+      syncDebounceMs,
+      syncMaxWaitMs,
+      worktreeByDefault,
+      generateDistinctFiles,
+      releaseNotesPath,
+    },
+    agents: {
+      effortLevel,
+      defaultAgent,
+      boardPermissionDefault,
+      ticketPermissionDefault,
+      groomingModel,
+      implementationModel,
+      geminiGroomingModel,
+      geminiImplementationModel,
+      agentProgressEnabled,
+      agentProgressDelay,
+      tokenDisplayMode,
+      tokenCostThresholds,
+    },
+    modules: { modules, mcpServerPhases },
+    general: {
+      defaultUser: globalDefaultUser,
+      preferredFramework: globalPreferredFramework,
+      port: globalPort,
+    },
+  };
 
-  const originalPayload = JSON.stringify({
-    columns: config.columns,
-    hiddenStatuses: config.hiddenStatuses,
-    users: config.users,
-    tags: config.tags,
-    priorities: config.priorities,
-    projects: config.projects,
-    enableBacklogScreen: config.enableBacklogScreen,
-    requireCommentOnStatusChange: config.requireCommentOnStatusChange,
-    boardCardOpenMode: config.boardCardOpenMode || 'chat',
-    worktreeByDefault: config.worktreeByDefault ?? false,
-    animationsEnabled: config.animationsEnabled ?? true,
-    enableFireworks: config.enableFireworks ?? true,
-    animationSpeed: config.animationSpeed || 'normal',
-    requireInputStatus: config.requireInputStatus || DEFAULT_REQUIRE_INPUT_STATUS,
-    readyForMergeStatus: config.readyForMergeStatus || DEFAULT_READY_FOR_MERGE_STATUS,
-    archiveStatus: config.archiveStatus || DEFAULT_ARCHIVE_STATUS,
-    docsEditPermissions: config.docsEditPermissions || 'all',
-    docsAllowedUsers: config.docsEditPermissions === 'specified' ? (config.docsAllowedUsers || []) : [],
-    docsRoot: config.docsRoot || '.docs',
-    hoverPopupsEnabled: config.hoverPopupsEnabled ?? true,
-    hoverPopupDelay: config.hoverPopupDelay ?? 1500,
-    commentHoverPreviewEnabled: config.commentHoverPreviewEnabled ?? false,
-    tokenDisplayMode: config.tokenDisplayMode ?? 'cost',
-    tokenCostThresholds: config.tokenCostThresholds ?? { green: 0.10, yellow: 0.50 },
-    effortLevel: config.effortLevel || 'high',
-    defaultAgent: config.defaultAgent || 'auto',
-    boardPermissionDefault: config.permissions?.boardDefault === 'skip' ? 'skip' : 'gated',
-    ticketPermissionDefault: config.permissions?.ticketDefault === 'gated' ? 'gated' : 'skip',
-    groomingModel: config.integrations?.claudeCode?.groomingModel || '',
-    implementationModel: config.integrations?.claudeCode?.implementationModel || '',
-    geminiGroomingModel: config.integrations?.geminiCli?.groomingModel || '',
-    geminiImplementationModel: config.integrations?.geminiCli?.implementationModel || '',
-    generateDistinctFiles: config.releaseSettings?.generateDistinctFiles ?? true,
-    releaseNotesPath: config.releaseSettings?.releaseNotesPath || 'release-notes',
-    syncDebounceMs: config.syncSettings?.debounceMs ?? 30000,
-    syncMaxWaitMs: config.syncSettings?.maxWaitMs ?? 300000,
-    agentProgressEnabled: config.agentProgress?.enabled ?? true,
-    agentProgressDelay: config.agentProgress?.inlineDelay ?? 2,
-    modules: config.modules || [],
-    mcpServerPhases: (config as ConfigWithMcpPhases).mcpServerPhases || {},
-  });
+  const originalByTab: Record<SettingsTab, unknown> = {
+    board: {
+      columns: config.columns,
+      hiddenStatuses: config.hiddenStatuses,
+      requireInputStatus: config.requireInputStatus || DEFAULT_REQUIRE_INPUT_STATUS,
+      readyForMergeStatus: config.readyForMergeStatus || DEFAULT_READY_FOR_MERGE_STATUS,
+      archiveStatus: config.archiveStatus || DEFAULT_ARCHIVE_STATUS,
+      boardCardOpenMode: config.boardCardOpenMode || 'chat',
+      requireCommentOnStatusChange: config.requireCommentOnStatusChange,
+      enableBacklogScreen: config.enableBacklogScreen,
+      hoverPopupsEnabled: config.hoverPopupsEnabled ?? true,
+      hoverPopupDelay: config.hoverPopupDelay ?? 1500,
+      commentHoverPreviewEnabled: config.commentHoverPreviewEnabled ?? false,
+    },
+    appearance: {
+      animationsEnabled: config.animationsEnabled ?? true,
+      animationSpeed: config.animationSpeed || 'normal',
+      enableFireworks: config.enableFireworks ?? true,
+      boardFx: { columnFire: true, ticketAgeRust: true, dragTrail: true, idleDust: true, boardWeather: true, columnFlowArrows: true, heartbeat: true, speedDemon: true, doneStreak: true, ticketDna: true, ...(config.boardFx ?? {}) },
+    },
+    attributes: {
+      tags: config.tags,
+      priorities: config.priorities,
+    },
+    workspace: {
+      users: config.users,
+      projects: config.projects,
+      docsEditPermissions: config.docsEditPermissions || 'all',
+      docsAllowedUsers: config.docsEditPermissions === 'specified' ? (config.docsAllowedUsers || []) : [],
+      docsRoot: config.docsRoot || '.docs',
+      syncDebounceMs: config.syncSettings?.debounceMs ?? 30000,
+      syncMaxWaitMs: config.syncSettings?.maxWaitMs ?? 300000,
+      worktreeByDefault: config.worktreeByDefault ?? false,
+      generateDistinctFiles: config.releaseSettings?.generateDistinctFiles ?? true,
+      releaseNotesPath: config.releaseSettings?.releaseNotesPath || 'release-notes',
+    },
+    agents: {
+      effortLevel: config.effortLevel || 'high',
+      defaultAgent: config.defaultAgent || 'auto',
+      boardPermissionDefault: config.permissions?.boardDefault === 'skip' ? 'skip' : 'gated',
+      ticketPermissionDefault: config.permissions?.ticketDefault === 'gated' ? 'gated' : 'skip',
+      groomingModel: config.integrations?.claudeCode?.groomingModel || '',
+      implementationModel: config.integrations?.claudeCode?.implementationModel || '',
+      geminiGroomingModel: config.integrations?.geminiCli?.groomingModel || '',
+      geminiImplementationModel: config.integrations?.geminiCli?.implementationModel || '',
+      agentProgressEnabled: config.agentProgress?.enabled ?? true,
+      agentProgressDelay: config.agentProgress?.inlineDelay ?? 2,
+      tokenDisplayMode: config.tokenDisplayMode ?? 'cost',
+      tokenCostThresholds: config.tokenCostThresholds ?? { green: 0.10, yellow: 0.50 },
+    },
+    modules: {
+      modules: config.modules || [],
+      mcpServerPhases: (config as ConfigWithMcpPhases).mcpServerPhases || {},
+    },
+    general: {
+      defaultUser: loadedGlobal.defaultUser,
+      preferredFramework: loadedGlobal.preferredFramework,
+      port: loadedGlobal.port,
+    },
+  };
 
-  const isDirty = currentSavedPayload !== originalPayload;
+  const dirtyTabs = new Set<SettingsTab>(
+    TAB_ORDER.filter((tab) => JSON.stringify(currentByTab[tab]) !== JSON.stringify(originalByTab[tab]))
+  );
+  const isGeneralDirty = dirtyTabs.has('general');
+  const isDirty = dirtyTabs.size > 0;
 
   return (
     <>
@@ -438,19 +531,14 @@ export function Settings() {
             </h2>
           </div>
           <div className="py-2 flex flex-col gap-1">
-            {(['workflow', 'attributes', 'workspace', 'preferences', 'agent', 'modules', 'global'] as const).map((tab) => (
+            {TAB_ORDER.map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
-                className={`w-full text-left px-5 py-2.5 text-sm font-medium transition-colors ${activeTab === tab ? 'bg-primary/10 text-primary border-r-2 border-primary' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-white/5 border-r-2 border-transparent'}`}
+                className={`w-full text-left px-5 py-2.5 text-sm font-medium transition-colors flex items-center justify-between gap-2 ${activeTab === tab ? 'bg-primary/10 text-primary border-r-2 border-primary' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-white/5 border-r-2 border-transparent'}`}
               >
-                {tab === 'workflow' && 'Workflow & Statuses'}
-                {tab === 'attributes' && 'Attributes'}
-                {tab === 'workspace' && 'Workspace'}
-                {tab === 'preferences' && 'Preferences'}
-                {tab === 'agent' && 'Agent Integration'}
-                {tab === 'modules' && 'Modules'}
-                {tab === 'global' && 'Global Settings'}
+                <span>{TAB_LABELS[tab]}</span>
+                {dirtyTabs.has(tab) && <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" title="Unsaved changes on this tab" />}
               </button>
             ))}
           </div>
@@ -460,37 +548,50 @@ export function Settings() {
           <div className="p-8 flex-1">
             <div className="flex items-center justify-between gap-4 mb-8 pb-6 border-b border-gray-200 dark:border-white/10">
               <div>
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
-                  {activeTab === 'workflow' && 'Workflow & Statuses'}
-                  {activeTab === 'attributes' && 'Attributes'}
-                  {activeTab === 'workspace' && 'Workspace'}
-                  {activeTab === 'preferences' && 'Preferences'}
-                  {activeTab === 'agent' && 'Agent Integration'}
-                  {activeTab === 'modules' && 'Modules'}
-                  {activeTab === 'global' && 'Global Settings'}
-                </h2>
+                <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">{TAB_LABELS[activeTab]}</h2>
               </div>
               <StopServiceButton />
             </div>
 
             <div className="space-y-10">
-              {activeTab === 'workflow' && (
-                <WorkflowSection
-                  columns={columns}
-                  setColumns={setColumns}
-                  hiddenStatuses={hiddenStatuses}
-                  setHiddenStatuses={setHiddenStatuses}
-                  setRequireInputStatus={setRequireInputStatus}
-                  setReadyForMergeStatus={setReadyForMergeStatus}
-                  setArchiveStatus={setArchiveStatus}
-                  statusOptions={statusOptions}
-                  normalizedRequireInputStatus={normalizedRequireInputStatus}
-                  normalizedReadyForMergeStatus={normalizedReadyForMergeStatus}
-                  normalizedArchiveStatus={normalizedArchiveStatus}
-                  isRequireInputStatusMissing={isRequireInputStatusMissing}
-                  isReadyForMergeStatusMissing={isReadyForMergeStatusMissing}
-                  getWorkflowStatusLocation={getWorkflowStatusLocation}
-                  restoreWorkflowStatusToBoard={restoreWorkflowStatusToBoard}
+              {activeTab === 'board' && (
+                <div className="space-y-10">
+                  <WorkflowSection
+                    columns={columns}
+                    setColumns={setColumns}
+                    hiddenStatuses={hiddenStatuses}
+                    setHiddenStatuses={setHiddenStatuses}
+                    requireInputStatus={normalizedRequireInputStatus}
+                    readyForMergeStatus={normalizedReadyForMergeStatus}
+                    archiveStatus={normalizedArchiveStatus}
+                  />
+                  <BoardBehaviorSection
+                    boardCardOpenMode={boardCardOpenMode}
+                    setBoardCardOpenMode={setBoardCardOpenMode}
+                    requireComment={requireComment}
+                    setRequireComment={setRequireComment}
+                    enableBacklog={enableBacklog}
+                    setEnableBacklog={setEnableBacklog}
+                    hoverPopupsEnabled={hoverPopupsEnabled}
+                    setHoverPopupsEnabled={setHoverPopupsEnabled}
+                    hoverPopupDelay={hoverPopupDelay}
+                    setHoverPopupDelay={setHoverPopupDelay}
+                    commentHoverPreviewEnabled={commentHoverPreviewEnabled}
+                    setCommentHoverPreviewEnabled={setCommentHoverPreviewEnabled}
+                  />
+                </div>
+              )}
+
+              {activeTab === 'appearance' && (
+                <AppearanceSection
+                  animationsEnabled={animationsEnabled}
+                  setAnimationsEnabled={setAnimationsEnabled}
+                  animationSpeed={animationSpeed}
+                  setAnimationSpeed={setAnimationSpeed}
+                  enableFireworks={enableFireworks}
+                  setEnableFireworks={setEnableFireworks}
+                  boardFx={boardFx}
+                  setBoardFx={setBoardFx}
                 />
               )}
 
@@ -504,86 +605,73 @@ export function Settings() {
               )}
 
               {activeTab === 'workspace' && (
-                <WorkspaceSection
-                  users={users}
-                  setUsers={setUsers}
-                  projects={projects}
-                  setProjects={setProjects}
-                  docsRoot={docsRoot}
-                  setDocsRoot={setDocsRoot}
-                  docsEditPermissions={docsEditPermissions}
-                  setDocsEditPermissions={setDocsEditPermissions}
-                  docsAllowedUsers={docsAllowedUsers}
-                  setDocsAllowedUsers={setDocsAllowedUsers}
-                  workspacePath={workspacePath}
-                  notifyWorkspaceSet={notifyWorkspaceSet}
-                  syncDebounceMs={syncDebounceMs}
-                  setSyncDebounceMs={setSyncDebounceMs}
-                  syncMaxWaitMs={syncMaxWaitMs}
-                  setSyncMaxWaitMs={setSyncMaxWaitMs}
-                  agentProgressEnabled={agentProgressEnabled}
-                  setAgentProgressEnabled={setAgentProgressEnabled}
-                  agentProgressDelay={agentProgressDelay}
-                  setAgentProgressDelay={setAgentProgressDelay}
-                />
+                <div className="space-y-10">
+                  <WorkspaceSection
+                    users={users}
+                    setUsers={setUsers}
+                    projects={projects}
+                    setProjects={setProjects}
+                    docsRoot={docsRoot}
+                    setDocsRoot={setDocsRoot}
+                    docsEditPermissions={docsEditPermissions}
+                    setDocsEditPermissions={setDocsEditPermissions}
+                    docsAllowedUsers={docsAllowedUsers}
+                    setDocsAllowedUsers={setDocsAllowedUsers}
+                    workspacePath={workspacePath}
+                    notifyWorkspaceSet={notifyWorkspaceSet}
+                    syncDebounceMs={syncDebounceMs}
+                    setSyncDebounceMs={setSyncDebounceMs}
+                    syncMaxWaitMs={syncMaxWaitMs}
+                    setSyncMaxWaitMs={setSyncMaxWaitMs}
+                  />
+                  <WorktreeSection
+                    worktreeByDefault={worktreeByDefault}
+                    setWorktreeByDefault={setWorktreeByDefault}
+                  />
+                  <ReleaseNotesSection
+                    generateDistinctFiles={generateDistinctFiles}
+                    setGenerateDistinctFiles={setGenerateDistinctFiles}
+                    releaseNotesPath={releaseNotesPath}
+                    setReleaseNotesPath={setReleaseNotesPath}
+                  />
+                </div>
               )}
 
-              {activeTab === 'preferences' && (
-                <PreferencesSection
-                  boardCardOpenMode={boardCardOpenMode}
-                  setBoardCardOpenMode={setBoardCardOpenMode}
-                  animationsEnabled={animationsEnabled}
-                  setAnimationsEnabled={setAnimationsEnabled}
-                  animationSpeed={animationSpeed}
-                  setAnimationSpeed={setAnimationSpeed}
-                  enableFireworks={enableFireworks}
-                  setEnableFireworks={setEnableFireworks}
-                  hoverPopupsEnabled={hoverPopupsEnabled}
-                  setHoverPopupsEnabled={setHoverPopupsEnabled}
-                  hoverPopupDelay={hoverPopupDelay}
-                  setHoverPopupDelay={setHoverPopupDelay}
-                  commentHoverPreviewEnabled={commentHoverPreviewEnabled}
-                  setCommentHoverPreviewEnabled={setCommentHoverPreviewEnabled}
-                  tokenDisplayMode={tokenDisplayMode}
-                  setTokenDisplayMode={setTokenDisplayMode}
-                  tokenCostThresholds={tokenCostThresholds}
-                  setTokenCostThresholds={setTokenCostThresholds}
-                  enableBacklog={enableBacklog}
-                  setEnableBacklog={setEnableBacklog}
-                  requireComment={requireComment}
-                  setRequireComment={setRequireComment}
-                  worktreeByDefault={worktreeByDefault}
-                  setWorktreeByDefault={setWorktreeByDefault}
-                  generateDistinctFiles={generateDistinctFiles}
-                  setGenerateDistinctFiles={setGenerateDistinctFiles}
-                  releaseNotesPath={releaseNotesPath}
-                  setReleaseNotesPath={setReleaseNotesPath}
-                  boardFx={boardFx}
-                  setBoardFx={setBoardFx}
-                />
-              )}
-
-              {activeTab === 'agent' && (
-                <AgentSection
-                  effortLevel={effortLevel}
-                  setEffortLevel={setEffortLevel}
-                  targetFramework={defaultAgent}
-                  setTargetFramework={setDefaultAgent}
-                  boardPermissionDefault={boardPermissionDefault}
-                  setBoardPermissionDefault={setBoardPermissionDefault}
-                  ticketPermissionDefault={ticketPermissionDefault}
-                  setTicketPermissionDefault={setTicketPermissionDefault}
-                  groomingModel={groomingModel}
-                  setGroomingModel={setGroomingModel}
-                  implementationModel={implementationModel}
-                  setImplementationModel={setImplementationModel}
-                  geminiGroomingModel={geminiGroomingModel}
-                  setGeminiGroomingModel={setGeminiGroomingModel}
-                  geminiImplementationModel={geminiImplementationModel}
-                  setGeminiImplementationModel={setGeminiImplementationModel}
-                  workspacePath={workspacePath}
-                  setView={setView}
-                />
+              {activeTab === 'agents' && (
+                <div className="space-y-6">
+                  <AgentSection
+                    effortLevel={effortLevel}
+                    setEffortLevel={setEffortLevel}
+                    targetFramework={defaultAgent}
+                    setTargetFramework={setDefaultAgent}
+                    boardPermissionDefault={boardPermissionDefault}
+                    setBoardPermissionDefault={setBoardPermissionDefault}
+                    ticketPermissionDefault={ticketPermissionDefault}
+                    setTicketPermissionDefault={setTicketPermissionDefault}
+                    groomingModel={groomingModel}
+                    setGroomingModel={setGroomingModel}
+                    implementationModel={implementationModel}
+                    setImplementationModel={setImplementationModel}
+                    geminiGroomingModel={geminiGroomingModel}
+                    setGeminiGroomingModel={setGeminiGroomingModel}
+                    geminiImplementationModel={geminiImplementationModel}
+                    setGeminiImplementationModel={setGeminiImplementationModel}
+                    workspacePath={workspacePath}
+                    setView={setView}
+                  />
+                  <AgentProgressSection
+                    agentProgressEnabled={agentProgressEnabled}
+                    setAgentProgressEnabled={setAgentProgressEnabled}
+                    agentProgressDelay={agentProgressDelay}
+                    setAgentProgressDelay={setAgentProgressDelay}
+                  />
+                  <CostTokensSection
+                    tokenDisplayMode={tokenDisplayMode}
+                    setTokenDisplayMode={setTokenDisplayMode}
+                    tokenCostThresholds={tokenCostThresholds}
+                    setTokenCostThresholds={setTokenCostThresholds}
+                  />
+                </div>
               )}
 
               {activeTab === 'modules' && (
@@ -593,11 +681,33 @@ export function Settings() {
                 </>
               )}
 
-              {activeTab === 'global' && <GlobalSection />}
+              {activeTab === 'general' && (
+                <GeneralSection
+                  defaultUser={globalDefaultUser}
+                  setDefaultUser={setGlobalDefaultUser}
+                  preferredFramework={globalPreferredFramework}
+                  setPreferredFramework={setGlobalPreferredFramework}
+                  port={globalPort}
+                  setPort={setGlobalPort}
+                  globalLoading={globalLoading}
+                  globalError={globalError}
+                  migratedFrom={globalMigratedFrom}
+                />
+              )}
             </div>
           </div>
         </div>
       </div>
+
+      {/* Transient save confirmation toast */}
+      {toast && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[60] pointer-events-none">
+          <div className={`flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium shadow-lg ${toast.kind === 'success' ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white'}`}>
+            {toast.kind === 'success' ? <Check className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
+            {toast.message}
+          </div>
+        </div>
+      )}
 
       {/* Sticky Save/Action Bar */}
       <div
@@ -607,7 +717,9 @@ export function Settings() {
         <div className="max-w-2xl mx-auto flex items-center justify-between bg-white dark:bg-[#1a1b23] border border-gray-200 dark:border-white/10 rounded-2xl shadow-2xl p-4 pointer-events-auto relative">
           <div className="flex flex-col">
             <span className="text-sm font-bold text-gray-900 dark:text-gray-100">Unsaved Changes</span>
-            <span className="text-xs text-gray-500">You have modified your workspace settings.</span>
+            <span className="text-xs text-gray-500">
+              {Array.from(dirtyTabs).map((tab) => TAB_LABELS[tab]).join(', ')} {dirtyTabs.size === 1 ? 'tab has' : 'tabs have'} unsaved changes.
+            </span>
           </div>
           <div className="flex items-center gap-3">
             <button

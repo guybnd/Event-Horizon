@@ -464,6 +464,21 @@ export function useTaskModalController() {
     }
   };
 
+  // FLUX-816: manual set/clear of the EH review verdict so a human can stamp or retract the
+  // review badge (e.g. correct a false badge, or mark an off-flow review). Persists via the PUT
+  // path; pass null to clear back to "never reviewed" (no badge).
+  const handleSetReviewState = async (next: 'approved' | 'changes-requested' | null) => {
+    if (!modalTask?.id) return;
+    try {
+      const updatedTask = await updateTask(modalTask.id, { reviewState: next });
+      setModalTask(updatedTask);
+      triggerRefresh();
+    } catch (error) {
+      console.error(error);
+      setSaveError(error instanceof Error ? error.message : 'Failed to update review state. Make sure the engine is running.');
+    }
+  };
+
   const sendCommentDirectly = async () => {
     const commentText = commentBoxRef.current?.getValue()?.trim() ?? '';
     if (!commentText || !modalTask?.id) return;
@@ -961,7 +976,7 @@ export function useTaskModalController() {
     // banners
     groomingBanner, requireInputBanner, readyForMergeBanner,
     // handlers
-    handleCloseAttempt, handleSave, handleDelete,
+    handleCloseAttempt, handleSave, handleDelete, handleSetReviewState,
     sendCommentDirectly, sendReplyDirectly, submitRequireInputResponse,
     handleReturnToWork, openLauncher, handleReviewLaunch,
     sendFinishCommand, handleLaunchWithBranchCheck, handleStartPromptConfirm,

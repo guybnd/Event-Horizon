@@ -441,6 +441,9 @@ export function startSyncWatcher(): void {
   watcher.on('add', () => scheduler!.schedule());
   watcher.on('change', () => scheduler!.schedule());
   watcher.on('unlink', () => scheduler!.schedule());
+  // FLUX-784: swallow recoverable watcher errors (inotify limits, transient locks) — an
+  // unhandled 'error' would rethrow and the uncaughtException handler exits the engine.
+  watcher.on('error', (err) => console.error('[sync-watcher] file-sync paused:', err));
 
   const debounceMs = configCache.syncSettings?.debounceMs ?? 30000;
   const maxWaitMs = configCache.syncSettings?.maxWaitMs ?? 300000;

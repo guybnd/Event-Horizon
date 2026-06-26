@@ -39,22 +39,45 @@ router.get('/errors', (req, res) => {
   res.json(Object.values(parseErrors));
 });
 
+// Resolve the repo's default branch name (master → main → 'master'), run in `root`.
+// Best-effort: mirrors diff-aggregator's resolution so the worktree ahead-count and
+// the divergence aggregate measure against the same base (FLUX-582).
+async function resolveDefaultBranch(root: string): Promise<string> {
+  for (const candidate of ['master', 'main']) {
+    try {
+      await execFileAsync('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `refs/heads/${candidate}`], { windowsHide: true });
+      return candidate;
+    } catch {
+      /* try next */
+    }
+  }
+  return 'master';
+}
+
 // List active task worktrees (FLUX-516). Registered before /:id so the literal
 // path wins. Maps each worktree to the ticket whose branch it holds (if any).
 router.get('/worktrees', async (_req, res) => {
   try {
     const worktrees = await listTaskWorktrees(workspaceRoot!);
+    // Resolve the default branch once (master → main) for the per-worktree ahead count.
+    const defaultBranch = await resolveDefaultBranch(workspaceRoot!);
     const result = await Promise.all(
       worktrees.map(async (w) => {
         const ticket = Object.values(tasksCache).find((t: any) => t.branch === w.branch) as any;
         // Changed-file count vs master — drives the board chip's "N changed" badge.
         const changedFiles = await worktreeChangeCount(w.path).catch(() => 0);
+        // Commits this worktree is ahead of the default branch (FLUX-582) — pairs with
+        // changedFiles for the panel's "↑N · M vs master" divergence badge. Best-effort.
+        const aheadCount = await execFileAsync(
+          'git', ['-C', w.path, 'rev-list', '--count', `${defaultBranch}..HEAD`], { windowsHide: true },
+        ).then((r) => parseInt(r.stdout.trim(), 10) || 0).catch(() => 0);
         return {
           path: w.path,
           branch: w.branch,
           ticketId: ticket?.id ?? null,
           ticketTitle: ticket?.title ?? null,
           changedFiles,
+          aheadCount,
         };
       }),
     );
@@ -70,7 +93,7 @@ router.get('/worktrees', async (_req, res) => {
 // wins. Best-effort: 0 when not a git repo or git errors (worktreeChangeCount
 // already swallows those).
 router.get('/uncommitted-count', async (_req, res) => {
-  if (!workspaceRoot) return res.json({ count: 0, branch: null });
+  if (!workspaceRoot) return res.json({ count: 0, branch: null, diverged: 0 });
   const [mainCount, branch, worktrees] = await Promise.all([
     worktreeChangeCount(workspaceRoot, 'HEAD').catch(() => 0),
     currentBranchName(workspaceRoot).catch(() => null),
@@ -78,11 +101,16 @@ router.get('/uncommitted-count', async (_req, res) => {
   ]);
   // Aggregate uncommitted work across EVERY active task worktree too, not just the main
   // tree — otherwise the badge reads 0 while 20+ files sit uncommitted in a worktree.
-  const wtCounts = await Promise.all(
-    worktrees.map((w) => worktreeChangeCount(w.path, 'HEAD').catch(() => 0)),
-  );
+  // Alongside it, `diverged` sums each worktree's full divergence vs master (committed +
+  // uncommitted) so the stoplight can show a secondary "vs master" count that survives a
+  // commit, unlike the uncommitted `count` (FLUX-582). Both best-effort.
+  const [wtCounts, wtDiverged] = await Promise.all([
+    Promise.all(worktrees.map((w) => worktreeChangeCount(w.path, 'HEAD').catch(() => 0))),
+    Promise.all(worktrees.map((w) => worktreeChangeCount(w.path, 'master').catch(() => 0))),
+  ]);
   const count = mainCount + wtCounts.reduce((sum, n) => sum + n, 0);
-  res.json({ count, branch });
+  const diverged = wtDiverged.reduce((sum, n) => sum + n, 0);
+  res.json({ count, branch, diverged });
 });
 
 // Open the active workspace root in a new VS Code window (FLUX-544). Best-effort:
@@ -96,6 +124,10 @@ router.post('/open-editor', async (req, res) => {
   if (file) {
     // Repo-relative only — reject absolute / traversal paths before joining.
     if (file.startsWith('/') || file.includes('..') || /^[a-zA-Z]:/.test(file)) {
+      return res.status(400).json({ error: 'Invalid path' });
+    }
+    // FLUX-789: reject shell metacharacters — `file` flows into a shell:true spawn.
+    if (!isShellSafePath(file)) {
       return res.status(400).json({ error: 'Invalid path' });
     }
     // A worktree ref (branch) opens the file in that worktree's checkout;
@@ -592,6 +624,7 @@ router.delete('/:id', async (req, res) => {
     }
     await fs.unlink(task._path);
     delete tasksCache[id];
+    broadcastEvent('taskDeleted', { id }); // FLUX-753: drop the card on connected portals
     res.json({ success: true });
   } catch (err) {
     console.error('Failed to delete task:', err);
@@ -706,7 +739,7 @@ router.post('/:id/assets', async (req, res) => {
 
 import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, extractFileFromDiff, captureDiff, createPullRequest, mergePullRequest, checkGhAuth, getPullRequestStatus, getDefaultBranch } from '../branch-manager.js';
 import { createTaskWorktree, detachTaskWorktree, taskWorktreeDir, listTaskWorktrees, findWorktreeForBranch, worktreeChangeCount, listLocalBranches, currentBranchName } from '../task-worktree.js';
-import { isEditorAvailable, openEditorWindow, openEditorFile } from '../editor-launcher.js';
+import { isEditorAvailable, openEditorWindow, openEditorFile, isShellSafePath } from '../editor-launcher.js';
 import { cleanupMergedBranch } from '../pr-cleanup.js';
 import { broadcastEvent } from '../events.js';
 

@@ -84,6 +84,26 @@ describe('collectEpicFoldedIds', () => {
     const plain = makeTask({ id: 'T-1', status: 'Todo' });
     expect(collectEpicFoldedIds([plain], new Map(), new Set()).size).toBe(0);
   });
+
+  it('FLUX-673: does not fold a nested epic\'s grandchildren (folded epic deck is suppressed)', () => {
+    // Epic B → [A]; Epic A → [X]; all in the same column. A folds into B, but X must NOT fold:
+    // A renders compact inside B's deck with its own deck suppressed, so a folded X would vanish.
+    const epicB = makeTask({ id: 'E-B', status: 'Todo', subtasks: ['E-A'] });
+    const epicA = makeTask({ id: 'E-A', status: 'Todo', subtasks: ['X-1'] });
+    const x1 = makeTask({ id: 'X-1', status: 'Todo' });
+    const byId = new Map<string, Task>([['E-B', epicB], ['E-A', epicA], ['X-1', x1]]);
+    const ids = collectEpicFoldedIds([epicB, epicA, x1], byId, new Set());
+    expect(ids).toEqual(new Set(['E-A'])); // A folds; X stays in its column
+  });
+
+  it('FLUX-673: does not fold subtasks of a PR-member epic', () => {
+    // E-1 is itself folded into a PR deck → its children must not also fold (its deck won't render).
+    const epic = makeTask({ id: 'E-1', status: 'Todo', subtasks: ['T-1'] });
+    const t1 = makeTask({ id: 'T-1', status: 'Todo' });
+    const byId = new Map<string, Task>([['E-1', epic], ['T-1', t1]]);
+    const ids = collectEpicFoldedIds([epic, t1], byId, new Set(['E-1']));
+    expect(ids.size).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

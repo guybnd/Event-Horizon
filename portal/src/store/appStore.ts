@@ -127,7 +127,9 @@ export interface AppActions {
 
 function createInitialState(): AppStoreState {
   return {
-    currentUser: 'Guy',
+    // FLUX-785: pre-hydration value only (AppContext's snapshot overwrites it once mounted).
+    // Read the persisted identity if present, else a neutral 'You' — never the maintainer's name.
+    currentUser: (typeof localStorage !== 'undefined' && localStorage.getItem('eh-current-user')) || 'You',
     currentProject: '',
     searchQuery: '',
     sortOption: 'default',

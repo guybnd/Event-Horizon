@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo, useDeferredValue } from 'react';
 import { Search } from 'lucide-react';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { searchTasks } from '../taskSearch';
@@ -24,7 +24,13 @@ export function GlobalSearch() {
     setGlobalSearchQuery('');
   };
 
-  const searchResults = globalSearchQuery.trim() ? searchTasks(tasks, globalSearchQuery, 7) : [];
+  // FLUX-791: defer the query + memoize so the per-character subsequence scan over every ticket's
+  // full body doesn't run on every keystroke render. The input stays responsive; results catch up.
+  const deferredQuery = useDeferredValue(globalSearchQuery);
+  const searchResults = useMemo(
+    () => (deferredQuery.trim() ? searchTasks(tasks, deferredQuery, 7) : []),
+    [tasks, deferredQuery],
+  );
 
   const getTaskHref = (task: Task) => {
     const path = task.status.toLowerCase() === 'backlog' ? '/backlog' : '/board';

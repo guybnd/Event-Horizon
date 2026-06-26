@@ -523,6 +523,16 @@ router.post('/:id/cli-session/start', async (req, res) => {
     if (phase === 'chat' && (appendPrompt || chatAttachments.length)) {
       appendTranscriptEvent(id, { type: 'user', text: appendPrompt, attachments: chatAttachments, timestamp: new Date().toISOString() });
     }
+    // FLUX-794: for a non-chat phase launch (Groom / Implement / Review / Finalize) the chat pops
+    // in but nothing records WHICH action the user pressed. Append a synthetic `action` turn so the
+    // pressed action surfaces as a durable, quiet system chip (projected to a `note`, not a bubble)
+    // in chronological order before the agent's first response. The `phase !== 'chat'` guard avoids
+    // doubling up with the chat user-turn above; ad-hoc launches (no phase) get no chip — no clean
+    // label. Best-effort like the launch-focus block: `appendTranscriptEvent` is fire-and-forget, so
+    // a transcript-append failure can never turn a successful launch into a 500.
+    if (phase && phase !== 'chat') {
+      appendTranscriptEvent(id, { type: 'action', phase, focus: focusComment || undefined, timestamp: new Date().toISOString() });
+    }
     // FLUX-480: persist the launch focus as a small, clean history entry so it
     // survives across sessions and is visible to any agent re-reading the
     // ticket. Only the focus text is stored — never the full launch prompt

@@ -1,0 +1,18 @@
+{
+  "name": "event-horizon-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Electron desktop shell for Event Horizon — runs the local engine + portal in its own window (FLUX-793, opt-in build).",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac --arm64",
+    "build:linux": "electron-builder --linux"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  }
+}

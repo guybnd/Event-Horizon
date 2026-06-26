@@ -29,6 +29,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # FLUX-774: gate the publish on the green checks that exist locally, so a tagged release
+      # can't ship a type regression or a broken engine. Lint is intentionally excluded (its
+      # baseline is still being burned down); typecheck + engine tests are the load-bearing gate.
+      - name: Type-check (portal + engine)
+        run: npm run typecheck
+
+      - name: Engine tests
+        run: npm run test -w engine
+
       - name: Build source distribution
         run: npm run dist:source
 
@@ -38,6 +47,22 @@ jobs:
       - name: Build Windows executable
         # Cross-compile Windows exe on the macOS runner via Node.js SEA + postject
         run: npm run dist:win
+
+      # FLUX-793: macOS desktop app (Electron). The engine ships as the esbuild bundle run via
+      # Electron-as-node, so this only needs the regular build + electron-builder on the mac runner.
+      - name: Build macOS desktop app (Electron)
+        # First release exercising the Electron CI path — keep it non-blocking so a desktop-build
+        # hiccup can't sink the core release (source + SEA binaries + the GitHub Release). If it
+        # fails, the .dmg simply isn't attached (the files glob below matches nothing).
+        continue-on-error: true
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false # unsigned build — don't probe the keychain on CI
+        run: |
+          npm run build
+          npm ci --prefix electron
+          VER="${GITHUB_REF_NAME#v}"
+          npm --prefix electron version "$VER" --no-git-tag-version --allow-same-version
+          npm --prefix electron run build:mac -- --publish never
 
       - name: Extract release notes
         id: release_notes
@@ -64,5 +89,45 @@ jobs:
             event-horizon-source.zip
             releases/event-horizon-macos-*.zip
             releases/event-horizon-win-*.zip
+            electron/dist/*.dmg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # FLUX-793: the Windows desktop installer (NSIS) must build on a Windows runner — electron-builder
+  # can't reliably cross-build NSIS on macOS. Runs after `release` so the GitHub Release already
+  # exists, then appends the .exe installer to it (action-gh-release upserts by tag, body untouched).
+  release-windows:
+    needs: release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (portal + engine bundle)
+        run: npm run build
+
+      - name: Build Windows desktop app (Electron)
+        continue-on-error: true # non-blocking (see the macOS desktop step) — first run of this path
+        shell: bash
+        run: |
+          npm ci --prefix electron
+          VER="${GITHUB_REF_NAME#v}"
+          npm --prefix electron version "$VER" --no-git-tag-version --allow-same-version
+          npm --prefix electron run build:win -- --publish never
+
+      - name: Append Windows installer to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: electron/dist/*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

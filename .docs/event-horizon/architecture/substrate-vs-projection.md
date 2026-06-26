@@ -128,6 +128,30 @@ re-prime path (FLUX-602) can reuse it. It is size-capped (~1–2k chars; file/ti
 truncated with a "+N more" tail) and fully best-effort (any git hiccup ⇒ `null` ⇒ the turn
 proceeds with the prompt untouched).
 
+### 4.3 Synthetic `action` event (FLUX-794)
+
+When the user presses a **non-chat phase action** in the portal (Groom / Implement / Review /
+Finalize), the chat panel pops in but nothing in the transcript records *which* button started
+the session. The launch route (`engine/src/routes/cli-session.ts`, the start handler) records a
+synthetic `action` event right after `spawnSession` succeeds, guarded on `phase && phase !== 'chat'`
+so it never doubles up with the chat session's own `user` turn (and ad-hoc launches with no phase
+get no marker — there is no clean label):
+
+```jsonc
+{ "type": "action", "phase": "implementation", "focus": "land the engine seam", "timestamp": "2026-06-26T…Z" }
+```
+
+`classifyRole` maps the envelope to `unknown` (ordering metadata only). Like the resume-preamble it
+is deliberately **not** a chat bubble: `projectTranscript` projects it to a non-bubble `note` row
+tagged `kind: 'action'` via a small `PHASE_LABELS` map (`implementation → "Implementation session
+started"`, etc.; unknown phase ⇒ `"Session started"`), appending `— <focus>` when a launch focus was
+supplied. The portal (`ChatView.tsx → ActionChip`) renders that as a quiet ▶ "… session started" row
+— distinct from the ⟳ context-update chip — landing in chronological order **before** the agent's
+first response. It is durable (lives in the JSONL substrate, survives reload / cold resume) and
+display-only: it carries no tokens and never triggers "user replied" logic. The append is
+best-effort (`appendTranscriptEvent` is fire-and-forget/queued), so a transcript failure can never
+turn a successful launch into a 500.
+
 ## 5. Backward compatibility — legacy lines
 
 Live transcripts written before this ticket contain bare raw events (no envelope). The

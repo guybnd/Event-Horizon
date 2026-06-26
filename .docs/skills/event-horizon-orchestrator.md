@@ -12,7 +12,7 @@ Scope: Route the agent to the correct phase-specific skill based on ticket statu
 
 # Event Horizon Agent — Orchestrator
 
-Version: 2.4.0
+Version: 2.5.0
 
 ## Overview
 
@@ -153,6 +153,7 @@ Ticket changes that only exist in chat or agent memory are **lost**. The engine 
 ## Critical Rules
 
 - **End every working turn on a board action (FLUX-651).** When you finish grooming/implementing/reviewing a ticket — including in a chat/discussion session — you MUST end the turn by moving the ticket to its next status (or `Require Input`, or creating subtasks). Never finish the work and just summarize it in chat: the engine flags such a ticket "Needs Action" on the board and notifies the user. "It was only a discussion turn" is not an exception.
+- **Raise decisions through a structured surface, regardless of status (FLUX-826).** Any question or decision for the user goes through `ask_user_question` or `Require Input` — never chat prose. This holds on **resting/terminal** tickets too (Done/Ready/Todo/Backlog/Released/Archived): a "should I file a ticket / commit / leave it?" call on a closed ticket typed only into chat has no picker, no notification, and no board flag, so it's lost the moment the user looks away. `Require Input` parks the *current* status (wrong for a Done ticket) — on a resting ticket use `ask_user_question`, whose timeout now also leaves a persistent "Needs Action" flag as a safety net.
 - NEVER use Write, Edit, or Bash to modify files in `.flux/` or `.flux-store/`. These paths are engine-managed.
 - Treat ticket files as schema-sensitive. The engine validates and rejects malformed writes.
 - Do not delete ticket history; append only.

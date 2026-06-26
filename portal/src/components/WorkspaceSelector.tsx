@@ -47,19 +47,11 @@ export function WorkspaceSelector() {
             Event Horizon
           </h1>
           <p className="text-sm text-gray-500 dark:text-gray-400">
-            Open a project folder to get started. The folder must contain a{' '}
+            Open any project folder to get started. Event Horizon automatically bootstraps the{' '}
             <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-xs dark:bg-white/10">
               .flux/
             </code>{' '}
-            or{' '}
-            <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-xs dark:bg-white/10">
-              .flux-store/
-            </code>{' '}
-            directory. Run{' '}
-            <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-xs dark:bg-white/10">
-              event-horizon init
-            </code>{' '}
-            in a project to create one.
+            store, docs, and agent skills on first open — no setup command needed.
           </p>
         </div>
 

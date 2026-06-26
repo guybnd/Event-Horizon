@@ -21,7 +21,11 @@ const outDir = path.join(engineRoot, 'dist');
 // Engine version — inlined into the bundle via esbuild `define` so the runtime
 // never has to read package.json from disk (which doesn't exist next to a SEA
 // binary). Read once here so both the bundle and the SEA manifest agree.
-const appVersion = JSON.parse(fs.readFileSync(path.join(engineRoot, 'package.json'), 'utf-8')).version;
+// FLUX-774: prefer the release tag (VERSION env, set by .github/workflows/release.yml to
+// github.ref_name, e.g. "v1.0.0") so the embedded version is driven by the tag and can't drift
+// from the published release. Strip a leading "v"; fall back to package.json for local builds.
+const pkgVersion = JSON.parse(fs.readFileSync(path.join(engineRoot, 'package.json'), 'utf-8')).version;
+const appVersion = (process.env.VERSION || pkgVersion).replace(/^v/, '');
 const portalSrc = path.join(repoRoot, 'portal', 'dist');
 const portalDest = path.join(outDir, 'portal', 'dist');
 

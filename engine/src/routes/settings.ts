@@ -42,12 +42,10 @@ router.put('/global', async (req, res) => {
     const current = await loadGlobalSettings();
     const updates = req.body ?? {};
 
-    if (updates.theme !== undefined) current.theme = updates.theme;
     if (updates.defaultUser !== undefined) current.defaultUser = updates.defaultUser;
     if (updates.preferredFramework !== undefined) current.preferredFramework = updates.preferredFramework;
     if (updates.defaultAgent !== undefined) current.defaultAgent = updates.defaultAgent;
     if (updates.port !== undefined) current.port = updates.port;
-    if (updates.boardClickBehavior !== undefined) current.boardClickBehavior = updates.boardClickBehavior;
     if (updates.animations !== undefined) current.animations = updates.animations;
     if (updates.timeouts !== undefined) current.timeouts = { ...current.timeouts, ...updates.timeouts };
 

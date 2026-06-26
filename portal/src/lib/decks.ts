@@ -44,9 +44,30 @@ export function epicDeckSubtasks(epic: Task, resolvedSubtasks: readonly Task[], 
  * (precedence). `byId` resolves a subtask id → task (Board's local task map).
  */
 export function collectEpicFoldedIds(tasks: Iterable<Task>, byId: ReadonlyMap<string, Task>, prMemberIds: ReadonlySet<string>): Set<string> {
+  const all = [...tasks];
+
+  // FLUX-673: an epic that is ITSELF folded (a PR member, or a same-column subtask of another
+  // epic) renders as a compact card whose own deck is suppressed. Folding such an epic's subtasks
+  // would exclude them from their column while nothing renders them — they'd vanish. Pre-compute
+  // those folded epics so we can skip them below, leaving their grandchildren in their own column.
+  const foldedEpics = new Set<string>();
+  for (const parent of all) {
+    if (!parent.subtasks?.length) continue;
+    for (const entry of parent.subtasks) {
+      const childId = normalizeSubtaskId(entry);
+      if (prMemberIds.has(childId)) continue;
+      const child = byId.get(childId);
+      if (child?.subtasks?.length && isFoldedIntoEpic(parent, child, prMemberIds)) {
+        foldedEpics.add(childId);
+      }
+    }
+  }
+
   const ids = new Set<string>();
-  for (const epic of tasks) {
+  for (const epic of all) {
     if (!epic.subtasks?.length) continue;
+    // FLUX-673: a folded epic doesn't hide its children (its deck won't render to show them).
+    if (prMemberIds.has(epic.id) || foldedEpics.has(epic.id)) continue;
     for (const entry of epic.subtasks) {
       const childId = normalizeSubtaskId(entry);
       if (prMemberIds.has(childId)) continue; // PR precedence

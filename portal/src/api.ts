@@ -27,6 +27,8 @@ export async function fetchParseErrors(): Promise<ParseError[]> {
 export interface UncommittedStatus {
   count: number;
   branch: string | null;
+  /** Total files diverged from master across all task worktrees (committed + uncommitted) — FLUX-582. */
+  diverged: number;
 }
 
 export async function fetchUncommittedStatus(): Promise<UncommittedStatus> {
@@ -36,6 +38,7 @@ export async function fetchUncommittedStatus(): Promise<UncommittedStatus> {
   return {
     count: typeof data?.count === 'number' ? data.count : 0,
     branch: typeof data?.branch === 'string' ? data.branch : null,
+    diverged: typeof data?.diverged === 'number' ? data.diverged : 0,
   };
 }
 
@@ -934,9 +937,9 @@ export interface TranscriptMessage {
   role: 'user' | 'assistant' | 'tool' | 'note';
   text: string;
   ts: string;
-  /** FLUX-745: subkind of a `note` row. Currently only `'context-update'` (warm-resume
-   *  situational update, FLUX-655/FLUX-745). */
-  kind?: 'context-update';
+  /** FLUX-745: subkind of a `note` row. `'context-update'` = warm-resume situational update
+   *  (FLUX-655/FLUX-745); `'action'` = the pressed phase-launch action (FLUX-794). */
+  kind?: 'context-update' | 'action';
   /** FLUX-661: normalized tool name for an edit-ish tool row (`Edit`, `Write`, …). */
   tool?: string;
   /** FLUX-661: repo-relative path of the file an edit tool touched. When present (and the
@@ -1047,14 +1050,28 @@ export async function fetchPendingBoardRebases(): Promise<PendingBoardRebase[]> 
 export async function resolveBoardRebase(
   id: string,
   approvedItemIds: string[],
-): Promise<{ ok: boolean; results: BoardRebaseItemResult[] } | null> {
-  const res = await fetch(`${API_URL}/board/board-rebase-resolve`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id, approvedItemIds }),
-  });
-  if (!res.ok) return null;
-  return res.json();
+): Promise<{ ok: boolean; results: BoardRebaseItemResult[]; expired?: boolean; timedOut?: boolean } | null> {
+  // 15s ceiling so a slow/wedged engine can't leave the Apply button stuck in "submitting"
+  // forever (FLUX-773). Distinguish the three failure modes so the UI can say what to do:
+  //   timedOut → engine busy/hung; 404 (expired) → batch gone (restarted/already applied); null → network.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const res = await fetch(`${API_URL}/board/board-rebase-resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, approvedItemIds }),
+      signal: controller.signal,
+    });
+    if (res.status === 404) return { ok: false, results: [], expired: true };
+    if (!res.ok) return null;
+    return res.json();
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') return { ok: false, results: [], timedOut: true };
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** FLUX-662: one option within a structured question. */
@@ -1283,6 +1300,10 @@ export async function markNotificationRead(id: string): Promise<void> {
   await fetch(`${API_URL}/notifications/${id}/read`, { method: 'POST' });
 }
 
+export async function markNotificationUnread(id: string): Promise<void> {
+  await fetch(`${API_URL}/notifications/${id}/unread`, { method: 'POST' });
+}
+
 export async function markAllNotificationsRead(): Promise<void> {
   await fetch(`${API_URL}/notifications/read-all`, { method: 'POST' });
 }
@@ -1313,13 +1334,11 @@ export interface BootStatus {
 export interface GlobalSettings {
   workspaces: { path: string; label?: string }[];
   lastWorkspace?: string;
-  theme?: 'light' | 'dark' | 'system';
   defaultUser?: string;
   preferredFramework?: string;
   defaultAgent?: string;
   port?: number;
   dataDir?: string;
-  boardClickBehavior?: 'modal' | 'expand';
   animations?: boolean;
   timeouts?: {
     syncDebounceMs?: number;
@@ -1566,6 +1585,8 @@ export interface WorktreeInfo {
   ticketTitle: string | null;
   /** Files changed vs master (committed + uncommitted + untracked) — board chip badge. */
   changedFiles?: number;
+  /** Commits this worktree is ahead of the default branch (FLUX-582) — divergence badge. */
+  aheadCount?: number;
 }
 
 /** All active task worktrees (FLUX-516) — drives the worktree badges + Join picker. */
@@ -1651,6 +1672,8 @@ export interface DiffChangedFile {
   status: DiffChangeStatus;
   /** Other group refs (branch names and/or 'main') that also touch this file. */
   collidesWith?: string[];
+  /** Worktree files only: true when committed-ahead of master, false/absent when loose (FLUX-582). */
+  committed?: boolean;
 }
 
 export interface DiffGroup {

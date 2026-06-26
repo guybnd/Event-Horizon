@@ -2,6 +2,7 @@
   "name": "event-horizon",
   "version": "1.0.0",
   "private": true,
+  "license": "PolyForm-Noncommercial-1.0.0",
   "workspaces": [
     "engine",
     "portal"
@@ -23,7 +24,9 @@
     "dist:all": "npm run dist:source && npm run dist:mac && npm run dist:win",
     "dist:source": "node engine/scripts/dist-source.js",
     "install-skill": "npm run install-skill -w engine --",
-    "publish-public": "node scripts/publish-public.mjs"
+    "publish-public": "node scripts/publish-public.mjs",
+    "electron": "npm --prefix electron start",
+    "electron:build": "npm --prefix electron run build"
   },
   "overrides": {
     "react-draggable": "4.4.6"

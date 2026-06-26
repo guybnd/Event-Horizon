@@ -34,6 +34,7 @@ function groupRef(g: DiffGroup): string {
 export function UncommittedChangesStoplight() {
   const { setView, setChangesFocus } = useAppActions();
   const [count, setCount] = useState<number | null>(null);
+  const [diverged, setDiverged] = useState<number>(0); // secondary "vs master" divergence count (FLUX-582)
   const [branch, setBranch] = useState<string | null>(null); // main-tree branch (for the badge + main group)
   const [editorMsg, setEditorMsg] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
@@ -56,7 +57,7 @@ export function UncommittedChangesStoplight() {
     let cancelled = false;
     const load = () => {
       fetchUncommittedStatus()
-        .then((s) => { if (!cancelled) { setCount(s.count); setBranch(s.branch); } })
+        .then((s) => { if (!cancelled) { setCount(s.count); setBranch(s.branch); setDiverged(s.diverged); } })
         .catch(() => { if (!cancelled) setCount(null); });
     };
     load();
@@ -196,6 +197,14 @@ export function UncommittedChangesStoplight() {
         </div>
         <span className="text-sm font-semibold leading-none">{count}</span>
         <span className="text-[10px] font-bold uppercase tracking-wider opacity-70">Uncommitted</span>
+        {diverged > 0 && (
+          <span
+            className="ml-1 border-l border-current/20 pl-1.5 text-[10px] font-semibold leading-none opacity-70"
+            title={`${diverged} file${diverged === 1 ? '' : 's'} diverged from master across worktrees (committed + uncommitted)`}
+          >
+            ↑{diverged} vs master
+          </span>
+        )}
         <ChevronDown className={`h-3 w-3 opacity-60 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
 

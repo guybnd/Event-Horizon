@@ -73,7 +73,7 @@ function StepDots({ current, total }: { current: number; total: number }) {
 }
 
 export function OnboardingWizard() {
-  const { notifyWorkspaceSet, setView, markOnboardingComplete } = useAppActions();
+  const { notifyWorkspaceSet, setView, markOnboardingComplete, setCurrentUser } = useAppActions();
 
   // Data-driven flow (FLUX-756 Phase 1). The wizard renders from the validated
   // flow config instead of a hardcoded step===N switch. validateFlow guarantees a
@@ -207,7 +207,8 @@ export function OnboardingWizard() {
       const trimmedName = userName.trim();
       if (trimmedName) {
         const cfg = await fetchConfig();
-        const existingUsers = cfg.users || [];
+        // Drop the 'You' placeholder seeded by bootstrap (FLUX-785) now that we have a real name.
+        const existingUsers = (cfg.users || []).filter((u) => u.name && u.name.toLowerCase() !== 'you');
         const hasUser = existingUsers.some((u) => u.name === trimmedName);
         const hasAgent = existingUsers.some((u) => u.name === 'Agent');
         const newUsers = [
@@ -216,6 +217,9 @@ export function OnboardingWizard() {
           ...(hasAgent ? [] : [{ name: 'Agent' }]),
         ];
         await apiSaveConfig({ ...cfg, users: newUsers });
+        // FLUX-785: actually adopt the name as the active identity (the wizard wrote it to config
+        // but never set currentUser, so attribution stayed at the 'Guy' default).
+        setCurrentUser(trimmedName);
       }
       onAdvance();
     } catch (err) {

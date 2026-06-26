@@ -16,7 +16,7 @@ import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
 import { extractTicket } from './extract.js';
 import { normalizeHistoryEntries, buildActivityEntry } from './history.js';
 import { getCliWorkspace, getActiveFluxDir, getWorkspacesList, workspaceRoot } from './workspace.js';
-import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, checkGhAuth, captureDiff, resolveCommit, getPullRequestStatus, getDefaultBranch } from './branch-manager.js';
+import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, checkGhAuth, captureDiff, resolveCommit, planFinishPr, getDefaultBranch } from './branch-manager.js';
 import { createTaskWorktree, detachTaskWorktree, taskWorktreeDir, findWorktreeForBranch, worktreeChangeCount } from './task-worktree.js';
 import { cleanupMergedBranch } from './pr-cleanup.js';
 import { sharedNonDoneSiblings } from './pr-tickets.js';
@@ -376,29 +376,24 @@ export function buildMcpServer(): McpServer {
       const task = tasksCache[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`);
 
-      const { _path } = task;
-      const { frontmatter, body: existingBody } = await readTaskFromDisk(task);
-
+      // Build the merged frontmatter for a pre-write schema check. The authoritative write below
+      // re-reads + re-applies these inside the per-ticket lock (updateTaskWithHistory).
+      const { frontmatter } = await readTaskFromDisk(task);
       if (title !== undefined) frontmatter.title = title;
       if (priority !== undefined) frontmatter.priority = priority;
       if (effort !== undefined) frontmatter.effort = effort;
       if (assignee !== undefined) frontmatter.assignee = assignee;
       if (tags !== undefined) frontmatter.tags = tags;
       if (implementationLink !== undefined) frontmatter.implementationLink = implementationLink;
-      const nextBody = body !== undefined ? body : existingBody;
-      frontmatter.updatedBy = 'Agent';
 
       const validationErrors = validateTicketFrontmatter(frontmatter);
       if (validationErrors.length > 0) {
         return errorResult(`Schema validation failed:\n${formatValidationErrors(validationErrors)}`);
       }
 
-      if (frontmatter.tags && Array.isArray(frontmatter.tags)) {
-        await autoRegisterUnknownTags(frontmatter.tags);
+      if (tags !== undefined && Array.isArray(tags)) {
+        await autoRegisterUnknownTags(tags);
       }
-
-      const activityTimestamp = new Date().toISOString();
-      const existingHistory = normalizeHistoryEntries(frontmatter.history || []).history;
 
       const fieldChanges: string[] = [];
       if (title !== undefined && title !== task.title) fieldChanges.push('Updated title.');
@@ -409,14 +404,31 @@ export function buildMcpServer(): McpServer {
       if (tags !== undefined) fieldChanges.push('Updated tags.');
       if (implementationLink !== undefined) fieldChanges.push('Updated implementation link.');
 
-      if (fieldChanges.length > 0) {
-        existingHistory.push(buildActivityEntry(fieldChanges.join(' '), 'Agent', activityTimestamp));
+      const extraFields: Record<string, any> = {};
+      if (priority !== undefined) extraFields.priority = priority;
+      if (effort !== undefined) extraFields.effort = effort;
+      if (assignee !== undefined) extraFields.assignee = assignee;
+      if (tags !== undefined) extraFields.tags = tags;
+      if (implementationLink !== undefined) extraFields.implementationLink = implementationLink;
+
+      // FLUX-788: route through the locked + atomic write path (FLUX-645/290) instead of a bare
+      // fs.writeFile read-modify-write, which raced concurrent add_comment/log_progress/change_status
+      // on the same ticket and could drop the history append or expose a half-written file.
+      try {
+        const result = await updateTaskWithHistory(ticketId, {
+          updatedBy: 'Agent',
+          entries: fieldChanges.length > 0
+            ? [buildActivityEntry(fieldChanges.join(' '), 'Agent', new Date().toISOString())]
+            : [],
+          ...(Object.keys(extraFields).length > 0 ? { extraFields } : {}),
+          ...(title !== undefined ? { newTitle: title } : {}),
+          ...(body !== undefined ? { newBody: body } : {}),
+        });
+        if (!result) return errorResult(`Failed to update ${ticketId}`);
+      } catch (err: any) {
+        return errorResult(`Failed to update ${ticketId}: ${err?.message || err}`);
       }
 
-      frontmatter.history = normalizeHistoryEntries(existingHistory).history;
-      const fileContent = matter.stringify(nextBody, frontmatter);
-      await fs.writeFile(_path, fileContent, 'utf-8');
-      tasksCache[ticketId] = { ...frontmatter, body: nextBody, id: ticketId, _path };
       broadcastEvent('taskUpdated', { id: ticketId });
       const warning = body !== undefined ? bodySizeWarning(body) : undefined;
       return textResult(`Updated ${ticketId}${warning ? `\nWarning: ${warning}` : ''}`);
@@ -431,8 +443,9 @@ export function buildMcpServer(): McpServer {
       newStatus: z.string().describe('Target status'),
       comment: z.string().optional().describe('Required for Require Input/Ready transitions. Provide the question or completion summary.'),
       callerRole: z.string().optional().describe('Role of the calling session (e.g. "orchestrator"). Required to change status when scatter-gather sessions are active.'),
+      reviewState: z.enum(['approved', 'changes-requested']).nullable().optional().describe('FLUX-816: the EH review verdict to record on the card. Set "approved" when concluding a review to Ready, "changes-requested" when sending back to In Progress. Pass null to clear. Surfaces a review badge; distinct from the GitHub-synced reviewDecision.'),
     },
-    async ({ ticketId, newStatus, comment, callerRole }) => {
+    async ({ ticketId, newStatus, comment, callerRole, reviewState }) => {
       const task = tasksCache[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`);
 
@@ -495,6 +508,14 @@ export function buildMcpServer(): McpServer {
       }
 
       const extraFields: Record<string, any> = {};
+
+      // FLUX-816: record the EH review verdict alongside the status move so the card reflects it.
+      // Passed explicitly by the review orchestrator (approved→Ready, changes-requested→In Progress)
+      // or null to clear. No auto-clear on re-entry to In Progress — a 'changes-requested' verdict
+      // legitimately coincides with In Progress and must persist until the next review concludes.
+      if (reviewState !== undefined) {
+        extraFields.reviewState = reviewState;
+      }
 
       // Clear swimlane when moving out of a blocked state (e.g. user answered the question)
       if (task.swimlane && newStatus !== requireInputStatus) {
@@ -773,8 +794,9 @@ export function buildMcpServer(): McpServer {
       user: z.string().optional().describe('Author of the comment (default: Agent)'),
       summary: z.string().optional().describe('Faithful one-paragraph summary of this comment. Once it ages out of the recent window, the agent digest shows the summary instead of the full text (full text still fetchable on demand). Write it for a substantial comment; preserve the decision/why/anything actionable — concise but NOT lossy. Skip for short comments.'),
       pin: z.boolean().optional().describe('Pin this comment so it is NEVER collapsed in the agent digest (use for review handoffs / key decisions that must always stay visible in full).'),
+      supersedes: z.array(z.string()).optional().describe('History entry id(s) this comment makes obsolete (e.g. it reverses or replaces an earlier decision). The superseded entries collapse to a one-line marker in the agent digest so the next session reads the live decision, not the dead one — still recoverable via get_ticket expand. Set this ONLY when genuinely retiring a now-wrong entry; a pinned or user-authored target is treated as advisory-only (kept full) — the engine will not bury human intent on an agent\'s say-so.'),
     },
-    async ({ ticketId, comment, user, summary, pin }) => {
+    async ({ ticketId, comment, user, summary, pin, supersedes }) => {
       const task = tasksCache[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`);
 
@@ -783,6 +805,7 @@ export function buildMcpServer(): McpServer {
         type: 'comment', user: actor, comment, date: new Date().toISOString(),
         ...(summary && summary.trim() ? { summary: summary.trim() } : {}),
         ...(pin ? { pin: true } : {}),
+        ...(Array.isArray(supersedes) && supersedes.length ? { supersedes } : {}),
       }];
       const result = await updateTaskWithHistory(ticketId, { entries, updatedBy: actor });
       if (!result) return errorResult(`Failed to update ${ticketId}`);
@@ -799,8 +822,9 @@ export function buildMcpServer(): McpServer {
       message: z.string().describe('Progress message'),
       summary: z.string().optional().describe('Faithful summary shown in the agent digest once this note ages out of the recent window (full text fetchable on demand). Write it for a long note; concise but not lossy. Skip for short ones.'),
       pin: z.boolean().optional().describe('Pin so this note is never collapsed in the agent digest.'),
+      supersedes: z.array(z.string()).optional().describe('History entry id(s) this note makes obsolete (it records that an earlier decision/plan no longer holds). The superseded entries collapse to a one-line marker in the agent digest — still recoverable via get_ticket expand. A pinned or user-authored target is advisory-only (kept full); the engine will not bury human intent on an agent\'s say-so.'),
     },
-    async ({ ticketId, message, summary, pin }) => {
+    async ({ ticketId, message, summary, pin, supersedes }) => {
       const task = tasksCache[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`);
 
@@ -808,6 +832,7 @@ export function buildMcpServer(): McpServer {
       const extra: Record<string, unknown> = {
         ...(summary && summary.trim() ? { summary: summary.trim() } : {}),
         ...(pin ? { pin: true } : {}),
+        ...(Array.isArray(supersedes) && supersedes.length ? { supersedes } : {}),
       };
       const entries = [buildActivityEntry(message, 'Agent', activityTimestamp, extra)];
       const result = await updateTaskWithHistory(ticketId, { entries, updatedBy: 'Agent' });
@@ -871,27 +896,32 @@ export function buildMcpServer(): McpServer {
           return errorResult(`Cannot finish ${ticketId} — gh not configured. Ticket moved back to In Progress.`);
         }
 
-        // Ensure a PR exists before merging (FLUX-578). finish must be self-sufficient: the
-        // PR is normally opened at the Ready transition, but if that didn't happen (e.g. the
-        // work wasn't committed until now) we open it here. No commits ahead → bounce with an
-        // actionable "commit first" message rather than a raw gh merge error.
-        const existingPr = await getPullRequestStatus(task.branch).catch(() => null);
-        if (!existingPr) {
-          const branchStatus = await getTicketBranchStatus(task.branch).catch(() => null);
-          if (branchStatus && branchStatus.exists && branchStatus.aheadCount === 0) {
-            const msg = `Cannot finish ${ticketId} — branch \`${task.branch}\` has no commits yet. Commit your work, then finish again.`;
-            await updateTaskWithHistory(ticketId, { entries: [{ type: 'comment', user: 'Agent', comment: `⚠️ ${msg}`, date: new Date().toISOString() }], updatedBy: 'Agent', nextStatus: 'In Progress' });
+        // Ensure an OPEN PR exists before merging (FLUX-578 + FLUX-741). finish must be
+        // self-sufficient: the PR is normally opened at the Ready transition, but if that didn't
+        // happen (work committed only now) we open it here. CRITICALLY, a branch whose prior PR is
+        // already MERGED/CLOSED (a commit pushed after that PR merged — FLUX-656) must NOT fall
+        // through to `gh pr merge` on the dead PR (which throws "already merged" and strands the
+        // commit) — planFinishPr opens a FRESH PR for it instead. A branch with 0 commits ahead
+        // can't get a PR → route to Require Input (FLUX-570: don't leave a blocker only in chat).
+        try {
+          const prBody = `${task.body ? task.body.slice(0, 800) : ''}\n\n---\nTicket: ${ticketId}`;
+          const plan = await planFinishPr(task.branch, task.title || ticketId, prBody);
+          if (plan.action === 'blocked') {
+            const msg = `Cannot finish ${ticketId} — ${plan.reason} Commit your work, then finish again.`;
+            await updateTaskWithHistory(ticketId, {
+              entries: [{ type: 'comment', user: 'Agent', comment: `⚠️ ${msg}`, date: new Date().toISOString() }],
+              updatedBy: 'Agent',
+              nextStatus: configCache.requireInputStatus || 'Require Input',
+              extraFields: { swimlane: 'require-input' },
+            });
             broadcastEvent('taskUpdated', { id: ticketId });
-            return errorResult(`${msg} Ticket moved back to In Progress.`);
+            return errorResult(`${msg} Ticket moved to Require Input.`);
           }
-          try {
-            const prBody = `${task.body ? task.body.slice(0, 800) : ''}\n\n---\nTicket: ${ticketId}`;
-            finalLink = await createPullRequest(task.branch, task.title || ticketId, prBody);
-          } catch (createErr: any) {
-            await updateTaskWithHistory(ticketId, { entries: [{ type: 'comment', user: 'Agent', comment: `⚠️ Finish aborted — could not open a PR: ${createErr.message}.`, date: new Date().toISOString() }], updatedBy: 'Agent', nextStatus: 'In Progress' });
-            broadcastEvent('taskUpdated', { id: ticketId });
-            return errorResult(`Cannot finish ${ticketId} — PR creation failed: ${createErr.message}. Ticket moved back to In Progress.`);
-          }
+          if (plan.action === 'created' && plan.url) finalLink = plan.url;
+        } catch (createErr: any) {
+          await updateTaskWithHistory(ticketId, { entries: [{ type: 'comment', user: 'Agent', comment: `⚠️ Finish aborted — could not open a PR: ${createErr.message}.`, date: new Date().toISOString() }], updatedBy: 'Agent', nextStatus: 'In Progress' });
+          broadcastEvent('taskUpdated', { id: ticketId });
+          return errorResult(`Cannot finish ${ticketId} — PR creation failed: ${createErr.message}. Ticket moved back to In Progress.`);
         }
 
         try {
@@ -988,7 +1018,7 @@ export function buildMcpServer(): McpServer {
     {
       ticketId: z.string().describe('Ticket ID'),
       baseBranch: z.string().optional().describe('Base branch (default: master)'),
-      worktree: z.boolean().optional().describe('Create a dedicated git worktree for this branch (default: the workspace `worktreeByDefault` setting). Implies a branch.'),
+      worktree: z.boolean().optional().describe('Create a dedicated git worktree for this branch. Agent branch sessions are worktree-isolated BY DEFAULT (FLUX-741) so parallel ticket sessions never share a checkout; pass `worktree:false` to run in the shared main tree instead (single-checkout / human-manual escape). Implies a branch.'),
     },
     async ({ ticketId, baseBranch, worktree }) => {
       const task = tasksCache[ticketId];
@@ -1000,7 +1030,12 @@ export function buildMcpServer(): McpServer {
         await updateTaskWithHistory(ticketId, { updatedBy: 'Agent', extraFields: { branch } });
 
         // FLUX-521: optionally create a dedicated worktree (worktree ⇒ branch).
-        const useWorktree = worktree ?? (configCache as any).worktreeByDefault === true;
+        // FLUX-741: agent branch sessions are worktree-isolated BY DEFAULT — two parallel ticket
+        // sessions must never share one checkout (the FLUX-734/739 loss, where a shared-root switch
+        // discarded uncommitted work). The explicit `worktree` param is the per-call escape
+        // (`worktree:false` → run in the shared main tree). The portal/human "Start task" path keeps
+        // its own `worktreeByDefault` default (off, see routes/tasks.ts) — this flip is agent-only.
+        const useWorktree = worktree ?? true;
         let worktreePath: string | undefined;
         let worktreeError: string | undefined;
         if (useWorktree) {

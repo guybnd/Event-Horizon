@@ -185,6 +185,7 @@ export function TaskModal() {
       createdAt={createdAt}
       updatedAt={updatedAt}
       effort={effort}
+      handleSetReviewState={c.handleSetReviewState}
       implementationLink={implementationLink}
       activeRunGroup={activeRunGroup}
       config={config}

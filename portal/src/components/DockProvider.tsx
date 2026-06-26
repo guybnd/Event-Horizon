@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { BOARD_CONVERSATION_ID } from '../api';
 
 /** localStorage key for the dismissed-card set (matches the `eh-`-prefixed convention). */
 const DISMISSED_KEY = 'eh-dock-dismissed';
@@ -101,14 +102,32 @@ export interface ComposerSelections {
   permission?: string;
 }
 
+/** FLUX-801: the on-screen rect of the element that triggered an open, captured at click time.
+ *  Threaded to ChatDock so a window's open/close animation can grow out of (and shrink back to)
+ *  the clicked card. A plain `{left,top,width,height}` snapshot, not a live DOMRect. */
+export interface AnchorRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
 export interface DockActions {
   /** Open a chat window for `id` and surface its card even with no active session.
    *  `from` (the clicked element) anchors where the window spawns. */
   openChat: (id: string, from?: HTMLElement | null) => void;
+  /** FLUX-801: bring an already-open window to the front of the paint order (the dock renders
+   *  `open` in array order, so "front" = last). No-op if absent or already frontmost. Called on
+   *  open/re-click and on a window mousedown so the active chat paints above its siblings. */
+  raise: (id: string) => void;
   /** FLUX-744: open a ticket's chat window AND ensure its sideview (ticket panel) is open. This is the
    *  default "open this ticket" action — board/deck cards and global search route here, so opening a
    *  ticket lands in the chat-aligned view with the ticket panel showing instead of the center modal. */
   openTicket: (id: string, from?: HTMLElement | null) => void;
+  /** FLUX-810: open the orchestrator (`__board__`) chat window. Unlike `openTicket` this does NOT
+   *  force the ticket sideview (the board has no ticket panel, FLUX-734); it only opens the chat,
+   *  never toggles it closed. Used by the "Orchestrator replied" notification card-click. */
+  openBoard: (from?: HTMLElement | null) => void;
   /** Toggle a window open/closed (open path mirrors `openChat`). */
   toggle: (id: string, from?: HTMLElement | null) => void;
   /** Retire a card into History (drops its window + manual-open flag). */
@@ -155,6 +174,10 @@ export interface DockState {
   manuallyOpened: string[];
   /** Per-chat x-center of the element that triggered the open, so a window spawns "out of" it. */
   anchors: Record<string, number>;
+  /** FLUX-801: per-chat full source rect captured at click time, so the window's open/close
+   *  animation can grow from / shrink to the clicked card. Parallel to `anchors` (which keeps the
+   *  x-center contract intact for spawn positioning). */
+  anchorRects: Record<string, AnchorRect>;
   /** FLUX-727: persisted manual tab order (left→right). The dock renders this filtered to active
    *  tickets (appending any active id not yet here), so a drag order sticks and survives reloads. */
   order: string[];
@@ -204,6 +227,8 @@ export function DockProvider({ children }: { children: ReactNode }) {
   const [sectionOpen, setSectionOpenState] = useState<Record<string, boolean>>(() => readBoolRecord(SECTION_OPEN_KEY));
   const [manuallyOpened, setManuallyOpened] = useState<string[]>([]);
   const [anchors, setAnchors] = useState<Record<string, number>>({});
+  // FLUX-801: full source rects (parallel to `anchors`) for the pop-open/close animation.
+  const [anchorRects, setAnchorRects] = useState<Record<string, AnchorRect>>({});
   // FLUX-623: per-conversation unsent composer text, so minimizing a chat (which unmounts its
   // window subtree) no longer discards what the user typed.
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -279,11 +304,15 @@ export function DockProvider({ children }: { children: ReactNode }) {
       if (!el) return;
       const r = el.getBoundingClientRect();
       setAnchors((prev) => ({ ...prev, [id]: r.left + r.width / 2 }));
+      // FLUX-801: keep the full rect too, so the window can animate out of the clicked card.
+      setAnchorRects((prev) => ({ ...prev, [id]: { left: r.left, top: r.top, width: r.width, height: r.height } }));
     };
 
     const openWindow = (id: string, from?: HTMLElement | null) => {
       recordAnchor(id, from);
-      setOpen((prev) => (prev.includes(id) ? prev : [...prev, id]));
+      // FLUX-801: opening (or re-clicking) a card brings its window to the front of the paint order
+      // (last in `open`), so the freshly opened chat draws above any already-open siblings.
+      setOpen((prev) => (prev.includes(id) ? [...prev.filter((x) => x !== id), id] : [...prev, id]));
       setAcked((prev) => (prev.includes(id) ? prev : [...prev, id]));
       setDismissed((prev) => prev.filter((x) => x !== id));
     };
@@ -295,6 +324,12 @@ export function DockProvider({ children }: { children: ReactNode }) {
 
     return {
       openChat,
+      // FLUX-801: move an open window to the front (end) of the paint order. Bails when it's absent
+      // or already frontmost so a mousedown handler can call it idempotently without churning state.
+      raise: (id) =>
+        setOpen((prev) =>
+          !prev.includes(id) || prev[prev.length - 1] === id ? prev : [...prev.filter((x) => x !== id), id],
+        ),
       // FLUX-744: open the ticket's chat window and ensure the sideview is open (idempotent — never
       // toggles an already-open panel shut). The default surface for opening a ticket; cards/search
       // route here instead of the center modal.
@@ -302,6 +337,8 @@ export function DockProvider({ children }: { children: ReactNode }) {
         openChat(id, from);
         setSideviewOpen((prev) => (prev.includes(id) ? prev : [...prev, id]));
       },
+      // FLUX-810: open the orchestrator chat without the ticket sideview (it has no ticket panel).
+      openBoard: (from) => openChat(BOARD_CONVERSATION_ID, from),
       reopenFromHistory: openChat,
       toggle: (id, from) => {
         if (openRef.current.includes(id)) {
@@ -401,8 +438,8 @@ export function DockProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const state = useMemo<DockState>(
-    () => ({ open, acked, dismissed, manuallyOpened, anchors, drafts, selections, order, sideviewOpen, sideviewWidth, sideviewWidthUserSet, sectionOpen }),
-    [open, acked, dismissed, manuallyOpened, anchors, drafts, selections, order, sideviewOpen, sideviewWidth, sideviewWidthUserSet, sectionOpen],
+    () => ({ open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, sideviewWidthUserSet, sectionOpen }),
+    [open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, sideviewWidthUserSet, sectionOpen],
   );
 
   return (

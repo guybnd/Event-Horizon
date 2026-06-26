@@ -22,7 +22,7 @@ import path from 'path';
 import os from 'os';
 
 import { fileURLToPath } from 'url';
-import { requireWorkspace } from './middleware.js';
+import { requireWorkspace, loopbackOnly, originGuard, isLoopbackHostname } from './middleware.js';
 import { workspaceRoot, loadAppSettings, getCliWorkspace, resolvePortalDist, autoRegisterWorkspace } from './workspace.js';
 import { isPkg, isSea, isPackaged, ensureSeaAssetsExtracted, getSeaAsset, setEnginePort } from './packaged-mode.js';
 import { migrateFromLegacy, getBootStatus } from './global-settings.js';
@@ -33,7 +33,7 @@ import { activateWorkspace, tasksCache } from './task-store.js';
 // lazy `seaRequire('mcp-server.js')` loaded a SECOND, never-activated task-store, so MCP
 // writes threw "Received null" and MCP reads were blind to tickets REST had written.
 import { handleMcpHttpRequest, startMcpServer } from './mcp-server.js';
-import { stopAllCliSessions, setAutoRestartCallback, getAllActiveSessions } from './session-store.js';
+import { stopAllCliSessions, setAutoRestartCallback, getAllActiveSessions, getActiveSessionsForTask } from './session-store.js';
 import { requestApproval, resolveApproval, listPendingApprovals } from './permission-prompts.js';
 import { requestAnswer, resolveAnswer, listPendingQuestions } from './ask-questions.js';
 import { proposeBoardRebase, resolveBoardRebase, listPendingBoardRebases } from './board-rebase.js';
@@ -94,7 +94,33 @@ function describeWorkspaceProblem(dir: string): string {
 }
 
 const app = express();
-app.use(cors());
+
+// FLUX-774/783: the engine has no auth and can spawn agents with shell/file access, so by default
+// it binds to loopback (below), rejects non-loopback Host headers (DNS-rebinding) and non-loopback
+// Origins (drive-by cross-site fetch), and reflects CORS only for loopback origins so a page the
+// user merely visits can neither drive the API nor read its responses. Opt into LAN exposure with
+// EH_ALLOW_REMOTE=1 (no auth — trusted networks only).
+const ALLOW_REMOTE = process.env.EH_ALLOW_REMOTE === '1';
+if (ALLOW_REMOTE) {
+  app.use(cors());
+} else {
+  app.use(cors({
+    // Reflect ONLY loopback origins; never echo an arbitrary site's origin back. `false`
+    // simply omits CORS headers (no error) — the request still hits originGuard below.
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true); // same-origin navigations / curl / server-side callers
+      try {
+        let h = new URL(origin).hostname.toLowerCase();
+        if (h.startsWith('[')) h = h.slice(1, h.indexOf(']'));
+        return cb(null, isLoopbackHostname(h));
+      } catch {
+        return cb(null, false);
+      }
+    },
+  }));
+  app.use(loopbackOnly);
+  app.use(originGuard);
+}
 
 // ─── MCP over HTTP (FLUX-645) ───────────────────────────────────────────────────
 // Serve the Event Horizon MCP server in-process over loopback so every Claude Code session
@@ -222,6 +248,13 @@ app.post('/api/board/ask-question', requireWorkspace, async (req, res) => {
   if (questions.length === 0) {
     res.status(400).json({ error: 'questions[] is required' });
     return;
+  }
+  // FLUX-826 (lever B): mark that this turn routed a decision through the structured picker, so
+  // the turn-end soft backstop won't ALSO nudge on a benign comment from the same turn — the
+  // question route (lever A) already owns that turn's safety net. conversationId is the ticket id
+  // for per-ticket sessions; a no-match (board / unrouted) simply marks nothing.
+  if (conversationId) {
+    for (const session of getActiveSessionsForTask(conversationId)) session.askedThisTurn = true;
   }
   const result = await requestAnswer(questions, conversationId);
   res.json(result);
@@ -457,12 +490,27 @@ async function startServer() {
     }
   }
 
+  // Terminal error handler (FLUX-783). 4-arg, registered AFTER all routes + the SPA catch-all.
+  // Maps body-parser JSON failures to 400 and anything else to status||500, always as the uniform
+  // {error} JSON the portal expects — never an HTML stack trace (Express's default finalhandler
+  // would leak internals in dev). Stack is logged server-side for 5xx, never sent to the client.
+  app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (res.headersSent) return next(err);
+    const status = err?.status || err?.statusCode || (err?.type === 'entity.parse.failed' ? 400 : 500);
+    if (status >= 500) console.error('[express] unhandled error:', err);
+    res.status(status).json({ error: status === 400 ? 'Invalid request body' : (err?.message || 'Internal error') });
+  });
+
   const PORT = await readPortConfig();
   setEnginePort(PORT); // FLUX-645: the installer renders this port into .mcp.json's /mcp URL.
 
-  const server = app.listen(PORT, async () => {
+  const bindHost = ALLOW_REMOTE ? '0.0.0.0' : '127.0.0.1';
+  const server = app.listen(PORT, bindHost, async () => {
     console.log(`Event Horizon Engine running on port ${PORT}`);
     console.log(`Portal:   http://localhost:${PORT}`);
+    if (ALLOW_REMOTE) {
+      console.warn('[FLUX] EH_ALLOW_REMOTE=1 — bound to 0.0.0.0 and accepting non-loopback connections. The API has NO authentication and can spawn agents with shell/file access; only enable this on a trusted network.');
+    }
 
     await migrateFromLegacy();
 
@@ -508,7 +556,10 @@ async function startServer() {
       );
     }
 
-    if (isPackaged) {
+    // FLUX-793: under the Electron desktop shell, Electron owns the window + tray, so the engine
+    // must NOT open its own browser tab or spawn the systray binary (that would duplicate the
+    // window and show two tray icons). The shell sets EH_SHELL=electron on the engine it spawns.
+    if (isPackaged && process.env.EH_SHELL !== 'electron') {
       setTimeout(() => openBrowser(`http://localhost:${PORT}`), 800);
       initTray(PORT).catch(e => console.warn('Tray init failed:', e.message));
     }

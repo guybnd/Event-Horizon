@@ -1,0 +1,52 @@
+# electron-builder config for the Event Horizon desktop shell (FLUX-793).
+# Build with: npm --prefix electron run build  (or build:win / build:mac / build:linux)
+appId: dev.eventhorizon.desktop
+productName: Event Horizon
+copyright: Event Horizon
+
+directories:
+  output: dist
+  buildResources: build
+
+# Only the shell's own files ship in the asar; the engine is staged as a resource (below).
+# build/icon.png + build/tray.png are shipped too so main.js can set the window + tray icon
+# at runtime (electron-builder also derives the .ico/.icns app icon from build/icon.png).
+files:
+  - main.js
+  - preload.js
+  - package.json
+  - build/icon.png
+  - build/tray.png
+
+# Bundle the self-contained engine bundle so the app needs no external Node/engine. Run
+# `npm run build` at the repo root first — it produces engine/dist/ (esbuild bundle with all deps
+# inlined + the staged portal at engine/dist/portal/dist). main.js runs resources/engine/index.js
+# via Electron-as-node. (.tmp/.map/the SEA scratch files are excluded — not needed at runtime.)
+extraResources:
+  - from: ../engine/dist
+    to: engine
+    filter:
+      - "**/*"
+      - "!**/*.map"
+      - "!sea-prep.blob"
+      - "!sea-manifest.json"
+
+win:
+  target: nsis
+  icon: build/icon.png
+mac:
+  target: dmg
+  category: public.app-category.developer-tools
+  icon: build/icon.png
+linux:
+  target: AppImage
+  category: Development
+  icon: build/icon.png
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+
+# App/tray icons are generated from the portal favicon — see scripts/gen-icons.mjs.
+# electron-builder derives the platform .ico/.icns from build/icon.png.

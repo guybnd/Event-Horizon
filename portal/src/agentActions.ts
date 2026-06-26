@@ -449,6 +449,17 @@ export async function launchOrchestration(opts: {
   // one agent solo — no orchestrator overhead for the cheap single-reviewer path.
   const useLead = def.hasLead && !!lead && participants.length > 1;
 
+  // FLUX-754: a lead-capable review mode launched with exactly ONE participant collapses to a lone
+  // reviewer (useLead is false — it requires >1). Without an orchestrator to synthesize, that
+  // reviewer posts its review and defers to nobody, leaving the ticket dangling in In Progress
+  // (the PR-62 bug). Option A: grant the sole reviewer authority to finalize itself via an appended
+  // focusComment — resolvePersonaPrompt appends focus AFTER the persona prompt, so it supersedes the
+  // persona's blanket "defer" line (which we also carve out for the sole-reviewer case). The combiner
+  // path (useLead, ≥2 workers) is untouched.
+  const soloReviewer = def.hasLead && participants.length === 1;
+  const soloAuthority =
+    '\n\n---\n**You are the SOLE reviewer for this ticket — there is no orchestrator and no other reviewer to synthesize your verdict.** You OWN the final decision. After posting your structured review you MUST call `change_status`: APPROVED → "Ready" with a summary; CHANGES NEEDED → "In Progress" with the required changes (Blockers first); if you need a user decision → "Require Input". Do not end your turn without a status move.';
+
   // Scatter-gather combiners must run AFTER their workers finish. Register the
   // combiner as deferred BEFORE launching workers so the engine's fan-in barrier
   // owns the sequencing — a Claude CLI session can't poll/block to wait itself.
@@ -477,7 +488,8 @@ export async function launchOrchestration(opts: {
       startTaskCliSessionEx(taskId, {
         framework,
         personaId: p.personaId,
-        focusComment: p.focusComment,
+        // FLUX-754: the lone reviewer gets decision authority appended; multi-reviewer focus is untouched.
+        focusComment: soloReviewer ? (p.focusComment ?? '') + soloAuthority : p.focusComment,
         skipPermissions,
         effortOverride,
         phase,

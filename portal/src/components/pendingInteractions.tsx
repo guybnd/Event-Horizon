@@ -51,6 +51,22 @@ export interface PendingInteractionsValue {
   rebaseFailures: BoardRebaseFailure[];
   /** Non-null conversation ids that currently have at least one unresolved pending prompt. */
   pendingPromptConversationIds: Set<string>;
+  /** FLUX-809: total count of pending prompts (approvals + questions + rebases + post-apply
+   *  failures), claimed-or-not — the always-meaningful number shown on the pinned Pending tab. */
+  pendingCount: number;
+  /** FLUX-809: whether the user has manually opened the pending fallback window via the Pending
+   *  tab. Orphan prompts still force the window visible regardless (the FLUX-720 safety); this only
+   *  adds a manual open/close on top of that. */
+  pendingPanelOpen: boolean;
+  /** FLUX-809: bumped each time the Pending tab is clicked, so the (possibly already-mounted)
+   *  window re-clamps itself back on-screen. */
+  revealNonce: number;
+  /** FLUX-809: toggle the manual-open state (and request a re-clamp). When orphans exist the
+   *  window can't actually hide, so this degrades to a "bring it back on-screen" action. */
+  togglePendingPanel: () => void;
+  /** FLUX-809: explicitly close the manually-opened window (the window's own ✕, only offered when
+   *  there are no orphan prompts left to force it open). */
+  closePendingPanel: () => void;
   removeApproval: (id: string) => void;
   removeQuestion: (id: string) => void;
   removeRebase: (id: string) => void;
@@ -77,6 +93,10 @@ export function PendingInteractionsProvider({ children }: { children: ReactNode 
   const [rebaseFailures, setRebaseFailures] = useState<BoardRebaseFailure[]>([]);
   // conversationId → mounted inline-surface count (refcounted claims).
   const [claimed, setClaimed] = useState<Record<string, number>>({});
+  // FLUX-809: manual open state for the pending fallback window (driven by the pinned Pending tab).
+  // Orphans still force the window open independently; this only adds a user-driven open/close.
+  const [pendingPanelOpen, setPendingPanelOpen] = useState(false);
+  const [revealNonce, setRevealNonce] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -163,6 +183,15 @@ export function PendingInteractionsProvider({ children }: { children: ReactNode 
     [claimed],
   );
 
+  const togglePendingPanel = useCallback(() => {
+    setPendingPanelOpen((v) => !v);
+    setRevealNonce((n) => n + 1);
+  }, []);
+  const closePendingPanel = useCallback(() => setPendingPanelOpen(false), []);
+
+  // FLUX-809: total pending prompts across all queues — the count shown on the pinned Pending tab.
+  const pendingCount = approvals.length + questions.length + rebases.length + rebaseFailures.length;
+
   const pendingPromptConversationIds = useMemo(() => {
     const set = new Set<string>();
     for (const a of approvals) if (a.conversationId) set.add(a.conversationId);
@@ -178,6 +207,11 @@ export function PendingInteractionsProvider({ children }: { children: ReactNode 
       rebases,
       rebaseFailures,
       pendingPromptConversationIds,
+      pendingCount,
+      pendingPanelOpen,
+      revealNonce,
+      togglePendingPanel,
+      closePendingPanel,
       removeApproval: (id) => setApprovals((prev) => prev.filter((p) => p.id !== id)),
       removeQuestion: (id) => setQuestions((prev) => prev.filter((p) => p.id !== id)),
       removeRebase: (id) => setRebases((prev) => prev.filter((p) => p.id !== id)),
@@ -191,7 +225,21 @@ export function PendingInteractionsProvider({ children }: { children: ReactNode 
       release,
       isClaimed,
     }),
-    [approvals, questions, rebases, rebaseFailures, pendingPromptConversationIds, claim, release, isClaimed],
+    [
+      approvals,
+      questions,
+      rebases,
+      rebaseFailures,
+      pendingPromptConversationIds,
+      pendingCount,
+      pendingPanelOpen,
+      revealNonce,
+      togglePendingPanel,
+      closePendingPanel,
+      claim,
+      release,
+      isClaimed,
+    ],
   );
 
   return (
@@ -246,6 +294,10 @@ export function PendingInteractionFallback() {
     rebases,
     rebaseFailures,
     isClaimed,
+    pendingPromptConversationIds,
+    pendingPanelOpen,
+    revealNonce,
+    closePendingPanel,
     removeApproval,
     removeQuestion,
     removeRebase,
@@ -259,25 +311,64 @@ export function PendingInteractionFallback() {
   const orphanRebases = rebases.filter((p) => !isClaimed(p.conversationId));
   const orphanFailures = rebaseFailures.filter((f) => !isClaimed(f.conversationId));
 
-  if (
-    !orphanApprovals.length &&
-    !orphanQuestions.length &&
-    !orphanRebases.length &&
-    !orphanFailures.length
-  )
-    return null;
+  const hasOrphans = !!(
+    orphanApprovals.length ||
+    orphanQuestions.length ||
+    orphanRebases.length ||
+    orphanFailures.length
+  );
+
+  // FLUX-809: orphan prompts always force the window open (the FLUX-720 no-orphans safety). The
+  // pinned Pending tab can additionally open it manually even when every prompt is being handled
+  // inline — but it can never hide a window that still has orphan prompts to resolve.
+  if (!hasOrphans && !pendingPanelOpen) return null;
+
+  // Chats whose pending prompt is handled inline (claimed) — offered as jump chips when the user
+  // opens the window manually with no orphans of its own to resolve, so the count is never a dead end.
+  const claimedPendingIds = [...pendingPromptConversationIds].filter((id) => isClaimed(id));
 
   const count =
     orphanApprovals.length + orphanRebases.length + orphanQuestions.length + orphanFailures.length;
 
   return (
     <FloatingPanel
-      storageKey="eh.pendingFallback.geometry"
-      title={`Pending · ${count} item${count === 1 ? '' : 's'}`}
-      defaultWidth={400}
-      defaultHeight={460}
+      storageKey="eh.pendingFallback.geometry.v2"
+      title={hasOrphans ? `Pending · ${count} item${count === 1 ? '' : 's'}` : 'Pending'}
+      defaultWidth={600}
+      defaultHeight={690}
+      tone="attention"
+      pulse={hasOrphans}
+      revealSignal={revealNonce}
+      // Only offer a close ✕ when there are no orphans forcing the window open (else it's gated).
+      onClose={hasOrphans ? undefined : closePendingPanel}
     >
       <div className="flex flex-col gap-2">
+        {!hasOrphans &&
+          (claimedPendingIds.length > 0 ? (
+            <div className="flex flex-col gap-1.5 rounded-xl border border-[var(--eh-border)] bg-black/[0.02] p-2.5 dark:bg-white/[0.02]">
+              <div className="text-[11px] font-medium text-[var(--eh-text-muted)]">
+                These chats have a prompt open in their own window:
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {claimedPendingIds.map((id) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => openChat(id)}
+                    title="Open this chat"
+                    className="flex items-center gap-1 rounded-lg border border-amber-400/50 bg-amber-400/10 px-2 py-1 text-[11px] font-semibold text-amber-700 transition-colors hover:bg-amber-400/20 dark:text-amber-300"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                    {id === BOARD_CONVERSATION_ID ? 'Board chat' : id}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="px-1 py-6 text-center text-xs text-[var(--eh-text-muted)]">
+              No pending items — you’re all caught up.
+            </div>
+          ))}
         {orphanApprovals.map((p) => (
           <FallbackItem key={p.id} conversationId={p.conversationId} onOpen={openChat}>
             <ApprovalCard pending={p} onResolved={() => removeApproval(p.id)} />

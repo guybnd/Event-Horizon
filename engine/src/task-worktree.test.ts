@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import { existsSync, realpathSync } from 'fs';
 import path from 'path';
@@ -16,7 +16,13 @@ import {
   taskWorktreesBaseDir,
   worktreeChangeCount,
   listLocalBranches,
+  stashDirtyTree,
 } from './task-worktree.js';
+
+// Real git worktree ops are slow on Windows under parallel suite load — the default 5000ms
+// testTimeout intermittently overruns when the full engine suite runs concurrently (FLUX-749).
+// Raise it file-wide so these don't flake the `check` gate (mirrors group-integration.test.ts).
+vi.setConfig({ testTimeout: 30000, hookTimeout: 30000 });
 
 const execFileAsync = promisify(execFile);
 
@@ -315,6 +321,50 @@ describe('task-worktree', () => {
       const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
       // FLUX-2 has no worktree of its own but shares FLUX-1's branch (joined).
       expect(sameDir(await resolveTaskExecutionRoot({ id: 'FLUX-2', branch: 'flux/FLUX-1' }, repo), wt)).toBe(true);
+    });
+
+    // FLUX-741 AC2: two parallel branch tickets must never share one checkout.
+    it('gives two parallel branch tickets distinct worktrees / execution roots', async () => {
+      const wtA = await createTaskWorktree(repo, 'FLUX-A', 'flux/FLUX-A');
+      const wtB = await createTaskWorktree(repo, 'FLUX-B', 'flux/FLUX-B');
+
+      expect(sameDir(wtA, wtB)).toBe(false);
+      const rootA = await resolveTaskExecutionRoot({ id: 'FLUX-A', branch: 'flux/FLUX-A' }, repo);
+      const rootB = await resolveTaskExecutionRoot({ id: 'FLUX-B', branch: 'flux/FLUX-B' }, repo);
+      expect(sameDir(rootA, wtA)).toBe(true);
+      expect(sameDir(rootB, wtB)).toBe(true);
+      // Neither resolves to the shared engine root, and the two are isolated from each other.
+      expect(sameDir(rootA, repo)).toBe(false);
+      expect(sameDir(rootB, repo)).toBe(false);
+      expect(sameDir(rootA, rootB)).toBe(false);
+    });
+  });
+
+  // FLUX-741 AC1: the dirty-root backstop the post-merge cleanup uses before switching/resetting
+  // the MAIN tree. It must never silently discard work — dirty trees are stashed (recoverable).
+  describe('stashDirtyTree (FLUX-741 dirty-root backstop)', () => {
+    it('is a no-op on a clean tree', async () => {
+      const res = await stashDirtyTree(repo);
+      expect(res.stashed).toBe(false);
+      expect(res.stashRef).toBeUndefined();
+    });
+
+    it('stashes uncommitted + untracked work and returns a recoverable ref', async () => {
+      // A tracked modification AND an untracked file — both must be preserved.
+      await fs.writeFile(path.join(repo, 'README.md'), '# dirty edit\n', 'utf8');
+      await fs.writeFile(path.join(repo, 'precious.txt'), 'do not lose me\n', 'utf8');
+
+      const res = await stashDirtyTree(repo, { reason: 'EH test backstop' });
+
+      expect(res.stashed).toBe(true);
+      expect(res.stashRef).toBeTruthy();
+      // The working tree is now clean (the switch the caller is about to do is safe)...
+      const { stdout: porcelain } = await execFileAsync('git', ['-C', repo, 'status', '--porcelain'], { windowsHide: true });
+      expect(porcelain.trim()).toBe('');
+      // ...but NOTHING was lost — both changes come back when the stash is applied.
+      await execFileAsync('git', ['-C', repo, 'stash', 'apply', res.stashRef!], { windowsHide: true });
+      expect(await fs.readFile(path.join(repo, 'README.md'), 'utf8')).toContain('dirty edit');
+      expect(await fs.readFile(path.join(repo, 'precious.txt'), 'utf8')).toContain('do not lose me');
     });
   });
 });

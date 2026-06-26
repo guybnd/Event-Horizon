@@ -133,6 +133,11 @@ export interface CliSessionRecord extends CliSessionSummary {
    *  (status moved / Require Input raised / subtask created) or just parked. */
   statusAtTurnStart?: string;
   subtaskCountAtTurnStart?: number;
+  /** FLUX-826: agent-comment count at turn start + whether the agent raised a structured
+   *  `ask_user_question` this turn — feed the SOFT resting-status backstop (a fresh comment
+   *  with no board action and no structured prompt surfaces a needs-action nudge). */
+  commentCountAtTurnStart?: number;
+  askedThisTurn?: boolean;
 }
 
 export interface AgentEvent {

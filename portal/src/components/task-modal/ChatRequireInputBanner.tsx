@@ -25,7 +25,7 @@ export function ChatRequireInputBanner({ task }: ChatRequireInputBannerProps) {
         <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-amber-600 dark:text-amber-300">
           Awaiting your input
         </p>
-        <p className="mt-1 whitespace-pre-wrap break-words text-sm text-gray-700 dark:text-gray-300">{question}</p>
+        <p className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-sm text-gray-700 dark:text-gray-300">{question}</p>
       </div>
     </div>
   );

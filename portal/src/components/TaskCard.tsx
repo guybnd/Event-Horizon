@@ -18,7 +18,6 @@ import { CardSessionRow } from './task-card/CardSessionRow';
 import { CardSubtaskProgress } from './task-card/CardSubtaskProgress';
 import { CardFooterRow } from './task-card/CardFooterRow';
 import { CardActionButtons } from './task-card/CardActionButtons';
-import { CardChatButton } from './task-card/CardChatButton';
 import { CardCommentPopover } from './task-card/CardCommentPopover';
 import { CardSubtaskPopover } from './task-card/CardSubtaskPopover';
 import { CardDescriptionPopup } from './task-card/CardDescriptionPopup';
@@ -148,13 +147,13 @@ export const TaskCardInner = memo(function TaskCardInner({
         {c.hasActiveCliSession && !isOverlay && (
           <div className="pointer-events-none absolute inset-0 rounded-xl bot-border-breathe" />
         )}
-        {/* Comment indicator: normal cards show it in the footer (CardFooterRow); compact
-            (folded-deck) cards show it inline in the body, PR cards inline in their status row —
-            all so the chat pill can own the top-right corner on every surface (FLUX-739). */}
-        {/* Chat — the card's primary action, owning the top-right corner on every surface incl.
-            PR cards and folded member subcards (FLUX-739). */}
+        {/* Comment indicator owns the top-right corner on every surface — normal, compact
+            (folded-deck) member, and PR cards (FLUX-804 returned it here after FLUX-739 had
+            relocated it to make room for a now-removed chat pill; the card body click already
+            opens chat, FLUX-744). Corner states: unread → always-visible amber count; has
+            comments → neutral count on hover; none → muted "add a comment" affordance on hover. */}
         {!isOverlay && (
-          <CardChatButton task={task} nudged={c.isPromptStatus && !compact} />
+          <CardCommentBadge task={task} c={c} compact={compact} />
         )}
         {c.isPromptStatus && !compact && (
           <div className="absolute -top-1.5 -right-1.5 z-10">
@@ -233,15 +232,6 @@ export const TaskCardInner = memo(function TaskCardInner({
                 <p className="eh-card-desc mb-3 text-xs leading-relaxed text-gray-600 line-clamp-3 dark:text-gray-400">
                   {c.snippet}
                 </p>
-
-                {/* Compact (folded-deck) member cards have no footer, so the comment badge that
-                    used to sit in the corner now renders inline here — the corner is the chat
-                    pill's (FLUX-739). Only when there are comments, to keep subcards tidy. */}
-                {compact && !isOverlay && c.comments.length > 0 && (
-                  <div className="mb-1 flex">
-                    <CardCommentBadge task={task} c={c} inline />
-                  </div>
-                )}
 
                 {c.clusterGroup && c.clusterAgg && !isOverlay && (
                   <CardClusterPanel c={c} />

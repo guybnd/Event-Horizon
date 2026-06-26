@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { FolderGit2, FolderX, ExternalLink, Loader2, RefreshCw } from 'lucide-react';
+import { FolderGit2, FolderX, ExternalLink, Loader2, RefreshCw, GitCompare } from 'lucide-react';
 import { fetchWorktrees, detachWorktree, openWorktreeWindow, type WorktreeInfo } from '../../api';
 
 /**
@@ -68,6 +68,16 @@ export function WorktreesPanel() {
                 </div>
                 <div className="truncate text-[10px] text-gray-400" title={w.path}>{w.path}</div>
               </div>
+              {/* Divergence vs master (FLUX-582): commits ahead + changed files. Hidden when both 0. */}
+              {((w.aheadCount ?? 0) > 0 || (w.changedFiles ?? 0) > 0) && (
+                <span
+                  className="flex shrink-0 items-center gap-1 rounded border border-gray-200 px-1.5 py-0.5 font-mono text-[10px] text-gray-500 dark:border-white/10 dark:text-gray-400"
+                  title={`${w.aheadCount ?? 0} commit${(w.aheadCount ?? 0) === 1 ? '' : 's'} ahead · ${w.changedFiles ?? 0} file${(w.changedFiles ?? 0) === 1 ? '' : 's'} changed vs master`}
+                >
+                  <GitCompare className="h-2.5 w-2.5 shrink-0" />
+                  ↑{w.aheadCount ?? 0} · {w.changedFiles ?? 0} vs master
+                </span>
+              )}
               <button
                 onClick={() => void handleOpen(w)}
                 disabled={!w.ticketId || busy === w.path}

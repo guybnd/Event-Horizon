@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { Layers } from 'lucide-react';
 import type { Task } from '../../types';
 import { StatusBadge } from '../StatusBadge';
+import { reviewChip } from '../ReviewChip';
 import { getStatusColorClass } from '../../statusStyles';
 import type { TaskCardController } from '../../hooks/useTaskCardController';
 
@@ -122,6 +123,10 @@ export function CardMetadataRow({ task, isOverlay, c }: { task: Task; isOverlay?
             className="text-[9px] font-bold uppercase tracking-[0.12em]"
           />
         )}
+        {/* Internal review verdict (FLUX-816). PR cards render their own review badge in
+            PrDeckSection (from reviewDecision ?? reviewState), so this is non-PR only to avoid
+            double-badging. null reviewState → no badge (never a false "approved"). */}
+        {task.kind !== 'pr' && reviewChip(task.reviewState)}
         {isEpic && task.kind !== 'pr' && (
           <span className="flex items-center gap-0.5 rounded-full bg-indigo-100 px-1.5 py-0.5 text-[9px] font-bold text-indigo-600 dark:bg-indigo-500/15 dark:text-indigo-300">
             <Layers className="w-2.5 h-2.5" />

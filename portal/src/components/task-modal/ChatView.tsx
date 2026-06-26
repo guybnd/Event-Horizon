@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Send, Loader2, Square, Wrench, ChevronDown, ChevronRight, Check, Clock, ArrowDown, Cpu, Gauge, Shield, Paperclip, X, RefreshCw } from 'lucide-react';
+import { Send, Loader2, Square, Wrench, ChevronDown, ChevronRight, Check, Clock, ArrowDown, Cpu, Gauge, Shield, Paperclip, X, RefreshCw, Play } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { fetchDiffFile, openWorkspaceEditor, type TranscriptMessage, type ChatAttachment } from '../../api';
 import type { QueuedMessage, ChatSendOptions } from '../../hooks/useChatSession';
+import { DELEGATION_TOOLS } from '../../orchestration';
 import { TaskMarkdown } from '../TaskMarkdown';
 import { CopyButton } from '../CopyButton';
 import { DiffLines } from '../DiffLines';
@@ -50,6 +51,14 @@ const PERM_OPTS: ChipOption[] = [
   { value: 'gated', label: 'Gated', hint: 'ask' },
   { value: 'skip', label: 'Skip', hint: 'danger', tone: 'danger' },
 ];
+
+/** FLUX-814: how many trailing messages a chat renders on open, and how many more each
+ *  "Show earlier" click reveals. Long threads (the orchestrator board reaches 800+ messages)
+ *  used to mount EVERY message on open — each assistant turn a react-markdown parse — which
+ *  froze the open for 3–4s. Rendering only the tail makes the open feel instant; older turns
+ *  load on demand (and opening find reveals all, so search still scans the whole transcript). */
+const INITIAL_VISIBLE_MESSAGES = 80;
+const LOAD_MORE_MESSAGES = 200;
 
 export interface ChatViewProps {
   messages: TranscriptMessage[];
@@ -146,6 +155,15 @@ export interface ChatViewProps {
   onEnqueue?: (text: string, opts?: ChatSendOptions) => void;
   /** FLUX-748: remove a still-queued message by id (the ✕ on a queued row). */
   onDequeue?: (id: string) => void;
+  /** FLUX-803: ambient "who's live now" presence rail, pinned above the transcript. Rendered only
+   *  while a run is live (the caller passes it only then); absent for single-session chats. Caller
+   *  builds it (`<ChatPresenceRail group=… />`) so ChatView stays transport-free. */
+  presenceRail?: ReactNode;
+  /** FLUX-803: the prominent inline orchestration block (durable run record). When provided, ChatView
+   *  suppresses the raw `delegate_parallel`/`start_session` tool row and renders this card in its place
+   *  (the spawn point); if no such row is in the transcript yet it renders just below the stream. Caller
+   *  builds it (`<ChatOrchestrationBlock group=… />`) and passes it only when a run group exists. */
+  orchestrationBlock?: ReactNode;
 }
 
 /**
@@ -191,6 +209,8 @@ export function ChatView({
   queued,
   onEnqueue,
   onDequeue,
+  presenceRail,
+  orchestrationBlock,
 }: ChatViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
@@ -207,6 +227,13 @@ export function ChatView({
   // FLUX-686: in-transcript find, scoped to this surface's scroll container. Opened with
   // Cmd/Ctrl+F or `/` (see the root onKeyDown below); the bar handles next/prev + Esc itself.
   const find = useTranscriptFind(scrollRef, messages);
+
+  // FLUX-814: render only the last `visibleCount` messages on open (the tail), so a long thread
+  // doesn't mount 800+ markdown rows synchronously and freeze the open. "Show earlier" reveals
+  // older turns in chunks; `restoreFromBottomRef` keeps the viewport anchored when those rows are
+  // prepended above the current scroll position.
+  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE_MESSAGES);
+  const restoreFromBottomRef = useRef<number | null>(null);
 
   // FLUX-695: unread-divider state. `lastSeenRef` is the count of messages the user has seen;
   // `dividerIndex` is the boundary (first unseen index) where the "new messages" rule renders.
@@ -248,6 +275,26 @@ export function ChatView({
     markSeen(); // an explicit jump-to-latest is a deliberate "I'm caught up".
   }
 
+  // FLUX-814: reveal an older chunk of the transcript. Record the distance-from-bottom first so the
+  // layout effect below can restore it — prepending rows above would otherwise jump the viewport.
+  function showEarlier() {
+    const el = scrollRef.current;
+    if (el) restoreFromBottomRef.current = el.scrollHeight - el.scrollTop;
+    setVisibleCount((c) => Math.min(messages.length, c + LOAD_MORE_MESSAGES));
+  }
+
+  // FLUX-814: after "Show earlier" prepends rows, keep the previously-visible content in place by
+  // pinning the same distance from the bottom. Runs only on a `visibleCount` change (not on new
+  // turns — those keep the existing stick-to-bottom behavior). Child layout effects (Clampable
+  // measuring) run before this parent effect, so heights are settled when we restore.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (el && restoreFromBottomRef.current != null) {
+      el.scrollTop = el.scrollHeight - restoreFromBottomRef.current;
+      restoreFromBottomRef.current = null;
+    }
+  }, [visibleCount]);
+
   // FLUX-695: track tab visibility + window focus. When the surface becomes attended while the
   // user is already at the bottom, the new messages are in view → mark them seen (clear divider).
   useEffect(() => {
@@ -278,17 +325,19 @@ export function ChatView({
     // final message is already at its true height when we measure. Skipped while a turn is streaming
     // (`working`) so a live chat keeps stick-to-tail. Setting `atBottomRef=false` also stops
     // `handleScroll` from snapping back / auto-marking-seen, leaving the unread divider intact.
-    if (openToLastMessage && !didInitialScrollRef.current && messages.length > 0) {
-      didInitialScrollRef.current = true;
-      if (!working) {
-        const el = scrollRef.current;
-        const last = el?.querySelector('[data-last-msg]') as HTMLElement | null;
-        if (el && last) {
-          el.scrollTop += last.getBoundingClientRect().top - el.getBoundingClientRect().top - 8;
-          atBottomRef.current = false;
-          prevLenRef.current = messages.length;
-          return;
-        }
+    if (openToLastMessage && !didInitialScrollRef.current && messages.length > 0 && !working) {
+      // FLUX-824: only burn the one-shot once the scroll ACTUALLY runs. If this first pass fires
+      // while a turn streams (`working`) or before `[data-last-msg]` is in the DOM (`last` null),
+      // leaving the guard unset keeps the one-shot armed for the next render instead of silently
+      // landing the user at the bottom — the intermittent "sometimes it doesn't scroll" failure.
+      const el = scrollRef.current;
+      const last = el?.querySelector('[data-last-msg]') as HTMLElement | null;
+      if (el && last) {
+        didInitialScrollRef.current = true;
+        el.scrollTop += last.getBoundingClientRect().top - el.getBoundingClientRect().top - 8;
+        atBottomRef.current = false;
+        prevLenRef.current = messages.length;
+        return;
       }
     }
     const grew = messages.length - prevLenRef.current;
@@ -296,7 +345,15 @@ export function ChatView({
       // Transcript shrank/reset — rebaseline so a stale boundary can't point past the end.
       lastSeenRef.current = messages.length;
       setDividerIndex(null);
+      // FLUX-814: a reset/conversation-switch collapses the window back to the tail.
+      setVisibleCount(INITIAL_VISIBLE_MESSAGES);
     } else if (grew > 0) {
+      // FLUX-814: grow the window with *incremental* arrivals so the hidden/visible boundary stays
+      // fixed — a streaming turn never drops an already-rendered row off the top. A turn commit adds
+      // only a handful of messages; gating on `< INITIAL_VISIBLE_MESSAGES` excludes the one-shot bulk
+      // hydration on cold open (the whole history lands at once — that's exactly what must NOT expand
+      // the window, or the freeze returns). Incremental arrivals are cheap (one parse each).
+      if (grew < INITIAL_VISIBLE_MESSAGES) setVisibleCount((c) => c + grew);
       const attended = documentActiveRef.current && atBottomRef.current;
       if (attended) {
         lastSeenRef.current = messages.length;
@@ -366,8 +423,21 @@ export function ChatView({
   // turn that fires many Read/Bash/grep calls doesn't bury the agent's prose in a wall of rows.
   // Assistant/user turns — and edit-diff tool rows (which are individually meaningful and already
   // expandable) — break a run and render inline as before.
-  const rows = useMemo(() => {
-    const isPlainTool = (m: TranscriptMessage) => m.role === 'tool' && !(m.path && diffBranch);
+  // FLUX-803: when an inline orchestration block is supplied, ChatView suppresses the raw
+  // delegation tool row and renders the block at that spawn point. The boolean (not the node) is a
+  // memo dep so live block updates never bust the markdown-heavy transcript memo.
+  const hasBlock = !!orchestrationBlock;
+  // FLUX-814: window the rendered transcript to the last `visibleCount` messages. Opening find
+  // reveals everything (find walks the live DOM, so search must see the whole transcript); once
+  // the window has grown to cover all messages, `startIndex` is 0 and nothing is hidden.
+  const fullyExpanded = find.open || visibleCount >= messages.length;
+  const startIndex = fullyExpanded ? 0 : Math.max(0, messages.length - visibleCount);
+  const { rows, spawnInsertAt } = useMemo(() => {
+    // FLUX-803: a tool row that spawned the subagent group (tagged by the projector). Excluded from
+    // the plain-tool fold so it never disappears inside a ToolGroup before we can anchor the block.
+    const isDelegationTool = (m: TranscriptMessage) => m.role === 'tool' && DELEGATION_TOOLS.has(m.tool ?? '');
+    const isPlainTool = (m: TranscriptMessage) =>
+      m.role === 'tool' && !(m.path && diffBranch) && !(hasBlock && isDelegationTool(m));
 
     // FLUX-727: index of the final assistant turn (highest non-tool index, unless that turn is a
     // trailing `user` message — i.e. mid-send — in which case there's no settled final reply).
@@ -416,9 +486,13 @@ export function ChatView({
             </div>
           );
         }
-      // FLUX-745: a system/automated note (the warm-resume situational update). Not a bubble — a
-      // subtle, collapsible "⟳ context update" chip, visually distinct from user/assistant turns.
+      // FLUX-745 / FLUX-794: a system/automated note. Not a bubble — a subtle chip, visually
+      // distinct from user/assistant turns. `action` = the pressed phase-launch button (▶), the
+      // default `context-update` = the warm-resume situational update (⟳).
       if (m.role === 'note') {
+        if (m.kind === 'action') {
+          return <ActionChip key={i} text={m.text} ts={m.ts} />;
+        }
         return <ContextUpdateChip key={i} text={m.text} ts={m.ts} />;
       }
       // Assistant — no bubble: flowing markdown so code blocks / lists / links breathe.
@@ -454,14 +528,26 @@ export function ChatView({
     // Walk the messages, batching maximal runs of plain tool rows into one ToolGroup. The
     // trailing group stays open while the agent is working so a live turn keeps showing motion.
     const out: ReactNode[] = [];
+    // FLUX-803: output index where the inline orchestration block should be spliced — the position
+    // the first delegation tool row would have occupied. Stays null when there's no block / no such
+    // row yet (the consumer then renders the block just below the stream).
+    let spawnInsertAt: number | null = null;
     let dividerDone = false;
-    for (let i = 0; i < messages.length; i++) {
+    // FLUX-814: start at the window head (the tail of the transcript) — absolute indices `i` are
+    // kept for keys, the unread-divider boundary, and `lastAssistantIdx`, so all anchors stay correct.
+    for (let i = startIndex; i < messages.length; i++) {
       // FLUX-695: drop the "new messages" rule before the first unseen segment. We push it at the
       // first segment whose start index reaches the boundary (a tool run straddling the boundary
       // renders the rule just before the run — close enough, and never mid-fold).
       if (dividerIndex !== null && !dividerDone && i >= dividerIndex) {
         out.push(<UnreadDivider key="unread-divider" />);
         dividerDone = true;
+      }
+      // FLUX-803: suppress the spawn-point tool row — the prominent inline block stands in for it.
+      // Record where the first one sits so the consumer can splice the block at that point.
+      if (hasBlock && isDelegationTool(messages[i])) {
+        if (spawnInsertAt === null) spawnInsertAt = out.length;
+        continue;
       }
       if (isPlainTool(messages[i])) {
         const start = i;
@@ -481,8 +567,8 @@ export function ChatView({
       // unclamped so streaming output stays fully visible.
       out.push(renderMessage(messages[i], i, i === messages.length - 1 && !!working));
     }
-    return out;
-  }, [messages, linkifyTickets, diffBranch, working, dividerIndex, openToLastMessage]);
+    return { rows: out, spawnInsertAt };
+  }, [messages, linkifyTickets, diffBranch, working, dividerIndex, openToLastMessage, hasBlock, startIndex]);
 
   // The floating window owns its own title bar, so suppress the in-surface title there. The
   // "working" signal now lives in the WorkingStrip above the composer (FLUX-639), so the
@@ -509,6 +595,10 @@ export function ChatView({
         }
       }}
     >
+      {/* FLUX-803: ambient presence rail — pinned above everything so "who's live now" sits where
+          the eye lands first. Present only while a run is live (the caller gates it). */}
+      {presenceRail}
+
       {showHeader && (
         <div className="flex items-center justify-between gap-2">
           <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">{title}</p>
@@ -545,7 +635,32 @@ export function ChatView({
               </>
             )
           )}
-          {rows}
+          {/* FLUX-814: "load earlier" affordance — only the last N messages render on open so a long
+              thread doesn't freeze; this reveals older turns in chunks (scroll position preserved). */}
+          {startIndex > 0 && (
+            <button
+              type="button"
+              onClick={showEarlier}
+              className="mx-auto mb-1 flex items-center gap-1.5 rounded-full border border-[var(--eh-border)] bg-[var(--eh-surface)] px-3 py-1 text-[11px] font-semibold text-[var(--eh-text-secondary)] transition-colors hover:text-[var(--eh-text-primary)]"
+            >
+              Show earlier messages ({startIndex})
+            </button>
+          )}
+          {/* FLUX-803: splice the inline orchestration block in at the spawn point (where the
+              suppressed delegation tool row sat). When no spawn row is in the transcript yet, the
+              block renders just below the stream as a fallback so a freshly-spawned run still shows. */}
+          {orchestrationBlock && spawnInsertAt !== null ? (
+            <>
+              {rows.slice(0, spawnInsertAt)}
+              {orchestrationBlock}
+              {rows.slice(spawnInsertAt)}
+            </>
+          ) : (
+            <>
+              {rows}
+              {orchestrationBlock}
+            </>
+          )}
           {/* FLUX-691: the live streaming node — the current turn's assistant text rendered
               token-by-token. It sits OUTSIDE the memoized `rows` (so each delta only re-renders
               this node, never the markdown-heavy transcript) and is plain text, not markdown (no
@@ -842,6 +957,23 @@ function ContextUpdateChip({ text, ts }: { text: string; ts?: string }) {
           <TaskMarkdown body={text} compact />
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * FLUX-794: the pressed phase-launch action (Groom / Implement / Review / Finalize), recorded as a
+ * durable `action` note so the popped-in chat shows WHICH button started the session. A quiet,
+ * non-bubble row with a ▶ (play) glyph — distinct from the ⟳ context-update chip — sitting in
+ * chronological order before the agent's first response. Display-only; not collapsible (the text is
+ * a single short line, optionally with the launch focus appended).
+ */
+function ActionChip({ text, ts }: { text: string; ts?: string }) {
+  return (
+    <div className="flex w-full min-w-0 items-center gap-1.5 rounded-md border border-dashed border-primary/25 bg-primary/[0.04] px-2 py-1 text-[11px] text-[var(--eh-text-muted)]">
+      <Play className="h-3 w-3 flex-shrink-0 text-primary/70" />
+      <span className="min-w-0 truncate font-medium text-[var(--eh-text-secondary)]">{text}</span>
+      <MessageTime ts={ts} className="ml-auto flex-shrink-0" />
     </div>
   );
 }

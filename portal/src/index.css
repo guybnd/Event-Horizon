@@ -1332,3 +1332,21 @@ button:not(:disabled):active {
   animation: foil-shimmer 4s ease-in-out infinite;
   will-change: opacity;
 }
+
+/* ─── FLUX-790: blanket reduced-motion fallback ──────────────────────────────
+   index.css defines ~24 infinite animations but only a few have targeted
+   reduced-motion overrides, so a prefers-reduced-motion user still got a board
+   that perpetually flickers/shimmers/breathes/floats dust (a vestibular/migraine
+   trigger, WCAG 2.3.3). This neutralizes every animation + transition in one
+   place. The targeted @media blocks above still apply their static-visible
+   fallbacks (e.g. keeping the done-pulse glow). Last in the file so it wins. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

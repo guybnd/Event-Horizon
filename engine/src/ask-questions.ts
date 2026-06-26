@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { broadcastEvent } from './events.js';
 import { appendTranscriptEvent } from './transcript.js';
+import { raiseNeedsAction } from './parked-ticket.js';
 
 /**
  * FLUX-662: human-in-the-loop structured questions for chat/board sessions. The agent
@@ -72,6 +73,16 @@ export function requestAnswer(questions: AskQuestion[], conversationId: string |
       const result: AnswerResult = { answers: {}, unanswered: true };
       if (conversationId) {
         appendTranscriptEvent(conversationId, { type: 'ask-answer', id, ...result, timestamp: new Date().toISOString() });
+        // FLUX-826 (lever A): the live picker was never answered. Without a safety net the tool
+        // just returns `unanswered → proceed with best judgment` and the question evaporates —
+        // fatal on a resting/terminal ticket the user isn't watching. The conversationId is the
+        // ticket id for per-ticket sessions, so raise the persistent needsAction flag +
+        // notification on it. No-op for the `__board__` sentinel / unrouted ids (raiseNeedsAction
+        // guards on a real ticket), and best-effort so a failure never blocks resolving the turn.
+        void raiseNeedsAction(
+          conversationId,
+          'Agent asked a question that timed out unanswered — re-open the ticket to respond, or it will proceed on its best judgment.',
+        );
       }
       resolve(result);
     }, ASK_TIMEOUT_MS);

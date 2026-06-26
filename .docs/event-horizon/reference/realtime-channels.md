@@ -79,6 +79,8 @@ All three pending-prompt feeds share one SSE subscription via `PendingInteractio
 
 **Key consequence:** ticket-state freshness on the portal does *not* come from SSE today. It comes from polling (Channel 3). SSE is only used for high-frequency agent activity that would be wasteful to poll for.
 
+> **Electron desktop shell (FLUX-796).** Downstream of the `notification` SSE event, the optional Electron shell re-surfaces action-required notifications natively: a taskbar badge (count of unread `'prompt'` notifications) and focus-gated OS toasts. This is a separate portal↔desktop-shell IPC layer (`window.electronAPI` in `electron/preload.js` ↔ `eh:set-action-count` / `eh:notify` / `eh:notification-click` in `electron/main.js`, driven from `AppContext.tsx`), not part of this engine↔portal contract — all calls are guarded behind `window.electronAPI`, so the browser portal is unaffected. See [`electron/README.md`](../../../electron/README.md).
+
 This is the intentional current split. If you want SSE to drive ticket refresh too, you would add `taskCreated` / `taskUpdated` listeners in `AppContext.tsx` and probably drop or lengthen the poll interval. See FLUX-347.
 
 ## Channel 3 — Portal polling (portal → engine)

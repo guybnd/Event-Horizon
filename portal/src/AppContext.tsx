@@ -8,6 +8,7 @@ import { tasksEqual } from './lib/tasksEqual';
 import { appStore } from './store/appStore';
 import type { AppStoreState, AppActions, AppView, AppTheme, TaskSortOption } from './store/appStore';
 import { AppActionsContext } from './store/useAppSelector';
+import { getElectronAPI, renderBadgeDataUrl } from './electronApi';
 
 export type { AppView, TaskSortOption, AppTheme };
 
@@ -149,9 +150,25 @@ function reconcileProject(prev: string, projects: string[] | undefined): string 
   return list[0] || 'PROJECT';
 }
 
+// FLUX-785: the active identity used to default to the literal 'Guy' (the maintainer) and was
+// never reconciled or persisted — so every new user's tickets were attributed updatedBy:'Guy'.
+// Persist an explicit choice in localStorage; otherwise adopt the first non-Agent config user;
+// otherwise a neutral 'You'. Mirrors reconcileProject.
+const CURRENT_USER_KEY = 'eh-current-user';
+function getInitialUser(): string {
+  try { return localStorage.getItem(CURRENT_USER_KEY) || ''; } catch { return ''; }
+}
+function reconcileUser(prev: string, users: unknown[] | undefined): string {
+  if (prev && prev.trim()) return prev; // an explicit/persisted choice always wins
+  const names = (users ?? [])
+    .map((u) => (typeof u === 'string' ? u : (u as { name?: string } | null)?.name))
+    .filter((n): n is string => !!n && !!n.trim());
+  return names.find((n) => n.toLowerCase() !== 'agent') || names[0] || 'You';
+}
+
 export function AppProvider({ children }: { children: ReactNode }) {
   const initialFilters = getTaskFiltersFromLocation();
-  const [currentUser, setCurrentUser] = useState('Guy');
+  const [currentUser, setCurrentUser] = useState(getInitialUser);
   const [currentProject, setCurrentProject] = useState('');
   const [searchQuery, setSearchQuery] = useState(initialFilters.searchQuery);
   const [sortOption, setSortOption] = useState<TaskSortOption>(initialFilters.sortOption);
@@ -233,6 +250,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [parseErrorsLoading] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
+  // FLUX-796: ids we've already surfaced as native toasts, so per-ticket-dedup re-broadcasts and
+  // the initial load don't re-pop. A ref (not state) because the SSE handler closes over it stalely.
+  const seenNotificationIds = useRef<Set<string>>(new Set());
   const [restartPending, setRestartPending] = useState(false);
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
   // FLUX-758: reactive mirror of the onboarding-complete localStorage flag. App
@@ -456,9 +476,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const refreshNotifications = useCallback(() => {
     fetchNotifications().then(data => {
+      // FLUX-796: notifications already present at load are NOT "new" — record their ids so the
+      // first SSE re-broadcast of any of them doesn't fire a native toast.
+      for (const n of data.notifications) seenNotificationIds.current.add(n.id);
       setNotifications(data.notifications);
       setNotificationUnreadCount(data.unreadCount);
     }).catch(() => {});
+  }, []);
+
+  // FLUX-796 — Electron native toast gating. Policy: suppress ALL toasts while the window is
+  // focused (you're already looking at the board — only the badge updates). When unfocused, pop
+  // for action-required ('prompt') and ticket-Done ('completion'); 'info'/'error' never pop.
+  const maybeNotifyNative = useCallback((n: Notification) => {
+    const api = getElectronAPI();
+    if (!api?.notify) return; // plain browser portal → no-op
+    if (typeof document !== 'undefined' && document.hasFocus()) return;
+    if (n.type !== 'prompt' && n.type !== 'completion') return;
+    api.notify({ title: n.title, body: n.message, ticketId: n.ticketId });
   }, []);
 
   const triggerRefresh = useCallback(() => {
@@ -651,6 +685,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setConfig(loadedConfig);
         configRef.current = loadedConfig;
         setCurrentProject((prev) => reconcileProject(prev, loadedConfig.projects));
+        setCurrentUser((prev) => reconcileUser(prev, loadedConfig.users)); // FLUX-785
       } catch (error) {
         console.error(error);
         if (cancelled) return;
@@ -679,6 +714,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     fetchWorkspaces().then(setWorkspaces).catch(() => {});
   }, []);
 
+  // FLUX-785: persist the active identity so it survives reloads and seeds getInitialUser on the
+  // next boot. Skip the neutral 'You' placeholder so we never lock it in over a real name.
+  useEffect(() => {
+    try {
+      if (currentUser && currentUser.trim() && currentUser !== 'You') {
+        localStorage.setItem(CURRENT_USER_KEY, currentUser.trim());
+      }
+    } catch { /* localStorage unavailable — non-fatal */ }
+  }, [currentUser]);
+
   // FLUX-758: owns the onboarding-complete localStorage write AND flips the
   // reactive store field so App re-renders and dismisses the wizard at once.
   const markOnboardingComplete = useCallback(() => {
@@ -697,6 +742,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             setConfig(c);
             configRef.current = c;
             setCurrentProject((prev) => reconcileProject(prev, c.projects));
+            setCurrentUser((prev) => reconcileUser(prev, c.users)); // FLUX-785
           }).catch(() => {});
           refreshWorkspaces();
           refreshNotifications();
@@ -828,6 +874,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
     es.addEventListener('taskUpdated', () => {
       void loadTasks();
+      // FLUX-796: resolving a Require Input / Needs Action ticket dismisses its notification
+      // server-side WITHOUT a broadcast (only add/dedup/read-all broadcast). Re-sync the list so
+      // the Electron taskbar badge decrements on resolve and clears at 0. Electron-only so the
+      // browser portal's network behavior is unchanged (the bell already refreshes on interaction).
+      if (getElectronAPI()) refreshNotifications();
+    });
+    // FLUX-753: a deleted ticket re-fetches the list so the card disappears immediately
+    // (the engine now broadcasts taskDeleted on delete + extract-compensation).
+    es.addEventListener('taskDeleted', () => {
+      void loadTasks();
     });
     es.addEventListener('activity', (e: MessageEvent) => {
       const { taskId, activity } = JSON.parse(e.data) as { taskId: string; activity: string | null };
@@ -862,6 +918,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
     es.addEventListener('notification', (e: MessageEvent) => {
       const { notification, unreadCount } = JSON.parse(e.data) as { notification: Notification | null; unreadCount: number };
+      // FLUX-796: pop a native OS toast only for genuinely NEW notifications (first time we see the
+      // id), not on the per-ticket-dedup re-broadcasts. A ref (not the stale-in-closure `notifications`
+      // state) is the reliable source of "have I seen this before".
+      if (notification && !seenNotificationIds.current.has(notification.id)) {
+        seenNotificationIds.current.add(notification.id);
+        maybeNotifyNative(notification);
+      }
       startTransition(() => {
         if (notification) {
           setNotifications(prev => {
@@ -979,6 +1042,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return sum + (hasUnread ? 1 : 0);
     }, 0);
   }, [tasks, readComments, currentUser, config]);
+
+  // FLUX-796: the taskbar "action needed" count = unread, non-dismissed ACTION-REQUIRED ('prompt')
+  // notifications only (Require Input + Needs Action) — deliberately NOT completion/info, so the
+  // badge means "N things to act on", not "N things happened".
+  const actionRequiredCount = useMemo(
+    () => notifications.filter(n => n.type === 'prompt' && !n.read && !n.dismissed).length,
+    [notifications],
+  );
+
+  // Push the count to the Electron taskbar badge whenever it changes (no-op in the browser portal).
+  useEffect(() => {
+    const api = getElectronAPI();
+    if (!api?.setActionCount) return;
+    api.setActionCount(actionRequiredCount, renderBadgeDataUrl(actionRequiredCount));
+  }, [actionRequiredCount]);
+
+  // Clicking a native toast → focus is handled in main; here we navigate to the ticket.
+  useEffect(() => {
+    const api = getElectronAPI();
+    if (!api?.onNotificationClick) return;
+    const off = api.onNotificationClick(ticketId => {
+      if (ticketId) window.dispatchEvent(new CustomEvent('flux:open-ticket', { detail: { id: ticketId } }));
+    });
+    return typeof off === 'function' ? off : undefined;
+  }, []);
 
   // --- External store plumbing (FLUX-625) ---------------------------------
   // Stable action delegators read the freshest handler closures from this ref,

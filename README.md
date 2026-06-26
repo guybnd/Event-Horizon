@@ -1,138 +1,153 @@
 # Event Horizon
 
-[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D%2018-green.svg)](https://nodejs.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Status: Beta](https://img.shields.io/badge/Status-Beta-blue.svg)]()
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D%2020-green.svg)](https://nodejs.org/)
+[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm%20Noncommercial%201.0.0-orange.svg)](LICENSE)
+[![Status: 1.0](https://img.shields.io/badge/Status-1.0-brightgreen.svg)]()
 
-> A local-first, agent-centric project management layer designed as the operating surface for solo developers and small teams building alongside AI coding agents.
+### An IDE for the agent era.
 
-Event Horizon stores all state in your repository — tickets, documentation, workflow instructions, and product code live together in version control. There is no cloud service, no account, and no sync dependency unless you want one.
+You still live in your editor — but more and more of the work gets handed to agents, and your editor was never built to *run* them. Event Horizon is the environment for that side of the job: break work into tickets, dispatch agents that each carry full context and run on their **own branch, in parallel**, and review everything as a **real pull request** before it lands. It runs alongside your IDE and terminal, and every change comes back as a normal git branch — your repo stays the source of truth.
+
+Not a chat bolted onto your editor — the command surface for directing agents and reviewing what they ship: **plan → dispatch → review → ship**, on a board you own, all in your repo.
 
 ---
 
-## Features
+<a id="Quick Look"></a>
 
-### 1. 🤖 A local-first agent board
+## Why Event Horizon?
 
-Send a ticket to an agent straight from its card and watch progress stream back to the ticket in real
-time. There's no cloud service and no account — the engine runs locally and every artifact (tickets,
-docs, workflow rules) is a plain file in your repo. Because each agent gets its own branch **and its
-own git worktree** off to the side, concurrent agents never clobber each other and your working tree
-stays clean.
+### Every ticket is a living agent chat
 
-
+Open a ticket and the agent is already briefed — description, history, branch, and attachments are in context, so you never re-explain. Minimize it to the dock and it keeps working in the background while you move on.
 
 https://github.com/user-attachments/assets/2ce3e8f7-97b2-4c15-ae9a-925068bf48fb
 
+### Run agents in parallel — safely
 
-> [](https://github.com/user-attachments/assets/e6b539f4-c082-4f2f-8b8b-2020c8c5c5dd)
+Each ticket gets its own git worktree on its own branch, so three agents can build three things at once with **zero file collisions**. Watch every session run live on the board.
 
+https://github.com/user-attachments/assets/f09f2668-edab-4179-a394-a7098fddbde7
 
-<!-- VIDEO: "Event Horizon.mp4" (same overview clip, optional second placement). Remove this block if the hero clip above is enough. -->
+### Orchestrate, don't micromanage
 
-### 2. 🔀 One ticket → one branch → one PR
+Hand a ticket to a specialist persona, or fan the work out **scatter-gather** under a supervisor that reviews and synthesizes the results. Or talk to the **board orchestrator** about the whole project — it triages, breaks big asks into tickets, and dispatches the right agent to each.
 
-Starting a task spins up a dedicated `flux/<id>-<slug>` branch in an isolated worktree. When you're
-done reviewing, `finish` pushes the branch and opens the PR for you — the PR URL is recorded back on
-the ticket as its implementation link. No manual branch juggling, no checkout dance on your main tree.
+https://github.com/user-attachments/assets/8ef35453-ac1a-4699-b52d-a4d7596fbf98
 
-<img width="580" height="530" alt="image" src="https://github.com/user-attachments/assets/e1a72575-2756-441b-bdd9-64d6690c3419" />
+### Ship through real pull requests
 
+Move a ticket to **Ready** and its branch is pushed and a PR opened automatically. Review the diff on GitHub, then `finish` squash-merges it and advances the ticket to **Done** — no terminal, no manual git dance.
 
-> [](https://github.com/user-attachments/assets/66b1a908-5410-458e-8593-7673c5ebd09c)
+https://github.com/user-attachments/assets/94aa932d-d288-46bd-bdc3-49f27aebec0d
 
+### Design your own workflows
 
+Pick an orchestration shape and build agent personas tuned to your product and process — then reuse them across the board.
 
-### 3. 🙋 Answer the agent inline
+https://github.com/user-attachments/assets/11a9fcaa-aee2-4c04-90bf-ad311decda4d
 
-When an agent needs a decision it moves the ticket to **Require Input** and posts one focused question
-with proposed defaults. You answer right in the portal — no separate chat window — and the agent picks
-up exactly where it left off.
+### Your board, in markdown, forever
 
+Tickets are markdown files with YAML frontmatter, committed to your repo (or a dedicated data branch). They version alongside your code, work offline, render right in the portal's **Docs** screen, and never get trapped in someone else's database. Switch machines and your whole board comes with a `git clone`.
 
-> [](https://github.com/user-attachments/assets/26782532-622e-45ca-b023-023856bdd640)
+https://github.com/user-attachments/assets/c2a4cc93-4fd4-42ec-bd10-2929a69b6245
 
-### 4. 🧩 Phase-aware workflows + a visual workflow editor
-
-Workflows are phase-aware — grooming, implementation, review, and finalize each get their own
-behavior, and you can scope MCP servers per phase (keep a heavy search server out of grooming, for
-example). The built-in workflow editor lets you compose multi-agent patterns (relay, scatter,
-supervisor) and customize the skill prompts for each phase — no config files to hand-edit.
+**And there's more:** multi-repo groups that map a feature across repositories and share one knowledge base · board-driven release notes auto-generated from your Done tickets · multi-workspace switching from one running instance. etc.
 
 
-> [](https://github.com/user-attachments/assets/b0fd8184-674f-4319-a283-c88347c58fb6)
+## What makes it different
 
+Your IDE is still where you read code, debug, and make the precise edits you want by hand — keep it. What it was never built for is **running a team of agents**: several tasks at once, each needing context, each producing a diff someone has to review before it's safe to land. Bolt an agent chat onto an editor and you get one assistant, a couple of tasks, in a log that disappears. Event Horizon is built for that other half of the job — the agent-era IDE that sits alongside the editor you already use and hands everything back as standard git.
 
--------
+| Running agents from your editor today | With Event Horizon |
+|---|---|
+| One agent in a side panel, one task at a time | A **board of agents**, many tasks in parallel |
+| A bland chat window — status and progress buried in the scroll | A **rich UI** shows everything at a glance: status columns, live agent progress, review state, actionble items and more |
+| Re-explain the context on every new chat, get lost in your history | Each **ticket carries its full context** |
+| Context window fills and the thread is lost | **Durable ticket history** — any agent or teammate resumes with full context |
+| Watch it run; close the tab and the work is gone | Minimize to the dock — agents **run in the background** and ping you only when they need a call |
+| Parallel agents collide in one working tree and pull the rug under each other | Each ticket runs in its **own git worktree + branch** |
+| It blocks on a prompt mid-run, or quietly guesses | **Require Input** — a focused question with a sensible default, answered when *you're* ready |
+| The diff lands in your files — catching problems is on you | **Ready → real PR →** review the diff → `finish` merges |
+| One tool's agent for every task | Assign, customize and create the **agent, persona, and effort per ticket** |
+| One repo, one window | **Multi-repo groups** — orchestrate, document and map a feature across repositories |
+| Decisions vanish into disposable chat logs | Plans + history are **markdown committed to your repo** |
+| Sessions live in a vendor's cloud | **Local-first** — travels with a `git clone` |
 
-> [](https://github.com/user-attachments/assets/930466b3-7395-4fed-ae5c-0013b23cf26c)
-
-### 5. 📝 Full markdown, docs and tickets synced off your code history
-
-Ticket bodies and project docs are first-class markdown, edited in-product or in any text editor. Turn
-on Git Sync and both move to an orphan `flux-data` branch — versioned, multi-machine, and restored
-automatically on clone, yet completely off your main code history.
-
-
-> [](https://github.com/user-attachments/assets/50a4d5fc-14a3-4f03-841b-4c0f7759af64)
-
-### 6. 🔌 Addon modules + a dedicated MCP for CLI & IDE agents
-
-Agents talk to Event Horizon through an MCP server whose tools appear natively in their tool list —
-works the same whether you drive Claude Code, Gemini, or Copilot from the CLI or from your IDE. Addon
-modules extend the board with extra capabilities (scoped per phase, with live health probes) without
-touching the core.
-
-### 7. ✨ And more
-
-- **Multi-workspace** — manage several projects from one running instance and switch from the header.
-- **Global fuzzy search** — jump to any ticket from anywhere.
-- **In-product docs tree** — browse and edit `.docs/` without leaving the portal.
-- **Schema-validated tickets** — invalid frontmatter surfaces as a visible error, never silent corruption.
-- **Append-only history** — every status change, comment, and agent session is recorded on the ticket.
+> **You bring the agent; Event Horizon is the environment around it.** It orchestrates a CLI you already use — **Claude Code, Gemini CLI, or GitHub Copilot CLI** — or a supported IDE (Cursor, Windsurf, Cline). It ships no LLM and needs no key of its own. Keep your editor, terminal, and debugger exactly as they are: every change still arrives as a normal **git branch + PR** you can pull into your own tools — Event Horizon just adds the board where agents do the building and you stay in command.
 
 ---
 
-## See it in action
 
-Short demos straight from the in-product onboarding tour (the "What you can do" step). Each one is a committed asset in `portal/public/onboarding-assets/`.
 
-**Each ticket is an AI chat-box**
+---
 
-<video src="https://github.com/guybnd/Event-Horizon/raw/master/portal/public/onboarding-assets/each-ticket-chat.mp4" width="640" muted autoplay loop playsinline controls><a href="https://github.com/guybnd/Event-Horizon/raw/master/portal/public/onboarding-assets/each-ticket-chat.mp4">Watch the demo</a></video>
+## Install
 
-**Isolated agent runs (one git worktree per ticket)**
+**Prerequisite — your agent.** Event Horizon orchestrates an agent CLI you install separately: [Claude Code](https://www.anthropic.com/claude-code), Gemini CLI, or GitHub Copilot CLI (or drive it from Cursor / Windsurf / Cline). Have at least one set up with its own credentials before you start.
 
-<video src="https://github.com/guybnd/Event-Horizon/raw/master/portal/public/onboarding-assets/isolated-agent-runs.mp4" width="640" muted autoplay loop playsinline controls><a href="https://github.com/guybnd/Event-Horizon/raw/master/portal/public/onboarding-assets/isolated-agent-runs.mp4">Watch the demo</a></video>
+### Option 1 — Download the app (recommended, zero dependencies)
 
-**Inline PRs**
+Grab a build from the **[releases page](../../releases)** — no Node, no build step. It runs a local service and opens your board at `http://localhost:3067`.
 
-<video src="https://github.com/guybnd/Event-Horizon/raw/master/portal/public/onboarding-assets/feature-prs-workflows.mp4" width="640" muted autoplay loop playsinline controls><a href="https://github.com/guybnd/Event-Horizon/raw/master/portal/public/onboarding-assets/feature-prs-workflows.mp4">Watch the demo</a></video>
+- **Desktop app** — `.dmg` (macOS) / `.exe` (Windows): Event Horizon in its own window with a taskbar/dock entry.
+- **Tray binary** — a single executable that runs in the system tray; closing the browser tab doesn't stop it.
+- *First launch:* the builds are **unsigned**, so macOS Gatekeeper or Windows Defender may warn — it's a false positive, see [Troubleshooting](#first-run-troubleshooting).
 
-**Multi-agent orchestration**
+### Option 2 — Run from source (Node 20+)
 
-<video src="https://github.com/guybnd/Event-Horizon/raw/master/portal/public/onboarding-assets/multi-agent.mp4" width="640" muted autoplay loop playsinline controls><a href="https://github.com/guybnd/Event-Horizon/raw/master/portal/public/onboarding-assets/multi-agent.mp4">Watch the demo</a></video>
+```bash
+# download & extract event-horizon-source.zip from the releases page, then:
+npm install
+npm run build                               # portal (Vite) + engine (esbuild)
+node engine/dist/index.js --workspace <path-to-your-project>
+```
 
-**Design your own workflows**
+### Then: open a folder
 
-<video src="https://github.com/guybnd/Event-Horizon/raw/master/portal/public/onboarding-assets/feature-feature-9.mp4" width="640" muted autoplay loop playsinline controls><a href="https://github.com/guybnd/Event-Horizon/raw/master/portal/public/onboarding-assets/feature-feature-9.mp4">Watch the demo</a></video>
+Point Event Horizon at a project folder. New folders are **auto-bootstrapped** — board config, docs, and the agent skill + MCP config are written in, so your agent discovers the board automatically. Create a ticket, hand it to an agent, and you're running.
 
-**Docs and shared workspace**
+---
 
-<video src="https://github.com/guybnd/Event-Horizon/raw/master/portal/public/onboarding-assets/feature-docs-shared-workspace.mp4" width="640" muted autoplay loop playsinline controls><a href="https://github.com/guybnd/Event-Horizon/raw/master/portal/public/onboarding-assets/feature-docs-shared-workspace.mp4">Watch the demo</a></video>
+## Your first five minutes
 
-> These clips resolve once the current source (including `portal/public/onboarding-assets/`) is pushed to the public repo on a release. If GitHub doesn't auto-play the embeds, the same clips can be drag-dropped into a GitHub comment to mint `user-attachments` URLs (the method the feature clips above use).
+1. **Open the app** → it lands at `http://localhost:3067` and asks for a project folder.
+2. **Pick your repo** → Event Horizon bootstraps it (config + docs + agent skill installed).
+3. **Create a ticket** — a one-line ask is enough ("add a dark-mode toggle").
+4. **Hand it to an agent** — it grooms the ticket into a plan, asks you anything blocking via **Require Input**, then implements on its own branch.
+5. **Review & ship** — when it hits **Ready**, a PR is open; review the diff and `finish` to merge.
+
+> New to the board? Hit **"Bootstrap with AI"** on an empty board and an agent scans your repo and proposes a starter set of tickets.
+
+---
+
+## Works with your agent
+
+Event Horizon installs a workflow skill + MCP config for your framework so the agent picks up tickets natively — no curl, no REST wrappers.
+
+| Framework | CLI | Skill install path |
+|-----------|-----|--------------------|
+| Claude Code | `claude` | `.claude/rules/event-horizon.md` |
+| GitHub Copilot | `github-copilot-cli` | `.github/skills/event-horizon/` |
+| Gemini CLI | `gemini` | `.gemini/skills/event-horizon.md` |
+| Cursor | (IDE) | `.cursor/rules/event-horizon.mdc` |
+| Windsurf | (IDE) | `.windsurf/rules/event-horizon.md` |
+| Cline | (IDE) | `.cline/skills/event-horizon-*.md` |
+| Generic | — | `.event-horizon/skills/event-horizon.md` |
+
+Install from **Settings → Agents → Install**, or `npx event-horizon install-skill --target /path/to/project`.
+
+Under the hood, ticket operations are exposed as **MCP tools** served in-process over loopback HTTP (`http://127.0.0.1:3067/mcp`) by the running engine. The tools enforce workflow rules, validate schemas, and broadcast realtime updates to the portal. See [MCP Server](#mcp-server--how-agents-connect) for the full tool list.
 
 ---
 
 ## Core Principles
 
-- **Filesystem as Database:** Tickets are plain Markdown files with YAML frontmatter in `.flux/`. Version-controlled alongside your code. Editable in any text editor.
-- **MCP-First Agent Integration:** Agents interact through MCP tools that appear directly in their tool list — no curl, no REST wrappers. The MCP server enforces workflow rules, validates schemas, and broadcasts real-time updates to the portal.
-- **Agent-First & Human-Friendly:** The file format is instantly parseable by LLMs while remaining readable and editable by humans. Agents and humans use the same surface.
-- **Zero Latency:** No cloud APIs. The UI reacts at the speed of your local disk.
-- **Flexible Storage:** Tickets live in-repo by default. Enable Git Sync to move them to an orphan branch — keeping ticket history off your main branch while retaining full git-native sync across machines.
-- **Multi-Workspace:** Manage multiple projects from a single running instance. Switch workspaces from the header dropdown — active agent sessions are guarded against accidental switches.
+- **Filesystem as database** — tickets are plain Markdown + YAML frontmatter in `.flux/`, version-controlled with your code, editable in any text editor.
+- **MCP-first** — agents act through MCP tools that appear directly in their tool list; the server enforces the workflow and validates every write.
+- **Agent-first & human-friendly** — the same surface is instantly parseable by an LLM and readable by you.
+- **Zero latency** — no cloud APIs; the UI reacts at the speed of your local disk.
+- **Yours** — local-first by default; nothing leaves your machine unless you turn on Git Sync.
 
 ---
 
@@ -140,59 +155,22 @@ Short demos straight from the in-product onboarding tour (the "What you can do" 
 
 ```
 Event Horizon
-├── engine/           Node.js/TypeScript — REST API + MCP server (stdio)
+├── engine/           Node.js/TypeScript — REST API + in-process MCP server (loopback HTTP, stdio fallback)
 ├── portal/           React + Vite + Tailwind v4 — board, backlog, docs, settings
+├── electron/         Opt-in desktop shell (own window + tray) — standalone, not in the main install
 ├── global settings   %APPDATA%/EventHorizon (Win) | ~/Library/Application Support (Mac) | ~/.config (Linux)
 └── data layer
     ├── .flux/        Board config, workflow skills, tickets (default mode)
-    └── .flux-store/  Git worktree on orphan branch (Git Sync mode)
+    └── .flux-store/  Git worktree on an orphan branch (Git Sync mode)
 ```
 
-The binary embeds the engine and portal into a single executable. No Node.js required for end users.
-
----
-
-## Quick Start
-
-1. **Download & Run** the binary from the [releases page](../../releases).
-2. **Connect** — browser opens at `http://localhost:3067`.
-3. **First Boot** — a one-time dialog shows your global data directory and migrates any legacy settings.
-4. **Select Workspace** — browse to your project folder. New folders are auto-bootstrapped with config, docs, and agent skills.
-
-The service runs as a system tray application. Closing the browser does not stop the engine.
-
-> **Windows users — if Defender flags the exe:** see [Windows Defender false positive](#windows-defender-false-positive) below.
-
----
-
-
-## Run from source (Windows)
-
-If you want to avoid the binary entirely, the source distribution on the [releases page](../../releases) (`event-horizon-source.zip`) contains everything you need. Node.js 20+ required.
-
-```bash
-# 1. Download and extract event-horizon-source.zip, then:
-cd event-horizon
-
-# 2. Install dependencies
-npm install
-
-# 3. Build (portal + engine)
-npm run build
-
-# 4. Start the engine (opens browser automatically)
-node engine/dist/index.js --workspace /path/to/your/project
-```
-
-The engine serves the portal at `http://localhost:3067`. Set `PORT=<n>` to override the port.
+The downloadable binary embeds the engine and portal into a single executable — **no Node.js required for end users**.
 
 ---
 
 ## MCP Server — How Agents Connect
 
-Event Horizon exposes ticket operations as **MCP tools**, served in-process over loopback HTTP by the running engine (with a headless stdio fallback). When the workflow installer runs, it writes an MCP config file into your project so agents discover the tools automatically.
-
-### Available Tools
+Ticket operations are exposed as **MCP tools**, served in-process over loopback HTTP by the running engine (headless stdio fallback). The workflow installer writes the MCP config into your project so agents discover the tools automatically.
 
 | Tool | Purpose |
 |------|---------|
@@ -200,122 +178,36 @@ Event Horizon exposes ticket operations as **MCP tools**, served in-process over
 | `list_tickets` | Filter by status, assignee, tag, priority |
 | `get_board_config` | Read board config (statuses, tags, project key) |
 | `create_ticket` | Create a new ticket |
-| `create_subtask` | Create child ticket linked to parent |
+| `create_subtask` | Create a child ticket linked to a parent |
 | `update_ticket` | Update metadata (title, priority, effort, tags, body) |
-| `change_status` | Move to new status (enforces comment on Require Input / Ready) |
-| `add_comment` | Append comment to history |
+| `change_status` | Move to a new status (enforces a comment on Require Input / Ready) |
+| `add_comment` | Append a comment to history |
 | `log_progress` | Log progress activity |
 | `finish_ticket` | Atomic: set implementationLink + completion comment + Done |
 
-### MCP Config (auto-generated)
-
-```json
-{
-  "mcpServers": {
-    "event-horizon": {
-      "type": "http",
-      "url": "http://127.0.0.1:3067/mcp",
-      "alwaysLoad": true
-    }
-  }
-}
-```
-
-The installer renders this in-process HTTP entry (FLUX-645) so every session shares the running engine's task-store; the URL's port tracks the engine. Config is placed at the framework-appropriate path (`.mcp.json`, `.cursor/mcp.json`, `.gemini/settings.json`, etc.) during skill installation.
-
-### Relationship to REST API
-
-The MCP tools and REST API coexist. **MCP is the primary path for agents** — tools appear natively and enforce workflow rules. The REST API (`localhost:3067/api/`) serves the portal and acts as a fallback. Both share the same in-memory state.
-
----
-
-## Agent Workflow
-
-Event Horizon drives an autonomous loop: agents work forward through tickets, surfacing decisions only when they need human input. The portal is the command center — no chat window required for most of the lifecycle.
-
-### Ticket Lifecycle
-
-1. **Grooming** — Agent reads the ticket, fills metadata, rewrites body as a concrete plan.
-2. **Require Input** — Agent posts one focused question with proposed defaults. You answer in the portal.
-3. **In Progress** — Agent implements. Progress logged to ticket history in real time.
-4. **Ready** — Code complete, uncommitted. You review the diff from the ticket modal.
-5. **Done** — `finish <ticket>` commits atomically and records the link.
-
-### Supported Frameworks
-
-| Framework | CLI | Skill Install Path |
-|-----------|-----|-------------------|
-| Claude Code | `claude` | `.claude/rules/event-horizon.md` |
-| GitHub Copilot | `github-copilot-cli` | `.github/skills/event-horizon/` |
-| Gemini CLI | `gemini` | `.gemini/skills/event-horizon.md` |
-| Cursor | WIP | `.cursor/rules/event-horizon.mdc` |
-| Windsurf | WIP | `.windsurf/rules/event-horizon.md` |
-| Cline | WIP | `.cline/skills/event-horizon-*.md` |
-
-Install via **Settings → Agent Integration → Install Agent Workflow**, or:
-
-```bash
-npx event-horizon install-skill --target /path/to/project
-```
-
-The installer writes both the workflow skill files and the MCP config for the detected framework.
+Config is placed at the framework-appropriate path (`.mcp.json`, `.cursor/mcp.json`, `.gemini/settings.json`, …) during skill installation. The MCP tools and the REST API (`localhost:3067/api/`) share the same in-memory state — MCP is the primary path for agents; REST serves the portal and acts as a fallback.
 
 ---
 
 ## Multi-Workspace
 
-- **Header dropdown** — shows active workspace, click to switch instantly.
-- **Settings → Workspace** — add, remove, rename workspaces. Folder picker included.
-- **Auto-registration** — opening a new folder adds it to the list.
-- **Project bootstrapping** — new workspaces get a config derived from folder name, default user, and agent skills pre-installed.
-- **Session guard** — switching while agents are running triggers a confirmation to stop them first.
+Manage multiple projects from one running instance. Switch from the **header dropdown**; add/remove/rename under **Settings → Workspace**. Opening a new folder auto-registers and bootstraps it. Switching while agents are running prompts you to stop them first.
 
 ---
 
 ## Git Sync
 
-Move tickets to an orphan branch so they never touch your code history:
+Move tickets onto an orphan branch so they never touch your code history:
 
-1. Creates `flux-data` orphan branch (no ancestry with `main`)
-2. Moves tickets to `.flux-store/` worktree pointing to that branch
-3. Auto-commits and pushes on a debounced schedule (30s silence, 5min max)
+1. Creates a `flux-data` orphan branch (no ancestry with `main`).
+2. Moves tickets to a `.flux-store/` worktree on that branch.
+3. Auto-commits and pushes on a debounced schedule (30s of silence, 5min max).
 
-Enable in **Settings → Git Sync**. Fully reversible. Multi-machine restore is automatic on `git clone`.
-
----
-
-## Config Reference
-
-### Global Settings
-
-| Platform | Path |
-|----------|------|
-| Windows | `%APPDATA%/EventHorizon/settings.json` |
-| macOS | `~/Library/Application Support/EventHorizon/settings.json` |
-| Linux | `~/.config/event-horizon/settings.json` |
-
-Fields: `workspaces[]`, `lastWorkspace`, `theme`, `defaultUser`, `preferredFramework`, `port`, `boardClickBehavior`, `animations`, `timeouts`.
-
-### Project Config (`.flux/config.json`)
-
-| Field | Description |
-|-------|-------------|
-| `columns` | Board columns (`name`, optional `color`) |
-| `hiddenStatuses` | Statuses hidden from board but tracked in system |
-| `projects` | Project key prefixes (e.g. `["MYAPP"]`) |
-| `users` | Known users and agents |
-| `tags` | Tag definitions with colors |
-| `priorities` | Priority levels with icons and colors |
-| `defaultAgent` | Agent framework for sessions (`claude`, `gemini`, `copilot`) |
-| `effortLevel` | Global effort level (`low`, `medium`, `high`, `xhigh`, `max`) |
-| `syncSettings.debounceMs` | Git Sync commit delay after last write |
-| `syncSettings.maxWaitMs` | Git Sync forced commit ceiling |
+Enable in **Settings → Workspace → Git Sync**. Fully reversible; multi-machine restore is automatic on `git clone`.
 
 ---
 
 ## Ticket Format
-
-Tickets are `.md` files with YAML frontmatter:
 
 ```yaml
 ---
@@ -337,68 +229,45 @@ history:
 Implement a dark mode toggle that persists user preference via local storage.
 ```
 
-History is append-only. Schema-validated on load — invalid frontmatter surfaces as a visible error, never silent corruption.
+History is append-only and schema-validated on load — invalid frontmatter surfaces as a visible error, never silent corruption.
 
 ---
 
-## Documentation
+## Desktop app (Electron, opt-in)
 
-In-product docs tree at `.docs/`, served through the portal's **Docs** screen:
-
-- [Project Overview](.docs/event-horizon/project-overview.md)
-- [Architecture](.docs/event-horizon/architecture/overview.md)
-- [MCP Server](.docs/event-horizon/mcp-server.md)
-- [Agent Integrations](.docs/event-horizon/agent-integrations.md)
-- [Installation & Setup](.docs/event-horizon/installation.md)
-- [Configuration](.docs/event-horizon/configuration.md)
-- [Ticket Lifecycle](.docs/event-horizon/workflow/ticket-lifecycle.md)
-
----
-
-## Development Setup
+Prefer a real app window over a browser tab? Prebuilt **`.dmg`/`.exe`** installers ship on every [release](../../releases), or build your own from the standalone [`electron/`](electron/) package (it's **not** part of the main install, so the normal setup never downloads Electron):
 
 ```bash
-# Engine (API + MCP server)
-cd engine && npm install && npm run dev
-
-# Portal (hot reload)
-cd portal && npm install && npm run dev
-```
-
-Engine: `http://localhost:3067` — Portal dev: `http://localhost:5167` (proxies API).
-
-### Production Build
-
-```bash
-npm run build          # Portal (Vite) + Engine (esbuild)
-npm run package:win    # Windows executable
-npm run package:mac    # macOS executable
+npm run dev                               # engine + vite
+cd electron && npm install && npm start   # or, from the root: npm run electron
 ```
 
 ---
 
-## Utilities
+## First-run troubleshooting
 
-### patch-ticket CLI
+**macOS** — the build is **Apple Silicon (arm64)** and unsigned; on an Intel Mac, run from source. Clear the Gatekeeper quarantine with `xattr -d com.apple.quarantine /path/to/event-horizon`, or right-click → **Open** → **Open Anyway**.
 
-```bash
-npm run patch-ticket -- FLUX-42 --status "In Progress"
-npm run patch-ticket -- FLUX-42 --comment "implementation complete"
-npx tsx engine/src/patch-ticket.ts FLUX-42 --workspace . --status "Done"
-```
+**Windows** — the unsigned binary may trip a Defender false positive (e.g. `Trojan:Script/Wacatac`); the desktop app may flag a cached JS file (`VirTool:JS/Anomelesz.A`). Both are false positives from unsigned packaging — run from source, allow the file, or report it at <https://www.microsoft.com/wdsi/filesubmission>. Set `PORT=<n>` to change the port.
 
-Works in both in-repo and Git Sync modes.
+---
 
-### seed-demo CLI
-
-Regenerate the bundled [`demo/`](demo) showcase workspace (the **Trailhead** board used for the
-showcase recordings):
+## Development & docs
 
 ```bash
-npx tsx engine/src/seed-demo.ts          # writes ./demo/.flux
-npx tsx engine/src/seed-demo.ts --out path/to/dir
+cd engine && npm install && npm run dev    # API + MCP  → http://localhost:3067
+cd portal && npm install && npm run dev    # hot reload → http://localhost:5167 (proxies API)
 ```
 
-It validates every seeded ticket against the engine schema before writing, so the demo board stays
-schema-valid as the format evolves. See [`docs/media/RECORDING.md`](docs/media/RECORDING.md) for how
-the demo board feeds the showcase recordings.
+In-product docs live at `.docs/` and render in the portal's **Docs** screen — [Project Overview](.docs/event-horizon/project-overview.md) · [Architecture](.docs/event-horizon/architecture/overview.md) · [MCP Server](.docs/event-horizon/mcp-server.md) · [Agent Integrations](.docs/event-horizon/agent-integrations.md) · [Installation](.docs/event-horizon/installation.md) · [Configuration](.docs/event-horizon/configuration.md) · [Ticket Lifecycle](.docs/event-horizon/workflow/ticket-lifecycle.md).
+
+---
+
+## License
+
+Event Horizon is **source-available**, not open-source, under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+
+- ✅ **Free** for personal, hobby, academic, and other **non-commercial** use — use, modify, and share.
+- 💼 **Commercial use requires a paid license** — contact **guylivingroom@gmail.com**.
+
+Copyright remains with the author. Bundled third-party components keep their own permissive licenses — see [`THIRD_PARTY_NOTICES.txt`](THIRD_PARTY_NOTICES.txt).

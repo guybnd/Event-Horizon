@@ -113,7 +113,19 @@ export function RebaseCard({
     const res = await resolveBoardRebase(batch.id, ids).catch(() => null);
     if (res === null) {
       // POST failed entirely — keep the card so the user can retry (no longer swallowed).
-      setError('Couldn’t apply — check the connection and try again.');
+      setError('Couldn’t reach the engine — check it’s running and try again.');
+      setSubmitting(false);
+      return;
+    }
+    if (res.timedOut) {
+      setError('The engine didn’t respond within 15s — it may be busy or hung. Restart it, then re-run the cleanup.');
+      setSubmitting(false);
+      return;
+    }
+    if (res.expired) {
+      // Batch gone server-side (engine restarted, or already applied). In-memory proposals don't
+      // survive a restart — say so plainly instead of failing silently; Dismiss clears the dead card.
+      setError('This proposal expired (the engine restarted, or it was already applied). Ask the agent to re-run the board cleanup, then Dismiss.');
       setSubmitting(false);
       return;
     }
@@ -132,6 +144,15 @@ export function RebaseCard({
       });
     }
     // The engine also broadcasts board-rebase-resolved (idempotent); remove locally now.
+    onResolved();
+  }
+
+  // Dismiss best-efforts the server resolve (apply nothing) but ALWAYS drops the card locally,
+  // so a dead/expired/wedged batch can still be cleared from view (FLUX-773).
+  async function dismiss() {
+    if (submitting) return;
+    setSubmitting(true);
+    await resolveBoardRebase(batch.id, []).catch(() => null);
     onResolved();
   }
 
@@ -167,7 +188,7 @@ export function RebaseCard({
         </button>
         <button
           type="button"
-          onClick={() => void apply([])}
+          onClick={() => void dismiss()}
           disabled={submitting}
           className="flex items-center gap-1 rounded-lg bg-gray-200 px-3 py-1.5 text-[12px] font-semibold text-gray-700 transition-colors hover:bg-gray-300 disabled:opacity-40 dark:bg-white/10 dark:text-gray-200 dark:hover:bg-white/20"
         >
