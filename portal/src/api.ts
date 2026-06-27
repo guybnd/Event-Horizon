@@ -1467,6 +1467,28 @@ export class MergeParkedError extends Error {
   }
 }
 
+/** A non-Done branch sibling that a shared-PR merge would sweep to Done (FLUX-569 guard payload). */
+export interface SharedNonDoneSibling {
+  id: string;
+  status: string;
+  title?: string;
+}
+
+/**
+ * The shared-PR finish guard fired (FLUX-569): the branch bundles non-Done siblings that would all
+ * advance to Done. Carries the structured sibling list so the portal can render an actionable
+ * "Merge all & finish" (force:true) decision instead of string-parsing the prose message.
+ */
+export class MergeForceRequiredError extends Error {
+  requiresForce = true;
+  sharedNonDone: SharedNonDoneSibling[];
+  constructor(message: string, sharedNonDone: SharedNonDoneSibling[]) {
+    super(message);
+    this.name = 'MergeForceRequiredError';
+    this.sharedNonDone = sharedNonDone;
+  }
+}
+
 /**
  * Squash-merge the branch's PR + run post-merge cleanup (advances all branch tickets). Pass
  * `force` to override the shared-PR guard (FLUX-569) when the branch bundles non-Done siblings
@@ -1480,9 +1502,18 @@ export async function mergePr(taskId: string, opts?: { force?: boolean; stopPark
     body: JSON.stringify({ force: opts?.force === true, stopParkedSessions: opts?.stopParkedSessions === true }),
   });
   if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { error?: string; parkedOnly?: boolean; parkedOwners?: string[] };
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      parkedOnly?: boolean;
+      parkedOwners?: string[];
+      requiresForce?: boolean;
+      sharedNonDone?: SharedNonDoneSibling[];
+    };
     if (body.parkedOnly) {
       throw new MergeParkedError(body.error || 'Parked sessions block merge', body.parkedOwners ?? []);
+    }
+    if (body.requiresForce) {
+      throw new MergeForceRequiredError(body.error || 'Merging this shared PR would advance unfinished tickets to Done.', body.sharedNonDone ?? []);
     }
     throw new Error(body.error || 'Failed to merge PR');
   }

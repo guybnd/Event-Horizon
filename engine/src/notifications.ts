@@ -127,9 +127,14 @@ export function generatePromptNotification(ticketId: string, ticketTitle: string
  * FLUX-651 — an agent ended its turn leaving the ticket parked in a working status without
  * taking a board action. Deduped per ticket (like the prompt notification) so repeated parked
  * turns refresh the existing entry instead of stacking.
+ *
+ * FLUX-827 — `message` lets the caller pass the same reason string already written to the
+ * `needsAction` flag, so the toast matches the board reason (the soft resting-status backstop
+ * and the `ask_user_question` timeout reuse this path, where the default hard-park wording reads
+ * oddly). Falls back to the generic hard-park text when omitted.
  */
-export function generateNeedsActionNotification(ticketId: string, ticketTitle: string, status: string): void {
-  const message = `Agent stopped in "${status}" without moving the ticket forward — review and move it on (or resume).`;
+export function generateNeedsActionNotification(ticketId: string, ticketTitle: string, status: string, message?: string): void {
+  message ??= `Agent stopped in "${status}" without moving the ticket forward — review and move it on (or resume).`;
   const existing = notifications.find(
     n => n.type === 'prompt' && n.ticketId === ticketId && n.title?.startsWith('Needs action') && !n.dismissed
   );

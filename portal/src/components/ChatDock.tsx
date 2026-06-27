@@ -16,6 +16,7 @@ import { TicketSideView } from './task-modal/TicketSideView';
 import { getPriorityIcon } from './task-modal/taskModalHelpers';
 import { TicketContextCard, BoardSnapshotCard, SessionMeter } from './task-modal/chatContext';
 import { parseQuickReplies } from './task-modal/chatQuickReplies';
+import { parseRunProposal } from './task-modal/chatRunProposal';
 import { ChatRequireInputBanner } from './task-modal/ChatRequireInputBanner';
 import { TagSelector } from './TagSelector';
 import { TicketActions } from './ticket-actions/TicketActions';
@@ -137,7 +138,9 @@ export function ChatDock() {
   // distinct prompt icon and can't be closed/removed until it's resolved.
   // FLUX-809: `pendingCount` (total pending prompts) + the manual-open machinery back the pinned
   // Pending tab — always present, loud when prompts wait, toggles/raises the pending window.
-  const { pendingPromptConversationIds, pendingCount, pendingPanelOpen, togglePendingPanel } = usePendingInteractions();
+  // FLUX-813: use `pendingPanelVisible` (orphan-forced OR manual) not `pendingPanelOpen` (manual only)
+  // so the tab's open-indicator bar reflects the window actually being on-screen when orphans force it.
+  const { pendingPromptConversationIds, pendingCount, pendingPanelVisible, togglePendingPanel } = usePendingInteractions();
   // Window/open state lives in the app-root DockProvider (FLUX-603) so a card can drive it
   // and it survives view switches. `anchors` records where each window should spawn from.
   const { open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, toggle, closeCard, reopenFromHistory, setDraft, setSelections, reorder, promoteToFront, toggleSideView, setSideviewWidth, seedSideviewWidth, openTicket, raise } = useDock();
@@ -540,7 +543,7 @@ export function ChatDock() {
         {/* FLUX-809: pinned Pending tab — always present, immediately right of the Orchestrator.
             Shows the live count of pending prompts (loud amber + pulse when >0), and toggles /
             brings the pending window on-screen. Outside the SortableContext: not draggable. */}
-        <PendingTab count={pendingCount} open={pendingPanelOpen} onToggle={togglePendingPanel} />
+        <PendingTab count={pendingCount} open={pendingPanelVisible} onToggle={togglePendingPanel} />
 
         {activeTickets.length > 0 && (
           <div className="h-7 w-px bg-[var(--eh-border)]" aria-hidden="true" />
@@ -1618,9 +1621,18 @@ function ChatWindow({
   ) : task ? (
     <TicketContextCard task={task} />
   ) : undefined;
+  // FLUX-805: a "suggest a supervisor run" proposal from the chat agent's latest turn takes precedence
+  // over Require-Input quick replies, rendering as a one-click confirm chip (see chatRunProposal). Works
+  // for a bound ticket chat or the board orchestrator chat alike — it's keyed off the transcript, not the task.
+  const runProposal = useMemo(() => parseRunProposal(chat.messages), [chat.messages]);
   const quickReplies = useMemo(
-    () => (task ? parseQuickReplies(task, requireInputStatus) : []),
-    [task, requireInputStatus],
+    () =>
+      runProposal
+        ? [{ label: runProposal.label, value: runProposal.confirm, tone: 'primary' as const }]
+        : task
+          ? parseQuickReplies(task, requireInputStatus)
+          : [],
+    [runProposal, task, requireInputStatus],
   );
   // FLUX-752: surface a board Require-Input prompt in the dock chat — guarded on a bound ticket
   // (the orchestrator board chat has none), status OR the require-input swimlane, matching the full

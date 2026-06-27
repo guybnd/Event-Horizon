@@ -151,6 +151,19 @@ Under the hood, ticket operations are exposed as **MCP tools** served in-process
 
 ---
 
+## Why agents succeed here — governed shared memory
+
+In a single repo your "multi-agent shared memory" is really *many agent sessions, separated in time, reading and writing the same ticket history*. Event Horizon **governs** that memory so each new session inherits a clean, trustworthy state instead of raw noise — that's why agents don't drift, repeat discarded work, or lose your instructions.
+
+- **Provenance** — history is append-only and attributed (`user`/`date`, human vs agent); nothing is silently rewritten, so an agent can always see *who decided what, and when*.
+- **Authority over recency** — pinned entries and your own comments are re-surfaced even after they age out of the recent window, so human instructions never get buried under a pile of agent chatter.
+- **Relevance windowing** — each session's noise is compacted to summaries with on-demand `expand`, so a new agent reads *signal*, not thousands of lines of prior tool output — and stays inside a useful context window.
+- **Temporal supersession** — when a decision is replaced, the dead one collapses to a marker, so an agent reads the *live* decision state instead of reconciling abandoned plans by hand.
+
+The payoff: **governed shared memory → less context drift, fewer repeated or contradictory decisions, human intent preserved → a higher agent success rate.**
+
+---
+
 ## Architecture
 
 ```

@@ -81,6 +81,11 @@ export interface TranscriptFind {
 export function useTranscriptFind(
   scrollRef: React.RefObject<HTMLDivElement | null>,
   messages: TranscriptMessage[],
+  // FLUX-821: an opaque "the rendered DOM grew" signal. ChatView windows the transcript and expands
+  // it progressively while find is open, so `messages` changing isn't enough — the match recompute
+  // must also re-run as more rows mount. Threading this into the deps (rather than re-walking on a
+  // timer) keeps the debounce honest: per-frame changes coalesce to a single walk after expansion.
+  revealSignal?: number,
 ): TranscriptFind {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -114,7 +119,7 @@ export function useTranscriptFind(
       setVersion((v) => v + 1);
     }, RECOMPUTE_MS);
     return () => window.clearTimeout(handle);
-  }, [open, query, messages, scrollRef]);
+  }, [open, query, messages, scrollRef, revealSignal]);
 
   // Paint the focused match distinctly and scroll it to the middle of the scroll container (which
   // reuses the FLUX-644 scroll region — the existing onScroll keeps jump-to-bottom state honest).

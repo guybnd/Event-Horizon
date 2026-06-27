@@ -142,7 +142,7 @@ export async function raiseNeedsAction(taskId: string, message: string): Promise
       });
       broadcastEvent('taskUpdated', { id: taskId });
     }
-    generateNeedsActionNotification(taskId, task.title || taskId, task.status);
+    generateNeedsActionNotification(taskId, task.title || taskId, task.status, message);
   } catch (err: any) {
     console.error(`[parked-ticket] raiseNeedsAction failed for ${taskId}:`, err?.message);
   }

@@ -264,19 +264,36 @@ export const NotificationPanel = memo(function NotificationPanel({ notifications
 
   const dismiss = useCallback((id: string) => {
     setDismissedIds((prev) => { const next = new Set(prev); next.add(id); return next; });
-    void dismissNotification(id).then(onUpdate).catch(() => onUpdate());
+    // FLUX-831: on failure the server keeps the notification in the live list, so roll back the
+    // optimistic dismissedIds override (the reconcile effect would otherwise retain it for the
+    // panel's lifetime — `live.has(id)` keeps it) and refetch to reconcile truth.
+    void dismissNotification(id).then(onUpdate).catch(() => {
+      setDismissedIds((prev) => { if (!prev.has(id)) return prev; const next = new Set(prev); next.delete(id); return next; });
+      onUpdate();
+    });
   }, [onUpdate]);
 
   const markRead = useCallback((id: string) => {
     setReadIds((prev) => { const next = new Set(prev); next.add(id); return next; });
     setUnreadIds((prev) => { if (!prev.has(id)) return prev; const next = new Set(prev); next.delete(id); return next; });
-    void markNotificationRead(id).then(onUpdate).catch(() => {});
+    // FLUX-823: on failure the server keeps the notification unread, so roll back the optimistic
+    // readIds override (the reconcile effect would otherwise retain it for the panel's lifetime —
+    // `prev.has(n.id) && !n.read` keeps it) and refetch to reconcile truth.
+    void markNotificationRead(id).then(onUpdate).catch(() => {
+      setReadIds((prev) => { if (!prev.has(id)) return prev; const next = new Set(prev); next.delete(id); return next; });
+      onUpdate();
+    });
   }, [onUpdate]);
 
   const markUnread = useCallback((id: string) => {
     setUnreadIds((prev) => { const next = new Set(prev); next.add(id); return next; });
     setReadIds((prev) => { if (!prev.has(id)) return prev; const next = new Set(prev); next.delete(id); return next; });
-    void markNotificationUnread(id).then(onUpdate).catch(() => {});
+    // FLUX-823: same swallow as markRead — roll back the optimistic unreadIds override on failure
+    // and refetch so a failed mark-unread doesn't leave a permanent stale override.
+    void markNotificationUnread(id).then(onUpdate).catch(() => {
+      setUnreadIds((prev) => { if (!prev.has(id)) return prev; const next = new Set(prev); next.delete(id); return next; });
+      onUpdate();
+    });
   }, [onUpdate]);
 
   const { prefs } = useNotificationPrefs();
@@ -298,8 +315,18 @@ export const NotificationPanel = memo(function NotificationPanel({ notifications
   ];
 
   const handleMarkAllRead = useCallback(() => {
-    setReadIds((prev) => { const next = new Set(prev); visible.forEach((n) => next.add(n.id)); return next; });
-    void markAllNotificationsRead().then(onUpdate).catch(() => {});
+    // FLUX-823: track exactly the ids this call adds so a failed bulk mark-all-read rolls back its
+    // own optimistic overrides (not ones already pending from individual markReads) and refetches.
+    const added: string[] = [];
+    setReadIds((prev) => {
+      const next = new Set(prev);
+      visible.forEach((n) => { if (!next.has(n.id)) { next.add(n.id); added.push(n.id); } });
+      return next;
+    });
+    void markAllNotificationsRead().then(onUpdate).catch(() => {
+      setReadIds((prev) => { const next = new Set(prev); added.forEach((id) => next.delete(id)); return next; });
+      onUpdate();
+    });
   }, [onUpdate, visible]);
 
   return (

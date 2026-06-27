@@ -66,8 +66,9 @@ jobs:
 
       - name: Extract release notes
         id: release_notes
+        # VERSION comes from the workflow-level env: (github.ref_name), so it never
+        # interpolates ${{ }} into this shell — avoids GHA script injection (FLUX-802).
         run: |
-          VERSION="${{ github.ref_name }}"
           NOTES_FILE=".docs/release-notes/${VERSION}.md"
           if [ -f "$NOTES_FILE" ]; then
             # Strip YAML frontmatter (BSD sed compatible)

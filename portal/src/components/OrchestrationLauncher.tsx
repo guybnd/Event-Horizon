@@ -127,6 +127,8 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
   const [personas, setPersonas] = useState<ReviewPersona[]>([]);
   const [personasLoading, setPersonasLoading] = useState(false);
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
+  const [templatesLoaded, setTemplatesLoaded] = useState(false);
+  const [defaultResolved, setDefaultResolved] = useState(false);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
   const [supervisorLeadId, setSupervisorLeadId] = useState<string>('');
   const [startMode, setStartMode] = useState<StartMode>('branch');
@@ -147,6 +149,11 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
 
   const showBranchSection = ticket?.status === 'Todo' && !ticket?.branch;
 
+  // The interactive template/mode/persona controls are only revealed once personas + templates
+  // have loaded and the default template has been resolved/applied — otherwise the form would
+  // flash a blank `Custom` state before snapping to the real default. See FLUX-830.
+  const ready = !personasLoading && templatesLoaded && defaultResolved;
+
   // While open, register as a blocking overlay so board hover popups (card description
   // previews, etc.) are suppressed and cannot render on top of the dialog.
   useEffect(() => {
@@ -162,6 +169,8 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
       setComment('');
       setEffort('');
       setSelectedTemplateId('');
+      setTemplatesLoaded(false);
+      setDefaultResolved(false);
       setSupervisorLeadId('');
       setStartMode('branch');
       setJoinBranch(null);
@@ -230,7 +239,8 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
     let cancelled = false;
     fetchWorkflows()
       .then((list) => { if (!cancelled) setTemplates(list); })
-      .catch(() => { if (!cancelled) setTemplates([]); });
+      .catch(() => { if (!cancelled) setTemplates([]); })
+      .finally(() => { if (!cancelled) setTemplatesLoaded(true); });
     return () => { cancelled = true; };
   }, [open]);
 
@@ -240,12 +250,14 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
     [templates, phase],
   );
 
-  // Pre-populate from the card's chosen template, else the board default, once personas load.
+  // Pre-populate from the card's chosen template, else the board default, once personas + templates load.
   useEffect(() => {
-    if (!open || personasLoading || defaultAppliedRef.current || personas.length === 0 || templates.length === 0) return;
+    if (!open || personasLoading || !templatesLoaded || defaultAppliedRef.current) return;
     let cancelled = false;
     (async () => {
       try {
+        // Nothing to resolve against yet — fall through to mark resolved so the form reveals.
+        if (personas.length === 0 || templates.length === 0) return;
         let targetId = initialTemplateId;
         if (!targetId) {
           const config = await fetchConfig();
@@ -259,10 +271,14 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
         defaultAppliedRef.current = true;
       } catch {
         // No default to apply — leave the launcher at its blank defaults.
+      } finally {
+        // Every terminal path (applied, no-default, empty, or error) is "resolved":
+        // we've decided whether a default applies, so the form can be revealed.
+        if (!cancelled) setDefaultResolved(true);
       }
     })();
     return () => { cancelled = true; };
-  }, [open, phase, personas, personasLoading, templates, initialTemplateId, applyTemplate]);
+  }, [open, phase, personas, personasLoading, templatesLoaded, templates, initialTemplateId, applyTemplate]);
 
   useEffect(() => {
     if (!open) return;
@@ -400,6 +416,15 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
             )}
           </div>
 
+          {/* Gate the interactive controls behind `ready` so the resolved default template
+              (+ its mode/personas) is in place before they're revealed — no blank-then-snap. */}
+          {!ready ? (
+            <div className="mb-4 flex min-h-[280px] flex-col items-center justify-center gap-2 rounded-xl border border-gray-100 bg-gray-50 dark:border-white/5 dark:bg-black/20">
+              <div className="h-5 w-5 animate-spin rounded-full border-2 border-gray-300 border-t-primary dark:border-white/20 dark:border-t-primary" />
+              <span className="text-xs text-gray-400">Preparing template…</span>
+            </div>
+          ) : (
+          <>
           {/* Template + reasoning effort — share a row to save vertical space */}
           <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start">
             {templatesForPhase.length > 0 && (
@@ -692,6 +717,8 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
                 <OrchestrationTopology group={previewGroup} variant="map" />
               </div>
             </div>
+          )}
+          </>
           )}
 
           {/* Focus area */}

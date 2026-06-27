@@ -7,14 +7,16 @@
 //
 // This is the launch slice that used to live inline in useTaskCardController, lifted out so the
 // card and the chat surfaces share it verbatim instead of re-implementing it.
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import type { Task } from '../types';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import {
   mergePr, updateTask, fetchWorkflows, fetchPrStatus, sendTaskCliInput, raisePr, deleteTask,
   detachWorktree, joinWorktree, openWorktreeWindow, setTicketBranch, attachParent,
+  MergeForceRequiredError, MergeParkedError,
   type WorkflowTemplate,
 } from '../api';
+import type { FinishMergeState, MergeConfirmOpts } from '../components/task-modal/FinishMergeConfirm';
 import { resolveEffectiveAgent } from '../utils';
 import { isActiveSession } from '../orchestration';
 import { getArchiveStatus, getReadyForMergeStatus, getRequireInputStatus, isPromptableStatus } from '../workflow';
@@ -105,6 +107,11 @@ export interface UseTicketActions {
   startPromptOpen: boolean;
   confirmStartPrompt: (branch: string | null) => Promise<void>;
   cancelStartPrompt: () => void;
+  // ── Finish-via-merge confirm/decision modal (FLUX-815) — replaces native confirm/alert ──
+  finishMergeState: FinishMergeState | null;
+  finishMergeBusy: boolean;
+  confirmFinishMerge: (opts: MergeConfirmOpts) => Promise<void>;
+  cancelFinishMerge: () => void;
   // ── For ContextMenu re-exposure (FLUX-717 will migrate it onto the registry) ──
   singleDefaultId: string;
 }
@@ -127,6 +134,12 @@ export function useTicketActions(task: Task): UseTicketActions {
   const [launcherTemplateId, setLauncherTemplateId] = useState<string | undefined>(undefined);
   const [launcherBusy, setLauncherBusy] = useState(false);
   const [startPromptOpen, setStartPromptOpen] = useState(false);
+  const [finishMergeState, setFinishMergeState] = useState<FinishMergeState | null>(null);
+  const [finishMergeBusy, setFinishMergeBusy] = useState(false);
+  // Merge options accumulate across escalations (confirm → shared force → parked stop&merge), so a
+  // chain that picks up `force` then needs `stopParkedSessions` keeps both (the engine checks them
+  // in sequence — see tasks.ts:1022-1024). Reset whenever the modal opens fresh or is cancelled.
+  const finishMergeOptsRef = useRef<MergeConfirmOpts>({});
 
   // Lazily load the workflow catalog the first time a launch ▾ menu opens. Until then the menu
   // still shows Single/Multi (their ids resolve synchronously); names + extra templates fill in.
@@ -199,15 +212,39 @@ export function useTicketActions(task: Task): UseTicketActions {
       await dispatchFinish();
       return;
     }
-    if (!window.confirm(`Merge ${task.id}'s PR and mark it Done? This can't be undone.`)) return;
+    // FLUX-815: no native confirm/alert. Open the styled modal in plain-confirm mode; the
+    // shared-PR guard (FLUX-569) and parked-session block (FLUX-636) become in-modal decisions.
+    finishMergeOptsRef.current = {};
+    setFinishMergeState({ mode: 'confirm' });
+  }
+
+  // Run the merge with the accumulated options + this action's delta. Each engine guard maps to a
+  // modal mode rather than a native dialog: shared-PR → decision list, parked → stop&merge, else
+  // an inline error. On success: refresh the board and close.
+  const confirmFinishMerge = async (delta: MergeConfirmOpts) => {
+    const opts = { ...finishMergeOptsRef.current, ...delta };
+    finishMergeOptsRef.current = opts;
+    setFinishMergeBusy(true);
     try {
-      await mergePr(task.id);
+      await mergePr(task.id, opts);
+      setFinishMergeState(null);
+      triggerRefresh();
     } catch (err) {
-      alert(`Failed to finish ${task.id}: ${err instanceof Error ? err.message : String(err)}`);
-      return;
+      if (err instanceof MergeForceRequiredError) {
+        setFinishMergeState({ mode: 'shared', sharedNonDone: err.sharedNonDone });
+      } else if (err instanceof MergeParkedError) {
+        setFinishMergeState({ mode: 'parked', message: err.message });
+      } else {
+        setFinishMergeState({ mode: 'error', message: err instanceof Error ? err.message : String(err) });
+      }
+    } finally {
+      setFinishMergeBusy(false);
     }
-    triggerRefresh();
   };
+  const cancelFinishMerge = () => {
+    finishMergeOptsRef.current = {};
+    setFinishMergeState(null);
+  };;
 
   // ── Agent: branchless (or no-open-PR) finish needs a curated commit → run the `finish` command.
   // FLUX-719: when a CLI session is live, continue it by sending `finish` as input rather than
@@ -408,6 +445,10 @@ export function useTicketActions(task: Task): UseTicketActions {
     startPromptOpen,
     confirmStartPrompt,
     cancelStartPrompt,
+    finishMergeState,
+    finishMergeBusy,
+    confirmFinishMerge,
+    cancelFinishMerge,
     singleDefaultId,
   };
 }

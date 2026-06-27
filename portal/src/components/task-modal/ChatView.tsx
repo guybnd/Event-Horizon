@@ -16,11 +16,13 @@ import type { ComposerSelections } from '../DockProvider';
 import { formatRelative } from '../../lib/relativeTime';
 
 /** FLUX-643: a one-tap reply chip rendered above the composer. Selecting it sends
- *  `value` as the chat reply. `tone: 'danger'` paints it red (e.g. a "Skip" option). */
+ *  `value` as the chat reply. `tone: 'danger'` paints it red (e.g. a "Skip" option);
+ *  FLUX-805: `tone: 'primary'` paints it as an accented launch CTA with a ▶ glyph (the
+ *  "suggest a supervisor run" confirm chip). */
 export interface QuickReply {
   label: string;
   value: string;
-  tone?: 'danger';
+  tone?: 'danger' | 'primary';
 }
 
 /** One choice in a ChipSelect. `tone: 'danger'` paints the hint + active chip red. */
@@ -59,6 +61,13 @@ const PERM_OPTS: ChipOption[] = [
  *  load on demand (and opening find reveals all, so search still scans the whole transcript). */
 const INITIAL_VISIBLE_MESSAGES = 80;
 const LOAD_MORE_MESSAGES = 200;
+/** FLUX-821: find still needs the whole transcript mounted (it walks the live DOM), but expanding
+ *  to it in one synchronous commit re-introduces the FLUX-814 freeze. So on find-open we grow the
+ *  window a chunk PER FRAME instead of all at once — the same total work, spread across frames so
+ *  the main thread keeps yielding (find bar paints, typing stays responsive) rather than blocking
+ *  3–4s. The find recompute is debounced past the last chunk (see useTranscriptFind), so it walks
+ *  the DOM once, fully populated. */
+const FIND_EXPAND_CHUNK = 120;
 
 export interface ChatViewProps {
   messages: TranscriptMessage[];
@@ -218,15 +227,16 @@ export function ChatView({
   // first render with messages after (re)mount. ChatView re-mounts on each dock open (keyed in
   // `open.map`), so this naturally resets per open.
   const didInitialScrollRef = useRef(false);
+  // FLUX-829: while true, the initial pin keeps re-asserting itself each frame (the re-pin loop
+  // below) because earlier turns are still collapsing post-paint (Clampable capping, ToolGroup
+  // folding) and shrinking the content above the target. Cleared once heights hold steady or the
+  // user takes over the scroll, so it never fights a deliberate scroll.
+  const repinActiveRef = useRef(false);
   // FLUX-644: jump-to-bottom pill state — shown while the user has scrolled up; `newCount`
   // tallies messages that arrived since they detached from the bottom.
   const [showJump, setShowJump] = useState(false);
   const [newCount, setNewCount] = useState(0);
   const prevLenRef = useRef(messages.length);
-
-  // FLUX-686: in-transcript find, scoped to this surface's scroll container. Opened with
-  // Cmd/Ctrl+F or `/` (see the root onKeyDown below); the bar handles next/prev + Esc itself.
-  const find = useTranscriptFind(scrollRef, messages);
 
   // FLUX-814: render only the last `visibleCount` messages on open (the tail), so a long thread
   // doesn't mount 800+ markdown rows synchronously and freeze the open. "Show earlier" reveals
@@ -234,6 +244,13 @@ export function ChatView({
   // prepended above the current scroll position.
   const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE_MESSAGES);
   const restoreFromBottomRef = useRef<number | null>(null);
+
+  // FLUX-686: in-transcript find, scoped to this surface's scroll container. Opened with
+  // Cmd/Ctrl+F or `/` (see the root onKeyDown below); the bar handles next/prev + Esc itself.
+  // FLUX-821: `visibleCount` is passed as the reveal signal so the (DOM-walking) match recompute
+  // re-fires as the progressive expansion grows the window — and, being debounced, only settles
+  // once the last chunk has mounted, walking the fully-populated transcript exactly once.
+  const find = useTranscriptFind(scrollRef, messages, visibleCount);
 
   // FLUX-695: unread-divider state. `lastSeenRef` is the count of messages the user has seen;
   // `dividerIndex` is the boundary (first unseen index) where the "new messages" rule renders.
@@ -295,6 +312,77 @@ export function ChatView({
     }
   }, [visibleCount]);
 
+  // FLUX-821: progressively reveal the rest of the transcript while find is open, one chunk per
+  // frame, so find can walk the whole DOM without the all-at-once mount re-freezing the heavy board.
+  // The effect re-runs as `visibleCount` climbs (each chunk), scheduling the next frame until the
+  // window covers everything. Each step anchors the viewport from the bottom (same mechanism as
+  // `showEarlier`) so prepended older rows don't shove the user's position around. The find
+  // recompute is debounced and keyed on `visibleCount`, so it fires once after the last chunk lands.
+  useEffect(() => {
+    if (!find.open || visibleCount >= messages.length) return;
+    const el = scrollRef.current;
+    if (el) restoreFromBottomRef.current = el.scrollHeight - el.scrollTop;
+    const id = requestAnimationFrame(() => {
+      setVisibleCount((c) => Math.min(messages.length, c + FIND_EXPAND_CHUNK));
+    });
+    return () => cancelAnimationFrame(id);
+  }, [find.open, visibleCount, messages.length]);
+
+  // FLUX-727/829: put the final assistant message at the top of the viewport. Returns false when
+  // `[data-last-msg]` isn't in the DOM yet (e.g. a trailing user message mid-send has no settled
+  // reply) so callers can keep their one-shot armed instead of landing the user at the bottom.
+  function pinToLast(el: HTMLDivElement): boolean {
+    const last = el.querySelector('[data-last-msg]') as HTMLElement | null;
+    if (!last) return false;
+    el.scrollTop += last.getBoundingClientRect().top - el.getBoundingClientRect().top - 8;
+    atBottomRef.current = false;
+    return true;
+  }
+
+  // FLUX-829: the initial pin measures against first-paint heights, but earlier turns shrink in a
+  // LATER commit — `Clampable` caps tall replies (its useLayoutEffect flips needsClamp), `ToolGroup`
+  // folds after mount — so the content above the target collapses and the browser clamps our
+  // now-too-large scrollTop back toward 0, dumping the user at the top of the loaded window. Re-pin
+  // every frame until scrollHeight holds steady for a few frames (collapse commits have flushed), or
+  // a 1s safety cap, whichever comes first. `cancelRepin` (genuine user input below) stops it early.
+  function startRepinLoop() {
+    repinActiveRef.current = true;
+    let lastH = scrollRef.current?.scrollHeight ?? 0;
+    let stableFrames = 0;
+    const startedAt = Date.now();
+    const tick = () => {
+      const el = scrollRef.current;
+      if (!repinActiveRef.current || !el) {
+        repinActiveRef.current = false;
+        return;
+      }
+      // Measure content height BEFORE pinning. A scrollTop write changes the scroll offset, not
+      // scrollHeight, so this reads the same value the post-pin read would — but taking it before
+      // the write keeps the scrollHeight read off the tail of a scrollTop write, avoiding a
+      // write→read layout flush within the frame.
+      const h = el.scrollHeight;
+      if (h === lastH) stableFrames += 1;
+      else {
+        stableFrames = 0;
+        lastH = h;
+      }
+      pinToLast(el);
+      if (stableFrames >= 3 || Date.now() - startedAt > 1000) {
+        repinActiveRef.current = false;
+        return;
+      }
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+
+  // FLUX-829: a deliberate user scroll (wheel / touch / arrow keys / scrollbar drag) takes over —
+  // stop re-pinning so we never yank them back. Keyed on real input events, NOT the scroll event,
+  // which our own `pinToLast` writes would otherwise trip.
+  function cancelRepin() {
+    repinActiveRef.current = false;
+  }
+
   // FLUX-695: track tab visibility + window focus. When the surface becomes attended while the
   // user is already at the bottom, the new messages are in view → mark them seen (clear divider).
   useEffect(() => {
@@ -320,22 +408,23 @@ export function ChatView({
   // drops the unread divider at the boundary; an attended arrival just advances `lastSeen`.
   useEffect(() => {
     // FLUX-727: on first open (dock window), land at the TOP of the final message — rendered
-    // unclamped (see the rows memo) — instead of snapping to the very bottom. One-shot per mount;
-    // this passive effect runs after all layout effects (Clampable measuring) have settled, so the
-    // final message is already at its true height when we measure. Skipped while a turn is streaming
-    // (`working`) so a live chat keeps stick-to-tail. Setting `atBottomRef=false` also stops
-    // `handleScroll` from snapping back / auto-marking-seen, leaving the unread divider intact.
+    // unclamped (see the rows memo) — instead of snapping to the very bottom. One-shot per mount.
+    // Skipped while a turn is streaming (`working`) so a live chat keeps stick-to-tail. Setting
+    // `atBottomRef=false` (inside pinToLast) also stops `handleScroll` from snapping back /
+    // auto-marking-seen, leaving the unread divider intact.
+    // FLUX-829: the pin set here measures first-paint heights, but earlier turns then collapse in a
+    // LATER commit (Clampable capping, ToolGroup folding) and the browser clamps our scrollTop back
+    // toward 0 — landing the user at the top of the loaded window. So we don't fire once and trust
+    // it: `startRepinLoop` re-asserts the pin every frame until heights settle (or the user scrolls).
     if (openToLastMessage && !didInitialScrollRef.current && messages.length > 0 && !working) {
       // FLUX-824: only burn the one-shot once the scroll ACTUALLY runs. If this first pass fires
-      // while a turn streams (`working`) or before `[data-last-msg]` is in the DOM (`last` null),
-      // leaving the guard unset keeps the one-shot armed for the next render instead of silently
-      // landing the user at the bottom — the intermittent "sometimes it doesn't scroll" failure.
+      // while a turn streams (`working`) or before `[data-last-msg]` is in the DOM (pinToLast returns
+      // false), leaving the guard unset keeps the one-shot armed for the next render instead of
+      // silently landing the user at the bottom — the intermittent "sometimes it doesn't scroll".
       const el = scrollRef.current;
-      const last = el?.querySelector('[data-last-msg]') as HTMLElement | null;
-      if (el && last) {
+      if (el && pinToLast(el)) {
         didInitialScrollRef.current = true;
-        el.scrollTop += last.getBoundingClientRect().top - el.getBoundingClientRect().top - 8;
-        atBottomRef.current = false;
+        startRepinLoop();
         prevLenRef.current = messages.length;
         return;
       }
@@ -427,10 +516,14 @@ export function ChatView({
   // delegation tool row and renders the block at that spawn point. The boolean (not the node) is a
   // memo dep so live block updates never bust the markdown-heavy transcript memo.
   const hasBlock = !!orchestrationBlock;
-  // FLUX-814: window the rendered transcript to the last `visibleCount` messages. Opening find
-  // reveals everything (find walks the live DOM, so search must see the whole transcript); once
-  // the window has grown to cover all messages, `startIndex` is 0 and nothing is hidden.
-  const fullyExpanded = find.open || visibleCount >= messages.length;
+  // FLUX-814: window the rendered transcript to the last `visibleCount` messages. Find walks the
+  // live DOM, so search must see the whole transcript — but FLUX-821: rather than flipping the
+  // whole window open in one synchronous commit on find-open (which re-froze the heavy board for
+  // 3–4s), the progressive-expansion effect below grows `visibleCount` a chunk per frame while find
+  // is open. Once the window covers all messages, `startIndex` is 0 and nothing is hidden. The
+  // window is never collapsed back when find closes — re-mounting/jumping the viewport would be
+  // pure waste (and the find-close scroll jump, FLUX-821 item 2, came from exactly that toggle).
+  const fullyExpanded = visibleCount >= messages.length;
   const startIndex = fullyExpanded ? 0 : Math.max(0, messages.length - visibleCount);
   const { rows, spawnInsertAt } = useMemo(() => {
     // FLUX-803: a tool row that spawned the subagent group (tagged by the projector). Excluded from
@@ -613,6 +706,12 @@ export function ChatView({
         <div
           ref={scrollRef}
           onScroll={handleScroll}
+          // FLUX-829: a genuine user scroll gesture stops the initial re-pin loop so we never fight
+          // it. Keyed on input events (not onScroll, which our own pinToLast writes also trigger).
+          onWheel={cancelRepin}
+          onTouchMove={cancelRepin}
+          onPointerDown={cancelRepin}
+          onKeyDown={cancelRepin}
           // tabIndex makes the transcript focusable so the `/` shortcut works after clicking it
           // (not only while the composer holds focus); outline-none keeps the focus ring quiet.
           tabIndex={0}
@@ -636,8 +735,10 @@ export function ChatView({
             )
           )}
           {/* FLUX-814: "load earlier" affordance — only the last N messages render on open so a long
-              thread doesn't freeze; this reveals older turns in chunks (scroll position preserved). */}
-          {startIndex > 0 && (
+              thread doesn't freeze; this reveals older turns in chunks (scroll position preserved).
+              FLUX-821: hidden while find is open — find auto-expands the window itself, so the manual
+              affordance would only flicker as the window fills in. */}
+          {startIndex > 0 && !find.open && (
             <button
               type="button"
               onClick={showEarlier}
@@ -707,7 +808,10 @@ export function ChatView({
           composer so liveness sits where the user's eyes already are. */}
       <WorkingStrip working={!!working} busy={busy} activity={activity ?? null} elapsedMs={elapsed} trail={trail} onStop={onStop} />
 
-      {/* FLUX-643: one-tap reply chips (e.g. Require-Input defaults). */}
+      {/* FLUX-643: one-tap reply chips (e.g. Require-Input defaults). FLUX-805: the same surface
+          hosts the "suggest a supervisor run" confirm chip (tone 'primary') — clicking it sends the
+          confirmation that prompts the agent to launch the proposed fleet. Hidden while working/busy
+          so a run can't be confirmed mid-turn. */}
       {quickReplies && quickReplies.length > 0 && !working && !busy && (
         <div className="flex flex-wrap items-center gap-1.5 px-0.5">
           {quickReplies.map((q, i) => (
@@ -716,12 +820,15 @@ export function ChatView({
               type="button"
               onClick={() => void onSend(q.value)}
               title={q.value}
-              className={`inline-flex max-w-full items-center rounded-md border px-2.5 py-1 text-[11px] font-semibold transition-colors ${
+              className={`inline-flex max-w-full items-center gap-1 rounded-md border px-2.5 py-1 text-[11px] font-semibold transition-colors ${
                 q.tone === 'danger'
                   ? 'border-red-500/30 text-red-500 hover:bg-red-500/10'
-                  : 'eh-border bg-[var(--eh-input-bg)] text-[var(--eh-text-primary)] hover:bg-black/5 dark:hover:bg-white/5'
+                  : q.tone === 'primary'
+                    ? 'border-primary/40 bg-primary/10 text-primary hover:bg-primary/15'
+                    : 'eh-border bg-[var(--eh-input-bg)] text-[var(--eh-text-primary)] hover:bg-black/5 dark:hover:bg-white/5'
               }`}
             >
+              {q.tone === 'primary' && <Play className="h-3 w-3 flex-shrink-0" aria-hidden="true" />}
               <span className="truncate">{q.label}</span>
             </button>
           ))}

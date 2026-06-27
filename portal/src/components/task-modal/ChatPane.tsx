@@ -6,6 +6,7 @@ import { ChatDiffPanel } from './ChatDiffPanel';
 import { ChatPresenceRail, ChatOrchestrationBlock } from './ChatOrchestration';
 import { TicketContextCard, SessionMeter } from './chatContext';
 import { parseQuickReplies } from './chatQuickReplies';
+import { parseRunProposal } from './chatRunProposal';
 import { ChatRequireInputBanner } from './ChatRequireInputBanner';
 import { TicketActions } from '../ticket-actions/TicketActions';
 import { ChatPendingInteractions } from '../pendingInteractions';
@@ -44,9 +45,16 @@ export function ChatPane({ task }: { task: Task }) {
   }, [task.id, runGroup]);
   // FLUX-694: board task list backing the composer's ticket autocomplete.
   const tickets = useAppSelector((s) => s.tasks) as Task[];
+  // FLUX-805: a "suggest a supervisor run" proposal the chat agent emitted (an orchestratable intent
+  // recognized in its latest turn) takes precedence over Require-Input quick replies — it renders as a
+  // one-click confirm chip that sends the confirmation prompting the agent to launch the proposed fleet.
+  const runProposal = useMemo(() => parseRunProposal(chat.messages), [chat.messages]);
   const quickReplies = useMemo(
-    () => parseQuickReplies(task, getRequireInputStatus(config)),
-    [task, config],
+    () =>
+      runProposal
+        ? [{ label: runProposal.label, value: runProposal.confirm, tone: 'primary' as const }]
+        : parseQuickReplies(task, getRequireInputStatus(config)),
+    [runProposal, task, config],
   );
   // FLUX-752: surface a board Require-Input prompt in the chat — status OR the require-input
   // swimlane, matching the full modal's `isRequireInput` predicate.

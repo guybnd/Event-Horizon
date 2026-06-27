@@ -149,11 +149,10 @@ export function RebaseCard({
 
   // Dismiss best-efforts the server resolve (apply nothing) but ALWAYS drops the card locally,
   // so a dead/expired/wedged batch can still be cleared from view (FLUX-773).
-  async function dismiss() {
+  function dismiss() {
     if (submitting) return;
-    setSubmitting(true);
-    await resolveBoardRebase(batch.id, []).catch(() => null);
-    onResolved();
+    void resolveBoardRebase(batch.id, []).catch(() => null); // best-effort, don't block
+    onResolved(); // drop the card now, even on a hung/dead engine
   }
 
   const relProposed = formatRelative(batch.createdAt);

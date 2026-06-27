@@ -7,8 +7,8 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { ExternalLink } from 'lucide-react';
-import { useAppActions } from '../store/useAppSelector';
+import { ChevronDown, ChevronRight, ExternalLink } from 'lucide-react';
+import { useAppActions, useTaskById } from '../store/useAppSelector';
 import { useDockActions } from './DockProvider';
 import {
   BOARD_CONVERSATION_ID,
@@ -58,6 +58,10 @@ export interface PendingInteractionsValue {
    *  tab. Orphan prompts still force the window visible regardless (the FLUX-720 safety); this only
    *  adds a manual open/close on top of that. */
   pendingPanelOpen: boolean;
+  /** FLUX-813: effective visibility of the pending fallback window — `hasOrphans || pendingPanelOpen`.
+   *  Orphan prompts force the window open even when the user hasn't clicked the Pending tab, so the
+   *  tab's open-indicator must reflect this derived value, not the manual `pendingPanelOpen` alone. */
+  pendingPanelVisible: boolean;
   /** FLUX-809: bumped each time the Pending tab is clicked, so the (possibly already-mounted)
    *  window re-clamps itself back on-screen. */
   revealNonce: number;
@@ -192,6 +196,18 @@ export function PendingInteractionsProvider({ children }: { children: ReactNode 
   // FLUX-809: total pending prompts across all queues — the count shown on the pinned Pending tab.
   const pendingCount = approvals.length + questions.length + rebases.length + rebaseFailures.length;
 
+  // FLUX-813: do any pending prompts lack an inline surface? Orphans force the fallback window open
+  // (the FLUX-720 safety) — the same predicate the fallback uses to gate itself, hoisted here so the
+  // Pending tab can derive its effective visibility. `pendingPanelVisible` = orphan-forced OR manual.
+  const hasOrphans = useMemo(() => {
+    const anyOrphan = (items: { conversationId: string | null }[]) =>
+      items.some((p) => !isClaimed(p.conversationId));
+    return (
+      anyOrphan(approvals) || anyOrphan(questions) || anyOrphan(rebases) || anyOrphan(rebaseFailures)
+    );
+  }, [approvals, questions, rebases, rebaseFailures, isClaimed]);
+  const pendingPanelVisible = hasOrphans || pendingPanelOpen;
+
   const pendingPromptConversationIds = useMemo(() => {
     const set = new Set<string>();
     for (const a of approvals) if (a.conversationId) set.add(a.conversationId);
@@ -209,6 +225,7 @@ export function PendingInteractionsProvider({ children }: { children: ReactNode 
       pendingPromptConversationIds,
       pendingCount,
       pendingPanelOpen,
+      pendingPanelVisible,
       revealNonce,
       togglePendingPanel,
       closePendingPanel,
@@ -233,6 +250,7 @@ export function PendingInteractionsProvider({ children }: { children: ReactNode 
       pendingPromptConversationIds,
       pendingCount,
       pendingPanelOpen,
+      pendingPanelVisible,
       revealNonce,
       togglePendingPanel,
       closePendingPanel,
@@ -339,43 +357,30 @@ export function PendingInteractionFallback() {
       tone="attention"
       pulse={hasOrphans}
       revealSignal={revealNonce}
-      // Only offer a close ✕ when there are no orphans forcing the window open (else it's gated).
+      // FLUX-832: minimize is always offered — it tucks the window to its title bar (count still
+      // visible, one click to restore) without hiding anything, so it's safe even while orphans
+      // force the window open. The close ✕ stays gated on no-orphans (it would actually hide).
+      minimizable
       onClose={hasOrphans ? undefined : closePendingPanel}
     >
       <div className="flex flex-col gap-2">
-        {!hasOrphans &&
-          (claimedPendingIds.length > 0 ? (
-            <div className="flex flex-col gap-1.5 rounded-xl border border-[var(--eh-border)] bg-black/[0.02] p-2.5 dark:bg-white/[0.02]">
-              <div className="text-[11px] font-medium text-[var(--eh-text-muted)]">
-                These chats have a prompt open in their own window:
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                {claimedPendingIds.map((id) => (
-                  <button
-                    key={id}
-                    type="button"
-                    onClick={() => openChat(id)}
-                    title="Open this chat"
-                    className="flex items-center gap-1 rounded-lg border border-amber-400/50 bg-amber-400/10 px-2 py-1 text-[11px] font-semibold text-amber-700 transition-colors hover:bg-amber-400/20 dark:text-amber-300"
-                  >
-                    <ExternalLink className="h-3 w-3" />
-                    {id === BOARD_CONVERSATION_ID ? 'Board chat' : id}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div className="px-1 py-6 text-center text-xs text-[var(--eh-text-muted)]">
-              No pending items — you’re all caught up.
-            </div>
-          ))}
         {orphanApprovals.map((p) => (
-          <FallbackItem key={p.id} conversationId={p.conversationId} onOpen={openChat}>
+          <FallbackItem
+            key={p.id}
+            conversationId={p.conversationId}
+            summary={`Tool approval · ${p.toolName}`}
+            onOpen={openChat}
+          >
             <ApprovalCard pending={p} onResolved={() => removeApproval(p.id)} />
           </FallbackItem>
         ))}
         {orphanRebases.map((p) => (
-          <FallbackItem key={p.id} conversationId={p.conversationId} onOpen={openChat}>
+          <FallbackItem
+            key={p.id}
+            conversationId={p.conversationId}
+            summary={`Board rebase · ${p.items.length} item${p.items.length === 1 ? '' : 's'}`}
+            onOpen={openChat}
+          >
             <RebaseCard
               batch={p}
               onResolved={() => removeRebase(p.id)}
@@ -384,48 +389,137 @@ export function PendingInteractionFallback() {
           </FallbackItem>
         ))}
         {orphanFailures.map((f) => (
-          <FallbackItem key={`fail-${f.batchId}`} conversationId={f.conversationId} onOpen={openChat}>
+          <FallbackItem
+            key={`fail-${f.batchId}`}
+            conversationId={f.conversationId}
+            summary={`Rebase failures · ${f.failed.length} item${f.failed.length === 1 ? '' : 's'}`}
+            onOpen={openChat}
+          >
             <RebaseFailureCard failure={f} onDismiss={() => dismissRebaseFailure(f.batchId)} />
           </FallbackItem>
         ))}
         {orphanQuestions.map((p) => (
-          <FallbackItem key={p.id} conversationId={p.conversationId} onOpen={openChat}>
+          <FallbackItem
+            key={p.id}
+            conversationId={p.conversationId}
+            summary={`Question · ${p.questions[0]?.header || p.questions[0]?.question || 'Awaiting your answer'}`}
+            onOpen={openChat}
+          >
             <QuestionCard pending={p} onResolved={() => removeQuestion(p.id)} />
           </FallbackItem>
         ))}
+        {/* FLUX-813: jump chips for prompts handled inline in their own chat. Rendered below the
+            orphan items REGARDLESS of `hasOrphans` so the window always accounts for the full
+            pending count (orphan + claimed) — never a "tab says 3, window shows 2" dead end. */}
+        {claimedPendingIds.length > 0 && (
+          <div className="flex flex-col gap-1.5 rounded-xl border border-[var(--eh-border)] bg-black/[0.02] p-2.5 dark:bg-white/[0.02]">
+            <div className="text-[11px] font-medium text-[var(--eh-text-muted)]">
+              These chats have a prompt open in their own window:
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {claimedPendingIds.map((id) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => openChat(id)}
+                  title="Open this chat"
+                  className="flex items-center gap-1 rounded-lg border border-amber-400/50 bg-amber-400/10 px-2 py-1 text-[11px] font-semibold text-amber-700 transition-colors hover:bg-amber-400/20 dark:text-amber-300"
+                >
+                  <ExternalLink className="h-3 w-3" />
+                  {id === BOARD_CONVERSATION_ID ? 'Board chat' : id}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {!hasOrphans && claimedPendingIds.length === 0 && (
+          <div className="px-1 py-6 text-center text-xs text-[var(--eh-text-muted)]">
+            No pending items — you’re all caught up.
+          </div>
+        )}
       </div>
     </FloatingPanel>
   );
 }
 
-/** A fallback card wrapper: an origin chip (links to the originating dock) above the prompt card. */
+/**
+ * A fallback card wrapper: a header row with the origin chip (links to the originating dock) and a
+ * collapse toggle, above the prompt card. The chip shows the owning ticket (`id · title`) so a queue
+ * of items is identifiable at a glance; collapsing replaces the card body with the one-line `summary`
+ * so several queued prompts stay scannable. Default state is expanded — an orphan prompt is never
+ * hidden by default; collapse is a manual, per-item affordance.
+ */
 function FallbackItem({
   conversationId,
+  summary,
   onOpen,
   children,
 }: {
   conversationId: string | null;
+  summary: string;
   onOpen: (id: string) => void;
   children: ReactNode;
 }) {
+  const [collapsed, setCollapsed] = useState(false);
+  // conversationId is the originating ticket id for ticket chats — resolve it to a title via the
+  // store (skipping the board chat and null/legacy ids). Falls back to the raw id if no task matches,
+  // so a non-ticket conversationId never renders blank or crashes the lookup.
+  const task = useTaskById(
+    conversationId && conversationId !== BOARD_CONVERSATION_ID ? conversationId : undefined,
+  );
+  const originLabel =
+    conversationId == null
+      ? 'Unrouted'
+      : conversationId === BOARD_CONVERSATION_ID
+        ? 'Board chat'
+        : task?.title
+          ? `${conversationId} · ${task.title}`
+          : conversationId;
+
   return (
     <div className="eh-surface eh-border flex flex-col gap-1.5 rounded-xl border p-2 shadow-2xl">
-      {conversationId ? (
+      <div className="flex items-center justify-between gap-2">
+        {conversationId ? (
+          <button
+            type="button"
+            onClick={() => onOpen(conversationId)}
+            title="Open this chat"
+            className="flex min-w-0 items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)] transition-colors hover:text-primary"
+          >
+            <ExternalLink className="h-3 w-3 shrink-0" />
+            <span className="truncate">{originLabel}</span>
+          </button>
+        ) : (
+          <div className="min-w-0 truncate text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">
+            {originLabel}
+          </div>
+        )}
         <button
           type="button"
-          onClick={() => onOpen(conversationId)}
-          title="Open this chat"
-          className="flex items-center gap-1 self-start text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)] transition-colors hover:text-primary"
+          onClick={() => setCollapsed((v) => !v)}
+          title={collapsed ? 'Expand' : 'Collapse'}
+          aria-expanded={!collapsed}
+          className="shrink-0 rounded p-0.5 text-[var(--eh-text-muted)] transition-colors hover:bg-black/10 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/10"
         >
-          <ExternalLink className="h-3 w-3" />
-          {conversationId === BOARD_CONVERSATION_ID ? 'Board chat' : conversationId}
+          {collapsed ? (
+            <ChevronRight className="h-3.5 w-3.5" />
+          ) : (
+            <ChevronDown className="h-3.5 w-3.5" />
+          )}
+        </button>
+      </div>
+      {collapsed ? (
+        <button
+          type="button"
+          onClick={() => setCollapsed(false)}
+          title="Expand"
+          className="truncate text-left text-xs text-[var(--eh-text-muted)] transition-colors hover:text-[var(--eh-text-primary)]"
+        >
+          {summary}
         </button>
       ) : (
-        <div className="self-start text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">
-          Unrouted
-        </div>
+        children
       )}
-      {children}
     </div>
   );
 }

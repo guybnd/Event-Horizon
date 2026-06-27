@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { GripHorizontal, X } from 'lucide-react';
+import { GripHorizontal, Maximize2, Minus, X } from 'lucide-react';
 
 /**
  * FLUX-722: a lightweight draggable + resizable floating window. Drag by the header; resize from
@@ -61,6 +61,7 @@ export function FloatingPanel({
   tone = 'default',
   pulse = false,
   revealSignal,
+  minimizable = false,
   onClose,
   children,
 }: {
@@ -76,6 +77,11 @@ export function FloatingPanel({
   /** FLUX-809: bump this to re-clamp the (already-mounted) window back on-screen — e.g. when the
    *  pinned Pending tab is clicked to "bring it into view". A change after mount re-runs the clamp. */
   revealSignal?: number;
+  /** FLUX-832: offer a minimize control that collapses the panel to just its draggable title bar
+   *  (and restores it), distinct from `onClose`. Unlike close, minimize is always available — it
+   *  never hides content that must be acted on (the title/count stays visible and it's one click to
+   *  restore), so it can't bypass the no-orphans safety that gates the pending window's ✕. */
+  minimizable?: boolean;
   onClose?: () => void;
   children: ReactNode;
 }) {
@@ -102,6 +108,12 @@ export function FloatingPanel({
   const sizeRef = useRef({ w: initial.current.w, h: initial.current.h });
   const panelRef = useRef<HTMLDivElement | null>(null);
   const drag = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
+  // FLUX-832: collapse the panel to just its title bar without closing it. Held as a ref-mirror too
+  // so the ResizeObserver can ignore the collapsed (header-only) height and never persist it as the
+  // restored geometry.
+  const [minimized, setMinimized] = useState(false);
+  const minimizedRef = useRef(minimized);
+  minimizedRef.current = minimized;
 
   const persist = useCallback(() => {
     saveGeometry(storageKey, { ...posRef.current, ...sizeRef.current });
@@ -114,6 +126,14 @@ export function FloatingPanel({
     el.style.width = `${sizeRef.current.w}px`;
     el.style.height = `${sizeRef.current.h}px`;
   }, []);
+
+  // FLUX-832: drop the fixed height while minimized so the panel shrinks to its header; restore the
+  // persisted height (owned by the resize handle) on expand. Width is untouched so it restores in place.
+  useEffect(() => {
+    const el = panelRef.current;
+    if (!el) return;
+    el.style.height = minimized ? 'auto' : `${sizeRef.current.h}px`;
+  }, [minimized]);
 
   // FLUX-809: re-clamp on viewport resize / DPI change. If the window shrinks below where the
   // panel sits, nudge it back into view (and persist the correction) so no controls are lost.
@@ -163,6 +183,9 @@ export function FloatingPanel({
     if (!el || typeof ResizeObserver === 'undefined') return;
     let raf = 0;
     const ro = new ResizeObserver(() => {
+      // FLUX-832: while minimized the element is header-height; don't capture/persist that as the
+      // window's size or it would "restore" to the collapsed height.
+      if (minimizedRef.current) return;
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
         sizeRef.current = { w: el.offsetWidth, h: el.offsetHeight };
@@ -215,7 +238,17 @@ export function FloatingPanel({
     <div
       ref={panelRef}
       className={panelClass}
-      style={{ left: pos.x, top: pos.y, resize: 'both', minWidth: 280, minHeight: 160, maxWidth: '95vw', maxHeight: '90vh' }}
+      style={{
+        left: pos.x,
+        top: pos.y,
+        // FLUX-832: while minimized, disable the native resize handle and let the panel collapse to
+        // its header (minHeight 0); both are restored on expand.
+        resize: minimized ? 'none' : 'both',
+        minWidth: 280,
+        minHeight: minimized ? 0 : 160,
+        maxWidth: '95vw',
+        maxHeight: '90vh',
+      }}
     >
       <div
         onPointerDown={onPointerDown}
@@ -227,18 +260,31 @@ export function FloatingPanel({
           <GripHorizontal className="h-3.5 w-3.5 shrink-0" />
           <span className="truncate">{title}</span>
         </div>
-        {onClose && (
-          <button
-            type="button"
-            onClick={onClose}
-            title="Hide"
-            className="shrink-0 rounded p-0.5 transition-colors hover:bg-black/10 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/10"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        )}
+        <div className="flex shrink-0 items-center gap-0.5">
+          {minimizable && (
+            <button
+              type="button"
+              onClick={() => setMinimized((v) => !v)}
+              title={minimized ? 'Restore' : 'Minimize'}
+              aria-label={minimized ? 'Restore' : 'Minimize'}
+              className="shrink-0 rounded p-0.5 transition-colors hover:bg-black/10 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/10"
+            >
+              {minimized ? <Maximize2 className="h-3.5 w-3.5" /> : <Minus className="h-3.5 w-3.5" />}
+            </button>
+          )}
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              title="Hide"
+              className="shrink-0 rounded p-0.5 transition-colors hover:bg-black/10 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/10"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto p-2">{children}</div>
+      {!minimized && <div className="min-h-0 flex-1 overflow-y-auto p-2">{children}</div>}
     </div>
   );
 }

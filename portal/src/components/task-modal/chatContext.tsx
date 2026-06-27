@@ -7,6 +7,7 @@ import { History, Sparkles } from 'lucide-react';
 import type { Task, HistoryEntry, CliSessionSummary, Config } from '../../types';
 import { isAgentSession } from '../../types';
 import { relativeTime } from '../../workflow';
+import { stripRunMarker } from './chatRunProposal';
 
 /** The most recent "where this left off" entry — newest agent comment or session outcome. */
 function lastContextEntry(task: Task): { label: string; text: string; date: string } | null {
@@ -14,7 +15,9 @@ function lastContextEntry(task: Task): { label: string; text: string; date: stri
   for (let i = history.length - 1; i >= 0; i--) {
     const entry = history[i]!;
     if (isAgentSession(entry)) {
-      const text = entry.finalMessage?.trim() || entry.comment?.trim() || entry.outcome?.trim();
+      // FLUX-805: this card shows agent text verbatim (not via react-markdown), so strip any run
+      // marker so a proposal that was the session's final message never flashes as a raw comment.
+      const text = stripRunMarker(entry.finalMessage?.trim() || entry.comment?.trim() || entry.outcome?.trim() || '');
       if (text) return { label: 'Last agent session', text, date: entry.endedAt || entry.date };
       continue;
     }
