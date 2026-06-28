@@ -6,6 +6,13 @@
 
 ### An IDE for the agent era.
 
+
+
+https://github.com/user-attachments/assets/6a266cd2-b145-47b7-8eb2-aefeb9108b47
+
+
+
+
 You still live in your editor — but more and more of the work gets handed to agents, and your editor was never built to *run* them. Event Horizon is the environment for that side of the job: break work into tickets, dispatch agents that each carry full context and run on their **own branch, in parallel**, and review everything as a **real pull request** before it lands. It runs alongside your IDE and terminal, and every change comes back as a normal git branch — your repo stays the source of truth.
 
 Not a chat bolted onto your editor — the command surface for directing agents and reviewing what they ship: **plan → dispatch → review → ship**, on a board you own, all in your repo.
