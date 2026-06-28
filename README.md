@@ -132,6 +132,8 @@ Point Event Horizon at a project folder. New folders are **auto-bootstrapped** â
 
 Event Horizon installs a workflow skill + MCP config for your framework so the agent picks up tickets natively â€” no curl, no REST wrappers.
 
+NOTICE : Fully tested only with claude code CLI. Will add more support for the other tools as I get access to them.
+
 | Framework | CLI | Skill install path |
 |-----------|-----|--------------------|
 | Claude Code | `claude` | `.claude/rules/event-horizon.md` |
