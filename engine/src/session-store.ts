@@ -1,5 +1,7 @@
+import { createHash } from 'node:crypto';
 import type { CliSessionRecord, CliSessionSummary, CliFramework, ExecutionPattern, PatternPosition } from './agents/types.js';
 import { CLI_CAPABILITIES as capabilities } from './agents/types.js';
+import { killProcessTree } from './kill-process-tree.js';
 
 export const cliSessionsById = new Map<string, CliSessionRecord>();
 export const cliSessionsByTaskId = new Map<string, string[]>();
@@ -426,6 +428,93 @@ export function cancelDelegation(sessionId: string, reason: string): void {
   });
 }
 
+// ── Dispatch idempotency (FLUX-842) ─────────────────────────────────────────
+// delegate_parallel / delegate_to_agent are spawn-then-ack with no dedupe key.
+// If the MCP transport drops the response AFTER the engine spawned the child but
+// BEFORE the orchestrator saw it, the orchestrator treats the call as failed and
+// retries — re-launching the whole fleet against already-running sessions (~3×
+// token cost). We dedupe by a stable hash of (taskId, personaId, task, effort):
+// a retry with the same inputs attaches to the in-flight delegation (or its
+// freshly-cached result) instead of spawning a fresh child.
+
+interface DispatchEntry {
+  sessionId: string;
+  promise: Promise<DelegationResult>;
+}
+
+// How long a settled dispatch's result stays dedupable, so a retry that lands
+// just after the child finished returns the cached result instead of re-spawning.
+const DISPATCH_RESULT_TTL_MS = 90_000;
+const dispatchRegistry = new Map<string, DispatchEntry>();
+
+/** Stable idempotency key for a delegation request. */
+export function dispatchKey(taskId: string, personaId: string, task: string, effort: string): string {
+  return createHash('sha1').update(JSON.stringify([taskId, personaId, task, effort])).digest('hex');
+}
+
+/** Returns the in-flight (or recently-settled) dispatch for this key, if any. */
+export function findDispatch(key: string): DispatchEntry | undefined {
+  return dispatchRegistry.get(key);
+}
+
+/** Schedule TTL eviction of a settled dispatch entry (no-op if already replaced). */
+function scheduleDispatchEviction(key: string, entry: DispatchEntry): void {
+  const timer = setTimeout(() => {
+    if (dispatchRegistry.get(key) === entry) dispatchRegistry.delete(key);
+  }, DISPATCH_RESULT_TTL_MS);
+  if (typeof timer.unref === 'function') timer.unref();
+}
+
+/** Handles for a pre-spawn dispatch reservation (FLUX-844). */
+export interface DispatchReservation {
+  /** Fill in the real child sessionId once spawnSession() resolves. */
+  setSessionId(sessionId: string): void;
+  /** Resolve attached retries with the delegation result, then TTL-evict. */
+  settle(result: DelegationResult): void;
+  /** Release the reservation and reject attached retries (spawn itself failed). */
+  fail(error: unknown): void;
+}
+
+/**
+ * Reserve an idempotency key BEFORE spawn so a retry that lands *during*
+ * spawnSession() attaches to this in-flight reservation instead of launching a
+ * second child (FLUX-844 — closes the spawn-duration window left by the old
+ * post-spawn registration: findDispatch ran before spawn but the key wasn't
+ * recorded until spawn resolved, so a client-timeout retract shorter than spawn
+ * latency could still double-launch).
+ *
+ * The reservation holds a deferred promise that attached retries await. The
+ * caller fills in the real sessionId and `settle()`s it once the delegation
+ * resolves, or `fail()`s it (releasing the key) if spawn itself errors — so a
+ * genuinely later retry after a failed spawn can start fresh rather than attach
+ * to a dead reservation.
+ */
+export function reserveDispatch(key: string): DispatchReservation {
+  let resolveResult!: (result: DelegationResult) => void;
+  let rejectResult!: (error: unknown) => void;
+  const promise = new Promise<DelegationResult>((resolve, reject) => {
+    resolveResult = resolve;
+    rejectResult = reject;
+  });
+  // If fail() rejects and no retry happened to attach, the rejection would
+  // surface as an unhandledRejection. Swallow it here; real awaiters still
+  // observe the rejection through their own await of entry.promise.
+  void promise.catch(() => {});
+  const entry: DispatchEntry = { sessionId: '', promise };
+  dispatchRegistry.set(key, entry);
+  return {
+    setSessionId(sessionId: string) { entry.sessionId = sessionId; },
+    settle(result: DelegationResult) {
+      resolveResult(result);
+      scheduleDispatchEviction(key, entry);
+    },
+    fail(error: unknown) {
+      if (dispatchRegistry.get(key) === entry) dispatchRegistry.delete(key);
+      rejectResult(error);
+    },
+  };
+}
+
 // File-lock enforcement: check if any active session holds a conflicting path lock
 export function checkPathConflicts(taskId: string, requestedPaths: string[]): { conflict: boolean; holder?: string; paths?: string[] } {
   if (!requestedPaths || requestedPaths.length === 0) return { conflict: false };
@@ -460,8 +549,53 @@ export function validatePatternSupport(framework: CliFramework, pattern: Executi
   return null;
 }
 
+// FLUX-846: grace margin before a dead-process active session is force-terminalized. The `exit`
+// handler finalizes status within milliseconds of the child exiting (it sets status only after an
+// `await session.writeQueue`); this margin keeps the lazy reaper from racing that brief window while
+// still healing a session whose `exit` event never finalized (lost event / zombie child) so it can
+// never linger as forever-'running' with a runaway timer.
+const DEAD_SESSION_GRACE_MS = 15_000;
+
+/**
+ * FLUX-846: lazily reconcile in-memory sessions whose child process has already exited but whose
+ * status was never flipped to terminal — a missed/incomplete `exit` handler otherwise leaves the
+ * card stuck on 'running' (runaway timer) while the engine should report the session done. Called
+ * on the active-session read paths (board state, task list) so a poll/refresh self-heals the record
+ * and `get_board_state` agrees with the portal panel.
+ *
+ * Only touches 'running'/'pending' sessions with a spawned-but-now-dead process (a real `proc` whose
+ * exit/signal code is non-null) whose last sign of life predates the grace margin. A null `proc` is
+ * NOT treated as dead: the only running/pending session without a `proc` is one still in the pre-spawn
+ * window (`startedAt` is stamped before worktree creation + the spawn does `npm prefix -g`, which can
+ * exceed the grace on a cold Windows start), and reaping it would stamp a bogus `endedAt` that the
+ * later `status='running'` transition leaves behind — making a genuinely-live session read as inactive
+ * forever (FLUX-846, the same bug from the opposite direction). Never 'waiting-input' (those
+ * intentionally keep a dead `proc` between resumable turns) and never a live process. The lost-exit
+ * scenario this heals always retains the now-dead child `proc`, so requiring one loses no coverage.
+ */
+export function reconcileDeadSessions(now: number = Date.now()): number {
+  let reaped = 0;
+  for (const session of cliSessionsById.values()) {
+    if (session.status !== 'running' && session.status !== 'pending') continue;
+    const proc = session.proc;
+    const procDead = !!proc && (proc.exitCode !== null || proc.signalCode !== null);
+    if (!procDead) continue;
+    const lastBeat = Date.parse(session.lastOutputAt ?? session.startedAt) || 0;
+    if (now - lastBeat < DEAD_SESSION_GRACE_MS) continue;
+    session.status = proc.exitCode === 0 ? 'completed' : 'failed';
+    session.endedAt = new Date(now).toISOString();
+    reaped++;
+    // Best-effort display healing only: unlike the real `exit` handler this does NOT notify
+    // scatter-gather/relay barriers or launch the combiner, so a truly-lost exit on a grouped worker
+    // clears the card but can still leave the group/combiner stalled (acceptable — lost exits are rare).
+    console.warn(`[session] reaped stale ${session.taskId} session ${session.id} (process exited, terminal event missed) → ${session.status}`);
+  }
+  return reaped;
+}
+
 /** FLUX-604: all currently-active sessions across the whole board (orchestrator situational awareness). */
 export function getAllActiveSessions(): CliSessionRecord[] {
+  reconcileDeadSessions();
   const out: CliSessionRecord[] = [];
   for (const session of cliSessionsById.values()) {
     if (session.status === 'running' || session.status === 'waiting-input' || session.status === 'pending') {
@@ -472,6 +606,7 @@ export function getAllActiveSessions(): CliSessionRecord[] {
 }
 
 export function getActiveSessionCount(): number {
+  reconcileDeadSessions();
   let count = 0;
   for (const session of cliSessionsById.values()) {
     if (session.status === 'running' || session.status === 'waiting-input' || session.status === 'pending') {
@@ -487,7 +622,7 @@ export function stopAllCliSessions(reason: string) {
     if (session.status === 'running' || session.status === 'waiting-input' || session.status === 'pending') {
       session.requestedStop = true;
       try {
-        session.proc.kill('SIGTERM');
+        killProcessTree(session.proc);
       } catch (error) {
         console.warn(`Failed to stop CLI session ${session.id} during ${reason}:`, error);
       }
@@ -518,7 +653,7 @@ export function stopAllSessionsForTask(taskId: string, reason: string) {
     session.endedAt = new Date().toISOString();
     if (session.proc) {
       try {
-        session.proc.kill('SIGTERM');
+        killProcessTree(session.proc);
       } catch (error) {
         console.warn(`Failed to stop session ${session.id} for task ${taskId} during ${reason}:`, error);
       }
@@ -545,7 +680,7 @@ export function reapStaleParkedSessions(taskId: string, reason: string): CliSess
     session.endedAt = now;
     if (session.proc) {
       try {
-        session.proc.kill('SIGTERM');
+        killProcessTree(session.proc);
       } catch (error) {
         console.warn(`Failed to reap stale parked session ${session.id} for task ${taskId} during ${reason}:`, error);
       }

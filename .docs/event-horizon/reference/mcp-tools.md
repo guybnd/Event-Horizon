@@ -49,6 +49,7 @@ Key properties:
 | [`submit_group_doc`](#submit_group_doc) | Group docs — Write | yes |
 | [`delete_group_doc`](#delete_group_doc) | Group docs — Write | yes |
 | [`extract_ticket`](#extract_ticket) | Mutation (gated) | yes (CONFIRM) |
+| [`merge_tickets`](#merge_tickets) | Mutation (gated) | yes (CONFIRM) |
 | [`update_ticket`](#update_ticket) | Mutation | yes |
 | [`change_status`](#change_status) | Mutation | yes (enforced) |
 | [`archive_ticket`](#archive_ticket) | Mutation | yes |
@@ -160,9 +161,9 @@ The **board-rebase ritual** (FLUX-659) — the orchestrator's structured way to 
 
 **Behavior:** **fire-then-resolve** — POSTs to [`/api/board/board-rebase`](rest-api.md), which **parks** the batch and broadcasts `board-rebase-proposed` ([realtime channels](realtime-channels.md)), then **returns immediately** (unlike [`permission_prompt`](#permission_prompt), which blocks the CLI synchronously). The portal renders the batch in the orchestrator dock with a per-item toggle (default-checked) + *Apply approved* / *Dismiss*; applying POSTs the approved subset to `/api/board/board-rebase-resolve`, which executes each approved item via the **verb registry** in [`engine/src/board-rebase.ts`](../../../engine/src/board-rebase.ts) and broadcasts `board-rebase-resolved`.
 
-**Verb registry (v1):** `leave` / `status` / `archive` / `dispatch` run live; `promote` / `fold` are *proposable and approvable now* but no-op with a clear `pending <ticket>` result until [FLUX-656](../architecture/code-map.md) / FLUX-657 register their executor (their turn-slicing rests on the FLUX-658 substrate).
+**Verb registry (v1):** all verbs run live — `leave` / `status` / `archive` / `dispatch`, plus `promote` ([FLUX-656](../architecture/code-map.md) `extractTicket()`) and `fold` (FLUX-657 `mergeTickets()`), both now registered. Their turn-slicing rests on the FLUX-658 substrate.
 
-**Teeth:** the mutating verbs `change_status`, `archive_ticket`, and (speculatively) `extract_ticket` / `merge_tickets` are in the [`permission_prompt`](#permission_prompt) **Confirm** tier, so a *direct* orchestrator call to mutate is gated even if it bypasses this ritual — "never silently restructure" is enforced by the gate, not just the prompt.
+**Teeth:** the mutating verbs `change_status`, `archive_ticket`, `extract_ticket`, and `merge_tickets` are in the [`permission_prompt`](#permission_prompt) **Confirm** tier, so a *direct* orchestrator call to mutate is gated even if it bypasses this ritual — "never silently restructure" is enforced by the gate, not just the prompt.
 
 ### `get_project_group`
 
@@ -311,6 +312,40 @@ and the approved item runs through the same `extractTicket()` engine path.
 
 **Errors** (validated before any ticket is created — no partial state): inverted range
 (`fromSeq > toSeq`), non-finite seqs, unknown source stream, or an empty slice → `extract: …`.
+
+### `merge_tickets`
+
+The **fold gate** (FLUX-657) — the *inverse* of `extract_ticket`. Fold several tickets/chat-streams
+into ONE survivor effort, for when *"three chats are really one effort."* Extract carves a slice
+*out* into a new card; merge folds whole streams *in* to an existing one.
+
+| Input | Type | Required | Notes |
+|-------|------|----------|-------|
+| `into` | string | yes | Survivor ticket the sources fold into |
+| `from` | string[] | yes | Source ticket/stream ids to fold in (non-empty; must exclude `into`) |
+
+**Output:** `{ into, merged, turnsFolded, archiveFailures }` — `merged` is the deduped source list,
+`turnsFolded` the total turns gathered from all sources, `archiveFailures` any source whose
+tombstone/archive side-effect failed (the merge op still stands; re-archive those).
+
+**Side effects:** appends one `merge` op to the curation op-log
+(`<fluxDir>/transcripts/_curation-ops.jsonl`). The survivor's transcript then **re-derives** as the
+**chronological union** (`ts` order, tie-broken by `(streamId, seq)`) of its own turns plus every
+`from` stream's turns; foreign turns keep their `streamId` so the projection tags them with a
+`sourceStream` attribution badge. The source turns are **never moved or copied** — merge is additive
+and un-doable (remove the op → the view reverts). Each `from` ticket is then **tombstoned**
+(a [`mergedInto`](ticket-schema.md) frontmatter pointer + a **pinned** tombstone comment) and
+**archived** (`config.archiveStatus`); **none are deleted** and their original transcripts stay intact
+in the substrate.
+
+**Gating (human-approval invariant):** `merge_tickets` is in the **CONFIRM** permission tier — a
+direct call by a gated session prompts the human. The orchestrator does not call it autonomously; it
+proposes a `fold` item via [`propose_board_rebase`](#propose_board_rebase), and the approved item runs
+through the same `mergeTickets()` engine path.
+
+**Errors** (validated before the op is appended / any ticket is mutated — no partial state): unknown
+survivor `into`, empty `from`, self-merge (`into ∈ from`), unknown source, or a source already merged
+into another effort → `merge: …`.
 
 ### `update_ticket`
 
@@ -518,9 +553,11 @@ Create a child ticket and link it from the parent's `subtasks` array atomically.
 **Policy** (`permissionDecisionFor` in [`mcp-server.ts`](../../../engine/src/mcp-server.ts)):
 
 - **Auto-allow** — reads and safe tools (`get_ticket`, `list_tickets`, `get_board_config`, `Read`, `Glob`, `Grep`, `WebFetch`, …) and anything not in the confirm set.
-- **Confirm** — destructive ops `change_status`, `delete_branch`, `finish_ticket`, `Bash`, and the restructuring verbs `archive_ticket` / `extract_ticket` / `merge_tickets` (FLUX-659 teeth — the last two speculative until FLUX-656/657 ship) route through a human Allow/Deny round-trip: the tool POSTs to [`/api/board/permission-request`](rest-api.md), which parks the call until a human resolves it in the portal (or 120s elapses → auto-deny). The synchronous CLI contract is satisfied by holding the HTTP response open until resolution.
+- **Confirm** — destructive ops `change_status`, `delete_branch`, `finish_ticket`, `Bash`, and the restructuring verbs `archive_ticket` / `extract_ticket` / `merge_tickets` (FLUX-659 teeth) route through a human Allow/Deny round-trip: the tool POSTs to [`/api/board/permission-request`](rest-api.md), which parks the call until a human resolves it in the portal (or 120s elapses → auto-deny). The synchronous CLI contract is satisfied by holding the HTTP response open until resolution.
 
 The confirm round-trip emits the `permission-request` / `permission-resolved` realtime events ([realtime channels](realtime-channels.md)) so the portal can show the approval prompt. Gating is per-session: see [permission mode](#permission-mode) below.
+
+**FLUX-833 (durable record + safety net).** For a ticket-bound request (the session's `EH_CONVERSATION_ID` is a real ticket id) the round-trip is also recorded durably: `permission-prompts.ts` appends a `permission-request` transcript event when approval is raised and a `permission-resolved` event when it settles, so a cold resume shows the approval in chat history (rendered as a quiet 🛡 `permission` note — see [substrate-vs-projection §4.4](../architecture/substrate-vs-projection.md)). On **timeout** the auto-deny also raises a persistent **"Needs Action"** flag + notification on the ticket (`raiseNeedsAction`, the same net `ask_user_question` uses, FLUX-826) — so a denied-by-timeout approval no longer silently vanishes. (Durability across an **engine restart** and re-injecting a late decision are later FLUX-833 phases; today the pending entry is still in-memory.)
 
 #### Permission mode
 

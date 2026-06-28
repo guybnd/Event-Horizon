@@ -6,10 +6,12 @@ import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { FRAMEWORK_ICONS } from '../constants';
 import { FrameworkSelector } from './FrameworkSelector';
 
-/** Compact running-duration label, e.g. "4s", "3m 12s", "1h 04m". */
-function formatElapsed(startedAt: string | undefined, now: number): string {
+/** Compact running-duration label, e.g. "4s", "3m 12s", "1h 04m". FLUX-846: a terminal session
+ *  freezes its duration at `endedAt` instead of counting from `startedAt` against `now` forever. */
+function formatElapsed(startedAt: string | undefined, now: number, endedAt?: string): string {
   if (!startedAt) return '';
-  const ms = now - new Date(startedAt).getTime();
+  const end = endedAt ? new Date(endedAt).getTime() : now;
+  const ms = end - new Date(startedAt).getTime();
   if (!Number.isFinite(ms) || ms < 0) return '';
   const totalSecs = Math.floor(ms / 1000);
   const secs = totalSecs % 60;
@@ -48,7 +50,7 @@ const SessionItem = memo(function SessionItem({ task, now, onClose, openTask, ha
   const session = task.cliSession!;
   const Icon = FRAMEWORK_ICONS[session.framework] || Bot;
   const statusColor = session.status === 'running' ? 'text-emerald-500' : session.status === 'waiting-input' ? 'text-amber-500' : 'text-gray-400';
-  const elapsed = formatElapsed(session.startedAt, now);
+  const elapsed = formatElapsed(session.startedAt, now, session.endedAt);
   const isWaiting = session.status === 'waiting-input';
 
   // Performance: Only compute last line when we actually have output
@@ -236,8 +238,10 @@ export const ActiveSessionsPopover = memo(function ActiveSessionsPopover({ tasks
     }
   }, [config, saveConfig]);
 
-  const activeTasks = useMemo(() => 
-    tasks.filter(t => t.cliSession && ['pending', 'running', 'waiting-input'].includes(t.cliSession.status)),
+  const activeTasks = useMemo(() =>
+    // FLUX-846: `isActiveSession` excludes a session the engine has terminalized (carries `endedAt`)
+    // even if its `status` is stale — so a completed session never lingers here as forever-'Working'.
+    tasks.filter(t => t.cliSession && isActiveSession(t.cliSession)),
     [tasks]
   );
 

@@ -13,6 +13,7 @@ import {
   normalizeRoleLabel,
   patternLabel,
   statusDotColor,
+  statusDotLabel,
   topologyShape,
 } from '../../orchestration';
 
@@ -86,7 +87,9 @@ export function ChatPresenceRail({ group, taskId, onOpenRun, onStopSession }: Ra
                     : 'border-violet-200 bg-white/70 hover:bg-white dark:border-white/10 dark:bg-white/5 dark:hover:bg-white/10'
                 }`}
               >
-                <span className={`inline-block h-2 w-2 flex-shrink-0 rounded-full bg-current ${statusDotColor(s.status)} ${active && s.status !== 'waiting-input' ? 'animate-pulse' : ''}`} />
+                <span className={`inline-block h-2 w-2 flex-shrink-0 rounded-full bg-current ${statusDotColor(s.status)} ${active && s.status !== 'waiting-input' ? 'animate-pulse' : ''}`}>
+                  <span className="sr-only">{statusDotLabel(s.status)}</span>
+                </span>
                 <Icon className="h-3 w-3 flex-shrink-0 text-gray-500 dark:text-gray-400" />
                 <span className="font-semibold text-gray-800 dark:text-gray-100">{role}</span>
                 {active && activity && (
@@ -96,9 +99,14 @@ export function ChatPresenceRail({ group, taskId, onOpenRun, onStopSession }: Ra
             );
           })}
           {overflow > 0 && (
-            <span className="flex-shrink-0 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-bold text-violet-600 dark:bg-violet-500/15 dark:text-violet-300">
+            <button
+              type="button"
+              onClick={onOpenRun}
+              title={`Show all ${ordered.length} agents in the Run View`}
+              className="flex-shrink-0 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-bold text-violet-600 transition-colors hover:bg-violet-200 dark:bg-violet-500/15 dark:text-violet-300 dark:hover:bg-violet-500/25"
+            >
               +{overflow}
-            </span>
+            </button>
           )}
         </div>
         <button
@@ -160,18 +168,23 @@ function DelegateRow({ session, isLead, live, onStopSession }: {
           ) : (
             <span className="h-3.5 w-3.5 flex-shrink-0" />
           )}
-          <span className={`inline-block h-2 w-2 flex-shrink-0 rounded-full bg-current ${statusDotColor(session.status)} ${active && session.status !== 'waiting-input' ? 'animate-pulse' : ''}`} />
+          <span className={`inline-block h-2 w-2 flex-shrink-0 rounded-full bg-current ${statusDotColor(session.status)} ${active && session.status !== 'waiting-input' ? 'animate-pulse' : ''}`}>
+            <span className="sr-only">{statusDotLabel(session.status)}</span>
+          </span>
           <Icon className="h-3.5 w-3.5 flex-shrink-0 text-gray-500 dark:text-gray-400" />
           <span className="flex-shrink-0 text-[11px] font-semibold text-gray-800 dark:text-gray-100">{role}</span>
-          {active && activity && (
+          {active && activity ? (
             <span className="min-w-0 truncate text-[11px] text-gray-500 dark:text-gray-400">{activity}</span>
-          )}
+          ) : active && !hasOutput ? (
+            <span className="min-w-0 truncate text-[11px] italic text-gray-400 dark:text-gray-500">waiting…</span>
+          ) : null}
         </button>
         {active && (
           <button
             type="button"
             onClick={() => onStopSession(session.id)}
             title="Stop this agent"
+            aria-label="Stop this agent"
             className="flex flex-shrink-0 items-center justify-center rounded-md border border-gray-300 p-1 text-gray-600 transition-colors hover:bg-gray-100 dark:border-white/10 dark:text-gray-300 dark:hover:bg-white/5"
           >
             <Square className="h-3 w-3" />
@@ -231,9 +244,14 @@ export function ChatOrchestrationBlock({ group, taskId, onOpenRun, onStopSession
         <span className="flex-shrink-0 text-[11px] font-bold uppercase tracking-wider text-violet-600 dark:text-violet-300">
           {label} Run
         </span>
-        <span className="flex-shrink-0 rounded-full bg-violet-100 px-1.5 py-0.5 text-[9px] font-semibold text-violet-600 dark:bg-violet-500/15 dark:text-violet-300">
+        <span className="flex-shrink-0 rounded-full bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-600 dark:bg-violet-500/15 dark:text-violet-300">
           {agg.total} agents
         </span>
+        {agg.failed > 0 && (
+          <span className="flex-shrink-0 rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-600 dark:bg-red-500/15 dark:text-red-300">
+            ✕ {agg.failed} failed
+          </span>
+        )}
         <span className="ml-auto flex-shrink-0 text-[10px] text-gray-500 dark:text-gray-400">
           {agg.completed + agg.failed} of {agg.total} finished
         </span>
@@ -259,11 +277,18 @@ export function ChatOrchestrationBlock({ group, taskId, onOpenRun, onStopSession
         <span className="flex-shrink-0 text-xs font-bold uppercase tracking-wider text-violet-700 dark:text-violet-200">
           {label} Run
         </span>
-        <span className="flex-shrink-0 rounded-full bg-violet-200 px-1.5 py-0.5 text-[9px] font-semibold text-violet-700 dark:bg-violet-500/20 dark:text-violet-200">
+        <span className="flex-shrink-0 rounded-full bg-violet-200 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700 dark:bg-violet-500/20 dark:text-violet-200">
           {agg.total} agents
         </span>
+        {agg.failed > 0 && (
+          <span className="flex-shrink-0 rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-600 dark:bg-red-500/15 dark:text-red-300">
+            ✕ {agg.failed} failed
+          </span>
+        )}
         {anyActive && (
-          <span className="flex h-1.5 w-1.5 flex-shrink-0 rounded-full bg-emerald-500 animate-pulse" title="Live" />
+          <span role="status" className="flex h-1.5 w-1.5 flex-shrink-0 rounded-full bg-emerald-500 animate-pulse" title="Live">
+            <span className="sr-only">Live</span>
+          </span>
         )}
         <div className="ml-auto flex flex-shrink-0 items-center gap-1">
           {anyActive && (

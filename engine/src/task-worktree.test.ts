@@ -40,6 +40,11 @@ async function gitInit(root: string): Promise<void> {
   await execFileAsync('git', ['-C', root, 'config', 'user.email', 'test@test.com'], { windowsHide: true });
   await execFileAsync('git', ['-C', root, 'config', 'user.name', 'Test'], { windowsHide: true });
   await fs.writeFile(path.join(root, 'README.md'), '# test\n', 'utf8');
+  // Mirror the real repo's committed `.serena/.gitignore` so the per-worktree
+  // Serena override (`project.local.yml`, FLUX-843) is gitignored and never
+  // registers as a dirty/untracked change in the worktree.
+  await fs.mkdir(path.join(root, '.serena'), { recursive: true });
+  await fs.writeFile(path.join(root, '.serena', '.gitignore'), '/cache\n/project.local.yml\n', 'utf8');
   await execFileAsync('git', ['-C', root, 'add', '.'], { windowsHide: true });
   await execFileAsync('git', ['-C', root, 'commit', '-m', 'init'], { windowsHide: true });
 }
@@ -161,6 +166,27 @@ describe('task-worktree', () => {
       // The next create reconciles the phantom (prune + existsSync) and succeeds.
       const c = await createTaskWorktree(repo, 'FLUX-3', 'flux/c', { maxWorktrees: 2 });
       expect(existsSync(c)).toBe(true);
+    });
+
+    it('writes a per-worktree Serena override with a unique project_name (FLUX-843)', async () => {
+      const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1-demo');
+      const override = path.join(wt, '.serena', 'project.local.yml');
+      expect(existsSync(override)).toBe(true);
+      const body = await fs.readFile(override, 'utf8');
+      // Unique name = worktree dir basename (`<repo>-<id>`), distinct from main "EventHorizon".
+      expect(body).toContain(`project_name: "${path.basename(wt)}"`);
+      expect(body).toContain('EventHorizon-FLUX-1');
+    });
+
+    it('self-heals the Serena override on idempotent reuse (FLUX-843)', async () => {
+      const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1-demo');
+      const override = path.join(wt, '.serena', 'project.local.yml');
+      // Simulate a worktree created before FLUX-843 (override missing).
+      await fs.rm(override, { force: true });
+      expect(existsSync(override)).toBe(false);
+      // Reuse rewrites it.
+      await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1-demo');
+      expect(existsSync(override)).toBe(true);
     });
   });
 

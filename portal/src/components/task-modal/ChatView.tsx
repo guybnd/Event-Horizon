@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Send, Loader2, Square, Wrench, ChevronDown, ChevronRight, Check, Clock, ArrowDown, Cpu, Gauge, Shield, Paperclip, X, RefreshCw, Play } from 'lucide-react';
+import { Send, Loader2, Square, Wrench, ChevronDown, ChevronRight, Check, Clock, ArrowDown, Cpu, Gauge, Shield, Paperclip, X, RefreshCw, Play, Radio } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { fetchDiffFile, openWorkspaceEditor, type TranscriptMessage, type ChatAttachment } from '../../api';
 import type { QueuedMessage, ChatSendOptions } from '../../hooks/useChatSession';
@@ -173,6 +173,11 @@ export interface ChatViewProps {
    *  (the spawn point); if no such row is in the transcript yet it renders just below the stream. Caller
    *  builds it (`<ChatOrchestrationBlock group=… />`) and passes it only when a run group exists. */
   orchestrationBlock?: ReactNode;
+  /** FLUX-839: a "resume vs start fresh" choice strip shown just above the composer when the board
+   *  orchestrator has a prior transcript but no live/resumable session (a cold open after a restart).
+   *  Caller builds it (`ChatWindow` computes the cold state and wires Resume/Start-fresh) so ChatView
+   *  stays transport-free; omit it (the normal case) and only the composer's Send shows. */
+  coldResumeChoice?: ReactNode;
 }
 
 /**
@@ -220,6 +225,7 @@ export function ChatView({
   onDequeue,
   presenceRail,
   orchestrationBlock,
+  coldResumeChoice,
 }: ChatViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
@@ -586,6 +592,21 @@ export function ChatView({
         if (m.kind === 'action') {
           return <ActionChip key={i} text={m.text} ts={m.ts} />;
         }
+        if (m.kind === 'permission') {
+          return <PermissionChip key={i} text={m.text} ts={m.ts} />;
+        }
+        if (m.kind === 'dispatch') {
+          return (
+            <DispatchChip
+              key={i}
+              text={m.text}
+              ts={m.ts}
+              sourceTask={m.sourceTask}
+              lifecycle={m.lifecycle}
+              linkifyTickets={linkifyTickets}
+            />
+          );
+        }
         return <ContextUpdateChip key={i} text={m.text} ts={m.ts} />;
       }
       // Assistant — no bubble: flowing markdown so code blocks / lists / links breathe.
@@ -872,6 +893,11 @@ export function ChatView({
         </div>
       )}
 
+      {/* FLUX-839: cold-open "resume vs start fresh" choice — shown just above the composer when the
+          board orchestrator has a prior transcript but no live session. Caller-built so ChatView stays
+          transport-free; absent in the normal warm flow. */}
+      {coldResumeChoice && <div className="px-0.5">{coldResumeChoice}</div>}
+
       {/* Composer lives in its own component so its per-keystroke input state never
           re-renders the transcript above it. */}
       <Composer busy={busy} working={!!working} onSend={onSend} onEnqueue={onEnqueue} onUploadImage={onUploadImage} draft={draft} onDraftChange={onDraftChange} selections={selections} onSelectionsChange={onSelectionsChange} tickets={tickets} />
@@ -1081,6 +1107,105 @@ function ActionChip({ text, ts }: { text: string; ts?: string }) {
       <Play className="h-3 w-3 flex-shrink-0 text-primary/70" />
       <span className="min-w-0 truncate font-medium text-[var(--eh-text-secondary)]">{text}</span>
       <MessageTime ts={ts} className="ml-auto flex-shrink-0" />
+    </div>
+  );
+}
+
+/**
+ * FLUX-833: a gated-tool approval round-trip (`permission_prompt`) recorded as a durable
+ * `permission` note so a cold resume shows the approval was requested and how it settled. A quiet,
+ * non-bubble row with a 🛡 (shield) glyph — distinct from the ▶ action and ⟳ context-update chips.
+ * The text already carries its own state emoji (🔒 requested / ✅ granted / ⛔ denied); display-only.
+ */
+function PermissionChip({ text, ts }: { text: string; ts?: string }) {
+  return (
+    <div className="flex w-full min-w-0 items-center gap-1.5 rounded-md border border-dashed border-amber-400/30 bg-amber-400/[0.05] px-2 py-1 text-[11px] text-[var(--eh-text-muted)]">
+      <Shield className="h-3 w-3 flex-shrink-0 text-amber-500/70" />
+      <span className="min-w-0 truncate font-medium text-[var(--eh-text-secondary)]">{text}</span>
+      <MessageTime ts={ts} className="ml-auto flex-shrink-0" />
+    </div>
+  );
+}
+
+/**
+ * FLUX-849: short, friendly stage labels for a dispatched session's board chip — mirrors the
+ * engine's `DISPATCH_LIFECYCLE_LABEL`. The raw enum (`waiting-input` / `cancelled`) is the wrong
+ * thing to show a board-watcher; this maps it to `needs input` / `stopped`. Kept client-side (rather
+ * than rendering the engine's `text`) because the `working` and `started` rows ship a full message
+ * in `text`, not a one-word stage — only these short markers want a label derived from the stage.
+ */
+const DISPATCH_STAGE_LABEL: Record<string, string> = {
+  started: 'started',
+  working: 'working',
+  completed: 'completed',
+  failed: 'failed',
+  cancelled: 'stopped',
+  'waiting-input': 'needs input',
+};
+
+/**
+ * FLUX-849: a dispatched (unattended, work-phase) session's live activity teed to the board
+ * orchestrator thread, rendered as a quiet non-bubble `dispatch` note so a user watching the board
+ * sees `started / working / needs-input / completed / failed` without opening the ticket. A 📡
+ * (radio) glyph + the source ticket id + the lifecycle stage. The in-flight `working` narration can
+ * be multi-paragraph, so that variant is collapsible (default-collapsed, like the context-update
+ * chip); the short lifecycle markers render inline.
+ */
+function DispatchChip({
+  text,
+  ts,
+  sourceTask,
+  lifecycle,
+  linkifyTickets,
+}: {
+  text: string;
+  ts?: string;
+  sourceTask?: string;
+  lifecycle?: 'started' | 'working' | 'completed' | 'failed' | 'cancelled' | 'waiting-input';
+  linkifyTickets?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const isWorking = lifecycle === 'working';
+  const stageLabel = (lifecycle && DISPATCH_STAGE_LABEL[lifecycle]) ?? lifecycle ?? 'activity';
+  const header = (
+    <>
+      <Radio className="h-3 w-3 flex-shrink-0 text-primary/70" />
+      {sourceTask && (
+        <span className="flex-shrink-0 font-mono font-medium text-[var(--eh-text-secondary)]">{sourceTask}</span>
+      )}
+      <span className="flex-shrink-0 uppercase tracking-wide opacity-70">{stageLabel}</span>
+    </>
+  );
+
+  // Lifecycle markers (started / completed / failed / stopped / needs input) are one short line.
+  if (!isWorking) {
+    return (
+      <div className="flex w-full min-w-0 items-center gap-1.5 rounded-md border border-dashed border-primary/20 bg-primary/[0.03] px-2 py-1 text-[11px] text-[var(--eh-text-muted)]">
+        {header}
+        <MessageTime ts={ts} className="ml-auto flex-shrink-0" />
+      </div>
+    );
+  }
+
+  // In-flight narration — collapsible so a long message never buries the orchestrator dialogue.
+  return (
+    <div className="group min-w-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        title={open ? 'Hide dispatched-session narration' : 'Show dispatched-session narration'}
+        className="flex w-full min-w-0 items-center gap-1.5 rounded-md border border-dashed border-primary/20 bg-primary/[0.03] px-2 py-1 text-left text-[11px] text-[var(--eh-text-muted)] transition-colors hover:text-[var(--eh-text-secondary)]"
+      >
+        {open ? <ChevronDown className="h-3 w-3 flex-shrink-0" /> : <ChevronRight className="h-3 w-3 flex-shrink-0" />}
+        {header}
+        <MessageTime ts={ts} className="ml-auto flex-shrink-0" />
+      </button>
+      {open && (
+        <div className="mt-1 rounded-md border border-[var(--eh-border)] bg-black/[0.02] px-3 py-2 text-[12px] leading-relaxed text-[var(--eh-text-secondary)] dark:bg-white/[0.02]">
+          <TaskMarkdown body={text} compact linkifyTickets={linkifyTickets} />
+        </div>
+      )}
     </div>
   );
 }

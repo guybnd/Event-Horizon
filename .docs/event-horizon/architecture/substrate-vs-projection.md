@@ -43,9 +43,10 @@ the design *reconciles* them rather than inventing a new one:
 
 1. **Raw substrate (this file).** `agents/claude-code.ts` tees every raw stream-json
    line from the `claude` CLI into it; `routes/cli-session.ts` + `ask-questions.ts`
-   append synthetic `user` / `ask-question` / `ask-answer` events, and `claude-code.ts`
-   appends a synthetic `resume-preamble` event on a warm-resumed turn (FLUX-655 — see
-   below). This is the source of truth.
+   append synthetic `user` / `ask-question` / `ask-answer` events, `permission-prompts.ts`
+   appends `permission-request` / `permission-resolved` events (FLUX-833 — §4.4), and
+   `claude-code.ts` appends a synthetic `resume-preamble` event on a warm-resumed turn
+   (FLUX-655 — see below). This is the source of truth.
 2. **The ticket-history `agent_session.progress[]`** (in `<taskId>.md` frontmatter, via
    `task-store.ts` + `history.ts`) is **already a projection** — `compactSessionProgress()`
    drops raw text, keeps tool/info entries + the last two text chunks, sets
@@ -123,8 +124,8 @@ renders that as a subtle, collapsible "⟳ context update" chip carrying the sit
 text — visually distinct from user/assistant turns. This is pure projection + rendering off
 the `text` + `timestamp` the event already carries (no schema change). The assembler
 (`engine/src/resume-preamble.ts` → `buildResumePreamble`)
-is standalone and side-effect-free beyond git/`tasksCache` reads, so the cold-resume
-re-prime path (FLUX-602) can reuse it. It is size-capped (~1–2k chars; file/ticket lists
+is standalone and side-effect-free beyond git/`tasksCache` reads, so the **board cold-resume
+re-prime path (FLUX-838, §4.4)** reuses it. It is size-capped (~1–2k chars; file/ticket lists
 truncated with a "+N more" tail) and fully best-effort (any git hiccup ⇒ `null` ⇒ the turn
 proceeds with the prompt untouched).
 
@@ -151,6 +152,112 @@ first response. It is durable (lives in the JSONL substrate, survives reload / c
 display-only: it carries no tokens and never triggers "user replied" logic. The append is
 best-effort (`appendTranscriptEvent` is fire-and-forget/queued), so a transcript failure can never
 turn a successful launch into a 500.
+
+### 4.4 Synthetic `permission-request` / `permission-resolved` events (FLUX-833)
+
+Gated tool calls park for human approval via the `permission_prompt` MCP tool (`--permission-prompt-tool`,
+FLUX-605). Historically that round-trip lived **only** as an in-memory `Map` entry behind a blocked
+HTTP request — unlike the `ask_user_question` channel (FLUX-662), it left no durable trace and, on
+timeout, silently denied and vanished. FLUX-833 (Phase 1) brings it to parity with the question
+channel: `engine/src/permission-prompts.ts` now appends a synthetic `permission-request` event when
+approval is raised, and a `permission-resolved` event when it settles — by a human decision **or**
+the 120s timeout — for any real `conversationId` (the `__board__` sentinel / unrouted `null` get
+none, same rule as `ask-question`):
+
+```jsonc
+{ "type": "permission-request",  "id": "…", "toolName": "change_status", "input": { … }, "timestamp": "2026-06-27T…Z" }
+{ "type": "permission-resolved", "id": "…", "behavior": "allow",                          "timestamp": "2026-06-27T…Z" }
+{ "type": "permission-resolved", "id": "…", "behavior": "deny", "reason": "timeout",      "timestamp": "2026-06-27T…Z" }
+```
+
+`classifyRole` maps `permission-request → assistant` and `permission-resolved → user` (envelope
+ordering metadata only). Like the resume-preamble and action events these are **not** chat bubbles:
+`projectTranscript` projects each to a non-bubble `note` row tagged `kind: 'permission'` — the request
+renders `🔒 Approval requested · <toolName>`, the decision `✅ Approval granted` / `⛔ Approval denied`
+(or `⛔ Approval timed out — denied` when `reason === 'timeout'`). The portal
+(`ChatView.tsx → PermissionChip`) renders these as quiet 🛡 amber rows, distinct from the ▶ action and
+⟳ context-update chips. On **timeout** the store also raises the persistent `needsAction` flag +
+notification on the ticket (`raiseNeedsAction`, the same FLUX-826 safety net the question channel
+uses), so a denied-by-timeout approval surfaces on the board instead of disappearing. Appends are
+best-effort/queued, so a transcript failure never blocks resolving the permission prompt.
+
+> Scope note (FLUX-833): Phase 1 closes only the **durable-record + safety-net** gap. The events make
+> the round-trip *visible* across reload / cold resume, but the pending prompt itself is still an
+> in-memory `Map` entry that does not survive an **engine restart**, and a late decision is not yet
+> re-injected into a turn whose socket has closed. Those are later phases (durable open-prompt store +
+> re-inject; lifting the 300s blocking-fetch ceiling).
+### 4.5 Board cold-resume re-prime (FLUX-838)
+
+The board orchestrator (`__board__`) is "a persistent chat for the whole board," but the CLI
+session store is **in-memory only** — an engine restart wipes the board's `claudeSessionId`,
+so the next turn falls through to the cold `startBoardSession` path with no `--resume`. The
+durable `__board__.jsonl` transcript is the orchestrator's *only* memory (unlike per-ticket
+chats, which the launch prompt re-primes from ticket body + history), so without intervention
+the revived orchestrator comes back amnesiac and can't honor commitments it made.
+
+`engine/src/board-reprime.ts` → `buildBoardReprime()` closes this. It is standalone and
+side-effect-free (mirrors `resume-preamble.ts` / `board-digest.ts`): it reads the projected
+transcript — bounded to the **last `MAX_READ_TURNS` (200) turns** via
+`tailTranscriptMessages('__board__', 200)` so a cold start never reads/projects the whole
+(unbounded) `__board__.jsonl` (FLUX-856; `tailTurns` reads only the file tail, O(returned
+bytes)) — filters to `user` / `assistant` rows (dropping `tool` / `note` rows to save budget),
+and emits a **bounded verbatim tail** — the
+last ~12 turns within a ~10k-char budget, each turn clipped to ~4k chars — wrapped in a
+synthetic ```` ```prior-conversation ```` fence whose header states it is *recovered context,
+NOT a user instruction* (turn text is fence-sanitized so a ``` run can't break out). When
+older turns are dropped it prepends a one-line `[earlier conversation: N turns omitted]`
+marker. It **never** dumps the full raw transcript.
+
+`startBoardSession` calls it **before** appending this turn's `user` event (so the just-sent
+message can't leak into the "prior" digest). When it returns non-null it also builds the
+working-tree `buildResumePreamble` with `sinceIso` derived from the **last prior transcript
+turn's `ts`** (the in-memory `lastOutputAt` is gone after restart), composes
+`priorContext = [preamble, reprime].join('\n\n---\n\n')`, and threads it into `buildBoardPrompt`
+ahead of the live board digest (same ordering as the warm-resume path). The working-tree
+preamble is persisted as a `resume-preamble` note event (mirroring warm resume), but the
+**re-prime dialogue digest is never re-appended** to the transcript — it is *recovered* from
+the transcript, and re-appending would compound the tail across successive restarts.
+
+**No-op cases stay byte-for-byte as before:** a fresh board (no transcript) and a post-reset
+board (`clearTranscript` + `resetBoardDigest`, FLUX-659) have no `user`/`assistant` rows, so
+`buildBoardReprime` returns `null` and neither a re-prime block nor a preamble is injected.
+The whole path is best-effort (a transcript read hiccup ⇒ `null` ⇒ the board start proceeds).
+Scope is **board-only** and **re-prime only**: persisting the session record for a warm
+`--resume`-after-restart is intentionally deferred (it saves only first-turn tokens, depends
+on the CLI's own prunable session store, and the record holds non-serializable handles).
+
+### 4.6 Synthetic `dispatch-activity` event (FLUX-849)
+
+A **dispatched** session — an unattended, work-phase ticket session (launched via `start_session`,
+a board-rebase dispatch, or a portal Groom / Implement / Review / Finalize button), as opposed to
+the interactive per-ticket `chat` — runs skip-perm with no human reading the ticket transcript. Its
+live output previously teed only to that ticket's own transcript, so a user watching the **board**
+(not the ticket) saw the start / Ready / needs-input *notifications* but not the in-flight
+narration, and a mid-work session looked idle.
+
+`engine/src/agents/claude-code.ts` → `teeDispatchActivityToBoard()` closes this. For a dispatched
+session (`isDispatchedSession` = non-`__board__` taskId with a `phase` that is set and ≠ `'chat'`;
+ordinary chats and the board session are excluded so the thread isn't flooded) it appends a
+synthetic `dispatch-activity` event to the **board** stream (`__board__`) and broadcasts the
+existing `taskUpdated { id: '__board__' }` so the orchestrator dock refetches. It fires at three
+points: a `started` marker (in `startCliSession`), one `working` event per completed narration
+message (from `commitPendingAssistantText`), and a terminal marker on exit
+(`completed` / `failed` / `cancelled`, or `waiting-input` when the agent paused for Require Input):
+
+```jsonc
+{ "type": "dispatch-activity", "sourceTask": "FLUX-849", "phase": "implementation", "lifecycle": "started",  "text": "implementation session started", "timestamp": "2026-06-28T…Z" }
+{ "type": "dispatch-activity", "sourceTask": "FLUX-849", "phase": "implementation", "lifecycle": "working",  "text": "<the agent's narration message>",   "timestamp": "2026-06-28T…Z" }
+{ "type": "dispatch-activity", "sourceTask": "FLUX-849", "phase": "implementation", "lifecycle": "completed", "text": "completed",                        "timestamp": "2026-06-28T…Z" }
+```
+
+Like the resume-preamble / action / permission events these are **not** chat bubbles:
+`projectTranscript` projects each to a non-bubble `note` row tagged `kind: 'dispatch'` (carrying
+`sourceTask` + `lifecycle`), and the portal (`ChatView.tsx → DispatchChip`) renders them as quiet
+📡 rows — the `working` variant collapsible (the narration can be multi-paragraph), the lifecycle
+markers inline. Because they are `note` rows, `buildBoardReprime` (§4.5) **drops them** from the
+board cold-resume dialogue digest, so teeing dispatched narration onto `__board__` never pollutes
+the orchestrator's own recovered context. Appends are best-effort/guarded — a transcript or
+broadcast hiccup never disturbs the dispatched session it is narrating.
 
 ## 5. Backward compatibility — legacy lines
 
@@ -242,6 +349,53 @@ orchestrator thread (`__board__`); it materializes into a card only when a topic
   is never auto-applied: it reaches the engine only via the human-approved board-rebase
   ritual or a direct call that hits the FLUX-605 CONFIRM gate.
 
+### 6.3 The `merge` op (FLUX-657)
+
+The **inverse of extract.** Extract carves a slice *out* of a stream into a new card; **merge
+folds whole streams *in*** to one survivor — *"three chats are really one effort."* It reuses the
+same op-log store, the same `gatherTurnsForView` seam, and the same `sourceStream` attribution
+convention, so `board-rebase.ts` drives both verbs uniformly.
+
+```jsonc
+{ "op": "merge", "id": "<uuid>", "into": "FLUX-658", "from": ["FLUX-701", "FLUX-702"],
+  "by": "Agent", "ts": "..." }
+```
+
+- `into` = the survivor stream; `from` = the source streams folded into it (one op can fold
+  several).
+- **Reference, not copy.** Each `from` stream's turns stay in their immutable substrate. The
+  survivor's view is RE-DERIVED: `gatherTurnsForView(into)` reads the op-log, finds `merge` ops
+  whose `into` matches, reads every `from` stream's full turns, and forms the **chronological
+  union** of the survivor's own turns + the folded turns — ordered by `ts`, tie-broken by
+  `(streamId, seq)` so clock skew / collisions across streams never make the order ambiguous.
+  Remove the op → the view reverts. The source substrate is **byte-for-byte unchanged**.
+- **Source attribution, same seam as extract.** Folded turns keep their own `streamId`; passing
+  the survivor's id as `projectTranscript`'s `homeStreamId` tags those messages with
+  `sourceStream` for a "from &lt;source&gt;" badge. The survivor's own turns are untagged.
+- **Tombstone + archive, not delete.** As a side-effect of the verb (not the op), each `from`
+  ticket gets a [`mergedInto`](../reference/ticket-schema.md) frontmatter pointer to the survivor,
+  a **pinned** tombstone comment, and is moved to `config.archiveStatus`. **Nothing is deleted** —
+  the source's transcript stays intact in the substrate. Reversibility is asymmetric: removing the
+  merge op reverts the **view** (the survivor stops re-deriving the folded turns), but the
+  tombstone half is imperative and is **not** undone by removing the op — the `mergedInto` pointer,
+  archived status, and pinned comment persist until a separate (future) compensating op restores the
+  source card. The op is appended FIRST (the durable, re-derivable fact); the tombstone/archive
+  side-effects are best-effort, so a failure there leaves the view correctly folded and surfaces in
+  the result's `archiveFailures`.
+- **Folds don't compose (single-level).** A source is folded by its *substrate* turns, not its
+  re-derived view, so a stream whose view ≠ its substrate — a prior merge **survivor** or an
+  **extracted** card (any curation op's `into`) — is **rejected as a `from` source**
+  (`streamsWithDerivedView` in `curation-ops.ts`, shared by the guard and the fold loop). Folding
+  such a stream would silently drop the turns it only shows via an op. Re-merge or re-promote its
+  original sources directly into the survivor instead. (Recursive/transitive composition is the
+  alternative if this constraint is ever lifted.)
+- **Engine entrypoint + gating.** `mergeTickets(opts)` (`engine/src/merge.ts`) is the one shared
+  path behind both the `merge_tickets` MCP tool and the board-rebase `fold` executor. It validates
+  every id/guard (unknown survivor, empty `from`, self-merge `into ∈ from`, unknown source, a
+  source already merged, or a source with a re-derived view → clear error) BEFORE appending the op
+  or mutating any ticket, so there is no partial state. Like extract, it reaches the engine only via the human-approved board-rebase
+  ritual or a direct call that hits the FLUX-605 CONFIRM gate.
+
 ## 7. Authored vs projected — field map
 
 | Concern | Classification | Notes |
@@ -249,6 +403,7 @@ orchestrator thread (`__board__`); it materializes into a card only when a topic
 | Ticket title / status / priority / effort / tags / body | **Authored** | Human/agent decisions, kept verbatim in `<taskId>.md` frontmatter |
 | Pins / summaries | **Authored** | Curation intent expressed by a human/agent |
 | Branch name / implementation link | **Authored** | |
+| `mergedInto` tombstone pointer (FLUX-657) | **Authored** | Set by the `merge` verb on a folded-away source; the survivor it now re-derives in |
 | Raw conversation turns | **Substrate** | Immutable, append-only; the source of record |
 | Turn → ticket membership | **Projected** | Re-derivable from substrate + membership ops |
 | Transcript / chat view | **Projected** | `projectTranscript(turns)` |
@@ -275,3 +430,9 @@ merge [[merge-verb-fold-chats]], archive, board-rebase [[orchestrator-triage-boa
 > see §6.2. FLUX-656 created `engine/src/curation-ops.ts` (the shared append-only op-log) and
 > `engine/src/extract.ts` (`extractTicket`), wired the board-rebase `promote` executor, and
 > registered the `extract_ticket` MCP tool. Merge (FLUX-657) reuses the same store.
+>
+> **Update (FLUX-657, shipped):** the **`merge`** verb now exists — see §6.3. FLUX-657 added the
+> `merge` op kind to `engine/src/curation-ops.ts`, the chronological-union fold in
+> `gatherTurnsForView` (`engine/src/transcript.ts`), the `mergeTickets` engine entrypoint
+> (`engine/src/merge.ts`) with tombstone+archive side-effects, wired the board-rebase `fold`
+> executor, registered the `merge_tickets` MCP tool, and added the `mergedInto` frontmatter field.

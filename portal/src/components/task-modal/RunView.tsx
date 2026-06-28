@@ -42,7 +42,9 @@ function SessionRow({ session, config, busy, onStop }: {
   busy: boolean;
   onStop: (id: string) => void;
 }) {
-  const [open, setOpen] = useState(isActiveSession(session));
+  // Start collapsed even for active sessions (FLUX-853): opening a ticket shouldn't
+  // blast every running agent's full live output at once. Click to expand.
+  const [open, setOpen] = useState(false);
   const Icon = FRAMEWORK_ICONS[session.framework] || Bot;
   const label = normalizeRoleLabel(session.role) ?? session.label ?? session.framework;
   const active = isActiveSession(session);

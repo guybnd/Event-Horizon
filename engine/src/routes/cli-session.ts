@@ -23,6 +23,9 @@ import {
   notifyGroupSessionTerminal,
   awaitDelegation,
   cancelDelegation,
+  dispatchKey,
+  findDispatch,
+  reserveDispatch,
   type PendingCombinerSpec,
   type PendingRelaySpec,
 } from '../session-store.js';
@@ -35,6 +38,7 @@ import { appendTranscriptEvent, readTranscriptMessages, clearTranscript } from '
 import { resetBoardDigest } from '../board-digest.js';
 import { dismissNotificationsForTicket } from '../notifications.js';
 import { resolvePersonaPrompt } from '../orchestration-personas.js';
+import { ensureTicketIsolation } from '../ticket-isolation.js';
 import { buildActivityEntry } from '../history.js';
 import {
   captureDiffForPrompt,
@@ -430,6 +434,16 @@ router.post('/:id/cli-session/start', async (req, res) => {
     ? (phaseRaw as LaunchPhase)
     : undefined;
 
+  // FLUX-845: server-side isolation policy. Agent-driven dispatch (start_session / board-rebase)
+  // has no human to choose a branch, so it requests isolation here and the engine creates the
+  // branch (+worktree) BEFORE spawning — otherwise the session runs branchless in the shared
+  // checkout (the FLUX-840/841/844 tangle). 'worktree' → dedicated worktree (the default for
+  // agent callers); 'branch' → branch only; omitted → no server-side isolation (the portal
+  // pre-creates its own branch client-side and omits this).
+  const isolationRaw = typeof req.body?.isolation === 'string' ? req.body.isolation.trim() : '';
+  const isolation: 'worktree' | 'branch' | undefined =
+    isolationRaw === 'worktree' || isolationRaw === 'branch' ? isolationRaw : undefined;
+
   // Multi-session fields
   const role = typeof req.body?.role === 'string' ? req.body.role.trim() : undefined;
   const pattern = typeof req.body?.pattern === 'string' ? req.body.pattern.trim() as ExecutionPattern : undefined;
@@ -491,6 +505,13 @@ router.post('/:id/cli-session/start', async (req, res) => {
     : appendPrompt;
 
   try {
+    // FLUX-845: isolate BEFORE spawning so resolveTaskExecutionRoot lands the session in the
+    // dedicated worktree (the canonical mechanism, shared with create_branch + the /branch route).
+    // Idempotent: a ticket that already has a branch is reused, never re-created.
+    if (isolation) {
+      await ensureTicketIsolation(id, { worktree: isolation === 'worktree' });
+    }
+
     // Inject pre-computed diff for scatter-gather review workers
     let diffBlock: string | undefined;
     if (groupType === 'scatter-gather' && patternPosition !== 'lead') {
@@ -716,6 +737,34 @@ router.post('/:id/cli-session/delegate', async (req, res) => {
       : taskPrompt;
   }
 
+  // FLUX-842: idempotency. If the MCP transport dropped a prior response after
+  // the child spawned, the orchestrator retries the identical delegation. Attach
+  // to the in-flight (or freshly-settled) dispatch instead of spawning a second
+  // child — this is what kept the review fleet running ~3× over.
+  const idempotencyKey = dispatchKey(id, personaId, taskPrompt, effortOverride);
+  const existing = findDispatch(idempotencyKey);
+  if (existing) {
+    try {
+      const result = await existing.promise;
+      return res.json({
+        sessionId: result.sessionId,
+        status: result.status,
+        output: result.output,
+        succeeded: result.succeeded,
+        deduped: true,
+      });
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message || 'Delegation failed' });
+    }
+  }
+
+  // FLUX-844: reserve the idempotency key BEFORE spawn so a retry that lands
+  // *during* spawnSession() attaches to this reservation instead of launching a
+  // second child. The reservation holds a deferred promise; we fill in the real
+  // sessionId and settle it once the delegation resolves, or fail it (releasing
+  // the key) if spawn itself errors so a genuine later retry can start fresh.
+  const reservation = reserveDispatch(idempotencyKey);
+
   let session: CliSessionRecord;
   try {
     session = await spawnSession(task, {
@@ -731,11 +780,19 @@ router.post('/:id/cli-session/delegate', async (req, res) => {
       groupVariant: 'combiner',
     });
   } catch (error: any) {
+    reservation.fail(error);
     return res.status(500).json({ error: error.message || 'Failed to spawn delegate' });
   }
 
   // Set up a race between delegation completion and timeout.
+  reservation.setSessionId(session.id);
   const delegationPromise = awaitDelegation(session.id);
+  // Pump the delegation outcome into the reservation so retries attached during
+  // spawn settle with the real result (held for a short TTL after it settles).
+  void delegationPromise.then(
+    (result) => reservation.settle(result),
+    (error) => reservation.fail(error),
+  );
   const timeoutId = setTimeout(() => {
     cancelDelegation(session.id, `Delegation timed out after ${timeoutMs / 1000}s`);
     // Also kill the child process if still running.

@@ -91,6 +91,10 @@ export interface Task {
    *  working status without taking a board action. Truthy = show as "Needs Action"; the string
    *  is the reason. Cleared automatically when the ticket's status moves or work resumes. */
   needsAction?: string | null;
+  /** FLUX-657: redirect pointer set when this ticket was folded into a survivor by the `merge`
+   *  verb. Truthy = tombstoned survivor of a merge; the value is the survivor ticket id whose view
+   *  now re-derives this ticket's turns. Validated in schema.ts; the card redirects here. */
+  mergedInto?: string | null;
   /** PR tickets only: the gh PR number, draft flag, and the work-gated member ticket ids. */
   prNumber?: number;
   prState?: string;

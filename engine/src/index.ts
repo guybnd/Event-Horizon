@@ -36,6 +36,8 @@ import { handleMcpHttpRequest, startMcpServer } from './mcp-server.js';
 import { stopAllCliSessions, setAutoRestartCallback, getAllActiveSessions, getActiveSessionsForTask } from './session-store.js';
 import { requestApproval, resolveApproval, listPendingApprovals } from './permission-prompts.js';
 import { requestAnswer, resolveAnswer, listPendingQuestions } from './ask-questions.js';
+import { isSafeStreamId } from './transcript.js';
+import { verifyConversation } from './session-binding.js';
 import { proposeBoardRebase, resolveBoardRebase, listPendingBoardRebases } from './board-rebase.js';
 import { shutdownSharedServers } from './shared-mcp-server.js';
 import { broadcastEvent } from './events.js';
@@ -220,13 +222,53 @@ app.get('/api/board/state', requireWorkspace, (_req, res) => {
   res.json({ activeSessions, statusCounts });
 });
 
+// FLUX-833 (Phase 2): the `claude --resume` pointer for the live session on a conversation, if
+// any active session has captured one yet. Persisted on the durable HITL record so a post-restart
+// answer has a resume target (Phase 3). `conversationId` is the ticket id (or the `__board__`
+// sentinel, whose session is registered under that taskId); null/no-match → undefined.
+function resumePointerFor(conversationId: string | null): string | undefined {
+  if (!conversationId) return undefined;
+  for (const session of getActiveSessionsForTask(conversationId)) {
+    if (session.claudeSessionId) return session.claudeSessionId;
+  }
+  return undefined;
+}
+
+// FLUX-841: resolve the conversationId a HITL request is allowed to route to. `conversationId` is
+// an agent-supplied self-declaration that selects a transcript stream (`${id}.jsonl`); isSafeStreamId
+// (FLUX-833 M4) blocks path traversal, but a *valid sibling ticket id* is same-shape, so a session
+// bound to ticket A could otherwise drive a permission/ask transcript event into ticket B's stream
+// (cross-ticket injection). Each session is launched with EH_CONVERSATION_TOKEN = an HMAC of its OWN
+// bound conversationId (claude-code.ts/cleanChildEnv) and the MCP tools forward it here. We require
+// that token to match the claimed id — a session can only produce a valid token for its own ticket,
+// so a mismatched/forged id is dropped to null (unrouted): the human round-trip still happens via the
+// global overlay, but cannot be attributed/persisted to a foreign ticket. No token (legacy/delegated
+// session, or a null id) → unrouted, exactly as before.
+function boundConversationId(req: express.Request): string | null {
+  const claimed = typeof req.body?.conversationId === 'string' && isSafeStreamId(req.body.conversationId)
+    ? req.body.conversationId : null;
+  if (!claimed) return null;
+  const token = typeof req.body?.conversationToken === 'string' ? req.body.conversationToken : null;
+  if (!verifyConversation(claimed, token)) {
+    console.warn(`[hitl] dropping unbound conversationId "${claimed}" (session token missing/mismatched) — routing as unrouted`);
+    return null;
+  }
+  return claimed;
+}
+
 // FLUX-605: gated-tool approval round-trip. permission_prompt (MCP) posts a request that
 // parks until a human resolves it via the portal, or 120s timeout → deny.
 app.post('/api/board/permission-request', requireWorkspace, async (req, res) => {
   const toolName = String(req.body?.tool_name || req.body?.toolName || 'unknown');
   const input = req.body?.input ?? {};
-  const conversationId = typeof req.body?.conversationId === 'string' ? req.body.conversationId : null;
-  const decision = await requestApproval(toolName, input, conversationId);
+  // FLUX-833 M4 (path safety) + FLUX-841 (session→ticket binding): conversationId becomes a
+  // transcript stream id; require it to be path-safe AND match the requesting session's binding
+  // token, so an agent can neither escape the transcripts dir nor inject into a sibling ticket.
+  const conversationId = boundConversationId(req);
+  // FLUX-833 (Phase 2): persist the live session's `claude --resume` pointer on the durable
+  // record so a later Phase 3 can re-inject a post-restart decision (it lives only in-memory on
+  // the session and is lost when reconcileOrphanedSessions cancels the session on restart).
+  const decision = await requestApproval(toolName, input, conversationId, resumePointerFor(conversationId));
   res.json(decision);
 });
 app.post('/api/board/permission-resolve', requireWorkspace, (req, res) => {
@@ -244,7 +286,8 @@ app.get('/api/board/permission-pending', requireWorkspace, (_req, res) => {
 // parks until the user answers via the portal picker, or 4min timeout → unanswered sentinel.
 app.post('/api/board/ask-question', requireWorkspace, async (req, res) => {
   const questions = Array.isArray(req.body?.questions) ? req.body.questions : [];
-  const conversationId = typeof req.body?.conversationId === 'string' ? req.body.conversationId : null;
+  // FLUX-833 M4 (path safety) + FLUX-841 (session→ticket binding): see the permission route.
+  const conversationId = boundConversationId(req);
   if (questions.length === 0) {
     res.status(400).json({ error: 'questions[] is required' });
     return;
@@ -256,7 +299,7 @@ app.post('/api/board/ask-question', requireWorkspace, async (req, res) => {
   if (conversationId) {
     for (const session of getActiveSessionsForTask(conversationId)) session.askedThisTurn = true;
   }
-  const result = await requestAnswer(questions, conversationId);
+  const result = await requestAnswer(questions, conversationId, resumePointerFor(conversationId));
   res.json(result);
 });
 app.post('/api/board/ask-question/:id/answer', requireWorkspace, (req, res) => {

@@ -10,6 +10,8 @@ import { isPathInsideRoot } from '../file-utils.js';
 import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
 import { appendTranscriptLine, appendTranscriptEvent } from '../transcript.js';
+import { signConversation } from '../session-binding.js';
+import { killProcessTree } from '../kill-process-tree.js';
 import { checkFrameworkHealth, checkSkillStaleness, generateOrchestratorReplyNotification } from '../notifications.js';
 import { captureTurnStartState, clearNeedsActionIfSet, flagIfParked } from '../parked-ticket.js';
 import { buildMemberScopeArgs } from '../group.js';
@@ -19,6 +21,7 @@ import { getProbeStatus } from '../module-probe.js';
 import { getSharedServerUrl, isSharedHttpPlatformProven } from '../shared-mcp-server.js';
 import { buildBoardDigest } from '../board-digest.js';
 import { buildResumePreamble } from '../resume-preamble.js';
+import { buildBoardReprime } from '../board-reprime.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest, CliFramework, SendInputOptions } from './types.js';
 import type { ChatAttachment } from '../projection.js';
 
@@ -45,7 +48,14 @@ function cleanChildEnv(conversationId?: string): NodeJS.ProcessEnv {
   // ask_user_question) can route their parked request back to the originating chat/board
   // surface in the portal. Per-ticket sessions pass the ticket id; the board passes its
   // sentinel. Absent (e.g. a delegated subagent) → unrouted, handled by the global overlay.
-  if (conversationId) env.EH_CONVERSATION_ID = conversationId;
+  if (conversationId) {
+    env.EH_CONVERSATION_ID = conversationId;
+    // FLUX-841: mint this session's binding token — an HMAC of its OWN conversationId. The MCP
+    // tools forward it on every HITL POST; the route requires it to match the claimed
+    // conversationId, so a session can only route a transcript event into its own ticket (it can't
+    // forge a sibling's token). Closes the same-shape cross-ticket injection isSafeStreamId can't.
+    env.EH_CONVERSATION_TOKEN = signConversation(conversationId);
+  }
   return env;
 }
 
@@ -417,6 +427,76 @@ export function buildInitialPrompt(task: any, appendPrompt: string, opts?: { dif
   return lines.join('\n').replace(/\0/g, '');
 }
 
+/**
+ * FLUX-849: a "dispatched" session is an unattended ticket work session — launched via
+ * `start_session`, a board-rebase dispatch, or a portal phase button (Groom / Implement / Review /
+ * Finalize) — as opposed to the interactive per-ticket `chat`. A dispatched session runs skip-perm
+ * with no human reading the ticket transcript, so its live activity is teed to the board
+ * orchestrator thread (`__board__`) where a user watching the board sees `started / working /
+ * needs-input / completed / failed` without opening the ticket. Ordinary ticket chats
+ * (`phase: 'chat'`) and the board session itself are excluded so the thread isn't flooded by
+ * conversations the user is already reading.
+ *
+ * The gate is the *absence* of a chat — NOT the presence of a work phase. `session.phase` is only
+ * populated when the launcher passes one explicitly: `start_session` and board-rebase dispatch
+ * forward `phase` only when present (its derivation from ticket status shapes the prompt, never the
+ * record), and ad-hoc API launches set none. So requiring a truthy phase would silently no-op the
+ * primary agent dispatch path (`start_session` with no explicit phase). An interactive chat always
+ * carries `phase: 'chat'`, so any non-board session whose phase is not `'chat'` (including
+ * `undefined`) is an unattended dispatch and belongs on the board thread.
+ */
+function isDispatchedSession(session: CliSessionRecord, taskId: string): boolean {
+  return taskId !== BOARD_CONVERSATION_ID && session.phase !== 'chat';
+}
+
+export type DispatchLifecycle =
+  | 'started'
+  | 'working'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'waiting-input';
+
+/** FLUX-849: short human label for a dispatched session's lifecycle marker on the board chip. */
+const DISPATCH_LIFECYCLE_LABEL: Record<Exclude<DispatchLifecycle, 'working'>, string> = {
+  started: 'started',
+  completed: 'completed',
+  failed: 'failed',
+  cancelled: 'stopped',
+  'waiting-input': 'needs input',
+};
+
+/**
+ * FLUX-849: tee a dispatched session's live activity to the board orchestrator thread as a quiet
+ * `dispatch-activity` note (projected to a non-bubble chip; filtered out of board cold-resume
+ * dialogue, so the orchestrator's own working context is untouched). `lifecycle: 'working'` carries
+ * an in-flight narration message; the other lifecycles are bracketing markers. Best-effort: a
+ * transcript-append or broadcast hiccup must never disturb the session it is narrating.
+ */
+function teeDispatchActivityToBoard(
+  session: CliSessionRecord,
+  taskId: string,
+  lifecycle: DispatchLifecycle,
+  text: string,
+): void {
+  if (!isDispatchedSession(session, taskId)) return;
+  const trimmed = text.trim();
+  if (!trimmed) return;
+  try {
+    appendTranscriptEvent(BOARD_CONVERSATION_ID, {
+      type: 'dispatch-activity',
+      sourceTask: taskId,
+      phase: session.phase,
+      lifecycle,
+      text: trimmed,
+      timestamp: new Date().toISOString(),
+    });
+    broadcastEvent('taskUpdated', { id: BOARD_CONVERSATION_ID });
+  } catch {
+    /* best-effort: board narration must never break the dispatched session */
+  }
+}
+
 export function attachStdoutProcessing(
   proc: ReturnType<typeof spawn>,
   session: CliSessionRecord,
@@ -426,6 +506,8 @@ export function attachStdoutProcessing(
     if (session.pendingAssistantText) {
       appendSessionOutput(session, session.pendingAssistantText, 'stdout', true);
       flushSessionOutput(session);
+      // FLUX-849: a completed narration message — tee it to the board thread for dispatched sessions.
+      teeDispatchActivityToBoard(session, taskId, 'working', session.pendingAssistantText);
       session.pendingAssistantText = '';
     }
   };
@@ -693,6 +775,10 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   captureTurnStartState(session, id);
   void clearNeedsActionIfSet(id);
 
+  // FLUX-849: announce a dispatched session's start on the board orchestrator thread so a user
+  // watching the board sees it spin up without opening the ticket (no-op for interactive chats).
+  teeDispatchActivityToBoard(session, id, 'started', `${session.phase ?? 'work'} session started`);
+
   const commitPending = attachStdoutProcessing(proc, session, id);
 
   proc.stderr!.on('data', (chunk) => {
@@ -713,6 +799,10 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     await session.writeQueue;
 
     const outcome = `${label} session failed to start: ${error.message}`;
+
+    // FLUX-849: a spawn failure after the 'started' tee would otherwise leave the board chip
+    // dangling — bracket it with a terminal 'failed' marker so the lifecycle is symmetric.
+    teeDispatchActivityToBoard(session, id, 'failed', DISPATCH_LIFECYCLE_LABEL['failed']);
 
     if (session.sessionHistoryEntry && session.sessionHistoryEntry.sessionId) {
       const accumulatedProgress = session.sessionHistoryEntry.progress || [];
@@ -830,6 +920,8 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
       // FLUX-651: a chat turn that ends without the agent moving the ticket = "sat on its
       // hands". Don't flag a turn the agent itself paused for Require Input (pausedForInput).
       if (!session.pausedForInput) await flagIfParked(session, id);
+      // FLUX-849: a dispatched session paused for input — mark it on the board thread.
+      teeDispatchActivityToBoard(session, id, 'waiting-input', DISPATCH_LIFECYCLE_LABEL['waiting-input']);
       broadcastEvent('taskUpdated', { id });
       return;
     }
@@ -837,6 +929,10 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     const outcome = session.requestedStop
       ? `${label} session stopped by user.`
       : `${label} session ended with ${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`}.`;
+
+    // FLUX-849: bracket the dispatched session's board narration with a terminal marker.
+    // `finalStatus` here is one of completed / failed / cancelled (waiting-input returns above).
+    teeDispatchActivityToBoard(session, id, finalStatus, DISPATCH_LIFECYCLE_LABEL[finalStatus]);
 
     const tokenUpdate = (session.inputTokens ?? 0) > 0 || (session.outputTokens ?? 0) > 0
       ? (() => {
@@ -936,7 +1032,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   }
 
   stop(session: CliSessionRecord): void {
-    session.proc?.kill('SIGTERM');
+    // Tree-kill so the agent's MCP servers (serena, context7, …) are reaped too, not orphaned —
+    // the stale-node-process leak. See kill-process-tree.ts.
+    killProcessTree(session.proc);
   }
 }
 
@@ -1065,6 +1163,10 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     session.status = 'waiting-input';
     commitReplyPending();
     flushSessionOutput(session, true);
+    // FLUX-849: a crashed resumed turn (reply spawn error) was previously invisible on the board —
+    // the only tee on this path was the Require-Input pause. Bracket it with a 'failed' marker so a
+    // board-watcher sees the crash even though the session itself stays resumable.
+    teeDispatchActivityToBoard(session, id, 'failed', DISPATCH_LIFECYCLE_LABEL['failed']);
     await updateTaskWithHistory(id, {
       updatedBy: 'Agent',
       entries: [buildActivityEntry(`${session.label} reply failed: ${error.message}`, 'Agent', new Date().toISOString())],
@@ -1072,13 +1174,27 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     console.error(`[${id}] Failed to spawn ${binaryName} for reply:`, error.message);
   });
 
-  replyProc.on('exit', async () => {
+  replyProc.on('exit', async (code, signal) => {
     commitReplyPending();
     flushSessionOutput(session, true);
     session.status = 'waiting-input';
     // FLUX-651: resumed chat turn ended — flag if the agent parked without acting. Skip when
     // it paused itself for Require Input (that IS an action and keeps the session resumable).
     if (!session.pausedForInput) await flagIfParked(session, id);
+    // FLUX-849: bracket the dispatched session's board narration on this resumed path.
+    // - Require-Input pause → 'needs input'.
+    // - User-requested stop → 'stopped'.
+    // - Non-zero/signalled crash → 'failed' (previously silent — the only resumed-path tee was the
+    //   pause, so a crashed resumed turn left no board signal at all).
+    // A clean turn-end (code 0) already narrated via the 'working' tee and stays resumable, so it
+    // gets no terminal marker here (a finish that moves the ticket surfaces via the status path).
+    if (session.pausedForInput) {
+      teeDispatchActivityToBoard(session, id, 'waiting-input', DISPATCH_LIFECYCLE_LABEL['waiting-input']);
+    } else if (session.requestedStop) {
+      teeDispatchActivityToBoard(session, id, 'cancelled', DISPATCH_LIFECYCLE_LABEL['cancelled']);
+    } else if (code !== 0 || signal) {
+      teeDispatchActivityToBoard(session, id, 'failed', DISPATCH_LIFECYCLE_LABEL['failed']);
+    }
     broadcastEvent('taskUpdated', { id });
   });
 }
@@ -1112,7 +1228,7 @@ function spawnClaudeForBoard(claudeArgs: string[], executionRoot: string): Retur
   return spawn('claude', claudeArgs, { cwd: executionRoot, env: cleanChildEnv(BOARD_CONVERSATION_ID), stdio: 'pipe', windowsHide: true });
 }
 
-function buildBoardPrompt(firstMessage: string): string {
+function buildBoardPrompt(firstMessage: string, priorContext?: string): string {
   const key = configCache.projects?.[0] || 'PROJECT';
   const digest = buildBoardDigest();
   return [
@@ -1127,6 +1243,10 @@ function buildBoardPrompt(firstMessage: string): string {
     `When you reference a ticket in prose, always write its full id (e.g. \`${key}-123\`) — every single time, including repeat mentions, shorthand lists, and x/y comparisons. Never abbreviate to a bare number (a bare \`123\` cannot render as a chip). The full id renders as an interactive chip; on first mention spell out the title too — \`${key}-123 (short title)\` — to keep the message readable before the reader hovers.`,
     'You run at the workspace root, with the whole board in scope.',
     '',
+    // FLUX-838: cold-resume re-prime — recovered prior dialogue (+ working-tree preamble) after an
+    // engine restart wiped the in-memory session. Ordered before the live digest, mirroring the
+    // warm-resume path in sendBoardInput (preamble first, then digest, then the message).
+    ...(priorContext ? [priorContext, ''] : []),
     ...(digest ? [digest, ''] : []),
     firstMessage,
   ].join('\n');
@@ -1176,13 +1296,30 @@ function wireBoardProc(proc: ReturnType<typeof spawn>, session: CliSessionRecord
 export async function startBoardSession(session: CliSessionRecord, firstMessage: string, workspaceRoot: string, opts?: SendInputOptions) {
   checkBinaryInstalled('claude');
   session.executionRoot = workspaceRoot;
+  // FLUX-838: cold-resume re-prime. The CLI session store is in-memory only, so an engine
+  // restart leaves an empty store and this start path runs with no `--resume`. Recover the
+  // orchestrator's memory from the durable `__board__.jsonl` transcript: a bounded verbatim
+  // tail of the prior dialogue, plus the working-tree situational update. Computed BEFORE this
+  // turn's `user` event is appended (below) so the just-sent message can't leak into the
+  // "prior" digest. A fresh / post-reset board (FLUX-659) yields null → no re-prime block.
+  const reprime = await buildBoardReprime();
+  let resumePreamble: string | null = null;
+  if (reprime) {
+    // sinceIso from the last prior transcript turn's ts — the in-memory lastOutputAt is gone
+    // after restart. Board scope has no branch → preamble degrades to ticket-movement only.
+    resumePreamble = await buildResumePreamble({
+      workspaceRoot: canonicalWorkspaceRoot ?? workspaceRoot,
+      sinceIso: reprime.sinceIso,
+    });
+  }
+  const priorContext = [resumePreamble, reprime?.digest].filter(Boolean).join('\n\n---\n\n') || undefined;
   // FLUX-676: pasted-image attachments on the opening orchestrator turn. Reference their
   // absolute sidecar paths in the spawn prompt (the agent Reads them); keep the clean refs
   // for the transcript so the bubble re-renders the thumbnail on reload / cold resume.
   const attachments = opts?.attachments ?? [];
   const attachmentAbsPaths = resolveAttachmentAbsPaths(attachments);
   const claudeArgs = [
-    '-p', `${buildBoardPrompt(firstMessage)}${attachmentReadInstruction(attachmentAbsPaths)}`,
+    '-p', `${buildBoardPrompt(firstMessage, priorContext)}${attachmentReadInstruction(attachmentAbsPaths)}`,
     '--output-format', 'stream-json',
     '--verbose',
     // FLUX-691: token-by-token live streaming for the board orchestrator chat too.
@@ -1195,6 +1332,13 @@ export async function startBoardSession(session: CliSessionRecord, firstMessage:
   ];
   session.status = 'running';
   session.args = claudeArgs;
+  // FLUX-838: persist the working-tree preamble as a context-update note (mirrors the warm-resume
+  // path in sendBoardInput), ordered ahead of this turn's user event so it renders before the
+  // bubble. The re-prime dialogue digest is NOT appended — it is recovered from the transcript,
+  // and re-appending it would compound across successive restarts (criterion 6).
+  if (resumePreamble) {
+    appendTranscriptEvent(BOARD_CONVERSATION_ID, { type: 'resume-preamble', text: resumePreamble, timestamp: session.startedAt });
+  }
   // First turn: record the user message in the transcript (mirrors the per-ticket chat /start).
   appendTranscriptEvent(BOARD_CONVERSATION_ID, { type: 'user', text: firstMessage, attachments, timestamp: session.startedAt });
   const proc = spawnClaudeForBoard(claudeArgs, workspaceRoot);

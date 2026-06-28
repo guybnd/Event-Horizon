@@ -872,6 +872,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         try { forward(type, JSON.parse(e.data)); } catch { /* non-JSON payload — skip */ }
       });
     }
+    // FLUX-846: reconcile on every (re)connect. If the engine restarts or the stream drops, the
+    // incremental terminal `taskUpdated` for a session that ended during the gap can be missed —
+    // leaving its card stuck on 'Working'. Re-fetching the authoritative task list on `open`
+    // re-syncs each card to the engine's current session status (terminal/absent included).
+    es.addEventListener('open', () => {
+      void loadTasks();
+    });
     es.addEventListener('taskUpdated', () => {
       void loadTasks();
       // FLUX-796: resolving a Require Input / Needs Action ticket dismisses its notification

@@ -38,6 +38,7 @@ import {
   validatePatternSupport,
   stopAllSessionsForTask,
   reapStaleParkedSessions,
+  reconcileDeadSessions,
 } from './session-store.js';
 import type { CliSessionRecord } from './agents/types.js';
 
@@ -164,6 +165,61 @@ describe('session-store', () => {
 
     it('returns empty array when no sessions', () => {
       expect(getAllSessionSummariesForTask('FLUX-NONE')).toEqual([]);
+    });
+  });
+
+  describe('reconcileDeadSessions (FLUX-846)', () => {
+    const STALE = '2026-06-27T15:00:00.000Z';
+    const NOW = Date.parse('2026-06-27T15:30:00.000Z'); // 30m after STALE — well past the grace
+    const deadProc = (exitCode: number | null, signalCode: string | null = null) =>
+      ({ exitCode, signalCode } as any);
+
+    it('terminalizes a running session whose process exited cleanly (missed exit event)', () => {
+      const s = createMockSession({ id: 'sess-dead', taskId: 'FLUX-1', status: 'running', startedAt: STALE, lastOutputAt: STALE, proc: deadProc(0) });
+      cliSessionsById.set('sess-dead', s);
+      const reaped = reconcileDeadSessions(NOW);
+      expect(reaped).toBe(1);
+      expect(s.status).toBe('completed');
+      expect(s.endedAt).toBe(new Date(NOW).toISOString());
+    });
+
+    it('marks a non-zero exit session as failed', () => {
+      const nonZero = createMockSession({ id: 'sess-nz', taskId: 'FLUX-1', status: 'running', startedAt: STALE, lastOutputAt: STALE, proc: deadProc(1) });
+      cliSessionsById.set('sess-nz', nonZero);
+      expect(reconcileDeadSessions(NOW)).toBe(1);
+      expect(nonZero.status).toBe('failed');
+    });
+
+    it('never reaps a pre-spawn pending session with no proc (live, still starting)', () => {
+      // A null `proc` is the pre-spawn window (`startedAt` stamped before the spawn completes), not a
+      // dead process. Reaping it would stamp a bogus endedAt that the later status='running' leaves
+      // behind, making a genuinely-live session read as inactive forever (FLUX-846, opposite direction).
+      const noProc = createMockSession({ id: 'sess-np', taskId: 'FLUX-1', status: 'pending', startedAt: STALE, lastOutputAt: STALE });
+      cliSessionsById.set('sess-np', noProc);
+      expect(reconcileDeadSessions(NOW)).toBe(0);
+      expect(noProc.status).toBe('pending');
+      expect(noProc.endedAt).toBeUndefined();
+    });
+
+    it('leaves a live process alone', () => {
+      const s = createMockSession({ id: 'sess-live', taskId: 'FLUX-1', status: 'running', startedAt: STALE, lastOutputAt: STALE, proc: deadProc(null) });
+      cliSessionsById.set('sess-live', s);
+      expect(reconcileDeadSessions(NOW)).toBe(0);
+      expect(s.status).toBe('running');
+    });
+
+    it('respects the grace window (does not race the exit handler)', () => {
+      const justExited = createMockSession({ id: 'sess-fresh', taskId: 'FLUX-1', status: 'running', startedAt: STALE, lastOutputAt: new Date(NOW - 5_000).toISOString(), proc: deadProc(0) });
+      cliSessionsById.set('sess-fresh', justExited);
+      expect(reconcileDeadSessions(NOW)).toBe(0);
+      expect(justExited.status).toBe('running');
+    });
+
+    it('never reaps a waiting-input session (resumable, keeps a dead proc between turns)', () => {
+      const parked = createMockSession({ id: 'sess-wait', taskId: 'FLUX-1', status: 'waiting-input', startedAt: STALE, lastOutputAt: STALE, proc: deadProc(0) });
+      cliSessionsById.set('sess-wait', parked);
+      expect(reconcileDeadSessions(NOW)).toBe(0);
+      expect(parked.status).toBe('waiting-input');
     });
   });
 

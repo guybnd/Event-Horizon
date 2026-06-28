@@ -200,6 +200,12 @@ export function FloatingPanel({
   }, [persist]);
 
   const onPointerDown = (e: React.PointerEvent) => {
+    // FLUX-836: only start a drag from the bare header. If the pointerdown landed on an interactive
+    // control (minimize / close / any future button or input), bail before capturing — otherwise the
+    // header steals the pointer and the button's own click never fires (minimize never collapses),
+    // and a capture left dangling across the button's re-render funnels ALL pointer events to this
+    // header, locking out every other input until the panel unmounts.
+    if ((e.target as HTMLElement).closest('button,input,textarea,select,a,[role="button"]')) return;
     drag.current = { sx: e.clientX, sy: e.clientY, ox: posRef.current.x, oy: posRef.current.y };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   };
@@ -216,7 +222,10 @@ export function FloatingPanel({
     );
     setPos({ x: clamped.x, y: clamped.y });
   };
-  const onPointerUp = (e: React.PointerEvent) => {
+  // FLUX-836: shared release path. Both pointerup and pointercancel clear the drag and release the
+  // capture — without the pointercancel handler a cancelled pointer (e.g. interrupted by a re-render
+  // or the OS) could leave capture stuck on the header and lock out the rest of the app's input.
+  const endDrag = (e: React.PointerEvent) => {
     if (!drag.current) return;
     drag.current = null;
     (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
@@ -253,7 +262,8 @@ export function FloatingPanel({
       <div
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
         className={headerClass}
       >
         <div className="flex min-w-0 items-center gap-1.5 text-[11px] font-semibold">

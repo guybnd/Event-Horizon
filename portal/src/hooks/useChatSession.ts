@@ -12,6 +12,7 @@ import {
 } from '../api';
 import { uploadChatImage } from '../taskAssetUploads';
 import { getTranscript, hasTranscript, setTranscript } from '../transcriptCache';
+import { getChatQueue, setChatQueue } from '../chatQueueCache';
 
 /** FLUX-674: per-turn send options, including pasted-image attachments. */
 export interface ChatSendOptions {
@@ -35,6 +36,17 @@ function sameMessages(a: TranscriptMessage[], b: TranscriptMessage[]): boolean {
     if (a[i]!.role !== b[i]!.role || a[i]!.text !== b[i]!.text) return false;
   }
   return true;
+}
+
+/** FLUX-837: next monotonic queue-id, seeded past any restored ids (`q<n>`) so a queue rehydrated
+ *  from the cache on a fresh mount can't hand out a key that collides with a restored message. */
+function nextQueueId(items: QueuedMessage[]): number {
+  let max = -1;
+  for (const m of items) {
+    const n = Number(m.id.replace(/^q/, ''));
+    if (Number.isFinite(n) && n > max) max = n;
+  }
+  return max + 1;
 }
 
 export interface UseChatSession {
@@ -99,8 +111,11 @@ export function useChatSession(conversationId: string, enabled = true, working =
   // FLUX-748: client-side message queue. `working` (the live `running` session, owned by the
   // caller) is the dispatch gate; `busy` is this hook's own in-flight POST flag. A monotonic
   // ref supplies stable list keys without Date.now()/Math.random().
-  const [queued, setQueued] = useState<QueuedMessage[]>([]);
-  const queueIdRef = useRef(0);
+  // FLUX-837: rehydrate the parked queue from the module-level cache so minimizing a chat (which
+  // unmounts this hook) no longer discards a message submitted mid-turn. The lazy initializer runs
+  // once; a conversationId switch on a reused hook re-seeds via the effect below.
+  const [queued, setQueued] = useState<QueuedMessage[]>(() => getChatQueue(conversationId));
+  const queueIdRef = useRef(nextQueueId(getChatQueue(conversationId)));
   const [pendingUser, setPendingUser] = useState<string | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
   // FLUX-691: token-by-token live stream for the current turn (see `liveText` in UseChatSession).
@@ -123,6 +138,11 @@ export function useChatSession(conversationId: string, enabled = true, working =
     setMessages(cached);
     setLoading(enabled && !hasTranscript(conversationId));
     setLiveText('');
+    // FLUX-837: re-seed the parked queue for the new conversation too, so a reused hook never
+    // bleeds one conversation's queued messages onto another id.
+    const cachedQueue = getChatQueue(conversationId);
+    queueIdRef.current = nextQueueId(cachedQueue);
+    setQueued(cachedQueue);
   }, [conversationId, enabled]);
 
   // Event-driven transcript sync (FLUX-611): fetch once on open, then refetch only when the
@@ -256,6 +276,61 @@ export function useChatSession(conversationId: string, enabled = true, working =
     setQueued([]);
   }
 
+  // FLUX-837: write the queue through to the module cache on every change so it survives this
+  // hook's unmount (minimize). Guard the id-switch render: when conversationId just changed, the
+  // re-seed effect above owns `queued` for the NEW id, so skip one persist — otherwise the previous
+  // conversation's queue would be written under the new id before the re-seed lands.
+  const persistedQueueIdRef = useRef(conversationId);
+  useEffect(() => {
+    if (persistedQueueIdRef.current !== conversationId) {
+      persistedQueueIdRef.current = conversationId;
+      return;
+    }
+    setChatQueue(conversationId, queued);
+  }, [conversationId, queued]);
+
+  // FLUX-837: one-shot reopen dispatch. If the chat reopened (a fresh mount after minimize) with a
+  // parked queue and no live turn, send the head. The edge auto-dispatch below only fires on a
+  // working true→false transition, which can't happen on a fresh mount — so a turn that FINISHED
+  // while the chat was minimized would otherwise leave the restored message parked forever. We
+  // confirm the session is genuinely idle with a fresh fetch (not the possibly-lagging `working`
+  // prop) so we never fire a message into a live turn and trip the mid-turn 409.
+  //
+  // FLUX-840: re-run on a real conversationId switch too, not just the first mount. The modal
+  // ChatPane reuses one hook across conversations (the FLUX-750 re-seed path); switching to a
+  // different conversation whose queue is parked-but-idle (its turn finished while parked) would
+  // otherwise never auto-dispatch the head, since the edge effect can't see a working true→false
+  // transition while idle. Deps are [conversationId] only — this never re-fires on a busy/working
+  // change, so the FLUX-714 double-dispatch gap stays closed; the `cancelled` cleanup still makes a
+  // StrictMode double-mount (and a rapid id switch) dispatch exactly once per conversation.
+  useEffect(() => {
+    if (!enabled || working || busy) return;
+    // Read the parked queue straight from the cache: on an id switch the re-seed effect's setQueued
+    // for the new id hasn't flushed yet, so the `queued` state still mirrors the PREVIOUS
+    // conversation at effect-run time — the cache is authoritative for the new id (and matches
+    // state on a cold mount). Capturing `parked` synchronously also keeps the head stable across
+    // the async live-session fetch below.
+    const parked = getChatQueue(conversationId);
+    if (parked.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const live = await fetchTaskCliSession(conversationId);
+        // Still mid-turn → leave it parked; the edge effect dispatches when this turn finishes.
+        if (live && (live.status === 'running' || live.status === 'pending')) return;
+      } catch {
+        /* no live session — a fresh start is safe */
+      }
+      if (cancelled) return;
+      const head = parked[0];
+      if (!head) return;
+      setQueued((q) => (q[0]?.id === head.id ? q.slice(1) : q));
+      void send(head.text, head.opts);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId]);
+
   // FLUX-748: auto-dispatch the head of the queue on the `working` true→false edge — the moment
   // the live turn finishes. Edge-triggered (not a steady-state `!working && !busy` check) on
   // purpose: `busy` resets when our POST returns (~1s), well BEFORE the engine flips the session
@@ -314,6 +389,9 @@ export function useChatSession(conversationId: string, enabled = true, working =
       setTranscript(conversationId, []); // FLUX-750: reflect the cleared transcript in the cache.
       setLiveText('');
       setPendingUser(null);
+      // FLUX-837: a reset wipes the conversation, so drop any parked queue too (state + cache).
+      setQueued([]);
+      setChatQueue(conversationId, []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to reset conversation');
     }

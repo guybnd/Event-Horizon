@@ -152,7 +152,9 @@ export interface TicketActionContext {
   changeStatus: (newStatus: string, opts?: { needsComment?: boolean }) => void | Promise<void>;
   /** Engine finish for branch/PR tickets — merge the open PR and advance to Done. */
   finishViaMerge: () => void | Promise<void>;
-  /** Agent `finish` — branchless tickets need a curated commit, so this is tokenized. */
+  /** Engine finish for branchless tickets (FLUX-618) — curated commit + Done, zero tokens. */
+  finishViaEngine: () => void | Promise<void>;
+  /** Agent `finish` — fallback when there's nothing to curate (clean tree / no open PR), tokenized. */
   dispatchFinish: () => void | Promise<void>;
   /** One-click launch of the phase default (StartPrompt for Todo-no-branch; launcher fallback). */
   launchDefault: (phase: LaunchPhase) => void | Promise<void>;
@@ -269,8 +271,9 @@ export function actionsForStatus(task: Task, ctx: TicketActionContext): TicketAc
       },
     });
     actions.push(transition('back-to-in-progress', 'Back to In Progress', IN_PROGRESS_STATUS, ctx, { surfaces: ['compact'] }));
-    // Finish: branch/PR ticket → engine merge (zero tokens); branchless → tokenized agent finish.
-    // The ▾ menu carries finalize templates either way.
+    // Finish: both branches are now zero-token engine actions (FLUX-618) — branch/PR ticket → merge
+    // the open PR; branchless → curated commit + Done via the engine finish route. The ▾ menu carries
+    // finalize templates either way.
     actions.push({
       key: 'finish',
       label: 'Finish',
@@ -279,7 +282,7 @@ export function actionsForStatus(task: Task, ctx: TicketActionContext): TicketAc
       tone: 'primary',
       icon: 'send',
       guard: task.branch ? 'confirm' : undefined,
-      run: () => (task.branch ? ctx.finishViaMerge() : ctx.dispatchFinish()),
+      run: () => (task.branch ? ctx.finishViaMerge() : ctx.finishViaEngine()),
       templates: ctx.finalizeTemplates,
       onTemplate: (id) => ctx.openLauncher('finalize', id),
     });

@@ -11,6 +11,8 @@ import {
   readTurns,
   sliceTurns,
   readTranscriptMessages,
+  tailTurns,
+  tailTranscriptMessages,
 } from './transcript.js';
 import { projectTranscript, type Turn } from './projection.js';
 
@@ -190,6 +192,32 @@ describe('substrate vs projection (FLUX-658)', () => {
     ]);
   });
 
+  it('projectTranscript renders a permission round-trip as quiet permission note rows (FLUX-833)', () => {
+    const stream = 'PERM';
+    const raws = [
+      // FLUX-833: a gated tool call parks for approval. The durable request + decision events
+      // project to non-bubble `note` rows tagged `permission` so a cold resume sees the round-trip.
+      { type: 'permission-request', id: 'p1', toolName: 'change_status', input: { newStatus: 'Done' }, timestamp: 'T1' },
+      { type: 'permission-resolved', id: 'p1', behavior: 'allow', timestamp: 'T2' },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'done' }] } },
+      // A timed-out denial is distinguished by `reason: 'timeout'` in the rendered text.
+      { type: 'permission-request', id: 'p2', toolName: 'Bash', input: { command: 'rm -rf x' }, timestamp: 'T3' },
+      { type: 'permission-resolved', id: 'p2', behavior: 'deny', reason: 'timeout', timestamp: 'T4' },
+      // A plain human denial (no reason) reads as a flat "denied".
+      { type: 'permission-resolved', id: 'p3', behavior: 'deny', timestamp: 'T5' },
+    ];
+    const turns: Turn[] = raws.map((raw, seq) => ({ turnId: `${stream}:${seq}`, streamId: stream, seq, ts: 'TENV', role: 'unknown', raw }));
+
+    expect(projectTranscript(turns)).toEqual([
+      { role: 'note', kind: 'permission', text: '🔒 Approval requested · change_status', ts: 'T1' },
+      { role: 'note', kind: 'permission', text: '✅ Approval granted', ts: 'T2' },
+      { role: 'assistant', text: 'done', ts: 'TENV' },
+      { role: 'note', kind: 'permission', text: '🔒 Approval requested · Bash', ts: 'T3' },
+      { role: 'note', kind: 'permission', text: '⛔ Approval timed out — denied', ts: 'T4' },
+      { role: 'note', kind: 'permission', text: '⛔ Approval denied', ts: 'T5' },
+    ]);
+  });
+
   it('projectTranscript carries pasted-image attachments onto the user turn (FLUX-674)', () => {
     const stream = 'IMG';
     const raws = [
@@ -298,5 +326,87 @@ describe('substrate vs projection (FLUX-658)', () => {
       { role: 'user', text: 'legacy hi', ts: 'T0' },
       { role: 'assistant', text: 'enveloped reply', ts: 'T1' },
     ]);
+  });
+});
+
+/**
+ * FLUX-856 — bounded-tail read for cold-resume re-prime. `tailTurns` / `tailTranscriptMessages`
+ * must return only the last N turns (with their real enveloped seq) regardless of how large the
+ * transcript is, so the board cold-start never reads/projects the whole `__board__.jsonl`.
+ */
+describe('bounded tail read (FLUX-856)', () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-tail-'));
+    setWorkspaceRoot(root);
+  });
+
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true }).catch(() => {});
+  });
+
+  let n = 0;
+  const freshStream = () => `TAIL-${Date.now()}-${n++}`;
+
+  it('returns only the last N turns, with their real (absolute) seq preserved', async () => {
+    const stream = freshStream();
+    for (let i = 0; i < 50; i++) {
+      appendTranscriptEvent(stream, { type: 'user', text: `turn ${i}`, timestamp: `T${i}` });
+    }
+    await flushTranscript(stream);
+
+    const tail = await tailTurns(stream, 10);
+    expect(tail).toHaveLength(10);
+    // Seqs are the real absolute envelope seqs (40..49), not window-relative indices.
+    expect(tail.map((t) => t.seq)).toEqual([40, 41, 42, 43, 44, 45, 46, 47, 48, 49]);
+    expect(tail[0]!.raw.text).toBe('turn 40');
+    expect(tail[9]!.raw.text).toBe('turn 49');
+    expect(tail[9]!.turnId).toBe(`${stream}:49`);
+  });
+
+  it('returns the whole (short) transcript when it has fewer than N turns', async () => {
+    const stream = freshStream();
+    appendTranscriptEvent(stream, { type: 'user', text: 'only one', timestamp: 'T0' });
+    await flushTranscript(stream);
+
+    const tail = await tailTurns(stream, 200);
+    expect(tail).toHaveLength(1);
+    expect(tail[0]!.raw.text).toBe('only one');
+  });
+
+  it('returns [] for a missing transcript file (fresh board)', async () => {
+    expect(await tailTurns(freshStream(), 200)).toEqual([]);
+    expect(await tailTranscriptMessages(freshStream(), 200)).toEqual([]);
+  });
+
+  it('tailTranscriptMessages projects only the tail window', async () => {
+    const stream = freshStream();
+    for (let i = 0; i < 30; i++) {
+      appendTranscriptEvent(stream, { type: 'user', text: `msg ${i}`, timestamp: `T${i}` });
+    }
+    await flushTranscript(stream);
+
+    const msgs = await tailTranscriptMessages(stream, 5);
+    expect(msgs).toEqual([
+      { role: 'user', text: 'msg 25', ts: 'T25' },
+      { role: 'user', text: 'msg 26', ts: 'T26' },
+      { role: 'user', text: 'msg 27', ts: 'T27' },
+      { role: 'user', text: 'msg 28', ts: 'T28' },
+      { role: 'user', text: 'msg 29', ts: 'T29' },
+    ]);
+  });
+
+  it('reads a tail across many file chunks (line spanning the 64 KiB read window)', async () => {
+    const stream = freshStream();
+    // A single fat turn larger than the 64 KiB chunk forces the backward reader to loop.
+    appendTranscriptEvent(stream, { type: 'user', text: 'x'.repeat(80_000), timestamp: 'T0' });
+    appendTranscriptEvent(stream, { type: 'user', text: 'last', timestamp: 'T1' });
+    await flushTranscript(stream);
+
+    const tail = await tailTurns(stream, 2);
+    expect(tail).toHaveLength(2);
+    expect(tail[0]!.raw.text).toHaveLength(80_000);
+    expect(tail[1]!.raw.text).toBe('last');
   });
 });

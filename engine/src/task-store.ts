@@ -14,6 +14,7 @@ import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, fi
 import { generatePromptNotification, generateCompletionNotification, clearNotifications, checkSkillStaleness, addNotification } from './notifications.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
 import { broadcastEvent } from './events.js';
+import { rehydrateOpenPrompts } from './hitl-prompts.js';
 import { getCliSessionSummaryForTask, getAllSessionSummariesForTask, getListSessionSummariesForTask, slimSessionSummaryForAgent, cliSessionsById, cliSessionIdByTaskId } from './session-store.js';
 import { isTopLevelTaskFile, getDocsDir, isDocFile, getDocPathFromFile, titleFromDocPath, slugifyDocValue, parseDocOrder } from './file-utils.js';
 import type { StoredDoc } from './file-utils.js';
@@ -1234,6 +1235,10 @@ export async function startWatchers() {
     ignored: (filePath: string) => {
       const basename = path.basename(filePath);
       if (basename.endsWith('.tmp')) return true;
+      // FLUX-855: the HITL store (open-prompts.json) is rewritten on every prompt park/settle and is
+      // not a task file — the add/change handlers no-op on it (not *.md, not config.json), so watching
+      // it is pure FS-event churn on a hot path. Exclude it (its .tmp sibling is already covered above).
+      if (basename === 'open-prompts.json') return true;
       return basename.startsWith('.') && basename !== path.basename(getActiveFluxDir());
     },
     persistent: true,
@@ -1248,7 +1253,15 @@ export async function startWatchers() {
       if (isTopLevelTaskFile(filePath)) void loadTask(filePath);
       if (filePath === configFile) void loadConfig();
     })
-    .on('ready', () => { void reconcileOrphanedSessions(); })
+    .on('ready', () => {
+      void reconcileOrphanedSessions();
+      // FLUX-833 (Phase 2): re-surface HITL prompts that were still open when the engine stopped.
+      // Runs here (not earlier) so getActiveFluxDir() resolves against the now-activated workspace,
+      // alongside the orphaned-session reconcile it conceptually parallels. rehydrate self-guards
+      // each record, but wrap the call too (review M1) so nothing it does can throw out of this
+      // synchronous chokidar `ready` listener and crash boot.
+      try { rehydrateOpenPrompts(); } catch (err) { console.error('[hitl] rehydrate failed', err); }
+    })
     .on('unlink', (filePath) => {
       if (isTopLevelTaskFile(filePath)) {
         const taskEntry = Object.entries(tasksCache).find(([, task]) => task._path === filePath);

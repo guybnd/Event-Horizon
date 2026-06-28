@@ -78,12 +78,6 @@ export function ChatDiffPanel({ task }: { task: Task }) {
     if (open && summary === null && !loading && !error) load();
   }, [open, summary, loading, error, load]);
 
-  // Auto-open when a session goes active so the live diff is visible without a click.
-  // Only fires on the idle→active transition, so manually closing it mid-turn sticks.
-  useEffect(() => {
-    if (working) setOpen(true);
-  }, [working]);
-
   // Live refresh: while open, refetch the summary (debounced) whenever the engine
   // pushes an event for THIS ticket — the same stream the chat transcript listens to.
   useEffect(() => {

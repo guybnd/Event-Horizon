@@ -4,11 +4,13 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
-import { ChevronDown, ChevronRight, ExternalLink } from 'lucide-react';
-import { useAppActions, useTaskById } from '../store/useAppSelector';
+import { ChevronDown, ChevronRight, ExternalLink, HelpCircle, X } from 'lucide-react';
+import { useAppActions, useTaskById, useAppSelector, shallowEqual } from '../store/useAppSelector';
+import type { Task } from '../types';
 import { useDockActions } from './DockProvider';
 import {
   BOARD_CONVERSATION_ID,
@@ -51,8 +53,16 @@ export interface PendingInteractionsValue {
   rebaseFailures: BoardRebaseFailure[];
   /** Non-null conversation ids that currently have at least one unresolved pending prompt. */
   pendingPromptConversationIds: Set<string>;
-  /** FLUX-809: total count of pending prompts (approvals + questions + rebases + post-apply
-   *  failures), claimed-or-not — the always-meaningful number shown on the pinned Pending tab. */
+  /** Ticket ids with the require-input swimlane — for a persistent "needs input" badge on the chat tab. */
+  requireInputConversationIds: Set<string>;
+  /** Tickets currently carrying the `require-input` swimlane — surfaced in the same pending bar so a
+   *  grooming "needs your input" lands in one loud place (the pinned tab count) instead of only a
+   *  quiet board-card flag. Derived client-side from the task store; no engine change. */
+  requireInputTickets: Task[];
+  /** Hide a require-input ticket from the pending bar (persisted; the ticket keeps its board swimlane). */
+  dismissRequireInput: (task: Task) => void;
+  /** FLUX-809: total count of pending prompts (approvals + questions + rebases + post-apply failures)
+   *  PLUS require-input tickets, claimed-or-not — the always-meaningful number on the pinned Pending tab. */
   pendingCount: number;
   /** FLUX-809: whether the user has manually opened the pending fallback window via the Pending
    *  tab. Orphan prompts still force the window visible regardless (the FLUX-720 safety); this only
@@ -193,8 +203,47 @@ export function PendingInteractionsProvider({ children }: { children: ReactNode 
   }, []);
   const closePendingPanel = useCallback(() => setPendingPanelOpen(false), []);
 
-  // FLUX-809: total pending prompts across all queues — the count shown on the pinned Pending tab.
-  const pendingCount = approvals.length + questions.length + rebases.length + rebaseFailures.length;
+  // Tickets with the require-input swimlane, derived from the task store so a grooming "needs your
+  // input" shows in the same pending bar (no engine change — the portal already has every ticket).
+  const allRequireInputTickets = useAppSelector(
+    (s) => s.tasks.filter((t) => t.swimlane === 'require-input'),
+    shallowEqual,
+  );
+  // Per-item dismiss: hide a require-input from the bar WITHOUT touching the ticket's board swimlane
+  // (the persistent record stays on the card). Persisted by id+set-date so a NEW question re-surfaces.
+  const [dismissedRequireInput, setDismissedRequireInput] = useState<Set<string>>(loadDismissedRequireInput);
+  const requireInputTickets = useMemo(
+    () => allRequireInputTickets.filter((t) => !dismissedRequireInput.has(requireInputKey(t))),
+    [allRequireInputTickets, dismissedRequireInput],
+  );
+  const dismissRequireInput = useCallback((task: Task) => {
+    setDismissedRequireInput((prev) => {
+      const key = requireInputKey(task);
+      if (prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.add(key);
+      saveDismissedRequireInput(next);
+      return next;
+    });
+  }, []);
+
+  // FLUX-809: total pending prompts across all queues + require-input tickets — the count shown on the
+  // pinned Pending tab (loud amber + pulse when > 0), so grooming questions are no longer easy to miss.
+  const pendingCount =
+    approvals.length + questions.length + rebases.length + rebaseFailures.length + requireInputTickets.length;
+
+  // Auto-pop the pending window whenever the pending set GROWS — a new approval/question/rebase or a
+  // newly-raised require-input pops it on-screen instead of only bumping the tab badge. Rising-edge
+  // only, so closing the window (✕) or dismissing an item never re-opens it; the next NEW item does.
+  // require-input isn't in `pendingPanelVisible`'s force-open set, so the ✕ can still hide it.
+  const prevPendingCountRef = useRef(0);
+  useEffect(() => {
+    if (pendingCount > prevPendingCountRef.current) {
+      setPendingPanelOpen(true);
+      setRevealNonce((n) => n + 1);
+    }
+    prevPendingCountRef.current = pendingCount;
+  }, [pendingCount]);
 
   // FLUX-813: do any pending prompts lack an inline surface? Orphans force the fallback window open
   // (the FLUX-720 safety) — the same predicate the fallback uses to gate itself, hoisted here so the
@@ -216,13 +265,25 @@ export function PendingInteractionsProvider({ children }: { children: ReactNode 
     return set;
   }, [approvals, questions, rebases]);
 
+  // Ticket ids with the require-input swimlane — the dock taskbar uses this to put a PERSISTENT
+  // "needs your input" badge on the chat's tab (like a parked prompt). Unlike the ack-clearable
+  // needs-input session state, it stays until the swimlane is cleared (answered) and shows even
+  // with no live session. Dismissed items are excluded, so a bar dismiss clears the tab flag too.
+  const requireInputConversationIds = useMemo(
+    () => new Set(requireInputTickets.map((t) => t.id)),
+    [requireInputTickets],
+  );
+
   const value = useMemo<PendingInteractionsValue>(
     () => ({
+      requireInputTickets,
+      dismissRequireInput,
       approvals,
       questions,
       rebases,
       rebaseFailures,
       pendingPromptConversationIds,
+      requireInputConversationIds,
       pendingCount,
       pendingPanelOpen,
       pendingPanelVisible,
@@ -243,11 +304,14 @@ export function PendingInteractionsProvider({ children }: { children: ReactNode 
       isClaimed,
     }),
     [
+      requireInputTickets,
+      dismissRequireInput,
       approvals,
       questions,
       rebases,
       rebaseFailures,
       pendingPromptConversationIds,
+      requireInputConversationIds,
       pendingCount,
       pendingPanelOpen,
       pendingPanelVisible,
@@ -321,8 +385,20 @@ export function PendingInteractionFallback() {
     removeRebase,
     reportRebaseFailure,
     dismissRebaseFailure,
+    requireInputTickets,
+    dismissRequireInput,
   } = usePendingInteractions();
   const { openChat } = useDockActions();
+
+  // Jumping to a chat from the pending window should close the window, not draw on top of the ticket
+  // you just opened (require-input isn't force-open, so this hides it).
+  const jumpToChat = useCallback(
+    (id: string) => {
+      openChat(id);
+      closePendingPanel();
+    },
+    [openChat, closePendingPanel],
+  );
 
   const orphanApprovals = approvals.filter((p) => !isClaimed(p.conversationId));
   const orphanQuestions = questions.filter((p) => !isClaimed(p.conversationId));
@@ -347,20 +423,22 @@ export function PendingInteractionFallback() {
 
   const count =
     orphanApprovals.length + orphanRebases.length + orphanQuestions.length + orphanFailures.length;
+  // Include require-input tickets in the window's title count + attention pulse so the surface
+  // reflects everything waiting on you, not just the parked prompts.
+  const totalCount = count + requireInputTickets.length;
 
   return (
     <FloatingPanel
       storageKey="eh.pendingFallback.geometry.v2"
-      title={hasOrphans ? `Pending · ${count} item${count === 1 ? '' : 's'}` : 'Pending'}
+      title={totalCount > 0 ? `Pending · ${totalCount} item${totalCount === 1 ? '' : 's'}` : 'Pending'}
       defaultWidth={600}
       defaultHeight={690}
       tone="attention"
-      pulse={hasOrphans}
+      pulse={hasOrphans || requireInputTickets.length > 0}
       revealSignal={revealNonce}
-      // FLUX-832: minimize is always offered — it tucks the window to its title bar (count still
-      // visible, one click to restore) without hiding anything, so it's safe even while orphans
-      // force the window open. The close ✕ stays gated on no-orphans (it would actually hide).
-      minimizable
+      // The close ✕ hides the window; it stays gated while orphan prompts force it open (resolve them
+      // in-place to dismiss — the FLUX-720 no-ignore safety). Minimize was removed: the ✕ is the single
+      // expected hide control, and require-input items can be dismissed individually instead.
       onClose={hasOrphans ? undefined : closePendingPanel}
     >
       <div className="flex flex-col gap-2">
@@ -408,6 +486,11 @@ export function PendingInteractionFallback() {
             <QuestionCard pending={p} onResolved={() => removeQuestion(p.id)} />
           </FallbackItem>
         ))}
+        {/* Grooming "Require Input" tickets — surfaced here as jump-to-answer items so a board-card
+            swimlane is no longer the only signal that the agent is blocked on you. */}
+        {requireInputTickets.map((t) => (
+          <RequireInputItem key={`ri-${t.id}`} task={t} onOpen={jumpToChat} onDismiss={dismissRequireInput} />
+        ))}
         {/* FLUX-813: jump chips for prompts handled inline in their own chat. Rendered below the
             orphan items REGARDLESS of `hasOrphans` so the window always accounts for the full
             pending count (orphan + claimed) — never a "tab says 3, window shows 2" dead end. */}
@@ -432,7 +515,7 @@ export function PendingInteractionFallback() {
             </div>
           </div>
         )}
-        {!hasOrphans && claimedPendingIds.length === 0 && (
+        {!hasOrphans && claimedPendingIds.length === 0 && requireInputTickets.length === 0 && (
           <div className="px-1 py-6 text-center text-xs text-[var(--eh-text-muted)]">
             No pending items — you’re all caught up.
           </div>
@@ -519,6 +602,121 @@ function FallbackItem({
         </button>
       ) : (
         children
+      )}
+    </div>
+  );
+}
+
+const DISMISSED_RI_KEY = 'eh-dismissed-require-input';
+const DISMISSED_RI_CAP = 200;
+
+/** The agent's question + the timestamp the require-input swimlane was set: the comment on the latest
+ *  `swimlane_change → set require-input` entry (question falls back to the most recent comment). */
+function requireInputMeta(task: Task): { question: string; setDate: string } {
+  const entries = task.history ?? [];
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i] as { type?: string; action?: string; swimlane?: string; comment?: string; date?: string };
+    if (e?.type === 'swimlane_change' && e.action === 'set' && e.swimlane === 'require-input') {
+      return { question: e.comment || 'This ticket is waiting for your input.', setDate: e.date ?? '' };
+    }
+  }
+  let question = 'This ticket is waiting for your input.';
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i] as { type?: string; comment?: string };
+    if (e?.type === 'comment' && e.comment) {
+      question = e.comment;
+      break;
+    }
+  }
+  return { question, setDate: '' };
+}
+
+/** Stable per-ticket dismissal key — id + the swimlane-set timestamp, so a FRESH require-input on the
+ *  same ticket (a new question after the last was answered) re-surfaces instead of staying dismissed. */
+function requireInputKey(task: Task): string {
+  return `${task.id}:${requireInputMeta(task).setDate}`;
+}
+
+function loadDismissedRequireInput(): Set<string> {
+  try {
+    const raw = localStorage.getItem(DISMISSED_RI_KEY);
+    return new Set(raw ? (JSON.parse(raw) as string[]) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveDismissedRequireInput(set: Set<string>): void {
+  try {
+    // Cap to avoid unbounded growth as tickets churn (keys for cleared tickets linger harmlessly).
+    localStorage.setItem(DISMISSED_RI_KEY, JSON.stringify([...set].slice(-DISMISSED_RI_CAP)));
+  } catch {
+    /* storage full/disabled — dismissal is a nicety, not load-bearing */
+  }
+}
+
+/**
+ * A require-input ticket rendered as a pending-bar item. Unlike a parked approval/question, a
+ * grooming "Require Input" carries free-form prose (proposed options, not a structured picker), so
+ * the affordance is "Open to answer" — it pops the ticket chat where you reply. This is what unifies
+ * grooming questions into the same loud surface as approvals/questions instead of a quiet board-card
+ * swimlane the user has to happen to notice.
+ */
+function RequireInputItem({
+  task,
+  onOpen,
+  onDismiss,
+}: {
+  task: Task;
+  onOpen: (id: string) => void;
+  onDismiss: (task: Task) => void;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+  const question = requireInputMeta(task).question;
+  const clipped = question.length > 280 ? `${question.slice(0, 280).trimEnd()}…` : question;
+  const label = task.title ? `${task.id} · ${task.title}` : task.id;
+
+  return (
+    <div className="eh-surface eh-border flex flex-col gap-1.5 rounded-xl border p-2 shadow-2xl">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+          <HelpCircle className="h-3 w-3 shrink-0" />
+          <span className="truncate">Needs your input · {label}</span>
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <button
+            type="button"
+            onClick={() => setCollapsed((v) => !v)}
+            title={collapsed ? 'Expand' : 'Collapse'}
+            aria-expanded={!collapsed}
+            className="shrink-0 rounded p-0.5 text-[var(--eh-text-muted)] transition-colors hover:bg-black/10 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/10"
+          >
+            {collapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+          </button>
+          <button
+            type="button"
+            onClick={() => onDismiss(task)}
+            title="Dismiss from this list (the ticket keeps its require-input flag on the board)"
+            aria-label="Dismiss"
+            className="shrink-0 rounded p-0.5 text-[var(--eh-text-muted)] transition-colors hover:bg-black/10 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/10"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
+      {!collapsed && (
+        <>
+          <div className="whitespace-pre-wrap break-words text-[12px] leading-snug text-[var(--eh-text-secondary)]">
+            {clipped}
+          </div>
+          <button
+            type="button"
+            onClick={() => onOpen(task.id)}
+            className="flex items-center justify-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-[12px] font-semibold text-white transition-colors hover:bg-primary-hover"
+          >
+            <ExternalLink className="h-3.5 w-3.5" /> Open to answer
+          </button>
+        </>
       )}
     </div>
   );

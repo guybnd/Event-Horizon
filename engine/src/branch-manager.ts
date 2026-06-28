@@ -33,7 +33,14 @@ export async function createTicketBranch(ticketId: string, title: string, baseBr
   // process must NOT switch HEAD to the ticket branch; the agent's worktree/session
   // is what checks it out.
   if (!(await branchRefExists(name))) {
-    await git(['branch', name, baseBranch]);
+    try {
+      await git(['branch', name, baseBranch]);
+    } catch (err) {
+      // FLUX-852: a concurrent same-ticket dispatch can create the ref between the existence
+      // check above and this `git branch` — tolerate that race (reuse the now-existing branch)
+      // instead of surfacing a raw "already exists" 500. Re-throw any other failure.
+      if (!(await branchRefExists(name))) throw err;
+    }
   }
   await git(['push', '-u', 'origin', name]);
   return name;

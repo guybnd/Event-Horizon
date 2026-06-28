@@ -14,10 +14,12 @@ import { configCache, autoRegisterUnknownTags } from './config.js';
 import { broadcastEvent } from './events.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
 import { extractTicket } from './extract.js';
+import { mergeTickets } from './merge.js';
 import { normalizeHistoryEntries, buildActivityEntry } from './history.js';
 import { getCliWorkspace, getActiveFluxDir, getWorkspacesList, workspaceRoot } from './workspace.js';
-import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, checkGhAuth, captureDiff, resolveCommit, planFinishPr, getDefaultBranch } from './branch-manager.js';
-import { createTaskWorktree, detachTaskWorktree, taskWorktreeDir, findWorktreeForBranch, worktreeChangeCount } from './task-worktree.js';
+import { getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, checkGhAuth, captureDiff, resolveCommit, planFinishPr, getDefaultBranch } from './branch-manager.js';
+import { detachTaskWorktree, taskWorktreeDir, findWorktreeForBranch, worktreeChangeCount } from './task-worktree.js';
+import { ensureTicketIsolation } from './ticket-isolation.js';
 import { cleanupMergedBranch } from './pr-cleanup.js';
 import { sharedNonDoneSiblings } from './pr-tickets.js';
 import { existsSync, statSync, readFileSync } from 'fs';
@@ -355,6 +357,28 @@ export function buildMcpServer(): McpServer {
         return jsonResult(result);
       } catch (err: any) {
         return errorResult(err.message || 'Failed to extract ticket');
+      }
+    },
+  );
+
+  // FLUX-657: the `merge` curation verb — fold several chat-streams/tickets into ONE survivor
+  // effort (the inverse of extract). Gated in the CONFIRM tier (below) and surfaced via the
+  // board-rebase `fold` proposal — never auto-applied. Additive (one op-log entry); the source
+  // turns are never moved, and each source is tombstoned + archived (not deleted).
+  server.tool(
+    'merge_tickets',
+    'Fold several tickets/chat-streams into ONE survivor effort — the inverse of extract, for when "three chats are really one effort." The survivor\'s transcript re-derives as the chronological union of its own turns plus every source stream\'s turns (source attribution preserved); each source ticket is tombstoned (mergedInto pointer + pinned comment) and archived, never deleted — its turns stay intact in the substrate. Additive and reversible (one op in the curation op-log). Human-approved only (CONFIRM gate / board-rebase `fold` proposal).',
+    {
+      into: z.string().describe('Survivor ticket id the sources fold into.'),
+      from: z.array(z.string()).describe('Source ticket/stream ids to fold into the survivor (each gets tombstoned + archived). Must be non-empty and exclude `into`.'),
+    },
+    async ({ into, from }) => {
+      if (workspaceActivating) return errorResult('Workspace is activating, please retry');
+      try {
+        const result = await mergeTickets({ into, from });
+        return jsonResult(result);
+      } catch (err: any) {
+        return errorResult(err.message || 'Failed to merge tickets');
       }
     },
   );
@@ -1026,33 +1050,16 @@ export function buildMcpServer(): McpServer {
       if (task.branch) return errorResult(`Ticket ${ticketId} already has branch: ${task.branch}`);
 
       try {
-        const branch = await createTicketBranch(ticketId, task.title || ticketId, baseBranch);
-        await updateTaskWithHistory(ticketId, { updatedBy: 'Agent', extraFields: { branch } });
-
         // FLUX-521: optionally create a dedicated worktree (worktree ⇒ branch).
         // FLUX-741: agent branch sessions are worktree-isolated BY DEFAULT — two parallel ticket
         // sessions must never share one checkout (the FLUX-734/739 loss, where a shared-root switch
         // discarded uncommitted work). The explicit `worktree` param is the per-call escape
         // (`worktree:false` → run in the shared main tree). The portal/human "Start task" path keeps
         // its own `worktreeByDefault` default (off, see routes/tasks.ts) — this flip is agent-only.
-        const useWorktree = worktree ?? true;
-        let worktreePath: string | undefined;
-        let worktreeError: string | undefined;
-        if (useWorktree) {
-          try {
-            worktreePath = await createTaskWorktree(workspaceRoot!, ticketId, branch, { baseBranch });
-          } catch (wtErr: any) {
-            // Branch already created — don't fail the whole call; agent falls back to the
-            // main tree. Surface it on the ticket so the lost isolation isn't silent.
-            worktreeError = wtErr.message;
-            await updateTaskWithHistory(ticketId, {
-              updatedBy: 'Agent',
-              entries: [buildActivityEntry(`⚠️ Dedicated worktree NOT created: ${worktreeError}. The agent will run in the main tree (no isolation).`, 'Agent', new Date().toISOString())],
-            });
-          }
-        }
-        broadcastEvent('taskUpdated', { id: ticketId });
-        return jsonResult({ branch, ...(worktreePath ? { worktree: worktreePath } : {}), ...(worktreeError ? { worktreeError } : {}) });
+        // FLUX-845: the branch+worktree mechanism is centralized in ensureTicketIsolation; this tool
+        // only resolves the agent POLICY (worktree-by-default) and delegates.
+        const result = await ensureTicketIsolation(ticketId, { worktree: worktree ?? true, baseBranch });
+        return jsonResult(result);
       } catch (err: any) {
         return errorResult(`Failed to create branch: ${err.message}`);
       }
@@ -1304,11 +1311,18 @@ export function buildMcpServer(): McpServer {
       phase: z.enum(['grooming', 'implementation', 'review', 'finalize']).optional().describe('Work phase — drives the session mission. If omitted, the engine derives it from the ticket status.'),
       personaId: z.string().optional().describe('Optional persona to lead the session (from list_available_agents). Default: the phase\'s solo lead.'),
       effort: z.string().optional().describe('Effort level: low, medium, high, xhigh.'),
+      worktree: z.boolean().optional().describe('Isolate the session in a dedicated git worktree (FLUX-845). Defaults to TRUE: agent dispatch is unattended and often concurrent, so it must never share a checkout with another session. Pass `worktree:false` for the single-checkout / shared-tree escape (manual case).'),
     },
-    async ({ ticketId, phase, personaId, effort }) => {
+    async ({ ticketId, phase, personaId, effort, worktree }) => {
       try {
         const framework = process.env.EVENT_HORIZON_FRAMEWORK || 'claude';
-        const body: Record<string, unknown> = { framework, skipPermissions: true, patternPosition: 'standalone' };
+        // FLUX-845: isolate by default — the engine creates the branch+worktree before spawning.
+        const body: Record<string, unknown> = {
+          framework,
+          skipPermissions: true,
+          patternPosition: 'standalone',
+          isolation: worktree === false ? 'branch' : 'worktree',
+        };
         if (phase) body.phase = phase;
         if (personaId) body.personaId = personaId;
         if (effort) body.effortOverride = effort;
@@ -1396,8 +1410,7 @@ export function buildMcpServer(): McpServer {
   // FLUX-659 teeth: the restructuring verbs join the CONFIRM tier so a DIRECT orchestrator call to
   // mutate the board is gated even if it bypasses the board-rebase ritual — "never silently
   // restructure" is enforced by the gate, not just the prompt. extract_ticket (FLUX-656) and
-  // merge_tickets (FLUX-657) aren't built yet; they're listed speculatively so they're gated the
-  // moment they land — verify the names when those tickets ship.
+  // merge_tickets (FLUX-657) are both live and registered above; they are gated here.
   const CONFIRM_PERMISSION_TOOLS = new Set([
     'change_status', 'delete_branch', 'finish_ticket', 'Bash',
     'archive_ticket', 'extract_ticket', 'merge_tickets',
@@ -1421,7 +1434,7 @@ export function buildMcpServer(): McpServer {
         const res = await fetch(`${ENGINE_URL}/api/board/permission-request`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tool_name, input, conversationId: process.env.EH_CONVERSATION_ID || null }),
+          body: JSON.stringify({ tool_name, input, conversationId: process.env.EH_CONVERSATION_ID || null, conversationToken: process.env.EH_CONVERSATION_TOKEN || null }),
         });
         if (!res.ok) return jsonResult({ behavior: 'deny', message: 'Approval channel error — denied.' });
         return jsonResult(await res.json());
@@ -1456,7 +1469,7 @@ export function buildMcpServer(): McpServer {
         const res = await fetch(`${ENGINE_URL}/api/board/ask-question`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ questions, conversationId: process.env.EH_CONVERSATION_ID || null }),
+          body: JSON.stringify({ questions, conversationId: process.env.EH_CONVERSATION_ID || null, conversationToken: process.env.EH_CONVERSATION_TOKEN || null }),
         });
         if (!res.ok) return errorResult('Ask-question channel error — no answer received. Proceed with your best judgment or ask again.');
         const result = await res.json();

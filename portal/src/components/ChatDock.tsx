@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { Sparkles, MessageSquare, Minus, X, History, Square, RotateCcw, GitBranch, FolderGit2, GitPullRequest, ListChecks, Loader2, MessageCircleQuestion, PanelRight, PanelRightClose, Maximize2, Tag, Link2, Gauge, Save, ChevronDown, Check, Inbox, CircleHelp, TriangleAlert, Circle } from 'lucide-react';
+import { Sparkles, MessageSquare, Minus, X, History, Square, RotateCcw, GitBranch, FolderGit2, GitPullRequest, ListChecks, Loader2, MessageCircleQuestion, PanelRight, PanelRightClose, Maximize2, Tag, Link2, Gauge, Save, ChevronDown, Check, Inbox, CircleHelp, TriangleAlert, Circle, Play } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
@@ -140,7 +140,7 @@ export function ChatDock() {
   // Pending tab — always present, loud when prompts wait, toggles/raises the pending window.
   // FLUX-813: use `pendingPanelVisible` (orphan-forced OR manual) not `pendingPanelOpen` (manual only)
   // so the tab's open-indicator bar reflects the window actually being on-screen when orphans force it.
-  const { pendingPromptConversationIds, pendingCount, pendingPanelVisible, togglePendingPanel } = usePendingInteractions();
+  const { pendingPromptConversationIds, requireInputConversationIds, pendingCount, pendingPanelVisible, togglePendingPanel } = usePendingInteractions();
   // Window/open state lives in the app-root DockProvider (FLUX-603) so a card can drive it
   // and it survives view switches. `anchors` records where each window should spawn from.
   const { open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, toggle, closeCard, reopenFromHistory, setDraft, setSelections, reorder, promoteToFront, toggleSideView, setSideviewWidth, seedSideviewWidth, openTicket, raise } = useDock();
@@ -377,7 +377,7 @@ export function ChatDock() {
       const hasPrompt = pendingPromptConversationIds.has(t.id);
       if (hasPrompt) nextPrompt.add(t.id);
       const needsInput =
-        cardState(t.cliSession?.status, acked.includes(t.id), t.status === 'Require Input') === 'needs-input';
+        cardState(t.cliSession?.status, acked.includes(t.id), t.status === 'Require Input' || t.swimlane === 'require-input') === 'needs-input';
       if (needsInput) nextNeeds.add(t.id);
       if (didSeedPromoteRef.current) {
         const isNew = !prevActiveRef.current.has(t.id);
@@ -556,7 +556,12 @@ export function ChatDock() {
           <DndContext sensors={sensors} collisionDetection={closestCenter} autoScroll={false} onDragEnd={onDragEnd}>
             <SortableContext items={orderedIds} strategy={horizontalListSortingStrategy}>
               {orderedTickets.map((t) => {
-                const pendingPrompt = pendingPromptConversationIds.has(t.id);
+                // A require-input swimlane gets the SAME persistent tab badge as a parked prompt — it
+                // stays until answered and ignores ack/open, fixing the badge clearing when you open the chat.
+                const pendingPrompt = pendingPromptConversationIds.has(t.id) || requireInputConversationIds.has(t.id);
+                // FLUX-720 hard-close gate keys off PROMPTS ONLY — require-input tabs keep the badge but
+                // stay closeable (they're dismissible by design), matching the context-menu close below.
+                const hardClose = pendingPromptConversationIds.has(t.id);
                 return (
                   <SortableChatTab
                     key={t.id}
@@ -564,7 +569,7 @@ export function ChatDock() {
                     title={t.title}
                     orchestrator={false}
                     open={open.includes(t.id)}
-                    state={cardState(t.cliSession?.status, acked.includes(t.id), t.status === 'Require Input')}
+                    state={cardState(t.cliSession?.status, acked.includes(t.id), t.status === 'Require Input' || t.swimlane === 'require-input')}
                     pendingPrompt={pendingPrompt}
                     statusTint={getStatusTint(config, t.status)}
                     activity={t.cliSession?.currentActivity ?? null}
@@ -574,7 +579,7 @@ export function ChatDock() {
                     onOpen={(el) => toggle(t.id, el)}
                     // FLUX-720: hard-gate close while a prompt is pending — the tab can't be retired
                     // until the user resolves it (minimize still works; resolve controls stay usable).
-                    onClose={pendingPrompt ? undefined : () => closeCard(t.id)}
+                    onClose={hardClose ? undefined : () => closeCard(t.id)}
                     onContextMenu={(e) => setMenu({ id: t.id, x: e.clientX, y: e.clientY })}
                   />
                 );
@@ -1836,6 +1841,60 @@ function ChatWindow({
   const stopOne = (sessionId: string) => { void stopTaskCliSession(id, { sessionId }); };
   const stopAll = () => { if (runGroup) void stopTaskCliSession(id, { groupId: runGroup.groupId }); };
 
+  // FLUX-839: cold-open choice for the BOARD orchestrator only. When there's a prior transcript
+  // (messages already loaded) but no live/resumable session — e.g. the engine restarted and the
+  // board session is gone — the next plain Send silently cold-starts and auto-re-primes from the
+  // saved board transcript (FLUX-838). We surface that fork explicitly: Resume (the default — plain
+  // Send already resumes) vs Start fresh (wipe the transcript so the next send is a clean context).
+  // Gated on `messages.length > 0` so it never flashes before the transcript loads, and hidden the
+  // moment a session is live/resumable. `coldDismissed` lets "Resume" tuck the strip away.
+  const [coldDismissed, setColdDismissed] = useState(false);
+  const cold =
+    orchestrator && !working && !session?.resumable && chat.messages.length > 0 && !coldDismissed;
+  const coldResumeChoice = cold ? (
+    <div className="flex flex-col gap-1.5 rounded-lg border border-dashed border-[var(--eh-border)] bg-[var(--eh-input-bg)] px-2.5 py-2 text-[12px]">
+      <span className="text-[var(--eh-text-secondary)]">
+        Previous conversation found — resume it, or start a clean context?
+      </span>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => {
+            // Plain Send already resumes (FLUX-838 re-prime). If the user has typed a draft, send it
+            // now; otherwise just tuck the strip away and let them type — either way it's a resume.
+            const text = (draft ?? '').trim();
+            if (text) {
+              void chat.send(draft);
+              onDraftChange('');
+            }
+            setColdDismissed(true);
+          }}
+          title="Continue the previous conversation (your next message is fed the prior context)"
+          className="inline-flex items-center gap-1 rounded-md border border-primary/40 bg-primary/10 px-2.5 py-1 text-[11px] font-semibold text-primary transition-colors hover:bg-primary/15"
+        >
+          <Play className="h-3 w-3 flex-shrink-0" aria-hidden="true" />
+          Resume conversation
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            // Destructive: clears the durable board transcript so the next send is a genuinely clean
+            // context (no re-prime). Confirm — same one-way action as the header "Reset conversation".
+            if (window.confirm('Start a fresh context? This clears the board conversation history.')) {
+              void chat.reset();
+            }
+          }}
+          title="Discard the previous conversation and start a clean context"
+          className="inline-flex items-center gap-1 rounded-md border border-[var(--eh-border)] bg-[var(--eh-input-bg)] px-2.5 py-1 text-[11px] font-semibold text-[var(--eh-text-secondary)] transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+        >
+          <RotateCcw className="h-3 w-3 flex-shrink-0" aria-hidden="true" />
+          Start fresh
+        </button>
+      </div>
+      <span className="text-[10px] text-[var(--eh-text-muted)]">Sending a message resumes the previous conversation.</span>
+    </div>
+  ) : undefined;
+
   // The chat surface itself is identical for orchestrator + ticket windows; only the surrounding
   // chrome (metadata bar, diff panel, sideview) differs, so it's built once and reused in both
   // branches of the body below.
@@ -1867,6 +1926,7 @@ function ChatWindow({
       onStop={chat.stop}
       onUploadImage={chat.uploadImage}
       awaitingInputBanner={isRequireInput && task ? <ChatRequireInputBanner task={task} /> : undefined}
+      coldResumeChoice={coldResumeChoice}
       questionPicker={<ChatPendingInteractions conversationId={id} />}
       diffBranch={task?.branch}
       tickets={allTasks}

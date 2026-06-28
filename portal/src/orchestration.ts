@@ -9,8 +9,13 @@ export const ACTIVE_SESSION_STATUSES: CliSessionStatus[] = ['pending', 'running'
  *  a standalone, ungrouped session that never resolves into a 2+ run group (see projection.ts). */
 export const DELEGATION_TOOLS = new Set(['delegate_parallel', 'delegate_to_agent']);
 
-export function isActiveSession(s: Pick<CliSessionSummary, 'status'>): boolean {
-  return ACTIVE_SESSION_STATUSES.includes(s.status);
+export function isActiveSession(s: Pick<CliSessionSummary, 'status' | 'endedAt'>): boolean {
+  // FLUX-846: a session that carries an `endedAt` is terminal — the engine stamps it together
+  // with the terminal status on every exit/error path, and never on a live `running`/`pending`/
+  // `waiting-input` session. Treat a present `endedAt` as authoritative even if `status` is stuck
+  // on 'running' (a missed terminal event / partial update), so a finished session can never show
+  // as forever-'Working' with a runaway timer.
+  return !s.endedAt && ACTIVE_SESSION_STATUSES.includes(s.status);
 }
 
 /** Strip the multi-session role prefix (e.g. "reviewer:architect" -> "architect"). */
@@ -249,5 +254,28 @@ export function statusDotColor(status: CliSessionStatus): string {
     case 'completed':
     default:
       return 'text-gray-400';
+  }
+}
+
+/**
+ * Human-readable word for a status dot — pair with {@link statusDotColor} so the status isn't
+ * conveyed by color alone (FLUX-807). Render as `sr-only` text beside the dot for screen readers.
+ */
+export function statusDotLabel(status: CliSessionStatus): string {
+  switch (status) {
+    case 'running':
+      return 'running';
+    case 'pending':
+      return 'pending';
+    case 'waiting-input':
+      return 'needs input';
+    case 'failed':
+      return 'failed';
+    case 'cancelled':
+      return 'cancelled';
+    case 'completed':
+      return 'completed';
+    default:
+      return status;
   }
 }

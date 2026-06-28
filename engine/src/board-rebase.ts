@@ -4,6 +4,7 @@ import { tasksCache, updateTaskWithHistory } from './task-store.js';
 import { configCache } from './config.js';
 import { getEnginePort } from './packaged-mode.js';
 import { extractTicket } from './extract.js';
+import { mergeTickets } from './merge.js';
 
 /**
  * FLUX-659: the board-rebase ritual. The orchestrator proposes a BATCH of restructurings via
@@ -215,7 +216,10 @@ function registerDefaults(): void {
   registerVerb('dispatch', async (item) => {
     const ticketId = item.targets[0];
     if (!ticketId) return { ok: false, message: 'dispatch: no target ticket' };
-    const body: Record<string, unknown> = { framework: 'claude', skipPermissions: true, patternPosition: 'standalone' };
+    // FLUX-845: board-rebase dispatch is unattended and often launches several sessions in one
+    // approved batch — isolate each in its own worktree by default so they never share a checkout
+    // (the FLUX-840/841/844 tangle). The engine creates the branch+worktree before spawning.
+    const body: Record<string, unknown> = { framework: 'claude', skipPermissions: true, patternPosition: 'standalone', isolation: 'worktree' };
     if (item.phase) body.phase = item.phase;
     try {
       const res = await fetch(`http://127.0.0.1:${getEnginePort()}/api/tasks/${ticketId}/cli-session/start`, {
@@ -258,12 +262,24 @@ function registerDefaults(): void {
     }
   });
 
-  // Pending verb — proposable and approvable now; the executor registers when FLUX-657 lands.
-  // Until then, applying a fold item is a clear no-op, never a crash.
-  registerVerb('fold', async () => ({
-    ok: false,
-    message: 'fold pending — merge_tickets (FLUX-657) not yet built',
-  }));
+  // `fold` (FLUX-657) — merge source streams into a survivor. Shares the engine `mergeTickets()`
+  // with the `merge_tickets` MCP tool, so the fold→survivor path exists once. `targets` are the
+  // source streams; `into` is the survivor. Additive + un-doable (sources tombstoned + archived,
+  // never deleted).
+  registerVerb('fold', async (item) => {
+    if (!item.into) return { ok: false, message: 'fold: no `into` survivor ticket' };
+    if (!item.targets || item.targets.length === 0) return { ok: false, message: 'fold: no source streams to fold' };
+    try {
+      const r = await mergeTickets({ into: item.into, from: item.targets });
+      const failed = r.archiveFailures.length ? `; archive failed for ${r.archiveFailures.join(', ')}` : '';
+      return {
+        ok: r.archiveFailures.length === 0,
+        message: `folded ${r.merged.join(', ')} into ${r.into} (${r.turnsFolded} turns)${failed}`,
+      };
+    } catch (err: any) {
+      return { ok: false, message: `fold: ${err?.message || 'merge failed'}` };
+    }
+  });
 }
 
 registerDefaults();

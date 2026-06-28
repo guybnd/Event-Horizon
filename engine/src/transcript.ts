@@ -29,8 +29,10 @@ export type { Turn, TranscriptMessage } from './projection.js';
  * lines written before the envelope existed are still read losslessly (see `readTurns`).
  *
  * This is the local-first, in-repo record that outlives the CLI's own session store and
- * powers cold resume (re-priming a fresh CLI session from the captured turns). The board
- * view is a re-derivable projection of it (`projectTranscript`), not an independent store.
+ * powers cold resume: after an engine restart wipes the in-memory session, the board start
+ * path re-primes a fresh CLI session from the captured turns (`board-reprime.ts`, FLUX-838).
+ * The board view is a re-derivable projection of it (`projectTranscript`), not an independent
+ * store.
  */
 
 export function getTranscriptDir(): string {
@@ -39,6 +41,22 @@ export function getTranscriptDir(): string {
 
 export function getTranscriptFile(taskId: string): string {
   return path.join(getTranscriptDir(), `${taskId}.jsonl`);
+}
+
+/**
+ * FLUX-833 review (M4): is `id` safe to use as a transcript stream id, i.e. a single path segment
+ * that becomes `${id}.jsonl` inside transcripts/? A stream id is a ticket id or the `__board__`
+ * sentinel; both are plain `[A-Za-z0-9_.-]` tokens. This rejects path separators and `..` so an
+ * agent-supplied `conversationId` (taken off the permission/ask POST body) can't escape the
+ * transcripts dir via traversal. This is path-safety ONLY: a *valid sibling ticket id* is the same
+ * shape and passes here. The same-shape cross-ticket injection it can't stop is closed separately by
+ * the session→ticket binding token (session-binding.ts, FLUX-841) — the HITL route honors a
+ * conversationId only when the request also carries the requesting session's own valid binding
+ * token, which it can't forge for a sibling.
+ */
+export function isSafeStreamId(id: string): boolean {
+  return typeof id === 'string' && id.length > 0 && id.length <= 128
+    && /^[A-Za-z0-9_.-]+$/.test(id) && !id.includes('..') && !id.startsWith('.');
 }
 
 /** Envelope schema version written to disk (FLUX-658). */
@@ -176,6 +194,28 @@ function legacyTurn(streamId: string, seq: number, raw: any): Turn {
   };
 }
 
+/** Parse one transcript line into a `Turn`. Enveloped lines keep their stored identity;
+ *  legacy un-enveloped (or unparseable) lines are wrapped with `legacySeq` as their seq. */
+function lineToTurn(streamId: string, line: string, legacySeq: number): Turn {
+  let obj: any;
+  try {
+    obj = JSON.parse(line);
+  } catch {
+    return legacyTurn(streamId, legacySeq, line); // unparseable — preserve verbatim
+  }
+  if (isEnvelope(obj)) {
+    return {
+      turnId: obj.turnId,
+      streamId: typeof obj.streamId === 'string' ? obj.streamId : streamId,
+      seq: obj.seq,
+      ts: typeof obj.ts === 'string' ? obj.ts : '',
+      role: obj.role ?? classifyRole(obj.raw),
+      raw: obj.raw,
+    };
+  }
+  return legacyTurn(streamId, legacySeq, obj);
+}
+
 /**
  * Read the full turn substrate for a stream as addressable `Turn`s. Enveloped lines are
  * returned with their stored identity; legacy un-enveloped lines are wrapped on the fly
@@ -184,30 +224,72 @@ function legacyTurn(streamId: string, seq: number, raw: any): Turn {
  */
 export async function readTurns(streamId: string): Promise<Turn[]> {
   const lines = await readTranscript(streamId);
-  const turns: Turn[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    let obj: any;
-    try {
-      obj = JSON.parse(line);
-    } catch {
-      turns.push(legacyTurn(streamId, i, line)); // unparseable — preserve verbatim
-      continue;
+  return lines.map((line, i) => lineToTurn(streamId, line, i));
+}
+
+/**
+ * FLUX-856: read only the last `maxLines` non-empty lines of a transcript file, reading at
+ * most a bounded tail of the file from the end rather than the whole thing. Reads fixed-size
+ * chunks backwards from EOF until `maxLines` complete lines are buffered (or the file start is
+ * reached), so cost is O(returned bytes), independent of transcript size. Counting `\n` bytes
+ * is UTF-8-safe (0x0A never occurs inside a multibyte sequence); the only line that can be
+ * front-truncated by a chunk boundary is the over-read line beyond `maxLines`, which `slice`
+ * discards. Missing file → []. This is the bounded read behind cold-resume re-prime.
+ */
+async function readTailLines(file: string, maxLines: number): Promise<string[]> {
+  let handle: fs.FileHandle | undefined;
+  try {
+    handle = await fs.open(file, 'r');
+    const { size } = await handle.stat();
+    if (size === 0) return [];
+    const CHUNK = 64 * 1024;
+    let pos = size;
+    let buf = Buffer.alloc(0);
+    let newlines = 0;
+    // Read backwards until we have one more newline than requested lines (so the first kept
+    // line is whole), or we hit the start of the file.
+    while (pos > 0 && newlines <= maxLines) {
+      const readSize = Math.min(CHUNK, pos);
+      pos -= readSize;
+      const chunk = Buffer.alloc(readSize);
+      await handle.read(chunk, 0, readSize, pos);
+      buf = Buffer.concat([chunk, buf]);
+      newlines = 0;
+      for (const byte of buf) if (byte === 0x0a) newlines++;
     }
-    if (isEnvelope(obj)) {
-      turns.push({
-        turnId: obj.turnId,
-        streamId: typeof obj.streamId === 'string' ? obj.streamId : streamId,
-        seq: obj.seq,
-        ts: typeof obj.ts === 'string' ? obj.ts : '',
-        role: obj.role ?? classifyRole(obj.raw),
-        raw: obj.raw,
-      });
-    } else {
-      turns.push(legacyTurn(streamId, i, obj));
-    }
+    const lines = buf.toString('utf8').split('\n').filter((l) => l.trim());
+    return lines.slice(-maxLines);
+  } catch (err: any) {
+    if (err?.code === 'ENOENT') return [];
+    throw err;
+  } finally {
+    await handle?.close();
   }
-  return turns;
+}
+
+/**
+ * FLUX-856: read only the last `maxTurns` turns of a stream's substrate, bounding the read to
+ * the file tail (see `readTailLines`) instead of parsing the whole transcript. Enveloped lines
+ * keep their stored seq; the rare legacy line in the tail gets a best-effort window-relative
+ * seq (the absolute line index is unknown without reading the whole file — acceptable because
+ * the tail's only consumer, cold-resume re-prime, orders by array position, not seq). Order is
+ * preserved (oldest→newest within the window).
+ */
+export async function tailTurns(streamId: string, maxTurns: number): Promise<Turn[]> {
+  const lines = await readTailLines(getTranscriptFile(streamId), maxTurns);
+  return lines.map((line, i) => lineToTurn(streamId, line, i));
+}
+
+/**
+ * FLUX-856: the bounded-tail counterpart of `readTranscriptMessages` — project just the last
+ * `maxTurns` of a stream's OWN substrate into chat messages, reading only the file tail. It
+ * deliberately skips the cross-stream gather (`gatherTurnsForView`): its sole caller is the
+ * board cold-resume re-prime, and the board is only ever an extract *source*, never a
+ * destination, so it has no foreign turns to resolve. Use `readTranscriptMessages` for any
+ * full, gather-aware view.
+ */
+export async function tailTranscriptMessages(streamId: string, maxTurns: number): Promise<TranscriptMessage[]> {
+  return projectTranscript(await tailTurns(streamId, maxTurns));
 }
 
 /**
@@ -224,30 +306,89 @@ export async function sliceTurns(streamId: string, fromSeq?: number, toSeq?: num
 }
 
 /**
+ * Deterministic chronological order for a folded (merge) view: by `ts` (ISO strings sort
+ * lexicographically), tie-broken by `(streamId, seq)` so timestamp collisions / clock skew
+ * across streams never make the order ambiguous (FLUX-657). Legacy turns without a stored `ts`
+ * (`''`) sort first, then fall back to the stable stream/seq tie-break.
+ */
+function compareTurnsChrono(a: Turn, b: Turn): number {
+  if (a.ts !== b.ts) return a.ts < b.ts ? -1 : 1;
+  if (a.streamId !== b.streamId) return a.streamId < b.streamId ? -1 : 1;
+  return a.seq - b.seq;
+}
+
+/**
  * Gather the full turn list for a stream's VIEW: its own substrate turns, plus any turns
- * carved into it from another stream by an `extract` curation op (FLUX-656). The extracted
- * slices are resolved here — `readCurationOps()` finds the ops whose `into === taskId`, and
- * each referenced range is fetched via `sliceTurns(from, fromSeq, toSeq)` from its *source*
- * stream's substrate. The gathered (foreign) turns keep their own `streamId` for attribution
- * and are prepended in op order, ahead of the card's own turns.
+ * folded in by a curation op. Two op kinds contribute:
  *
- * This is the cross-stream RESOLUTION layer (the real new work of FLUX-656). It lives in the
- * reader so `projectTranscript` stays pure over a flat turn list; merge (FLUX-657) consumes
- * exactly the same seam. Returns the gathered turns and the op-log (so the caller can hand
- * both to the projector).
+ * - `extract` (FLUX-656): a `[fromSeq..toSeq]` SLICE of another stream carved INTO this card.
+ *   `readCurationOps()` finds the ops whose `into === taskId`; each range is fetched via
+ *   `sliceTurns(from, …)` from its *source* substrate and prepended in op order, ahead of the
+ *   card's own turns.
+ * - `merge` (FLUX-657): one or more WHOLE source streams folded into this survivor. Each
+ *   `from` stream's full turns are read and unioned with the survivor's own turns, then ordered
+ *   CHRONOLOGICALLY by `ts` (tie-break `(streamId, seq)`) — the natural reading of "fold three
+ *   chats into one effort." Foreign turns keep their own `streamId`, so the projector tags them
+ *   with a `sourceStream` attribution when handed `homeStreamId = taskId`.
+ *
+ * Both gathered slices and folded streams are ADDITIVE — the source substrate is never touched,
+ * so removing the op reverts the view (the un-doable guarantee the epic rests on). This is the
+ * cross-stream RESOLUTION layer; it lives in the reader so `projectTranscript` stays pure over a
+ * flat turn list. Returns the gathered turns and the op-log (so the caller can hand both to the
+ * projector).
  */
 export async function gatherTurnsForView(
   taskId: string,
 ): Promise<{ turns: Turn[]; ops: Awaited<ReturnType<typeof readCurationOps>> }> {
   const ops = await readCurationOps();
-  const extractedHere = ops.filter((o) => o.op === 'extract' && o.into === taskId);
+  const extractedHere = ops.filter(
+    (o): o is Extract<typeof o, { op: 'extract' }> => o.op === 'extract' && o.into === taskId,
+  );
   const gathered: Turn[] = [];
   for (const op of extractedHere) {
     const slice = await sliceTurns(op.from, op.fromSeq, op.toSeq);
     gathered.push(...slice);
   }
   const own = await readTurns(taskId);
-  return { turns: [...gathered, ...own], ops };
+
+  // FLUX-657: fold every `from` stream of every merge op targeting this survivor. Dedupe source
+  // ids across ops so re-merging the same stream can't double-fold its turns.
+  const foldedFrom = new Set<string>();
+  for (const op of ops) {
+    if (op.op === 'merge' && op.into === taskId && Array.isArray(op.from)) {
+      for (const f of op.from) if (f && f !== taskId) foldedFrom.add(f);
+    }
+  }
+  if (foldedFrom.size === 0) {
+    // No merge folding — preserve extract's exact ordering (gathered slices ahead of own turns).
+    return { turns: [...gathered, ...own], ops };
+  }
+  // A source is folded by its *substrate* turns (`readTurns`), NOT its re-derived view — folds do
+  // not compose here. A source whose view ≠ substrate (a prior merge survivor OR an extracted card)
+  // would therefore drop its re-derived turns when folded, so `mergeTickets` (merge.ts) rejects any
+  // such stream as a source via the shared `streamsWithDerivedView` predicate (and rejects folding
+  // into an already-merged-away card). Those guards keep this single-level fold loss-free;
+  // recursive/transitive folding would be the alternative if that constraint is ever lifted.
+  const folded: Turn[] = [];
+  for (const f of foldedFrom) folded.push(...(await readTurns(f)));
+  // Merge the folded foreign turns into the survivor's OWN turns chronologically WITHOUT reordering
+  // own turns among themselves: own keeps its substrate (seq) order, and each folded turn is placed
+  // at the first own turn it chronologically precedes. A global re-sort would let a survivor's own
+  // turns reorder (e.g. legacy turns with `ts === ''` floating to the front) purely because the card
+  // became a merge target; this stable insertion keeps own's order invariant (FLUX-657 review).
+  // Folded turns are chrono-sorted among themselves first. Extract slices (if any also target this
+  // card) still prepend in op order, ahead of the chronological body.
+  const foldedSorted = [...folded].sort(compareTurnsChrono);
+  const union: Turn[] = [];
+  let fi = 0;
+  for (const o of own) {
+    while (fi < foldedSorted.length && compareTurnsChrono(foldedSorted[fi]!, o) <= 0) {
+      union.push(foldedSorted[fi++]!);
+    }
+    union.push(o);
+  }
+  while (fi < foldedSorted.length) union.push(foldedSorted[fi++]!);
+  return { turns: [...gathered, ...union], ops };
 }
 
 /**

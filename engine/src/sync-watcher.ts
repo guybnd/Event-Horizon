@@ -432,7 +432,10 @@ export function startSyncWatcher(): void {
   watcher = chokidar.watch(storeDir, {
     ignored: (filePath: string) => {
       const base = path.basename(filePath);
-      return base.endsWith('.tmp') || base.startsWith('.git') || base === '.git';
+      // FLUX-855: open-prompts.json (HITL store) is gitignored (STORE_LOCAL_IGNORES) and rewritten on
+      // every prompt park/settle; watching it just wakes the sync cycle for a file that is never
+      // committed. Exclude it so the HITL hot path doesn't churn the flux-data sync watcher.
+      return base.endsWith('.tmp') || base.startsWith('.git') || base === '.git' || base === 'open-prompts.json';
     },
     ignoreInitial: true,
     persistent: true,

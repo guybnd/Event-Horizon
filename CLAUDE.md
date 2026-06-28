@@ -21,17 +21,7 @@ This is a TypeScript codebase indexed by **Serena** (MCP server `serena`, availa
 
 ### Serena transport (local dev)
 
-`.mcp.json` points `serena` at a **shared streamable-http server** (`http://127.0.0.1:9122/mcp`, pinned to this project). The intent: when several Claude Code sessions are open on this repo, they all reuse **one** language-server process instead of each stdio-spawning its own Serena + tsserver stack (which otherwise multiplies memory and process count, and adds a dashboard/tray per instance).
-
-You are responsible for having that server running locally — it is not started by the repo. Start it with:
-
-```
-serena start-mcp-server --context claude-code --project <path-to-this-repo> \
-  --transport streamable-http --port 9122 \
-  --enable-web-dashboard False --enable-gui-log-window False
-```
-
-(On a dev machine you'd typically wire this into a logon task so it's always up.) If you don't want to run a shared server, swap the `serena` entry in `.mcp.json` for a per-session stdio spawn instead:
+`.mcp.json` spawns `serena` **per session over stdio** with `--project-from-cwd`, so each Claude Code session binds Serena to its **own** working directory:
 
 ```json
 "serena": {
@@ -40,5 +30,11 @@ serena start-mcp-server --context claude-code --project <path-to-this-repo> \
            "--open-web-dashboard", "False", "--enable-gui-log-window", "False"]
 }
 ```
+
+This per-session model is **required** for task **worktree** sessions to edit the right tree. A worktree runs from `<repoParent>/.eh-worktrees/<repo>-<id>`, but the committed `.serena/project.yml` carries `project_name: "EventHorizon"` and git worktrees share all tracked files — so every worktree would otherwise start Serena under the *same* name, and Serena's **name-keyed** project registry resolves `--project-from-cwd` back to the already-registered "EventHorizon" → the **main checkout**. Symbol edits then silently land on `master` in the main tree.
+
+The engine fixes this when it creates a worktree (`engine/src/task-worktree.ts`, `createTaskWorktree`): it writes `<worktree>/.serena/project.local.yml` with a **unique** `project_name` (`<repo>-<id>`, e.g. `EventHorizon-FLUX-843`). `project.local.yml` is gitignored (`.serena/.gitignore`), so it is per-checkout and never shared into other worktrees. A name with no prior registration forces `--project-from-cwd` to register/bind at the **worktree path**, so Serena's edit tools write there — FLUX-843.
+
+**Do not point worktree sessions at a shared HTTP Serena server.** A single shared server (e.g. one pinned with `--project <main-checkout>` on a fixed port) cannot auto-detect the project per client, so it binds every session to whatever path it was launched with — defeating per-worktree binding. If you run a shared server for convenience on the **main checkout only**, keep `.mcp.json` on the stdio per-session spawn above so worktrees stay correctly bound.
 
 Either way the `serena` tools are scoped to this repo only — don't expect them to resolve symbols for other projects.

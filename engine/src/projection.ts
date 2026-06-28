@@ -62,8 +62,16 @@ export interface TranscriptMessage {
   ts: string;
   /** FLUX-745: subkind of a `note` row so the portal can pick the right chip.
    *  `'context-update'` = the warm-resume situational update (FLUX-655/FLUX-745);
-   *  `'action'` = the pressed phase-launch action (FLUX-794, e.g. "▶ Implementation session started"). */
-  kind?: 'context-update' | 'action';
+   *  `'action'` = the pressed phase-launch action (FLUX-794, e.g. "▶ Implementation session started");
+   *  `'permission'` = a gated-tool approval request/decision round-trip (FLUX-833);
+   *  `'dispatch'` = a dispatched session's live activity teed to the board thread (FLUX-849). */
+  kind?: 'context-update' | 'action' | 'permission' | 'dispatch';
+  /** FLUX-849: on a `dispatch` note, the source ticket the dispatched session is working
+   *  (e.g. `FLUX-849`) — the board chip labels/links the row to that ticket. */
+  sourceTask?: string;
+  /** FLUX-849: on a `dispatch` note, the session-lifecycle stage this row narrates. Mirrors the
+   *  engine's `DispatchLifecycle` union (claude-code.ts) so a drift surfaces as a compile error. */
+  lifecycle?: 'started' | 'working' | 'completed' | 'failed' | 'cancelled' | 'waiting-input';
   /** FLUX-661: normalized tool name for a tool row (e.g. `Edit`, `list_tickets`). */
   tool?: string;
   /** FLUX-661: repo-relative path of the file an edit-ish tool touched, when resolvable.
@@ -236,8 +244,8 @@ export interface CurationOp {
 /** Classify a raw event into a coarse turn role (envelope metadata; ordering is by seq). */
 export function classifyRole(raw: any): TurnRole {
   const t = raw?.type;
-  if (t === 'user' || t === 'ask-answer') return 'user';
-  if (t === 'assistant' || t === 'ask-question') return 'assistant';
+  if (t === 'user' || t === 'ask-answer' || t === 'permission-resolved') return 'user';
+  if (t === 'assistant' || t === 'ask-question' || t === 'permission-request') return 'assistant';
   if (t === 'system') return 'system';
   if (t === 'result') return 'result';
   if (t === 'tool' || t === 'tool_use' || t === 'tool_result') return 'tool';
@@ -339,6 +347,36 @@ export function projectTranscript(
         const note = typeof evt.notes === 'string' && evt.notes.trim() ? ` — ${evt.notes.trim()}` : '';
         out.push(tag({ role: 'user', text: `✔ ${picks.join(' · ')}${note}`.trim(), ts }, turn));
       }
+    } else if (evt?.type === 'permission-request' && typeof evt.toolName === 'string') {
+      // FLUX-833: an agent's gated tool call parked for human approval. It's an operational
+      // round-trip, not a conversational turn, so render a quiet non-bubble `note` chip (like
+      // the resume-preamble / action notes) rather than an assistant bubble — enough for a cold
+      // resume to see that approval was requested for which tool.
+      const ts = typeof evt.timestamp === 'string' ? evt.timestamp : turn.ts;
+      out.push(tag({ role: 'note', kind: 'permission', text: `🔒 Approval requested · ${evt.toolName}`, ts }, turn));
+    } else if (evt?.type === 'permission-resolved') {
+      // FLUX-833: the decision (or timeout) that settled a parked approval. `behavior` is
+      // 'allow' | 'deny'; a `reason: 'timeout'` deny is the auto-deny that also raised needsAction.
+      const ts = typeof evt.timestamp === 'string' ? evt.timestamp : turn.ts;
+      const allowed = evt.behavior === 'allow';
+      const timedOut = evt.reason === 'timeout';
+      const text = allowed
+        ? '✅ Approval granted'
+        : timedOut
+          ? '⛔ Approval timed out — denied'
+          : '⛔ Approval denied';
+      out.push(tag({ role: 'note', kind: 'permission', text, ts }, turn));
+    } else if (evt?.type === 'dispatch-activity' && typeof evt.text === 'string' && evt.text.trim()) {
+      // FLUX-849: a dispatched (unattended, work-phase) session's live activity teed to the board
+      // orchestrator thread. Render as a quiet non-bubble `note` chip so a user watching the board
+      // sees the in-flight narration + lifecycle (started / working / needs-input / completed /
+      // failed) without opening the ticket — and so board cold-resume drops it as a note row,
+      // keeping the orchestrator's own dialogue context clean.
+      const ts = typeof evt.timestamp === 'string' ? evt.timestamp : turn.ts;
+      const msg: TranscriptMessage = { role: 'note', kind: 'dispatch', text: evt.text, ts };
+      if (typeof evt.sourceTask === 'string') msg.sourceTask = evt.sourceTask;
+      if (typeof evt.lifecycle === 'string') msg.lifecycle = evt.lifecycle;
+      out.push(tag(msg, turn));
     } else if (evt?.type === 'assistant' && Array.isArray(evt.message?.content)) {
       for (const b of evt.message.content) {
         if (b?.type === 'text' && typeof b.text === 'string' && b.text.trim()) {

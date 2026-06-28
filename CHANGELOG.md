@@ -2,6 +2,35 @@
 
 Notable changes are summarized here; detailed per-version notes for the dev line live in [`.docs/release-notes/`](.docs/release-notes/).
 
+## [1.0.1] — 1.0, hardened
+
+A reliability batch on top of the 1.0 release (still the major release — revamped, not superseded). Full notes: [`.docs/release-notes/v1.0.1.md`](.docs/release-notes/v1.0.1.md).
+
+### Reliability & sessions
+
+- **Durable, resumable human-in-the-loop prompts** — a *Require Input* question survives an engine/session restart and no longer hits the ~300s ceiling; the durable store persists asynchronously (coalesced), prompts are re-bound to their session, and `open-prompts.json` is excluded from the flux-dir + sync watchers (#141, #156, #145, #155).
+- **Process-tree teardown** — stopping an agent tree-kills the whole process tree so its MCP servers are reaped instead of leaking stale `node` processes (#163).
+- **Active-sessions panel** — completed sessions no longer display as forever-"Working" with a runaway timer (#149).
+- **Board orchestrator cold-resume** — a cold board offers "Resume conversation" vs "Start fresh," with re-prime bounded to the last N turns (#155, #142, #158).
+
+### Orchestration & dispatch
+
+- `delegate_parallel` no longer re-launches the entire fleet (~3× token cost) when the MCP transport drops after spawn (#144).
+- Closed a delegate double-launch window with a pre-spawn reservation (#146); reopen dispatch re-fires on a modal `conversationId` switch (#147).
+- Dispatched-session live output streams to the board, not just the ticket transcript (#154).
+
+### Isolation & worktrees
+
+- Agent dispatch isolates by default through a single canonical ticket-isolation path, hardened with a race guard + unit test (#150, #159).
+- Serena binds to the per-task worktree (unique `project_name`) so symbol edits land in the worktree, never on `master` in the main checkout (#143).
+
+### Surfaces & verbs
+
+- Require-input tickets unified into one loud Pending bar: persistent chat-tab badge, auto-pop, dismiss, close-on-jump, and a taskbar require-input flag (#160, #161, #162).
+- **Merge verb** — fold several chats/tickets into one effort (#151).
+- **Engine-side branchless finish** (zero-token) via `POST /:id/finish` (#152).
+- Ticket-modal diff + session-run panels default to collapsed (#153); a11y polish on chat orchestration surfaces (#148); floating panel no longer swallows minimize/close clicks while dragging (FLUX-836).
+
 ## [1.0.0] — first public release
 
 Event Horizon's first public release. **Event Horizon is an IDE for the agent era** — a local-first board where you break work into tickets, hand each to an agent that carries full context and runs on its own git branch in parallel, and review every result as a real pull request. Tickets, plans, and history are plain markdown in your repo; it ships no LLM and orchestrates an agent CLI you already use (Claude Code, Gemini CLI, GitHub Copilot CLI) or a supported IDE.

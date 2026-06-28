@@ -21,7 +21,10 @@ function killPort(port) {
           .filter((pid) => !!pid && /^\d+$/.test(pid))
       );
       for (const pid of pids) {
-        try { execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' }); } catch {}
+        // /T = tree kill: the engine PLUS every agent session it spawned and their MCP servers
+        // (serena, context7, …). Without /T the engine died but its children orphaned and piled up
+        // across restarts — the 100+ stale-node-process leak that wedges the machine.
+        try { execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore' }); } catch {}
       }
     } else {
       execSync(`lsof -ti:${port} | xargs -r kill -9`, { stdio: 'ignore' });
@@ -189,9 +192,22 @@ pipeLines(portal.stderr, (line) => {
   if (out) process.stderr.write(`[portal] ${line}\n`);
 });
 
+// Tree-kill a spawned child so Ctrl+C / an engine crash reaps the engine|portal AND every agent
+// session + MCP server they spawned, instead of orphaning them (the leak that accreted 100+ node
+// processes across restarts). `engine`/`portal` are npm wrappers, so a plain `.kill()` leaves the
+// real tsx/vite + their descendants running.
+function killTree(child) {
+  if (!child?.pid) return;
+  if (isWin) {
+    try { execSync(`taskkill /F /T /PID ${child.pid}`, { stdio: 'ignore' }); } catch {}
+  } else {
+    try { child.kill(); } catch {}
+  }
+}
+
 function cleanup() {
-  engine.kill();
-  portal.kill();
+  killTree(engine);
+  killTree(portal);
   process.exit();
 }
 
@@ -200,7 +216,7 @@ process.on('SIGTERM', cleanup);
 
 engine.on('exit', (code) => {
   if (code !== 0) console.error(`[engine] exited with code ${code}`);
-  portal.kill();
+  killTree(portal);
   process.exit(code ?? 1);
 });
 

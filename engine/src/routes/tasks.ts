@@ -16,7 +16,7 @@ import {
   resolveSupportedImageExtension, sanitizeAssetBaseName, normalizeBase64Content,
   normalizeRelativePath, encodeAssetPath, createUniqueAssetFileName,
 } from '../file-utils.js';
-import { cliSessionIdByTaskId, cliSessionsById, stopAllSessionsForTask, getActiveSessionsForTask, getBlockingSessionsForTask, getParkedSessionsForTask } from '../session-store.js';
+import { cliSessionIdByTaskId, cliSessionsById, stopAllSessionsForTask, getActiveSessionsForTask, getBlockingSessionsForTask, getParkedSessionsForTask, reconcileDeadSessions, reapStaleParkedSessions } from '../session-store.js';
 import { getAdapter } from '../agents/index.js';
 import { computeAgentPayloadMetrics } from '../agent-payload-metrics.js';
 import { computeContextBudget } from '../context-budget-metrics.js';
@@ -32,6 +32,9 @@ const execFileAsync = promisify(execFile);
 const router = express.Router();
 
 router.get('/', (req, res) => {
+  // FLUX-846: self-heal any session stuck 'running' after a missed terminal event before serializing,
+  // so the served `cliSession` status is authoritative and the portal's active-sessions panel clears.
+  reconcileDeadSessions();
   res.json(Object.values(tasksCache).map(serializeTaskForList));
 });
 
@@ -737,49 +740,29 @@ router.post('/:id/assets', async (req, res) => {
 
 // ─── Branch routes ────────────────────────────────────────────────────────────
 
-import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, extractFileFromDiff, captureDiff, createPullRequest, mergePullRequest, checkGhAuth, getPullRequestStatus, getDefaultBranch } from '../branch-manager.js';
+import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, extractFileFromDiff, captureDiff, createPullRequest, mergePullRequest, checkGhAuth, getPullRequestStatus, getDefaultBranch, resolveCommit } from '../branch-manager.js';
 import { createTaskWorktree, detachTaskWorktree, taskWorktreeDir, listTaskWorktrees, findWorktreeForBranch, worktreeChangeCount, listLocalBranches, currentBranchName } from '../task-worktree.js';
 import { isEditorAvailable, openEditorWindow, openEditorFile, isShellSafePath } from '../editor-launcher.js';
 import { cleanupMergedBranch } from '../pr-cleanup.js';
 import { broadcastEvent } from '../events.js';
+import { ensureTicketIsolation } from '../ticket-isolation.js';
 
 router.post('/:id/branch', async (req, res) => {
   const { id } = req.params;
   const task = tasksCache[id];
   if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
 
-  const title: string = task.title || id;
   const baseBranch: string | undefined = req.body?.baseBranch;
   // FLUX-521: per-launch "dedicated worktree" choice; defaults to the workspace setting.
+  // FLUX-845: the branch+worktree MECHANISM is centralized in ensureTicketIsolation;
+  // this route only resolves the portal POLICY (config worktreeByDefault) and delegates.
   const useWorktree: boolean = typeof req.body?.worktree === 'boolean'
     ? req.body.worktree
     : (configCache as any).worktreeByDefault === true;
 
   try {
-    // Idempotent: reuse an existing branch (e.g. one a prior worktree-open created)
-    // instead of erroring with a raw git "already exists".
-    let branch = task.branch as string | undefined;
-    if (!branch) {
-      branch = await createTicketBranch(id, title, baseBranch);
-      await updateTaskWithHistory(id, { updatedBy: 'Agent', extraFields: { branch } });
-    }
-
-    let worktreePath: string | undefined;
-    let worktreeError: string | undefined;
-    if (useWorktree) {
-      try {
-        worktreePath = await createTaskWorktree(workspaceRoot!, id, branch, baseBranch ? { baseBranch } : {});
-      } catch (wtErr: any) {
-        // Branch is created — don't fail; surface the lost isolation on the ticket.
-        worktreeError = wtErr.message;
-        await updateTaskWithHistory(id, {
-          updatedBy: 'Agent',
-          entries: [buildActivityEntry(`⚠️ Dedicated worktree NOT created: ${worktreeError}. The agent will run in the main tree (no isolation).`, 'Agent', new Date().toISOString())],
-        });
-      }
-    }
-    broadcastEvent('taskUpdated', { id });
-    res.json({ branch, ...(worktreePath ? { worktree: worktreePath } : {}), ...(worktreeError ? { worktreeError } : {}) });
+    const result = await ensureTicketIsolation(id, { worktree: useWorktree, baseBranch });
+    res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1066,6 +1049,105 @@ router.post('/:id/pr/merge', async (req, res) => {
   await resolveMergedPrTickets(branch);
 
   res.json({ merged: true, ...cleanup });
+});
+
+// Engine-side finish for BRANCHLESS tickets (FLUX-618) — the zero-token sibling of POST /:id/pr/merge.
+// Branch/PR tickets finish by merging their open PR (that route, unchanged); a branchless ticket needs
+// a curated commit, which used to require a tokenized agent `finish`. Here the portal supplies the
+// curated commit message + the EXPLICIT file list it showed the user (NO silent `git add -A` — the
+// real footgun called out in grooming), and the engine stages exactly those, commits, then runs the
+// SAME tail as finish_ticket's branchless path (engine/src/mcp-server.ts): completion comment,
+// implementationLink = commit hash, swimlane cleared, baseline lazy-repair + diff capture + .diff
+// sidecar, status → Done, reap stale parked sessions.
+router.post('/:id/finish', async (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id] as any;
+  if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
+
+  // Branch/PR tickets must finish through the PR-merge surface — never commit straight to their tree here.
+  if (task.branch) {
+    return res.status(409).json({ error: `Ticket ${id} has a branch (\`${task.branch}\`) — finish it by merging its PR, not the branchless finish route.` });
+  }
+
+  // Same guard as finish_ticket (mcp-server.ts): only a Ready ticket can finish.
+  const readyStatus = configCache.readyForMergeStatus || 'Ready';
+  if (task.status !== readyStatus) {
+    return res.status(409).json({ error: `Cannot finish ${id} — ticket must be in "${readyStatus}" status first (current: "${task.status}").` });
+  }
+
+  if (!workspaceRoot) return res.status(400).json({ error: 'No active workspace' });
+
+  const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
+  const completionComment = typeof req.body?.completionComment === 'string' && req.body.completionComment.trim()
+    ? req.body.completionComment.trim()
+    : message;
+  const files: string[] = Array.isArray(req.body?.files)
+    ? req.body.files.filter((f: any) => typeof f === 'string' && f.trim()).map((f: string) => f.trim())
+    : [];
+  if (!message) return res.status(400).json({ error: 'A commit message is required to finish.' });
+  // Explicit-staging contract (FLUX-618): the route NEVER sweeps the tree. The portal sends the exact
+  // files it showed the user; an empty list means there is nothing safe to stage → refuse.
+  if (files.length === 0) return res.status(400).json({ error: 'No files to commit — stage changes first (this route never runs git add -A).' });
+  for (const f of files) {
+    if (f.startsWith('/') || f.includes('..') || /^[a-zA-Z]:/.test(f)) {
+      return res.status(400).json({ error: `Invalid path: ${f}` });
+    }
+  }
+
+  // 1) Stage ONLY the explicit paths + commit them (pathspec-scoped, mirroring POST /commit so any
+  //    other staged changes in the index never ride along).
+  let hash: string;
+  try {
+    await execFileAsync('git', ['-C', workspaceRoot, 'add', '--', ...files], { windowsHide: true });
+    await execFileAsync('git', ['-C', workspaceRoot, 'commit', '-m', message, '--', ...files], { windowsHide: true });
+    const { stdout } = await execFileAsync('git', ['-C', workspaceRoot, 'rev-parse', '--short', 'HEAD'], { windowsHide: true });
+    hash = stdout.trim();
+  } catch (err: any) {
+    const detail = (err?.stderr || err?.message || 'Commit failed').toString().trim();
+    return res.status(500).json({ error: `Commit failed: ${detail}` });
+  }
+
+  // 2) Finish tail — verbatim mirror of finish_ticket's branchless path.
+  const finishExtraFields: Record<string, any> = { implementationLink: hash, swimlane: null };
+  try {
+    // Lazy baseline repair: by finish time the new commit is HEAD, so a missing baseline anchors at
+    // the parent (HEAD~1..HEAD); HEAD itself would yield an empty HEAD..HEAD range.
+    if (!task.baselineCommit) {
+      const parent = await resolveCommit('HEAD~1');
+      if (parent) {
+        await updateTaskWithHistory(id, { updatedBy: 'Agent', extraFields: { baselineCommit: parent } });
+        task.baselineCommit = parent;
+      }
+    }
+    const diff = await captureDiff(null, task.baselineCommit ?? null);
+    if (diff && diff.summary.length > 0) {
+      finishExtraFields.diffSummary = diff.summary;
+      const diffPath = path.join(getActiveFluxDir(), `${id}.diff`);
+      await fs.writeFile(diffPath, diff.fullDiff, 'utf-8');
+    }
+  } catch (err: any) {
+    console.error(`Diff capture failed for ${id}:`, err.message);
+  }
+
+  const result = await updateTaskWithHistory(id, {
+    entries: [{ type: 'comment', user: 'Agent', comment: completionComment, date: new Date().toISOString() }],
+    updatedBy: 'Agent',
+    nextStatus: 'Done',
+    extraFields: finishExtraFields,
+  });
+  if (!result) return res.status(500).json({ error: `Failed to finish ${id}` });
+
+  // Reap any sessions still parked on an earlier phase now that the ticket is Done (FLUX-721 parity).
+  const reaped = reapStaleParkedSessions(id, 'ticket finished → Done');
+  if (reaped.length > 0) {
+    await updateTaskWithHistory(id, {
+      updatedBy: 'Agent',
+      entries: [buildActivityEntry(`Reaped ${reaped.length} stale parked session${reaped.length > 1 ? 's' : ''} from an earlier phase on finish.`, 'Agent', new Date().toISOString())],
+    });
+  }
+
+  broadcastEvent('taskUpdated', { id });
+  res.json({ finished: true, hash, link: hash });
 });
 
 // Continue development on a PR by binding work to its branch (FLUX-569 AC1). A zero-member PR

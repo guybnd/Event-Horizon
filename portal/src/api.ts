@@ -78,6 +78,25 @@ export async function commitFiles(ref: string, files: string[], message: string)
   return { hash: data?.hash };
 }
 
+/**
+ * Engine-side finish for a BRANCHLESS ticket (FLUX-618), zero-token sibling of `mergePr`. Stages the
+ * EXPLICIT `files` (no silent `git add -A`), commits them with `message`, then advances the ticket to
+ * Done (completion comment, implementationLink = commit hash, diff capture). Throws on engine error.
+ */
+export async function finishBranchless(
+  taskId: string,
+  body: { message: string; files: string[]; completionComment?: string },
+): Promise<{ finished: boolean; hash: string; link: string }> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/finish`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error((data && data.error) || 'Finish failed');
+  return data;
+}
+
 export async function fetchTask(id: string): Promise<Task> {
   const res = await fetch(`${API_URL}/tasks/${id}`);
   if (!res.ok) throw new Error('Failed to fetch task');
@@ -938,8 +957,16 @@ export interface TranscriptMessage {
   text: string;
   ts: string;
   /** FLUX-745: subkind of a `note` row. `'context-update'` = warm-resume situational update
-   *  (FLUX-655/FLUX-745); `'action'` = the pressed phase-launch action (FLUX-794). */
-  kind?: 'context-update' | 'action';
+   *  (FLUX-655/FLUX-745); `'action'` = the pressed phase-launch action (FLUX-794);
+   *  `'permission'` = a gated-tool approval request/decision round-trip (FLUX-833);
+   *  `'dispatch'` = a dispatched session's live activity teed to the board thread (FLUX-849). */
+  kind?: 'context-update' | 'action' | 'permission' | 'dispatch';
+  /** FLUX-849: on a `dispatch` note, the source ticket the dispatched session is working. */
+  sourceTask?: string;
+  /** FLUX-849: on a `dispatch` note, the session-lifecycle stage this row narrates. Mirrors the
+   *  engine's `DispatchLifecycle` union so a drift in either side is a compile error, not a silent
+   *  fallthrough to the raw-enum chip label. */
+  lifecycle?: 'started' | 'working' | 'completed' | 'failed' | 'cancelled' | 'waiting-input';
   /** FLUX-661: normalized tool name for an edit-ish tool row (`Edit`, `Write`, …). */
   tool?: string;
   /** FLUX-661: repo-relative path of the file an edit tool touched. When present (and the

@@ -30,6 +30,9 @@ engine/vitest.config.d.ts.map
 .flux/*.md
 .flux/config.json
 .flux/assets/
+# FLUX-833: durable open-prompts index — process-local in-flight HITL state, never committed.
+.flux/open-prompts.json
+.flux/open-prompts.json.tmp
 
 # orphan worktree directory (managed by git worktree, not committed to master)
 .flux-store/

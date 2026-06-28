@@ -119,6 +119,8 @@ The MCP tools handle schema validation, timestamps, history normalization, and p
 | `change_status` | Moving to a new status (comment required for Require Input/Ready) |
 | `archive_ticket` | Safely removing a ticket from the active board (moves to `Archived`; reversible — there is no hard-delete tool) |
 | `unarchive_ticket` | Restoring an archived ticket to the active board (default `Todo`) |
+| `extract_ticket` | Carving a topic-slice out of a chat stream into a NEW card (the promotion gate, FLUX-656). Human-approved only (CONFIRM gate / board-rebase `promote`); additive + un-doable |
+| `merge_tickets` | Folding several tickets/chat-streams into ONE survivor effort (the inverse of extract, FLUX-657). Sources are tombstoned + archived (never deleted); the survivor re-derives the chronological union. Human-approved only (CONFIRM gate / board-rebase `fold`) |
 | `add_comment` | Adding a comment to ticket history |
 | `log_progress` | Logging a progress update |
 | `finish_ticket` | Completing a ticket (sets implementationLink + Done atomically) |

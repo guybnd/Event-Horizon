@@ -13,6 +13,7 @@ import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import {
   mergePr, updateTask, fetchWorkflows, fetchPrStatus, sendTaskCliInput, raisePr, deleteTask,
   detachWorktree, joinWorktree, openWorktreeWindow, setTicketBranch, attachParent,
+  finishBranchless, fetchDiffOverview,
   MergeForceRequiredError, MergeParkedError,
   type WorkflowTemplate,
 } from '../api';
@@ -246,9 +247,47 @@ export function useTicketActions(task: Task): UseTicketActions {
     setFinishMergeState(null);
   };;
 
-  // ── Agent: branchless (or no-open-PR) finish needs a curated commit → run the `finish` command.
-  // FLUX-719: when a CLI session is live, continue it by sending `finish` as input rather than
-  // spawning a new session, mirroring the pre-FLUX-715 card behavior. ──
+  // ── Engine: branchless finish (FLUX-618) — zero tokens. Gather the main tree's uncommitted files,
+  // show them + prompt for a curated commit message (the same reactive window.prompt Ready/Require
+  // Input use), then commit + finish server-side. The user sees EXACTLY what goes in — no silent
+  // `git add -A`. A clean tree (nothing to commit) falls back to the agent finish, which can sort out
+  // an already-committed or empty case. ──
+  const finishViaEngine = async () => {
+    let files: string[] = [];
+    try {
+      const overview = await fetchDiffOverview(true);
+      const mainGroup = overview.groups.find((g) => g.kind === 'main');
+      files = (mainGroup?.files ?? []).map((f) => f.file);
+    } catch {
+      // Diff overview unavailable — fall back to the agent finish rather than guess.
+      await dispatchFinish();
+      return;
+    }
+    if (files.length === 0) {
+      // Nothing uncommitted to curate — let the agent finish handle it (already-committed work, etc.).
+      await dispatchFinish();
+      return;
+    }
+    const fileList = files.map((f) => `  • ${f}`).join('\n');
+    const entered = window.prompt(
+      `Finish ${task.id} — these ${files.length} file(s) will be committed:\n\n${fileList}\n\n` +
+        `Commit message (describe the shipped behavior):`,
+      `${task.id}: ${task.title}`,
+    );
+    if (entered === null) return; // cancelled
+    const message = entered.trim();
+    if (!message) { alert('A commit message is required to finish.'); return; }
+    try {
+      await finishBranchless(task.id, { files, message });
+      triggerRefresh();
+    } catch (err) {
+      alert(`Failed to finish ${task.id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  // ── Agent: no-open-PR finish (and the branchless clean-tree fallback) needs a curated commit → run
+  // the `finish` command. FLUX-719: when a CLI session is live, continue it by sending `finish` as
+  // input rather than spawning a new session, mirroring the pre-FLUX-715 card behavior. ──
   const dispatchFinish = async () => {
     if (hasActiveCliSession) {
       await sendTaskCliInput(task.id, `finish ${task.id}`, currentUser);
@@ -406,6 +445,7 @@ export function useTicketActions(task: Task): UseTicketActions {
     finalizeTemplates,
     changeStatus,
     finishViaMerge,
+    finishViaEngine,
     dispatchFinish,
     launchDefault,
     openLauncher,

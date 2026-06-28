@@ -38,7 +38,7 @@ function git(cwd: string, args: string[]): Promise<{ stdout: string; stderr: str
  * revert on every fetch and leak between clones. They stay on disk locally; they
  * just stop being version-controlled in the orphan store.
  */
-const STORE_LOCAL_IGNORES = ['config.json', 'read-state.json'];
+const STORE_LOCAL_IGNORES = ['config.json', 'read-state.json', 'open-prompts.json', 'open-prompts.json.tmp'];
 
 /** Ensure the store-root `.gitignore` lists the local-only files. Returns true if it changed. */
 async function ensureStoreLocalGitignore(storeDir: string): Promise<boolean> {
@@ -155,7 +155,7 @@ export async function migrateToOrphan(workspaceRoot: string): Promise<void> {
     const existing = await fs.readFile(gitignorePath, 'utf-8').catch(() => '');
     const marker = '# flux-data orphan mode';
     if (!existing.includes(marker)) {
-      const addition = `\n${marker}\n.flux/*.md\n.flux/config.json\n.flux/assets/\n.flux/read-state.json\n.flux/memory/\n.flux-store/\n`;
+      const addition = `\n${marker}\n.flux/*.md\n.flux/config.json\n.flux/assets/\n.flux/read-state.json\n.flux/open-prompts.json\n.flux/open-prompts.json.tmp\n.flux/memory/\n.flux-store/\n`;
       await fs.writeFile(gitignorePath, existing + addition, 'utf-8');
     }
 
@@ -214,7 +214,7 @@ export async function migrateToOrphan(workspaceRoot: string): Promise<void> {
   const existing = await fs.readFile(gitignorePath, 'utf-8').catch(() => '');
   const marker = '# flux-data orphan mode';
   if (!existing.includes(marker)) {
-    const addition = `\n${marker}\n.flux/*.md\n.flux/config.json\n.flux/assets/\n.flux/read-state.json\n.flux/memory/\n.flux-store/\n`;
+    const addition = `\n${marker}\n.flux/*.md\n.flux/config.json\n.flux/assets/\n.flux/read-state.json\n.flux/open-prompts.json\n.flux/open-prompts.json.tmp\n.flux/memory/\n.flux-store/\n`;
     await fs.writeFile(gitignorePath, existing + addition, 'utf-8');
   }
 
@@ -350,7 +350,7 @@ export async function restoreToInRepo(workspaceRoot: string): Promise<void> {
   try {
     const content = await fs.readFile(gitignorePath, 'utf-8');
     const normalized = content.replace(/\r\n/g, '\n');
-    const section = `\n# flux-data orphan mode\n.flux/*.md\n.flux/config.json\n.flux/assets/\n.flux/read-state.json\n.flux/memory/\n.flux-store/\n`;
+    const section = `\n# flux-data orphan mode\n.flux/*.md\n.flux/config.json\n.flux/assets/\n.flux/read-state.json\n.flux/open-prompts.json\n.flux/open-prompts.json.tmp\n.flux/memory/\n.flux-store/\n`;
     const cleaned = normalized.split(section).join('');
     await fs.writeFile(gitignorePath, cleaned, 'utf-8');
   } catch {

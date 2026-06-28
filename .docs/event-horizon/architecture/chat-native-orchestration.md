@@ -39,6 +39,17 @@ That endpoint:
   (tracked in [`engine/src/session-store.ts`](../../../engine/src/session-store.ts) via
   `awaitDelegation`/`notifyDelegationComplete`).
 
+**Idempotency / dedupe (FLUX-842, FLUX-844).** The endpoint dedupes by a stable hash of
+`(taskId, personaId, task, effort)`. If the MCP transport drops the held-open response after a child
+spawned, the orchestrator's retry attaches to the in-flight (or freshly-settled, within a 90s TTL)
+delegation — returning the same result with `deduped: true` instead of launching a second child (this
+is the ~3× review-fleet blow-up it prevents). The reservation is taken **before** `spawnSession()`
+(`reserveDispatch`), so even a retry that lands *during* spawn attaches rather than double-launching; a
+failed spawn releases the key so a genuine later retry can start fresh. **Caveat for callers:** because
+the key is byte-identical inputs, two *intentionally identical* concurrent delegations (e.g. an
+N-identical-skeptic adversarial-verify fan-out) collapse to one — vary the prompt/label by index when
+you genuinely want N distinct runs.
+
 Chat sessions are **durable** — `session-store.ts` only reaps *non-`chat`* parked phase sessions on a
 status change, so a chat-driven run survives status moves.
 

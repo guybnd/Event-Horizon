@@ -181,6 +181,12 @@ export function validateTicketFrontmatter(fm: any): TicketValidationError[] {
     errors.push({ path: 'status', message: 'status must be a non-empty string when present' });
   }
 
+  // FLUX-657: a tombstone pointer on a merged-away source ticket (set by the `merge` verb) —
+  // the survivor ticket id this card was folded into. Optional; a non-empty string when present.
+  if (fm.mergedInto != null && !isNonEmptyString(fm.mergedInto)) {
+    errors.push({ path: 'mergedInto', message: 'mergedInto must be a non-empty string when present' });
+  }
+
   if (fm.tags != null) {
     if (!Array.isArray(fm.tags)) {
       errors.push({ path: 'tags', message: 'tags must be an array' });

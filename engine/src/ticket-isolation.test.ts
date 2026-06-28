@@ -1,0 +1,104 @@
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+// FLUX-852: unit-test the canonical ticket-isolation chokepoint (FLUX-845) in isolation — stub the
+// git/worktree/store collaborators so the branch-reuse, live-cache-patch, and non-fatal worktree
+// failure behaviours are exercised without a real repo. Mock factories define their own vi.fn()s
+// (hoist-safe) and the test configures them via the imported binding + vi.mocked (mirrors
+// board-reprime.test.ts).
+vi.mock('./branch-manager.js', () => ({ createTicketBranch: vi.fn() }));
+vi.mock('./task-worktree.js', () => ({ createTaskWorktree: vi.fn() }));
+vi.mock('./task-store.js', () => ({ tasksCache: {}, updateTaskWithHistory: vi.fn(async () => {}) }));
+vi.mock('./events.js', () => ({ broadcastEvent: vi.fn() }));
+vi.mock('./history.js', () => ({
+  buildActivityEntry: vi.fn((message: string, user: string, date: string) => ({ type: 'activity', comment: message, user, date })),
+}));
+vi.mock('./workspace.js', () => ({ workspaceRoot: '/fake/workspace' }));
+
+import { ensureTicketIsolation } from './ticket-isolation.js';
+import { createTicketBranch } from './branch-manager.js';
+import { createTaskWorktree } from './task-worktree.js';
+import { tasksCache, updateTaskWithHistory } from './task-store.js';
+import { broadcastEvent } from './events.js';
+import { buildActivityEntry } from './history.js';
+
+const cache = tasksCache as Record<string, any>;
+
+describe('ensureTicketIsolation (FLUX-845 chokepoint, FLUX-852 hardening)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    for (const k of Object.keys(cache)) delete cache[k];
+  });
+
+  it('throws when the ticket is not in cache', async () => {
+    await expect(ensureTicketIsolation('FLUX-404', { worktree: false })).rejects.toThrow('not found');
+  });
+
+  it('reuses an existing task.branch — never re-creates it', async () => {
+    cache['FLUX-1'] = { id: 'FLUX-1', title: 'Already branched', branch: 'flux/FLUX-1-already' };
+
+    const res = await ensureTicketIsolation('FLUX-1', { worktree: false });
+
+    expect(res.branch).toBe('flux/FLUX-1-already');
+    expect(createTicketBranch).not.toHaveBeenCalled();
+    // no branch write-back when the existing branch is reused (idempotent)
+    expect(updateTaskWithHistory).not.toHaveBeenCalled();
+    expect(broadcastEvent).toHaveBeenCalledWith('taskUpdated', { id: 'FLUX-1' });
+  });
+
+  it('creates a branch and patches it onto the LIVE cache object (in-tick visibility guard)', async () => {
+    const task: any = { id: 'FLUX-2', title: 'Add the thing' };
+    cache['FLUX-2'] = task;
+    vi.mocked(createTicketBranch).mockResolvedValue('flux/FLUX-2-add-the-thing');
+
+    const res = await ensureTicketIsolation('FLUX-2', { worktree: false });
+
+    expect(createTicketBranch).toHaveBeenCalledWith('FLUX-2', 'Add the thing', undefined);
+    expect(res.branch).toBe('flux/FLUX-2-add-the-thing');
+    // the SAME cache object a same-tick resolveTaskExecutionRoot holds must see the new branch —
+    // updateTaskWithHistory replaces the cache entry, so ticket-isolation also mutates the live ref.
+    expect(task.branch).toBe('flux/FLUX-2-add-the-thing');
+    expect(updateTaskWithHistory).toHaveBeenCalledWith(
+      'FLUX-2',
+      expect.objectContaining({ extraFields: { branch: 'flux/FLUX-2-add-the-thing' } }),
+    );
+    expect(createTaskWorktree).not.toHaveBeenCalled();
+  });
+
+  it('returns the worktree path when worktree creation succeeds', async () => {
+    cache['FLUX-5'] = { id: 'FLUX-5', title: 'Worktree ok' };
+    vi.mocked(createTicketBranch).mockResolvedValue('flux/FLUX-5-worktree-ok');
+    vi.mocked(createTaskWorktree).mockResolvedValue('/fake/.eh-worktrees/FLUX-5');
+
+    const res = await ensureTicketIsolation('FLUX-5', { worktree: true });
+
+    expect(res).toEqual({ branch: 'flux/FLUX-5-worktree-ok', worktree: '/fake/.eh-worktrees/FLUX-5' });
+    expect(res.worktreeError).toBeUndefined();
+  });
+
+  it('is non-fatal when the worktree fails: returns the branch + worktreeError and records history', async () => {
+    cache['FLUX-3'] = { id: 'FLUX-3', title: 'Limit hit' };
+    vi.mocked(createTicketBranch).mockResolvedValue('flux/FLUX-3-limit-hit');
+    vi.mocked(createTaskWorktree).mockRejectedValue(new Error('Task worktree limit reached (4/4).'));
+
+    const res = await ensureTicketIsolation('FLUX-3', { worktree: true });
+
+    expect(res.branch).toBe('flux/FLUX-3-limit-hit'); // branch still created
+    expect(res.worktree).toBeUndefined();
+    expect(res.worktreeError).toContain('worktree limit reached');
+    // two writes: the branch field, then the lost-isolation history entry
+    expect(updateTaskWithHistory).toHaveBeenCalledTimes(2);
+  });
+
+  it('attributes the worktree-error history entry to the resolved updatedBy, not a hardcoded "Agent" (FLUX-852)', async () => {
+    cache['FLUX-4'] = { id: 'FLUX-4', title: 'Author check' };
+    vi.mocked(createTicketBranch).mockResolvedValue('flux/FLUX-4-author-check');
+    vi.mocked(createTaskWorktree).mockRejectedValue(new Error('boom'));
+
+    await ensureTicketIsolation('FLUX-4', { worktree: true, updatedBy: 'qa-correctness' });
+
+    // the worktree-error entry is built via buildActivityEntry(message, author, date)
+    expect(buildActivityEntry).toHaveBeenCalledTimes(1);
+    const author = vi.mocked(buildActivityEntry).mock.calls[0]![1];
+    expect(author).toBe('qa-correctness');
+  });
+});
