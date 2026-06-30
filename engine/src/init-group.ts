@@ -13,6 +13,7 @@
  * git@host:path), so only the first two colons are treated as separators.
  */
 
+import { log } from './log.js';
 import path from 'path';
 import { planGroupSetup, applyGroupSetup, type GroupSetupInput } from './group-setup.js';
 import type { GroupMember } from './group.js';
@@ -59,20 +60,20 @@ function parseMember(spec: string): GroupMember {
 }
 
 function printPlan(plan: Awaited<ReturnType<typeof planGroupSetup>>) {
-  console.log(`\nGroup setup plan for '${plan.groupName}'`);
-  console.log(`  parent: ${plan.parentRoot}`);
-  console.log(`  already configured: ${plan.alreadyConfigured ? 'yes' : 'no'}`);
-  console.log('\n  Files:');
-  for (const f of plan.files) console.log(`    [${f.action}] ${f.path}${f.detail ? ` — ${f.detail}` : ''}`);
-  if (plan.gitignore.length > 0) console.log(`\n  .gitignore additions: ${plan.gitignore.join(', ')}`);
-  console.log(`\n  Orphan docs branch: [${plan.orphanBranch.action}] ${plan.orphanBranch.name}`);
-  console.log('\n  Members:');
+  log.info(`\nGroup setup plan for '${plan.groupName}'`);
+  log.info(`  parent: ${plan.parentRoot}`);
+  log.info(`  already configured: ${plan.alreadyConfigured ? 'yes' : 'no'}`);
+  log.info('\n  Files:');
+  for (const f of plan.files) log.info(`    [${f.action}] ${f.path}${f.detail ? ` — ${f.detail}` : ''}`);
+  if (plan.gitignore.length > 0) log.info(`\n  .gitignore additions: ${plan.gitignore.join(', ')}`);
+  log.info(`\n  Orphan docs branch: [${plan.orphanBranch.action}] ${plan.orphanBranch.name}`);
+  log.info('\n  Members:');
   for (const m of plan.members) {
-    console.log(`    [${m.action}] ${m.name} (${m.role}) → ${m.resolvedPath}${m.detail ? ` — ${m.detail}` : ''}`);
+    log.info(`    [${m.action}] ${m.name} (${m.role}) → ${m.resolvedPath}${m.detail ? ` — ${m.detail}` : ''}`);
   }
   if (plan.warnings.length > 0) {
-    console.log('\n  Warnings:');
-    for (const w of plan.warnings) console.log(`    ! ${w}`);
+    log.info('\n  Warnings:');
+    for (const w of plan.warnings) log.info(`    ! ${w}`);
   }
 }
 
@@ -109,20 +110,20 @@ async function main() {
     if (!opts.apply) {
       const plan = await planGroupSetup(input);
       printPlan(plan);
-      console.log('\nDry run — pass --apply to perform these actions.\n');
+      log.info('\nDry run — pass --apply to perform these actions.\n');
       return;
     }
 
     const result = await applyGroupSetup(input);
-    console.log(`\n✓ Group '${result.groupName}' configured at ${result.parentRoot}`);
-    console.log(`  group.json written: ${result.wroteConfig}`);
-    console.log(`  .gitignore patched: ${result.patchedGitignore}`);
-    console.log(`  store scaffolded:   ${result.scaffoldedStore}`);
-    console.log('  Members:');
+    log.info(`\n✓ Group '${result.groupName}' configured at ${result.parentRoot}`);
+    log.info(`  group.json written: ${result.wroteConfig}`);
+    log.info(`  .gitignore patched: ${result.patchedGitignore}`);
+    log.info(`  store scaffolded:   ${result.scaffoldedStore}`);
+    log.info('  Members:');
     for (const m of result.members) {
-      console.log(`    ${m.ok ? '✓' : '✗'} ${m.name} (${m.action})${m.error ? ` — ${m.error}` : ''}`);
+      log.info(`    ${m.ok ? '✓' : '✗'} ${m.name} (${m.action})${m.error ? ` — ${m.error}` : ''}`);
     }
-    console.log('');
+    log.info('');
   } catch (err: any) {
     console.error(`\nError: ${err.message}\n`);
     process.exit(1);

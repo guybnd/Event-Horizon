@@ -1,3 +1,4 @@
+import { log } from './log.js';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
@@ -38,7 +39,7 @@ function git(cwd: string, args: string[]): Promise<{ stdout: string; stderr: str
  * revert on every fetch and leak between clones. They stay on disk locally; they
  * just stop being version-controlled in the orphan store.
  */
-const STORE_LOCAL_IGNORES = ['config.json', 'read-state.json', 'open-prompts.json', 'open-prompts.json.tmp'];
+const STORE_LOCAL_IGNORES = ['config.json', 'read-state.json', 'open-prompts.json', 'open-prompts.json.tmp', 'session-binding-secret', 'session-binding-secret.tmp'];
 
 /** Ensure the store-root `.gitignore` lists the local-only files. Returns true if it changed. */
 async function ensureStoreLocalGitignore(storeDir: string): Promise<boolean> {
@@ -77,7 +78,7 @@ export async function excludeLocalConfigFromSync(storeDir: string): Promise<void
       }
     }
   } catch (err: any) {
-    console.log(`[storage-sync] excludeLocalConfigFromSync skipped: ${err.message}`);
+    log.info(`[storage-sync] excludeLocalConfigFromSync skipped: ${err.message}`);
   }
 }
 
@@ -89,7 +90,7 @@ async function gitWithRetry(cwd: string, args: string[], maxRetries = 3): Promis
     } catch (err: any) {
       const msg = err.message || String(err);
       if (msg.includes('index.lock') && attempts < maxRetries - 1) {
-        console.log(`[storage-sync] Git lock detected, retrying in 1s (attempt ${attempts + 1}/${maxRetries})...`);
+        log.info(`[storage-sync] Git lock detected, retrying in 1s (attempt ${attempts + 1}/${maxRetries})...`);
         await new Promise(r => setTimeout(r, 1000));
         attempts++;
       } else {
@@ -108,9 +109,9 @@ export async function attachWorktreeIfPresent(workspaceRoot: string): Promise<vo
     // Worktree already attached - pull latest changes on startup
     try {
       await git(storeDir, ['pull', '--ff-only', 'origin', 'flux-data']);
-      console.log('[storage-sync] Pulled latest flux-data on startup');
+      log.info('[storage-sync] Pulled latest flux-data on startup');
     } catch (err: any) {
-      console.log(`[storage-sync] Could not pull on startup: ${err.message}`);
+      log.info(`[storage-sync] Could not pull on startup: ${err.message}`);
     }
     // Scaffold dirs for all modules that declare one — idempotent, safe every startup.
     await scaffoldModuleDirs(storeDir, MEMORY_GITIGNORE_DIRS);
@@ -127,9 +128,9 @@ export async function attachWorktreeIfPresent(workspaceRoot: string): Promise<vo
     await git(workspaceRoot, ['worktree', 'add', '-b', 'flux-data', storeDir, 'origin/flux-data']);
     await scaffoldModuleDirs(storeDir, MEMORY_GITIGNORE_DIRS);
     await excludeLocalConfigFromSync(storeDir);
-    console.log('[storage-sync] Re-attached .flux-store worktree from origin/flux-data');
+    log.info('[storage-sync] Re-attached .flux-store worktree from origin/flux-data');
   } catch (err: any) {
-    console.log(`[storage-sync] attachWorktreeIfPresent skipped: ${err.message}`);
+    log.info(`[storage-sync] attachWorktreeIfPresent skipped: ${err.message}`);
   }
 }
 
@@ -155,7 +156,7 @@ export async function migrateToOrphan(workspaceRoot: string): Promise<void> {
     const existing = await fs.readFile(gitignorePath, 'utf-8').catch(() => '');
     const marker = '# flux-data orphan mode';
     if (!existing.includes(marker)) {
-      const addition = `\n${marker}\n.flux/*.md\n.flux/config.json\n.flux/assets/\n.flux/read-state.json\n.flux/open-prompts.json\n.flux/open-prompts.json.tmp\n.flux/memory/\n.flux-store/\n`;
+      const addition = `\n${marker}\n.flux/*.md\n.flux/config.json\n.flux/assets/\n.flux/read-state.json\n.flux/open-prompts.json\n.flux/open-prompts.json.tmp\n.flux/session-binding-secret\n.flux/session-binding-secret.tmp\n.flux/memory/\n.flux-store/\n`;
       await fs.writeFile(gitignorePath, existing + addition, 'utf-8');
     }
 
@@ -240,11 +241,11 @@ export async function migrateStrandedFluxTickets(workspaceRoot: string): Promise
     try {
       if (existsSync(dst)) {
         await fs.unlink(src);
-        console.log(`[startup-migrate] Removed stale duplicate: ${name}`);
+        log.info(`[startup-migrate] Removed stale duplicate: ${name}`);
       } else {
         await fs.copyFile(src, dst);
         await fs.unlink(src);
-        console.log(`[startup-migrate] Migrated ticket: ${name}`);
+        log.info(`[startup-migrate] Migrated ticket: ${name}`);
       }
     } catch (err: any) {
       console.warn(`[startup-migrate] Failed to migrate ${name}, skipping: ${err.message}`);
@@ -257,9 +258,9 @@ export async function migrateStrandedFluxTickets(workspaceRoot: string): Promise
     try {
       if (!existsSync(configDst)) {
         await fs.copyFile(configSrc, configDst);
-        console.log(`[startup-migrate] Migrated config.json`);
+        log.info(`[startup-migrate] Migrated config.json`);
       } else {
-        console.log(`[startup-migrate] Removed stale config.json from .flux/`);
+        log.info(`[startup-migrate] Removed stale config.json from .flux/`);
       }
       await fs.unlink(configSrc);
     } catch (err: any) {
@@ -283,12 +284,12 @@ export async function migrateStrandedFluxTickets(workspaceRoot: string): Promise
       try {
         if (existsSync(dst)) {
           await fs.rm(src, { recursive: true, force: true });
-          console.log(`[startup-migrate] Removed stale asset: ${name}`);
+          log.info(`[startup-migrate] Removed stale asset: ${name}`);
         } else {
           await fs.mkdir(assetsDst, { recursive: true });
           await fs.cp(src, dst, { recursive: true });
           await fs.rm(src, { recursive: true, force: true });
-          console.log(`[startup-migrate] Migrated asset: ${name}`);
+          log.info(`[startup-migrate] Migrated asset: ${name}`);
         }
       } catch (err: any) {
         console.warn(`[startup-migrate] Failed to migrate asset ${name}, skipping: ${err.message}`);
@@ -350,7 +351,7 @@ export async function restoreToInRepo(workspaceRoot: string): Promise<void> {
   try {
     const content = await fs.readFile(gitignorePath, 'utf-8');
     const normalized = content.replace(/\r\n/g, '\n');
-    const section = `\n# flux-data orphan mode\n.flux/*.md\n.flux/config.json\n.flux/assets/\n.flux/read-state.json\n.flux/open-prompts.json\n.flux/open-prompts.json.tmp\n.flux/memory/\n.flux-store/\n`;
+    const section = `\n# flux-data orphan mode\n.flux/*.md\n.flux/config.json\n.flux/assets/\n.flux/read-state.json\n.flux/open-prompts.json\n.flux/open-prompts.json.tmp\n.flux/session-binding-secret\n.flux/session-binding-secret.tmp\n.flux/memory/\n.flux-store/\n`;
     const cleaned = normalized.split(section).join('');
     await fs.writeFile(gitignorePath, cleaned, 'utf-8');
   } catch {

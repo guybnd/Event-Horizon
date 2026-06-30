@@ -1,4 +1,5 @@
-import { AlertCircle, Maximize2, SendHorizontal } from 'lucide-react';
+import { AlertCircle, ChevronDown, ChevronUp, Maximize2, SendHorizontal } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode, RefObject } from 'react';
 
 interface RequireInputPromptProps {
@@ -32,6 +33,25 @@ export function RequireInputPrompt({
   setResponseDestination,
   requireInputDestinations,
 }: RequireInputPromptProps) {
+  // FLUX-896: in-place expand/collapse toggle for the question region. Collapsed keeps a compact
+  // cap (max-h-40) with scroll; expanded lifts it to max-h-[60vh]. An explicit chevron affordance
+  // (not click-anywhere) so markdown links / text-selection inside the question are never hijacked.
+  const [expanded, setExpanded] = useState(false);
+  const questionRegionRef = useRef<HTMLDivElement>(null);
+
+  // Click-outside-to-collapse: while expanded, a mousedown anywhere outside the question region
+  // (the toggle button lives inside the ref, so it won't self-collapse) snaps it back to collapsed.
+  useEffect(() => {
+    if (!expanded) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (questionRegionRef.current && !questionRegionRef.current.contains(event.target as Node)) {
+        setExpanded(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [expanded]);
+
   return (
     <div className="rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 to-white p-5 shadow-sm dark:border-amber-500/30 dark:from-amber-900/20 dark:to-[#1a1b23]">
       <div className="mb-4 flex items-start gap-3">
@@ -52,9 +72,25 @@ export function RequireInputPrompt({
           </p>
         </div>
       </div>
-      <div className="space-y-4">
-        {requireInputBanner}
-        {groomingBanner}
+      {/* FLUX-893: cap the question region with a max-height + vertical resize (parity with the
+          FLUX-888 picker) so a long/many-line Require Input question scrolls in place instead of
+          pushing the response textarea + routing controls below offscreen. Those stay pinned below
+          this scroll region. ChatRequireInputBanner keeps its own max-h-40 cap; this is the
+          full-modal surface only. FLUX-896 adds the in-place expand/collapse toggle below. */}
+      <div ref={questionRegionRef} className="relative">
+        <button
+          type="button"
+          onClick={() => setExpanded((value) => !value)}
+          aria-label={expanded ? 'Collapse question' : 'Expand question'}
+          title={expanded ? 'Collapse question' : 'Expand question'}
+          className="absolute right-1 top-1 z-10 rounded-md border border-amber-200 bg-white/90 p-1 text-amber-600 shadow-sm transition-colors hover:bg-amber-50 dark:border-amber-500/20 dark:bg-black/40 dark:text-amber-300 dark:hover:bg-white/5"
+        >
+          {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+        </button>
+        <div className={`${expanded ? 'max-h-[60vh]' : 'max-h-40'} min-h-[8rem] resize-y space-y-4 overflow-y-auto pr-8`}>
+          {requireInputBanner}
+          {groomingBanner}
+        </div>
       </div>
       <div className={`mt-4 grid gap-4 ${!isSwimlaneOnly && !hasActiveSessionForPrompt ? 'lg:grid-cols-[minmax(0,1fr)_180px]' : ''}`}>
         <div>

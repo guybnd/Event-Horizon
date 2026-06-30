@@ -1,52 +1,22 @@
-import { spawn, execSync, execFileSync } from 'child_process';
+import { log } from '../log.js';
+import { spawn, execSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { configCache } from '../config.js';
 import { buildActivityEntry, buildCommentEntry, buildAgentMessageEntry, buildAgentSessionEntry, appendSessionProgress, closeAgentSession, type AgentSessionEntry } from '../history.js';
 import { updateTaskWithHistory, updateAgentSession, tasksCache, estimateCostUSD } from '../task-store.js';
 import { resolveTaskExecutionRoot } from '../task-worktree.js';
-import { workspaceRoot as canonicalWorkspaceRoot } from '../workspace.js';
 import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal, checkAutoRestart } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
+import { killProcessTree } from '../kill-process-tree.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
 import { captureTurnStartState, clearNeedsActionIfSet, flagIfParked } from '../parked-ticket.js';
 import { buildMemberScopeArgs } from '../group.js';
 import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
 import { getModulePromptFragments } from '../modules.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
-
-function checkBinaryInstalled(binaryName: string): void {
-  const checker = process.platform === 'win32' ? 'where' : 'which';
-  try {
-    execFileSync(checker, [binaryName], { stdio: 'ignore', env: cleanChildEnv(), timeout: 10_000, windowsHide: true });
-  } catch {
-    throw new Error(`"${binaryName}" is not installed or not on PATH. Please install it before starting an agent session.`);
-  }
-}
-
-function cleanChildEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  for (const key of Object.keys(env)) {
-    if (key.toUpperCase() === 'NODE_OPTIONS') delete env[key];
-  }
-  env.EVENT_HORIZON_FRAMEWORK = 'copilot';
-  // Pin the canonical ticket store so a worktree agent's event-horizon MCP binds
-  // to the real workspace, not its cwd worktree (FLUX-516).
-  if (canonicalWorkspaceRoot) env.EH_CANONICAL_WORKSPACE = canonicalWorkspaceRoot;
-  return env;
-}
-
-// Effort levels accepted by the --effort CLI flag, in ascending order.
-export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
-type EffortLevel = typeof EFFORT_LEVELS[number];
-
-export const PROVIDER_CAPABILITIES = {
-  copilot: { supportsEffort: true, effortFlag: '--effort' },
-};
-
-export function cliLabelForFramework() {
-  return 'Copilot CLI';
-}
+import { CLI_CAPABILITIES } from './types.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, enqueueSessionWrite, flushSessionOutput } from './shared.js';
 
 const TOOL_ACTIVITY_MAP: Record<string, string> = {
   powershell: 'Running command',
@@ -61,87 +31,6 @@ const TOOL_ACTIVITY_MAP: Record<string, string> = {
   task: 'Delegating',
   sql: 'Working',
 };
-
-export function appendSessionOutput(session: CliSessionRecord, chunk: Buffer | string, source: 'stdout' | 'stderr', isAssistantText = false) {
-  const text = String(chunk ?? '').replace(/\r\n/g, '\n');
-  if (!text.trim()) return;
-
-  // Filter out noise from Windows ConPTY/AttachConsole failures
-  if (source === 'stderr' && (
-    text.includes('AttachConsole failed') || 
-    text.includes('conpty_console_list_agent.js') ||
-    text.includes('Shared memory agent failed')
-  )) {
-    return;
-  }
-
-  const prefix = source === 'stderr' ? '[stderr] ' : '';
-  session.liveOutputBuffer += `${prefix}${text}`;
-  if (isAssistantText) {
-    session.outputBuffer += text;
-    session.cumulativeOutput += text;
-  }
-  session.lastOutputAt = new Date().toISOString();
-}
-
-export function enqueueSessionWrite(session: CliSessionRecord, writer: () => Promise<void>) {
-  session.writeQueue = session.writeQueue
-    .then(writer)
-    .catch((error) => {
-      console.error(`CLI session ${session.id} failed to append task history:`, error);
-    });
-}
-
-export function flushSessionOutput(session: CliSessionRecord, force = false) {
-  if (!session.outputBuffer.trim()) return;
-
-  const flushNow = async () => {
-    const bufferedText = session.outputBuffer.trim();
-    session.outputBuffer = '';
-    if (!bufferedText) return;
-
-    const timestamp = new Date().toISOString();
-    const maxLength = 2000;
-    const clippedText = bufferedText.length > maxLength
-      ? `${bufferedText.slice(0, maxLength)}...`
-      : bufferedText;
-
-    // Broadcast progress immediately via SSE (UI gets live updates)
-    broadcastEvent('progress', {
-      taskId: session.taskId,
-      sessionId: session.sessionHistoryEntry?.sessionId,
-      timestamp,
-      message: clippedText,
-    });
-
-    // Accumulate progress in memory only — do NOT write to the ticket file
-    // during an active session. Writing continuously causes the agent to see
-    // the file changing and back off from editing it. The full progress is
-    // flushed to the ticket file once when the session ends.
-    if (session.sessionHistoryEntry) {
-      session.sessionHistoryEntry.progress.push({
-        timestamp,
-        message: clippedText,
-        type: 'text',
-      });
-    }
-  };
-
-  if (session.flushTimer) {
-    clearTimeout(session.flushTimer);
-    session.flushTimer = undefined;
-  }
-
-  if (force) {
-    enqueueSessionWrite(session, flushNow);
-    return;
-  }
-
-  session.flushTimer = setTimeout(() => {
-    session.flushTimer = undefined;
-    enqueueSessionWrite(session, flushNow);
-  }, 1000);
-}
 
 export function buildInitialPrompt(task: any, appendPrompt: string, opts?: { phase?: string | undefined }): string {
   const readyStatus = (configCache as any)?.readyForMergeStatus || 'Ready';
@@ -200,7 +89,7 @@ export function attachStdoutProcessing(
   const commitPendingAssistantText = () => {
     if (session.pendingAssistantText) {
       appendSessionOutput(session, session.pendingAssistantText, 'stdout', true);
-      flushSessionOutput(session);
+      flushSessionOutput(session, false, 'text');
       session.pendingAssistantText = '';
     }
   };
@@ -332,7 +221,7 @@ export function attachStdoutProcessing(
       } catch {
         // Non-JSON output — treat as plain text activity
         appendSessionOutput(session, trimmed + '\n', 'stdout', true);
-        flushSessionOutput(session);
+        flushSessionOutput(session, false, 'text');
         if (!session.currentActivity) {
           session.currentActivity = 'Working';
           broadcastEvent('activity', { taskId, activity: session.currentActivity });
@@ -354,19 +243,19 @@ function resolveCopilotBinary(id: string): { nodePath: string | null; entryPoint
   // this, causing MCP tools to be unavailable in non-interactive mode.
   try {
     const checker = isWin ? 'where' : 'which';
-    const result = execSync(`${checker} copilot`, { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000, windowsHide: true }).trim();
+    const result = execSync(`${checker} copilot`, { encoding: 'utf8', env: cleanChildEnv('copilot'), timeout: 10_000, windowsHide: true }).trim();
     const matches = result.split(/\r?\n/).filter(Boolean);
 
     if (isWin) {
       const exeMatch = matches.find(m => m.endsWith('.exe'));
       if (exeMatch && fs.existsSync(exeMatch)) {
-        console.log(`[${id}] Found copilot.exe: ${exeMatch}`);
+        log.info(`[${id}] Found copilot.exe: ${exeMatch}`);
         return { nodePath: null, entryPoint: null, exePath: exeMatch };
       }
     } else {
       const firstMatch = matches[0];
       if (firstMatch && fs.existsSync(firstMatch)) {
-        console.log(`[${id}] Found copilot on PATH: ${firstMatch}`);
+        log.info(`[${id}] Found copilot on PATH: ${firstMatch}`);
         return { nodePath: null, entryPoint: null, exePath: firstMatch };
       }
     }
@@ -376,7 +265,7 @@ function resolveCopilotBinary(id: string): { nodePath: string | null; entryPoint
   const vsCodeCandidates = getVSCodeGlobalStoragePaths();
   for (const candidate of vsCodeCandidates) {
     if (fs.existsSync(candidate)) {
-      console.log(`[${id}] Found copilot via VS Code globalStorage: ${candidate}`);
+      log.info(`[${id}] Found copilot via VS Code globalStorage: ${candidate}`);
       return { nodePath: null, entryPoint: null, exePath: candidate };
     }
   }
@@ -386,7 +275,7 @@ function resolveCopilotBinary(id: string): { nodePath: string | null; entryPoint
   if (isWin) {
     let systemNodePath: string | null = null;
     try {
-      const whereResult = execSync('where node', { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000, windowsHide: true }).trim().split(/\r?\n/);
+      const whereResult = execSync('where node', { encoding: 'utf8', env: cleanChildEnv('copilot'), timeout: 10_000, windowsHide: true }).trim().split(/\r?\n/);
       const selfExe = process.execPath.toLowerCase();
       systemNodePath = whereResult.find(p => p.toLowerCase() !== selfExe && fs.existsSync(p)) || null;
       if (!systemNodePath) systemNodePath = whereResult[0] || null;
@@ -394,19 +283,19 @@ function resolveCopilotBinary(id: string): { nodePath: string | null; entryPoint
 
     let entryPoint: string | null = null;
     try {
-      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000, windowsHide: true }).trim();
+      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', env: cleanChildEnv('copilot'), timeout: 10_000, windowsHide: true }).trim();
       const candidate = path.join(npmPrefix, 'node_modules', '@github', 'copilot', 'npm-loader.js');
       if (fs.existsSync(candidate)) {
         entryPoint = candidate;
-        console.log(`[${id}] Found copilot JS entry (fallback): ${entryPoint}`);
+        log.info(`[${id}] Found copilot JS entry (fallback): ${entryPoint}`);
       }
     } catch (err) {
-      console.log(`[${id}] Failed to resolve copilot via npm prefix:`, err);
+      log.info(`[${id}] Failed to resolve copilot via npm prefix:`, err);
     }
 
     if (!entryPoint) {
       try {
-        const result = execSync('where copilot', { encoding: 'utf8', env: cleanChildEnv(), timeout: 10_000, windowsHide: true }).trim();
+        const result = execSync('where copilot', { encoding: 'utf8', env: cleanChildEnv('copilot'), timeout: 10_000, windowsHide: true }).trim();
         const cmdMatch = result.split(/\r?\n/).find(m => m.endsWith('.cmd'));
         if (cmdMatch) {
           const binDir = path.dirname(cmdMatch);
@@ -419,12 +308,12 @@ function resolveCopilotBinary(id: string): { nodePath: string | null; entryPoint
     }
 
     if (entryPoint && systemNodePath) {
-      console.log(`[${id}] Will spawn (node fallback): ${systemNodePath} ${entryPoint}`);
+      log.info(`[${id}] Will spawn (node fallback): ${systemNodePath} ${entryPoint}`);
       return { nodePath: systemNodePath, entryPoint, exePath: systemNodePath };
     }
   }
 
-  console.log(`[${id}] copilot not found, falling back to bare name`);
+  log.info(`[${id}] copilot not found, falling back to bare name`);
   return { nodePath: null, entryPoint: null, exePath: 'copilot' };
 }
 
@@ -462,19 +351,19 @@ function spawnCopilot(id: string, args: string[], cwdRoot: string) {
 
   if (nodePath && entryPoint) {
     // Spawn node directly with JS entry point (avoids .cmd path-with-spaces issues on Windows)
-    console.log(`[${id}] Spawning: node ${path.basename(entryPoint)} [${args.length} args]`);
+    log.info(`[${id}] Spawning: node ${path.basename(entryPoint)} [${args.length} args]`);
     return spawn(nodePath, [entryPoint, ...args], {
       cwd: cwdRoot,
-      env: cleanChildEnv(),
+      env: cleanChildEnv('copilot', id),
       stdio: 'pipe',
       windowsHide: true,
     });
   }
 
-  console.log(`[${id}] Spawning: ${exePath} [${args.length} args]`);
+  log.info(`[${id}] Spawning: ${exePath} [${args.length} args]`);
   return spawn(exePath, args, {
     cwd: cwdRoot,
-    env: cleanChildEnv(),
+    env: cleanChildEnv('copilot', id),
     stdio: 'pipe',
     windowsHide: true,
   });
@@ -487,7 +376,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   const executionRoot = await resolveTaskExecutionRoot(task, workspaceRoot);
   session.executionRoot = executionRoot;
 
-  console.log(`[${id}] Starting Copilot CLI session in ${workspaceRoot}`);
+  log.info(`[${id}] Starting Copilot CLI session in ${workspaceRoot}`);
 
   const copilotIntegration = (configCache as any).integrations?.copilotCli;
   const groomingStatuses = [(configCache as any).requireInputStatus || 'Require Input', 'Grooming'];
@@ -513,15 +402,15 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     ...buildGroupDocsScopeArg(workspaceRoot),
   ];
 
-  const caps = PROVIDER_CAPABILITIES['copilot'];
+  const effortCap = CLI_CAPABILITIES.copilot.effort;
   const globalEffort = (configCache as any).effortLevel as string | undefined;
   const taskEffort = (task as any).effortLevel as string | undefined;
   const effectiveEffort = (effortOverrideRaw || taskEffort || globalEffort || '') as string;
-  if (caps.supportsEffort && EFFORT_LEVELS.includes(effectiveEffort as EffortLevel)) {
-    copilotArgs.push(caps.effortFlag, effectiveEffort);
+  if (effortCap.supported && effortCap.flag && EFFORT_LEVELS.includes(effectiveEffort as EffortLevel)) {
+    copilotArgs.push(effortCap.flag, effectiveEffort);
   }
 
-  console.log(`[${id}] Args: [${copilotArgs.map((a, i) => i === copilotArgs.indexOf(initialPrompt) ? `<prompt ${initialPrompt.length} chars>` : a).join(', ')}]`);
+  log.info(`[${id}] Args: [${copilotArgs.map((a, i) => i === copilotArgs.indexOf(initialPrompt) ? `<prompt ${initialPrompt.length} chars>` : a).join(', ')}]`);
 
   let proc = spawnCopilot(id, copilotArgs, executionRoot);
 
@@ -549,7 +438,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     session.status = 'failed';
     session.endedAt = new Date().toISOString();
     commitPending();
-    flushSessionOutput(session, true);
+    flushSessionOutput(session, true, 'text');
     await session.writeQueue;
 
     const outcome = `${label} session failed to start: ${error.message}`;
@@ -607,7 +496,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     }
 
     commitPending();
-    flushSessionOutput(session, true);
+    flushSessionOutput(session, true, 'text');
     await session.writeQueue;
     session.endedAt = new Date().toISOString();
 
@@ -717,7 +606,9 @@ export class CopilotAdapter implements AgentAdapter {
   }
 
   stop(session: CliSessionRecord): void {
-    session.proc?.kill('SIGTERM');
+    // Tree-kill so the agent's MCP servers (serena, context7, …) are reaped too, not orphaned —
+    // the stale-node-process leak. See kill-process-tree.ts.
+    killProcessTree(session.proc);
   }
 }
 
@@ -733,6 +624,8 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   const inputAt = new Date().toISOString();
   session.lastInputAt = inputAt;
   session.status = 'running';
+  // FLUX-915: clear a stale stop flag before resuming so a prior stop can't mis-cancel this turn.
+  session.requestedStop = false;
   // FLUX-651: new turn — snapshot ticket state and drop any stale "parked" flag.
   captureTurnStartState(session, id);
   void clearNeedsActionIfSet(id);
@@ -747,7 +640,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'json', '--yolo']
     : ['-p', safeMessage, '--output-format', 'json', '--yolo'];
 
-  console.log(`[${id}] Reply spawn, resume=${session.claudeSessionId || 'none'}`);
+  log.info(`[${id}] Reply spawn, resume=${session.claudeSessionId || 'none'}`);
   const replyProc = spawnCopilot(id, resumeArgs, executionRoot);
 
   session.proc = replyProc;
@@ -760,9 +653,15 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   });
 
   replyProc.on('error', async (error) => {
-    session.status = 'waiting-input';
+    // FLUX-915: a stop racing a spawn error stays 'cancelled' rather than reverting to resumable.
+    if (session.requestedStop) {
+      session.status = 'cancelled';
+      session.endedAt = new Date().toISOString();
+    } else {
+      session.status = 'waiting-input';
+    }
     commitReplyPending();
-    flushSessionOutput(session, true);
+    flushSessionOutput(session, true, 'text');
     await updateTaskWithHistory(id, {
       updatedBy: 'Agent',
       entries: [buildActivityEntry(`${session.label} reply failed: ${error.message}`, 'Agent', new Date().toISOString())],
@@ -772,10 +671,18 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
 
   replyProc.on('exit', async () => {
     commitReplyPending();
-    flushSessionOutput(session, true);
-    session.status = 'waiting-input';
-    // FLUX-651: resumed turn ended — flag if the agent parked without acting.
-    if (!session.pausedForInput) await flagIfParked(session, id);
+    flushSessionOutput(session, true, 'text');
+    // FLUX-915: a user-requested stop stays 'cancelled' instead of reverting to 'waiting-input'
+    // (which counted the killed session as active forever). Otherwise the resumable conversation
+    // stays waiting-input.
+    if (session.requestedStop) {
+      session.status = 'cancelled';
+      session.endedAt = new Date().toISOString();
+    } else {
+      session.status = 'waiting-input';
+    }
+    // FLUX-651: resumed turn ended — flag if the agent parked without acting. Skip a stopped turn.
+    if (!session.pausedForInput && !session.requestedStop) await flagIfParked(session, id);
     broadcastEvent('taskUpdated', { id });
   });
 }

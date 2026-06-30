@@ -9,8 +9,8 @@ import type { InlineSubtask, Task } from '../types';
  * Compares exactly the fields the old signature hashed (status, title, body
  * length + first 200 chars, assignee, priority, effort, implementationLink,
  * order, tags, subtasks, history length + last-entry key, cliSession
- * status/activity/label, tokenMetadata) so change-detection semantics are
- * unchanged — a pure hot-path swap.
+ * status/activity/label, tokenMetadata, artifacts (latest + revision count)) so
+ * change-detection semantics are unchanged — a pure hot-path swap.
  */
 export function tasksEqual(a: Task, b: Task): boolean {
   if (a === b) return true;
@@ -54,7 +54,19 @@ export function tasksEqual(a: Task, b: Task): boolean {
     return false;
   }
 
+  if (!artifactsEqual(a.artifacts, b.artifacts)) return false;
+
   return tokenMetadataEqual(a.tokenMetadata, b.tokenMetadata);
+}
+
+function artifactsEqual(a: Task['artifacts'], b: Task['artifacts']): boolean {
+  // Revisions are append-only and `latest` increments on every publish, so the
+  // two scalars (latest pointer + revision count) detect any publish — first
+  // artifact (0 → 1) or a new revision — without walking the revisions array.
+  return (
+    (a?.latest ?? 0) === (b?.latest ?? 0) &&
+    (a?.revisions?.length ?? 0) === (b?.revisions?.length ?? 0)
+  );
 }
 
 function stringArraysEqual(a: string[] | undefined, b: string[] | undefined): boolean {

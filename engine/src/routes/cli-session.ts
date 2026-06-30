@@ -34,10 +34,11 @@ import { BOARD_CONVERSATION_ID, startBoardSession, sendBoardInput, resolveAttach
 import type { ChatAttachment } from '../projection.js';
 import { updateTaskWithHistory } from '../task-store.js';
 import { broadcastEvent } from '../events.js';
+import { killProcessTree } from '../kill-process-tree.js';
 import { appendTranscriptEvent, readTranscriptMessages, clearTranscript } from '../transcript.js';
 import { resetBoardDigest } from '../board-digest.js';
 import { dismissNotificationsForTicket } from '../notifications.js';
-import { resolvePersonaPrompt } from '../orchestration-personas.js';
+import { resolvePersonaPrompt, getPersonaById } from '../orchestration-personas.js';
 import { ensureTicketIsolation } from '../ticket-isolation.js';
 import { buildActivityEntry } from '../history.js';
 import {
@@ -314,6 +315,39 @@ router.get('/:id/transcript', async (req, res) => {
   }
 });
 
+// FLUX-867: durable board Activity/History feed. The `📡 <ticket> <STAGE>` dispatch-lifecycle
+// rows teed to the board orchestrator thread (FLUX-849) are durably persisted in the same
+// `__board__` transcript; this replays them, filtered down to `kind:'dispatch'` rows only, so the
+// other board chat (user/assistant/tool/permission notes) never leaks into the Activity view.
+// Read-only, newest-first, with optional server-side filters (`ticket`/`phase`/`lifecycle`/`from`/
+// `to`/`limit`) so the unbounded `__board__.jsonl` is never shipped whole to the client. Backs the
+// portal Activity screen. (No new store — same source of truth as `/transcript`.)
+router.get('/:id/activity', async (req, res) => {
+  const { id } = req.params;
+  if (id !== BOARD_CONVERSATION_ID && !tasksCache[id]) return res.status(404).json({ error: 'Task not found' });
+  try {
+    const ticket = typeof req.query.ticket === 'string' ? req.query.ticket : '';
+    const phase = typeof req.query.phase === 'string' ? req.query.phase : '';
+    const lifecycle = typeof req.query.lifecycle === 'string' ? req.query.lifecycle : '';
+    const from = typeof req.query.from === 'string' ? Date.parse(req.query.from) : NaN;
+    const to = typeof req.query.to === 'string' ? Date.parse(req.query.to) : NaN;
+    const limitRaw = typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) : NaN;
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 2000) : 500;
+
+    let rows = (await readTranscriptMessages(id)).filter((m) => m.kind === 'dispatch');
+    if (ticket) rows = rows.filter((m) => m.sourceTask === ticket);
+    if (phase) rows = rows.filter((m) => m.phase === phase);
+    if (lifecycle) rows = rows.filter((m) => m.lifecycle === lifecycle);
+    if (Number.isFinite(from)) rows = rows.filter((m) => { const t = Date.parse(m.ts); return !Number.isNaN(t) && t >= from; });
+    if (Number.isFinite(to)) rows = rows.filter((m) => { const t = Date.parse(m.ts); return !Number.isNaN(t) && t <= to; });
+
+    // readTranscriptMessages returns chronological (oldest-first); reverse for newest-first, then cap.
+    res.json({ messages: rows.reverse().slice(0, limit) });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Failed to read activity' });
+  }
+});
+
 // Clear a conversation's transcript — the orchestrator "reset". The caller stops any live
 // session first; this just wipes the durable record. Broadcasting `taskUpdated` makes any
 // open chat window refetch (and come back empty) without a reload.
@@ -482,10 +516,21 @@ router.post('/:id/cli-session/start', async (req, res) => {
   if (!role && activeSessions.length > 0) {
     const blockingSession = activeSessions.find(s => !s.role);
     if (blockingSession) {
-      return res.status(409).json({
-        error: 'Task already has an active CLI session. Use role/pattern params for multi-session.',
-        session: getCliSessionSummaryForTask(id),
-      });
+      // FLUX-915: a session parked at waiting-input with NO claudeSessionId can never resume (the
+      // input route 409s on a missing session id) yet counts as active and reconcileDeadSessions
+      // skips waiting-input — a permanent wedge (the per-ticket twin of the board's FLUX-667
+      // self-heal). Terminalize it so a fresh start supersedes it instead of 409-ing forever. A
+      // genuinely resumable parked session (has claudeSessionId) still blocks — the user should
+      // send input to it, not spawn a duplicate.
+      if (blockingSession.status === 'waiting-input' && !blockingSession.claudeSessionId) {
+        blockingSession.status = 'cancelled';
+        blockingSession.endedAt = new Date().toISOString();
+      } else {
+        return res.status(409).json({
+          error: 'Task already has an active CLI session. Use role/pattern params for multi-session.',
+          session: getCliSessionSummaryForTask(id),
+        });
+      }
     }
   }
 
@@ -705,6 +750,8 @@ router.post('/:id/cli-session/delegate', async (req, res) => {
   const taskPrompt = typeof req.body?.task === 'string' ? req.body.task.trim() : '';
   const focusComment = typeof req.body?.focusComment === 'string' ? req.body.focusComment.trim() : '';
   const effortOverride = typeof req.body?.effortOverride === 'string' ? req.body.effortOverride.trim() : '';
+  // FLUX-482: per-call model override from the delegate MCP tool (highest precedence).
+  const modelOverride = typeof req.body?.model === 'string' ? req.body.model.trim() : '';
   const skipPermissions = req.body?.skipPermissions !== false;
   const timeoutMs = typeof req.body?.timeout === 'number' && req.body.timeout > 0
     ? Math.min(req.body.timeout, 600_000)
@@ -726,6 +773,7 @@ router.post('/:id/cli-session/delegate', async (req, res) => {
 
   // Build the child's prompt: persona prompt (if any) + delegation task
   let appendPrompt = '';
+  const persona = personaId ? getPersonaById(personaId) : undefined;
   if (personaId) {
     const resolved = resolvePersonaPrompt(personaId, focusComment);
     if (!resolved) return res.status(400).json({ error: `Unknown personaId: ${personaId}` });
@@ -741,7 +789,9 @@ router.post('/:id/cli-session/delegate', async (req, res) => {
   // the child spawned, the orchestrator retries the identical delegation. Attach
   // to the in-flight (or freshly-settled) dispatch instead of spawning a second
   // child — this is what kept the review fleet running ~3× over.
-  const idempotencyKey = dispatchKey(id, personaId, taskPrompt, effortOverride);
+  // FLUX-482: fold the per-call model into the effort component so two otherwise
+  // identical delegations that differ only by model don't dedupe onto each other.
+  const idempotencyKey = dispatchKey(id, personaId, taskPrompt, modelOverride ? `${effortOverride}::model=${modelOverride}` : effortOverride);
   const existing = findDispatch(idempotencyKey);
   if (existing) {
     try {
@@ -765,12 +815,42 @@ router.post('/:id/cli-session/delegate', async (req, res) => {
   // the key) if spawn itself errors so a genuine later retry can start fresh.
   const reservation = reserveDispatch(idempotencyKey);
 
+  // FLUX-482: resolve the delegate's model with precedence:
+  //   per-call `model` param  >  persona.model  >  config.delegateModel  >  undefined.
+  // Leaving it undefined makes the adapter fall back to its status-derived
+  // grooming/implementation model (unchanged default behavior). Cheap personas
+  // (search/grooming/doc/review-reading) carry persona.model='sonnet'; code-writing
+  // personas carry none, so they keep the strong implementation model.
+  //
+  // Claude-only for now: the resolved model is threaded onto session.model, which
+  // is currently honored ONLY by the Claude adapter (claude-code.ts: `session.model
+  // || selectedModel`). The Gemini and Copilot adapters read their own configured
+  // grooming/implementation model and ignore session.model, and persona.model='sonnet'
+  // is a Claude alias meaningless to them. So we gate the override to framework
+  // 'claude' — on Gemini/Copilot it stays undefined (no behavior change, and no risk
+  // of pushing a Claude alias onto a --model arg). Generalizing the adapters to honor
+  // session.model with a cheap/strong tier abstraction is tracked in FLUX-931.
+  const configDelegateModel = typeof (configCache as any)?.integrations?.claudeCode?.delegateModel === 'string'
+    ? (configCache as any).integrations.claudeCode.delegateModel.trim()
+    : '';
+  const resolvedModel = framework === 'claude'
+    ? (modelOverride || persona?.model || configDelegateModel || undefined)
+    : undefined;
+
+  // FLUX-482: thread the persona's phase so the child's prompt/MCP-server scoping
+  // matches the delegated role (e.g. a grooming scout gets the grooming server set).
+  // Persona.phases are workflow Phases, a strict subset of LaunchPhase (which adds
+  // 'chat'), so the first one is already a valid LaunchPhase.
+  const delegatePhase: LaunchPhase | undefined = persona?.phases?.[0];
+
   let session: CliSessionRecord;
   try {
     session = await spawnSession(task, {
       framework,
       appendPrompt,
       effortOverride,
+      ...(resolvedModel ? { model: resolvedModel } : {}),
+      ...(delegatePhase ? { phase: delegatePhase } : {}),
       skipPermissions,
       role: personaId ? `assistant:${personaId}` : 'assistant',
       pattern: 'supervisor',
@@ -917,16 +997,34 @@ router.post('/:id/cli-session/stop', async (req, res) => {
     const boardSession = sid ? cliSessionsById.get(sid) : undefined;
     if (boardSession) {
       boardSession.requestedStop = true;
-      boardSession.proc?.kill('SIGTERM');
-      // A live turn's exit handler will terminalize the status. But a session parked at
-      // 'waiting-input' (or 'pending' before claude spawned) has no live proc, so nothing
-      // would ever flip it — leaving it "active" enough to 409 every future start. Terminalize
-      // it here so reset actually clears the orchestrator (FLUX-667).
+      // FLUX-910: tree-kill so the orchestrator's MCP child servers (serena, context7, the EH MCP
+      // server) are reaped too — the board spawns the FULL toolset, so a raw proc.kill orphaned the
+      // heaviest child tree (the stale-node-process leak). Mirrors the adapter stop() paths.
+      killProcessTree(boardSession.proc);
+      // A live turn's exit handler will terminalize a 'running' session; one parked at
+      // 'waiting-input'/'pending' has no live proc, so terminalize it here (FLUX-667).
       if (boardSession.status === 'waiting-input' || boardSession.status === 'pending') {
         boardSession.status = 'cancelled';
         boardSession.endedAt = new Date().toISOString();
+      } else if (boardSession.status === 'running') {
+        // FLUX-915 (Finding 4): if the kill produces no exit (proc wedged / ignoring the signal on
+        // POSIX), the exit handler never fires and the board would stay 'running' forever, 409-ing
+        // every future start. Force-terminalize after a short grace if still running + stop-requested.
+        const stalled = boardSession;
+        const t = setTimeout(() => {
+          if (stalled.requestedStop && stalled.status === 'running') {
+            stalled.status = 'cancelled';
+            stalled.endedAt = new Date().toISOString();
+            broadcastEvent('taskUpdated', { id: BOARD_CONVERSATION_ID });
+          }
+        }, 5000);
+        t.unref?.();
       }
     }
+    // FLUX-910: broadcast synchronously so the UI reflects the stop immediately. The board path
+    // previously broadcast nothing — the only signal was the proc exit handler, invisible if the
+    // SSE stream stalled or the proc lingered.
+    broadcastEvent('taskUpdated', { id: BOARD_CONVERSATION_ID });
     return res.json({ session: getCliSessionSummaryForTask(BOARD_CONVERSATION_ID) || null });
   }
 

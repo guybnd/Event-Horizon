@@ -8,6 +8,7 @@
  *   npm run init -w engine -- [--target <path>] [--key <PROJECT_KEY>] [--force]
  */
 
+import { log } from './log.js';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
@@ -123,18 +124,18 @@ async function main() {
   const docsDir = path.join(target, '.docs');
   const overviewFile = path.join(docsDir, 'project-overview.md');
 
-  console.log(`\nEvent Horizon — workspace init`);
-  console.log(`Target: ${target}\n`);
+  log.info(`\nEvent Horizon — workspace init`);
+  log.info(`Target: ${target}\n`);
 
   // Check for existing installation
   try {
     await fs.access(configFile);
     if (!force) {
-      console.log(`.flux/config.json already exists at ${target}`);
-      console.log('Nothing was changed. Use --force to re-scaffold.\n');
+      log.info(`.flux/config.json already exists at ${target}`);
+      log.info('Nothing was changed. Use --force to re-scaffold.\n');
       process.exit(0);
     }
-    console.log('--force flag set — re-scaffolding existing workspace.\n');
+    log.info('--force flag set — re-scaffolding existing workspace.\n');
   } catch {
     // config doesn't exist yet, proceed normally
   }
@@ -146,7 +147,7 @@ async function main() {
     projectKey = validateProjectKey(raw) || 'PROJECT';
   }
 
-  console.log(`\nUsing project key: ${projectKey}`);
+  log.info(`\nUsing project key: ${projectKey}`);
 
   // Scaffold directories
   await fs.mkdir(fluxDir, { recursive: true });
@@ -155,7 +156,7 @@ async function main() {
   // Write config (always overwrite when --force, create when missing)
   const config = buildDefaultConfig(projectKey);
   await fs.writeFile(configFile, JSON.stringify(config, null, 2), 'utf-8');
-  console.log('Created .flux/config.json');
+  log.info('Created .flux/config.json');
 
   // Scaffold .docs/ if it doesn't exist
   let docsCreated = false;
@@ -164,12 +165,12 @@ async function main() {
   } catch {
     await fs.mkdir(docsDir, { recursive: true });
     await fs.writeFile(overviewFile, buildStarterProjectOverview(projectKey), 'utf-8');
-    console.log('Created .docs/project-overview.md');
+    log.info('Created .docs/project-overview.md');
     docsCreated = true;
   }
 
   if (!docsCreated) {
-    console.log('.docs/ directory already exists — skipped.');
+    log.info('.docs/ directory already exists — skipped.');
   }
 
   // Copy embedded EH docs (how-to guides, workflow, architecture) into .docs/event-horizon/
@@ -180,7 +181,7 @@ async function main() {
   if (existsSync(ehDocsSrc) && !existsSync(ehDocsDest)) {
     try {
       await copyDir(ehDocsSrc, ehDocsDest);
-      console.log('Created .docs/event-horizon/ (Event Horizon usage guides)');
+      log.info('Created .docs/event-horizon/ (Event Horizon usage guides)');
     } catch {
       // Non-fatal — docs are helpful but not required to run.
     }
@@ -193,7 +194,7 @@ async function main() {
   if (existsSync(skillsSrc) && !existsSync(skillsDest)) {
     try {
       await copyDir(skillsSrc, skillsDest);
-      console.log('Created .docs/skills/ (agent workflow skill modules)');
+      log.info('Created .docs/skills/ (agent workflow skill modules)');
     } catch {
       // Non-fatal — skills can be installed manually later.
     }
@@ -205,14 +206,14 @@ async function main() {
   if (existsSync(fluxSkillsSrc) && !existsSync(fluxSkillsDest)) {
     try {
       await copyDir(fluxSkillsSrc, fluxSkillsDest);
-      console.log('Created .flux/skills/ (copilot instructions template)');
+      log.info('Created .flux/skills/ (copilot instructions template)');
     } catch {
       // Non-fatal — template can be installed manually later.
     }
   }
 
   // Post-init guidance
-  console.log(`
+  log.info(`
 ✓ Event Horizon workspace created!
 
 Next steps:

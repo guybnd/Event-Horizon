@@ -1,3 +1,4 @@
+import { log } from './log.js';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { findWorktreeForBranch, removeTaskWorktree, detachTaskWorktree, stashDirtyTree } from './task-worktree.js';
@@ -395,7 +396,7 @@ export async function pruneMergedBranches(workspaceRoot: string): Promise<void> 
     if (wt) continue;
     try {
       await deleteTicketBranch(branch, true);
-      console.log(`[pr-prune] removed orphaned merged branch ${branch}`);
+      log.info(`[pr-prune] removed orphaned merged branch ${branch}`);
       notifiedStuckBranches.delete(branch); // recovered
     } catch {
       // The branch is gh-MERGED, not checked out, and not worktree-held — i.e. it SHOULD be

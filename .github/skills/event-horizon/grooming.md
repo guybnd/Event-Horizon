@@ -11,7 +11,7 @@ Scope: Interpret requirements, update frontmatter, and handle `.flux` metadata d
 
 # Event Horizon Agent — Grooming Skill
 
-Version: 2.4.0
+Version: 2.5.0
 
 ## When This Skill Applies
 
@@ -34,6 +34,50 @@ Refer to the orchestrator skill for the ticket model, APIs, and end-to-end check
 6. Use `change_status` with `newStatus: 'Todo'`. **CRITICAL: Stop execution after moving to Todo — do not begin implementation.**
 
 All persistence uses MCP tools — see the orchestrator skill's "Persisting Changes" section.
+
+## Rich Grooming Artifacts (`publish_artifact`) — the exception, not the norm
+
+For tickets where the user has to *imagine* the result, you can publish a **self-contained HTML artifact** the user reasons *against* — a rendered mockup, an architecture/flow diagram, an interactive prototype, or acceptance criteria laid out visually. The user reacts to a concrete artifact and catches misunderstanding *before* code is written. Use the `publish_artifact` MCP tool; the artifact renders in the ticket's **Grooming Artifact** panel.
+
+**Whether to emit is YOUR judgment per ticket — there is no tag gate.** Default OFF when unsure; artifacts must stay the exception so they don't become ceremony.
+
+- **Emit when** the ticket is about UI/UX, visual layout, an architecture/data-flow you can diagram, or a "shape of the thing" decision where a rendering surfaces misunderstanding cheaply.
+- **Skip when** it's a bug fix, an XS/S ticket, backend plumbing, or any change with no visual/structural "shape" to react to. A markdown plan is the right output for these.
+
+**How to emit:**
+- Pass a **complete, self-contained HTML document** as `html`: inline `<style>`/`<script>`. Tailwind (`https://cdn.tailwindcss.com`) and Mermaid (`https://cdn.jsdelivr.net`) are loadable via `<script>` tags. Lean on the **`frontend-design`** skill for high-quality markup.
+- It renders in a **sandboxed, opaque-origin iframe**: it CANNOT reach the portal, cookies, or storage, and CANNOT make network requests (no fetch/XHR — `connect-src` is blocked). Everything it needs must be inlined or come from the allowed CDNs. Do not rely on external API calls or `localStorage`.
+- Do **not** inline the HTML into the ticket body (the body is injected into every session and has a 10K soft limit) — `publish_artifact` stores it in a sidecar.
+- Every call is a **new revision** (history is kept — never an overwrite). Add a `title` and, when revising, a `note` on what changed. The viewer defaults to the latest revision.
+- **Annotation round-trip (FLUX-874/875):** the user can select regions of the rendered artifact (a floating composer pops up at each selection) and **collect several notes before sending them together**. They arrive as **one** chat message starting with `🎯 Artifact annotations`, listing each region's selected text, a CSS-path anchor, and the user's note. When you receive one, revise the artifact to address **every** listed region and call `publish_artifact` again (with a `note` on what changed) so the new revision streams back to the viewer. (The viewer also offers a full-screen mode for reviewing large artifacts.)
+
+### Richer artifact kinds (FLUX-875) — diagrams, mockups, charts, prototypes
+
+Because the artifact is a **real HTML page** rendered entirely by the sandboxed iframe, you are not limited to static markup — pick the form that makes the *shape of the thing* easiest to react to:
+
+- **Mermaid diagrams** (flowcharts, sequence, ERD, state) — best for architecture/data-flow tickets. Load Mermaid from jsDelivr and let it render a `<pre class="mermaid">` block:
+  ```html
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ startOnLoad: true });
+  </script>
+  <pre class="mermaid">
+  flowchart LR
+    A[publish_artifact] --> B[(sidecar .flux/artifacts)]
+    B --> C[GET /api/tasks/:id/artifact] --> D[sandboxed iframe]
+  </pre>
+  ```
+- **SVG mockups** — hand-author inline `<svg>` (or Tailwind-styled `<div>`s) for a UI wireframe the user can eyeball against their mental model.
+- **Charts / data shapes** — inline SVG or a chart lib from an allowed CDN (jsDelivr/unpkg). No network calls at runtime (`connect-src` is blocked), so inline the data.
+- **Clickable Tailwind prototypes** — Tailwind from `https://cdn.tailwindcss.com` plus a little inline `<script>` for tab/toggle interactions, so the user can click through a flow.
+
+Everything still renders inside the same opaque-origin sandbox (no portal/cookie/storage access, no fetch/XHR) — keep it self-contained.
+
+### Layout-audit gate (FLUX-875) — keep artifacts visually clean
+
+On open (and on every new revision) the viewer runs an automatic **layout audit** inside the iframe and **masks the artifact until it passes**. It checks four conservative failure modes: **`overflow-x`** (page wider than the viewport), **`off-canvas`** (an element spilling past a viewport edge), **`clipped`** (`overflow:hidden`/`clip` cutting off real text), and **`overlap`** (two text blocks rendering on top of each other). When it fails, the user can send the warnings back to you — they arrive as a chat message starting with **`🧪 Layout audit failed`**, listing each `kind`, the element selector, and the measured problem.
+
+**When you receive a `🧪 Layout audit failed` message, treat it like an annotation:** fix the offending layout (constrain widths, wrap/scroll long content, fix positioning) and call `publish_artifact` again with a `note` on what you changed, so the corrected revision re-runs the audit. To avoid tripping the gate in the first place: give the document a sane root width, prefer responsive/flow layouts over fixed pixel widths wider than the frame, and don't absolutely-position text blocks over each other.
 
 ## Metadata Conventions
 

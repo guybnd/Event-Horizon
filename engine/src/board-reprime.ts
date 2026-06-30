@@ -30,7 +30,12 @@ const MAX_TURN_CHARS = 4_000;
 // cold board start never reads/projects the whole (unbounded) `__board__.jsonl`. Set well
 // above MAX_TURNS so the window reliably still contains the ~12 dialogue turns the digest
 // emits even when the tail is dominated by tool / system turns (which the digest drops).
-const MAX_READ_TURNS = 200;
+// FLUX-911: raised headroom. The read bounds RAW turns BEFORE the dialogue filter (buildBoardReprime
+// below), so a tail dominated by note rows (dispatch brackets, action chips, resume-preambles) could
+// otherwise starve real dialogue out of the re-prime — the FLUX-849×FLUX-856 starvation. The
+// per-narration dispatch flood that made this acute is gone (FLUX-911 dropped those rows); this
+// headroom covers the residual note volume so cold-resume memory survives.
+const MAX_READ_TURNS = 600;
 
 /** Neutralize fence runs so a turn containing ``` can't break out of the synthetic fence
  *  (same idea as `sanitizeForFence` in resume-preamble.ts). */

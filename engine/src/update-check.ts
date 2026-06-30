@@ -1,3 +1,4 @@
+import { log } from './log.js';
 import { readFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -75,7 +76,7 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
     cachedResult = { updateAvailable, currentVersion, latestVersion, releaseUrl };
 
     if (updateAvailable) {
-      console.log(`\x1b[36m[update]\x1b[0m A newer version is available: v${latestVersion} (current: v${currentVersion}) — ${releaseUrl}`);
+      log.info(`\x1b[36m[update]\x1b[0m A newer version is available: v${latestVersion} (current: v${currentVersion}) — ${releaseUrl}`);
       addNotification({
         type: 'info',
         title: `Update available: v${latestVersion}`,

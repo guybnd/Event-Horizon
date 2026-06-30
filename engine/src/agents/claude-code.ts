@@ -1,4 +1,5 @@
-import { spawn, execSync, execFileSync, type ChildProcessWithoutNullStreams } from 'child_process';
+import { log } from '../log.js';
+import { spawn, execSync, type ChildProcessWithoutNullStreams } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { configCache } from '../config.js';
@@ -10,7 +11,6 @@ import { isPathInsideRoot } from '../file-utils.js';
 import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
 import { appendTranscriptLine, appendTranscriptEvent } from '../transcript.js';
-import { signConversation } from '../session-binding.js';
 import { killProcessTree } from '../kill-process-tree.js';
 import { checkFrameworkHealth, checkSkillStaleness, generateOrchestratorReplyNotification } from '../notifications.js';
 import { captureTurnStartState, clearNeedsActionIfSet, flagIfParked } from '../parked-ticket.js';
@@ -18,58 +18,31 @@ import { buildMemberScopeArgs } from '../group.js';
 import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
 import { getModulePromptFragments, getModuleMcpServers, getActiveModules, getWorkspaceMcpServers } from '../modules.js';
 import { getProbeStatus } from '../module-probe.js';
-import { getSharedServerUrl, isSharedHttpPlatformProven } from '../shared-mcp-server.js';
+import { ensureSharedServer, getSharedServerUrl, isSharedHttpPlatformProven } from '../shared-mcp-server.js';
 import { buildBoardDigest } from '../board-digest.js';
 import { buildResumePreamble } from '../resume-preamble.js';
 import { buildBoardReprime } from '../board-reprime.js';
-import type { AgentAdapter, CliSessionRecord, ProviderManifest, CliFramework, SendInputOptions } from './types.js';
+import type { AgentAdapter, CliSessionRecord, ProviderManifest, SendInputOptions } from './types.js';
+import { CLI_CAPABILITIES } from './types.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, enqueueSessionWrite, flushSessionOutput } from './shared.js';
 import type { ChatAttachment } from '../projection.js';
-
-function checkBinaryInstalled(binaryName: string): void {
-  const checker = process.platform === 'win32' ? 'where' : 'which';
-  try {
-    execFileSync(checker, [binaryName], { stdio: 'ignore', env: cleanChildEnv(), timeout: 10_000, windowsHide: true });
-  } catch {
-    throw new Error(`"${binaryName}" is not installed or not on PATH. Please install it before starting an agent session.`);
-  }
-}
-
-function cleanChildEnv(conversationId?: string): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  for (const key of Object.keys(env)) {
-    if (key.toUpperCase() === 'NODE_OPTIONS') delete env[key];
-  }
-  env.NODE_OPTIONS = '';
-  env.EVENT_HORIZON_FRAMEWORK = 'claude';
-  // Pin the canonical ticket store so a worktree agent's event-horizon MCP binds
-  // to the real workspace, not its cwd worktree (FLUX-516).
-  if (canonicalWorkspaceRoot) env.EH_CANONICAL_WORKSPACE = canonicalWorkspaceRoot;
-  // FLUX-662: tag the conversation so the event-horizon MCP tools (permission_prompt,
-  // ask_user_question) can route their parked request back to the originating chat/board
-  // surface in the portal. Per-ticket sessions pass the ticket id; the board passes its
-  // sentinel. Absent (e.g. a delegated subagent) → unrouted, handled by the global overlay.
-  if (conversationId) {
-    env.EH_CONVERSATION_ID = conversationId;
-    // FLUX-841: mint this session's binding token — an HMAC of its OWN conversationId. The MCP
-    // tools forward it on every HITL POST; the route requires it to match the claimed
-    // conversationId, so a session can only route a transcript event into its own ticket (it can't
-    // forge a sibling's token). Closes the same-shape cross-ticket injection isSafeStreamId can't.
-    env.EH_CONVERSATION_TOKEN = signConversation(conversationId);
-  }
-  return env;
-}
 
 // Build --mcp-config JSON string for active module MCP servers.
 // Prefers an engine-managed shared HTTP server when one is ready (so all sessions
 // reuse one language-server process); otherwise falls back to a per-session stdio
 // spawn. Skips modules whose probe status is 'error' to avoid cascading failures.
-function buildModuleServerMap(phase?: string, tags?: string[]): Record<string, any> {
+function buildModuleServerMap(phase?: string, tags?: string[], projectPath?: string): Record<string, any> {
   const stdioServers = getModuleMcpServers(phase, tags);
   const filtered: Record<string, any> = {};
+  // FLUX-579: the shared HTTP server is keyed per (module, worktree). Look it up
+  // for THIS session's execution root so a worktree session gets its own server,
+  // not the workspace-root one. Falls back to the workspace root for board /
+  // single-checkout sessions (no distinct worktree path) — same behavior as before.
+  const lookupPath = projectPath || canonicalWorkspaceRoot || '';
   for (const m of getActiveModules(phase, tags)) {
-    // Shared HTTP path: one server for all sessions, on proven platforms.
+    // Shared HTTP path: one server per (module, worktree), on proven platforms.
     if (m.sharedHttp && isSharedHttpPlatformProven()) {
-      const url = getSharedServerUrl(m.id);
+      const url = lookupPath ? getSharedServerUrl(m.id, lookupPath) : null;
       if (url) filtered[m.id] = { type: 'http', url };
       // Not ready yet (still starting / failed) → omit; don't stdio-fallback on a
       // proven platform, which would defeat the point and spawn N stacks.
@@ -84,8 +57,24 @@ function buildModuleServerMap(phase?: string, tags?: string[]): Record<string, a
   return filtered;
 }
 
-function buildModuleMcpConfigArgs(phase?: string, tags?: string[]): string[] {
-  const filtered = buildModuleServerMap(phase, tags);
+/**
+ * FLUX-579: start (or reuse) the per-worktree shared HTTP server for every active
+ * shared-http module pinned to THIS session's execution root, BEFORE we build the
+ * MCP config that looks it up by (module, worktree). The module probe only starts
+ * a server for the workspace root, so without this a worktree session would find
+ * no server for its own tree (and a proven platform omits the stdio fallback) —
+ * it would get NO shared server, or, pre-FLUX-579, the wrong workspace-root one.
+ * Idempotent and best-effort: a single-checkout session whose root IS the
+ * workspace root just reuses the probe's server.
+ */
+async function ensureSharedServersForRoot(projectPath: string, phase?: string, tags?: string[]): Promise<void> {
+  if (!projectPath || !isSharedHttpPlatformProven()) return;
+  const shared = getActiveModules(phase, tags).filter(m => m.sharedHttp);
+  await Promise.all(shared.map(m => ensureSharedServer(m, projectPath).catch(() => null)));
+}
+
+function buildModuleMcpConfigArgs(phase?: string, tags?: string[], projectPath?: string): string[] {
+  const filtered = buildModuleServerMap(phase, tags, projectPath);
   if (Object.keys(filtered).length === 0) return [];
   return ['--mcp-config', JSON.stringify({ mcpServers: filtered })];
 }
@@ -116,13 +105,13 @@ export function filterMcpServersByPhase(
   return out;
 }
 
-function buildSpawnMcpConfigArgs(phase?: string, tags?: string[]): string[] {
+function buildSpawnMcpConfigArgs(phase?: string, tags?: string[], projectPath?: string): string[] {
   const serverPhases = (configCache as any).mcpServerPhases as Record<string, string[]> | undefined;
   const hasProfiles = !!serverPhases && typeof serverPhases === 'object' && Object.keys(serverPhases).length > 0;
-  if (!hasProfiles) return buildModuleMcpConfigArgs(phase, tags);
+  if (!hasProfiles) return buildModuleMcpConfigArgs(phase, tags, projectPath);
 
   const merged: Record<string, any> = { ...getWorkspaceMcpServers() };
-  for (const [id, cfg] of Object.entries(buildModuleServerMap(phase, tags))) {
+  for (const [id, cfg] of Object.entries(buildModuleServerMap(phase, tags, projectPath))) {
     if (!(id in merged)) merged[id] = cfg;
   }
 
@@ -133,7 +122,7 @@ function buildSpawnMcpConfigArgs(phase?: string, tags?: string[]): string[] {
     // Fail open to merge mode rather than spawn an agent that can't manage the
     // ticket. (Review finding alongside FLUX-490.)
     console.warn('[mcp] strict profile would omit event-horizon — falling back to merge mode');
-    return buildModuleMcpConfigArgs(phase, tags);
+    return buildModuleMcpConfigArgs(phase, tags, projectPath);
   }
   if (Object.keys(filtered).length === 0) return [];
   // FLUX-604: keep the agent's OWN ticket tools loaded directly — no tool-search
@@ -177,19 +166,6 @@ export function getEffectiveSpawnServers(phase?: string, tags?: string[]): { str
   };
 }
 
-// Effort levels accepted by the --effort CLI flag, in ascending order.
-export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
-type EffortLevel = typeof EFFORT_LEVELS[number];
-
-export const PROVIDER_CAPABILITIES: Partial<Record<CliFramework, { supportsEffort: boolean; effortFlag: string }>> = {
-  claude: { supportsEffort: true, effortFlag: '--effort' },
-  copilot: { supportsEffort: false, effortFlag: '' },
-};
-
-export function cliLabelForFramework(framework: 'claude' | 'copilot') {
-  return framework === 'claude' ? 'Claude Code' : 'Copilot CLI';
-}
-
 const TOOL_ACTIVITY_MAP: Record<string, string> = {
   Bash: 'Running command',
   Edit: 'Editing',
@@ -199,84 +175,12 @@ const TOOL_ACTIVITY_MAP: Record<string, string> = {
   WebSearch: 'Researching',
   Agent: 'Delegating',
   TodoWrite: 'Planning',
+  publish_artifact: 'Preparing artifact',
+  ask_user_question: 'Asking',
+  add_comment: 'Commenting',
+  change_status: 'Updating ticket',
+  update_ticket: 'Updating ticket',
 };
-
-export function appendSessionOutput(session: CliSessionRecord, chunk: Buffer | string, source: 'stdout' | 'stderr', isAssistantText = false) {
-  const text = String(chunk ?? '').replace(/\r\n/g, '\n');
-  if (!text.trim()) return;
-
-  // Filter out noise from Windows ConPTY/AttachConsole failures
-  if (source === 'stderr' && (
-    text.includes('AttachConsole failed') || 
-    text.includes('conpty_console_list_agent.js') ||
-    text.includes('Shared memory agent failed')
-  )) {
-    return;
-  }
-
-  const prefix = source === 'stderr' ? '[stderr] ' : '';
-  session.liveOutputBuffer += `${prefix}${text}`;
-  if (isAssistantText) {
-    session.outputBuffer += text;
-    session.cumulativeOutput += text;
-  }
-  session.lastOutputAt = new Date().toISOString();
-}
-
-export function enqueueSessionWrite(session: CliSessionRecord, writer: () => Promise<void>) {
-  session.writeQueue = session.writeQueue
-    .then(writer)
-    .catch((error) => {
-      console.error(`CLI session ${session.id} failed to append task history:`, error);
-    });
-}
-
-export function flushSessionOutput(session: CliSessionRecord, force = false) {
-  if (!session.outputBuffer.trim()) return;
-
-  const flushNow = async () => {
-    const bufferedText = session.outputBuffer.trim();
-    session.outputBuffer = '';
-    if (!bufferedText) return;
-
-    const timestamp = new Date().toISOString();
-    const maxLength = 2000;
-    const clippedText = bufferedText.length > maxLength
-      ? `${bufferedText.slice(0, maxLength)}...`
-      : bufferedText;
-
-    // Broadcast progress immediately via SSE (UI gets live updates)
-    broadcastEvent('progress', {
-      taskId: session.taskId,
-      sessionId: session.sessionHistoryEntry?.sessionId,
-      timestamp,
-      message: clippedText,
-    });
-
-    // Accumulate progress in memory only — do NOT write to the ticket file
-    // during an active session. Writing continuously causes the agent to see
-    // the file changing and back off from editing it. The full progress is
-    // flushed to the ticket file once when the session ends.
-    if (session.sessionHistoryEntry) {
-      session.sessionHistoryEntry.progress.push({ timestamp, message: clippedText });
-    }
-  };
-
-  if (session.flushTimer) {
-    clearTimeout(session.flushTimer);
-    session.flushTimer = undefined;
-  }
-
-  if (force) {
-    enqueueSessionWrite(session, flushNow);
-    return;
-  }
-
-  session.flushTimer = setTimeout(() => {
-    session.flushTimer = undefined;
-    enqueueSessionWrite(session, flushNow);
-  }, 1000);
-}
 
 /**
  * FLUX-674: resolve chat image attachments (paste/drop in the composer) to absolute on-disk
@@ -488,6 +392,9 @@ function teeDispatchActivityToBoard(
       sourceTask: taskId,
       phase: session.phase,
       lifecycle,
+      // FLUX-869: carry the session start so the board chip can derive run duration client-side
+      // (live-ticking while `working`, final `ran Xm` on terminal rows) without event correlation.
+      startedAt: session.startedAt,
       text: trimmed,
       timestamp: new Date().toISOString(),
     });
@@ -506,8 +413,13 @@ export function attachStdoutProcessing(
     if (session.pendingAssistantText) {
       appendSessionOutput(session, session.pendingAssistantText, 'stdout', true);
       flushSessionOutput(session);
-      // FLUX-849: a completed narration message — tee it to the board thread for dispatched sessions.
-      teeDispatchActivityToBoard(session, taskId, 'working', session.pendingAssistantText);
+      // FLUX-911: do NOT tee per-narration 'working' rows to the board. Each was a durable line in
+      // __board__.jsonl PLUS a taskUpdated broadcast, so one chatty dispatched session (a) flooded
+      // the orchestrator chat/Activity with near-identical WORKING rows, (b) forced an O(file)
+      // board-transcript re-projection per narration on every open board chat, and (c) could starve
+      // real dialogue out of the bounded cold-resume re-prime. The board keeps the one-shot 'started'
+      // + terminal brackets (teed elsewhere); live per-narration progress remains available via the
+      // ephemeral `activity` SSE event and in the dispatched ticket's own chat. (FLUX-849 regression.)
       session.pendingAssistantText = '';
     }
   };
@@ -542,6 +454,25 @@ export function attachStdoutProcessing(
               sessionId: session.sessionHistoryEntry?.sessionId,
               text: inner.delta.text,
             });
+          } else if (inner?.type === 'content_block_start'
+            && inner.content_block?.type === 'tool_use'
+            && typeof inner.content_block.name === 'string') {
+            // FLUX-927: a tool_use block's name arrives up front, BEFORE its (potentially
+            // huge) input_json_delta streams — e.g. publish_artifact streams an entire
+            // self-contained HTML document as its input. Without this, currentActivity is
+            // only set when the COMPLETE assistant message lands (below), so the long
+            // input-streaming window shows no signal and the chat feels frozen. Broadcast an
+            // early activity the moment the tool name is known so the UI reflects it
+            // immediately. (Still partial-only: don't tee the transcript or touch buffers.)
+            const name = inner.content_block.name;
+            const earlyActivity = name === 'publish_artifact'
+              ? 'Preparing grooming artifact…'
+              : (TOOL_ACTIVITY_MAP[name] ?? 'Working');
+            if (session.currentActivity !== earlyActivity) {
+              session.currentActivity = earlyActivity;
+              session.lastProgressLog = undefined;
+              broadcastEvent('activity', { taskId, activity: session.currentActivity });
+            }
           }
           continue;
         }
@@ -702,6 +633,11 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
 
   const initialPrompt = buildInitialPrompt(task, appendPrompt, { diffBlock: session.diffBlock, phase: session.phase });
 
+  // FLUX-579: ensure this session's per-worktree shared HTTP server(s) exist (keyed
+  // by execution root) before building the MCP config that looks them up.
+  const sessionTags = Array.isArray(task.tags) ? task.tags : undefined;
+  if (framework === 'claude') await ensureSharedServersForRoot(executionRoot, session.phase, sessionTags);
+
   const modelToUse = session.model || selectedModel;
   const claudeArgs = [
     ...(modelToUse ? ['--model', modelToUse] : []),
@@ -717,15 +653,15 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     // Member worktree: add local .flux-group/ so the agent reads shared group docs (FLUX-422).
     ...buildGroupDocsScopeArg(workspaceRoot),
     // Inject enabled module MCP servers dynamically (phase+tag gated, skips errored probes).
-    ...(framework === 'claude' ? buildSpawnMcpConfigArgs(session.phase, Array.isArray(task.tags) ? task.tags : undefined) : []),
+    ...(framework === 'claude' ? buildSpawnMcpConfigArgs(session.phase, sessionTags, executionRoot) : []),
   ];
 
-  const caps = PROVIDER_CAPABILITIES[framework] ?? PROVIDER_CAPABILITIES['copilot']!;
+  const effortCap = CLI_CAPABILITIES[framework].effort;
   const globalEffort = (configCache as any).effortLevel as string | undefined;
   const taskEffort = (task as any).effortLevel as string | undefined;
   const effectiveEffort = (session.effortOverride || effortOverrideRaw || taskEffort || globalEffort || '') as string;
-  if (caps.supportsEffort && EFFORT_LEVELS.includes(effectiveEffort as EffortLevel)) {
-    claudeArgs.push(caps.effortFlag, effectiveEffort);
+  if (effortCap.supported && effortCap.flag && EFFORT_LEVELS.includes(effectiveEffort as EffortLevel)) {
+    claudeArgs.push(effortCap.flag, effectiveEffort);
   }
 
   let proc: ReturnType<typeof spawn>;
@@ -739,30 +675,30 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
       const candidateExe = path.join(npmPrefix, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
       if (fs.existsSync(candidateExe)) {
         exePath = candidateExe;
-        console.log(`[${id}] Found claude.exe at: ${exePath}`);
+        log.info(`[${id}] Found claude.exe at: ${exePath}`);
       } else {
-        console.log(`[${id}] claude.exe not found at ${candidateExe}`);
+        log.info(`[${id}] claude.exe not found at ${candidateExe}`);
       }
     } catch (err) {
-      console.log(`[${id}] Failed to resolve claude.exe path:`, err);
+      log.info(`[${id}] Failed to resolve claude.exe path:`, err);
     }
 
     if (!exePath) {
       throw new Error('claude.exe not found. Please install @anthropic-ai/claude-code globally: npm install -g @anthropic-ai/claude-code');
     }
 
-    console.log(`[${id}] Windows spawn: ${exePath} with ${claudeArgs.length} args`);
-    console.log(`[${id}] Prompt length: ${initialPrompt.length} chars`);
+    log.info(`[${id}] Windows spawn: ${exePath} with ${claudeArgs.length} args`);
+    log.info(`[${id}] Prompt length: ${initialPrompt.length} chars`);
     proc = spawn(exePath, claudeArgs, {
       cwd: executionRoot,
-      env: cleanChildEnv(id),
+      env: cleanChildEnv('claude', id),
       stdio: 'pipe',
       windowsHide: true,
     });
   } else {
     proc = spawn(binaryName, claudeArgs, {
       cwd: executionRoot,
-      env: cleanChildEnv(id),
+      env: cleanChildEnv('claude', id),
       stdio: 'pipe',
     });
   }
@@ -1057,6 +993,14 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   session.lastInputAt = inputAt;
   session.status = 'running';
   session.pausedForInput = false;
+  // FLUX-915: clear a stale stop flag from a prior turn so this resumed turn isn't mis-terminalized
+  // as 'cancelled' by the exit handler. requestedStop is set on stop but never otherwise reset, and
+  // this record is reused across turns (persistent chat / dispatched session).
+  session.requestedStop = false;
+  // FLUX-909: new turn started — clear the stale block reason from a prior parked turn so the
+  // card no longer reads as amber "Needs your input" after the user has answered and the agent
+  // resumes. blockedReason is set on the block path but otherwise never cleared.
+  delete session.blockedReason;
   // FLUX-651: new turn — snapshot ticket state and drop any stale "parked" flag.
   captureTurnStartState(session, id);
   void clearNeedsActionIfSet(id);
@@ -1110,7 +1054,12 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   // the user's message — FLUX-716 item 3 orders it before the user event).
   const promptForCli = resumePreamble ? `${resumePreamble}\n\n---\n\n${safeMessage}` : safeMessage;
 
-  const moduleMcpArgs = buildSpawnMcpConfigArgs(session.phase, Array.isArray(task?.tags) ? task.tags : undefined);
+  // FLUX-579: ensure the per-worktree shared server exists for this resumed turn's
+  // execution root before resolving the MCP config (engine may have restarted, or
+  // this is the first turn in a freshly-created worktree).
+  const resumeTags = Array.isArray(task?.tags) ? task.tags : undefined;
+  await ensureSharedServersForRoot(executionRoot, session.phase, resumeTags);
+  const moduleMcpArgs = buildSpawnMcpConfigArgs(session.phase, resumeTags, executionRoot);
   const meArgs = modelEffortArgs(session);
   // FLUX-691: `--include-partial-messages` → token-by-token live streaming on the resume/send path.
   const resumeArgs = session.claudeSessionId
@@ -1128,24 +1077,24 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
         exePath = candidateExe;
       }
     } catch (err) {
-      console.log(`[${id}] Failed to resolve claude.exe path for reply:`, err);
+      log.info(`[${id}] Failed to resolve claude.exe path for reply:`, err);
     }
 
     if (!exePath) {
       throw new Error('claude.exe not found. Please install @anthropic-ai/claude-code globally: npm install -g @anthropic-ai/claude-code');
     }
 
-    console.log(`[${id}] Windows reply spawn: ${exePath} --resume ${session.claudeSessionId || '(new)'}`);
+    log.info(`[${id}] Windows reply spawn: ${exePath} --resume ${session.claudeSessionId || '(new)'}`);
     replyProc = spawn(exePath, resumeArgs, {
       cwd: executionRoot,
-      env: cleanChildEnv(id),
+      env: cleanChildEnv('claude', id),
       stdio: 'pipe',
       windowsHide: true,
     });
   } else {
     replyProc = spawn(binaryName, resumeArgs, {
       cwd: executionRoot,
-      env: cleanChildEnv(id),
+      env: cleanChildEnv('claude', id),
       stdio: 'pipe',
       windowsHide: true,
     });
@@ -1160,7 +1109,17 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   });
 
   replyProc.on('error', async (error) => {
-    session.status = 'waiting-input';
+    // FLUX-915: a stop racing a spawn error stays 'cancelled' rather than reverting to resumable.
+    if (session.requestedStop) {
+      session.status = 'cancelled';
+      session.endedAt = new Date().toISOString();
+    } else {
+      // FLUX-918: a crashed resumed turn is not a clean idle turn-end — flag it blocked so the card
+      // classifies it "Needs your input" (amber) rather than calm idle. classifyCardSessionState
+      // keys off blockedReason; without it this read as idle.
+      session.blockedReason = `Reply failed: ${error.message}`;
+      session.status = 'waiting-input';
+    }
     commitReplyPending();
     flushSessionOutput(session, true);
     // FLUX-849: a crashed resumed turn (reply spawn error) was previously invisible on the board —
@@ -1177,10 +1136,21 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   replyProc.on('exit', async (code, signal) => {
     commitReplyPending();
     flushSessionOutput(session, true);
-    session.status = 'waiting-input';
-    // FLUX-651: resumed chat turn ended — flag if the agent parked without acting. Skip when
-    // it paused itself for Require Input (that IS an action and keeps the session resumable).
-    if (!session.pausedForInput) await flagIfParked(session, id);
+    // FLUX-915: terminalize a user-requested stop as 'cancelled' instead of blindly reverting to
+    // 'waiting-input'. The stop route synchronously set status='cancelled'+endedAt and killed the
+    // proc; this async exit handler used to overwrite that back to 'waiting-input', so Stop never
+    // stuck and the session showed active forever (getActiveSessionsForTask counts waiting-input;
+    // reconcileDeadSessions skips it). A clean OR crashed resumed turn stays resumable — a persistent
+    // conversation recovers via --resume, and the board tee below still surfaces a crash.
+    if (session.requestedStop) {
+      session.status = 'cancelled';
+      session.endedAt = new Date().toISOString();
+    } else {
+      session.status = 'waiting-input';
+    }
+    // FLUX-651: resumed chat turn ended — flag if the agent parked without acting. Skip a turn the
+    // agent paused for Require Input (that IS an action) or one the user stopped (FLUX-915).
+    if (!session.pausedForInput && !session.requestedStop) await flagIfParked(session, id);
     // FLUX-849: bracket the dispatched session's board narration on this resumed path.
     // - Require-Input pause → 'needs input'.
     // - User-requested stop → 'stopped'.
@@ -1218,14 +1188,14 @@ function spawnClaudeForBoard(claudeArgs: string[], executionRoot: string): Retur
       const candidateExe = path.join(npmPrefix, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
       if (fs.existsSync(candidateExe)) exePath = candidateExe;
     } catch (err) {
-      console.log('[board] Failed to resolve claude.exe path:', err);
+      log.info('[board] Failed to resolve claude.exe path:', err);
     }
     if (!exePath) {
       throw new Error('claude.exe not found. Please install @anthropic-ai/claude-code globally: npm install -g @anthropic-ai/claude-code');
     }
-    return spawn(exePath, claudeArgs, { cwd: executionRoot, env: cleanChildEnv(BOARD_CONVERSATION_ID), stdio: 'pipe', windowsHide: true });
+    return spawn(exePath, claudeArgs, { cwd: executionRoot, env: cleanChildEnv('claude', BOARD_CONVERSATION_ID), stdio: 'pipe', windowsHide: true });
   }
-  return spawn('claude', claudeArgs, { cwd: executionRoot, env: cleanChildEnv(BOARD_CONVERSATION_ID), stdio: 'pipe', windowsHide: true });
+  return spawn('claude', claudeArgs, { cwd: executionRoot, env: cleanChildEnv('claude', BOARD_CONVERSATION_ID), stdio: 'pipe', windowsHide: true });
 }
 
 function buildBoardPrompt(firstMessage: string, priorContext?: string): string {
@@ -1252,8 +1222,11 @@ function buildBoardPrompt(firstMessage: string, priorContext?: string): string {
   ].join('\n');
 }
 
-function boardMcpArgs(): string[] {
-  return buildSpawnMcpConfigArgs(undefined, undefined);
+function boardMcpArgs(projectPath?: string): string[] {
+  // FLUX-579: the board runs at the workspace root, so its shared server is keyed
+  // there. Pass the root explicitly (falls back to canonicalWorkspaceRoot in
+  // buildModuleServerMap when omitted).
+  return buildSpawnMcpConfigArgs(undefined, undefined, projectPath);
 }
 
 function wireBoardProc(proc: ReturnType<typeof spawn>, session: CliSessionRecord, onExitStatus: () => void) {
@@ -1296,6 +1269,8 @@ function wireBoardProc(proc: ReturnType<typeof spawn>, session: CliSessionRecord
 export async function startBoardSession(session: CliSessionRecord, firstMessage: string, workspaceRoot: string, opts?: SendInputOptions) {
   checkBinaryInstalled('claude');
   session.executionRoot = workspaceRoot;
+  // FLUX-579: ensure the workspace-root shared server(s) exist before building the board MCP config.
+  await ensureSharedServersForRoot(workspaceRoot);
   // FLUX-838: cold-resume re-prime. The CLI session store is in-memory only, so an engine
   // restart leaves an empty store and this start path runs with no `--resume`. Recover the
   // orchestrator's memory from the durable `__board__.jsonl` transcript: a bounded verbatim
@@ -1328,7 +1303,7 @@ export async function startBoardSession(session: CliSessionRecord, firstMessage:
     ...modelEffortArgs(session, 'medium'),
     ...DISALLOW_NATIVE_ASK,
     ...permissionArgs(session),
-    ...boardMcpArgs(),
+    ...boardMcpArgs(workspaceRoot),
   ];
   session.status = 'running';
   session.args = claudeArgs;
@@ -1357,6 +1332,9 @@ export async function sendBoardInput(session: CliSessionRecord, message: string,
   session.lastInputAt = inputAt;
   session.status = 'running';
   session.pausedForInput = false;
+  // FLUX-915: clear any stale stop flag before resuming (see sendCliSessionInput) — the board
+  // session record is reused across turns, so a sticky requestedStop would mis-cancel a clean turn.
+  session.requestedStop = false;
   // FLUX-676: pasted-image attachments for this turn. Resolve to absolute sidecar paths the
   // agent can Read; keep the metadata on the transcript turn so the bubble re-renders.
   const attachments = opts?.attachments ?? [];
@@ -1387,10 +1365,12 @@ export async function sendBoardInput(session: CliSessionRecord, message: string,
     promptForCli = `${resumePreamble}\n\n---\n\n${promptForCli}`;
   }
   const meArgs = modelEffortArgs(session, 'medium');
+  // FLUX-579: ensure the workspace-root shared server(s) exist for this board turn.
+  await ensureSharedServersForRoot(workspaceRoot);
   // FLUX-691: `--include-partial-messages` → token-by-token live streaming on the board send path.
   const claudeArgs = session.claudeSessionId
-    ? ['-p', promptForCli, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...boardMcpArgs()]
-    : ['-p', promptForCli, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...boardMcpArgs()];
+    ? ['-p', promptForCli, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...boardMcpArgs(workspaceRoot)]
+    : ['-p', promptForCli, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...boardMcpArgs(workspaceRoot)];
   session.args = claudeArgs;
   const proc = spawnClaudeForBoard(claudeArgs, session.executionRoot ?? workspaceRoot);
   wireBoardProc(proc, session, () => { session.status = 'waiting-input'; });

@@ -3,12 +3,12 @@ import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Archive, ArrowRightLeft, Bot, ChevronRight, CircleX, Code2, ExternalLink, Filter,
-  FolderGit2, GitBranch, GitCompare, GitMerge, GitPullRequest, Link2, Loader2, MessageCircle, Play, Search, Trash2, Undo2, X,
+  FolderGit2, GitBranch, GitCompare, GitMerge, GitPullRequest, Link2, Loader2, MessageCircle, Play, Search, Square, Trash2, Undo2, X,
 } from 'lucide-react';
 import type { Task } from '../types';
 import { normalizeSubtaskId } from '../types';
-import { useAppSelector, useAppActions } from '../store/useAppSelector';
-import { fetchBranches, type BranchOption } from '../api';
+import { useAppSelector, useAppActions, useLiveSession } from '../store/useAppSelector';
+import { fetchBranches, stopTaskCliSession, type BranchOption } from '../api';
 import { getArchiveStatus, getReadyForMergeStatus } from '../workflow';
 import { searchTasks } from '../taskSearch';
 import { useTicketActions } from '../hooks/useTicketActions';
@@ -24,6 +24,11 @@ interface Props {
 type TopMenu = 'launch' | 'transition' | 'worktree' | 'attachParent' | null;
 type WtMenu = 'attachWorktree' | 'attachBranch' | null;
 
+// The CLI-session statuses that count as "still active" (mirrors the engine's stop-route filter
+// and CardSessionRow's gating) — used to decide whether to show "Stop agent session" and whether
+// the card carries a cluster of sessions.
+const ACTIVE_SESSION_STATUSES = ['pending', 'running', 'waiting-input'];
+
 const PRIMARY_LABEL: Record<string, string> = {
   Grooming: 'Start grooming',
   Todo: 'Implement',
@@ -38,6 +43,9 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
   const worktreeBranches = useAppSelector((s) => s.worktreeBranches);
   const filterWorktree = useAppSelector((s) => s.filterWorktree);
   const taskById = useAppSelector((s) => s.taskById);
+  // FLUX-918 (m1): the live SSE session slice — preferred over the polled task.cliSession.status when
+  // deciding whether to show "Stop agent session", so the item tracks the card's session pill.
+  const liveSession = useLiveSession(task.id);
   const menuRef = useRef<HTMLDivElement>(null);
   const [openTop, setOpenTop] = useState<TopMenu>(null);
   const [openWt, setOpenWt] = useState<WtMenu>(null);
@@ -152,6 +160,28 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
   const handleDelete = () => { onClose(); void ctl.ops.deleteTicket(); };
   const handleMarkRead = () => { ctl.ops.markCommentsRead(); onClose(); };
   const handleClearSwimlane = () => { onClose(); void ctl.ops.clearSwimlane(); };
+
+  // FLUX-909: terminate the ticket's agent session from the card. The stop route already
+  // terminalizes parked (waiting-input / pending) sessions and tree-kills the process; the
+  // `taskUpdated` SSE refresh then clears the card's session pill. Close first so the menu doesn't
+  // linger over the now-stale card.
+  // FLUX-918 (m3): an orchestration/cluster card runs several sessions at once. A bare
+  // stopTaskCliSession(task.id) only cancels the most-recent one, leaving siblings live; when more
+  // than one session is active, scope the stop to ALL of them (the route's stopAll path) instead.
+  const activeSessionCount = (task.cliSessions ?? []).filter((s) => ACTIVE_SESSION_STATUSES.includes(s.status)).length;
+  const handleStopSession = async () => {
+    onClose();
+    try {
+      await stopTaskCliSession(task.id, activeSessionCount > 1 ? { stopAll: true } : undefined);
+    } catch (err) {
+      console.error('Failed to stop agent session:', err instanceof Error ? err.message : err);
+    }
+  };
+  // FLUX-918 (m1): gate the item on the live SSE status — the same source CardSessionRow's pill reads
+  // — so the menu item and the pill can't disagree at a turn boundary (the polled cliSession.status
+  // lags the live status). Fall back to the polled status when no live slice exists yet.
+  const liveSessionStatus = liveSession?.status ?? task.cliSession?.status;
+  const hasActiveSession = !!task.cliSession && !!liveSessionStatus && ACTIVE_SESSION_STATUSES.includes(liveSessionStatus);
 
   // Worktree/PR actions — run the registry op (which refreshes), then close. On failure, surface
   // the message in the menu (it stays open) instead of failing silently (FLUX-561).
@@ -278,6 +308,13 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
         <Divider />
         <MenuItem onClick={() => launchTemplate()}>Open launcher…</MenuItem>
       </Flyout>
+
+      {/* FLUX-909: stop the running/parked agent session straight from the card. */}
+      {hasActiveSession && (
+        <MenuItem icon={<Square className="h-3.5 w-3.5" />} onClick={() => void handleStopSession()}>
+          Stop agent session
+        </MenuItem>
+      )}
 
       <Divider />
 

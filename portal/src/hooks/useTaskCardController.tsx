@@ -10,7 +10,7 @@ import { useDockActions } from '../components/DockProvider';
 import { sendTaskCliInput, updateTask, detachWorktree } from '../api';
 import { useTicketActions } from './useTicketActions';
 import { type LaunchPhase } from '../agentActions';
-import { getReadyForMergeStatus, isPromptableStatus, isTaskAwaitingInput } from '../workflow';
+import { getReadyForMergeStatus, isPromptableStatus, isTaskAwaitingInput, classifyCardSessionState } from '../workflow';
 import { epicDeckSubtasks } from '../lib/decks';
 import { isEpic as isEpicTask, getDoneStatuses } from '../lib/epics';
 import { groupSessions, aggregateGroup, isGroupLive, isCombinerPending } from '../orchestration';
@@ -251,6 +251,12 @@ export function useTaskCardController({
   // value, so activity ticks update this card without churning the whole tasks array.
   const liveSession = useLiveSession(task.id);
   const currentActivity = hasActiveCliSession ? (liveSession?.currentActivity ?? task.cliSession?.currentActivity ?? 'Running') : undefined;
+  // FLUX-909: the parked-vs-running sub-state for the single-session row. `waiting-input` is
+  // overloaded (blocked-on-user vs clean idle turn-end), so classify it from the task signals.
+  // Prefer the live SSE status so the pill flips the instant a turn ends (same rationale as
+  // `currentActivity` above), and keep `hasActiveCliSession` unchanged — other call sites depend on
+  // it covering all three active statuses.
+  const sessionState = classifyCardSessionState(task, liveSession?.status, config);
 
   // Multi-agent cluster: show the most recent multi-session run group while it is
   // still live (workers running, or a combiner still owed). Grouping ALL sessions
@@ -801,6 +807,7 @@ export function useTaskCardController({
     readCommentIds,
     hasActiveCliSession,
     currentActivity,
+    sessionState,
     clusterGroup,
     clusterAgg,
     clusterCombinerPending,

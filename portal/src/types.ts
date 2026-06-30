@@ -124,6 +124,14 @@ export interface Task {
   branch?: string;
   baselineCommit?: string;
   diffSummary?: { file: string; additions: number; deletions: number }[];
+  /** FLUX-873: rich grooming artifact pointer — revision-keyed self-contained HTML published via the
+   *  `publish_artifact` MCP tool. Each publish appends a revision (history is kept); the viewer
+   *  defaults to `latest`. The HTML lives in a sidecar served by GET /api/tasks/:id/artifact?rev=,
+   *  never inlined in the body. */
+  artifacts?: {
+    latest: number;
+    revisions: { rev: number; title?: string; note?: string; createdAt: string; bytes: number }[];
+  };
   parentId?: string;
   subtasks?: (string | InlineSubtask)[];
   version?: string;

@@ -73,9 +73,9 @@ There is a second capabilities table in [`types.ts`](../../../engine/src/agents/
 
 ```ts
 export const CLI_CAPABILITIES: Record<CliFramework, CliCapabilities> = {
-  claude:  { resume: true,  background: true,  supervisor: true,  scatter: true, toolGating: true, structuredOutput: true  },
-  gemini:  { resume: false, background: false, supervisor: false, scatter: true, toolGating: true, structuredOutput: false },
-  copilot: { resume: true,  background: false, supervisor: false, scatter: true, toolGating: true, structuredOutput: false },
+  claude:  { resume: true, background: true,  supervisor: true,  scatter: true, toolGating: true, structuredOutput: true,  effort: { supported: true,  flag: '--effort' } },
+  gemini:  { resume: true, background: true,  supervisor: true,  scatter: true, toolGating: true, structuredOutput: true,  effort: { supported: false } },
+  copilot: { resume: true, background: false, supervisor: false, scatter: true, toolGating: true, structuredOutput: false, effort: { supported: true,  flag: '--effort' } },
 };
 ```
 
@@ -87,16 +87,17 @@ export const CLI_CAPABILITIES: Record<CliFramework, CliCapabilities> = {
 | `scatter` | Adapter can run as a parallel worker in scatter-gather mode. |
 | `toolGating` | Adapter respects allow/deny tool lists. |
 | `structuredOutput` | Adapter emits structured stream-json the engine can parse for activity / tokens. |
+| `effort` | Whether the CLI accepts an effort flag, and the literal (`{ supported: boolean; flag?: string }`). Folded in from the former per-adapter `PROVIDER_CAPABILITIES` tables, which disagreed (FLUX-900, audit A.8). |
 
 When you add a new framework, add a row here too.
 
-> **Known gaps in the current adapter layer** — the three shipping adapters do not yet agree on the full surface area implied by this contract (duplicated helpers, claude-only `EH_CONVERSATION_ID` env, claude-only `__board__` orchestrator, claude-only `--mcp-config` injection, claude-only `pausedForInput` flow, claude-only `permissionMode` honoring, claude-only image attachments). See the [Adapter Layer Audit](../architecture/adapter-layer-audit.md) (FLUX-700) for the full row-by-row inventory and the proposed disposition per row. New adapter work should land against the post-audit shape, not the current one.
+> **Known gaps in the current adapter layer** — the three shipping adapters do not yet agree on the full surface area implied by this contract. **Resolved (FLUX-900):** the duplicated per-adapter helpers (`cleanChildEnv`, `checkBinaryInstalled`, `appendSessionOutput`/`flushSessionOutput`/`enqueueSessionWrite`, `EFFORT_LEVELS`) were lifted into [`shared.ts`](../../../engine/src/agents/shared.ts); `PROVIDER_CAPABILITIES` was folded into `CLI_CAPABILITIES.effort`; and the unified `cleanChildEnv(framework, conversationId?)` now sets `EH_CONVERSATION_ID` (+ `EH_CONVERSATION_TOKEN`) for **every** framework — so HITL picker routing works on Copilot/Gemini, not just Claude (audit A.6, was blocking). **Still open:** claude-only `__board__` orchestrator, claude-only `--mcp-config` injection, claude-only `pausedForInput` flow, claude-only `permissionMode` honoring, claude-only image attachments, and the still-per-adapter `attachStdoutProcessing` / `buildInitialPrompt` (audit A.1/A.2 — deferred to land alongside the cross-adapter contract test net, since each parses a different stdout schema). See the [Adapter Layer Audit](../architecture/adapter-layer-audit.md) (FLUX-700) for the full row-by-row inventory and the proposed disposition per row. New adapter work should land against the post-audit shape, not the current one.
 
 ## Lifecycle: `start`
 
 `start(session, task, appendPrompt, effortOverride, workspaceRoot)` is called once when a CLI session begins. The standard implementation in all three adapters is a thin wrapper around a shared `startCliSession(...)` helper that:
 
-1. Verifies the binary is on PATH (`checkBinaryInstalled`).
+1. Verifies the binary is on PATH (`checkBinaryInstalled`, shared in [`shared.ts`](../../../engine/src/agents/shared.ts)).
 2. Builds the CLI command + args (provider-specific flags for permission mode, effort, model, resume). For Claude Code, `permissionArgs(session)` emits either `--permission-prompt-tool mcp__event-horizon__permission_prompt` (`permissionMode: 'gated'`) or `--dangerously-skip-permissions` (`permissionMode: 'skip'` / legacy `skipPermissions`) — see [`permission_prompt`](mcp-tools.md#permission_prompt) (FLUX-605).
 3. `spawn`s the child process with a sanitized env (`cleanChildEnv` strips `NODE_OPTIONS` to avoid loader injection). For a routed session it also sets `EH_CONVERSATION_ID` (the bound ticket id / `__board__` sentinel) and `EH_CONVERSATION_TOKEN` — an HMAC of that conversationId minted from a per-process secret (FLUX-841). The `permission_prompt` / `ask_user_question` MCP tools forward the token on every HITL POST so the route can assert the request targets the session's OWN ticket; a session can't forge a token for a sibling, which closes same-shape cross-ticket transcript injection (`isSafeStreamId` only blocks path traversal, not a valid sibling ticket id).
 4. Records the `pid`, `command`, `args`, `startedAt`, and writes an `agent_session` history entry to the ticket (`buildAgentSessionEntry` from [`history.ts`](../../../engine/src/history.ts)).
@@ -158,7 +159,7 @@ Key fields adapters touch:
 | `command` / `args` | spawn (for display) |
 | `status` | every state transition |
 | `lastOutputAt` / `lastInputAt` | each I/O event |
-| `currentActivity` | each tool-use frame |
+| `currentActivity` | early on a partial `content_block_start` (tool name known before its input streams, FLUX-927), then on the complete tool-use frame |
 | `outputBuffer` / `liveOutputBuffer` | stream parsing |
 | `inputTokens` / `outputTokens` / `cacheReadTokens` / `cacheCreationTokens` | each usage frame |
 | `costUSD` / `costIsEstimated` | each usage frame (via `estimateCostUSD`) |
@@ -229,7 +230,7 @@ Example: `"mcpServerPhases": { "basic-memory": ["implementation"] }` keeps basic
 
 - `checkBinaryInstalled` throws a user-facing error if the CLI is missing. Routes surface it as a 400 with the message.
 - Stream-parse errors are swallowed and logged — a malformed frame from the CLI should never crash the engine.
-- `cleanChildEnv` is mandatory: any `NODE_OPTIONS` inherited from the parent (typical when the engine itself is launched from VS Code) will break the child agent's loader.
+- `cleanChildEnv` (in [`shared.ts`](../../../engine/src/agents/shared.ts)) is mandatory: any `NODE_OPTIONS` inherited from the parent (typical when the engine itself is launched from VS Code) will break the child agent's loader — it is **removed** entirely (not blanked to `''`, which some pkg-built CLIs still parse).
 - Windows ConPTY noise from `AttachConsole failed` is filtered in `appendSessionOutput`.
 
 ## Cross-references

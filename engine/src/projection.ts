@@ -72,6 +72,16 @@ export interface TranscriptMessage {
   /** FLUX-849: on a `dispatch` note, the session-lifecycle stage this row narrates. Mirrors the
    *  engine's `DispatchLifecycle` union (claude-code.ts) so a drift surfaces as a compile error. */
   lifecycle?: 'started' | 'working' | 'completed' | 'failed' | 'cancelled' | 'waiting-input';
+  /** FLUX-865: on a `dispatch` note, the work phase the dispatched session is running. Mirrors the
+   *  engine's `AgentSession.phase` union (models/agent.ts) so a drift surfaces as a compile error.
+   *  Lets the board chip say *what kind* of session a row narrates (groom / impl / review / final),
+   *  the biggest gap in the bare `<id> <stage>` row. */
+  phase?: 'grooming' | 'implementation' | 'review' | 'finalize';
+  /** FLUX-869: on a `dispatch` note, the dispatched session's start time (ISO). Lets the board chip
+   *  derive run duration client-side — live-ticking `running Xm` while `working`, final `ran Xm` on
+   *  terminal rows — without correlating start/end events. Absent on older rows (degrades to no
+   *  duration token). */
+  startedAt?: string;
   /** FLUX-661: normalized tool name for a tool row (e.g. `Edit`, `list_tickets`). */
   tool?: string;
   /** FLUX-661: repo-relative path of the file an edit-ish tool touched, when resolvable.
@@ -376,6 +386,12 @@ export function projectTranscript(
       const msg: TranscriptMessage = { role: 'note', kind: 'dispatch', text: evt.text, ts };
       if (typeof evt.sourceTask === 'string') msg.sourceTask = evt.sourceTask;
       if (typeof evt.lifecycle === 'string') msg.lifecycle = evt.lifecycle;
+      // FLUX-865: the tee already emits `phase` (claude-code.ts teeDispatchActivityToBoard); copy it
+      // through so the chip can label the row's phase. Degrades to no phase label when absent.
+      if (typeof evt.phase === 'string') msg.phase = evt.phase;
+      // FLUX-869: pass the session start through so the chip can derive run duration. Degrades to
+      // no duration token when absent (older rows / paths that left startedAt undefined).
+      if (typeof evt.startedAt === 'string') msg.startedAt = evt.startedAt;
       out.push(tag(msg, turn));
     } else if (evt?.type === 'assistant' && Array.isArray(evt.message?.content)) {
       for (const b of evt.message.content) {

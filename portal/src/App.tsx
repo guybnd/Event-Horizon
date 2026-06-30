@@ -17,7 +17,6 @@ import { WorkflowBuilder } from './components/WorkflowBuilder';
 import { WorkspaceSelector } from './components/WorkspaceSelector';
 import { OnboardingWizard } from './components/OnboardingWizard';
 import { FirstBootDialog } from './components/FirstBootDialog';
-import { RestartBanner } from './components/RestartBanner';
 
 // Dev-only Onboarding Studio (FLUX-759, extends the FLUX-755 editor). The lazy()
 // — and thus the dynamic import() — lives inside an `import.meta.env.DEV` branch
@@ -59,7 +58,6 @@ function AppContent() {
 
   return (
     <div className="min-h-dvh h-screen flex flex-col font-sans app-shell" style={{ background: 'var(--eh-base)', color: 'var(--eh-text-primary)' }}>
-      <RestartBanner />
       <Header />
       <div className="relative flex min-h-0 flex-1 flex-col">
         <main className="flex-1 overflow-y-auto px-8 pt-2.5 pb-5">

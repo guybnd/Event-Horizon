@@ -132,6 +132,16 @@ export async function clearNeedsActionIfSet(taskId: string): Promise<void> {
  */
 export async function raiseNeedsAction(taskId: string, message: string): Promise<void> {
   try {
+    // FLUX-908: the board orchestrator (`__board__`) is not a ticket in tasksCache, so the
+    // needsAction FLAG can't be set on it — but a timed-out board prompt MUST still pull the user
+    // back. Previously this no-op'd here (the id is truthy, so it passes settle()'s guard, then bails
+    // on the missing task), so an orchestrator question the user never saw vanished on timeout. Emit
+    // a board-targeted notification instead (NotificationPanel routes `__board__` to "Open chat").
+    // A genuinely unrouted (null/absent) id still legitimately no-ops below.
+    if (taskId === '__board__') {
+      generateNeedsActionNotification(taskId, 'Orchestrator', '', message);
+      return;
+    }
     const task = tasksCache[taskId] as any;
     if (!task) return;
     if (!task.needsAction) {

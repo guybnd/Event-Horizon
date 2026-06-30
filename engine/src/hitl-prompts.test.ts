@@ -3,6 +3,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import { setWorkspaceRoot, getActiveFluxDir } from './workspace.js';
+import { readTranscript, flushTranscript, clearTranscript } from './transcript.js';
 import {
   parkPrompt,
   resolvePrompt,
@@ -174,6 +175,35 @@ describe('hitl-prompts durable store (FLUX-833 Phase 2)', () => {
     expect(listOpenPrompts('permission')).toHaveLength(0);
     await flushOpenPrompts();
     expect(await readIndex()).toHaveLength(0); // removed from disk too
+  });
+
+  // FLUX-866: an UNROUTED prompt (conversationId === null) — answered only via the pending board —
+  // must still echo its round-trip somewhere, or the chat shows the question with no reply. The
+  // fallback is the board orchestrator thread `__board__`: both the request (ask-question) and the
+  // answer (ask-answer) land there, matching the inline-picker echo for routed prompts.
+  it('echoes an unrouted question + its answer to the __board__ transcript stream (FLUX-866)', async () => {
+    await clearTranscript('__board__'); // isolate from any seq carried over by the module-global
+
+    const parked = parkPrompt({
+      kind: 'question',
+      payload: { questions: [{ header: 'H', question: 'Pick one?', options: [{ label: 'A' }, { label: 'B' }] }] },
+      conversationId: null, // unrouted — no EH_CONVERSATION_ID / dropped token
+      timeoutMs: 60_000,
+    });
+    await Promise.resolve();
+
+    const { id } = listOpenPrompts('question')[0]!;
+    expect(resolvePrompt(id, { answers: { 'Pick one?': 'A' } })).toBe(true);
+    await parked;
+
+    await flushTranscript('__board__');
+    const events = (await readTranscript('__board__')).map((l) => JSON.parse(l).raw);
+
+    const request = events.find((e) => e?.type === 'ask-question' && e.id === id);
+    expect(request).toBeTruthy();
+    const answer = events.find((e) => e?.type === 'ask-answer' && e.id === id);
+    expect(answer).toBeTruthy();
+    expect(answer.answers).toEqual({ 'Pick one?': 'A' });
   });
 
   // Review M4: a path-unsafe conversationId persisted in the index is neutralized to null on

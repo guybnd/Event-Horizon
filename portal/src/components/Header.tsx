@@ -202,25 +202,9 @@ export function Header() {
     (n) => !n.read && !n.dismissed && notificationCategory(n.type) === 'action' && isNotificationVisible(n, prefs),
   ).length;
 
-  const [isPromptPulseActive, setIsPromptPulseActive] = useState(false);
+  // FLUX-898: the bell is demoted to a muted secondary entry — the unified <AttentionDock/> (dock bar)
+  // now owns the primary count/pulse for notifications + pending. No loud badge or prompt-pulse here.
   const [isNotificationPanelOpen, setIsNotificationPanelOpen] = useState(false);
-
-  const previousUnreadRef = useRef(actionableUnread);
-
-  useEffect(() => {
-    if (actionableUnread === previousUnreadRef.current) {
-      return;
-    }
-
-    previousUnreadRef.current = actionableUnread;
-    if (actionableUnread > 0) {
-      setIsPromptPulseActive(true);
-      const timeoutId = window.setTimeout(() => {
-        setIsPromptPulseActive(false);
-      }, 1600);
-      return () => { window.clearTimeout(timeoutId); };
-    }
-  }, [actionableUnread]);
 
   const handleCloseNotificationPanel = useCallback(() => setIsNotificationPanelOpen(false), []);
   const handleSetView = useCallback((v: AppView) => setView(v), [setView]);
@@ -279,25 +263,21 @@ export function Header() {
           {/* Sync status — global (orphan-branch store), so it lives in the top bar. */}
           <SyncStatusIndicator />
 
-          {/* Notifications dropdown */}
+          {/* Notifications bell — FLUX-898: demoted to a muted secondary entry. The primary count +
+              pulse + the Activity feed now live in the dock-bar <AttentionDock/> (Updates / Activity
+              tabs); this stays as a quiet alternate way to open the notification list. A tiny neutral
+              dot marks unread action items, but there's no loud number/amber tone competing with the dock. */}
           <div className="relative">
             <button
               data-notif-toggle
               onClick={toggleNotificationPanel}
-              className={`group flex shrink-0 cursor-pointer items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-left transition-all duration-200 overflow-hidden ${
-                notifications.some(n => n.type === 'error' && !n.read)
-                  ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300'
-                  : actionableUnread > 0
-                    ? 'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300'
-                    : 'border-gray-200 bg-white/60 text-gray-500 dark:border-white/10 dark:bg-white/5 dark:text-gray-400'
-              } ${isPromptPulseActive ? 'header-live-prompts' : ''} ${isNotificationPanelOpen ? 'ring-2 ring-primary/30' : ''}`}
-              title="Notifications"
+              className={`group flex shrink-0 cursor-pointer items-center gap-1.5 rounded-xl border border-gray-200 bg-white/60 px-2.5 py-1.5 text-left text-gray-500 transition-all duration-200 overflow-hidden hover:text-gray-700 dark:border-white/10 dark:bg-white/5 dark:text-gray-400 dark:hover:text-gray-200 ${isNotificationPanelOpen ? 'ring-2 ring-primary/30' : ''}`}
+              title={actionableUnread > 0 ? `Notifications — ${actionableUnread} need attention` : 'Notifications'}
             >
               <div className="relative shrink-0">
                 <Bell className="h-3.5 w-3.5" />
-                {actionableUnread > 0 && <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-amber-500" />}
+                {actionableUnread > 0 && <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full bg-gray-400 dark:bg-gray-500" />}
               </div>
-              <span className="text-sm font-semibold leading-none">{actionableUnread}</span>
               <span className="max-w-0 overflow-hidden opacity-0 whitespace-nowrap text-[10px] font-bold uppercase tracking-wider transition-all duration-200 group-hover:max-w-[80px] group-hover:opacity-100 group-hover:ml-0.5">
                 Alerts
               </span>

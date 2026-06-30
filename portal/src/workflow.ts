@@ -60,6 +60,38 @@ export function needsAction(task: Task): boolean {
   return !!task.needsAction;
 }
 
+/** FLUX-909: the card presentation state of a single CLI session. */
+export type CardSessionState = 'running' | 'starting' | 'needs-input' | 'idle' | 'none';
+
+/**
+ * FLUX-909: classify a single CLI session into its card presentation state. The engine's
+ * `waiting-input` status is *overloaded* — it covers both "genuinely blocked, awaiting the user"
+ * and "clean resumable turn end, idle / nothing pending". The card has to tell these apart so the
+ * idle case reads as calm (blue) instead of an alarm (amber): split `waiting-input` into
+ * `needs-input` when something is actually pending the user (a `blockedReason`, the ticket sitting
+ * at the Require Input status, the `require-input` swimlane, or a `needsAction` flag) and `idle`
+ * otherwise.
+ *
+ * `liveStatus` is the SSE-fed session status — prefer it over the polled `cliSession.status` so the
+ * pill flips the instant a turn ends (FLUX-626); pass `undefined` to fall back to the polled value.
+ */
+export function classifyCardSessionState(
+  task: Task,
+  liveStatus: string | undefined,
+  config?: Config | null,
+): CardSessionState {
+  const status = liveStatus ?? task.cliSession?.status;
+  if (status === 'pending') return 'starting';
+  if (status === 'running') return 'running';
+  if (status !== 'waiting-input') return 'none';
+  const pendingUser =
+    !!task.cliSession?.blockedReason ||
+    task.status === getRequireInputStatus(config) ||
+    isTaskAwaitingInput(task) ||
+    needsAction(task);
+  return pendingUser ? 'needs-input' : 'idle';
+}
+
 export function relativeTime(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
   const mins = Math.floor(diff / 60000);

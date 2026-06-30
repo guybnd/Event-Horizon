@@ -6,12 +6,7 @@
 
 ### An IDE for the agent era.
 
-
-
 https://github.com/user-attachments/assets/6a266cd2-b145-47b7-8eb2-aefeb9108b47
-
-
-
 
 You still live in your editor — but more and more of the work gets handed to agents, and your editor was never built to *run* them. Event Horizon is the environment for that side of the job: break work into tickets, dispatch agents that each carry full context and run on their **own branch, in parallel**, and review everything as a **real pull request** before it lands. It runs alongside your IDE and terminal, and every change comes back as a normal git branch — your repo stays the source of truth.
 
@@ -131,8 +126,6 @@ Point Event Horizon at a project folder. New folders are **auto-bootstrapped** �
 ## Works with your agent
 
 Event Horizon installs a workflow skill + MCP config for your framework so the agent picks up tickets natively — no curl, no REST wrappers.
-
-NOTICE : Fully tested only with claude code CLI. Will add more support for the other tools as I get access to them.
 
 | Framework | CLI | Skill install path |
 |-----------|-----|--------------------|

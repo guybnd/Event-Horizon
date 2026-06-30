@@ -17,6 +17,11 @@ const SIDEVIEW_WIDTH_KEY = 'eh-dock-sideview-width';
 const SIDEVIEW_WIDTH_USERSET_KEY = 'eh-dock-sideview-width-userset';
 /** FLUX-740: localStorage key for the per-section sideview open/collapsed map (by section id). */
 const SECTION_OPEN_KEY = 'eh-dock-section-open';
+/** FLUX-920: localStorage key for the per-conversation chat-window geometry (size + dragged position). */
+const WINDOW_GEOM_KEY = 'eh-dock-window-geom';
+/** FLUX-920: cap on the geometry map — applied to the localStorage write so stored ids for chats that
+ *  were never retired (so never pruned by `closeCard`) can't accumulate unboundedly. Mirrors ORDER_CAP. */
+const WINDOW_GEOM_CAP = 50;
 
 /** FLUX-740: default sideview width + the clamp the divider enforces. Mirrored in ChatDock's drag. */
 export const DEFAULT_SIDEVIEW_WIDTH = 380;
@@ -78,6 +83,32 @@ function readBoolRecord(key: string): Record<string, boolean> {
   }
 }
 
+/** FLUX-920: rehydrate the per-conversation window-geometry map, dropping malformed entries (a valid
+ *  entry has finite `w`/`h`; `left`/`bottom` are optional and only kept when finite). */
+function readGeomRecord(key: string): Record<string, WindowGeometry> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = localStorage.getItem(key);
+    const parsed = raw ? JSON.parse(raw) : {};
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: Record<string, WindowGeometry> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (!v || typeof v !== 'object') continue;
+      const g = v as Record<string, unknown>;
+      const w = Number(g.w);
+      const h = Number(g.h);
+      if (!Number.isFinite(w) || !Number.isFinite(h)) continue;
+      const entry: WindowGeometry = { w, h };
+      if (Number.isFinite(Number(g.left))) entry.left = Number(g.left);
+      if (Number.isFinite(Number(g.bottom))) entry.bottom = Number(g.bottom);
+      out[k] = entry;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 /**
  * FLUX-603: global ownership of the bottom chat dock's window/open state.
  *
@@ -100,6 +131,17 @@ export interface ComposerSelections {
   model?: string;
   effort?: string;
   permission?: string;
+}
+
+/** FLUX-920: a chat window's persisted footprint. `w`/`h` are the resizable chat-column size; the
+ *  optional `left`/`bottom` are the dragged bottom-pinned position (absent until the window is dragged,
+ *  so a resize-only window persists size without forcing a position). Persisted to localStorage so the
+ *  footprint survives both minimize/reopen (window subtree unmount) and a full reload. */
+export interface WindowGeometry {
+  w: number;
+  h: number;
+  left?: number;
+  bottom?: number;
 }
 
 /** FLUX-801: the on-screen rect of the element that triggered an open, captured at click time.
@@ -151,6 +193,10 @@ export interface DockActions {
   promoteToFront: (id: string) => void;
   /** FLUX-734: toggle the ticket sideview panel for a chat window open/closed. */
   toggleSideView: (id: string) => void;
+  /** FLUX-887: idempotently OPEN the ticket sideview panel (no-op if already open) — used by the
+   *  inline artifact card's "Open in panel" action, which must reveal the panel without the risk of
+   *  `toggleSideView` closing an already-open one. */
+  openSideView: (id: string) => void;
   /** FLUX-740: set the (global) sideview panel width — driven by the chat↔panel resize divider.
    *  Clamped to [MIN_SIDEVIEW_WIDTH, MAX_SIDEVIEW_WIDTH] and persisted so it survives reloads.
    *  FLUX-744: this is the user's *explicit* choice, so it also marks the width "user-set" — after
@@ -164,6 +210,10 @@ export interface DockActions {
   /** FLUX-740: persist a sideview section's open/collapsed state, keyed by section id, so a user's
    *  collapse choices survive remount / reload. */
   setSectionOpen: (sectionId: string, open: boolean) => void;
+  /** FLUX-920: persist a chat window's footprint, keyed per conversation id, so a manual resize/drag
+   *  survives minimize/reopen (which unmounts the window) and a full reload. Merge-patched: a size-only
+   *  update (`{w,h}`) keeps any stored position and vice-versa. Pruned in `closeCard`. */
+  setWindowGeometry: (id: string, geom: Partial<WindowGeometry>) => void;
 }
 
 export interface DockState {
@@ -201,10 +251,18 @@ export interface DockState {
   /** FLUX-666: per-conversation composer chip selections (model/effort/permission). Same lifecycle
    *  as `drafts` — in-memory, survives minimize/reopen, pruned on `closeCard` and on send. */
   selections: Record<string, ComposerSelections>;
+  /** FLUX-920: per-conversation chat-window geometry (size + dragged position). Unlike `drafts`/
+   *  `selections` this is localStorage-persisted, so a resized/moved window also survives a full reload.
+   *  Pruned in `closeCard` when a chat is retired to History. */
+  windowGeometry: Record<string, WindowGeometry>;
 }
 
 const DockActionsContext = createContext<DockActions | null>(null);
 const DockStateContext = createContext<DockState | null>(null);
+/** FLUX-923: just the open-window id list, in its own context so consumers that only care WHICH chats
+ *  are open (e.g. the AttentionDock's open=inline/minimized=dock attention handoff) re-render when a
+ *  window opens/closes/minimizes — NOT on every composer keystroke (drafts live in the broad DockState). */
+const DockOpenContext = createContext<string[]>([]);
 
 export function DockProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState<string[]>([]);
@@ -235,6 +293,11 @@ export function DockProvider({ children }: { children: ReactNode }) {
   // FLUX-666: per-conversation composer chip selections (model/effort/permission), so minimizing
   // (which unmounts the window subtree) no longer resets them. Mirrors `drafts`.
   const [selections, setSelections] = useState<Record<string, ComposerSelections>>({});
+  // FLUX-920: per-conversation chat-window geometry, rehydrated from localStorage so a resized/dragged
+  // window survives both minimize/reopen AND a full reload (unlike the in-memory drafts/selections).
+  const [windowGeometry, setWindowGeometryState] = useState<Record<string, WindowGeometry>>(
+    () => readGeomRecord(WINDOW_GEOM_KEY),
+  );
 
   // FLUX-635: persist dismissals on change. Cap to bound growth (History only shows HISTORY_CAP).
   useEffect(() => {
@@ -289,6 +352,17 @@ export function DockProvider({ children }: { children: ReactNode }) {
       /* quota exceeded / private mode — section state just won't persist this load */
     }
   }, [sectionOpen]);
+
+  // FLUX-920: persist the per-conversation window geometry. Capped (like the order map) so ids for
+  // chats never retired through `closeCard` can't grow the stored map unboundedly.
+  useEffect(() => {
+    try {
+      const entries = Object.entries(windowGeometry).slice(0, WINDOW_GEOM_CAP);
+      localStorage.setItem(WINDOW_GEOM_KEY, JSON.stringify(Object.fromEntries(entries)));
+    } catch {
+      /* quota exceeded / private mode — geometry just won't persist this load */
+    }
+  }, [windowGeometry]);
 
   // Mirror of `open` so the stable `toggle` action can read the current value without a
   // dependency (which would make the action identity churn and re-render every card).
@@ -370,6 +444,14 @@ export function DockProvider({ children }: { children: ReactNode }) {
           delete next[id];
           return next;
         });
+        // FLUX-920: drop its stored window geometry — a chat reopened from History starts at the
+        // default footprint, and the persisted map stays bounded.
+        setWindowGeometryState((prev) => {
+          if (!(id in prev)) return prev;
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
       },
       // FLUX-623: prune empty drafts so an emptied composer doesn't linger in the map.
       setDraft: (id, text) =>
@@ -414,6 +496,9 @@ export function DockProvider({ children }: { children: ReactNode }) {
       // FLUX-734: flip the ticket sideview panel for a chat window.
       toggleSideView: (id) =>
         setSideviewOpen((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id])),
+      // FLUX-887: idempotently open the sideview (no churn / no accidental close if already open).
+      openSideView: (id) =>
+        setSideviewOpen((prev) => (prev.includes(id) ? prev : [...prev, id])),
       // FLUX-740: clamp + set the global sideview width (the divider drag is high-frequency, so the
       // setter stays cheap; persistence is debounced by React's batched render via the effect above).
       // FLUX-744: this is the user's explicit choice, so mark the width user-set — later opens keep it.
@@ -434,19 +519,47 @@ export function DockProvider({ children }: { children: ReactNode }) {
       // FLUX-740: record a section's explicit open/collapsed override (keyed by section id).
       setSectionOpen: (sectionId, openState) =>
         setSectionOpenState((prev) => (prev[sectionId] === openState ? prev : { ...prev, [sectionId]: openState })),
+      // FLUX-920: merge-patch a window's geometry so a size-only commit (`{w,h}` from the resize grip)
+      // keeps any stored dragged position and a position-only commit (`{left,bottom}` from the title-bar
+      // drag) keeps the stored size. A no-op write (identical values) keeps the same map identity so
+      // consumers don't churn.
+      setWindowGeometry: (id, geom) =>
+        setWindowGeometryState((prev) => {
+          const cur = prev[id];
+          const next = { ...cur, ...geom } as WindowGeometry;
+          if (
+            cur &&
+            cur.w === next.w &&
+            cur.h === next.h &&
+            cur.left === next.left &&
+            cur.bottom === next.bottom
+          ) {
+            return prev;
+          }
+          return { ...prev, [id]: next };
+        }),
     };
   }, []);
 
   const state = useMemo<DockState>(
-    () => ({ open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, sideviewWidthUserSet, sectionOpen }),
-    [open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, sideviewWidthUserSet, sectionOpen],
+    () => ({ open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, sideviewWidthUserSet, sectionOpen, windowGeometry }),
+    [open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, sideviewWidthUserSet, sectionOpen, windowGeometry],
   );
 
   return (
     <DockActionsContext.Provider value={actions}>
-      <DockStateContext.Provider value={state}>{children}</DockStateContext.Provider>
+      <DockStateContext.Provider value={state}>
+        <DockOpenContext.Provider value={open}>{children}</DockOpenContext.Provider>
+      </DockStateContext.Provider>
     </DockActionsContext.Provider>
   );
+}
+
+/** FLUX-923: the ids of currently-open (non-minimized) chat windows. Cheap subscription — changes only
+ *  on open/close/minimize/raise, never on draft/selection churn. */
+// eslint-disable-next-line react-refresh/only-export-components -- canonical context hook, colocated with its provider.
+export function useDockOpenIds(): string[] {
+  return useContext(DockOpenContext);
 }
 
 /** Stable dock actions — safe for cards to consume without extra re-renders. */

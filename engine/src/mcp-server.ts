@@ -24,20 +24,220 @@ import { cleanupMergedBranch } from './pr-cleanup.js';
 import { sharedNonDoneSiblings } from './pr-tickets.js';
 import { existsSync, statSync, readFileSync } from 'fs';
 import { getActiveSessionsForTask, stopAllSessionsForTask, reapStaleParkedSessions } from './session-store.js';
-import { generatePromptNotification, dismissNotificationsForTicket, addNotification } from './notifications.js';
+import { generatePromptNotification, generateReviewNotification, dismissNotificationsForTicket, addNotification } from './notifications.js';
 import { getGroupContext, getMemberBinding, groupDocsLabel, summarizeGroup, groupDocPathToStoreRelative, activeGroupDocsLabel } from './group.js';
 import { submitGroupEdit } from './group-edit.js';
+import { writeArtifactRevision, isSafeTicketId } from './artifacts.js';
 
 function textResult(text: string) {
   return { content: [{ type: 'text' as const, text }] };
 }
 
-function errorResult(text: string) {
-  return { content: [{ type: 'text' as const, text }], isError: true as const };
+/**
+ * Stable, machine-readable discriminants for MCP error results (FLUX-880, AXI structured
+ * errors). MCP has no CLI exit codes; the idiomatic port is a stable `code` an agent (or a
+ * wrapper) can branch on — most importantly to tell *retryable* (`transient_retry`) from
+ * *terminal* failures without parsing the human text.
+ *
+ *   not_found           — a referenced entity (ticket, session, branch, group doc) does not exist
+ *   validation_failed   — input failed schema/precondition checks (missing comment, bad path, …)
+ *   invalid_state       — the call is not valid for the entity's current state (wrong status,
+ *                         already has a branch/swimlane, shared-PR finish guard, …)
+ *   transient_retry     — a temporary condition (workspace activating); retrying may succeed
+ *   channel_unavailable — an out-of-band channel (ask-user, board-rebase, delegation, roster)
+ *                         was unreachable; the underlying work was not attempted
+ *   operation_failed    — an underlying operation failed unexpectedly (the catch-all default)
+ */
+type ErrorCode =
+  | 'not_found'
+  | 'validation_failed'
+  | 'invalid_state'
+  | 'transient_retry'
+  | 'channel_unavailable'
+  | 'operation_failed';
+
+/**
+ * Build an MCP error result. The human-readable `text` is preserved unchanged in `content`;
+ * a stable machine-readable `code` is added in `structuredContent` so agents/wrappers can
+ * branch programmatically (FLUX-880). `structuredContent` is safe on error results — the SDK
+ * skips output-schema validation when `isError` is set (and these tools declare no
+ * outputSchema anyway), so it passes through untouched to the client.
+ */
+function errorResult(text: string, code: ErrorCode = 'operation_failed') {
+  return {
+    content: [{ type: 'text' as const, text }],
+    isError: true as const,
+    structuredContent: { code, message: text },
+  };
 }
 
 function jsonResult(data: unknown) {
-  return textResult(JSON.stringify(data, null, 2));
+  // Compact (no-indent) JSON: agent readers gain nothing from indentation
+  // whitespace, and every list/get tool response pays for it in tokens. FLUX-876.
+  return textResult(JSON.stringify(data));
+}
+
+/**
+ * AXI #9 contextual disclosure (FLUX-877): a terse next-step hint for a `change_status`
+ * result, so the agent's next move is discoverable in the response itself rather than
+ * only in static tool docs. Status names are config-driven, so the caller passes the
+ * resolved labels for every status the hint text references (Ready / Require-Input, plus
+ * the In-Progress / Todo targets the Todo / Grooming hints advance toward). Returns ''
+ * when there is no useful next step (terminal/unknown statuses), so the caller appends
+ * nothing. Pure + exported for test. (FLUX-889: case-insensitive Ready match so a
+ * lowercase `'ready'` agrees with the case-insensitive switch below; config-driven
+ * target labels so a renamed board never points at a non-existent status.)
+ */
+export function nextStepForStatus(
+  newStatus: string,
+  opts: {
+    readyStatus: string;
+    requireInputStatus: string;
+    inProgressStatus?: string;
+    todoStatus?: string;
+  },
+): string {
+  const inProgressStatus = opts.inProgressStatus || 'In Progress';
+  const todoStatus = opts.todoStatus || 'Todo';
+  if (newStatus.toLowerCase() === opts.readyStatus.toLowerCase()) {
+    return `Next: finish_ticket to merge + close, or change_status back to ${inProgressStatus} if changes are needed.`;
+  }
+  switch (newStatus.toLowerCase()) {
+    case 'in progress':
+      return `Next: log_progress as you work; change_status to ${opts.readyStatus} (or ${opts.requireInputStatus}) when done.`;
+    case 'todo':
+      return `Next: start_session to begin, or change_status to ${inProgressStatus} when you pick it up.`;
+    case 'grooming':
+      return `Next: tighten the plan with update_ticket, then change_status to ${todoStatus} when it is ready.`;
+    default:
+      return '';
+  }
+}
+
+/**
+ * AXI #5 (definitive empty states, FLUX-878): build a filter-echoing note for a
+ * `list_tickets` call that matched zero rows. A bare `[]` can't tell an agent
+ * "the filter matched nothing" apart from "something went wrong / I queried the
+ * wrong field" — echoing the active filters makes the zero-result definitive.
+ * Pure + exported for unit test (mirrors the `evaluateWorktreeReadyRefusal` idiom).
+ */
+export function describeEmptyTicketList(filters: {
+  status?: string | undefined;
+  assignee?: string | undefined;
+  tag?: string | undefined;
+  priority?: string | undefined;
+}): string {
+  const active = [
+    filters.status && `status=${filters.status}`,
+    filters.assignee && `assignee=${filters.assignee}`,
+    filters.tag && `tag=${filters.tag}`,
+    filters.priority && `priority=${filters.priority}`,
+  ].filter(Boolean) as string[];
+  return active.length
+    ? `No tickets match ${active.join(', ')}.`
+    : 'No tickets on the board yet.';
+}
+
+/**
+ * FLUX-489: the `list_tickets` selection/cap *decision*, factored out of the handler so it
+ * can be unit-tested as a pure function (mirrors the `describeEmptyTicketList` /
+ * `evaluateWorktreeReadyRefusal` idiom).
+ *
+ * The default result set is now ACTIVE-BY-DEFAULT + BOUNDED: a no-filter call no longer
+ * dumps the whole board (~480 rows) into context. We
+ *  - drop terminal statuses (Done/Released/Archived) unless an explicit `status` is given;
+ *  - case-insensitively substring-match `search` over id + title;
+ *  - cap rows at `limit` (default 40).
+ * `includeAll:true` is the escape hatch: ignore both the active default and the limit.
+ *
+ * Discoverability (critical): whenever rows are omitted — by the active-default filter or by
+ * the limit — `note` explains total matched, returned count, and how to widen the call, so a
+ * truncation is never silent.
+ */
+export type ListTicketRow = {
+  id: string;
+  title: string;
+  status: string;
+  priority: string;
+  effort: string;
+  assignee: string;
+  tags: string[];
+};
+
+const TERMINAL_LIST_STATUSES = ['Done', 'Released', 'Archived'];
+const DEFAULT_LIST_LIMIT = 40;
+
+export function selectTicketsForList(
+  allTasks: any[],
+  filters: {
+    status?: string | undefined;
+    assignee?: string | undefined;
+    tag?: string | undefined;
+    priority?: string | undefined;
+    search?: string | undefined;
+    active?: boolean | undefined;
+    limit?: number | undefined;
+    includeAll?: boolean | undefined;
+  },
+  terminalStatuses: string[] = TERMINAL_LIST_STATUSES,
+): { rows: ListTicketRow[]; note?: string } {
+  const { status, assignee, tag, priority, search, includeAll } = filters;
+  // active defaults to true; an explicit status filter, or includeAll, overrides it.
+  const activeOnly = includeAll ? false : (filters.active ?? true) && !status;
+
+  let tasks = allTasks;
+  if (status) tasks = tasks.filter((t: any) => t.status === status);
+  if (assignee) tasks = tasks.filter((t: any) => t.assignee === assignee);
+  if (tag) tasks = tasks.filter((t: any) => t.tags?.includes(tag));
+  if (priority) tasks = tasks.filter((t: any) => t.priority === priority);
+  if (search) {
+    const needle = search.toLowerCase();
+    tasks = tasks.filter(
+      (t: any) =>
+        String(t.id ?? '').toLowerCase().includes(needle) ||
+        String(t.title ?? '').toLowerCase().includes(needle),
+    );
+  }
+
+  // After the explicit filters, the active-by-default screen removes terminal statuses.
+  const afterExplicit = tasks.length;
+  if (activeOnly) {
+    tasks = tasks.filter((t: any) => !terminalStatuses.includes(t.status));
+  }
+  const matched = tasks.length; // rows that pass active screen (the universe for limit)
+  const droppedByActive = afterExplicit - matched;
+
+  const effectiveLimit = includeAll
+    ? Infinity
+    : filters.limit != null && filters.limit > 0
+      ? filters.limit
+      : DEFAULT_LIST_LIMIT;
+  const capped = Number.isFinite(effectiveLimit) ? tasks.slice(0, effectiveLimit) : tasks;
+  const droppedByLimit = matched - capped.length;
+
+  const rows: ListTicketRow[] = capped.map((t: any) => ({
+    id: t.id,
+    title: t.title,
+    status: t.status,
+    priority: t.priority,
+    effort: t.effort,
+    assignee: t.assignee,
+    tags: t.tags,
+  }));
+
+  const notes: string[] = [];
+  if (droppedByActive > 0) {
+    notes.push(
+      `${droppedByActive} terminal-status ticket${droppedByActive === 1 ? '' : 's'} ` +
+        `(${terminalStatuses.join('/')}) hidden by active-default — pass includeAll:true or an explicit status to include them.`,
+    );
+  }
+  if (droppedByLimit > 0) {
+    notes.push(
+      `Showing ${rows.length} of ${matched} matched — raise limit (default ${DEFAULT_LIST_LIMIT}) or pass includeAll:true to see the rest.`,
+    );
+  }
+  return notes.length ? { rows, note: notes.join(' ') } : { rows };
 }
 
 // Soft ceiling for ticket bodies written by agents. The body is injected in
@@ -183,11 +383,12 @@ export function buildMcpServer(): McpServer {
       historyLimit: z.number().int().positive().optional().describe('Max history entries to return (default 20)'),
       expand: z.array(z.string()).optional().describe('History entry ids to return in FULL (un-collapse). Pass the `id` shown on a collapsed entry when its summary is not enough.'),
       fullHistory: z.boolean().optional().describe('Return all history uncollapsed. Discouraged — defeats the digest and re-inflates context; prefer expand:[ids].'),
+      fullBody: z.boolean().optional().describe('Return the full ticket body even when it is oversized. By default a very large body is truncated with a recoverable size hint to save context (FLUX-879); normal bodies are never truncated.'),
     },
-    async ({ ticketId, historyLimit, expand, fullHistory }) => {
+    async ({ ticketId, historyLimit, expand, fullHistory, fullBody }) => {
       const task = tasksCache[ticketId];
-      if (!task) return errorResult(`Ticket ${ticketId} not found`);
-      const { _path, ...output } = serializeTaskForAgent(task, historyLimit, { expand, fullHistory });
+      if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
+      const { _path, ...output } = serializeTaskForAgent(task, historyLimit, { expand, fullHistory, fullBody });
       return jsonResult(output);
     },
   );
@@ -202,7 +403,7 @@ export function buildMcpServer(): McpServer {
     },
     async ({ ticketId, sessionId, tail }) => {
       const task = tasksCache[ticketId];
-      if (!task) return errorResult(`Ticket ${ticketId} not found`);
+      if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
       const history: any[] = Array.isArray(task.history) ? task.history : [];
       const entry = history.find((e: any) => e?.type === 'agent_session' && e?.sessionId === sessionId);
       if (!entry) {
@@ -212,6 +413,7 @@ export function buildMcpServer(): McpServer {
         return errorResult(
           `Session ${sessionId} not found on ${ticketId}.` +
           (known.length > 0 ? ` Known sessions: ${known.join(', ')}` : ' This ticket has no agent sessions.'),
+          'not_found',
         );
       }
       const progress: any[] = Array.isArray(entry.progress) ? entry.progress : [];
@@ -224,24 +426,42 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'list_tickets',
-    'List tickets with optional filtering by status, assignee, tag, or priority',
+    'List tickets with optional filtering by status, assignee, tag, or priority. Active-by-default and bounded (FLUX-489): with no explicit status it returns only non-terminal tickets (excludes Done/Released/Archived) and caps at 40 rows. Use search to substring-match id+title, raise limit, or pass includeAll:true to see everything.',
     {
-      status: z.string().optional().describe('Filter by status (e.g. "In Progress", "Todo")'),
+      status: z.string().optional().describe('Filter by status (e.g. "In Progress", "Todo"). An explicit status overrides the active-by-default screen (so you CAN list Done/Released/Archived by naming the status).'),
       assignee: z.string().optional().describe('Filter by assignee'),
       tag: z.string().optional().describe('Filter by tag name'),
       priority: z.string().optional().describe('Filter by priority (Critical, High, Medium, Low, None)'),
+      search: z.string().optional().describe('Case-insensitive substring match over ticket id + title.'),
+      active: z.boolean().optional().describe('Default true: when no explicit status is given, return only NON-terminal tickets (exclude Done, Released, Archived). Set false to include terminal statuses.'),
+      limit: z.number().int().positive().optional().describe('Max rows to return (default 40). Ignored when includeAll is true.'),
+      includeAll: z.boolean().optional().describe('Escape hatch: return every matched row, ignoring the active-default screen AND the limit.'),
     },
-    async ({ status, assignee, tag, priority }) => {
-      let tasks = Object.values(tasksCache);
-      if (status) tasks = tasks.filter((t: any) => t.status === status);
-      if (assignee) tasks = tasks.filter((t: any) => t.assignee === assignee);
-      if (tag) tasks = tasks.filter((t: any) => t.tags?.includes(tag));
-      if (priority) tasks = tasks.filter((t: any) => t.priority === priority);
-      const summary = tasks.map((t: any) => ({
-        id: t.id, title: t.title, status: t.status,
-        priority: t.priority, effort: t.effort, assignee: t.assignee, tags: t.tags,
-      }));
-      return jsonResult(summary);
+    async ({ status, assignee, tag, priority, search, active, limit, includeAll }) => {
+      const terminalStatuses = [
+        'Done',
+        'Released',
+        configCache.archiveStatus || 'Archived',
+      ];
+      const { rows, note } = selectTicketsForList(
+        Object.values(tasksCache),
+        { status, assignee, tag, priority, search, active, limit, includeAll },
+        terminalStatuses,
+      );
+      // AXI #5 definitive empty state (FLUX-878): on zero matches return a
+      // filter-echoing note instead of a bare [].
+      if (rows.length === 0) {
+        // FLUX-489: an empty result is not always "nothing matched" — the
+        // active-default screen may have hidden every match (all terminal). In
+        // that case `selectTicketsForList` produced a disclosure note; surface
+        // it alongside the filter echo so the truncation is never silent and the
+        // agent learns includeAll:true would reveal the hidden terminal tickets.
+        const emptyNote = describeEmptyTicketList({ status, assignee, tag, priority });
+        return jsonResult({ tickets: [], note: note ? `${emptyNote} ${note}` : emptyNote });
+      }
+      // FLUX-489: when rows were omitted (active-default screen / limit), attach a
+      // discoverability note so a bounded result is never silently truncated.
+      return jsonResult(note ? { tickets: rows, note } : rows);
     },
   );
 
@@ -255,7 +475,21 @@ export function buildMcpServer(): McpServer {
         ...(configCache.hiddenStatuses || []).map((s: any) => s.name),
       ];
       const { projects, tags, priorities, users, requireInputStatus, readyForMergeStatus } = configCache;
-      return jsonResult({ statuses, projects, tags, priorities, users, requireInputStatus, readyForMergeStatus });
+      // Agent-facing projection (FLUX-928): the orchestrator reads this every
+      // session and the result re-bills each turn, so strip the Tailwind color
+      // classes agents never use. CLONE here — never mutate configCache (the
+      // portal/REST GET /api/config path must keep the full config with colors).
+      const agentTags = (tags || []).map((t: any) => t.name);
+      const agentPriorities = (priorities || []).map((p: any) => ({ name: p.name, icon: p.icon }));
+      return jsonResult({
+        statuses,
+        projects,
+        tags: agentTags,
+        priorities: agentPriorities,
+        users,
+        requireInputStatus,
+        readyForMergeStatus,
+      });
     },
   );
 
@@ -305,7 +539,7 @@ export function buildMcpServer(): McpServer {
       author: z.string().optional().describe('Author name (default: Agent)'),
     },
     async ({ title, status, priority, effort, assignee, tags, body, author }) => {
-      if (workspaceActivating) return errorResult('Workspace is activating, please retry');
+      if (workspaceActivating) return errorResult('Workspace is activating, please retry', 'transient_retry');
 
       try {
         const opts: CreateTaskOptions = { title, author: author || 'Agent' };
@@ -317,7 +551,10 @@ export function buildMcpServer(): McpServer {
         if (body !== undefined) opts.body = body;
         const { id, task } = await createTask(opts);
         const warning = bodySizeWarning(body);
-        return jsonResult({ id, title: task.title, status: task.status, ...(warning ? { warning } : {}) });
+        return jsonResult({
+          id, title: task.title, status: task.status, ...(warning ? { warning } : {}),
+          nextSteps: `Created ${id} (${task.status}). Next: start_session to begin work, or update_ticket to refine the plan first.`,
+        });
       } catch (err: any) {
         return errorResult(err.message || 'Failed to create ticket');
       }
@@ -342,7 +579,7 @@ export function buildMcpServer(): McpServer {
       body: z.string().optional().describe('Markdown body for the new ticket.'),
     },
     async ({ from, fromSeq, toSeq, title, priority, effort, tags, body }) => {
-      if (workspaceActivating) return errorResult('Workspace is activating, please retry');
+      if (workspaceActivating) return errorResult('Workspace is activating, please retry', 'transient_retry');
       try {
         const result = await extractTicket({
           ...(from !== undefined ? { from } : {}),
@@ -373,7 +610,7 @@ export function buildMcpServer(): McpServer {
       from: z.array(z.string()).describe('Source ticket/stream ids to fold into the survivor (each gets tombstoned + archived). Must be non-empty and exclude `into`.'),
     },
     async ({ into, from }) => {
-      if (workspaceActivating) return errorResult('Workspace is activating, please retry');
+      if (workspaceActivating) return errorResult('Workspace is activating, please retry', 'transient_retry');
       try {
         const result = await mergeTickets({ into, from });
         return jsonResult(result);
@@ -398,7 +635,7 @@ export function buildMcpServer(): McpServer {
     },
     async ({ ticketId, title, priority, effort, assignee, tags, body, implementationLink }) => {
       const task = tasksCache[ticketId];
-      if (!task) return errorResult(`Ticket ${ticketId} not found`);
+      if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
 
       // Build the merged frontmatter for a pre-write schema check. The authoritative write below
       // re-reads + re-applies these inside the per-ticket lock (updateTaskWithHistory).
@@ -412,7 +649,7 @@ export function buildMcpServer(): McpServer {
 
       const validationErrors = validateTicketFrontmatter(frontmatter);
       if (validationErrors.length > 0) {
-        return errorResult(`Schema validation failed:\n${formatValidationErrors(validationErrors)}`);
+        return errorResult(`Schema validation failed:\n${formatValidationErrors(validationErrors)}`, 'validation_failed');
       }
 
       if (tags !== undefined && Array.isArray(tags)) {
@@ -471,7 +708,11 @@ export function buildMcpServer(): McpServer {
     },
     async ({ ticketId, newStatus, comment, callerRole, reviewState }) => {
       const task = tasksCache[ticketId];
-      if (!task) return errorResult(`Ticket ${ticketId} not found`);
+      if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
+      // FLUX-922 review fix: capture the prior verdict before the update so the review notification
+      // only fires on an actual change (a re-affirming change_status with the same reviewState must
+      // not re-mark the card unread).
+      const priorReviewState = task.reviewState;
 
       // Scatter-gather guard: if there are active step sessions on this task,
       // only an orchestrator (or explicit lead) can change status. Scope the check
@@ -484,7 +725,8 @@ export function buildMcpServer(): McpServer {
           return errorResult(
             `Cannot change status: ${activeStepSessions.length} scatter-gather sessions are active on ${ticketId}. ` +
             `Only the orchestrator can change status while parallel reviews are running. ` +
-            `Post your findings via add_comment instead.`
+            `Post your findings via add_comment instead.`,
+            'invalid_state'
           );
         }
       }
@@ -496,7 +738,7 @@ export function buildMcpServer(): McpServer {
       // The ticket stays in its current status but gets the require-input swimlane set.
       if (newStatus === requireInputStatus && task.status !== requireInputStatus) {
         if (!comment) {
-          return errorResult('Transitioning to Require Input requires a comment (the question to ask).');
+          return errorResult('Transitioning to Require Input requires a comment (the question to ask).', 'validation_failed');
         }
 
         const entries: any[] = [
@@ -519,11 +761,11 @@ export function buildMcpServer(): McpServer {
 
         broadcastEvent('taskUpdated', { id: ticketId });
         generatePromptNotification(ticketId, task.title || ticketId, 'Require Input');
-        return textResult(`${ticketId} swimlane set to 'require-input' (status remains ${task.status})`);
+        return textResult(`${ticketId} swimlane set to 'require-input' (status remains ${task.status})\nNext: wait for the user's answer — the session resumes when they respond. Do not keep working this ticket meanwhile.`);
       }
 
       if (newStatus === readyStatus && task.status !== readyStatus && !comment && configCache.requireCommentOnStatusChange !== false) {
-        return errorResult('Transitioning to Ready requires a completion comment.');
+        return errorResult('Transitioning to Ready requires a completion comment.', 'validation_failed');
       }
 
       const entries: any[] = [];
@@ -574,7 +816,7 @@ export function buildMcpServer(): McpServer {
             readyStatus,
             changeCount,
           });
-          if (decision.refuse) return errorResult(decision.message!);
+          if (decision.refuse) return errorResult(decision.message!, 'invalid_state');
         }
 
         // Rather than fail silently in a buried activity line, surface a no-commit branch
@@ -635,7 +877,27 @@ export function buildMcpServer(): McpServer {
       }
 
       broadcastEvent('taskUpdated', { id: ticketId });
-      return textResult(`${ticketId} moved to ${newStatus}`);
+
+      // FLUX-922: a concluded review (verdict recorded via reviewState) emits a first-class review
+      // notification so the reviewer's verdict reaches the Updates panel, not just the card badge.
+      // Gate on a *changed* verdict so a no-op re-affirm doesn't re-fire the notification (and
+      // re-mark the card unread).
+      if ((reviewState === 'approved' || reviewState === 'changes-requested') && reviewState !== priorReviewState) {
+        generateReviewNotification(ticketId, task.title || ticketId, reviewState);
+      }
+
+      // FLUX-889: resolve the In-Progress / Todo target labels the Todo / Grooming hints
+      // advance toward from the configured column order (the next forward column after the
+      // canonical Todo / Grooming), so a renamed board never names a non-existent status.
+      const columnNames: string[] = (configCache.columns || []).map((c: any) => c.name);
+      const nextColumnAfter = (name: string): string | undefined => {
+        const i = columnNames.findIndex((c) => c.toLowerCase() === name.toLowerCase());
+        return i >= 0 && i + 1 < columnNames.length ? columnNames[i + 1] : undefined;
+      };
+      const inProgressStatus = nextColumnAfter('Todo') || 'In Progress';
+      const todoStatus = nextColumnAfter('Grooming') || 'Todo';
+      const hint = nextStepForStatus(newStatus, { readyStatus, requireInputStatus, inProgressStatus, todoStatus });
+      return textResult(`${ticketId} moved to ${newStatus}${hint ? `\n${hint}` : ''}`);
     },
   );
 
@@ -648,7 +910,7 @@ export function buildMcpServer(): McpServer {
     },
     async ({ ticketId, comment }) => {
       const task = tasksCache[ticketId];
-      if (!task) return errorResult(`Ticket ${ticketId} not found`);
+      if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
 
       const archiveStatus = configCache.archiveStatus || 'Archived';
       if (task.status === archiveStatus) {
@@ -694,16 +956,16 @@ export function buildMcpServer(): McpServer {
     },
     async ({ ticketId, toStatus }) => {
       const task = tasksCache[ticketId];
-      if (!task) return errorResult(`Ticket ${ticketId} not found`);
+      if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
 
       const archiveStatus = configCache.archiveStatus || 'Archived';
       if (task.status !== archiveStatus) {
-        return errorResult(`${ticketId} is not archived (status is ${task.status}).`);
+        return errorResult(`${ticketId} is not archived (status is ${task.status}).`, 'invalid_state');
       }
 
       const target = toStatus || 'Todo';
       if (target === archiveStatus) {
-        return errorResult(`Cannot unarchive ${ticketId} to ${archiveStatus} — choose a non-archive status.`);
+        return errorResult(`Cannot unarchive ${ticketId} to ${archiveStatus} — choose a non-archive status.`, 'invalid_state');
       }
 
       const result = await updateTaskWithHistory(ticketId, {
@@ -730,16 +992,16 @@ export function buildMcpServer(): McpServer {
     },
     async ({ ticketId, swimlane, comment }) => {
       const task = tasksCache[ticketId];
-      if (!task) return errorResult(`Ticket ${ticketId} not found`);
+      if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
 
       const swimlanes: any[] = configCache.swimlanes || [];
       const swimlaneDef = swimlanes.find((s: any) => s.id === swimlane);
       if (!swimlaneDef) {
-        return errorResult(`Unknown swimlane '${swimlane}'. Available: ${swimlanes.map((s: any) => s.id).join(', ')}`);
+        return errorResult(`Unknown swimlane '${swimlane}'. Available: ${swimlanes.map((s: any) => s.id).join(', ')}`, 'validation_failed');
       }
 
       if (swimlaneDef.commentRequired && !comment) {
-        return errorResult(`Swimlane '${swimlane}' requires a comment (the question to ask).`);
+        return errorResult(`Swimlane '${swimlane}' requires a comment (the question to ask).`, 'validation_failed');
       }
 
       const entries: any[] = [];
@@ -748,7 +1010,7 @@ export function buildMcpServer(): McpServer {
       if (task.swimlane && task.swimlane !== swimlane) {
         entries.push({ type: 'swimlane_change', swimlane: task.swimlane, action: 'cleared', user: 'Agent', date: new Date().toISOString() });
       } else if (task.swimlane === swimlane) {
-        return errorResult(`${ticketId} already has swimlane '${swimlane}'. Clear it first or use a different swimlane.`);
+        return errorResult(`${ticketId} already has swimlane '${swimlane}'. Clear it first or use a different swimlane.`, 'invalid_state');
       }
 
       if (comment) {
@@ -786,8 +1048,8 @@ export function buildMcpServer(): McpServer {
     },
     async ({ ticketId, comment }) => {
       const task = tasksCache[ticketId];
-      if (!task) return errorResult(`Ticket ${ticketId} not found`);
-      if (!task.swimlane) return errorResult(`${ticketId} has no active swimlane to clear.`);
+      if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
+      if (!task.swimlane) return errorResult(`${ticketId} has no active swimlane to clear.`, 'invalid_state');
 
       const previousSwimlane = task.swimlane;
       const entries: any[] = [];
@@ -822,7 +1084,7 @@ export function buildMcpServer(): McpServer {
     },
     async ({ ticketId, comment, user, summary, pin, supersedes }) => {
       const task = tasksCache[ticketId];
-      if (!task) return errorResult(`Ticket ${ticketId} not found`);
+      if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
 
       const actor = user || 'Agent';
       const entries = [{
@@ -850,7 +1112,7 @@ export function buildMcpServer(): McpServer {
     },
     async ({ ticketId, message, summary, pin, supersedes }) => {
       const task = tasksCache[ticketId];
-      if (!task) return errorResult(`Ticket ${ticketId} not found`);
+      if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
 
       const activityTimestamp = new Date().toISOString();
       const extra: Record<string, unknown> = {
@@ -863,6 +1125,50 @@ export function buildMcpServer(): McpServer {
       if (!result) return errorResult(`Failed to update ${ticketId}`);
       broadcastEvent('taskUpdated', { id: ticketId });
       return textResult(`Progress logged on ${ticketId}`);
+    },
+  );
+
+  // ─── Grooming Artifact Tools (FLUX-873) ───────────────────────────────────────
+
+  server.tool(
+    'publish_artifact',
+    'Publish a self-contained HTML grooming artifact for a ticket so the user can REASON AGAINST a concrete rendering (a mockup, an architecture/flow diagram, an interactive prototype, acceptance criteria) instead of imagining it from prose. Each call is a NEW REVISION (history is kept — never an overwrite); the viewer defaults to the latest. The HTML is stored in a sidecar and rendered in a sandboxed iframe, so it must be a COMPLETE, SELF-CONTAINED document: inline <style>/<script>, plus optional Tailwind (cdn.tailwindcss.com) and Mermaid (cdn.jsdelivr.net) via <script> tags. Do NOT inline the HTML into the ticket body. WHEN TO USE — judge per ticket: emit for UI/UX, architecture, or "shape of the thing" work where seeing a rendering catches misunderstanding before code. SKIP for bug fixes, XS/S tickets, and backend plumbing; default to NOT emitting when unsure. Artifacts are the exception, not the norm.',
+    {
+      ticketId: z.string().describe('Ticket ID, e.g. FLUX-42'),
+      html: z.string().describe('Complete, self-contained HTML document (inline styles/scripts; Tailwind/Mermaid via CDN script tags are allowed). Rendered in a sandboxed opaque-origin iframe — it cannot reach the portal, cookies, or storage, and cannot make network requests (connect-src is blocked), so everything it needs must be inlined or loaded from the allowed CDNs.'),
+      title: z.string().optional().describe('Short label for this artifact/revision (shown above the viewer).'),
+      note: z.string().optional().describe('Optional note about what changed in this revision or what to look at.'),
+    },
+    async ({ ticketId, html, title, note }) => {
+      const task = tasksCache[ticketId];
+      if (!task) return errorResult(`Ticket ${ticketId} not found`);
+      if (!isSafeTicketId(ticketId)) return errorResult(`Invalid ticket id ${ticketId}`);
+      if (!html || !html.trim()) return errorResult('html is required and must be a non-empty self-contained HTML document');
+
+      try {
+        const { rev, pointer, bytes } = await writeArtifactRevision(ticketId, html, { title, note }, task.artifacts);
+        const result = await updateTaskWithHistory(ticketId, {
+          updatedBy: 'Agent',
+          extraFields: { artifacts: pointer },
+          entries: [{
+            type: 'activity',
+            user: 'Agent',
+            comment: `Published grooming artifact revision ${rev}${title ? ` — ${title}` : ''} (${bytes.toLocaleString()} bytes).`,
+            date: new Date().toISOString(),
+          }],
+        });
+        if (!result) return errorResult(`Failed to record artifact revision on ${ticketId}`);
+        // taskUpdated refreshes the card/sideview pointer; artifactReady tells an open viewer to
+        // jump to the new revision (FLUX-873).
+        broadcastEvent('taskUpdated', { id: ticketId });
+        broadcastEvent('artifactReady', { ticketId, rev });
+        return textResult(
+          `Published artifact revision ${rev} for ${ticketId}. It appears in the ticket's "Grooming Artifact" panel (served at /api/tasks/${ticketId}/artifact?rev=${rev}). ` +
+          `Prior revisions are kept — re-publishing always creates a new revision, never overwrites.`,
+        );
+      } catch (err: any) {
+        return errorResult(`Failed to publish artifact for ${ticketId}: ${err.message}`);
+      }
     },
   );
 
@@ -879,13 +1185,14 @@ export function buildMcpServer(): McpServer {
     },
     async ({ ticketId, implementationLink, completionComment, force }) => {
       const task = tasksCache[ticketId];
-      if (!task) return errorResult(`Ticket ${ticketId} not found`);
+      if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
 
       const readyStatus = configCache.readyForMergeStatus || 'Ready';
       if (task.status !== readyStatus) {
         return errorResult(
           `Cannot finish ${ticketId} — ticket must be in "${readyStatus}" status first (current: "${task.status}"). ` +
-          `Move to "${readyStatus}" with change_status and wait for user confirmation before finishing.`
+          `Move to "${readyStatus}" with change_status and wait for user confirmation before finishing.`,
+          'invalid_state'
         );
       }
 
@@ -901,7 +1208,8 @@ export function buildMcpServer(): McpServer {
             `Cannot finish ${ticketId} — its branch \`${task.branch}\` is shared by ${nonDone.length} sibling ticket(s) that are NOT Done: ` +
             `${nonDone.map((t) => `${t.id} (${t.status})`).join(', ')}. Merging would advance them all to Done as a one-way door. ` +
             `Either finish/close those siblings first, merge via the PR ticket, or re-run finish with force:true if you intend to land the whole shared PR. ` +
-            `(If this is a blocking call, raise it via Require Input — don't leave it only in chat — FLUX-570.)`
+            `(If this is a blocking call, raise it via Require Input — don't leave it only in chat — FLUX-570.)`,
+            'invalid_state'
           );
         }
       }
@@ -917,7 +1225,7 @@ export function buildMcpServer(): McpServer {
           const failEntries = [{ type: 'comment', user: 'Agent', comment: `⚠️ Finish aborted — gh not configured. Merge the PR manually, then finish again.`, date: new Date().toISOString() }];
           await updateTaskWithHistory(ticketId, { entries: failEntries, updatedBy: 'Agent', nextStatus: 'In Progress' });
           broadcastEvent('taskUpdated', { id: ticketId });
-          return errorResult(`Cannot finish ${ticketId} — gh not configured. Ticket moved back to In Progress.`);
+          return errorResult(`Cannot finish ${ticketId} — gh not configured. Ticket moved back to In Progress.`, 'invalid_state');
         }
 
         // Ensure an OPEN PR exists before merging (FLUX-578 + FLUX-741). finish must be
@@ -939,7 +1247,7 @@ export function buildMcpServer(): McpServer {
               extraFields: { swimlane: 'require-input' },
             });
             broadcastEvent('taskUpdated', { id: ticketId });
-            return errorResult(`${msg} Ticket moved to Require Input.`);
+            return errorResult(`${msg} Ticket moved to Require Input.`, 'invalid_state');
           }
           if (plan.action === 'created' && plan.url) finalLink = plan.url;
         } catch (createErr: any) {
@@ -1046,8 +1354,8 @@ export function buildMcpServer(): McpServer {
     },
     async ({ ticketId, baseBranch, worktree }) => {
       const task = tasksCache[ticketId];
-      if (!task) return errorResult(`Ticket ${ticketId} not found`);
-      if (task.branch) return errorResult(`Ticket ${ticketId} already has branch: ${task.branch}`);
+      if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
+      if (task.branch) return errorResult(`Ticket ${ticketId} already has branch: ${task.branch}`, 'invalid_state');
 
       try {
         // FLUX-521: optionally create a dedicated worktree (worktree ⇒ branch).
@@ -1059,7 +1367,10 @@ export function buildMcpServer(): McpServer {
         // FLUX-845: the branch+worktree mechanism is centralized in ensureTicketIsolation; this tool
         // only resolves the agent POLICY (worktree-by-default) and delegates.
         const result = await ensureTicketIsolation(ticketId, { worktree: worktree ?? true, baseBranch });
-        return jsonResult(result);
+        return jsonResult({
+          ...result,
+          nextSteps: `Branch ready. Next: implement on it and commit, then change_status to Ready to open the PR (finish_ticket merges it).`,
+        });
       } catch (err: any) {
         return errorResult(`Failed to create branch: ${err.message}`);
       }
@@ -1074,7 +1385,7 @@ export function buildMcpServer(): McpServer {
     },
     async ({ ticketId }) => {
       const task = tasksCache[ticketId];
-      if (!task) return errorResult(`Ticket ${ticketId} not found`);
+      if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
 
       const name: string | undefined = task.branch;
       if (!name) return jsonResult({ name: null, exists: false, aheadCount: 0, behindCount: 0 });
@@ -1097,10 +1408,10 @@ export function buildMcpServer(): McpServer {
     },
     async ({ ticketId, force }) => {
       const task = tasksCache[ticketId];
-      if (!task) return errorResult(`Ticket ${ticketId} not found`);
+      if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
 
       const name: string | undefined = task.branch;
-      if (!name) return errorResult(`Ticket ${ticketId} has no associated branch`);
+      if (!name) return errorResult(`Ticket ${ticketId} has no associated branch`, 'not_found');
 
       try {
         // FLUX-521: a branch can't be deleted while a worktree holds it checked out —
@@ -1136,8 +1447,8 @@ export function buildMcpServer(): McpServer {
     },
     async ({ parentId, title, status, priority, effort, body, tags, assignee }) => {
       const parent = tasksCache[parentId];
-      if (!parent) return errorResult(`Parent ticket ${parentId} not found`);
-      if (workspaceActivating) return errorResult('Workspace is activating, please retry');
+      if (!parent) return errorResult(`Parent ticket ${parentId} not found`, 'not_found');
+      if (workspaceActivating) return errorResult('Workspace is activating, please retry', 'transient_retry');
 
       try {
         // skipBroadcast: defer the taskCreated event until after the child is
@@ -1169,7 +1480,10 @@ export function buildMcpServer(): McpServer {
         // creation event (FLUX-435).
         broadcastEvent('taskCreated', { id: childId, parentId });
 
-        return jsonResult({ id: childId, parentId, title: childTask.title, status: childTask.status });
+        return jsonResult({
+          id: childId, parentId, title: childTask.title, status: childTask.status,
+          nextSteps: `Created subtask ${childId} under ${parentId}. Next: start_session on ${childId}, or create_subtask again for more children.`,
+        });
       } catch (err: any) {
         return errorResult(err.message || 'Failed to create subtask');
       }
@@ -1195,7 +1509,7 @@ export function buildMcpServer(): McpServer {
           ? `${ENGINE_URL}/api/orchestration/personas?phase=${encodeURIComponent(phase)}`
           : `${ENGINE_URL}/api/orchestration/personas`;
         const res = await fetch(url);
-        if (!res.ok) return errorResult('Failed to fetch agent roster');
+        if (!res.ok) return errorResult('Failed to fetch agent roster', 'channel_unavailable');
         const data = await res.json();
         const list = Array.isArray(data) ? data : data.personas ?? [];
         const summary = list.map((p: any) => ({
@@ -1205,9 +1519,19 @@ export function buildMcpServer(): McpServer {
           role: p.role,
           phases: p.phases,
         }));
+        // AXI #5 definitive empty state (FLUX-878): distinguish "no personas for
+        // this phase" from a roster fetch that returned nothing unexpectedly.
+        if (summary.length === 0) {
+          return jsonResult({
+            agents: [],
+            note: phase
+              ? `No agent personas available for phase=${phase}.`
+              : 'No agent personas are configured.',
+          });
+        }
         return jsonResult(summary);
       } catch (err: any) {
-        return errorResult(`Failed to list agents: ${err.message}`);
+        return errorResult(`Failed to list agents: ${err.message}`, 'channel_unavailable');
       }
     },
   );
@@ -1220,9 +1544,10 @@ export function buildMcpServer(): McpServer {
       personaId: z.string().describe('Agent persona ID to delegate to (from list_available_agents)'),
       task: z.string().describe('Clear description of what the delegate should do. Be specific about files, scope, and expected output format.'),
       effort: z.string().optional().describe('Effort level for the delegate: low, medium, high (default: medium). Use low for quick checks, high for thorough work.'),
+      model: z.string().optional().describe('Optional model override for THIS delegate (e.g. "sonnet", "opus"). Highest precedence among the delegate-model overrides (above the persona default and the configured delegate model). Currently honored only on Claude-framework boards; Gemini/Copilot delegates ignore it and use their configured model. Omit to let the persona/config/status-derived default apply (cheap personas already default to a cheaper tier).'),
       timeout: z.number().optional().describe('Timeout in seconds (default: 300, max: 600). The delegation fails if the agent takes longer.'),
     },
-    async ({ ticketId, personaId, task: delegationTask, effort, timeout }) => {
+    async ({ ticketId, personaId, task: delegationTask, effort, model, timeout }) => {
       try {
         const timeoutMs = timeout ? Math.min(timeout * 1000, 600_000) : 300_000;
         const framework = process.env.EVENT_HORIZON_FRAMEWORK || 'claude';
@@ -1234,13 +1559,16 @@ export function buildMcpServer(): McpServer {
             personaId,
             task: delegationTask,
             effortOverride: effort || '',
+            // FLUX-482: per-call model override (highest precedence). The route resolves
+            // persona.model / config.delegateModel / status-derived fallback when omitted.
+            ...(model ? { model } : {}),
             skipPermissions: true,
             timeout: timeoutMs,
           }),
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
-          return errorResult(`Delegation failed: ${err.error || res.statusText}`);
+          return errorResult(`Delegation failed: ${err.error || res.statusText}`, 'channel_unavailable');
         }
         const result = await res.json();
         if (!result.succeeded) {
@@ -1248,7 +1576,7 @@ export function buildMcpServer(): McpServer {
         }
         return textResult(result.output || '(delegate produced no output)');
       } catch (err: any) {
-        return errorResult(`Delegation error: ${err.message}`);
+        return errorResult(`Delegation error: ${err.message}`, 'channel_unavailable');
       }
     },
   );
@@ -1262,6 +1590,7 @@ export function buildMcpServer(): McpServer {
         personaId: z.string().describe('Agent persona ID'),
         task: z.string().describe('What this specific delegate should do'),
         effort: z.string().optional().describe('Effort level: low, medium, high'),
+        model: z.string().optional().describe('Optional model override for THIS delegate (e.g. "sonnet", "opus"). Highest precedence among the delegate-model overrides (above the persona default and the configured delegate model). Currently honored only on Claude-framework boards; Gemini/Copilot delegates ignore it and use their configured model. Omit to let the persona/config/status-derived default apply.'),
       })).describe('Array of delegation specs to run in parallel'),
       timeout: z.number().optional().describe('Timeout in seconds for ALL delegations (default: 300, max: 600)'),
     },
@@ -1278,6 +1607,9 @@ export function buildMcpServer(): McpServer {
               personaId: d.personaId,
               task: d.task,
               effortOverride: d.effort || '',
+              // FLUX-482: per-call model override (highest precedence); route resolves the
+              // persona/config/status-derived fallback when omitted.
+              ...(d.model ? { model: d.model } : {}),
               skipPermissions: true,
               timeout: timeoutMs,
             }),
@@ -1333,13 +1665,13 @@ export function buildMcpServer(): McpServer {
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
-          return errorResult(`Failed to start session on ${ticketId}: ${err.error || res.statusText}`);
+          return errorResult(`Failed to start session on ${ticketId}: ${err.error || res.statusText}`, 'channel_unavailable');
         }
         const result = await res.json();
         const sid = result.session?.id || 'unknown';
         return textResult(`Started a ${phase || 'phase'} session on ${ticketId} (session ${sid}). It is running in the ticket's own scope — open ${ticketId}'s chat to drive it.`);
       } catch (err: any) {
-        return errorResult(`Failed to start session: ${err.message}`);
+        return errorResult(`Failed to start session: ${err.message}`, 'channel_unavailable');
       }
     },
   );
@@ -1351,10 +1683,10 @@ export function buildMcpServer(): McpServer {
     async () => {
       try {
         const res = await fetch(`${ENGINE_URL}/api/board/state`);
-        if (!res.ok) return errorResult(`Failed to get board state: ${res.statusText}`);
+        if (!res.ok) return errorResult(`Failed to get board state: ${res.statusText}`, 'channel_unavailable');
         return jsonResult(await res.json());
       } catch (err: any) {
-        return errorResult(`Failed to get board state: ${err.message}`);
+        return errorResult(`Failed to get board state: ${err.message}`, 'channel_unavailable');
       }
     },
   );
@@ -1389,12 +1721,12 @@ export function buildMcpServer(): McpServer {
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
-          return errorResult(`Failed to surface board-rebase proposal: ${err.error || res.statusText}`);
+          return errorResult(`Failed to surface board-rebase proposal: ${err.error || res.statusText}`, 'channel_unavailable');
         }
         const result = await res.json();
         return textResult(`Surfaced a board-rebase proposal with ${result.count} item(s) for the user to approve (batch ${result.id}). The proposal is PARKED — nothing has been applied. The user reviews each item and clicks "Apply approved" (or "Dismiss"). Do not call the restructuring verbs directly.`);
       } catch (err: any) {
-        return errorResult(`Board-rebase channel unavailable: ${err.message}`);
+        return errorResult(`Board-rebase channel unavailable: ${err.message}`, 'channel_unavailable');
       }
     },
   );
@@ -1471,14 +1803,14 @@ export function buildMcpServer(): McpServer {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ questions, conversationId: process.env.EH_CONVERSATION_ID || null, conversationToken: process.env.EH_CONVERSATION_TOKEN || null }),
         });
-        if (!res.ok) return errorResult('Ask-question channel error — no answer received. Proceed with your best judgment or ask again.');
+        if (!res.ok) return errorResult('Ask-question channel error — no answer received. Proceed with your best judgment or ask again.', 'channel_unavailable');
         const result = await res.json();
         if (result?.unanswered) {
           return textResult('The user did not answer in time. Proceed using your best judgment, or ask again if the answer is essential.');
         }
         return jsonResult({ answers: result.answers ?? {}, ...(result.notes ? { notes: result.notes } : {}) });
       } catch (err: any) {
-        return errorResult(`Ask-question channel unavailable: ${err.message}. Proceed with your best judgment.`);
+        return errorResult(`Ask-question channel unavailable: ${err.message}. Proceed with your best judgment.`, 'channel_unavailable');
       }
     },
   );
@@ -1519,6 +1851,7 @@ export function buildMcpServer(): McpServer {
       if (!doc || !doc.group) {
         return errorResult(
           `Group doc '${docPath}' not found. Use list_group_docs to see available paths.`,
+          'not_found',
         );
       }
       return jsonResult({ path: doc.path, title: doc.title, body: doc.body, directory: doc.directory });
@@ -1541,6 +1874,7 @@ export function buildMcpServer(): McpServer {
       if (!writer) {
         return errorResult(
           'No group writer is available. This workspace is not a group parent and is not bound to one. Set up a multi-repo group first (see get_project_group).',
+          'invalid_state',
         );
       }
       // Prepend the H1 title so the doc is self-contained.
@@ -1583,12 +1917,14 @@ export function buildMcpServer(): McpServer {
       if (!writer) {
         return errorResult(
           'No group writer is available. This workspace is not a group parent and is not bound to one.',
+          'invalid_state',
         );
       }
       const storeRel = groupDocPathToStoreRelative(docPath);
       if (!storeRel) {
         return errorResult(
           `'${docPath}' is not a valid group doc path. It must start with the group docs prefix (e.g. 'Product/…').`,
+          'validation_failed',
         );
       }
       try {

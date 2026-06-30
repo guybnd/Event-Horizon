@@ -1,3 +1,4 @@
+import { log } from '../log.js';
 import express from 'express';
 import fs from 'fs/promises';
 import path from 'path';
@@ -23,6 +24,7 @@ import { computeContextBudget } from '../context-budget-metrics.js';
 import { probeAllMcpSchemas } from '../mcp-schema-probe.js';
 import { getEffectiveSpawnServers, BOARD_CONVERSATION_ID } from '../agents/claude-code.js';
 import { diffFilesForBranch } from '../diff-aggregator.js';
+import { ARTIFACT_CSP, injectArtifactScripts, isSafeTicketId, parseRevParam, readArtifactRevision } from '../artifacts.js';
 import { selectMembers, sharedNonDoneSiblings, resolveMergedPrTickets } from '../pr-tickets.js';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -246,7 +248,8 @@ router.get('/:id', (req, res) => {
       ? req.query.expand.split(',').map((s) => s.trim()).filter(Boolean)
       : undefined;
     const fullHistory = req.query.fullHistory === 'true';
-    return res.json(serializeTaskForAgent(task, Number.isFinite(historyLimit) && historyLimit > 0 ? historyLimit : undefined, { expand, fullHistory }));
+    const fullBody = req.query.fullBody === 'true';
+    return res.json(serializeTaskForAgent(task, Number.isFinite(historyLimit) && historyLimit > 0 ? historyLimit : undefined, { expand, fullHistory, fullBody }));
   }
   res.json(serializeTaskForApi(task));
 });
@@ -348,7 +351,7 @@ router.post('/:parentId/subtasks', async (req, res) => {
     // Update cache
     tasksCache[parentId] = { ...tasksCache[parentId], subtasks: parentSubtasks, updatedBy: actor };
 
-    console.log(`[subtasks] Created ${childId} as subtask of ${parentId}`);
+    log.info(`[subtasks] Created ${childId} as subtask of ${parentId}`);
     res.json(serializeTaskForApi(childTask));
   } catch (err: any) {
     if (err.message?.startsWith('Schema validation failed')) {
@@ -1360,6 +1363,39 @@ router.get('/:id/diff', async (req, res) => {
     return;
   }
   res.type('text/plain').send(fullDiff);
+});
+
+// ─── Grooming artifact sidecar route (FLUX-873) ─────────────────────────────────
+//
+// Serve a revision of a ticket's rich grooming artifact as a self-contained HTML page. Mirrors the
+// diff route's shape (read a revision-keyed sidecar, default to latest) but adds the security
+// hardening the feature requires: the agent-authored HTML is served with a strict CSP + nosniff so
+// the portal can render it in a `<iframe sandbox="allow-scripts">` (NO allow-same-origin → opaque
+// origin, no access to portal cookies/DOM/storage). `rev` is parsed to a positive integer or
+// 'latest' and the file path is traversal-guarded inside the artifacts root (see artifacts.ts).
+router.get('/:id/artifact', async (req, res) => {
+  const { id } = req.params;
+  const task = tasksCache[id];
+  if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
+  if (!isSafeTicketId(id)) return res.status(400).json({ error: 'Invalid ticket id' });
+
+  const rev = parseRevParam(req.query.rev);
+  if (rev === null) {
+    return res.status(400).json({ error: 'Invalid rev — must be a positive integer or "latest"' });
+  }
+
+  const result = await readArtifactRevision(id, rev, task.artifacts);
+  if (!result) return res.status(404).json({ error: 'No artifact stored for this ticket/revision' });
+
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Content-Security-Policy', ARTIFACT_CSP);
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Artifact-Revision', String(result.rev));
+  // FLUX-874/875 (Tier 2+3): inject the serve-time runtime — the anchor-capture/annotation channel
+  // AND the layout-audit gate — at serve time (stored file stays pristine). Permitted by the CSP's
+  // `script-src 'unsafe-inline'` — no header change needed.
+  res.send(injectArtifactScripts(result.html));
 });
 
 // GET /api/tasks/:id/branch-diff — live changed-file summary for the ticket's branch vs

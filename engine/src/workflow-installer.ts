@@ -1,3 +1,4 @@
+import { log } from './log.js';
 import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -269,13 +270,13 @@ export async function getWorkflowInstallStatus({ sourceRoot, targetDir, framewor
 
 export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framework = 'auto' }: WorkflowInstallerOptions): Promise<WorkflowInstallResult> {
   const resolvedFramework = resolveFramework(targetDir, framework);
-  console.log(`[installer] Resolved framework: ${resolvedFramework}`);
+  log.info(`[installer] Resolved framework: ${resolvedFramework}`);
   const { skillSourcePath, skillSourcePaths, instructionsSourcePath } = getSourcePaths(sourceRoot);
   const skillInstalledPath = skillDestinationFor(targetDir, resolvedFramework);
   const instructionsInstalledPath = instructionsDestinationFor(targetDir, resolvedFramework);
 
-  console.log(`[installer] Skill dest: ${skillInstalledPath}`);
-  console.log(`[installer] Instructions dest: ${instructionsInstalledPath}`);
+  log.info(`[installer] Skill dest: ${skillInstalledPath}`);
+  log.info(`[installer] Instructions dest: ${instructionsInstalledPath}`);
 
   if (!await pathExists(skillSourcePath)) {
     throw new Error(`Skill source file not found: ${skillSourcePath}`);
@@ -283,7 +284,7 @@ export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framewor
 
   if (MODULAR_FRAMEWORKS.includes(resolvedFramework)) {
     // Option B: install one file per skill module
-    console.log(`[installer] Installing modular skill...`);
+    log.info(`[installer] Installing modular skill...`);
     for (const [index, module] of SKILL_MODULES.entries()) {
       const src = skillSourcePaths[index]!;
       const dest = skillModuleDestinationFor(targetDir, resolvedFramework, module);
@@ -292,14 +293,14 @@ export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framewor
     }
   } else {
     // Option A: concatenate all modules wrapped in XML tags
-    console.log(`[installer] Installing concatenated skill...`);
+    log.info(`[installer] Installing concatenated skill...`);
     await fs.mkdir(path.dirname(skillInstalledPath), { recursive: true });
     const concatenated = await buildConcatenatedSkill(skillSourcePaths);
     await fs.writeFile(skillInstalledPath, concatenated, 'utf-8');
   }
 
   if (instructionsInstalledPath) {
-    console.log(`[installer] Patching instructions...`);
+    log.info(`[installer] Patching instructions...`);
     if (!await pathExists(instructionsSourcePath)) {
       throw new Error(`Copilot instructions source file not found: ${instructionsSourcePath}`);
     }
@@ -314,7 +315,7 @@ export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framewor
   // Install MCP config for agent tool discovery
   await installMcpConfig(targetDir, sourceRoot, resolvedFramework);
 
-  console.log(`[installer] Done.`);
+  log.info(`[installer] Done.`);
   return {
     framework: resolvedFramework,
     skillInstalledPath,
@@ -399,7 +400,7 @@ async function installMcpConfig(targetDir: string, sourceRoot: string, framework
   // Merge module MCP servers (phase-independent at install time — phase gating happens at prompt/session time)
   const moduleServers = getModuleMcpServers();
   if (Object.keys(moduleServers).length > 0) {
-    console.log('[installer] Note: module MCP server paths are resolved against the current flux directory. If you later run "Migrate to orphan mode", re-run the installer to refresh module paths in .mcp.json.');
+    log.info('[installer] Note: module MCP server paths are resolved against the current flux directory. If you later run "Migrate to orphan mode", re-run the installer to refresh module paths in .mcp.json.');
   }
   for (const [id, server] of Object.entries(moduleServers)) {
     // Only write a module server when it's ABSENT — never clobber a user-customized entry.
@@ -413,5 +414,5 @@ async function installMcpConfig(targetDir: string, sourceRoot: string, framework
   await fs.mkdir(path.dirname(configPath), { recursive: true });
   await fs.writeFile(configPath, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
 
-  console.log(`[installer] MCP config installed: ${configPath}`);
+  log.info(`[installer] MCP config installed: ${configPath}`);
 }

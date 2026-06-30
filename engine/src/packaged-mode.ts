@@ -1,3 +1,4 @@
+import { log } from './log.js';
 import os from 'os';
 import path from 'path';
 import fs from 'fs/promises';
@@ -84,7 +85,7 @@ export async function ensureSeaAssetsExtracted(): Promise<string> {
   }
 
   if (needsExtract) {
-    console.log(`Extracting embedded assets to ${extractDir} …`);
+    log.info(`Extracting embedded assets to ${extractDir} …`);
     await fs.rm(extractDir, { recursive: true, force: true }); // drop any stale prior extract
     await fs.mkdir(extractDir, { recursive: true });
     for (const key of manifest.keys) {

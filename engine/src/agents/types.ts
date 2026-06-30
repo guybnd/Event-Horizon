@@ -22,12 +22,16 @@ export interface CliCapabilities {
   scatter: boolean;
   toolGating: boolean;
   structuredOutput: boolean;
+  // A.8 (FLUX-900): folded in from the per-adapter PROVIDER_CAPABILITIES tables, which
+  // disagreed with each other. `flag` is the CLI literal (e.g. '--effort') and is only
+  // meaningful when `supported` is true. Each value preserves the adapter's live behavior.
+  effort: { supported: boolean; flag?: string };
 }
 
 export const CLI_CAPABILITIES: Record<CliFramework, CliCapabilities> = {
-  claude: { resume: true, background: true, supervisor: true, scatter: true, toolGating: true, structuredOutput: true },
-  gemini: { resume: true, background: true, supervisor: true, scatter: true, toolGating: true, structuredOutput: true },
-  copilot: { resume: true, background: false, supervisor: false, scatter: true, toolGating: true, structuredOutput: false },
+  claude: { resume: true, background: true, supervisor: true, scatter: true, toolGating: true, structuredOutput: true, effort: { supported: true, flag: '--effort' } },
+  gemini: { resume: true, background: true, supervisor: true, scatter: true, toolGating: true, structuredOutput: true, effort: { supported: false } },
+  copilot: { resume: true, background: false, supervisor: false, scatter: true, toolGating: true, structuredOutput: false, effort: { supported: true, flag: '--effort' } },
 };
 
 export interface AgentProcess {

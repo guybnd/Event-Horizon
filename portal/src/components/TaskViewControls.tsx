@@ -24,7 +24,7 @@ function getPriorityIcon(name: string, config: Config | null) {
   }
 }
 
-function FilterDropdown({
+export function FilterDropdown({
   label,
   displayValue,
   children,
@@ -67,7 +67,7 @@ function FilterDropdown({
   );
 }
 
-function DropdownItem({
+export function DropdownItem({
   selected,
   onClick,
   children,

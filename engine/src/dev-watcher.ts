@@ -1,4 +1,12 @@
+import { log } from './log.js';
 import { spawn, type ChildProcess } from 'child_process';
+// FLUX-917: tree-kill the engine on hot-restart. The engine is spawned with `shell: isWin`, so a raw
+// killProcessTree(child) hits cmd.exe and does NOT propagate to the tsx→node engine grandchild on
+// Windows — the engine's gracefulShutdown (which reaps agent child trees) never runs, orphaning
+// claude.exe/serena/context7 processes on every engine/src change (the leak #163 fixed elsewhere but
+// missed on this path). killProcessTree taskkill /F /T's the whole tree on win32; on POSIX it stays
+// a graceful SIGTERM to the (non-shell) child, so the engine still runs its own handler there.
+import { killProcessTree } from './kill-process-tree.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -22,7 +30,7 @@ function spawnEngine() {
     child = null;
     if (restartPending) {
       restartPending = false;
-      console.log('[dev-watcher] Restarting engine...');
+      log.info('[dev-watcher] Restarting engine...');
       spawnEngine();
     } else if (code !== null && code !== 0) {
       console.error(`[dev-watcher] Engine exited with code ${code}, restarting in 1s...`);
@@ -59,15 +67,15 @@ async function handleFileChange() {
   debounceTimer = setTimeout(async () => {
     const active = await hasActiveSessions();
     if (!active) {
-      console.log('[dev-watcher] No active sessions, restarting immediately.');
+      log.info('[dev-watcher] No active sessions, restarting immediately.');
       restartPending = true;
       if (child) {
-        child.kill('SIGTERM');
+        killProcessTree(child);
       } else {
         spawnEngine();
       }
     } else {
-      console.log('[dev-watcher] Active sessions detected — restart deferred.');
+      log.info('[dev-watcher] Active sessions detected — restart deferred.');
       restartPending = true;
       await notifyRestartPending();
     }
@@ -85,16 +93,16 @@ async function startWatcher() {
   watcher.on('add', () => { void handleFileChange(); });
   watcher.on('unlink', () => { void handleFileChange(); });
 
-  console.log('[dev-watcher] Watching engine/src for changes...');
+  log.info('[dev-watcher] Watching engine/src for changes...');
   spawnEngine();
 }
 
 process.on('SIGINT', () => {
-  if (child) child.kill('SIGTERM');
+  if (child) killProcessTree(child);
   process.exit(0);
 });
 process.on('SIGTERM', () => {
-  if (child) child.kill('SIGTERM');
+  if (child) killProcessTree(child);
   process.exit(0);
 });
 

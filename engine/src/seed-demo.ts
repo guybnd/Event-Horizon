@@ -30,6 +30,7 @@
  *   npx tsx engine/src/seed-demo.ts --out path # custom output dir
  */
 
+import { log } from './log.js';
 import fs from 'fs';
 import path from 'path';
 import matter from 'gray-matter';
@@ -574,7 +575,7 @@ function main() {
     process.exit(1);
   }
 
-  console.log(`[seed-demo] Wrote ${tickets.length} tickets + config.json to ${fluxDir}`);
+  log.info(`[seed-demo] Wrote ${tickets.length} tickets + config.json to ${fluxDir}`);
 }
 
 main();

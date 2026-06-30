@@ -1,3 +1,4 @@
+import { log } from '../log.js';
 import express from 'express';
 import { resolveSkillSourceRoot, workspaceRoot } from '../workspace.js';
 import { getWorkflowInstallStatus, installWorkspaceWorkflow } from '../workflow-installer.js';
@@ -18,9 +19,9 @@ router.get('/status', async (req, res) => {
 router.post('/install', async (req, res) => {
   try {
     const framework = req.body?.framework || 'auto';
-    console.log(`[skill] Installing workflow for framework: ${framework}`);
+    log.info(`[skill] Installing workflow for framework: ${framework}`);
     const result = await installWorkspaceWorkflow({ sourceRoot: resolveSkillSourceRoot(), targetDir: workspaceRoot!, framework });
-    console.log(`[skill] Installation successful:`, result);
+    log.info(`[skill] Installation successful:`, result);
     res.json({ success: true, ...result });
   } catch (error) {
     console.error('[skill] Failed to install skill:', error);

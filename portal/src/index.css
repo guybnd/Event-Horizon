@@ -985,6 +985,39 @@ button:not(:disabled):active {
   box-shadow: 0 0 0 1.5px rgba(148, 163, 184, 0.35);
 }
 
+/* FLUX-898: a new / unacknowledged attention item glows its border until acknowledged (read ≠
+   resolved). Used on needs-you cards + the peek. The companion dot pulses opacity. */
+@keyframes eh-attention-glow {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.45), 0 0 10px 0 rgba(245, 158, 11, 0.2); }
+  50% { box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.85), 0 0 18px 2px rgba(245, 158, 11, 0.42); }
+}
+.eh-attention-glow {
+  animation: eh-attention-glow 1.9s ease-in-out infinite;
+}
+/* FLUX-923: a freshly-mounted inline prompt (ask_user_question picker / require-input banner) pulses
+   its border a few times on arrival, then settles to a quiet ring — so a question raised while the
+   chat is OPEN is noticeable inline (the picker is pinned + always visible; this draws the eye to it).
+   Finite iteration count = the pulse plays once on mount and stops; it does NOT restart on re-render
+   (only a remount — i.e. a new prompt — replays it). Violet to read as "a question", distinct from the
+   amber needs-input/approval glow. */
+@keyframes eh-prompt-arrival {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(139, 92, 246, 0.4), 0 0 10px 0 rgba(139, 92, 246, 0.18); }
+  50% { box-shadow: 0 0 0 1.5px rgba(139, 92, 246, 0.9), 0 0 20px 3px rgba(139, 92, 246, 0.5); }
+}
+.eh-prompt-arrival {
+  border-radius: 0.75rem;
+  /* `forwards` holds the final (100%) keyframe — the quiet violet ring — after the 3 pulses end, so the
+     card "settles to a quiet ring" as documented instead of reverting to no shadow (FLUX-923). */
+  animation: eh-prompt-arrival 1.4s ease-in-out 3 forwards;
+}
+@keyframes eh-attention-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.eh-attention-dot {
+  animation: eh-attention-dot 1.6s ease-in-out infinite;
+}
+
 /* Tiny "thinking" dots on a working tab — an unobtrusive sign progress is ticking, shown in
    place of the old activity text that buried the tab's real label. */
 @keyframes eh-thinking-dot {
@@ -995,6 +1028,24 @@ button:not(:disabled):active {
   animation: eh-thinking-dot 1.4s ease-in-out infinite;
 }
 
+/* FLUX-922: notification panel flourishes. The indeterminate bar sweeps a running session's live
+   card (no fabricated %); the orb halo breathes behind the caught-up empty state. Both are applied
+   only when motion is allowed (JS gates on prefers-reduced-motion) and disabled below as a backstop. */
+@keyframes eh-notif-indeterminate {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(340%); }
+}
+.eh-notif-indeterminate {
+  animation: eh-notif-indeterminate 1.4s ease-in-out infinite;
+}
+@keyframes eh-notif-orb {
+  0%, 100% { opacity: 0.5; transform: scale(1); }
+  50% { opacity: 0.9; transform: scale(1.15); }
+}
+.eh-notif-orb {
+  animation: eh-notif-orb 2.8s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .eh-logo-button,
   .eh-unread-badge,
@@ -1002,9 +1053,18 @@ button:not(:disabled):active {
   .eh-taskcard-needs-input,
   .eh-taskcard-finished,
   .eh-taskcard-error,
-  .eh-thinking-dot {
+  .eh-attention-glow,
+  .eh-attention-dot,
+  .eh-thinking-dot,
+  .eh-notif-indeterminate,
+  .eh-notif-orb,
+  .eh-prompt-arrival {
     animation: none;
   }
+  /* Reduced motion: keep a static amber ring so a new item still reads as "new". */
+  .eh-attention-glow { box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.7); }
+  /* Reduced motion: a static violet ring still flags the freshly-arrived prompt without pulsing. */
+  .eh-prompt-arrival { box-shadow: 0 0 0 1.5px rgba(139, 92, 246, 0.75); }
   /* Static but visible so the indicator still reads as "working". */
   .eh-thinking-dot { opacity: 0.6; }
 }

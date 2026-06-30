@@ -859,7 +859,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // SSE: receive instant activity pushes from the engine instead of polling for them.
   useEffect(() => {
     if (!isConnected) return;
-    const es = new EventSource('/api/events');
+    let es: EventSource | null = null;
+    let disposed = false;
+    // FLUX-910: liveness watchdog. The engine sends a named `ping` event every ~15s; if we stop
+    // seeing ANY traffic for well over that, the stream is a stalled half-open socket (laptop sleep,
+    // NAT idle-reaper) that EventSource will NOT auto-reconnect — it never observed a close, so
+    // readyState stays OPEN forever and every chat/board surface that depends on SSE goes dark.
+    // Force a fresh connection. `lastEventAt` is bumped by the heartbeat (and open); the ping alone
+    // guarantees the liveness signal on an otherwise-idle stream.
+    let lastEventAt = Date.now();
+    const STALE_MS = 40_000; // ~2.6× the 15s server heartbeat
+
     // Fan the events chat surfaces care about out to bus subscribers. Added as separate
     // listeners (EventSource allows many per type) so the built-in handlers stay untouched.
     const forward = (type: string, data: unknown) => {
@@ -867,102 +877,126 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!set) return;
       for (const h of set) { try { h(data); } catch { /* isolate subscriber errors */ } }
     };
-    for (const type of ['activity', 'progress', 'assistantDelta', 'taskUpdated', 'permission-request', 'permission-resolved', 'ask-question', 'ask-question-resolved', 'board-rebase-proposed', 'board-rebase-resolved']) {
-      es.addEventListener(type, (e: MessageEvent) => {
-        try { forward(type, JSON.parse(e.data)); } catch { /* non-JSON payload — skip */ }
+
+    const connect = () => {
+      if (disposed) return;
+      const src = new EventSource('/api/events');
+      es = src;
+      // FLUX-910: heartbeat keeps the watchdog's liveness clock fresh on an otherwise-idle stream.
+      src.addEventListener('ping', () => { lastEventAt = Date.now(); });
+      for (const type of ['activity', 'progress', 'assistantDelta', 'taskUpdated', 'permission-request', 'permission-resolved', 'ask-question', 'ask-question-resolved', 'board-rebase-proposed', 'board-rebase-resolved', 'artifactReady']) {
+        src.addEventListener(type, (e: MessageEvent) => {
+          try { forward(type, JSON.parse(e.data)); } catch { /* non-JSON payload — skip */ }
+        });
+      }
+      // FLUX-846: reconcile on every (re)connect. If the engine restarts or the stream drops, the
+      // incremental terminal `taskUpdated` for a session that ended during the gap can be missed —
+      // leaving its card stuck on 'Working'. Re-fetching the authoritative task list on `open`
+      // re-syncs each card to the engine's current session status (terminal/absent included).
+      src.addEventListener('open', () => {
+        lastEventAt = Date.now();
+        void loadTasks();
       });
-    }
-    // FLUX-846: reconcile on every (re)connect. If the engine restarts or the stream drops, the
-    // incremental terminal `taskUpdated` for a session that ended during the gap can be missed —
-    // leaving its card stuck on 'Working'. Re-fetching the authoritative task list on `open`
-    // re-syncs each card to the engine's current session status (terminal/absent included).
-    es.addEventListener('open', () => {
-      void loadTasks();
-    });
-    es.addEventListener('taskUpdated', () => {
-      void loadTasks();
-      // FLUX-796: resolving a Require Input / Needs Action ticket dismisses its notification
-      // server-side WITHOUT a broadcast (only add/dedup/read-all broadcast). Re-sync the list so
-      // the Electron taskbar badge decrements on resolve and clears at 0. Electron-only so the
-      // browser portal's network behavior is unchanged (the bell already refreshes on interaction).
-      if (getElectronAPI()) refreshNotifications();
-    });
-    // FLUX-753: a deleted ticket re-fetches the list so the card disappears immediately
-    // (the engine now broadcasts taskDeleted on delete + extract-compensation).
-    es.addEventListener('taskDeleted', () => {
-      void loadTasks();
-    });
-    es.addEventListener('activity', (e: MessageEvent) => {
-      const { taskId, activity } = JSON.parse(e.data) as { taskId: string; activity: string | null };
-      // FLUX-626: write to the isolated `liveSessions` slice instead of churning the whole
-      // `tasks` array (which re-rendered the entire board on every activity tick). Cards read
-      // this via `useLiveSession(id)` with a fallback to the polled `cliSession` value.
-      const current = appStore.getState().liveSessions;
-      const prev = current[taskId];
-      appStore.patch({
-        liveSessions: { ...current, [taskId]: { ...prev, currentActivity: activity ?? undefined } },
+      src.addEventListener('taskUpdated', () => {
+        void loadTasks();
+        // FLUX-796: resolving a Require Input / Needs Action ticket dismisses its notification
+        // server-side WITHOUT a broadcast (only add/dedup/read-all broadcast). Re-sync the list so
+        // the Electron taskbar badge decrements on resolve and clears at 0. Electron-only so the
+        // browser portal's network behavior is unchanged (the bell already refreshes on interaction).
+        if (getElectronAPI()) refreshNotifications();
       });
-    });
-    es.addEventListener('progress', (e: MessageEvent) => {
-      const { taskId, sessionId, timestamp, message } = JSON.parse(e.data) as { taskId: string; sessionId: string; timestamp: string; message: string };
-      // FLUX-626: append live progress into the isolated `liveSessions` slice, keyed by
-      // sessionId, instead of rebuilding `task.history` inside the `tasks` array (which
-      // re-rendered the board on every flush). Live progress isn't in the polled payload — the
-      // engine holds it in memory — so consumers merge this slice with the persisted history.
-      const current = appStore.getState().liveSessions;
-      const prev = current[taskId];
-      const prevBySession = prev?.progressBySession ?? {};
-      const prevEntries = prevBySession[sessionId] ?? [];
-      appStore.patch({
-        liveSessions: {
-          ...current,
-          [taskId]: {
-            ...prev,
-            progressBySession: { ...prevBySession, [sessionId]: [...prevEntries, { timestamp, message }] },
+      // FLUX-753: a deleted ticket re-fetches the list so the card disappears immediately
+      // (the engine now broadcasts taskDeleted on delete + extract-compensation).
+      src.addEventListener('taskDeleted', () => {
+        void loadTasks();
+      });
+      src.addEventListener('activity', (e: MessageEvent) => {
+        const { taskId, activity } = JSON.parse(e.data) as { taskId: string; activity: string | null };
+        // FLUX-626: write to the isolated `liveSessions` slice instead of churning the whole
+        // `tasks` array (which re-rendered the entire board on every activity tick). Cards read
+        // this via `useLiveSession(id)` with a fallback to the polled `cliSession` value.
+        const current = appStore.getState().liveSessions;
+        const prev = current[taskId];
+        appStore.patch({
+          liveSessions: { ...current, [taskId]: { ...prev, currentActivity: activity ?? undefined } },
+        });
+      });
+      src.addEventListener('progress', (e: MessageEvent) => {
+        const { taskId, sessionId, timestamp, message } = JSON.parse(e.data) as { taskId: string; sessionId: string; timestamp: string; message: string };
+        // FLUX-626: append live progress into the isolated `liveSessions` slice, keyed by
+        // sessionId, instead of rebuilding `task.history` inside the `tasks` array (which
+        // re-rendered the board on every flush). Live progress isn't in the polled payload — the
+        // engine holds it in memory — so consumers merge this slice with the persisted history.
+        const current = appStore.getState().liveSessions;
+        const prev = current[taskId];
+        const prevBySession = prev?.progressBySession ?? {};
+        const prevEntries = prevBySession[sessionId] ?? [];
+        appStore.patch({
+          liveSessions: {
+            ...current,
+            [taskId]: {
+              ...prev,
+              progressBySession: { ...prevBySession, [sessionId]: [...prevEntries, { timestamp, message }] },
+            },
           },
-        },
+        });
       });
-    });
-    es.addEventListener('notification', (e: MessageEvent) => {
-      const { notification, unreadCount } = JSON.parse(e.data) as { notification: Notification | null; unreadCount: number };
-      // FLUX-796: pop a native OS toast only for genuinely NEW notifications (first time we see the
-      // id), not on the per-ticket-dedup re-broadcasts. A ref (not the stale-in-closure `notifications`
-      // state) is the reliable source of "have I seen this before".
-      if (notification && !seenNotificationIds.current.has(notification.id)) {
-        seenNotificationIds.current.add(notification.id);
-        maybeNotifyNative(notification);
-      }
-      startTransition(() => {
-        if (notification) {
-          setNotifications(prev => {
-            const idx = prev.findIndex(n => n.id === notification.id);
-            if (idx >= 0) {
-              const next = [...prev];
-              next[idx] = notification;
-              return next;
-            }
-            return [notification, ...prev].slice(0, 50);
-          });
-        } else {
-          setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+      src.addEventListener('notification', (e: MessageEvent) => {
+        const { notification, unreadCount } = JSON.parse(e.data) as { notification: Notification | null; unreadCount: number };
+        // FLUX-796: pop a native OS toast only for genuinely NEW notifications (first time we see the
+        // id), not on the per-ticket-dedup re-broadcasts. A ref (not the stale-in-closure `notifications`
+        // state) is the reliable source of "have I seen this before".
+        if (notification && !seenNotificationIds.current.has(notification.id)) {
+          seenNotificationIds.current.add(notification.id);
+          maybeNotifyNative(notification);
         }
-        setNotificationUnreadCount(unreadCount);
+        startTransition(() => {
+          if (notification) {
+            setNotifications(prev => {
+              const idx = prev.findIndex(n => n.id === notification.id);
+              if (idx >= 0) {
+                const next = [...prev];
+                next[idx] = notification;
+                return next;
+              }
+              return [notification, ...prev].slice(0, 50);
+            });
+          } else {
+            setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+          }
+          setNotificationUnreadCount(unreadCount);
+        });
       });
-    });
-    es.addEventListener('restart_pending', () => {
-      setRestartPending(true);
-    });
-    es.addEventListener('auto_restarting', () => {
-      setRestartPending(false);
-    });
-    es.onerror = () => {
-      // When SSE reconnects after an engine restart, clear the pending state
-      if (es.readyState === EventSource.CONNECTING) {
+      src.addEventListener('restart_pending', () => {
+        setRestartPending(true);
+      });
+      src.addEventListener('auto_restarting', () => {
         setRestartPending(false);
-      }
+      });
+      src.onerror = () => {
+        // When SSE reconnects after an engine restart, clear the pending state
+        if (src.readyState === EventSource.CONNECTING) {
+          setRestartPending(false);
+        }
+      };
     };
+
+    connect();
+    // FLUX-910: poll the liveness clock. A stalled-OPEN (or fully CLOSED) stream past the staleness
+    // window is rebuilt from scratch; a CONNECTING socket is left alone so we don't fight EventSource's
+    // own in-flight reconnect.
+    const watchdog = setInterval(() => {
+      if (disposed) return;
+      const rs = es?.readyState;
+      if (Date.now() - lastEventAt > STALE_MS && rs !== EventSource.CONNECTING) {
+        lastEventAt = Date.now();
+        try { es?.close(); } catch { /* ignore */ }
+        connect();
+      }
+    }, 10_000);
+
     refreshNotifications();
-    return () => es.close();
+    return () => { disposed = true; clearInterval(watchdog); try { es?.close(); } catch { /* ignore */ } };
   }, [isConnected, refreshNotifications]);
 
   useEffect(() => {

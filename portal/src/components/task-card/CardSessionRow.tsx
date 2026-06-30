@@ -1,6 +1,8 @@
-import { Bot } from 'lucide-react';
+import { Bot, CheckCircle2, MessageCircleQuestion } from 'lucide-react';
+import type { ComponentType } from 'react';
 import type { Task } from '../../types';
 import type { TaskCardController } from '../../hooks/useTaskCardController';
+import type { CardSessionState } from '../../workflow';
 
 /**
  * Dedicated full-width lane for a single live agent session (FLUX-652). The live progress /
@@ -12,23 +14,90 @@ import type { TaskCardController } from '../../hooks/useTaskCardController';
  *
  * Multi-session / orchestration runs render through CardClusterPanel instead, so the caller gates
  * this on `!clusterGroup`; this row only covers the single-session case.
+ *
+ * FLUX-909: the row no longer reads as a flat emerald "Running" for every active state. The engine's
+ * `waiting-input` is overloaded (blocked-on-user vs clean idle turn-end), so the controller derives
+ * a `sessionState` we branch on here — emerald+pulse running, amber attention "Needs your input",
+ * calm blue "Idle · done for now", faint "Starting…". Reuses the amber convention from
+ * ActiveSessionsPopover / CardClusterPanel so dark mode + the board color language stay consistent.
  */
+
+interface StatePresentation {
+  /** Wrapper classes for the pill (border/bg/text + dark variants). */
+  wrapper: string;
+  /** Class for the trailing detail span (the dimmer same-hue text). */
+  detailClass: string;
+  icon: ComponentType<{ className?: string }>;
+  /** Whether the icon pulses (only the actively-working `running` state). */
+  pulse: boolean;
+}
+
+const PRESENTATION: Record<Exclude<CardSessionState, 'none'>, StatePresentation> = {
+  running: {
+    wrapper:
+      'border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300',
+    detailClass: 'text-emerald-600/90 dark:text-emerald-300/80',
+    icon: Bot,
+    pulse: true,
+  },
+  starting: {
+    wrapper:
+      'border-emerald-200/60 bg-emerald-50/60 text-emerald-600 dark:border-emerald-500/20 dark:bg-emerald-500/5 dark:text-emerald-300/80',
+    detailClass: 'text-emerald-600/80 dark:text-emerald-300/70',
+    icon: Bot,
+    pulse: false,
+  },
+  'needs-input': {
+    wrapper:
+      'border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300',
+    detailClass: 'text-amber-600/90 dark:text-amber-300/80',
+    icon: MessageCircleQuestion,
+    pulse: false,
+  },
+  idle: {
+    wrapper:
+      'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-300',
+    detailClass: 'text-blue-600/90 dark:text-blue-300/80',
+    icon: CheckCircle2,
+    pulse: false,
+  },
+};
+
 export function CardSessionRow({ task, c }: { task: Task; c: TaskCardController }) {
   const label = task.cliSession?.label ?? 'Agent';
-  // Prefer an explicit progress note once it's past the inline delay; otherwise the live tool
-  // activity (Thinking / Running command / …). Both are bounded by the truncate cell below.
+  // `sessionState` is 'none' only when there is no active session and we render purely for a recent
+  // progress note (shouldShowProgress); fall back to the running presentation so that case is
+  // unchanged from before FLUX-909.
+  const state = c.sessionState === 'none' ? 'running' : c.sessionState;
+  const p = PRESENTATION[state];
+  const Icon = p.icon;
+
+  // The trailing detail text per state: the live activity / progress note while running or starting,
+  // and a settled one-liner for the parked states. `needs-input` prefers the session's blockedReason
+  // (the concrete denial/permission text) and falls back to the generic prompt; `idle` is the calm
+  // "nothing pending" line. Both are bounded by the truncate cell below.
   const detail =
-    c.shouldShowProgress && c.latestProgress ? c.latestProgress.message : c.currentActivity ?? 'Running';
+    state === 'needs-input'
+      ? task.cliSession?.blockedReason ?? 'Needs your input'
+      : state === 'idle'
+        ? 'Idle · done for now'
+        : state === 'starting'
+          ? 'Starting…'
+          : c.shouldShowProgress && c.latestProgress
+            ? c.latestProgress.message
+            : c.currentActivity ?? 'Running';
 
   return (
     <div
-      className="bot-assignee-glow mb-2 flex min-w-0 max-w-full items-center gap-1.5 overflow-hidden rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300"
+      // The emerald pulsing glow is a "live / working" signal — keep it only for the running state
+      // so the calm parked states (idle / needs-input / starting) don't read as still-running.
+      className={`${state === 'running' ? 'bot-assignee-glow ' : ''}mb-2 flex min-w-0 max-w-full items-center gap-1.5 overflow-hidden rounded-md border px-2 py-1 text-[11px] ${p.wrapper}`}
       title={`${label}: ${detail}`}
     >
-      <Bot className="h-3 w-3 shrink-0" />
+      <Icon className={`h-3 w-3 shrink-0 ${p.pulse ? 'animate-pulse' : ''}`} />
       <span className="max-w-[40%] shrink-0 truncate font-semibold">{label}</span>
       <span aria-hidden className="shrink-0 opacity-40">·</span>
-      <span className="min-w-0 flex-1 truncate text-emerald-600/90 dark:text-emerald-300/80">{detail}</span>
+      <span className={`min-w-0 flex-1 truncate ${p.detailClass}`}>{detail}</span>
     </div>
   );
 }

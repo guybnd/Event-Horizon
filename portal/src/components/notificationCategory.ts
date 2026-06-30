@@ -1,15 +1,20 @@
 import type { Notification } from '../api';
 
 /**
- * FLUX-726: portal-side categorization of the 4 notification types into two buckets.
+ * FLUX-726: portal-side categorization of the notification types into two buckets.
  *
  *  - **action** — `prompt` (Require Input / Needs-action) + `error` (integration incomplete,
  *    skills outdated, PR failures). These demand a decision or signal a failure.
- *  - **update** — `completion` (ticket done) + `info` (update available). FYI only.
+ *  - **update** — `completion` (ticket done) + `review` (verdict recorded) + `info` (update
+ *    available). FYI only.
  *
- * This is a pure presentation map kept on the client on purpose — with only 4 types it's the
- * smallest surface and avoids adding a server `category` field (and the ticket-schema + reference-
- * doc churn that would bring). The Notification payload/shape is unchanged.
+ * This is a pure presentation map kept on the client on purpose — it's the smallest surface and
+ * avoids adding a server `category` field (and the ticket-schema + reference-doc churn that would
+ * bring). The Notification payload/shape is unchanged.
+ *
+ * FLUX-922: `review` lands in `update` (the verdict is a status outcome, not a blocking ask) — a
+ * `changes-requested` verdict already re-routes the ticket to In Progress, where the resulting
+ * needs-action surfaces drive the follow-up.
  */
 export type NotificationCategory = 'action' | 'update';
 

@@ -1,3 +1,4 @@
+import { log } from './log.js';
 import fs from 'fs/promises';
 import { renameSync, realpathSync } from 'fs';
 import path from 'path';
@@ -75,6 +76,36 @@ export function serializeTaskForApi(task: any) {
 // and are reported via `olderHistoryEntries`.
 const AGENT_HISTORY_LIMIT = 20;
 
+// AXI #3 (content truncation + size hint, FLUX-879) for the ticket `body` in the
+// agent view. The body is load-bearing (the plan / acceptance criteria live there),
+// so the threshold is GENEROUS — normal tickets are never touched; this targets only
+// pathological bodies that would otherwise dominate the get_ticket payload on every
+// read (agent-payload-metrics measures `body` as its own section). ~12k chars ≈ 3k tokens.
+export const AGENT_BODY_LIMIT = 12_000;
+
+/**
+ * Truncate an oversized ticket `body` for the agent view, mirroring the history
+ * truncation idiom: keep the head and append a recoverable size hint with an
+ * opt-in escape hatch (`get_ticket(..., fullBody:true)`). Returns `{}` when the
+ * body should pass through untouched (escape hatch set, not a string, or under the
+ * limit) so the caller's `...task` body is left intact; returns the truncated body
+ * plus `bodyTruncated`/`bodyOmittedChars` signals only when it actually trims. Pure
+ * + exported for unit test (mirrors the `evaluateWorktreeReadyRefusal` idiom).
+ */
+export function truncateBodyForAgent(
+  body: unknown,
+  fullBody?: boolean,
+): { body?: string; bodyTruncated?: true; bodyOmittedChars?: number } {
+  if (fullBody || typeof body !== 'string' || body.length <= AGENT_BODY_LIMIT) return {};
+  const omitted = body.length - AGENT_BODY_LIMIT;
+  const head = body.slice(0, AGENT_BODY_LIMIT);
+  return {
+    body: `${head}\n\n…[${omitted} of ${body.length} body chars omitted to save context — pass fullBody:true to get_ticket, or open the ticket, to see all]`,
+    bodyTruncated: true,
+    bodyOmittedChars: omitted,
+  };
+}
+
 /**
  * Agent-facing serializer for the MCP `get_ticket` tool. Unlike
  * {@link serializeTaskForApi} it digests `agent_session` history entries to
@@ -84,7 +115,7 @@ const AGENT_HISTORY_LIMIT = 20;
  * the portal. Use `get_session_log` semantics (fetch by sessionId) for raw
  * progress when an agent genuinely needs it.
  */
-export function serializeTaskForAgent(task: any, historyLimit?: number, opts: { expand?: string[] | undefined; fullHistory?: boolean | undefined } = {}) {
+export function serializeTaskForAgent(task: any, historyLimit?: number, opts: { expand?: string[] | undefined; fullHistory?: boolean | undefined; fullBody?: boolean | undefined } = {}) {
   const keepRecent = (configCache as any)?.commentDigest?.keepRecent ?? 3;
   const fullHistory = Array.isArray(task.history) ? task.history : [];
   const { history, olderHistoryEntries, collapsedCount } = digestHistoryForAgent(
@@ -104,6 +135,8 @@ export function serializeTaskForAgent(task: any, historyLimit?: number, opts: { 
   const cliSessions = getListSessionSummariesForTask(task.id).map(slimSessionSummaryForAgent);
   return {
     ...task,
+    // AXI #3 body truncation (FLUX-879): override the spread `body` only when oversized.
+    ...truncateBodyForAgent(task.body, opts.fullBody),
     history,
     ...(olderHistoryEntries > 0 ? { olderHistoryEntries } : {}),
     ...(collapsedCount ? { collapsedCount } : {}),
@@ -164,14 +197,14 @@ function recoverSessionEntry(taskId: string, sessionId: string, task: any): any 
   const liveSessionId = cliSessionIdByTaskId.get(taskId);
   const liveSession = liveSessionId ? cliSessionsById.get(liveSessionId) : undefined;
   if (liveSession?.sessionHistoryEntry?.sessionId === sessionId) {
-    console.log(`updateAgentSession: re-injected session ${sessionId} (agent dropped it from file)`);
+    log.info(`updateAgentSession: re-injected session ${sessionId} (agent dropped it from file)`);
     return { ...liveSession.sessionHistoryEntry };
   }
 
   const cachedHistory: any[] = Array.isArray(task.history) ? task.history : [];
   const cachedEntry = cachedHistory.find((e: any) => e?.type === 'agent_session' && e?.sessionId === sessionId);
   if (cachedEntry) {
-    console.log(`updateAgentSession: re-injected session ${sessionId} from cache`);
+    log.info(`updateAgentSession: re-injected session ${sessionId} from cache`);
     return { ...cachedEntry };
   }
 
@@ -440,7 +473,7 @@ export async function createTask(options: CreateTaskOptions): Promise<CreateTask
     const remoteMaxId = await getMaxIdFromRemote(pKey);
     maxId = Math.max(maxId, remoteMaxId);
     if (remoteMaxId > 0) {
-      console.log(`[tasks] Remote max ID for ${pKey}: ${remoteMaxId}, using ${maxId + 1}`);
+      log.info(`[tasks] Remote max ID for ${pKey}: ${remoteMaxId}, using ${maxId + 1}`);
     }
   }
 
@@ -618,7 +651,7 @@ export async function normalizeInlineSubtasks(frontmatter: any, parentPath: stri
 
     try {
       await atomicWriteFile(childPath, childContent);
-      console.log(`[subtasks] Auto-created ${childId} from inline subtask of ${parentId}`);
+      log.info(`[subtasks] Auto-created ${childId} from inline subtask of ${parentId}`);
     } catch (err) {
       console.error(`[subtasks] Failed to create ${childId}:`, err);
     }
@@ -626,7 +659,7 @@ export async function normalizeInlineSubtasks(frontmatter: any, parentPath: stri
     normalizedIds.push(childId);
   }
 
-  console.log(`[subtasks] Normalized ${parentId}: ${subtasks.length} entries → ${normalizedIds.length} string IDs`);
+  log.info(`[subtasks] Normalized ${parentId}: ${subtasks.length} entries → ${normalizedIds.length} string IDs`);
   return normalizedIds;
 }
 
@@ -788,7 +821,7 @@ export async function loadTask(filePath: string) {
     if (initialErrors.length > 0) {
       const repairs = repairTicket(parsed.data, filePath);
       if (repairs.length > 0) {
-        console.log(`[FLUX AUTO-REPAIR] ${filePath}\n  ${repairs.join('\n  ')}`);
+        log.info(`[FLUX AUTO-REPAIR] ${filePath}\n  ${repairs.join('\n  ')}`);
         if (!Array.isArray(parsed.data.history)) parsed.data.history = [];
         parsed.data.history.push({
           type: 'activity',
@@ -850,7 +883,7 @@ export async function loadTask(filePath: string) {
         history.push(...missingEntries);
         history.sort((a: any, b: any) => getHistoryTimestamp(a) - getHistoryTimestamp(b));
         historyReinjected = true;
-        console.log(`[${id}] Re-injected ${missingEntries.length} history entries dropped by agent`);
+        log.info(`[${id}] Re-injected ${missingEntries.length} history entries dropped by agent`);
       }
     }
 
@@ -892,7 +925,7 @@ export async function loadTask(filePath: string) {
       await autoRegisterUnknownTags(normalizedFrontmatter.tags);
     }
 
-    console.log(`Loaded task: ${id}`);
+    log.info(`Loaded task: ${id}`);
   } catch (error) {
     console.error(`Failed to load ${filePath}:`, error);
   }
@@ -925,7 +958,7 @@ export async function loadDoc(filePath: string) {
       _path: filePath,
     };
 
-    console.log(`Loaded doc: ${docPath}`);
+    log.info(`Loaded doc: ${docPath}`);
   } catch (error) {
     console.error(`Failed to load doc ${filePath}:`, error);
   }
@@ -1054,7 +1087,7 @@ export async function reconcileOrphanedSessions() {
         sessionEntry.endedAt = now;
       });
       recoveredCount++;
-      console.log(`Recovered orphaned session ${session.sessionId} in task ${task.id}`);
+      log.info(`Recovered orphaned session ${session.sessionId} in task ${task.id}`);
     }
 
     // Also check for old-style activity-based sessions (legacy compatibility)
@@ -1078,7 +1111,7 @@ export async function reconcileOrphanedSessions() {
   }
 
   if (recoveredCount > 0) {
-    console.log(`Session recovery: closed ${recoveredCount} orphaned session(s)`);
+    log.info(`Session recovery: closed ${recoveredCount} orphaned session(s)`);
   }
 }
 
@@ -1110,7 +1143,7 @@ export async function loadPricingDoc() {
     const rows = parsePricingDoc(parsed.content);
     if (rows.length > 0) {
       MODEL_PRICING = rows;
-      console.log(`Loaded ${rows.length} pricing entries from model-pricing.md`);
+      log.info(`Loaded ${rows.length} pricing entries from model-pricing.md`);
     }
   } catch {
     // File not present — keep whatever is already loaded
@@ -1211,11 +1244,11 @@ async function migrateRequireInputToSwimlane() {
       extraFields: { swimlane: 'require-input' },
       entries: [migrationEntry],
     });
-    console.log(`[migration] ${task.id}: status "${requireInputStatus}" → "${previousStatus}" + swimlane:require-input`);
+    log.info(`[migration] ${task.id}: status "${requireInputStatus}" → "${previousStatus}" + swimlane:require-input`);
   }
 
   if (tasksToMigrate.length > 0) {
-    console.log(`[migration] Migrated ${tasksToMigrate.length} ticket(s) from "Require Input" status to swimlane.`);
+    log.info(`[migration] Migrated ${tasksToMigrate.length} ticket(s) from "Require Input" status to swimlane.`);
   }
 }
 
@@ -1267,7 +1300,7 @@ export async function startWatchers() {
         const taskEntry = Object.entries(tasksCache).find(([, task]) => task._path === filePath);
         const id = taskEntry?.[0] || path.basename(filePath, '.md');
         delete tasksCache[id];
-        console.log(`Removed task: ${id}`);
+        log.info(`Removed task: ${id}`);
       }
     })
     // FLUX-784: without this, an unhandled chokidar 'error' (e.g. inotify ENOSPC/EMFILE, or a
@@ -1290,7 +1323,7 @@ export async function startWatchers() {
     .on('change', (filePath) => { if (isDocFile(filePath)) { void loadDoc(filePath); if (isPricingFile(filePath)) void loadPricingDoc(); } })
     .on('unlink', (filePath) => {
       const docPath = getDocPathFromFile(filePath);
-      if (docPath) { delete docsCache[docPath]; console.log(`Removed doc: ${docPath}`); }
+      if (docPath) { delete docsCache[docPath]; log.info(`Removed doc: ${docPath}`); }
     })
     .on('error', (err) => console.error('[watcher:docs] file-sync paused:', err)); // FLUX-784
 }
@@ -1318,7 +1351,7 @@ export async function startGroupDocsWatcher() {
     .on('change', reload)
     .on('unlink', (filePath) => {
       const docPath = groupDocPathFromFile(storeDir, filePath);
-      if (docPath) { delete docsCache[docPath]; console.log(`Removed group doc: ${docPath}`); }
+      if (docPath) { delete docsCache[docPath]; log.info(`Removed group doc: ${docPath}`); }
     })
     .on('error', (err) => console.error('[watcher:group-docs] file-sync paused:', err)); // FLUX-784
 }
@@ -1340,7 +1373,7 @@ export async function activateWorkspace(newRoot: string): Promise<string> {
     docsCache = {};
     parseErrors = {};
     clearNotifications();
-    console.log(`Workspace: ${newRoot}`);
+    log.info(`Workspace: ${newRoot}`);
     await bootstrapNewWorkspace();
     await attachWorktreeIfPresent(newRoot);
     // Crash recovery: prune git's records of any task worktrees whose dirs were

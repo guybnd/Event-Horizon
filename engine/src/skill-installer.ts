@@ -1,3 +1,4 @@
+import { log } from './log.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getWorkflowInstallStatus, installWorkspaceWorkflow } from './workflow-installer.js';
@@ -38,14 +39,14 @@ async function main() {
 
   if (dryRun) {
     const status = await getWorkflowInstallStatus({ sourceRoot: repoRoot, targetDir, framework });
-    console.log(JSON.stringify(status, null, 2));
+    log.info(JSON.stringify(status, null, 2));
     return;
   }
 
   const result = await installWorkspaceWorkflow({ sourceRoot: repoRoot, targetDir, framework });
-  console.log(`Installed Event Horizon workflow to ${result.skillInstalledPath}`);
+  log.info(`Installed Event Horizon workflow to ${result.skillInstalledPath}`);
   if (result.instructionsInstalledPath) {
-    console.log(`Patched Copilot instructions at ${result.instructionsInstalledPath}`);
+    log.info(`Patched Copilot instructions at ${result.instructionsInstalledPath}`);
   }
 }
 

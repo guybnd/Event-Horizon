@@ -2,6 +2,51 @@
 
 Notable changes are summarized here; detailed per-version notes for the dev line live in [`.docs/release-notes/`](.docs/release-notes/).
 
+## [1.1.0] — artifacts, redesigned cockpit, rock-solid sessions
+
+The first feature release on the 1.0 line. Full notes: [`.docs/release-notes/v1.1.0.md`](.docs/release-notes/v1.1.0.md).
+
+### Grooming artifacts
+
+- **Rich, annotatable grooming artifacts** — agents publish a self-contained HTML artifact (mockup, Mermaid diagram, SVG wireframe, clickable Tailwind prototype) rendered in a sandboxed, opaque-origin iframe (#173).
+- **Annotate any region** — select text or right-click non-text controls; batch notes round-trip to the agent, which revises and republishes; a revision picker keeps history (#175, #185).
+- **Layout-audit gate** masks the artifact until it passes overflow/off-canvas/clipped/overlap checks (#178).
+- Artifacts render **inline in chat on publish** (no reload), with a "publishing…" indicator during the tool-input stream (#188, #192, #195).
+
+### Notifications & pending surface
+
+- **Redesigned notification panel**, unified with the require-input/pending surface into one cockpit (#196, #189).
+- Activity log re-homed into a header panel next to the pending surface (#174).
+- **Parked agent sessions** are visually differentiated from active ones (#190, #191).
+
+### Human-in-the-loop
+
+- Open-chat questions **draw inline** in the conversation, not just a separate window (#197).
+- Require-Input / awaiting-input prompts render markdown and are scrollable/resizable with expand-collapse (#183, #184, #187).
+- Prompts **survive an engine restart** (per-process binding secret); board-submitted answers appear in the chat transcript (#186, #165).
+
+### Realtime & session reliability
+
+- Orchestrator chat rides a **keepalived SSE stream** — no more silent stalls of messages, "working" state, prompts, or stop; **Stop sticks**; optimistic-bubble/working-window/double-dispatch fixes; dispatch-row flood fix; hot-restart hardening (#193).
+- Chat-window geometry persists across minimize/reopen and reload (#194).
+
+### Board activity & dispatch
+
+- Durable, filterable **Board Activity / History view** of dispatch events (#170).
+- **DispatchChip polish** — lifecycle color-coding, live pulse, duration, timestamps, hierarchy (#167); enriched rows with phase + title + prominent timestamp (#166).
+
+### Agent experience (MCP)
+
+- **Compact JSON** tool results (#171); contextual next-step hints (#180); definitive empty states (#179); machine-readable error codes (#172, #177).
+- Oversized ticket bodies truncated in the agent view with a `fullBody` escape hatch (#181).
+- `list_tickets` active-by-default + limit + search (#199); `get_board_config` strips Tailwind color classes (#198); `nextStepForStatus` case-insensitive + config-driven (#182).
+
+### Engine & infrastructure
+
+- **Stderr-only structured logger** + `console.log` sweep for MCP stdout safety (#200).
+- Shared MCP servers **keyed per worktree** (one Serena per worktree) (#202).
+- `copilot`/`gemini` `stop()` tree-kill parity (#164); cheaper model for delegated subagents (#201); shared adapter helpers extracted + blocking-HITL routing fix (#204); public-repo cleanup (#168).
+
 ## [1.0.1] — 1.0, hardened
 
 A reliability batch on top of the 1.0 release (still the major release — revamped, not superseded). Full notes: [`.docs/release-notes/v1.0.1.md`](.docs/release-notes/v1.0.1.md).

@@ -4,7 +4,7 @@ import { workspaceRoot, resolveSkillSourceRoot } from './workspace.js';
 import { broadcastEvent } from './events.js';
 import { configCache } from './config.js';
 
-export type NotificationType = 'error' | 'prompt' | 'completion' | 'info';
+export type NotificationType = 'error' | 'prompt' | 'completion' | 'review' | 'info';
 
 export interface NotificationAction {
   label: string;
@@ -181,6 +181,43 @@ export function generateOrchestratorReplyNotification(): void {
     message,
     ticketId,
     actions: [{ label: 'Open chat', actionId: 'view' }],
+  });
+}
+
+/**
+ * FLUX-922 — a code review concluded with a recorded verdict (the reviewer handoff passes
+ * `reviewState` to `change_status`: `approved` → Ready, `changes-requested` → In Progress). Emits a
+ * first-class `review` notification so the verdict surfaces in the Updates panel, not only on the
+ * card. Title-scoped dedup per ticket (like the prompt notification) so a re-review refreshes the
+ * existing entry instead of stacking. The portal renders the verdict chip from the linked task's
+ * `reviewState` (portal-derived, no payload field) — the title carries the verdict for text-only
+ * surfaces (Electron toast).
+ */
+export function generateReviewNotification(ticketId: string, ticketTitle: string, verdict: 'approved' | 'changes-requested'): void {
+  const approved = verdict === 'approved';
+  const title = `Review ${approved ? 'approved' : 'changes requested'} — ${ticketTitle || ticketId}`;
+  const message = approved
+    ? 'The reviewer approved this ticket — ready to merge.'
+    : 'The reviewer requested changes — open the review to see what to fix.';
+
+  const existing = notifications.find(
+    n => n.type === 'review' && n.ticketId === ticketId && !n.dismissed
+  );
+  if (existing) {
+    existing.title = title;
+    existing.message = message;
+    existing.read = false;
+    existing.createdAt = new Date().toISOString();
+    broadcastEvent('notification', { notification: existing, unreadCount: getUnreadCount() });
+    return;
+  }
+
+  addNotification({
+    type: 'review',
+    title,
+    message,
+    ticketId,
+    actions: [{ label: 'View review', actionId: 'view' }],
   });
 }
 

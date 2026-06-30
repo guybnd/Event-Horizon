@@ -1,3 +1,4 @@
+import { log } from './log.js';
 import path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -74,10 +75,10 @@ export function triggerSync(): void {
 export function triggerTestError(): void {
   updateStatus({
     state: 'error',
-    error: 'This is a test error for UI development. The actual sync error was: "Command failed: git -C C:\\GitHub\\EventHorizon\\.flux-store commit -m flux: sync\\nfatal: Unable to create index.lock: File exists.\\n\\nAnother git process seems to be running in this repository, or the lock file may be stale."',
+    error: 'This is a test error for UI development. The actual sync error was: "Command failed: git -C <workspace>/.flux-store commit -m flux: sync\\nfatal: Unable to create index.lock: File exists.\\n\\nAnother git process seems to be running in this repository, or the lock file may be stale."',
     errorType: 'unknown'
   });
-  console.log('[sync-watcher] Test error triggered for UI testing');
+  log.info('[sync-watcher] Test error triggered for UI testing');
 }
 
 export async function allocateNewTicketId(storeDir: string, projectKey: string): Promise<string> {
@@ -109,7 +110,7 @@ async function detectMergeConflicts(storeDir: string): Promise<ConflictInfo[]> {
         const { stdout: remoteContent } = await execFileAsync('git', ['-C', storeDir, 'show', `MERGE_HEAD:${file}`]);
         conflicts.push({ ticketId, localContent, remoteContent });
       } catch {
-        console.log(`[sync-watcher] Skipping ${file} - error reading conflict content`);
+        log.info(`[sync-watcher] Skipping ${file} - error reading conflict content`);
       }
     }
   } catch (err: any) {
@@ -134,7 +135,7 @@ export async function resolveConflicts(
     switch (resolution.strategy) {
       case 'use-remote':
         await fs.writeFile(filePath, conflict.remoteContent, 'utf-8');
-        console.log(`[sync-watcher] Resolved ${resolution.ticketId}: used remote version`);
+        log.info(`[sync-watcher] Resolved ${resolution.ticketId}: used remote version`);
         break;
 
       case 'rename-local': {
@@ -145,13 +146,13 @@ export async function resolveConflicts(
         parsed.data.id = newId;
         const renamedContent = matter.stringify(parsed.content, parsed.data);
         await fs.writeFile(path.join(storeDir, `${newId}.md`), renamedContent, 'utf-8');
-        console.log(`[sync-watcher] Resolved ${resolution.ticketId}: renamed local to ${newId}, accepted remote`);
+        log.info(`[sync-watcher] Resolved ${resolution.ticketId}: renamed local to ${newId}, accepted remote`);
         break;
       }
 
       case 'manual':
         await fs.writeFile(filePath, resolution.newContent!, 'utf-8');
-        console.log(`[sync-watcher] Resolved ${resolution.ticketId}: used manual merge`);
+        log.info(`[sync-watcher] Resolved ${resolution.ticketId}: used manual merge`);
         break;
     }
   }
@@ -168,7 +169,7 @@ export async function resolveConflicts(
     } catch (addErr: any) {
       const msg = addErr.message || String(addErr);
       if (msg.includes('index.lock') && addAttempts < 2) {
-        console.log(`[sync-watcher] Git lock detected on add, retrying in 1s (attempt ${addAttempts + 1}/3)...`);
+        log.info(`[sync-watcher] Git lock detected on add, retrying in 1s (attempt ${addAttempts + 1}/3)...`);
         await new Promise(r => setTimeout(r, 1000));
         addAttempts++;
       } else {
@@ -178,12 +179,12 @@ export async function resolveConflicts(
   }
 
   await execFileAsync('git', ['-C', storeDir, 'commit', '-m', 'flux: sync (resolved conflicts)']);
-  console.log('[sync-watcher] Committed merge with resolved conflicts');
+  log.info('[sync-watcher] Committed merge with resolved conflicts');
 
   try {
     await execFileAsync('git', ['-C', storeDir, 'push', 'origin', 'flux-data']);
     updateStatus({ state: 'synced', lastSyncTime: new Date().toISOString() });
-    console.log('[sync-watcher] Pushed resolved conflicts to remote');
+    log.info('[sync-watcher] Pushed resolved conflicts to remote');
   } catch (pushErr: any) {
     const errorMsg = pushErr.message || String(pushErr);
     updateStatus({ state: 'error', error: errorMsg, errorType: 'unknown' });
@@ -269,7 +270,7 @@ export async function runSync(storeDir: string, onFail?: () => void): Promise<vo
       } catch (addErr: any) {
         const msg = addErr.message || String(addErr);
         if (msg.includes('index.lock') && addAttempts < 2) {
-          console.log(`[sync-watcher] Git lock detected on add, retrying in 1s (attempt ${addAttempts + 1}/3)...`);
+          log.info(`[sync-watcher] Git lock detected on add, retrying in 1s (attempt ${addAttempts + 1}/3)...`);
           await new Promise(r => setTimeout(r, 1000));
           addAttempts++;
         } else {
@@ -284,12 +285,12 @@ export async function runSync(storeDir: string, onFail?: () => void): Promise<vo
       while (commitAttempts < 3) {
         try {
           await execFileAsync('git', ['-C', storeDir, 'commit', '-m', 'flux: sync']);
-          console.log('[sync-watcher] Committed local changes');
+          log.info('[sync-watcher] Committed local changes');
           break;
         } catch (commitErr: any) {
           const msg = commitErr.message || String(commitErr);
           if (msg.includes('index.lock') && commitAttempts < 2) {
-            console.log(`[sync-watcher] Git lock detected on commit, retrying in 1s (attempt ${commitAttempts + 1}/3)...`);
+            log.info(`[sync-watcher] Git lock detected on commit, retrying in 1s (attempt ${commitAttempts + 1}/3)...`);
             await new Promise(r => setTimeout(r, 1000));
             commitAttempts++;
           } else {
@@ -308,7 +309,7 @@ export async function runSync(storeDir: string, onFail?: () => void): Promise<vo
         errorMsg.includes('Could not resolve host') || errorMsg.includes('network') ? 'network' :
         errorMsg.includes('Authentication failed') || errorMsg.includes('Permission denied') ? 'auth' :
         'unknown';
-      console.log(`[sync-watcher] fetch failed (${errorType}): ${errorMsg}`);
+      log.info(`[sync-watcher] fetch failed (${errorType}): ${errorMsg}`);
       // Push what we have locally, remote will catch up later
       try {
         await execFileAsync('git', ['-C', storeDir, 'push', 'origin', 'flux-data']);
@@ -330,18 +331,18 @@ export async function runSync(storeDir: string, onFail?: () => void): Promise<vo
       if (mergeBase.trim() === localCommit.trim()) {
         // Only remote has new commits — fast-forward
         await execFileAsync('git', ['-C', storeDir, 'merge', '--ff-only', 'origin/flux-data']);
-        console.log('[sync-watcher] Fast-forwarded to remote');
+        log.info('[sync-watcher] Fast-forwarded to remote');
       } else if (mergeBase.trim() !== remoteCommit.trim()) {
         // Both sides have commits — attempt auto-merge
-        console.log('[sync-watcher] Diverged branches, attempting auto-merge...');
+        log.info('[sync-watcher] Diverged branches, attempting auto-merge...');
         try {
           await execFileAsync('git', ['-C', storeDir, 'merge', '--no-edit', '-m', 'flux: sync (merge)', 'origin/flux-data']);
-          console.log('[sync-watcher] Auto-merged remote changes');
+          log.info('[sync-watcher] Auto-merged remote changes');
         } catch {
           // Merge failed — collect git-marked conflict files
           const conflicts = await detectMergeConflicts(storeDir);
           if (conflicts.length > 0) {
-            console.log(`[sync-watcher] Merge conflict in ${conflicts.length} ticket(s). Waiting for user resolution.`);
+            log.info(`[sync-watcher] Merge conflict in ${conflicts.length} ticket(s). Waiting for user resolution.`);
             pendingConflicts = conflicts;
             updateStatus({ state: 'conflict', conflicts });
             return;
@@ -358,7 +359,7 @@ export async function runSync(storeDir: string, onFail?: () => void): Promise<vo
     try {
       // Push from the worktree directory
       await execFileAsync('git', ['-C', storeDir, 'push', 'origin', 'flux-data']);
-      console.log('[sync-watcher] Pushed flux-data to remote');
+      log.info('[sync-watcher] Pushed flux-data to remote');
       updateStatus({ state: 'synced', lastSyncTime: new Date().toISOString() });
     } catch (pushErr: any) {
       const errorMsg = pushErr.message || String(pushErr);
@@ -366,7 +367,7 @@ export async function runSync(storeDir: string, onFail?: () => void): Promise<vo
         errorMsg.includes('Could not resolve host') || errorMsg.includes('network') ? 'network' :
         errorMsg.includes('Authentication failed') || errorMsg.includes('Permission denied') ? 'auth' :
         'unknown';
-      console.log(`[sync-watcher] push failed (${errorType}): ${errorMsg}`);
+      log.info(`[sync-watcher] push failed (${errorType}): ${errorMsg}`);
       updateStatus({ state: 'error', error: errorMsg, errorType });
       onFail?.();
     }
@@ -435,7 +436,8 @@ export function startSyncWatcher(): void {
       // FLUX-855: open-prompts.json (HITL store) is gitignored (STORE_LOCAL_IGNORES) and rewritten on
       // every prompt park/settle; watching it just wakes the sync cycle for a file that is never
       // committed. Exclude it so the HITL hot path doesn't churn the flux-data sync watcher.
-      return base.endsWith('.tmp') || base.startsWith('.git') || base === '.git' || base === 'open-prompts.json';
+      // FLUX-894: session-binding-secret is a gitignored local-only credential; never sync it.
+      return base.endsWith('.tmp') || base.startsWith('.git') || base === '.git' || base === 'open-prompts.json' || base === 'session-binding-secret';
     },
     ignoreInitial: true,
     persistent: true,
@@ -450,7 +452,7 @@ export function startSyncWatcher(): void {
 
   const debounceMs = configCache.syncSettings?.debounceMs ?? 30000;
   const maxWaitMs = configCache.syncSettings?.maxWaitMs ?? 300000;
-  console.log(`[sync-watcher] Watching .flux-store/ for changes (${debounceMs / 1000}s debounce, ${maxWaitMs / 1000}s max-wait)`);
+  log.info(`[sync-watcher] Watching .flux-store/ for changes (${debounceMs / 1000}s debounce, ${maxWaitMs / 1000}s max-wait)`);
 }
 
 export function stopSyncWatcher(): void {

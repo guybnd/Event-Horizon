@@ -21,6 +21,7 @@
  *   --title <value>      Title for the new subtask (used with --add-subtask)
  */
 
+import { log } from './log.js';
 import fs from 'fs';
 import path from 'path';
 import matter from 'gray-matter';
@@ -166,7 +167,7 @@ function createSubtask(parentId: string, workspace: string, options: {
   const parentContent = matter.stringify(parentParsed.content, parentParsed.data);
   fs.writeFileSync(parentPath, parentContent, 'utf-8');
 
-  console.log(`Created subtask ${childId} under ${parentId}`);
+  log.info(`Created subtask ${childId} under ${parentId}`);
   process.exit(0);
 }
 
@@ -281,7 +282,7 @@ if (opts.body !== undefined) {
 try {
   const output = matter.stringify(nextBody, fm);
   fs.writeFileSync(ticketPath, output, 'utf-8');
-  console.log(`Updated ${opts.id}`);
+  log.info(`Updated ${opts.id}`);
 } catch (err) {
   console.error(`patch-ticket: failed to write ${ticketPath}:`, err);
   process.exit(1);

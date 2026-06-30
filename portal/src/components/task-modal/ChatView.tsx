@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Send, Loader2, Square, Wrench, ChevronDown, ChevronRight, Check, Clock, ArrowDown, Cpu, Gauge, Shield, Paperclip, X, RefreshCw, Play, Radio } from 'lucide-react';
+import { Send, Loader2, Square, Wrench, ChevronDown, ChevronRight, Check, Clock, ArrowDown, Cpu, Gauge, Shield, Paperclip, X, RefreshCw, Play, CheckCircle2, XCircle, Ban, PauseCircle, Search, Code2, Eye, Flag, HelpCircle } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import { useReducedMotion } from 'framer-motion';
 import { fetchDiffFile, openWorkspaceEditor, type TranscriptMessage, type ChatAttachment } from '../../api';
 import type { QueuedMessage, ChatSendOptions } from '../../hooks/useChatSession';
 import { DELEGATION_TOOLS } from '../../orchestration';
@@ -14,6 +15,7 @@ import { FindBar } from './FindBar';
 import type { Task } from '../../types';
 import type { ComposerSelections } from '../DockProvider';
 import { formatRelative } from '../../lib/relativeTime';
+import { DISPATCH_STAGE_LABEL, DISPATCH_PHASE_LABEL } from '../../lib/dispatch';
 
 /** FLUX-643: a one-tap reply chip rendered above the composer. Selecting it sends
  *  `value` as the chat reply. `tone: 'danger'` paints it red (e.g. a "Skip" option);
@@ -113,6 +115,15 @@ export interface ChatViewProps {
    *  transcript and the composer. Caller builds it (`<ChatQuestionPicker conversationId>`) so
    *  ChatView stays transport-free. */
   questionPicker?: ReactNode;
+  /** FLUX-923: a parked `ask_user_question` awaiting an answer in THIS chat. When set, the composer
+   *  enters "answer mode" — Enter/Send settles the question via `onAnswerQuestion` (free-text answer)
+   *  EVEN THOUGH the session is still `working` (the turn is parked on the question, so a normal send
+   *  would only queue), and the textarea is labeled with the question. Caller passes it only for a
+   *  single-question prompt; the picker's option chips handle multi-question. Cleared on resolve. */
+  answerPrompt?: { id: string; label: string } | null;
+  /** FLUX-923: settle the parked `answerPrompt` with the composer's free-text. Required when
+   *  `answerPrompt` is set; the composer is otherwise a normal chat composer. */
+  onAnswerQuestion?: (text: string) => void | Promise<void>;
   /** FLUX-752: a compact, display-only "Awaiting your input" banner shown just above the
    *  questionPicker/working strip when the bound ticket sits in Require Input (status or
    *  swimlane). Caller builds it (`<ChatRequireInputBanner task>`) and decides when to pass it
@@ -178,6 +189,12 @@ export interface ChatViewProps {
    *  Caller builds it (`ChatWindow` computes the cold state and wires Resume/Start-fresh) so ChatView
    *  stays transport-free; omit it (the normal case) and only the composer's Send shows. */
   coldResumeChoice?: ReactNode;
+  /** FLUX-887: an inline grooming-artifact card rendered at the tail of the transcript (just below the
+   *  stream) when the ticket has a published artifact, so the agent's "here's the rendered thing"
+   *  surfaces in the chat the user reasons against — not only the sideview. Caller builds it
+   *  (`<ChatArtifactCard task onOpen=… />`) so ChatView stays transport-free; omit it (no artifact) and
+   *  nothing renders. */
+  artifactCard?: ReactNode;
 }
 
 /**
@@ -209,6 +226,8 @@ export function ChatView({
   quickReplies,
   linkifyTickets = false,
   questionPicker,
+  answerPrompt,
+  onAnswerQuestion,
   awaitingInputBanner,
   draft,
   onDraftChange,
@@ -226,6 +245,7 @@ export function ChatView({
   presenceRail,
   orchestrationBlock,
   coldResumeChoice,
+  artifactCard,
 }: ChatViewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
@@ -602,7 +622,10 @@ export function ChatView({
               text={m.text}
               ts={m.ts}
               sourceTask={m.sourceTask}
+              title={m.sourceTask ? tickets?.find((t) => t.id === m.sourceTask)?.title : undefined}
+              phase={m.phase}
               lifecycle={m.lifecycle}
+              startedAt={m.startedAt}
               linkifyTickets={linkifyTickets}
             />
           );
@@ -783,6 +806,10 @@ export function ChatView({
               {orchestrationBlock}
             </>
           )}
+          {/* FLUX-887: inline grooming-artifact card — pinned at the tail of the stream so a freshly
+              published artifact reads as "the latest thing the agent produced", in the chat the user
+              reasons against. Caller-built (`<ChatArtifactCard>`); absent when no artifact exists. */}
+          {artifactCard}
           {/* FLUX-691: the live streaming node — the current turn's assistant text rendered
               token-by-token. It sits OUTSIDE the memoized `rows` (so each delta only re-renders
               this node, never the markdown-heavy transcript) and is plain text, not markdown (no
@@ -900,7 +927,7 @@ export function ChatView({
 
       {/* Composer lives in its own component so its per-keystroke input state never
           re-renders the transcript above it. */}
-      <Composer busy={busy} working={!!working} onSend={onSend} onEnqueue={onEnqueue} onUploadImage={onUploadImage} draft={draft} onDraftChange={onDraftChange} selections={selections} onSelectionsChange={onSelectionsChange} tickets={tickets} />
+      <Composer busy={busy} working={!!working} onSend={onSend} onEnqueue={onEnqueue} onUploadImage={onUploadImage} draft={draft} onDraftChange={onDraftChange} selections={selections} onSelectionsChange={onSelectionsChange} tickets={tickets} answerPrompt={answerPrompt} onAnswerQuestion={onAnswerQuestion} />
     </div>
   );
 }
@@ -1127,21 +1154,97 @@ function PermissionChip({ text, ts }: { text: string; ts?: string }) {
   );
 }
 
+// FLUX-867: DISPATCH_STAGE_LABEL (lifecycle → friendly) and DISPATCH_PHASE_LABEL (phase → short)
+// moved to ../../lib/dispatch so the board chip here and the Activity screen share one source of
+// truth and the friendly labels can't drift. Imported at the top of this file.
+
 /**
- * FLUX-849: short, friendly stage labels for a dispatched session's board chip — mirrors the
- * engine's `DISPATCH_LIFECYCLE_LABEL`. The raw enum (`waiting-input` / `cancelled`) is the wrong
- * thing to show a board-watcher; this maps it to `needs input` / `stopped`. Kept client-side (rather
- * than rendering the engine's `text`) because the `working` and `started` rows ship a full message
- * in `text`, not a one-word stage — only these short markers want a label derived from the stage.
+ * FLUX-869: per-lifecycle accent for a dispatched-session chip — a leading status dot/glyph, a 2px
+ * left rail, and the colored lifecycle word, on an otherwise-neutral body so the accent does the
+ * talking. One accent per state, holding in light + dark (WCAG AA): working = primary (live, the dot
+ * pulses), completed = emerald, failed = rose, waiting-input = amber (loudest, +tinted body — it's
+ * the row that needs a human), cancelled = muted zinc, started = lighter primary. Terminal states
+ * carry a static glyph (no motion).
  */
-const DISPATCH_STAGE_LABEL: Record<string, string> = {
-  started: 'started',
-  working: 'working',
-  completed: 'completed',
-  failed: 'failed',
-  cancelled: 'stopped',
-  'waiting-input': 'needs input',
+const LIFECYCLE_STYLE: Record<
+  NonNullable<TranscriptMessage['lifecycle']>,
+  { rail: string; dot: string; text: string; bg?: string; Icon?: LucideIcon }
+> = {
+  started: { rail: 'border-l-primary/50', dot: 'bg-primary/60', text: 'text-primary/80' },
+  working: { rail: 'border-l-primary', dot: 'bg-primary', text: 'text-primary' },
+  completed: {
+    rail: 'border-l-emerald-500',
+    dot: 'bg-emerald-500',
+    text: 'text-emerald-600 dark:text-emerald-400',
+    Icon: CheckCircle2,
+  },
+  failed: {
+    rail: 'border-l-rose-500',
+    dot: 'bg-rose-500',
+    text: 'text-rose-600 dark:text-rose-400',
+    Icon: XCircle,
+  },
+  'waiting-input': {
+    rail: 'border-l-amber-500',
+    dot: 'bg-amber-500',
+    text: 'text-amber-600 dark:text-amber-400',
+    bg: 'bg-amber-500/[0.07]',
+    Icon: PauseCircle,
+  },
+  cancelled: {
+    rail: 'border-l-zinc-400 dark:border-l-zinc-500',
+    dot: 'bg-zinc-400 dark:bg-zinc-500',
+    text: 'text-zinc-500 dark:text-zinc-400',
+    Icon: Ban,
+  },
 };
+
+/** FLUX-869: neutral fallback accent for a dispatch row with no/unknown lifecycle. */
+const LIFECYCLE_STYLE_DEFAULT: { rail: string; dot: string; text: string; bg?: string; Icon?: LucideIcon } = {
+  rail: 'border-l-[var(--eh-border)]',
+  dot: 'bg-[var(--eh-text-muted)]',
+  text: 'text-[var(--eh-text-muted)]',
+};
+
+/** FLUX-869: phase → lucide glyph for the dispatched-session chip. Replaces the uppercase phase pill
+ *  with a single tooltip'd icon (killing the "double-eyebrow"); tooltip text reuses
+ *  DISPATCH_PHASE_LABEL. */
+const DISPATCH_PHASE_ICON: Record<NonNullable<TranscriptMessage['phase']>, LucideIcon> = {
+  grooming: Search,
+  implementation: Code2,
+  review: Eye,
+  finalize: Flag,
+};
+
+/** FLUX-869: compact run-duration label, e.g. `45s`, `4m`, `6m12s`, `1h3m`. Coarsens above an hour
+ *  (drops seconds) so a long-running row stays short. */
+function formatDuration(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  if (total < 60) return `${total}s`;
+  if (total < 3600) {
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return s ? `${m}m${s}s` : `${m}m`;
+  }
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  return m ? `${h}h${m}m` : `${h}h`;
+}
+
+/** FLUX-869: elapsed-ms since `startedAt`, re-rendering each second while `live` (interval cleared on
+ *  unmount). Returns null when `startedAt` is absent/unparseable so the caller omits the duration
+ *  token gracefully. Terminal rows pass `live=false` and read once (no interval). */
+function useElapsed(startedAt: string | undefined, live: boolean): number | null {
+  const start = startedAt ? new Date(startedAt).getTime() : NaN;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!live || !Number.isFinite(start)) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [live, start]);
+  if (!Number.isFinite(start)) return null;
+  return Math.max(0, now - start);
+}
 
 /**
  * FLUX-849: a dispatched (unattended, work-phase) session's live activity teed to the board
@@ -1155,34 +1258,106 @@ function DispatchChip({
   text,
   ts,
   sourceTask,
+  title,
+  phase,
   lifecycle,
+  startedAt,
   linkifyTickets,
 }: {
   text: string;
   ts?: string;
   sourceTask?: string;
+  /** FLUX-865: source ticket title, resolved from the `tickets` prop at the call site. Omitted when
+   *  the ticket isn't loaded — the chip falls back to the bare id. */
+  title?: string;
+  phase?: 'grooming' | 'implementation' | 'review' | 'finalize';
   lifecycle?: 'started' | 'working' | 'completed' | 'failed' | 'cancelled' | 'waiting-input';
+  /** FLUX-869: dispatched session start (ISO) — powers the run-duration token. Absent on older rows. */
+  startedAt?: string;
   linkifyTickets?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const reduceMotion = useReducedMotion();
   const isWorking = lifecycle === 'working';
   const stageLabel = (lifecycle && DISPATCH_STAGE_LABEL[lifecycle]) ?? lifecycle ?? 'activity';
+  // FLUX-869: lifecycle accent (status dot/glyph + left rail + colored word). Neutral fallback when
+  // lifecycle is absent/unknown so a malformed row still renders.
+  const style = (lifecycle && LIFECYCLE_STYLE[lifecycle]) ?? LIFECYCLE_STYLE_DEFAULT;
+  // FLUX-865/869: phase known → a single tooltip'd icon (replaces the uppercase pill). Absent phase
+  // renders nothing, never "undefined".
+  const phaseLabel = phase ? (DISPATCH_PHASE_LABEL[phase] ?? phase) : undefined;
+  const PhaseIcon = phase ? DISPATCH_PHASE_ICON[phase] : undefined;
+  const StatusIcon = style.Icon;
+
+  // FLUX-869: run duration. Working → live-ticking `running Xm` (gated null when no startedAt);
+  // terminal → final `ran Xm` computed as (eventTs − startedAt). Omitted gracefully when absent.
+  const elapsedLive = useElapsed(startedAt, isWorking);
+  let durationLabel: string | undefined;
+  if (isWorking) {
+    durationLabel = elapsedLive != null ? `running ${formatDuration(elapsedLive)}` : undefined;
+  } else if (startedAt && ts) {
+    const finalMs = new Date(ts).getTime() - new Date(startedAt).getTime();
+    if (Number.isFinite(finalMs) && finalMs >= 0) durationLabel = `ran ${formatDuration(finalMs)}`;
+  }
+
+  // FLUX-869: leading status glyph — working = pulsing dot (ping ring gated behind reduced-motion),
+  // terminal = its static lucide glyph, started/unknown = a plain dot. "Live row breathes, finished
+  // row sits still."
+  const statusGlyph = isWorking ? (
+    <span className="relative flex h-2 w-2 flex-shrink-0 items-center justify-center" aria-label="working">
+      {!reduceMotion && (
+        <span className={`absolute inline-flex h-full w-full animate-ping rounded-full opacity-75 ${style.dot}`} />
+      )}
+      <span className={`relative inline-flex h-2 w-2 rounded-full ${style.dot}`} />
+    </span>
+  ) : StatusIcon ? (
+    <StatusIcon className={`h-3 w-3 flex-shrink-0 ${style.text}`} aria-label={stageLabel} />
+  ) : (
+    <span className={`h-2 w-2 flex-shrink-0 rounded-full ${style.dot}`} aria-label={stageLabel} />
+  );
+
+  // FLUX-869 hierarchy ladder: title is the brightest lead, id secondary mono, phase a tooltip'd
+  // icon, the lifecycle word carries the color (the one surviving uppercase token).
   const header = (
     <>
-      <Radio className="h-3 w-3 flex-shrink-0 text-primary/70" />
+      {statusGlyph}
       {sourceTask && (
-        <span className="flex-shrink-0 font-mono font-medium text-[var(--eh-text-secondary)]">{sourceTask}</span>
+        <span className="flex-shrink-0 font-mono text-[var(--eh-text-muted)]">{sourceTask}</span>
       )}
-      <span className="flex-shrink-0 uppercase tracking-wide opacity-70">{stageLabel}</span>
+      {title && (
+        <span className="min-w-0 flex-1 truncate font-medium text-[var(--eh-text-primary)]" title={title}>
+          {title}
+        </span>
+      )}
+      {PhaseIcon && (
+        <span title={phaseLabel} className="flex-shrink-0">
+          <PhaseIcon className="h-3 w-3 text-[var(--eh-text-muted)]" aria-label={phaseLabel} />
+        </span>
+      )}
+      <span className={`flex-shrink-0 text-[10px] font-medium uppercase tracking-wide ${style.text}`}>
+        {stageLabel}
+      </span>
     </>
+  );
+
+  // FLUX-869: right-aligned meta cluster — final/live duration then the absolute/relative "when".
+  const meta = (
+    <span className="ml-auto flex flex-shrink-0 items-center gap-1.5">
+      {durationLabel && (
+        <span className="whitespace-nowrap tabular-nums text-[10px] text-[var(--eh-text-muted)]">{durationLabel}</span>
+      )}
+      <MessageTime ts={ts} className="!opacity-100 !text-[var(--eh-text-secondary)]" />
+    </span>
   );
 
   // Lifecycle markers (started / completed / failed / stopped / needs input) are one short line.
   if (!isWorking) {
     return (
-      <div className="flex w-full min-w-0 items-center gap-1.5 rounded-md border border-dashed border-primary/20 bg-primary/[0.03] px-2 py-1 text-[11px] text-[var(--eh-text-muted)]">
+      <div
+        className={`flex w-full min-w-0 items-center gap-1.5 rounded-md border border-[var(--eh-border)] border-l-2 ${style.rail} ${style.bg ?? ''} px-2 py-1 text-[11px] text-[var(--eh-text-muted)]`}
+      >
         {header}
-        <MessageTime ts={ts} className="ml-auto flex-shrink-0" />
+        {meta}
       </div>
     );
   }
@@ -1195,11 +1370,11 @@ function DispatchChip({
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         title={open ? 'Hide dispatched-session narration' : 'Show dispatched-session narration'}
-        className="flex w-full min-w-0 items-center gap-1.5 rounded-md border border-dashed border-primary/20 bg-primary/[0.03] px-2 py-1 text-left text-[11px] text-[var(--eh-text-muted)] transition-colors hover:text-[var(--eh-text-secondary)]"
+        className={`flex w-full min-w-0 items-center gap-1.5 rounded-md border border-[var(--eh-border)] border-l-2 ${style.rail} ${style.bg ?? ''} px-2 py-1 text-left text-[11px] text-[var(--eh-text-muted)] transition-colors hover:text-[var(--eh-text-secondary)]`}
       >
         {open ? <ChevronDown className="h-3 w-3 flex-shrink-0" /> : <ChevronRight className="h-3 w-3 flex-shrink-0" />}
         {header}
-        <MessageTime ts={ts} className="ml-auto flex-shrink-0" />
+        {meta}
       </button>
       {open && (
         <div className="mt-1 rounded-md border border-[var(--eh-border)] bg-black/[0.02] px-3 py-2 text-[12px] leading-relaxed text-[var(--eh-text-secondary)] dark:bg-white/[0.02]">
@@ -1541,6 +1716,8 @@ function Composer({
   selections,
   onSelectionsChange,
   tickets,
+  answerPrompt,
+  onAnswerQuestion,
 }: {
   busy: boolean;
   /** FLUX-714: the agent's turn is genuinely in flight (live `running` session). FLUX-748: this no
@@ -1557,6 +1734,9 @@ function Composer({
   selections?: ComposerSelections;
   onSelectionsChange?: (selections: ComposerSelections) => void;
   tickets?: Task[];
+  /** FLUX-923: when set, submit answers this parked question instead of sending/queuing a message. */
+  answerPrompt?: { id: string; label: string } | null;
+  onAnswerQuestion?: (text: string) => void | Promise<void>;
 }) {
   const [internalInput, setInternalInput] = useState('');
   // FLUX-666: internal chip-selection state — used only on the uncontrolled (ChatPane) path.
@@ -1569,6 +1749,20 @@ function Composer({
   const [attachError, setAttachError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // FLUX-923: answer-mode off-ramp + in-flight guard. `answerDismissed` lets the user step OUT of
+  // answer mode (the ✕ on the pill) so an Enter/Send goes through the normal send/queue path instead
+  // of irreversibly settling the parked question — the picker chips stay as the answer path. Reset
+  // whenever a *different* question arrives so a fresh prompt always re-enters answer mode.
+  const [answerDismissed, setAnswerDismissed] = useState(false);
+  // Prevents a double-answer race (chip + Enter, or a double Enter) from POSTing the same prompt twice.
+  const [answerSubmitting, setAnswerSubmitting] = useState(false);
+  const answerPromptId = answerPrompt?.id ?? null;
+  useEffect(() => {
+    setAnswerDismissed(false);
+    setAnswerSubmitting(false);
+  }, [answerPromptId]);
+  // Effective answer mode: a single-question prompt is parked for this chat AND the user hasn't opted out.
+  const answering = !!answerPrompt && !answerDismissed;
   // FLUX-694: ticket autocomplete. `mention` is the active trigger at the caret (null when none);
   // `mentionIdx` is the highlighted suggestion. `taRef` lets us read/restore the caret for
   // mid-string insertion. The picker is keyboard-first (↑/↓/Enter/Tab/Esc).
@@ -1696,6 +1890,29 @@ function Composer({
 
   function submit() {
     const text = input.trim();
+    // FLUX-923: answer mode — a parked ask_user_question is awaiting an answer in this chat. Route the
+    // free-text reply to settle it (the session is still `working` because the turn is parked on the
+    // question, so the normal path would only QUEUE the text). Must run BEFORE the working/busy branch.
+    // Stepping out via the pill's ✕ (`answerDismissed`) falls through to the normal send/queue path.
+    if (answering && onAnswerQuestion) {
+      if (!text || answerSubmitting) return;
+      setAnswerSubmitting(true);
+      // Clear the box only AFTER the engine accepts the answer — on failure the typed text is kept so
+      // the user can retry (onAnswerQuestion rethrows; the prompt stays parked). See useComposerAnswer.
+      void (async () => {
+        try {
+          await onAnswerQuestion(text);
+          setValue('');
+          setAttachments([]);
+          setAttachError(null);
+        } catch {
+          setAttachError('Failed to send your answer — it was kept; please try again.');
+        } finally {
+          setAnswerSubmitting(false);
+        }
+      })();
+      return;
+    }
     if ((!text && attachments.length === 0) || isUploading) return;
     const opts: ChatSendOptions = { model, effort, permissionMode: permission, attachments };
     // FLUX-748: mid-turn (working) or mid-POST (busy) → queue instead of erroring; it auto-dispatches
@@ -1795,6 +2012,25 @@ function Composer({
           )}
         </div>
       )}
+      {/* FLUX-923: answer-mode pill — a visible cue that Enter/Send will SETTLE the parked question
+          (not send a chat message), with a ✕ off-ramp back to normal send so an accidental Enter or a
+          stale draft can't silently burn the question. The picker chips remain the other answer path. */}
+      {answering && answerPrompt && (
+        <div className="mx-3 mt-2 flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-2.5 py-1.5 text-[11px] text-[var(--eh-text-primary)]">
+          <HelpCircle className="h-3.5 w-3.5 flex-shrink-0 text-primary" />
+          <span className="min-w-0 flex-1 truncate">
+            <span className="font-semibold text-primary">Answering:</span> {answerPrompt.label}
+          </span>
+          <button
+            type="button"
+            onClick={() => setAnswerDismissed(true)}
+            title="Send a normal message instead (the question stays open — answer it from the chips above)"
+            className="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full text-[var(--eh-text-muted)] transition-colors hover:bg-black/10 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/10"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      )}
       {attachError && <p className="px-3.5 pt-2 text-[11px] text-red-500">{attachError}</p>}
       <textarea
         ref={taRef}
@@ -1837,7 +2073,13 @@ function Composer({
           }
         }}
         rows={1}
-        placeholder={canAttach ? 'Message…  (Enter to send, paste or drop an image)' : 'Message…  (Enter to send, Shift+Enter for newline)'}
+        placeholder={
+          answering
+            ? 'Type your answer…  (Enter to send your reply)'
+            : canAttach
+              ? 'Message…  (Enter to send, paste or drop an image)'
+              : 'Message…  (Enter to send, Shift+Enter for newline)'
+        }
         className="max-h-32 min-h-[40px] w-full resize-none bg-transparent px-3.5 pt-3 text-[13px] text-[var(--eh-text-primary)] placeholder:text-[var(--eh-text-muted)] focus:outline-none"
       />
       <div className="flex items-center justify-between gap-2 px-2 pb-2">
@@ -1875,18 +2117,27 @@ function Composer({
           onClick={submit}
           // FLUX-748: stay clickable while working/busy so a follow-up can be QUEUED — only the
           // legacy no-queue path (`!onEnqueue`) keeps the old hard gate. Empty input / uploads
-          // still disable it in either mode.
-          disabled={isUploading || (!input.trim() && attachments.length === 0) || ((busy || working) && !onEnqueue)}
+          // still disable it in either mode. FLUX-923: in answer mode the only gate is empty text —
+          // answering a parked question is allowed regardless of `working` (the turn is parked on it).
+          disabled={
+            answering
+              ? !input.trim() || answerSubmitting
+              : isUploading || (!input.trim() && attachments.length === 0) || ((busy || working) && !onEnqueue)
+          }
           title={
-            (working || busy) && onEnqueue
-              ? 'Queue message — sends when the current turn finishes'
-              : working
-                ? 'Wait for the current turn to finish'
-                : 'Send'
+            answering
+              ? 'Send your answer to the agent'
+              : (working || busy) && onEnqueue
+                ? 'Queue message — sends when the current turn finishes'
+                : working
+                  ? 'Wait for the current turn to finish'
+                  : 'Send'
           }
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-white transition-colors hover:bg-primary-hover disabled:opacity-40"
         >
-          {(busy || working) && !onEnqueue ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+          {answering && answerSubmitting ? <Loader2 className="h-4 w-4 animate-spin" />
+            : !answering && (busy || working) && !onEnqueue ? <Loader2 className="h-4 w-4 animate-spin" />
+            : <Send className="h-4 w-4" />}
         </button>
       </div>
     </div>

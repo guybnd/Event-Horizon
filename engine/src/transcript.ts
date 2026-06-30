@@ -144,11 +144,13 @@ export async function clearTranscript(taskId: string): Promise<void> {
     try {
       await fs.unlink(file);
     } catch (err: any) {
-      if (err?.code !== 'ENOENT') throw err;
-    } finally {
-      // Reset the seq counter so a fresh transcript starts at seq 0.
-      lineCounts.delete(taskId);
+      if (err?.code !== 'ENOENT') throw err; // a real unlink failure (EBUSY/EPERM) — file still on disk
     }
+    // FLUX-917: reset the seq counter only when the file is actually gone (unlink succeeded or it was
+    // already absent). Previously this lived in a `finally`, so a real unlink failure still deleted
+    // the count — leaving lineCounts inconsistent with the on-disk file (it self-healed via re-seed,
+    // but only accidentally). Reached only when the try above did not re-throw.
+    lineCounts.delete(taskId);
   });
   // Keep the queue chain alive even if this rejects, so later appends still serialize.
   writeQueues.set(taskId, next.catch(() => {}));
@@ -399,6 +401,12 @@ export async function gatherTurnsForView(
  * transcript stays a function of the substrate + op-log, not an independent store.
  */
 export async function readTranscriptMessages(taskId: string): Promise<TranscriptMessage[]> {
+  // FLUX-910: drain any queued appends for this stream before reading. appendTranscriptEvent is
+  // fire-and-forget, and append-then-broadcast sites (the user-turn /start, the dispatch tee) emit
+  // taskUpdated BEFORE the write lands — so a refetch that broadcast triggers could otherwise read a
+  // transcript missing the just-appended turn (the post-send "my message vanished" race + the tee's
+  // structural self-race). Flushing here makes the live view read-after-write consistent.
+  await flushTranscript(taskId);
   const { turns, ops } = await gatherTurnsForView(taskId);
   return projectTranscript(turns, ops, taskId);
 }

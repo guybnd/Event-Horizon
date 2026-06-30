@@ -1,3 +1,4 @@
+import { log } from './log.js';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
@@ -63,11 +64,11 @@ async function run() {
   }
 
   if (tasksToRelease.length === 0) {
-    console.log('No tickets in "Done" status found. Exiting.');
+    log.info('No tickets in "Done" status found. Exiting.');
     return;
   }
 
-  console.log(`Found ${tasksToRelease.length} tickets to release.`);
+  log.info(`Found ${tasksToRelease.length} tickets to release.`);
 
   // Generate release notes
   let notes = `## Release ${version}\n*Released at ${new Date().toISOString()}*\n\n### Tickets\n\n`;
@@ -108,7 +109,7 @@ async function run() {
   // Write doc
   const docFileContent = matter.stringify(finalDocContent, finalFrontmatter);
   await fs.writeFile(docFilePath, docFileContent, 'utf-8');
-  console.log(`Updated release notes at: ${docRelativePath}.md`);
+  log.info(`Updated release notes at: ${docRelativePath}.md`);
 
   // Update tasks
   for (const t of tasksToRelease) {
@@ -131,7 +132,7 @@ async function run() {
     await fs.writeFile(t.filePath, newContent, 'utf-8');
   }
 
-  console.log(`Successfully released ${tasksToRelease.length} tickets as ${version}.`);
+  log.info(`Successfully released ${tasksToRelease.length} tickets as ${version}.`);
 }
 
 run().catch(console.error);

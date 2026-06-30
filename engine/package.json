@@ -1,7 +1,7 @@
 {
   "name": "engine",
-  "version": "1.0.1",
-  "description": "",
+  "version": "1.1.0",
+  "description": "Event Horizon engine — Express + TypeScript API, MCP server, and agent orchestration for the local-first ticket board.",
   "main": "dist/index.js",
   "bin": "dist/index.js",
   "scripts": {
@@ -9,6 +9,7 @@
     "dev:no-watch": "tsx src/index.ts --workspace ..",
     "build": "node scripts/build.js",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint src",
     "init": "tsx src/init.ts",
     "init-group": "tsx src/init-group.ts",
     "install-skill": "tsx src/skill-installer.ts",
@@ -19,8 +20,21 @@
     "package:mac": "npm run build && node scripts/package-release.js --platform mac",
     "test": "vitest run"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "event-horizon",
+    "ai-agents",
+    "agent-orchestration",
+    "mcp",
+    "ticket-board",
+    "local-first"
+  ],
+  "author": "guybnd",
+  "homepage": "https://github.com/guybnd/Event-Horizon#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/guybnd/Event-Horizon.git",
+    "directory": "engine"
+  },
   "license": "PolyForm-Noncommercial-1.0.0",
   "type": "module",
   "dependencies": {

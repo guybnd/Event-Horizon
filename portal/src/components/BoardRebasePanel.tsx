@@ -22,8 +22,8 @@ import {
  * the referenced ticket's LIVE title/status/last-update, and a single "Apply approved" (executes
  * the checked subset) plus "Dismiss" (resolves with an empty set — applies nothing). The pending
  * queue is owned by `PendingInteractionsProvider`; the panel renders inline in the originating
- * chat's dock (routed by `conversationId`), and unrouted/closed-chat batches fall through to the
- * unified global fallback (`PendingInteractionFallback`).
+ * chat's dock (routed by `conversationId`), and the same batch also mirrors in the unified
+ * attention surface (`AttentionDock`, FLUX-898), so a closed-chat batch is never lost.
  *
  * Hard rule: nothing is applied until the user clicks Apply — the orchestrator proposes, the human
  * approves. "Leave" items are the safe default (the stream stays in the durable orchestrator thread).

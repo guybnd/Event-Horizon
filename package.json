@@ -1,7 +1,28 @@
 {
   "name": "event-horizon",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "private": true,
+  "description": "An IDE for the agent era — a local-first, markdown-backed ticket board and orchestration layer for coding agents.",
+  "keywords": [
+    "event-horizon",
+    "ai-agents",
+    "coding-agents",
+    "agent-orchestration",
+    "ticket-board",
+    "kanban",
+    "mcp",
+    "local-first",
+    "claude-code"
+  ],
+  "homepage": "https://github.com/guybnd/Event-Horizon#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/guybnd/Event-Horizon.git"
+  },
+  "bugs": {
+    "url": "https://github.com/guybnd/Event-Horizon/issues"
+  },
+  "author": "guybnd",
   "license": "PolyForm-Noncommercial-1.0.0",
   "workspaces": [
     "engine",

@@ -1,3 +1,4 @@
+import { log } from './log.js';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
@@ -121,7 +122,7 @@ export async function attachMemberWorktree(
   // 6. Ensure .gitignore so the worktree dir doesn't appear as untracked.
   await ensureMemberGitignore(memberRoot);
 
-  console.log(`[group-worktree] Attached local docs store at ${storeDir}`);
+  log.info(`[group-worktree] Attached local docs store at ${storeDir}`);
   return true;
 }
 

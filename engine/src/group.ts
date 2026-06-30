@@ -1,3 +1,4 @@
+import { log } from './log.js';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
@@ -446,7 +447,7 @@ export async function activateGroup(parentRoot: string): Promise<GroupContext | 
     currentGroup = null;
   }
   if (currentGroup) {
-    console.log(`[group] Active group '${currentGroup.config.name}' with ${currentGroup.members.length} member(s)`);
+    log.info(`[group] Active group '${currentGroup.config.name}' with ${currentGroup.members.length} member(s)`);
   }
   return currentGroup;
 }
@@ -586,7 +587,7 @@ export async function activateMemberBinding(selfRoot: string, registeredRoots: s
         memberName: match.name,
         selfRemote: selfKey,
       };
-      console.log(`[group] Workspace bound as member '${match.name}' of group '${parentGroup.config.name}' (parent: ${root})`);
+      log.info(`[group] Workspace bound as member '${match.name}' of group '${parentGroup.config.name}' (parent: ${root})`);
       return currentMemberBinding;
     }
   } catch (err) {

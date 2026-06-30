@@ -10,8 +10,8 @@ import { resolvePermission, type PendingApproval } from '../api';
  * Allow/Deny. The pending queue is owned by `PendingInteractionsProvider` (one shared SSE
  * subscription); this file renders the inline-in-chat panel + the card, routed by
  * `conversationId` like `ChatQuestionPicker`/`ChatBoardRebasePanel`. The detached bottom-left
- * overlay it used to be is gone — unrouted/closed-chat approvals fall through to the unified
- * global fallback (`PendingInteractionFallback`).
+ * overlay it used to be is gone — the same approval also mirrors in the unified attention
+ * surface (`AttentionDock`, FLUX-898), so a closed-chat approval is never lost.
  */
 
 /** Inline panel for one chat pane — shows only this conversation's pending approvals. */

@@ -97,7 +97,8 @@ Each framework supports separate models for grooming vs implementation:
   "integrations": {
     "claudeCode": {
       "groomingModel": "claude-haiku-4",
-      "implementationModel": "claude-sonnet-4"
+      "implementationModel": "claude-sonnet-4",
+      "delegateModel": ""
     },
     "geminiCli": {
       "groomingModel": "gemini-2.5-flash",
@@ -112,6 +113,19 @@ Each framework supports separate models for grooming vs implementation:
 ```
 
 Leave empty to use the CLI's default model.
+
+#### Delegated-subagent model (FLUX-482)
+
+`claudeCode.delegateModel` (default empty) is the model for **delegated** subagents spawned via [`delegate_to_agent` / `delegate_parallel`](reference/mcp-tools.md#delegate_to_agent) — previously a delegate silently inherited the parent ticket's status-derived model (often the strong implementation model) even for cheap search/review work. The delegate's model is now resolved with this precedence:
+
+1. **per-call `model`** param on the delegate tool (highest) — override one delegate ad hoc,
+2. **`persona.model`** — built-in personas carry a cheaper tier (`sonnet`) on search / grooming / doc-sync / review-reading roles, and **no** override on code-writing roles (`implementer`, `test-engineer`, `dev-lead`, `finalizer`) so those keep the strong model,
+3. **`delegateModel`** above — a global default for all un-overridden delegates,
+4. the existing **status-derived** grooming/implementation model.
+
+Leave `delegateModel` empty for unchanged behavior (only the deliberately-cheapened personas drop to the lower tier).
+
+> **Claude-framework only (for now).** This whole override is honored only when the board runs on the Claude framework. The resolved model is threaded onto `session.model`, which only the Claude adapter reads; the Gemini and Copilot adapters use their own `groomingModel`/`implementationModel` and ignore it (and `sonnet` is a Claude alias). The delegate route gates the resolution to `framework === 'claude'`, so on Gemini/Copilot boards `delegateModel`, `persona.model`, and the per-call `model` param are all inert. Hence this key lives under `claudeCode`; teaching the other adapters a `cheap`/`strong` tier is tracked in FLUX-931.
 
 ---
 

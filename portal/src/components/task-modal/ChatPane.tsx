@@ -8,8 +8,9 @@ import { TicketContextCard, SessionMeter } from './chatContext';
 import { parseQuickReplies } from './chatQuickReplies';
 import { parseRunProposal } from './chatRunProposal';
 import { ChatRequireInputBanner } from './ChatRequireInputBanner';
+import { ChatArtifactCard } from './ChatArtifactCard';
 import { TicketActions } from '../ticket-actions/TicketActions';
-import { ChatPendingInteractions } from '../pendingInteractions';
+import { ChatPendingInteractions, useComposerAnswer } from '../pendingInteractions';
 import { useDockActions } from '../DockProvider';
 import { useAppActions, useAppSelector, useConfig } from '../../store/useAppSelector';
 import { getRequireInputStatus } from '../../workflow';
@@ -30,7 +31,7 @@ export function ChatPane({ task }: { task: Task }) {
   // FLUX-748: pass `working` (live running session) into the hook so its queue auto-dispatches on
   // the turn-completion edge.
   const chat = useChatSession(task.id, open, task.cliSession?.status === 'running');
-  const { openChat } = useDockActions();
+  const { openChat, openSideView, setSectionOpen } = useDockActions();
   const { openTaskFullView } = useAppActions();
   const config = useConfig();
 
@@ -59,6 +60,11 @@ export function ChatPane({ task }: { task: Task }) {
   // FLUX-752: surface a board Require-Input prompt in the chat — status OR the require-input
   // swimlane, matching the full modal's `isRequireInput` predicate.
   const isRequireInput = task.status === getRequireInputStatus(config) || task.swimlane === 'require-input';
+
+  // FLUX-923: composer-as-answer — a single-question ask_user_question parked for this chat (its own id
+  // or an unrouted prompt claimed by the single live chat) can be answered from the composer. Mirrors
+  // the dock ChatWindow path; multi-question prompts keep to the picker chips. Shared hook.
+  const { answerPrompt, onAnswerQuestion } = useComposerAnswer(task.id);
 
   if (!open) {
     return (
@@ -111,6 +117,8 @@ export function ChatPane({ task }: { task: Task }) {
         onUploadImage={chat.uploadImage}
         awaitingInputBanner={isRequireInput ? <ChatRequireInputBanner task={task} /> : undefined}
         questionPicker={<ChatPendingInteractions conversationId={task.id} />}
+        answerPrompt={answerPrompt}
+        onAnswerQuestion={onAnswerQuestion}
         actions={<TicketActions task={task} variant="compact" />}
         diffBranch={task.branch}
         tickets={tickets}
@@ -120,6 +128,18 @@ export function ChatPane({ task }: { task: Task }) {
         ) : undefined}
         orchestrationBlock={runGroup ? (
           <ChatOrchestrationBlock group={runGroup} taskId={task.id} onOpenRun={openRun} onStopSession={stopOne} onStopAll={stopAll} />
+        ) : undefined}
+        artifactCard={(task.artifacts?.revisions?.length ?? 0) > 0 ? (
+          <ChatArtifactCard
+            task={task}
+            // The task modal has no sideview of its own — "Open in panel" pops the chat out to its dock
+            // window with the Grooming Artifact viewer revealed (FLUX-887).
+            onOpen={() => {
+              openChat(task.id);
+              openSideView(task.id);
+              setSectionOpen('artifact', true);
+            }}
+          />
         ) : undefined}
       />
     </div>

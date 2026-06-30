@@ -52,6 +52,12 @@ function nextQueueId(items: QueuedMessage[]): number {
 export interface UseChatSession {
   /** Transcript messages, with the optimistic pending user turn merged in. */
   messages: TranscriptMessage[];
+  /**
+   * True while a turn is being submitted — from send() through the POST and until the engine
+   * reports the turn `running` (FLUX-916 awaiting-turn latch). Drives the live "working" indicator
+   * and the composer's disabled state so neither blanks in the gap between POST-return and the SSE
+   * running flip.
+   */
   busy: boolean;
   error: string | null;
   send: (text: string, opts?: ChatSendOptions) => Promise<void>;
@@ -118,6 +124,13 @@ export function useChatSession(conversationId: string, enabled = true, working =
   const queueIdRef = useRef(nextQueueId(getChatQueue(conversationId)));
   const [pendingUser, setPendingUser] = useState<string | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
+  // FLUX-916: "submitted, awaiting running" latch. Bridges the dead window between our POST
+  // returning (busy → false) and the SSE `running` flip (working → true), so the live indicator
+  // never blanks mid-send. Folded into the returned `busy` so no new prop threading is needed.
+  const [awaitingTurn, setAwaitingTurn] = useState(false);
+  // FLUX-916: synchronous re-entrancy guard. `busy` is state read from the render closure, so two
+  // send() calls in one batch (reopen + edge queue effects) could both see busy=false and double-POST.
+  const sendingRef = useRef(false);
   // FLUX-691: token-by-token live stream for the current turn (see `liveText` in UseChatSession).
   const [liveText, setLiveText] = useState('');
   // Mirror of `messages` so the event-driven `load()` can tell a real transcript change (the turn
@@ -204,12 +217,16 @@ export function useChatSession(conversationId: string, enabled = true, working =
     const trimmed = text.trim();
     const attachments = sendOpts?.attachments ?? [];
     // FLUX-674: allow an image-only turn (no text) as long as something is attached.
-    if ((!trimmed && attachments.length === 0) || busy) return;
+    // FLUX-916: sendingRef is the authoritative re-entrancy guard — `busy` is state read from the
+    // render closure, so two send() calls in one batch would both see busy=false and double-POST.
+    if ((!trimmed && attachments.length === 0) || busy || sendingRef.current) return;
+    sendingRef.current = true;
     setBusy(true);
     setError(null);
     setLiveText(''); // FLUX-691: fresh turn — drop any live node left over from a prior turn.
     setPendingUser(trimmed);
     setPendingAttachments(attachments);
+    setAwaitingTurn(true); // FLUX-916: keep the live indicator on until the engine reports running.
     try {
       let resumable = false;
       try {
@@ -253,10 +270,16 @@ export function useChatSession(conversationId: string, enabled = true, working =
       } catch { /* poll catches up */ }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to send message');
-    } finally {
+      // FLUX-916: the turn never sent — drop the optimistic bubble + stop the awaiting indicator.
       setPendingUser(null);
       setPendingAttachments([]);
+      setAwaitingTurn(false);
+    } finally {
+      // FLUX-916: pendingUser is cleared by the landing effect (when the committed turn appears in
+      // the transcript), NOT here — clearing it unconditionally on POST return dropped the user's
+      // message whenever the immediate fetch raced/failed (the "my message vanished" bug).
       setBusy(false);
+      sendingRef.current = false;
     }
   }
 
@@ -342,9 +365,11 @@ export function useChatSession(conversationId: string, enabled = true, working =
     const wasWorking = prevWorkingRef.current;
     prevWorkingRef.current = working;
     if (wasWorking && !working && !busy && queued.length > 0) {
-      const [head, ...rest] = queued;
-      setQueued(rest);
-      void send(head!.text, head!.opts);
+      // FLUX-916: slice by head id (match the reopen one-shot effect) instead of positionally, so a
+      // concurrent dispatch can't double-consume; sendingRef is the hard double-POST guard.
+      const head = queued[0]!;
+      setQueued((q) => (q[0]?.id === head.id ? q.slice(1) : q));
+      void send(head.text, head.opts);
     }
     // `send` is intentionally omitted — it's re-created each render and the edge guard above
     // (plus `busy` in deps) keeps the captured closure fresh enough; listing it would only add
@@ -352,20 +377,50 @@ export function useChatSession(conversationId: string, enabled = true, working =
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [working, busy, queued]);
 
+  // FLUX-916: clear the optimistic pending bubble only once the committed user turn lands in the
+  // transcript (the merged-bubble dedup hides a duplicate meanwhile). The SSE-driven load() —
+  // self-healing via the FLUX-910 watchdog — brings the turn in even if the immediate post-send
+  // fetch raced or failed, so the user's message is never silently dropped.
+  useEffect(() => {
+    if (pendingUser === null) return;
+    if (messages.some((m) => m.role === 'user' && m.text === pendingUser)) {
+      setPendingUser(null);
+      setPendingAttachments([]);
+    }
+  }, [messages, pendingUser]);
+
+  // FLUX-916: release the awaiting-turn latch when the engine reports the turn running (the live
+  // `working` indicator takes over), with a safety timeout so a turn that never starts can't pin
+  // the indicator (and the composer) on forever.
+  useEffect(() => {
+    if (!awaitingTurn) return;
+    if (working) { setAwaitingTurn(false); return; }
+    const t = setTimeout(() => setAwaitingTurn(false), 20000);
+    return () => clearTimeout(t);
+  }, [awaitingTurn, working]);
+
   /** FLUX-674: upload a pasted/dropped image to this ticket's asset sidecar. */
   async function uploadImage(file: File): Promise<ChatAttachment> {
     return uploadChatImage(conversationId, file);
   }
 
-  // Optimistic pending bubble, unless the transcript already has it.
-  const last = messages.length > 0 ? messages[messages.length - 1] : undefined;
-  const lastIsPending = pendingUser !== null && last?.role === 'user' && last.text === pendingUser;
+  // Optimistic pending bubble, unless the committed user turn already appears in the transcript.
+  // FLUX-916: check the whole transcript (not just the last message) so the bubble is suppressed the
+  // moment the real turn lands — even if an assistant reply arrived in the same fetch — avoiding a
+  // one-frame duplicate before the landing effect clears pendingUser.
+  const pendingLanded =
+    pendingUser !== null && messages.some((m) => m.role === 'user' && m.text === pendingUser);
   const merged: TranscriptMessage[] =
-    pendingUser !== null && !lastIsPending
+    pendingUser !== null && !pendingLanded
       ? [...messages, { role: 'user', text: pendingUser, ts: '', attachments: pendingAttachments.length ? pendingAttachments : undefined }]
       : messages;
 
   async function stop() {
+    // FLUX-916: drop the half-streamed live node + awaiting latch — a stopped turn commits no final
+    // message, so the event-driven load() (which clears liveText only on a transcript change) would
+    // otherwise leave a phantom partial assistant turn on screen until the next send.
+    setLiveText('');
+    setAwaitingTurn(false);
     try {
       await stopTaskCliSession(conversationId);
     } catch {
@@ -397,5 +452,8 @@ export function useChatSession(conversationId: string, enabled = true, working =
     }
   }
 
-  return { messages: merged, busy, error, send, queued, enqueue, dequeue, clearQueued, stop, reset, uploadImage, liveText, loading };
+  // FLUX-916: surface the awaiting-turn latch through `busy` so the live indicator + composer cover
+  // the dead window between POST-return and the SSE `running` flip, with no extra prop threading.
+  // (Internal queue effects above read the raw `busy` state, so their timing is unchanged.)
+  return { messages: merged, busy: busy || awaitingTurn, error, send, queued, enqueue, dequeue, clearQueued, stop, reset, uploadImage, liveText, loading };
 }

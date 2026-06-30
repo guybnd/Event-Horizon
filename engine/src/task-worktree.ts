@@ -3,6 +3,7 @@ import { existsSync, realpathSync } from 'fs';
 import path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { evictSharedServersForPath } from './shared-mcp-server.js';
 
 /**
  * Per-task-branch git worktree management (FLUX-517).
@@ -269,6 +270,11 @@ export async function removeTaskWorktree(
   opts: { gitRunner?: GitRunner } = {},
 ): Promise<void> {
   const runner = opts.gitRunner ?? defaultGitRunner;
+  // FLUX-579: tear down any engine-managed shared MCP server(s) pinned to THIS
+  // worktree before the tree is removed — their (module, worktree) key won't be
+  // requested again and the server would otherwise linger pointing at a gone tree.
+  // Best-effort; only matches this path's servers (sibling worktrees untouched).
+  try { evictSharedServersForPath(worktreePath); } catch { /* best-effort */ }
   // Remove the node_modules junctions FIRST so `git worktree remove` (which
   // deletes the directory tree) cannot follow a junction and destroy the main
   // tree's real dependencies — FLUX-518.

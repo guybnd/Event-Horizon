@@ -1,4 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import { getActiveFluxDir } from './workspace.js';
 
 /**
  * FLUX-841 — session→ticket binding for the human-in-the-loop channels.
@@ -14,26 +17,92 @@ import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
  * with `EH_CONVERSATION_TOKEN = signConversation(its own bound conversationId)` (see
  * claude-code.ts/cleanChildEnv). The MCP tools forward that token on every HITL POST, and the route
  * requires it to match the *claimed* conversationId (verifyConversation). Because the HMAC secret is
- * process-private, a session can only ever produce a valid token for its OWN ticket — it cannot forge
- * one for a sibling. A claim with a missing/mismatched token is dropped to "unrouted" at the route.
+ * workspace-private, a session can only ever produce a valid token for its OWN ticket — it cannot
+ * forge one for a sibling. A claim with a missing/mismatched token is dropped to "unrouted" at the
+ * route.
  *
- * The secret is a per-process random value held only in memory:
- *  - It is never persisted (no credential written to disk on a local-first install).
- *  - Sessions are cancelled by reconcileOrphanedSessions on an engine restart, so a token signed by
- *    a prior process is never *expected* to verify against a new one — graceful degrade to unrouted.
+ * The secret (FLUX-894): a 32-byte random value PERSISTED to the active flux dir
+ * (`session-binding-secret`), loaded lazily on first sign/verify and cached for the process.
+ *  - It is local-only: gitignored and excluded from flux-data sync, exactly like `open-prompts.json`,
+ *    so the FLUX-841 secrecy property still holds (the secret never leaves the machine).
+ *  - It is durable across an engine restart. The original design held the secret only in memory and
+ *    assumed reconcileOrphanedSessions kills every pre-restart session, so a token signed by a prior
+ *    process was "never expected to verify". That assumption is false for a prompt still in flight
+ *    across the restart, or a session resumed afterward (the rehydrate path) — such a session keeps
+ *    forwarding a token signed by the OLD per-process secret, which a freshly-minted secret would
+ *    reject, silently dropping the prompt to `null` → the board echo thread (FLUX-894). Persisting
+ *    the secret lets that token still verify against the SAME workspace secret, so the prompt keeps
+ *    its ticket attribution. A genuinely forged/sibling token still cannot verify.
  */
 
-const SECRET = randomBytes(32);
+const SECRET_FILE = 'session-binding-secret';
+/** The resolved per-workspace binding secret, cached for the life of the process after first use. */
+let cachedSecret: Buffer | null = null;
 
-/** HMAC-SHA256 of a conversationId under the per-process secret, hex-encoded. */
+/**
+ * Load the persisted binding secret, minting and persisting one on first use. Cached for the
+ * process so every sign/verify is consistent and disk is touched at most once.
+ *
+ * Best-effort persistence: if the active flux dir cannot be resolved (no workspace bound — e.g. a
+ * unit test) or the file system is unwritable, we fall back to a fresh in-memory secret. That is
+ * still internally consistent within the process (sign/verify match), it simply degrades to the
+ * pre-FLUX-894 behavior where tokens do not survive a restart — never a hard failure of the HITL
+ * round-trip. In the real engine the workspace is always bound before the first session spawns, so
+ * the on-disk secret is the live path.
+ */
+function getSecret(): Buffer {
+  if (cachedSecret) return cachedSecret;
+  let file: string | null = null;
+  // FLUX-908: distinguish "file absent" from "file present but unreadable". A transient Windows
+  // EBUSY/EACCES lock (AV/indexer) on the EXISTING valid secret must NOT trigger a re-mint+overwrite
+  // — that invalidates every in-flight token AND permanently rotates the on-disk secret. On such an
+  // error we degrade to an ephemeral in-process secret (consistent for this run's sign/verify) and
+  // leave the on-disk file intact so a later, unlocked restart recovers it.
+  let existedButUnreadable = false;
+  try {
+    file = path.join(getActiveFluxDir(), SECRET_FILE);
+    const hex = fs.readFileSync(file, 'utf-8').trim();
+    const buf = Buffer.from(hex, 'hex');
+    if (buf.length === 32) {
+      cachedSecret = buf;
+      return buf;
+    }
+    // Wrong length / garbage on disk (truncated/tampered) — fall through and re-mint a fresh one.
+  } catch (err: any) {
+    // ENOENT (or unbound workspace, no file path) → genuinely absent, safe to mint + persist below.
+    // Any OTHER errno (EBUSY/EACCES/EPERM) → an existing file we just can't read right now: do NOT
+    // overwrite it.
+    if (err?.code && err.code !== 'ENOENT') existedButUnreadable = true;
+  }
+  const buf = randomBytes(32);
+  if (file && !existedButUnreadable) {
+    // Atomic write-then-rename so a crash mid-write can't leave a torn secret that fails the
+    // length check on next boot. mode 0o600 — readable only by the owner (no-op on Windows ACLs).
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const tmp = `${file}.tmp`;
+      fs.writeFileSync(tmp, buf.toString('hex'), { encoding: 'utf-8', mode: 0o600 });
+      fs.renameSync(tmp, file);
+    } catch (err) {
+      console.error('[session-binding] could not persist binding secret; tokens will not survive an engine restart', err);
+    }
+  } else if (existedButUnreadable) {
+    console.warn('[session-binding] binding secret exists but was unreadable (transient lock?) — using an ephemeral in-process secret WITHOUT overwriting it; tokens will not survive this restart, but the on-disk secret is preserved for the next one');
+  }
+  cachedSecret = buf;
+  return buf;
+}
+
+/** HMAC-SHA256 of a conversationId under the persisted workspace secret, hex-encoded. */
 export function signConversation(conversationId: string): string {
-  return createHmac('sha256', SECRET).update(conversationId).digest('hex');
+  return createHmac('sha256', getSecret()).update(conversationId).digest('hex');
 }
 
 /**
  * True iff `token` is the valid binding token for `conversationId` — i.e. it was produced by
- * `signConversation(conversationId)` in THIS process. Constant-time compare; tolerant of a
- * missing/garbage token (returns false rather than throwing).
+ * `signConversation(conversationId)` under this workspace's secret (which, since FLUX-894, survives
+ * an engine restart). Constant-time compare; tolerant of a missing/garbage token (returns false
+ * rather than throwing).
  */
 export function verifyConversation(conversationId: string, token: string | null | undefined): boolean {
   if (typeof token !== 'string' || token.length === 0) return false;
@@ -43,4 +112,13 @@ export function verifyConversation(conversationId: string, token: string | null 
   // timingSafeEqual throws on a length mismatch; short-circuit so a wrong-length token is a clean false.
   if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);
+}
+
+/**
+ * TEST-ONLY: drop the cached secret so the next sign/verify re-loads it from disk. Used to simulate
+ * an engine restart (a fresh process re-reading the persisted secret) without resetting the module.
+ * Not part of the runtime API.
+ */
+export function __resetBindingSecretForTest(): void {
+  cachedSecret = null;
 }

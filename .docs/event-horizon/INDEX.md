@@ -34,6 +34,7 @@ This index routes by **subsystem**. For each subsystem you get the code entry po
 | **Development setup** | top-level `package.json`, workspace scripts | [Development](development.md) | — |
 | **Troubleshooting** | — | [Windows Agent Spawn](troubleshooting/windows-agent-spawn.md) | — |
 | **Project framing** | — | [Project Overview](project-overview.md) | — |
+| **Research / spikes** | [`engine/src/mcp-server.ts`](../../engine/src/mcp-server.ts), [`engine/src/history.ts`](../../engine/src/history.ts), [`engine/src/agent-payload-metrics.ts`](../../engine/src/agent-payload-metrics.ts) | [AXI → EH findings](../research/axi-findings.md) (agent-tool ergonomics audit) | — |
 
 ## Planned reference pages
 

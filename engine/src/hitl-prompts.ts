@@ -1,3 +1,4 @@
+import { log } from './log.js';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -166,30 +167,50 @@ function broadcastResolved(rec: OpenPromptRecord) {
   broadcastEvent(rec.kind === 'permission' ? 'permission-resolved' : 'ask-question-resolved', { id: rec.id });
 }
 
-/** Durable record that a prompt was raised (a cold resume sees the round-trip). No-op for an
- *  unrouted conversation (null) which has no transcript stream. */
+/** The board orchestrator thread — a real, projectable transcript stream — is the catch-all echo
+ *  destination for an UNROUTED prompt (conversationId === null). Without it, a prompt answered via
+ *  the pending board would write neither its question nor its answer to any stream and so vanish
+ *  from every chat (FLUX-866); routing the echo here makes it surface in the board chat, matching
+ *  the inline-picker behavior. Only the *transcript echo* is redirected — needsAction / Phase-3
+ *  resume attribution stays keyed on the real (null) `conversationId`, so an unrouted prompt is
+ *  never attributed to a sibling ticket (preserves FLUX-841). */
+const BOARD_ECHO_STREAM = '__board__';
+
+/** The transcript stream a prompt's round-trip echoes to: its own conversation, or the board thread
+ *  when unrouted. Returns null only for a genuinely path-unsafe id (shouldn't occur — `__board__`
+ *  is safe, and a non-null conversationId was already validated upstream / on rehydrate). */
+function echoStream(rec: OpenPromptRecord): string | null {
+  const id = rec.conversationId ?? BOARD_ECHO_STREAM;
+  return isSafeStreamId(id) ? id : null;
+}
+
+/** Durable record that a prompt was raised (a cold resume sees the round-trip). An unrouted prompt
+ *  (null conversation) echoes to the board thread; see `echoStream`. */
 function appendRequestTranscript(rec: OpenPromptRecord) {
-  if (!rec.conversationId) return;
+  const stream = echoStream(rec);
+  if (!stream) return;
   if (rec.kind === 'permission') {
     const p = rec.payload as PermissionPayload;
-    appendTranscriptEvent(rec.conversationId, { type: 'permission-request', id: rec.id, toolName: p.toolName, input: p.input, timestamp: rec.createdAt });
+    appendTranscriptEvent(stream, { type: 'permission-request', id: rec.id, toolName: p.toolName, input: p.input, timestamp: rec.createdAt });
   } else {
     const p = rec.payload as QuestionPayload;
-    appendTranscriptEvent(rec.conversationId, { type: 'ask-question', id: rec.id, questions: p.questions, timestamp: rec.createdAt });
+    appendTranscriptEvent(stream, { type: 'ask-question', id: rec.id, questions: p.questions, timestamp: rec.createdAt });
   }
 }
 
 /** Durable record of the resolution. `reason` distinguishes a timeout from a human decision in
- *  the permission transcript; questions carry the answer (or the `unanswered` sentinel). */
+ *  the permission transcript; questions carry the answer (or the `unanswered` sentinel). An unrouted
+ *  prompt echoes to the board thread; see `echoStream`. */
 function appendResolveTranscript(rec: OpenPromptRecord, result: any, reason?: 'timeout') {
-  if (!rec.conversationId) return;
+  const stream = echoStream(rec);
+  if (!stream) return;
   const timestamp = new Date().toISOString();
   if (rec.kind === 'permission') {
-    appendTranscriptEvent(rec.conversationId, {
+    appendTranscriptEvent(stream, {
       type: 'permission-resolved', id: rec.id, behavior: result.behavior, ...(reason ? { reason } : {}), timestamp,
     });
   } else {
-    appendTranscriptEvent(rec.conversationId, {
+    appendTranscriptEvent(stream, {
       type: 'ask-answer', id: rec.id, answers: result.answers ?? {},
       ...(result.notes ? { notes: result.notes } : {}),
       ...(result.unanswered ? { unanswered: true } : {}),
@@ -351,6 +372,6 @@ export function rehydrateOpenPrompts(): number {
       console.error('[hitl] skipped a malformed open-prompt record on rehydrate', err);
     }
   }
-  if (count > 0) console.log(`[hitl] re-surfaced ${count} open prompt(s) after restart`);
+  if (count > 0) log.info(`[hitl] re-surfaced ${count} open prompt(s) after restart`);
   return count;
 }

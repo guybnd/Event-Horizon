@@ -1,59 +1,22 @@
-import { spawn, execSync, execFileSync, type ChildProcessWithoutNullStreams } from 'child_process';
+import { log } from '../log.js';
+import { spawn, execSync, type ChildProcessWithoutNullStreams } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { configCache } from '../config.js';
 import { buildActivityEntry, buildCommentEntry, buildAgentMessageEntry, buildAgentSessionEntry, appendSessionProgress, closeAgentSession, type AgentSessionEntry } from '../history.js';
 import { updateTaskWithHistory, updateAgentSession, tasksCache, estimateCostUSD } from '../task-store.js';
 import { resolveTaskExecutionRoot } from '../task-worktree.js';
-import { workspaceRoot as canonicalWorkspaceRoot } from '../workspace.js';
 import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
+import { killProcessTree } from '../kill-process-tree.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
 import { captureTurnStartState, clearNeedsActionIfSet, flagIfParked } from '../parked-ticket.js';
 import { getModulePromptFragments } from '../modules.js';
 import { buildMemberScopeArgs } from '../group.js';
 import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
-
-function checkBinaryInstalled(binaryName: string): void {
-  const checker = process.platform === 'win32' ? 'where' : 'which';
-  try {
-    execFileSync(checker, [binaryName], { stdio: 'ignore', env: cleanChildEnv(), timeout: 10_000, windowsHide: true });
-  } catch {
-    throw new Error(`"${binaryName}" is not installed or not on PATH. Please install it before starting an agent session.`);
-  }
-}
-
-/** Build a clean env for child processes — strips NODE_OPTIONS and other vars that break pkg-spawned children. */
-function cleanChildEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  for (const key of Object.keys(env)) {
-    if (key.toUpperCase() === 'NODE_OPTIONS') delete env[key];
-  }
-  // Do NOT set NODE_OPTIONS to empty string — pkg binaries may still parse it.
-  // Fully removing it from the environment is the safest approach.
-  env.EVENT_HORIZON_FRAMEWORK = 'gemini';
-  // Pin the canonical ticket store so a worktree agent's event-horizon MCP binds
-  // to the real workspace, not its cwd worktree (FLUX-516).
-  if (canonicalWorkspaceRoot) env.EH_CANONICAL_WORKSPACE = canonicalWorkspaceRoot;
-  return env;
-}
-
-// Effort levels accepted by the --effort CLI flag, in ascending order.
-export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
-type EffortLevel = typeof EFFORT_LEVELS[number];
-
-export const PROVIDER_CAPABILITIES = {
-  claude: { supportsEffort: true, effortFlag: '--effort' },
-  copilot: { supportsEffort: false, effortFlag: '' },
-  gemini: { supportsEffort: false, effortFlag: '' },
-};
-
-export function cliLabelForFramework(framework: 'claude' | 'copilot' | 'gemini') {
-  if (framework === 'claude') return 'Claude Code';
-  if (framework === 'gemini') return 'Gemini CLI';
-  return 'Copilot CLI';
-}
+import { CLI_CAPABILITIES } from './types.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, enqueueSessionWrite, flushSessionOutput } from './shared.js';
 
 const TOOL_ACTIVITY_MAP: Record<string, string> = {
   Bash: 'Running command',
@@ -65,86 +28,6 @@ const TOOL_ACTIVITY_MAP: Record<string, string> = {
   Agent: 'Delegating',
   TodoWrite: 'Planning',
 };
-
-export function appendSessionOutput(session: CliSessionRecord, chunk: Buffer | string, source: 'stdout' | 'stderr', isAssistantText = false) {
-  let text = String(chunk ?? '').replace(/\r\n/g, '\n');
-  if (!text.trim()) return;
-
-  // Filter out noise from Windows ConPTY/AttachConsole failures
-  if (source === 'stderr' && (
-    text.includes('AttachConsole failed') || 
-    text.includes('conpty_console_list_agent.js') ||
-    text.includes('Shared memory agent failed')
-  )) {
-    return;
-  }
-
-  const prefix = source === 'stderr' ? '[stderr] ' : '';
-  session.liveOutputBuffer += `${prefix}${text}`;
-  if (isAssistantText) {
-    session.outputBuffer += text;
-  }
-  session.lastOutputAt = new Date().toISOString();
-}
-
-export function enqueueSessionWrite(session: CliSessionRecord, writer: () => Promise<void>) {
-  session.writeQueue = session.writeQueue
-    .then(writer)
-    .catch((error) => {
-      console.error(`CLI session ${session.id} failed to append task history:`, error);
-    });
-}
-
-export function flushSessionOutput(session: CliSessionRecord, force = false) {
-  if (!session.outputBuffer.trim()) return;
-
-  const flushNow = async () => {
-    const bufferedText = session.outputBuffer.trim();
-    session.outputBuffer = '';
-    if (!bufferedText) return;
-
-    const timestamp = new Date().toISOString();
-    const maxLength = 2000;
-    const clippedText = bufferedText.length > maxLength
-      ? `${bufferedText.slice(0, maxLength)}...`
-      : bufferedText;
-
-    // Broadcast progress immediately via SSE (UI gets live updates)
-    broadcastEvent('progress', {
-      taskId: session.taskId,
-      sessionId: session.sessionHistoryEntry?.sessionId,
-      timestamp,
-      message: clippedText,
-    });
-
-    // Accumulate progress in memory only — do NOT write to the ticket file
-    // during an active session. Writing continuously causes the agent to see
-    // the file changing and back off from editing it. The full progress is
-    // flushed to the ticket file once when the session ends.
-    if (session.sessionHistoryEntry) {
-      session.sessionHistoryEntry.progress.push({
-        timestamp,
-        message: clippedText,
-        type: 'text',
-      });
-    }
-  };
-
-  if (session.flushTimer) {
-    clearTimeout(session.flushTimer);
-    session.flushTimer = undefined;
-  }
-
-  if (force) {
-    enqueueSessionWrite(session, flushNow);
-    return;
-  }
-
-  session.flushTimer = setTimeout(() => {
-    session.flushTimer = undefined;
-    enqueueSessionWrite(session, flushNow);
-  }, 1000);
-}
 
 export function buildInitialPrompt(task: any, appendPrompt: string, opts?: { phase?: string | undefined }): string {
   const readyStatus = (configCache as any)?.readyForMergeStatus || 'Ready';
@@ -216,8 +99,8 @@ export function attachStdoutProcessing(
 ) {
   const commitPendingAssistantText = () => {
     if (session.pendingAssistantText) {
-      appendSessionOutput(session, session.pendingAssistantText, 'stdout', true);
-      flushSessionOutput(session);
+      appendSessionOutput(session, session.pendingAssistantText, 'stdout', true, false);
+      flushSessionOutput(session, false, 'text');
       session.pendingAssistantText = '';
     }
   };
@@ -310,7 +193,7 @@ export function attachStdoutProcessing(
             session.outputBuffer += evt.content;
             session.lastOutputAt = new Date().toISOString();
             // Trigger debounced flush to broadcast progress via SSE (matching Claude behavior)
-            flushSessionOutput(session);
+            flushSessionOutput(session, false, 'text');
           }
         } else if (evt.type === 'tool_use') {
           // Gemini CLI tool use schema
@@ -437,7 +320,7 @@ export function attachStdoutProcessing(
             : String(evt.error || 'Permission denied');
           session.blockedReason = reason;
           session.status = 'waiting-input';
-          flushSessionOutput(session, true);
+          flushSessionOutput(session, true, 'text');
           enqueueSessionWrite(session, async () => {
             await updateTaskWithHistory(taskId, {
               updatedBy: 'Agent',
@@ -469,7 +352,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   const executionRoot = await resolveTaskExecutionRoot(task, workspaceRoot);
   session.executionRoot = executionRoot;
 
-  console.log(`[${id}] Starting ${framework} session in ${workspaceRoot}`);
+  log.info(`[${id}] Starting ${framework} session in ${workspaceRoot}`);
 
   checkBinaryInstalled(binaryName);
 
@@ -526,14 +409,14 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     ...buildGeminiScopeArgs(workspaceRoot),
   ];
 
-  console.log(`[${id}] Args:`, geminiArgs);
+  log.info(`[${id}] Args:`, geminiArgs);
 
-  const caps = PROVIDER_CAPABILITIES[framework] ?? PROVIDER_CAPABILITIES['copilot'];
+  const effortCap = CLI_CAPABILITIES[framework].effort;
   const globalEffort = (configCache as any).effortLevel as string | undefined;
   const taskEffort = (task as any).effortLevel as string | undefined;
   const effectiveEffort = (effortOverrideRaw || taskEffort || globalEffort || '') as string;
-  if (caps.supportsEffort && EFFORT_LEVELS.includes(effectiveEffort as EffortLevel)) {
-    geminiArgs.push(caps.effortFlag, effectiveEffort);
+  if (effortCap.supported && effortCap.flag && EFFORT_LEVELS.includes(effectiveEffort as EffortLevel)) {
+    geminiArgs.push(effortCap.flag, effectiveEffort);
   }
 
   let proc: ReturnType<typeof spawn>;
@@ -550,7 +433,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     let entryPoint: string | null = null;
     let systemNodePath: string | null = null;
     try {
-      const prefixEnv = cleanChildEnv();
+      const prefixEnv = cleanChildEnv('gemini');
       const whereResult = execSync('where node', { encoding: 'utf8', env: prefixEnv, timeout: 10_000, windowsHide: true }).trim().split(/\r?\n/);
       // Filter out our own exe — pkg binaries ARE node binaries and 'where' may list them
       const selfExe = process.execPath.toLowerCase();
@@ -560,7 +443,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
       // 'where node' failed — will fall back to 'node' bare name (may break in pkg context)
     }
     try {
-      const prefixEnv = cleanChildEnv();
+      const prefixEnv = cleanChildEnv('gemini');
       const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', env: prefixEnv, timeout: 10_000, windowsHide: true }).trim();
       const candidateJs = path.join(npmPrefix, 'node_modules', '@google', 'gemini-cli', 'bundle', 'gemini.js');
       const candidateExe = path.join(npmPrefix, 'node_modules', '@google', 'gemini-cli', 'bin', 'gemini.exe');
@@ -571,13 +454,13 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
         exePath = candidateExe;
       }
     } catch (err) {
-      console.log(`[${id}] Failed to resolve gemini via npm prefix:`, err);
+      log.info(`[${id}] Failed to resolve gemini via npm prefix:`, err);
     }
 
     // Second attempt: use 'where' to find the gemini cmd/exe and resolve the JS entry
     if (!entryPoint && !exePath) {
       try {
-        const prefixEnv = cleanChildEnv();
+        const prefixEnv = cleanChildEnv('gemini');
         const wherePath = execSync(`where ${binaryName}`, { encoding: 'utf8', env: prefixEnv, timeout: 10_000, windowsHide: true }).trim().split(/\r?\n/)[0];
         if (wherePath) {
           // The .cmd is usually in the same dir as the npm prefix bin — try to find the JS bundle relative to it
@@ -598,10 +481,10 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
       }
     }
 
-    const env = cleanChildEnv();
+    const env = cleanChildEnv('gemini', id);
     const nodeCmd = systemNodePath || 'node';
     if (entryPoint) {
-      console.log(`[${id}] Windows spawn (node=${nodeCmd}): ${entryPoint}`);
+      log.info(`[${id}] Windows spawn (node=${nodeCmd}): ${entryPoint}`);
       proc = spawn(nodeCmd, [entryPoint, ...geminiArgs], {
         cwd: executionRoot,
         env,
@@ -609,7 +492,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
         windowsHide: true,
       });
     } else if (exePath) {
-      console.log(`[${id}] Windows spawn (exe): ${exePath}`);
+      log.info(`[${id}] Windows spawn (exe): ${exePath}`);
       proc = spawn(exePath, geminiArgs, {
         cwd: executionRoot,
         env,
@@ -619,7 +502,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     } else {
       // Last resort: use shell. Remove NODE_OPTIONS via explicit prefix to prevent
       // .cmd wrappers from re-injecting it.
-      console.log(`[${id}] Windows spawn (fallback): ${binaryName}`);
+      log.info(`[${id}] Windows spawn (fallback): ${binaryName}`);
       proc = spawn('cmd.exe', ['/c', `set "NODE_OPTIONS=" && ${binaryName}`, ...geminiArgs], {
         cwd: executionRoot,
         env,
@@ -630,7 +513,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   } else {
     proc = spawn(binaryName, geminiArgs, {
       cwd: executionRoot,
-      env: cleanChildEnv(),
+      env: cleanChildEnv('gemini', id),
       stdio: 'pipe',
     });
   }
@@ -658,7 +541,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     session.status = 'failed';
     session.endedAt = new Date().toISOString();
     commitPending();
-    flushSessionOutput(session, true);
+    flushSessionOutput(session, true, 'text');
     await session.writeQueue;
 
     const outcome = `${label} session failed to start: ${error.message}`;
@@ -719,7 +602,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     }
 
     commitPending();
-    flushSessionOutput(session, true);
+    flushSessionOutput(session, true, 'text');
     await session.writeQueue;
     session.endedAt = new Date().toISOString();
 
@@ -835,7 +718,9 @@ export class GeminiAdapter implements AgentAdapter {
   }
 
   stop(session: CliSessionRecord): void {
-    session.proc?.kill('SIGTERM');
+    // Tree-kill so the agent's MCP servers (serena, context7, …) are reaped too, not orphaned —
+    // the stale-node-process leak. See kill-process-tree.ts.
+    killProcessTree(session.proc);
   }
 }
 
@@ -854,6 +739,11 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   const inputAt = new Date().toISOString();
   session.lastInputAt = inputAt;
   session.status = 'running';
+  // FLUX-915: clear a stale stop flag before resuming so a prior stop can't mis-cancel this turn.
+  session.requestedStop = false;
+  // FLUX-909: new turn started — clear the stale block reason from a prior parked turn so the
+  // card no longer reads as amber "Needs your input" after the user resumes the session.
+  delete session.blockedReason;
   // FLUX-651: new turn — snapshot ticket state and drop any stale "parked" flag.
   captureTurnStartState(session, id);
   void clearNeedsActionIfSet(id);
@@ -875,14 +765,14 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     let entryPoint: string | null = null;
     let systemNodePath: string | null = null;
     try {
-      const prefixEnv = cleanChildEnv();
+      const prefixEnv = cleanChildEnv('gemini');
       const whereResult = execSync('where node', { encoding: 'utf8', env: prefixEnv, timeout: 10_000, windowsHide: true }).trim().split(/\r?\n/);
       const selfExe = process.execPath.toLowerCase();
       systemNodePath = whereResult.find(p => p.toLowerCase() !== selfExe && fs.existsSync(p)) || null;
       if (!systemNodePath) systemNodePath = whereResult[0] || null;
     } catch {}
     try {
-      const prefixEnv = cleanChildEnv();
+      const prefixEnv = cleanChildEnv('gemini');
       const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', env: prefixEnv, timeout: 10_000, windowsHide: true }).trim();
       const candidateJs = path.join(npmPrefix, 'node_modules', '@google', 'gemini-cli', 'bundle', 'gemini.js');
       const candidateExe = path.join(npmPrefix, 'node_modules', '@google', 'gemini-cli', 'bin', 'gemini.exe');
@@ -893,13 +783,13 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
         exePath = candidateExe;
       }
     } catch (err) {
-      console.log(`[${id}] Failed to resolve gemini path for reply:`, err);
+      log.info(`[${id}] Failed to resolve gemini path for reply:`, err);
     }
 
     // Second attempt: use 'where' to find the JS entry
     if (!entryPoint && !exePath) {
       try {
-        const prefixEnv = cleanChildEnv();
+        const prefixEnv = cleanChildEnv('gemini');
         const wherePath = execSync(`where ${binaryName}`, { encoding: 'utf8', env: prefixEnv, timeout: 10_000, windowsHide: true }).trim().split(/\r?\n/)[0];
         if (wherePath) {
           const binDir = path.dirname(wherePath);
@@ -916,10 +806,10 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       } catch {}
     }
 
-    const env = cleanChildEnv();
+    const env = cleanChildEnv('gemini', id);
     const nodeCmd = systemNodePath || 'node';
     if (entryPoint) {
-      console.log(`[${id}] Windows reply spawn (node=${nodeCmd}): ${entryPoint}`);
+      log.info(`[${id}] Windows reply spawn (node=${nodeCmd}): ${entryPoint}`);
       replyProc = spawn(nodeCmd, [entryPoint, ...resumeArgs], {
         cwd: executionRoot,
         env,
@@ -927,7 +817,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
         windowsHide: true,
       });
     } else if (exePath) {
-      console.log(`[${id}] Windows reply spawn (exe): ${exePath}`);
+      log.info(`[${id}] Windows reply spawn (exe): ${exePath}`);
       replyProc = spawn(exePath, resumeArgs, {
         cwd: executionRoot,
         env,
@@ -935,7 +825,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
         windowsHide: true,
       });
     } else {
-      console.log(`[${id}] Windows reply spawn (fallback): ${binaryName}`);
+      log.info(`[${id}] Windows reply spawn (fallback): ${binaryName}`);
       replyProc = spawn('cmd.exe', ['/c', `set "NODE_OPTIONS=" && ${binaryName}`, ...resumeArgs], {
         cwd: executionRoot,
         env,
@@ -946,7 +836,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   } else {
     replyProc = spawn(binaryName, resumeArgs, {
       cwd: executionRoot,
-      env: cleanChildEnv(),
+      env: cleanChildEnv('gemini', id),
       stdio: 'pipe',
     });
   }
@@ -960,9 +850,15 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   });
 
   replyProc.on('error', async (error) => {
-    session.status = 'waiting-input';
+    // FLUX-915: a stop racing a spawn error stays 'cancelled' rather than reverting to resumable.
+    if (session.requestedStop) {
+      session.status = 'cancelled';
+      session.endedAt = new Date().toISOString();
+    } else {
+      session.status = 'waiting-input';
+    }
     commitReplyPending();
-    flushSessionOutput(session, true);
+    flushSessionOutput(session, true, 'text');
     await updateTaskWithHistory(id, {
       updatedBy: 'Agent',
       entries: [buildActivityEntry(`${session.label} reply failed: ${error.message}`, 'Agent', new Date().toISOString())],
@@ -972,10 +868,18 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
 
   replyProc.on('exit', async () => {
     commitReplyPending();
-    flushSessionOutput(session, true);
-    session.status = 'waiting-input';
-    // FLUX-651: resumed turn ended — flag if the agent parked without acting.
-    if (!session.pausedForInput) await flagIfParked(session, id);
+    flushSessionOutput(session, true, 'text');
+    // FLUX-915: a user-requested stop stays 'cancelled' instead of reverting to 'waiting-input'
+    // (which counted the killed session as active forever). Otherwise the resumable conversation
+    // stays waiting-input.
+    if (session.requestedStop) {
+      session.status = 'cancelled';
+      session.endedAt = new Date().toISOString();
+    } else {
+      session.status = 'waiting-input';
+    }
+    // FLUX-651: resumed turn ended — flag if the agent parked without acting. Skip a stopped turn.
+    if (!session.pausedForInput && !session.requestedStop) await flagIfParked(session, id);
     broadcastEvent('taskUpdated', { id });
   });
 }

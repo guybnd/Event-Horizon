@@ -1,3 +1,4 @@
+import { log } from './log.js';
 import fs from 'fs/promises';
 import { renameSync } from 'fs';
 import { getConfigFile } from './workspace.js';
@@ -67,6 +68,11 @@ export let configCache: any = {
     claudeCode: {
       groomingModel: '',
       implementationModel: '',
+      // FLUX-482: default model for DELEGATED subagents (delegate_to_agent / delegate_parallel)
+      // when neither a per-call `model` param nor the persona's own `model` is set. Empty/undefined
+      // = no override → fall back to the status-derived grooming/implementation model. Set a cheap
+      // tier (e.g. 'sonnet') to make all un-overridden delegates cheap by default.
+      delegateModel: '',
     },
     geminiCli: {
       groomingModel: '',
@@ -146,7 +152,7 @@ export async function loadConfig() {
     }
 
     configCache = { ...configCache, ...loaded };
-    console.log('Loaded config');
+    log.info('Loaded config');
   } catch (error: any) {
     if (error.code === 'ENOENT') {
       // No file yet (fresh install) — write the defaults out. This is the ONLY
@@ -174,7 +180,7 @@ export async function loadConfig() {
     }
     configCache.chatOpenDefaultMigrated = true;
     await saveConfig(configCache);
-    console.log('[config] applied chat-open-default migration (boardCardOpenMode →', configCache.boardCardOpenMode + ')');
+    log.info('[config] applied chat-open-default migration (boardCardOpenMode →', configCache.boardCardOpenMode + ')');
   }
 }
 

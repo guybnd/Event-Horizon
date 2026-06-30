@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { Sparkles, MessageSquare, Minus, X, History, Square, RotateCcw, GitBranch, FolderGit2, GitPullRequest, ListChecks, Loader2, MessageCircleQuestion, PanelRight, PanelRightClose, Maximize2, Tag, Link2, Gauge, Save, ChevronDown, Check, Inbox, CircleHelp, TriangleAlert, Circle, Play } from 'lucide-react';
+import { Sparkles, MessageSquare, Minus, X, History, Square, RotateCcw, GitBranch, FolderGit2, GitPullRequest, ListChecks, Loader2, MessageCircleQuestion, PanelRight, PanelRightClose, Maximize2, Tag, Link2, Gauge, Save, ChevronDown, Check, CircleHelp, TriangleAlert, Circle, Play } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
@@ -13,6 +13,7 @@ import { ChatPresenceRail, ChatOrchestrationBlock } from './task-modal/ChatOrche
 import { selectChatRunGroup, isActiveSession } from '../orchestration';
 import { ChatDiffPanel } from './task-modal/ChatDiffPanel';
 import { TicketSideView } from './task-modal/TicketSideView';
+import { ChatArtifactCard } from './task-modal/ChatArtifactCard';
 import { getPriorityIcon } from './task-modal/taskModalHelpers';
 import { TicketContextCard, BoardSnapshotCard, SessionMeter } from './task-modal/chatContext';
 import { parseQuickReplies } from './task-modal/chatQuickReplies';
@@ -20,8 +21,9 @@ import { parseRunProposal } from './task-modal/chatRunProposal';
 import { ChatRequireInputBanner } from './task-modal/ChatRequireInputBanner';
 import { TagSelector } from './TagSelector';
 import { TicketActions } from './ticket-actions/TicketActions';
-import { ChatPendingInteractions, PendingInteractionFallback, usePendingInteractions } from './pendingInteractions';
-import { useDock, MIN_SIDEVIEW_WIDTH, MAX_SIDEVIEW_WIDTH, DEFAULT_SIDEVIEW_WIDTH, type ComposerSelections, type AnchorRect } from './DockProvider';
+import { ChatPendingInteractions, usePendingInteractions, useComposerAnswer } from './pendingInteractions';
+import { AttentionDock } from './attention/AttentionDock';
+import { useDock, MIN_SIDEVIEW_WIDTH, MAX_SIDEVIEW_WIDTH, DEFAULT_SIDEVIEW_WIDTH, type ComposerSelections, type AnchorRect, type WindowGeometry } from './DockProvider';
 import { useTicketSideView } from '../hooks/useTicketSideView';
 import { fireDesktopNotification } from '../hooks/useDesktopNotifications';
 import { getStatusTint, getStatusColorClass } from '../statusStyles';
@@ -136,14 +138,12 @@ export function ChatDock() {
   // FLUX-720: conversations with an unresolved pending interaction (approval / question /
   // board-rebase). Drives the hard-gated tab: a chat awaiting your answer is force-pinned with a
   // distinct prompt icon and can't be closed/removed until it's resolved.
-  // FLUX-809: `pendingCount` (total pending prompts) + the manual-open machinery back the pinned
-  // Pending tab — always present, loud when prompts wait, toggles/raises the pending window.
-  // FLUX-813: use `pendingPanelVisible` (orphan-forced OR manual) not `pendingPanelOpen` (manual only)
-  // so the tab's open-indicator bar reflects the window actually being on-screen when orphans force it.
-  const { pendingPromptConversationIds, requireInputConversationIds, pendingCount, pendingPanelVisible, togglePendingPanel } = usePendingInteractions();
+  // FLUX-898: the pending count + panel are now owned by the unified <AttentionDock/>; the dock taskbar
+  // only needs the prompt/require-input conversation-id sets for its per-tab gating + badges.
+  const { pendingPromptConversationIds, requireInputConversationIds } = usePendingInteractions();
   // Window/open state lives in the app-root DockProvider (FLUX-603) so a card can drive it
   // and it survives view switches. `anchors` records where each window should spawn from.
-  const { open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, toggle, closeCard, reopenFromHistory, setDraft, setSelections, reorder, promoteToFront, toggleSideView, setSideviewWidth, seedSideviewWidth, openTicket, raise } = useDock();
+  const { open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, windowGeometry, toggle, closeCard, reopenFromHistory, setDraft, setSelections, reorder, promoteToFront, toggleSideView, openSideView, setSideviewWidth, seedSideviewWidth, setSectionOpen, setWindowGeometry, openTicket, raise } = useDock();
 
   // FLUX-744: open-ticket bridge. `openTask` (AppContext, which lives ABOVE the DockProvider) can't
   // call dock actions directly, so for the default 'chat' open mode it dispatches a `flux:open-ticket`
@@ -215,6 +215,27 @@ export function ChatDock() {
     const unsubs = [subscribeToEvent('activity', on), subscribeToEvent('taskUpdated', on)];
     return () => { cancelled = true; unsubs.forEach((u) => u()); };
   }, [subscribeToEvent]);
+
+  // FLUX-910: bounded polling fallback for the orchestrator session. The board has no entry in the
+  // 3s /api/tasks poll, so its live state rides ONLY on the SSE stream above. If that stream stalls,
+  // the AppContext watchdog reconnects within ~40s — but while a board turn is actively running we
+  // poll every 3s as a faster backstop, so the "working" indicator and turn-completion never hang on
+  // a flaky stream. Bounded to an active turn (running/pending): an idle board still costs nothing,
+  // preserving the FLUX-611 no-idle-polling intent.
+  const boardLive = boardSession?.status === 'running' || boardSession?.status === 'pending';
+  useEffect(() => {
+    if (!boardLive) return;
+    let cancelled = false;
+    const iv = setInterval(() => {
+      void (async () => {
+        try {
+          const s = await fetchTaskCliSession(BOARD_CONVERSATION_ID);
+          if (!cancelled) setBoardSession(s);
+        } catch { /* transient — keep last good */ }
+      })();
+    }, 3000);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, [boardLive]);
 
   const allTasks = tasks as Task[];
 
@@ -473,10 +494,6 @@ export function ChatDock() {
 
   return (
     <>
-      {/* FLUX-720: no-orphans global fallback — pending prompts whose origin dock isn't open (or
-          whose conversationId is null) surface here; deduped against the inline panels. */}
-      <PendingInteractionFallback />
-
       {/* FLUX-801: AnimatePresence gives each window an exit animation (shrink back toward its
           origin card) when it leaves `open`. mode defaults to "sync" so multiple windows coexist. */}
       <AnimatePresence>
@@ -504,11 +521,21 @@ export function ChatDock() {
           // FLUX-734: ticket sideview toggle (ticket windows only — the orchestrator has no task).
           sideViewOpen={sideviewOpen.includes(id)}
           onToggleSideView={() => toggleSideView(id)}
+          // FLUX-887: "Open in panel" on the inline artifact card — idempotently reveal the sideview
+          // (only toggles when closed) and force the Grooming Artifact section open so the viewer shows.
+          onOpenArtifact={() => {
+            openSideView(id);
+            setSectionOpen('artifact', true);
+          }}
           // FLUX-740: live, persisted sideview width + setter for the chat↔panel resize divider.
           sideviewWidth={sideviewWidth}
           setSideviewWidth={setSideviewWidth}
           // FLUX-744: seed a proportional (~45%) width from the chat column when the panel opens.
           seedSideviewWidth={seedSideviewWidth}
+          // FLUX-920: persisted per-conversation window footprint — seeds size/position on (re)mount so
+          // a resize/drag survives minimize/reopen + reload; committed back on the resize/drag gesture.
+          windowGeometry={windowGeometry[id]}
+          onGeometryChange={(geom) => setWindowGeometry(id, geom)}
           onMinimize={() => toggle(id)}
           // FLUX-720: the window's close (X) is hidden while a prompt is pending, mirroring the
           // tab gate — the chat can't be retired until you resolve it. Minimize stays available.
@@ -533,17 +560,18 @@ export function ChatDock() {
           orchestrator
           open={open.includes(BOARD_CONVERSATION_ID)}
           state={cardState(boardSession?.status, acked.includes(BOARD_CONVERSATION_ID))}
-          pendingPrompt={pendingPromptConversationIds.has(BOARD_CONVERSATION_ID)}
+          // FLUX-923: same open=inline / minimized=dock handoff as the ticket tabs below.
+          pendingPrompt={pendingPromptConversationIds.has(BOARD_CONVERSATION_ID) && !open.includes(BOARD_CONVERSATION_ID)}
           activity={boardSession?.currentActivity ?? null}
           unread={unreadOf(BOARD_CONVERSATION_ID)}
           onOpen={(el) => toggle(BOARD_CONVERSATION_ID, el)}
           onContextMenu={(e) => setMenu({ id: BOARD_CONVERSATION_ID, x: e.clientX, y: e.clientY })}
         />
 
-        {/* FLUX-809: pinned Pending tab — always present, immediately right of the Orchestrator.
-            Shows the live count of pending prompts (loud amber + pulse when >0), and toggles /
-            brings the pending window on-screen. Outside the SortableContext: not draggable. */}
-        <PendingTab count={pendingCount} open={pendingPanelVisible} onToggle={togglePendingPanel} />
+        {/* FLUX-898: the unified attention surface — pinned immediately right of the Orchestrator.
+            Replaces the old Pending tab + floating fallback: a 3-tier dynamic-label button
+            (Needs You ▸ Updates ▸ Activity) that peeks new prompts and raises a 3-tab inbox. */}
+        <AttentionDock />
 
         {activeTickets.length > 0 && (
           <div className="h-7 w-px bg-[var(--eh-border)]" aria-hidden="true" />
@@ -557,8 +585,12 @@ export function ChatDock() {
             <SortableContext items={orderedIds} strategy={horizontalListSortingStrategy}>
               {orderedTickets.map((t) => {
                 // A require-input swimlane gets the SAME persistent tab badge as a parked prompt — it
-                // stays until answered and ignores ack/open, fixing the badge clearing when you open the chat.
-                const pendingPrompt = pendingPromptConversationIds.has(t.id) || requireInputConversationIds.has(t.id);
+                // stays until answered. FLUX-923: but gate the tab GLOW on the window being minimized/
+                // closed — while the chat is OPEN the prompt is shown inline there, so the tab must stay
+                // quiet (no double-demand); minimizing re-asserts the glow so the prompt is never lost.
+                // The badge still re-appears the moment the window is minimized.
+                const pendingPrompt =
+                  (pendingPromptConversationIds.has(t.id) || requireInputConversationIds.has(t.id)) && !open.includes(t.id);
                 // FLUX-720 hard-close gate keys off PROMPTS ONLY — require-input tabs keep the badge but
                 // stay closeable (they're dismissible by design), matching the context-menu close below.
                 const hardClose = pendingPromptConversationIds.has(t.id);
@@ -699,49 +731,6 @@ function SortableChatTab(props: React.ComponentProps<typeof ChatTab>) {
   };
   return (
     <ChatTab {...props} dragRef={setNodeRef} dragStyle={dragStyle} dragHandleProps={{ ...attributes, ...listeners }} />
-  );
-}
-
-/** FLUX-809: the pinned Pending tab — sits immediately right of the Orchestrator, always present.
- *  Carries the live count of pending prompts the agent is waiting on; loud (amber fill + count
- *  badge + attention pulse) when count > 0, subdued at 0. Clicking it toggles the pending fallback
- *  window and brings it on-screen (re-clamped). Like the orchestrator tab it's pinned — not in the
- *  drag SortableContext, never retirable. */
-function PendingTab({ count, open, onToggle }: { count: number; open: boolean; onToggle: () => void }) {
-  const loud = count > 0;
-  const base =
-    'group relative flex h-9 flex-shrink-0 items-center gap-1.5 rounded-lg border pl-2 pr-2.5 text-left shadow-sm transition-all duration-150 ';
-  const surface = loud
-    ? 'border-amber-400/70 bg-amber-400/15 text-amber-700 dark:text-amber-300 eh-taskcard-needs-input '
-    : open
-      ? 'border-gray-300 bg-gray-100 text-gray-700 dark:border-white/20 dark:bg-white/15 dark:text-gray-200 '
-      : 'border-gray-200 bg-white text-gray-500 hover:bg-gray-50 dark:border-white/10 dark:bg-white/5 dark:text-gray-400 dark:hover:bg-white/10 ';
-  const copy = loud
-    ? `${count} pending item${count === 1 ? '' : 's'} waiting on you`
-    : 'No pending items';
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      aria-label={`Pending — ${copy}`}
-      title={copy}
-      className={base + surface}
-    >
-      <Inbox className={`h-4 w-4 flex-shrink-0 ${loud ? 'text-amber-500' : ''}`} />
-      <span className="text-xs font-semibold leading-none tracking-tight">Pending</span>
-      {count > 0 && (
-        <span className="ml-0.5 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-bold leading-none text-white">
-          {count}
-        </span>
-      )}
-      {/* Windows-style open indicator bar (mirrors ChatTab). */}
-      {open && (
-        <span
-          aria-hidden="true"
-          className="pointer-events-none absolute bottom-0 left-1/2 h-[2px] w-3/4 -translate-x-1/2 rounded-full bg-amber-500"
-        />
-      )}
-    </button>
   );
 }
 
@@ -1569,9 +1558,12 @@ function ChatWindow({
   onSelectionsChange,
   sideViewOpen = false,
   onToggleSideView,
+  onOpenArtifact,
   sideviewWidth = DEFAULT_SIDEVIEW_WIDTH,
   setSideviewWidth,
   seedSideviewWidth,
+  windowGeometry,
+  onGeometryChange,
   onMinimize,
   onClose,
 }: {
@@ -1600,6 +1592,9 @@ function ChatWindow({
   sideViewOpen?: boolean;
   /** FLUX-734: toggle the ticket sideview panel. Absent for the orchestrator (no bound task). */
   onToggleSideView?: () => void;
+  /** FLUX-887: idempotently open the sideview + its Grooming Artifact section (the inline artifact
+   *  card's "Open in panel" action). Absent for the orchestrator (no bound task). */
+  onOpenArtifact?: () => void;
   /** FLUX-740: live, persisted width of the sideview panel (set by the chat↔panel divider). */
   sideviewWidth?: number;
   /** FLUX-740: commit a new sideview width (clamped + persisted in DockProvider). */
@@ -1607,6 +1602,12 @@ function ChatWindow({
   /** FLUX-744: seed a proportional (~45%) sideview width from the chat column at open time, bounded
    *  by `maxWidth` so the grown window fits the viewport (no-op once the user has set a width). */
   seedSideviewWidth?: (chatWidth: number, maxWidth?: number) => void;
+  /** FLUX-920: this conversation's persisted window footprint (size + dragged position), or undefined
+   *  if it has never been resized/moved. Seeds `size`/`pos` on mount only (clamped to the viewport). */
+  windowGeometry?: WindowGeometry;
+  /** FLUX-920: commit a window-footprint change (merge-patched + persisted in DockProvider). Called on
+   *  the resize-grip commit (`{w,h}`) and the title-bar drag commit (`{left,bottom}`). */
+  onGeometryChange?: (geom: Partial<WindowGeometry>) => void;
   onMinimize: () => void;
   /** Retire the card into History and close the window. Absent for the pinned orchestrator. */
   onClose?: () => void;
@@ -1616,6 +1617,10 @@ function ChatWindow({
   const chat = useChatSession(id, true, working);
   const allTasks = useAppSelector((s) => s.tasks) as Task[];
   const config = useAppSelector((s) => s.config);
+  // FLUX-923: composer-as-answer. A parked single-question ask_user_question for THIS chat (its own id,
+  // or — via the resilience net — an unrouted prompt claimed by the single live chat) can be answered
+  // straight from the composer in addition to the picker's chips. Shared hook (see useComposerAnswer).
+  const { answerPrompt, onAnswerQuestion } = useComposerAnswer(id);
   // FLUX-744: open the legacy full-screen ticket modal from the chat header (collapsing the chat).
   const { openTaskFullView } = useAppActions();
   const requireInputStatus = getRequireInputStatus(config);
@@ -1649,14 +1654,29 @@ function ChatWindow({
   // the grip lives at the top-right corner and grows the window up + right.
   // FLUX-727: seed the larger default clamped to the viewport so it never spawns off-screen on a
   // small display (the resize maxW/maxH below keep it bounded once the user drags the grip).
-  const [size, setSize] = useState(() => ({
-    w: typeof window !== 'undefined' ? Math.min(CHAT_WINDOW_WIDTH, window.innerWidth - 16) : CHAT_WINDOW_WIDTH,
-    h: typeof window !== 'undefined' ? Math.min(CHAT_WINDOW_HEIGHT, window.innerHeight - 100) : CHAT_WINDOW_HEIGHT,
-  }));
+  // FLUX-920: seed from the persisted footprint when present (a prior resize), else the larger default.
+  // Either way the seed is clamped to the live viewport (the same bound the resize grip enforces) so a
+  // geometry saved on a bigger monitor can never reopen larger than — or off — the current screen.
+  const [size, setSize] = useState(() => {
+    const maxW = typeof window !== 'undefined' ? window.innerWidth - 16 : CHAT_WINDOW_WIDTH;
+    const maxH = typeof window !== 'undefined' ? window.innerHeight - 100 : CHAT_WINDOW_HEIGHT;
+    const w = windowGeometry?.w ?? CHAT_WINDOW_WIDTH;
+    const h = windowGeometry?.h ?? CHAT_WINDOW_HEIGHT;
+    return {
+      w: Math.max(MIN_WINDOW_WIDTH, Math.min(w, maxW)),
+      h: Math.max(MIN_WINDOW_HEIGHT, Math.min(h, maxH)),
+    };
+  });
   // Dragged position as a `{left, bottom}` pair (FLUX-603) — bottom-pinned like the spawn
   // default, so the existing top-right resize math is unchanged. `null` until first drag,
   // when it falls back to the anchored spawn position below.
-  const [pos, setPos] = useState<{ left: number; bottom: number } | null>(null);
+  // FLUX-920: seed from the persisted position when present (a prior drag); the render-derived
+  // `left`/`bottom` below clamp it into the live viewport, so a stale off-screen value self-corrects.
+  const [pos, setPos] = useState<{ left: number; bottom: number } | null>(() =>
+    windowGeometry && windowGeometry.left != null && windowGeometry.bottom != null
+      ? { left: windowGeometry.left, bottom: windowGeometry.bottom }
+      : null,
+  );
 
   // FLUX-744: live viewport size, so the on-screen clamp below re-runs reactively on a window resize
   // (a resize doesn't re-render React by itself). Updated only on resize — cheap.
@@ -1765,16 +1785,26 @@ function ChatWindow({
     const startY = e.clientY;
     const baseLeft = rect?.left ?? left;
     const baseBottom = (typeof window !== 'undefined' ? window.innerHeight : 800) - (rect?.bottom ?? 0);
+    // FLUX-920: track the last committed position so we can persist it on pointer-up (and only when
+    // the title bar actually moved, so a plain click that raises the window doesn't write a position).
+    let lastLeft = baseLeft;
+    let lastBottom = baseBottom;
+    let moved = false;
     const onMove = (ev: PointerEvent) => {
       const maxLeft = (typeof window !== 'undefined' ? window.innerWidth : 1280) - outerW - 8;
       const maxBottom = (typeof window !== 'undefined' ? window.innerHeight : 800) - size.h - 8;
       const nLeft = Math.max(8, Math.min(baseLeft + (ev.clientX - startX), maxLeft));
       const nBottom = Math.max(8, Math.min(baseBottom - (ev.clientY - startY), maxBottom));
+      lastLeft = nLeft;
+      lastBottom = nBottom;
+      moved = true;
       setPos({ left: nLeft, bottom: nBottom });
     };
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
+      // FLUX-920: persist the dragged position so it survives minimize/reopen + reload.
+      if (moved) onGeometryChange?.({ left: lastLeft, bottom: lastBottom });
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
@@ -1791,14 +1821,24 @@ function ChatWindow({
     const startH = size.h;
     const maxW = (typeof window !== 'undefined' ? window.innerWidth : 1280) - 16 - (showSideView ? sideviewWidth : 0);
     const maxH = (typeof window !== 'undefined' ? window.innerHeight : 800) - 100;
+    // FLUX-920: track the last committed size so we can persist it on pointer-up (and only when the
+    // grip actually moved, so a no-op click on the grip doesn't write).
+    let lastW = startW;
+    let lastH = startH;
+    let moved = false;
     const onMove = (ev: PointerEvent) => {
       const w = Math.max(MIN_WINDOW_WIDTH, Math.min(startW + (ev.clientX - startX), maxW));
       const h = Math.max(MIN_WINDOW_HEIGHT, Math.min(startH - (ev.clientY - startY), maxH));
+      lastW = w;
+      lastH = h;
+      moved = true;
       setSize({ w, h });
     };
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
+      // FLUX-920: persist the resized footprint so it survives minimize/reopen + reload.
+      if (moved) onGeometryChange?.({ w: lastW, h: lastH });
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
@@ -1928,6 +1968,8 @@ function ChatWindow({
       awaitingInputBanner={isRequireInput && task ? <ChatRequireInputBanner task={task} /> : undefined}
       coldResumeChoice={coldResumeChoice}
       questionPicker={<ChatPendingInteractions conversationId={id} />}
+      answerPrompt={answerPrompt}
+      onAnswerQuestion={onAnswerQuestion}
       diffBranch={task?.branch}
       tickets={allTasks}
       meter={<SessionMeter session={session} config={config} />}
@@ -1936,6 +1978,9 @@ function ChatWindow({
       ) : undefined}
       orchestrationBlock={runGroup ? (
         <ChatOrchestrationBlock group={runGroup} taskId={id} onOpenRun={openRun} onStopSession={stopOne} onStopAll={stopAll} />
+      ) : undefined}
+      artifactCard={task && (task.artifacts?.revisions?.length ?? 0) > 0 ? (
+        <ChatArtifactCard task={task} onOpen={onOpenArtifact} />
       ) : undefined}
       actions={
         orchestrator ? (
@@ -2072,7 +2117,15 @@ function ChatWindow({
                     className="relative flex-shrink-0 overflow-hidden"
                     style={{ width: sideviewWidth }}
                   >
-                    <TicketSideView c={c} />
+                    {/* FLUX-874: route an artifact-region annotation into THIS chat — enqueue if a
+                        turn is live (FIFO), otherwise send straight away (starts/resumes a session). */}
+                    <TicketSideView
+                      c={c}
+                      onSendToChat={(text) => {
+                        if (working || chat.busy) chat.enqueue(text);
+                        else void chat.send(text);
+                      }}
+                    />
                   </div>
                 </>
               )}

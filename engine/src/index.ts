@@ -13,6 +13,7 @@ if (MCP_MODE) {
   console.log = (...args: any[]) => console.error(...args);
 }
 
+import { log } from './log.js';
 import express from 'express';
 import cors from 'cors';
 import fs from 'fs/promises';
@@ -292,6 +293,18 @@ app.post('/api/board/ask-question', requireWorkspace, async (req, res) => {
     res.status(400).json({ error: 'questions[] is required' });
     return;
   }
+  // FLUX-923: attribution breadcrumb so HITL routing is observable. When a ticket-bound question lands
+  // UNROUTED, the portal can only show it in the dock catch-all (the inline picker filters by id) unless
+  // the resilience net claims it — this log distinguishes "claimed id verified" from "dropped to unrouted"
+  // (boundConversationId already warns on a token mismatch). Pairs with the FLUX-908 binding work.
+  const claimedId = typeof req.body?.conversationId === 'string' ? req.body.conversationId : null;
+  if (claimedId && !conversationId) {
+    // The interesting case — a claimed id that failed verification and dropped to unrouted. Always warn.
+    console.warn(`[hitl] ask-question from claimed "${claimedId}" routed UNROUTED (token unverified) — inline picker will rely on the portal resilience net (FLUX-923)`);
+  } else if (DEV) {
+    // The happy path runs on every routed ask-question (a hot HITL path) — keep it out of production logs.
+    console.log(`[hitl] ask-question routed to conversationId=${conversationId ?? '(unrouted/null)'}`);
+  }
   // FLUX-826 (lever B): mark that this turn routed a decision through the structured picker, so
   // the turn-end soft backstop won't ALSO nudge on a benign comment from the same turn — the
   // question route (lever A) already owns that turn's safety net. conversationId is the ticket id
@@ -549,8 +562,8 @@ async function startServer() {
 
   const bindHost = ALLOW_REMOTE ? '0.0.0.0' : '127.0.0.1';
   const server = app.listen(PORT, bindHost, async () => {
-    console.log(`Event Horizon Engine running on port ${PORT}`);
-    console.log(`Portal:   http://localhost:${PORT}`);
+    log.info(`Event Horizon Engine running on port ${PORT}`);
+    log.info(`Portal:   http://localhost:${PORT}`);
     if (ALLOW_REMOTE) {
       console.warn('[FLUX] EH_ALLOW_REMOTE=1 — bound to 0.0.0.0 and accepting non-loopback connections. The API has NO authentication and can spawn agents with shell/file access; only enable this on a trusted network.');
     }

@@ -4,6 +4,7 @@ import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { createTask, deleteTask, fetchTask, sendTaskCliInput, updateTask } from '../api';
 import { runAgentAction, launchOrchestration, launchPhaseDefault, getOrchestrationMode, phaseCombiner, phaseLaunchStatus, type LaunchPhase } from '../agentActions';
 import { type OrchestrationLaunchPlan } from '../components/OrchestrationLauncher';
+import { TaskMarkdown } from '../components/TaskMarkdown';
 import { isAgentSession } from '../types';
 import type { HistoryEntry, InlineSubtask, Task } from '../types';
 import { DEFAULT_READY_FOR_MERGE_STATUS, getRequireInputStatus } from '../workflow';
@@ -890,7 +891,9 @@ export function useTaskModalController() {
       <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
       <div className="min-w-0 flex-1">
         <p className="mb-1 text-xs font-semibold uppercase tracking-wider text-amber-800 dark:text-amber-300">Response Needed</p>
-        <p className="whitespace-pre-wrap text-sm text-amber-700 dark:text-amber-400">{lastComment.comment}</p>
+        <div className="text-sm text-amber-700 dark:text-amber-400">
+          <TaskMarkdown body={lastComment.comment ?? ''} compact imageMode="comment" />
+        </div>
         <p className="mt-1.5 text-[10px] text-amber-500/70">
           {lastComment.user} · {new Date(lastComment.date).toLocaleString()}
         </p>

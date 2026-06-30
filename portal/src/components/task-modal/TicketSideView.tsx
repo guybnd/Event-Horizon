@@ -1,9 +1,10 @@
 import { useState, type ReactNode } from 'react';
 import {
-  AlignLeft, ChevronDown, ChevronRight, ListTree, Maximize2, MessageSquare, Minimize2,
+  AlignLeft, ChevronDown, ChevronRight, LayoutTemplate, ListTree, Maximize2, MessageSquare, Minimize2,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { SubtasksPanel } from './SubtasksPanel';
+import { ArtifactPanel } from './ArtifactPanel';
 import { HistoryList } from './HistoryList';
 import { CommentBox } from './CommentBox';
 import { ActivityFilterTabs } from './ActivityFilterTabs';
@@ -119,6 +120,33 @@ function SideviewPane({
   );
 }
 
+/**
+ * FLUX-873: the rich grooming-artifact viewer, surfaced as its own collapsible section at the top of
+ * the panel (above Description) — but ONLY when the ticket has a published artifact, so the 99% of
+ * tickets without one are unaffected. Open-state persists via DockProvider (keyed `artifact`),
+ * defaulting open. Unlike the generic {@link Section} it does NOT height-cap its body — the artifact
+ * iframe owns its own (large) height and would otherwise double-scroll inside a 40vh cap.
+ */
+function ArtifactSection({ c, onSendToChat }: { c: SideViewController; onSendToChat?: (text: string) => void }) {
+  const { sectionOpen, setSectionOpen } = useDock();
+  const open = sectionOpen['artifact'] ?? true;
+  return (
+    <section className="eh-border shrink-0 overflow-hidden rounded-xl border bg-[var(--eh-input-bg)]">
+      <button
+        type="button"
+        onClick={() => setSectionOpen('artifact', !open)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)] transition-colors hover:text-[var(--eh-text-secondary)]"
+      >
+        {open ? <ChevronDown className="h-3.5 w-3.5 flex-shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 flex-shrink-0" />}
+        <LayoutTemplate className="h-3.5 w-3.5 flex-shrink-0" />
+        <span>Grooming Artifact</span>
+      </button>
+      {open && <div className="px-3 pb-3">{<ArtifactPanel task={c.task} onSendToChat={onSendToChat} />}</div>}
+    </section>
+  );
+}
+
 /** Hierarchy (subtasks / parent) — collapsed by default, sits below the two primary panes. */
 const HIERARCHY_SECTION: SideViewSection = {
   id: 'subtasks',
@@ -152,7 +180,7 @@ const HIERARCHY_SECTION: SideViewSection = {
  * the chat window chrome + metadata bar above, so repeating them here was pure dead space. The panes
  * fill the whole panel; closing the sideview is the chat header's panel-toggle.
  */
-export function TicketSideView({ c }: { c: SideViewController }) {
+export function TicketSideView({ c, onSendToChat }: { c: SideViewController; onSendToChat?: (text: string) => void }) {
   // FLUX-744: which pane is expanded to fill the panel (null = the default Description/Activity split).
   const [focus, setFocus] = useState<PaneFocus>(null);
   return (
@@ -164,6 +192,7 @@ export function TicketSideView({ c }: { c: SideViewController }) {
       {/* Panes: Description → Activity → Hierarchy. Each primary pane scrolls internally; the column
           keeps `overflow-y-auto` as a fallback so an expanded Hierarchy stays reachable. */}
       <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto px-3 py-3">
+        {(c.task.artifacts?.revisions?.length ?? 0) > 0 && <ArtifactSection c={c} onSendToChat={onSendToChat} />}
         <SideviewPane id="description" title="Description" icon={AlignLeft} focus={focus} setFocus={setFocus}>
           <div className="flex min-h-0 flex-1 flex-col px-2 pb-2">
             <TaskDescriptionSurface

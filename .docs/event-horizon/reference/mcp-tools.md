@@ -43,6 +43,8 @@ Key properties:
 | [`get_board_config`](#get_board_config) | Read | — |
 | [`get_board_state`](#get_board_state) | Read | — |
 | [`propose_board_rebase`](#propose_board_rebase) | Orchestrator (propose) | — |
+| [`delegate_to_agent`](#delegate_to_agent) | Orchestrator (delegation) | spawns child session |
+| [`delegate_parallel`](#delegate_parallel) | Orchestrator (delegation) | spawns child sessions |
 | [`get_project_group`](#get_project_group) | Read | — |
 | [`list_group_docs`](#list_group_docs) | Group docs — Read | — |
 | [`read_group_doc`](#read_group_doc) | Group docs — Read | — |
@@ -56,6 +58,7 @@ Key properties:
 | [`unarchive_ticket`](#unarchive_ticket) | Mutation | yes |
 | [`add_comment`](#add_comment) | Mutation | yes |
 | [`log_progress`](#log_progress) | Mutation | yes |
+| [`publish_artifact`](#publish_artifact) | Mutation | yes |
 | [`finish_ticket`](#finish_ticket) | Lifecycle (atomic) | yes |
 | [`create_subtask`](#create_subtask) | Mutation | yes |
 | [`create_branch`](#create_branch) | Branch | yes |
@@ -78,6 +81,7 @@ Read a ticket by ID. Returns an **agent digest**, not the raw file: history is d
 | `historyLimit` | number | no | Max history entries returned (default 20) |
 | `expand` | string[] | no | History entry `id`s to return in FULL (un-collapse). Pass the `id` shown on a `collapsed` entry when its summary isn't enough. |
 | `fullHistory` | boolean | no | Return all history uncollapsed. Discouraged — re-inflates context; prefer `expand`. |
+| `fullBody` | boolean | no | Return the full `body` even when it is oversized. By default a very large body is truncated with a recoverable size hint (FLUX-879); normal bodies are never truncated. |
 
 **Output:** JSON — full frontmatter + `body` + digested `history`. The internal `_path` field is stripped. Digest rules (`serializeTaskForAgent` in [`task-store.ts`](../../../engine/src/task-store.ts), `digestHistoryForAgent` in [`history.ts`](../../../engine/src/history.ts)):
 
@@ -87,6 +91,7 @@ Read a ticket by ID. Returns an **agent digest**, not the raw file: history is d
 - Older `agent_session` entries are likewise collapsed to their `outcome` (shown as `summary`), keeping `sessionId` — recover the full session via [`get_session_log`](#get_session_log)`(ticketId, sessionId)`, **not** `expand` (collapsed sessions carry `sessionId`, not `id`).
 - **Temporal supersession collapse** (FLUX-811): a `comment`/`activity` entry explicitly superseded by a **later** entry (via that entry's `supersedes: ["<id>"]`) collapses to `{ type, user, date, supersededBy: "<superseder-id>", summary?, id, collapsed: true }` — **independent of the recent-window** (it collapses even when recent, because a dead decision is noise regardless of age), recoverable via `expand: ["<id>"]`. **Guardrail:** an *agent*-authored supersession never collapses a `pin: true` or user-authored target; that target stays full and instead gains an advisory `supersededByAdvisory: "<superseder-id>"` flag. See [ticket-schema → supersedes](ticket-schema.md#per-type-fields).
 - Only the most recent `historyLimit` entries are returned; when older ones are omitted, the response includes `olderHistoryEntries: <count>`.
+- **Oversized `body` truncation** (FLUX-879, AXI #3): the `body` is returned whole until it exceeds a generous limit (`AGENT_BODY_LIMIT`, 12k chars in [`task-store.ts`](../../../engine/src/task-store.ts) — normal plan/AC bodies are never touched). Beyond that, the head is kept and a recoverable size hint is appended (`…[N of M body chars omitted … pass fullBody:true …]`), with `bodyTruncated: true` and `bodyOmittedChars: <count>` signalled top-level. Pass `fullBody: true` to get the whole body. Targets only pathological bodies that would otherwise dominate the payload on every read.
 - Attached `cliSession`/`cliSessions` summaries are the list-scoped set with `liveOutput` truncated to a short tail, and slimmed for agents: `args` (which embeds the full launch prompt — i.e. the ticket body again), `command`, and `pid` are dropped; `argsChars` preserves a size hint.
 - **Recent user comments are always surfaced** (FLUX-480): a top-level `recentUserComments` array holds the last `commentDigest.recentUserComments` (config, default 3) **user-authored** `comment` entries — scanned from the *full* history, so a user comment that aged past the window is never silently dropped. Authorship is heuristic: agents write `user: 'Agent'` (the canonical marker) or a model/framework display name; everything else is treated as a user (the bias is to never hide user intent). Cheap flags `hasUserComments` (always present) and `lastUserCommentAt` accompany it so routing/preview consumers can read them without pulling history.
 - **Launch focus persists across sessions** (FLUX-480): when a session is launched with a `focusComment`, the engine records a small `activity` entry carrying a `launchFocus` field (the clean focus text only — never the full launch prompt, which FLUX-473 keeps out of the digest). The digest surfaces the most recent one as top-level `launchFocus`, with `hasLaunchFocus: true`.
@@ -116,16 +121,24 @@ Read the full progress log of **one** past agent session on a ticket. This is th
 
 ### `list_tickets`
 
-List or filter tickets.
+List or filter tickets. **Active-by-default and bounded (FLUX-489):** a no-filter call no longer dumps the whole board (~480 rows) into context — it returns only non-terminal tickets and caps the result, attaching a note whenever rows were omitted so the truncation is never silent.
 
 | Input | Type | Required | Notes |
 |-------|------|----------|-------|
-| `status` | string | no | Filter by status name |
+| `status` | string | no | Filter by status name. An explicit status **overrides the active-default screen** — pass `status: 'Done'` (or `Released`/`Archived`) to list terminal tickets. |
 | `assignee` | string | no | Filter by assignee |
 | `tag` | string | no | Ticket must include this tag |
 | `priority` | string | no | One of: `Critical`, `High`, `Medium`, `Low`, `None` |
+| `search` | string | no | Case-insensitive substring match over ticket **id + title**. |
+| `active` | boolean | no | Default **true**: with no explicit `status`, return only **non-terminal** tickets (exclude `Done`, `Released`, `Archived`). Set `false` to include terminal statuses. |
+| `limit` | number | no | Max rows returned. Default **40**. Ignored when `includeAll` is true. |
+| `includeAll` | boolean | no | Escape hatch — return every matched row, ignoring both the active-default screen and the limit. |
 
 **Output:** JSON array of summaries `{ id, title, status, priority, effort, assignee, tags }`. Bodies and history are not included — use `get_ticket` for full content.
+
+When rows are omitted — by the active-default screen or by the `limit` — the result is instead `{ tickets: [...], note }`, where `note` reports how many terminal tickets were hidden and/or `Showing N of M matched`, plus how to widen the call (`includeAll:true`, raise `limit`, or pass an explicit `status`). This keeps the new default lean **and** discoverable — a bounded result is never silently truncated (FLUX-489).
+
+On **zero matches** it instead returns a definitive empty state `{ tickets: [], note }` that echoes the active filters (AXI #5, FLUX-878) — e.g. `No tickets match status=Done, tag=mcp.` — so an agent can tell "the filter matched nothing" from "I queried the wrong field." (`list_available_agents` does the same on an empty roster: `{ agents: [], note }`.)
 
 ### `get_board_config`
 
@@ -134,6 +147,8 @@ Read board configuration.
 **Input:** none.
 
 **Output:** `{ statuses, projects, tags, priorities, users, requireInputStatus, readyForMergeStatus }`. `statuses` merges visible columns and hidden statuses.
+
+This is an **agent-facing projection** (FLUX-928), trimmed because the orchestrator reads it every session and the result re-bills each turn: `tags` is a bare `string[]` of tag names (the Tailwind `color` class is dropped), and `priorities` is `{ name, icon }[]` (the `color` is dropped). The handler **clones** these from `configCache` and never mutates it — the portal/REST `GET /api/config` path still returns the full config (tags as `{ name, color }`, priorities with `color`) with colors intact.
 
 ### `get_board_state`
 
@@ -164,6 +179,37 @@ The **board-rebase ritual** (FLUX-659) — the orchestrator's structured way to 
 **Verb registry (v1):** all verbs run live — `leave` / `status` / `archive` / `dispatch`, plus `promote` ([FLUX-656](../architecture/code-map.md) `extractTicket()`) and `fold` (FLUX-657 `mergeTickets()`), both now registered. Their turn-slicing rests on the FLUX-658 substrate.
 
 **Teeth:** the mutating verbs `change_status`, `archive_ticket`, `extract_ticket`, and `merge_tickets` are in the [`permission_prompt`](#permission_prompt) **Confirm** tier, so a *direct* orchestrator call to mutate is gated even if it bypasses this ritual — "never silently restructure" is enforced by the gate, not just the prompt.
+
+### `delegate_to_agent`
+
+Spawn one specialist [orchestration persona](../../../engine/src/orchestration-personas.ts) as a child session, block until it reaches a terminal state, and return its output. Used by supervisor/lead personas to fan work out to specialists.
+
+**Input:** `{ ticketId, personaId, task, effort?, model?, timeout? }`
+
+- `personaId` — a persona id from [`list_available_agents`](#list-available-agents) (built-in or custom).
+- `task` — clear scope/expected-output for the delegate.
+- `effort` — `low | medium | high` (default `medium`).
+- `model` (**FLUX-482**) — optional per-call model override for *this* delegate (e.g. `"sonnet"`, `"opus"`). **Highest precedence** among the delegate-model overrides. **Claude-only for now** (see resolution note below). Omit to let the persona/config/status-derived default apply.
+- `timeout` — seconds, default 300, max 600.
+
+**Model resolution (FLUX-482).** The delegate route resolves the child's model with this precedence:
+
+1. per-call `model` param (above),
+2. `persona.model` — built-in personas now carry a cheaper tier (`sonnet`) on **search / grooming / doc-sync / review-reading** roles (e.g. `context-scout`, `planner`, the review reviewers, `docs-auditor`); **code-writing personas** (`implementer`, `test-engineer`, `dev-lead`, `finalizer`) carry **no** override and keep the strong model,
+3. `integrations.claudeCode.delegateModel` config default (empty by default = no override),
+4. the existing **status-derived** grooming/implementation model.
+
+With no config or persona override, default behavior is unchanged except for the personas deliberately set to the cheaper tier. The persona's `phase` is also threaded onto the child so its prompt and MCP-server scoping match the delegated role.
+
+> **Claude-framework only (for now).** The resolved model is threaded onto `session.model`, which currently only the Claude adapter honors; the Gemini and Copilot adapters read their own configured grooming/implementation model and ignore it (and `sonnet` is a Claude alias). The delegate route therefore gates the whole override to `framework === 'claude'` — on Gemini/Copilot boards all four layers above are inert and the delegate keeps its configured model. Generalizing the other adapters to honor a `cheap`/`strong` tier is tracked in FLUX-931.
+
+> FLUX-882 will later merge `delegate_to_agent` + `delegate_parallel` into a single `delegate` tool; the model-override contract above is designed to carry forward unchanged.
+
+### `delegate_parallel`
+
+Spawn several specialists **simultaneously**, wait for all to finish, return each result. Use for independent perspectives (e.g. fan-out review).
+
+**Input:** `{ ticketId, delegations: Array<{ personaId, task, effort?, model? }>, timeout? }` — each delegation entry takes the same `model?` per-call override (and same resolution precedence) as [`delegate_to_agent`](#delegate_to_agent); `timeout` applies to all.
 
 ### `get_project_group`
 
@@ -274,7 +320,7 @@ Create a new ticket.
 | `body` | string | no | `''` |
 | `author` | string | no | `Agent` |
 
-**Output:** `{ id, title, status }`. When `body` exceeds 10,000 chars the output also carries a `warning` field — the write is accepted, but the agent is nudged to keep bodies a concise plan and move bulk material to `.docs/`.
+**Output:** `{ id, title, status, nextSteps }`. `nextSteps` is a terse AXI #9 contextual-disclosure hint (FLUX-877) pointing at the likely next move (`start_session` / `update_ticket`). When `body` exceeds 10,000 chars the output also carries a `warning` field — the write is accepted, but the agent is nudged to keep bodies a concise plan and move bulk material to `.docs/`.
 
 **Side effects:** assigns the next `<projectKey>-N` id, writes `.flux/<id>.md`, seeds a creation activity entry in history.
 
@@ -373,6 +419,8 @@ Move a ticket to a new status.
 | `callerRole` | string | no — set to `"orchestrator"` or `"lead"` to bypass scatter-gather restriction |
 | `reviewState` | `'approved'` \| `'changes-requested'` \| null | no — **FLUX-816.** Records the EH review verdict on the card (persisted as the [`reviewState`](ticket-schema.md) frontmatter field). A review lead passes `"approved"` when moving to `Ready` and `"changes-requested"` when moving back to `In Progress`; `null` clears it. Surfaces a review badge; distinct from the GitHub-synced `reviewDecision`. |
 
+**Output:** a confirmation line (`<id> moved to <status>`). On moves to `In Progress` / `Todo` / `Grooming` / `Ready` it appends a terse AXI #9 contextual-disclosure next-step hint (FLUX-877) — e.g. a `Ready` move points at `finish_ticket`; terminal/unknown statuses get no hint. The `Require Input` route returns its own hint to wait for the user.
+
 **Enforcement:**
 
 - Transitioning **to** `Require Input` requires `comment` (the question to ask the user).
@@ -443,6 +491,21 @@ Append an `activity` entry (different from a comment — used for "agent did X" 
 
 **Output:** `Progress logged on <id>`.
 
+### `publish_artifact`
+
+Publish a self-contained HTML **grooming artifact** (FLUX-873) so the user reasons against a concrete rendering — a mockup, an architecture/flow diagram, an interactive prototype — instead of imagining it from prose. Whether to emit is an **agent heuristic** (no tag gate): emit for UI/UX, architecture, or "shape of the thing" tickets; skip bug fixes / XS-S / backend plumbing; default OFF when unsure. The grooming skill carries the full heuristic.
+
+Each call is a **new revision** (history is kept — never an overwrite). The HTML is stored in a traversal-guarded sidecar at `.flux/artifacts/{ID}/{rev}.html` (never inlined in the body) and a revision-keyed pointer (`artifacts: { latest, revisions[] }`) is written to the ticket frontmatter. The tool broadcasts `taskUpdated` + `artifactReady { ticketId, rev }` over SSE, and the portal renders the artifact in a sandboxed iframe via [`GET /api/tasks/:id/artifact`](rest-api.md).
+
+| Input | Type | Required |
+|-------|------|----------|
+| `ticketId` | string | yes |
+| `html` | string | yes — a **complete, self-contained** HTML document (inline `<style>`/`<script>`; Tailwind/Mermaid via CDN `<script>` tags). Rendered in a sandboxed opaque-origin iframe with `connect-src 'none'`, so it cannot reach the portal/cookies/storage and cannot make network requests — inline everything or load from the allowed CDNs. |
+| `title` | string | no — short label shown above the viewer. |
+| `note` | string | no — what changed in this revision / what to look at. |
+
+**Output:** confirmation with the new revision number and the artifact route. Errors on a missing ticket, an unsafe id, or empty `html`.
+
 ---
 
 ## Lifecycle tool
@@ -482,7 +545,7 @@ These wrap git operations through [`branch-manager.ts`](../../../engine/src/bran
 | `baseBranch` | string | no | `master` |
 | `worktree` | boolean | no | **`true`** (agent sessions are worktree-isolated by default, FLUX-741) |
 
-**Output:** `{ branch: "<name>", worktree?: "<path>", worktreeError?: "<msg>" }`.
+**Output:** `{ branch: "<name>", worktree?: "<path>", worktreeError?: "<msg>", nextSteps }`. `nextSteps` is a terse AXI #9 next-step hint (FLUX-877) — implement, commit, then `change_status` to `Ready` to open the PR.
 
 **Worktree-by-default (FLUX-741).** This tool is the **agent** branch-creation path, so it **defaults `worktree` to `true`** — every agent branch session lands in its own dedicated git worktree at `<repoParent>/.eh-worktrees/<repo>-<id>` and runs isolated there (FLUX-516), so two parallel ticket sessions never share one checkout (the FLUX-734/739 root-clobber class of bug). The escape for **single-checkout / human-manual** branch work is to pass **`worktree: false`** explicitly — the agent then runs in the shared main tree. (The portal/human "Start task" path — `POST /:id/branch` — is *separate* and keeps its own default off, governed by the workspace `worktreeByDefault` setting; this default flip is agent-only.) The branch is always created first, so a worktree failure (e.g. hitting the concurrency cap of 4) is reported in `worktreeError` without failing the call. See [`task-worktree.ts`](../../../engine/src/task-worktree.ts).
 
@@ -526,7 +589,7 @@ Create a child ticket and link it from the parent's `subtasks` array atomically.
 | `status`, `priority`, `effort`, `assignee`, `body` | string | no | as `create_ticket` |
 | `tags` | string[] | no | `[]` |
 
-**Output:** `{ id, parentId, title, status }`.
+**Output:** `{ id, parentId, title, status, nextSteps }`. `nextSteps` is a terse AXI #9 next-step hint (FLUX-877).
 
 **Side effects:**
 

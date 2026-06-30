@@ -1,14 +1,44 @@
 import { useState } from 'react';
 import { HelpCircle, Send, Plus } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { usePendingInteractions } from './pendingInteractions';
 import { answerQuestion, type PendingQuestion, type AskQuestion } from '../api';
+import { TaskMarkdown } from './TaskMarkdown';
+
+/**
+ * FLUX-888: minimal inline markdown for the picker's clickable option chips. Every block-level
+ * construct collapses to inline/fragment output so the markup stays valid *inside the option
+ * `<button>`* (no `<p>`/`<div>` block children, no nested interactive `<a>`) and the button's own
+ * click is never swallowed — links render as plain styled text rather than real anchors.
+ */
+function InlineMarkdown({ text }: { text: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        p: ({ children }) => <>{children}</>,
+        a: ({ children }) => <span className="underline underline-offset-2">{children}</span>,
+        code: ({ children }) => (
+          <code className="rounded bg-black/10 px-1 py-0.5 text-[0.9em] dark:bg-white/10">{children}</code>
+        ),
+        ul: ({ children }) => <>{children}</>,
+        ol: ({ children }) => <>{children}</>,
+        li: ({ children }) => <>{children} </>,
+        pre: ({ children }) => <>{children}</>,
+      }}
+    >
+      {text}
+    </ReactMarkdown>
+  );
+}
 
 /**
  * FLUX-662 / FLUX-720: surfaces an agent's `ask_user_question` call as an interactive picker
  * and returns the user's selection into the same agent turn. The pending queue is owned by
  * `PendingInteractionsProvider` (one shared SSE subscription); this file renders the
- * inline-in-chat picker + the card. Unrouted/closed-chat questions fall through to the unified
- * global fallback (`PendingInteractionFallback`).
+ * inline-in-chat picker + the card. The same question also mirrors in the unified attention
+ * surface (`AttentionDock`, FLUX-898), so a closed-chat question is never lost.
  */
 
 /**
@@ -17,14 +47,28 @@ import { answerQuestion, type PendingQuestion, type AskQuestion } from '../api';
  * to the chat that asked.
  */
 export function ChatQuestionPicker({ conversationId }: { conversationId: string }) {
-  const { questions, removeQuestion } = usePendingInteractions();
-  const mine = questions.filter((p) => p.conversationId === conversationId);
+  const { questions, removeQuestion, singleActiveConversationId } = usePendingInteractions();
+  // Strict per-conversation match is the primary path. FLUX-923 resilience net: a question that
+  // routed UNROUTED (`conversationId == null` — an engine binding/token miss, FLUX-908) would
+  // otherwise match no chat and only ever show in the dock. When exactly one chat has a live session,
+  // it is unambiguously the asker, so claim the unrouted prompt inline there instead of black-holing
+  // the inline surface. Ambiguous (zero/several live) → singleActiveConversationId is null → no claim.
+  const mine = questions.filter(
+    (p) =>
+      p.conversationId === conversationId ||
+      (p.conversationId == null && singleActiveConversationId === conversationId),
+  );
   if (mine.length === 0) return null;
 
   return (
     <div className="flex flex-col gap-2">
       {mine.map((p) => (
-        <QuestionCard key={p.id} pending={p} onResolved={() => removeQuestion(p.id)} />
+        // FLUX-923: `eh-prompt-arrival` pulses the card on MOUNT (= a question arriving in this open
+        // chat) then settles to a quiet ring. Keyed by `p.id` so a re-asked question remounts and the
+        // pulse replays; a plain re-render does not restart it. Reduced-motion → static ring.
+        <div key={p.id} className="eh-prompt-arrival">
+          <QuestionCard pending={p} onResolved={() => removeQuestion(p.id)} scrollable />
+        </div>
       ))}
     </div>
   );
@@ -40,10 +84,19 @@ export function QuestionCard({
   pending,
   onResolved,
   bare = false,
+  scrollable = false,
 }: {
   pending: PendingQuestion;
   onResolved: () => void;
   bare?: boolean;
+  /**
+   * FLUX-888: cap the questions/options region with a max-height + vertical resize so a long or
+   * many-option question scrolls in place instead of overflowing the chat. Only the inline-in-chat
+   * picker sets this — the fallback renders inside `FloatingPanel`, which already scrolls + resizes,
+   * so leaving it false there avoids a nested second scrollbar. The Send button stays pinned below
+   * the scroll region so it's always reachable.
+   */
+  scrollable?: boolean;
 }) {
   const { questions } = pending;
   // Selections keyed by question index. For single-select we keep ≤1 entry; multi keeps many.
@@ -124,12 +177,21 @@ export function QuestionCard({
         <HelpCircle className="h-3.5 w-3.5" /> The agent has a question
       </div>
       <div className="flex flex-col gap-3">
+        <div
+          className={
+            scrollable
+              ? 'flex max-h-[60vh] min-h-[8rem] resize-y flex-col gap-3 overflow-y-auto pr-1'
+              : 'flex flex-col gap-3'
+          }
+        >
         {questions.map((q, qi) => (
           <div key={qi}>
             <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--eh-text-muted)]">
               {q.header}
             </div>
-            <div className="mb-1.5 text-[13px] text-[var(--eh-text-primary)]">{q.question}</div>
+            <div className="mb-1.5 text-[13px] text-[var(--eh-text-primary)]">
+              <TaskMarkdown body={q.question} compact imageMode="comment" />
+            </div>
             <div className="flex flex-col gap-1.5">
               {q.options.map((opt, oi) => {
                 const sel = (choices[qi] ?? []).includes(opt.label);
@@ -144,9 +206,13 @@ export function QuestionCard({
                         : 'eh-border bg-[var(--eh-input-bg)] text-[var(--eh-text-secondary)] hover:bg-black/5 dark:hover:bg-white/5'
                     }`}
                   >
-                    <span className="text-[12px] font-medium">{opt.label}</span>
+                    <span className="text-[12px] font-medium">
+                      <InlineMarkdown text={opt.label} />
+                    </span>
                     {opt.description && (
-                      <span className="text-[11px] text-[var(--eh-text-muted)]">{opt.description}</span>
+                      <span className="text-[11px] text-[var(--eh-text-muted)]">
+                        <InlineMarkdown text={opt.description} />
+                      </span>
                     )}
                   </button>
                 );
@@ -176,6 +242,7 @@ export function QuestionCard({
             </div>
           </div>
         ))}
+        </div>
         <input
           type="text"
           value={notes}

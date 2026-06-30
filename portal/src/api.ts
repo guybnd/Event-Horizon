@@ -967,6 +967,14 @@ export interface TranscriptMessage {
    *  engine's `DispatchLifecycle` union so a drift in either side is a compile error, not a silent
    *  fallthrough to the raw-enum chip label. */
   lifecycle?: 'started' | 'working' | 'completed' | 'failed' | 'cancelled' | 'waiting-input';
+  /** FLUX-865: on a `dispatch` note, the work phase the dispatched session is running (groom /
+   *  implement / review / finalize). Mirrors the engine's `AgentSession.phase` union so the board
+   *  chip can say *what kind* of session a row narrates. Absent on older rows / non-phase sessions. */
+  phase?: 'grooming' | 'implementation' | 'review' | 'finalize';
+  /** FLUX-869: on a `dispatch` note, the dispatched session's start time (ISO) — powers the board
+   *  chip's run-duration token (live-ticking `running Xm` while working, final `ran Xm` on terminal
+   *  rows). Absent on older rows; the chip omits the duration token when missing. */
+  startedAt?: string;
   /** FLUX-661: normalized tool name for an edit-ish tool row (`Edit`, `Write`, …). */
   tool?: string;
   /** FLUX-661: repo-relative path of the file an edit tool touched. When present (and the
@@ -983,6 +991,37 @@ export interface TranscriptMessage {
 export async function fetchTaskTranscript(taskId: string): Promise<TranscriptMessage[]> {
   const res = await fetch(`${API_URL}/tasks/${taskId}/transcript`);
   if (!res.ok) throw new Error('Failed to fetch transcript');
+  const payload = await res.json();
+  return payload.messages || [];
+}
+
+/** FLUX-867: server-side filters for the board Activity feed. All optional; omitted/empty
+ *  fields are not sent. `from`/`to` are ISO timestamps. */
+export interface BoardActivityFilters {
+  ticket?: string;
+  phase?: string;
+  lifecycle?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+}
+
+/**
+ * FLUX-867: fetch the durable board Activity/History feed — the `kind:'dispatch'` lifecycle rows
+ * replayed from the `__board__` transcript, newest-first, filtered server-side so the unbounded
+ * transcript is never shipped whole. Backs the Activity screen.
+ */
+export async function fetchBoardActivity(filters: BoardActivityFilters = {}): Promise<TranscriptMessage[]> {
+  const params = new URLSearchParams();
+  if (filters.ticket) params.set('ticket', filters.ticket);
+  if (filters.phase) params.set('phase', filters.phase);
+  if (filters.lifecycle) params.set('lifecycle', filters.lifecycle);
+  if (filters.from) params.set('from', filters.from);
+  if (filters.to) params.set('to', filters.to);
+  if (filters.limit) params.set('limit', String(filters.limit));
+  const qs = params.toString();
+  const res = await fetch(`${API_URL}/tasks/${BOARD_CONVERSATION_ID}/activity${qs ? `?${qs}` : ''}`);
+  if (!res.ok) throw new Error('Failed to fetch board activity');
   const payload = await res.json();
   return payload.messages || [];
 }
@@ -1301,7 +1340,7 @@ export interface NotificationAction {
 
 export interface Notification {
   id: string;
-  type: 'error' | 'prompt' | 'completion' | 'info';
+  type: 'error' | 'prompt' | 'completion' | 'review' | 'info';
   title: string;
   message: string;
   ticketId?: string;
