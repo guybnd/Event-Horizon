@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -361,6 +362,27 @@ export function AttentionDock() {
 
   const peekItem = peekKey ? items.find((i) => i.key === peekKey) ?? null : null;
 
+  // FLUX-1023: the peek must draw above every real window (chat docks / modals), but it lives inside
+  // the dock bar — a `fixed z-40` element with a `-translate-x-1/2` transform, i.e. its own stacking
+  // context — so an `absolute z-50` peek nested there is capped at effective level 40 and page-level
+  // chat windows (`fixed z-50`) draw over it. Portaling the peek to <body> (like the opened panel)
+  // escapes that context; we anchor it off the live dock-button rect so it still points at the button.
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const [peekPos, setPeekPos] = useState<{ left: number; bottom: number } | null>(null);
+  useLayoutEffect(() => {
+    if (!peekKey || open) { setPeekPos(null); return; }
+    const measure = () => {
+      const el = buttonRef.current;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      // Sit 8px above the button (matches the old `mb-2` gap), left edges aligned.
+      setPeekPos({ left: r.left, bottom: window.innerHeight - r.top + 8 });
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [peekKey, open]);
+
   const toggleOpen = useCallback(() => {
     setOpen((v) => {
       const next = !v;
@@ -399,6 +421,7 @@ export function AttentionDock() {
       <div role="alert" aria-live="assertive" className="sr-only">{announce}</div>
       {/* The dock button — dynamic 3-tier label. */}
       <button
+        ref={buttonRef}
         type="button"
         onClick={toggleOpen}
         aria-label={`${label.label}${label.count != null ? ` — ${label.count}` : ''}`}
@@ -423,10 +446,13 @@ export function AttentionDock() {
         )}
       </button>
 
-      {/* The peek — anchored above the button, never covers board cards, never force-opens the panel. */}
-      {peekItem && !open && (
+      {/* The peek — anchored above the button, never covers board cards, never force-opens the panel.
+          FLUX-1023: portaled to <body> with fixed geometry (see peekPos above) so it escapes the dock
+          bar's z-40/transform stacking context and draws over chat windows + modals at z-[70]. */}
+      {peekItem && !open && peekPos && createPortal(
         <div
-          className="absolute bottom-full left-0 z-50 mb-2 w-max max-w-[min(92vw,420px)]"
+          className="fixed z-[70] w-max max-w-[min(92vw,420px)]"
+          style={{ left: peekPos.left, bottom: peekPos.bottom }}
           onPointerEnter={() => setPeekPaused(true)}
           onPointerLeave={() => setPeekPaused(false)}
           onFocus={() => setPeekPaused(true)}
@@ -455,7 +481,8 @@ export function AttentionDock() {
             </button>
           </div>
           <span className="absolute -bottom-1 left-5 h-2.5 w-2.5 rotate-45 border-b border-r border-amber-400/60 bg-[var(--eh-surface)]" aria-hidden />
-        </div>
+        </div>,
+        document.body,
       )}
 
       {/* The raised panel — corner-resizable + size-persistent, three tabs. Portaled to <body> so its

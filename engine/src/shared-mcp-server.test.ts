@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { substituteArgs, isSharedHttpPlatformProven, ensureSharedServer, getSharedServerUrl, serverKey, evictSharedServersForPath } from './shared-mcp-server.js';
+import net from 'net';
+import { substituteArgs, isSharedHttpPlatformProven, ensureSharedServer, getSharedServerUrl, serverKey, evictSharedServersForPath, mcpHandshakeOk } from './shared-mcp-server.js';
 import type { ModuleDeclaration } from './modules.js';
 
 describe('substituteArgs', () => {
@@ -81,5 +82,35 @@ describe('evictSharedServersForPath (FLUX-579)', () => {
 
   it('returns 0 for an empty path', () => {
     expect(evictSharedServersForPath('')).toBe(0);
+  });
+});
+
+describe('mcpHandshakeOk (FLUX-1004: bounded single attempt)', () => {
+  it('returns false quickly — not hanging until HANDSHAKE_TIMEOUT_MS — against a server that accepts the connection but never responds', async () => {
+    // This is exactly the failure mode the ticket describes: a Serena that answers the TCP
+    // connect but never sends an HTTP response. Before FLUX-1004 the `fetch` had no `signal`,
+    // so this would hang indefinitely (the fix's own timeout is what makes this test terminate
+    // at all rather than blowing the suite's timeout).
+    const server = net.createServer((socket) => {
+      // Accept the connection; deliberately never write a response or end it.
+      socket.on('error', () => { /* ignore ECONNRESET from the aborted client */ });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as net.AddressInfo).port;
+    try {
+      const startedAt = Date.now();
+      const ok = await mcpHandshakeOk(port);
+      const elapsedMs = Date.now() - startedAt;
+      expect(ok).toBe(false);
+      // Bounded by the fetch's own AbortSignal.timeout, with generous margin for CI jitter —
+      // the regression this guards against is "never resolves" / "~45s", not exact timing.
+      expect(elapsedMs).toBeLessThan(15_000);
+    } finally {
+      server.close();
+    }
+  }, 20_000);
+
+  it('returns false immediately when nothing is listening on the port', async () => {
+    await expect(mcpHandshakeOk(65_530)).resolves.toBe(false);
   });
 });

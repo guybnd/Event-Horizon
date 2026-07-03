@@ -29,7 +29,7 @@ The dispositions are deliberately small in number — the follow-up implementati
 
 Phase 1 (a separate ticket) lifts these into `engine/src/agents/shared.ts`.
 
-> **Resolution status (FLUX-900, epic FLUX-851).** **Landed:** A.3 (`appendSessionOutput`/`flushSessionOutput`/`enqueueSessionWrite`), A.4 (`EFFORT_LEVELS`), A.6 (`cleanChildEnv` — the blocking fix; now sets `EH_CONVERSATION_ID`/`EH_CONVERSATION_TOKEN` for every framework), A.7 (`checkBinaryInstalled`), A.8 (`PROVIDER_CAPABILITIES` → `CLI_CAPABILITIES.effort`), A.9 (`cliLabelForFramework` deleted) — all in `shared.ts`. **Deferred to land with the cross-adapter contract test net (FLUX-903):** A.1 (`attachStdoutProcessing`) and A.5 (`TOOL_ACTIVITY_MAP` lookup, which lives inside it) — three genuinely-divergent stdout parsers that can't be exercised without the live CLIs; plus A.2 (`buildInitialPrompt`, behavior-sensitive). **Corrections found during A.3 extraction (the "word-for-word identical" claim below was wrong in two places, both now preserved exactly via a parameter, not normalized):** (1) `flushSessionOutput` — Claude pushed progress with no `type` (renders compact) while Copilot/Gemini pushed `type:'text'` (renders as a "Narration" block); (2) `appendSessionOutput` — Gemini never accumulated `session.cumulativeOutput`, so a Gemini session's captured `output` is currently always `''` (a **latent bug** — `outputData` is never set by any adapter, so `cumulativeOutput` is the only source; fix it deliberately in the test-net follow-up). Also: `cleanChildEnv` now **removes** `NODE_OPTIONS` rather than blanking it to `''` (Gemini's documented pkg-binary-safe behavior, harmless for Claude/Copilot).
+> **Resolution status (FLUX-900, epic FLUX-851).** **Landed:** A.3 (`appendSessionOutput`/`flushSessionOutput`/`enqueueSessionWrite`), A.4 (`EFFORT_LEVELS`), A.6 (`cleanChildEnv` — the blocking fix; now sets `EH_CONVERSATION_ID`/`EH_CONVERSATION_TOKEN` for every framework), A.7 (`checkBinaryInstalled`), A.8 (`PROVIDER_CAPABILITIES` → `CLI_CAPABILITIES.effort`), A.9 (`cliLabelForFramework` deleted) — all in `shared.ts`. **Landed (FLUX-932, after the FLUX-903 test net):** A.1 (`attachStdoutProcessing` — shared transport skeleton, per-adapter `onEvent` parser preserved verbatim) and A.5 (`TOOL_ACTIVITY_MAP` lookup → shared `activityFor`). **Still deferred:** A.2 (`buildInitialPrompt`) was carved out to **FLUX-960** as a capability-gated-parity redesign, not a straight extraction — the divergence turned out to be structural (Claude phase-based, Copilot/Gemini status-based), not just the body-echo toggle this doc assumed. **Corrections found during A.3 extraction (the "word-for-word identical" claim below was wrong in two places, both now preserved exactly via a parameter, not normalized):** (1) `flushSessionOutput` — Claude pushed progress with no `type` (renders compact) while Copilot/Gemini pushed `type:'text'` (renders as a "Narration" block); (2) `appendSessionOutput` — Gemini never accumulated `session.cumulativeOutput`, so a Gemini session's captured `output` was always `''` (**fixed in FLUX-932** — and adversarial review while writing FLUX-932's fixture tests found the first fix only covered the Claude-schema-fallback branch; Gemini's *native* `message`/`role:'assistant'` branch — the schema a real Gemini CLI session actually emits — separately bypassed `appendSessionOutput` by writing straight to `outputBuffer`; both paths now accumulate). Also: `cleanChildEnv` now **removes** `NODE_OPTIONS` rather than blanking it to `''` (Gemini's documented pkg-binary-safe behavior, harmless for Claude/Copilot).
 
 ### A.1 `attachStdoutProcessing`
 
@@ -110,6 +110,8 @@ Phase 1 (a separate ticket) lifts these into `engine/src/agents/shared.ts`.
 
 These are features that exist for claude but not for the other adapters. They are the most product-visible items in the audit because every one represents a UX regression when the user switches frameworks.
 
+> **Capability-flagged (FLUX-901).** B.1–B.7 are now declared per-framework on `CLI_CAPABILITIES` (`persistentChat`, `selfPause`, `partialDeltas`, `permissionGating`, `nativeAskBlocked`, `spawnTimeMcpConfig`, `imageAttachments`) and shipped to the portal via `GET /api/config`, so the UI gates them off capability instead of `=== 'claude'` (FLUX-906 consumes them). The *behaviors* remain Claude-only and stay encapsulated in `claude-code.ts` — the adapters already provide per-framework dispatch, so the audit's "lift into an `AgentAdapter` lifecycle hook" was not needed (verified: copilot/gemini have their own `startCliSession`; claude-code.ts's `framework === 'claude'` checks are defensive/always-true). Note `persistentChat`/`selfPause` are distinct from `resume`: copilot/gemini can `--resume` (the `resume` flag) but their first chat turn exits `completed`, not the persistent `waiting-input`.
+
 ### B.1 Persistent chat (`phase === 'chat'` → `waiting-input`)
 
 - **Location** — [`claude-code.ts:783-797`](../../../engine/src/agents/claude-code.ts) (the spawn-exit branch in `startCliSession`).
@@ -166,7 +168,9 @@ These are features that exist for claude but not for the other adapters. They ar
 - **Severity** — `leaky`. The portal still accepts pastes for copilot/gemini sessions; they silently never reach the agent.
 - **Disposition** — `capability-flag-in-CLI_CAPABILITIES` (`imageAttachments: boolean`) + per-adapter resolver hook on `AgentAdapter`; the path resolver moves to a shared helper.
 
-### B.8 The `__board__` orchestrator (largest single hole)
+### B.8 The `__board__` orchestrator (largest single hole) · ✅ RESOLVED (FLUX-904)
+
+> Lifted out of `claude-code.ts` into a `BoardAdapter`: the sentinel `BOARD_CONVERSATION_ID` + the `BoardAdapter` interface live in the dependency-free `engine/src/agents/board.ts` seam (single home — the 4 duplicated `'__board__'` literals in claude-code/board-reprime/extract/tasks now import it); the Claude implementation is `engine/src/agents/claude-board.ts`; routes resolve it via `getBoardAdapter()` (`agents/index.ts`) instead of deep-importing the Claude file (C.1). Also resolves **C.2** (`routes/tasks.ts` imports the sentinel from the seam) and **C.4** (the board session's `framework` is the adapter's, not a literal). The attachment helpers (C.1's other half) moved to `shared.ts`. `claude-board.ts` still shares the Claude spawn/parse internals via an intra-adapter import until FLUX-932. Locked by the B.8 tests in `adapter-contract.test.ts`.
 
 - **Location** — [`claude-code.ts:1058-1191`](../../../engine/src/agents/claude-code.ts): `BOARD_CONVERSATION_ID`, `spawnClaudeForBoard`, `buildBoardPrompt`, `boardMcpArgs`, `wireBoardProc`, `startBoardSession`, `sendBoardInput`. Plus the call sites in [`routes/cli-session.ts:30`](../../../engine/src/routes/cli-session.ts) and [`routes/tasks.ts:24`](../../../engine/src/routes/tasks.ts).
 - **What it does today** — The board-chat orchestrator (the "global agent" the user talks to from the board, not from a single ticket) is a parallel `start` / `sendInput` pair that lives entirely inside the claude adapter. It has its own MCP arg construction, its own prompt builder, its own transcript file (`<fluxDir>/transcripts/__board__.jsonl`), its own session id constant, and its own per-process wiring.
@@ -193,7 +197,9 @@ These are features that exist for claude but not for the other adapters. They ar
 - **Severity** — `leaky` (pairs with B.8).
 - **Disposition** — Constant moves out of the adapter file as part of `new-BoardAdapter-interface`.
 
-### C.3 `routes/cli-session.ts` — four `framework || 'claude'` fallbacks
+### C.3 `routes/cli-session.ts` — four `framework || 'claude'` fallbacks · ✅ RESOLVED (FLUX-905)
+
+> **C.3 + C.7 + C.17 resolved.** `agents/index.ts` now exports `resolveDefaultFramework()` (returns `configCache.defaultAgent`, resolving `'auto'`/unknown to the first registered runtime adapter). The 4 route fallbacks and the 2 MCP fallbacks (FLUX-882 had already merged the 3rd into the consolidated `delegate` handler) use it instead of a hardcoded `'claude'` — the default is config/registry-driven; an explicit-but-invalid framework still 400s. **C.17:** `AGENT_AUTHOR_PATTERN` (history.ts) is now built from `MODEL_FAMILIES` (a central per-framework map in `agents/types.ts`) ∪ `'agent'`, so a new framework/model is one edit, not a buried regex. The FLUX-938 allowlist's `claude-default-fallback` category is now empty (ratcheted 14 → 12 fingerprints). **Deferred to a small follow-up:** C.9 (`permission_prompt` description), C.14 (`transcript.ts` JSDoc), and C.15 (Serena `--context` derived from the framework — needs the spawning framework threaded into the module template; it's a tuning hint that falls back to `claude-code`, not a correctness gap).
 
 - **Location** — [`routes/cli-session.ts:400`](../../../engine/src/routes/cli-session.ts), `:555`, `:616`, `:668`.
 - **What it does today** — `String(req.body?.framework || 'claude').trim().toLowerCase()`. A POST without a `framework` field silently becomes a claude session.
@@ -212,7 +218,7 @@ These are features that exist for claude but not for the other adapters. They ar
 
 - **Location** — [`routes/cli-session.ts:768`](../../../engine/src/routes/cli-session.ts) and `:808` — `if (!boardSession.claudeSessionId)` / `if (!session.claudeSessionId)`. Also [`session-store.ts:81`](../../../engine/src/session-store.ts) — `summary.resumable = ... && !!session.claudeSessionId`.
 - **What it does today** — REST gate that decides whether a session can be resumed.
-- **Why** — Field was named when there was only one adapter (D.1).
+- **Why** — Field was named when there was only one adapter (D.1). · ✅ Resolved with D.1 (FLUX-902): the gate now reads `resumeSessionId`.
 - **Severity** — `leaky`.
 - **Disposition** — `rename-only` (D.1).
 
@@ -307,7 +313,9 @@ These are features that exist for claude but not for the other adapters. They ar
 
 ## D. Naming + type leaks
 
-### D.1 `claudeSessionId` field name — used by all three adapters
+### D.1 `claudeSessionId` field name — used by all three adapters · ✅ RESOLVED (FLUX-902)
+
+> Renamed to `resumeSessionId` across engine + portal + tests (semantics-preserving). The HITL-envelope field of the same name (`hitl-prompts.ts` / `ask-questions.ts` / `permission-prompts.ts` + `index.ts` `resumePointerFor`) was renamed too for consistency; its persisted `open-prompts.json` value is not yet consumed for resume (deferred Phase 3), so the persisted-key change is behavior-neutral.
 
 - **Location** — [`types.ts:96`](../../../engine/src/agents/types.ts). Call sites: every place a session is resumed.
 - **What it does today** — Stores the framework's native resume id (claude → the `session_id` field on its `system` event; copilot → `session.created.id` or `assistant.parentId`; gemini → `session_id`). 18+ call sites across engine + portal + tests.
@@ -347,65 +355,98 @@ These are features that exist for claude but not for the other adapters. They ar
 
 ## E. Portal
 
+> **✅ RESOLVED — FLUX-906 (Phase 2, portal decoupling).** The portal no longer hardcodes Claude for
+> feature gates or the `'auto'` default. `/api/config` now serves three values the portal used to assume:
+> `cliCapabilities` (FLUX-901), `defaultFramework` (the engine-resolved `'auto'`, via `resolveDefaultFramework()`),
+> and `boardConversationId`. New portal seam: **`frameworkSupports(config, framework, capability)`** in
+> [`utils.ts`](../../../portal/src/utils.ts) — the generic replacement for `framework === 'claude'` gates.
+> The ratcheting boundary guard (FLUX-938) allowlist shrank **12 → 10** fingerprints (E.6 + E.4 removed).
+> **E.3, E.7, and the OnboardingWizard "(default)" badge are documented leave-with-justification** —
+> framework-IDENTITY, not capability (annotated inline + kept allowlisted).
+
 ### E.1 `BOARD_CONVERSATION_ID` duplicated in portal
 
-- **Location** — [`portal/src/api.ts:887`](../../../portal/src/api.ts).
-- **What it does today** — Portal-side `BOARD_CONVERSATION_ID = '__board__'` constant. Must stay in sync with engine ([`claude-code.ts:1061`](../../../engine/src/agents/claude-code.ts)). 15+ references in portal components.
+- **Location** — [`portal/src/api.ts`](../../../portal/src/api.ts).
+- **What it does today** — Portal-side `BOARD_CONVERSATION_ID = '__board__'` constant. Must stay in sync with engine. 30+ references in portal components.
 - **Severity** — `leaky` (magic-string sync risk).
 - **Disposition** — Ship via `/api/config` or a shared types package.
+- **✅ FLUX-906** — Engine serves `boardConversationId` on `/api/config` (from [`agents/board.ts`](../../../engine/src/agents/board.ts), moved out of `claude-code.ts` in FLUX-904). The portal **keeps** its sync constant — 30+ call sites compare against it at render/handler time and can't await config — but `fetchConfig()` now **cross-checks** it against the engine value and dev-warns on drift, so the two can't silently diverge.
 
 ### E.2 `resolveEffectiveAgent` defaults to claude
 
-- **Location** — [`portal/src/utils.ts:11`](../../../portal/src/utils.ts).
+- **Location** — [`portal/src/utils.ts`](../../../portal/src/utils.ts).
 - **What it does today** — `framework === 'auto' ? 'claude' : framework`. When `config.defaultAgent` is `'auto'`, the portal picks claude.
 - **Severity** — `leaky`.
 - **Disposition** — Engine resolves `'auto'`; portal asks.
+- **✅ FLUX-906** — All callers now pass `config.defaultFramework` (the engine-resolved, concrete value) instead of `config.defaultAgent` (which may be the `'auto'` sentinel). The residual `'auto' → 'claude'` floor is reached only before `/api/config` loads — a documented pre-load default, not a gate (the boundary guard doesn't match the ternary form).
 
 ### E.3 Duplicated `CliFramework` enum
 
-- **Location** — [`portal/src/types.ts:128`](../../../portal/src/types.ts).
+- **Location** — [`portal/src/types.ts`](../../../portal/src/types.ts).
 - **What it does today** — `'claude' | 'copilot' | 'gemini'` — same shape as the engine enum but separately maintained.
 - **Severity** — `leaky`.
 - **Disposition** — Shared types package (or codegen from `/api/config`).
+- **🔵 FLUX-906 — documented leave-with-justification.** Portal and engine are separate TS builds with no shared package; the union (and the new `CliCapabilities` mirror) is a STRUCTURAL mirror, while the runtime contract is the served `cliCapabilities` table. Annotated inline in `types.ts`; keys kept in lockstep with the engine union.
 
 ### E.4 `useChatSession` hardcodes `framework: 'claude'`
 
-- **Location** — [`portal/src/hooks/useChatSession.ts:146`](../../../portal/src/hooks/useChatSession.ts).
+- **Location** — [`portal/src/hooks/useChatSession.ts`](../../../portal/src/hooks/useChatSession.ts).
 - **What it does today** — When starting a chat session from this hook, the framework is hardcoded.
 - **Severity** — `leaky`.
 - **Disposition** — Thread through the framework picker.
+- **✅ FLUX-906** — `StartSessionOptions.framework` is now optional; `startFresh` **omits** it so the engine resolves the configured default (`resolveDefaultFramework()`). A fresh chat now follows `defaultAgent` instead of always Claude (a latent fix — e.g. `defaultAgent: gemini` makes fresh chats use gemini). Allowlist entry removed.
 
 ### E.5 SSE subscriber list includes `assistantDelta`
 
-- **Location** — [`portal/src/AppContext.tsx:787`](../../../portal/src/AppContext.tsx).
+- **Location** — [`portal/src/AppContext.tsx`](../../../portal/src/AppContext.tsx).
 - **What it does today** — Global SSE channel subscribes to `assistantDelta`; only claude emits it (B.3). No-op for other adapters.
 - **Severity** — `cosmetic`.
-- **Disposition** — Pairs with B.3.
+- **Disposition** — Pairs with B.3 (out of FLUX-906 scope — cosmetic, no leak).
 
-### E.6 `agentActions.ts:133` — supervisor gate via literal string
+### E.6 `agentActions.ts` — supervisor gate via literal string
 
-- **Location** — [`portal/src/agentActions.ts:133`](../../../portal/src/agentActions.ts).
+- **Location** — [`portal/src/agentActions.ts`](../../../portal/src/agentActions.ts).
 - **What it does today** — `cfg?.pattern === 'supervisor' && (framework === 'claude' || framework === 'gemini')` — duplicates the capability check from the engine's `CLI_CAPABILITIES` as a hardcoded literal.
 - **Severity** — `leaky` (drift risk — if the engine table changes, portal does not).
 - **Disposition** — Drive from `CLI_CAPABILITIES` (ship through `/api/config`).
+- **✅ FLUX-906** — `launchPhaseDefault` now takes `supervisorCapable`, which all 3 callers pass as `frameworkSupports(config, framework, 'supervisor')` — read straight off the served capability table. Hardcoded literal removed; allowlist entry removed.
 
-### E.7 `AgentSection.tsx:270` — claude-or-auto settings branch
+### E.7 `AgentSection.tsx` — claude-or-auto settings branch
 
-- **Location** — [`portal/src/components/settings/AgentSection.tsx:270`](../../../portal/src/components/settings/AgentSection.tsx).
+- **Location** — [`portal/src/components/settings/AgentSection.tsx`](../../../portal/src/components/settings/AgentSection.tsx).
 - **What it does today** — `targetFramework === 'claude' || targetFramework === 'auto'` settings panel branch.
 - **Severity** — `leaky`.
 - **Disposition** — Drive from manifest (`adapter.manifest.configSchema`).
+- **🔵 FLUX-906 — documented leave-with-justification.** These are per-framework model-settings cards ("Claude Code Models" → `integrations.claudeCode`) — framework-IDENTITY config, not a capability gate (there is no `cliCapabilities` flag for "has a model-name input", and the copy is intrinsically per-CLI). Annotated inline; kept allowlisted. A future manifest-driven settings list (D-series) is the right home if this is ever generalized.
 
 ### E.8 `ChatDock.tsx` — 12+ `BOARD_CONVERSATION_ID` references
 
 - **Location** — `portal/src/components/ChatDock.tsx`.
-- **What it does today** — Heavy coupling for the board card render (pinned, can't close, special `cardState`, hardcoded conversation id checks in `AskQuestionPrompts.tsx:121`, `ChatView.tsx` sidecar `assets/__board__/`, etc.).
+- **What it does today** — Heavy coupling for the board card render (pinned, can't close, special `cardState`, hardcoded conversation id checks, sidecar `assets/__board__/`, etc.).
 - **Severity** — `leaky` (pairs with E.1).
 - **Disposition** — Fixed by E.1 + B.8.
+- **✅ FLUX-906** — Resolved with E.1: every reference imports the single `BOARD_CONVERSATION_ID` from `api.ts`, which is now cross-checked against the engine-served `boardConversationId`. These are sentinel comparisons (`id === BOARD_CONVERSATION_ID`), not per-CLI coupling — not a framework leak.
 
 ---
 
 ## F. The skill-installer asymmetry (largest single product gap)
+
+> **✅ RESOLVED — FLUX-907 (Phase 3, the epic's final ticket). Picked Option 3 (split semantics).**
+> The asymmetry is **intentional and now made explicit**, not closed by force:
+> - **Installer stays broad (8)** — writing EH's skill files for any agent the user already has (Cursor,
+>   Cline, Windsurf, Antigravity, …) is genuinely useful and stays.
+> - **Runtime stays at 3** — `claude` / `copilot` / `gemini` are the only frameworks EH can launch &
+>   drive. **No new runtime adapter was authored** (that is high-cost and explicitly out of the epic).
+> - **The gap is surfaced** — the engine serves an explicit **`runtimeFrameworks`** list on `/api/config`
+>   (`getRuntimeFrameworks()` = the adapter registry keys; a new adapter widens it automatically). The
+>   portal reads it via `isRuntimeFramework()` ([`utils.ts`](../../../portal/src/utils.ts)) and **badges
+>   install-only frameworks "Skills only"** in the framework picker ([`FrameworkSelector.tsx`](../../../portal/src/components/FrameworkSelector.tsx))
+>   and the first-run onboarding grid ([`OnboardingWizard.tsx`](../../../portal/src/components/OnboardingWizard.tsx),
+>   with a one-line legend). So "install ≠ run" is visible at the point of choice instead of being a silent surprise.
+>
+> **Mental model:** *installer = "write rules for any agent you have"; runtime = "the agents EH can actually pilot."*
+> With this Done, FLUX-851's epic-level acceptance is met (clean grep set, board orchestrator framework-agnostic,
+> capability-gated behaviors, `claudeSessionId`→`resumeSessionId` rename, docs refreshed).
 
 - **Location** — [`workflow-installer.ts`](../../../engine/src/workflow-installer.ts) (detection at lines 78-130; `skillDestinationFor` at lines 87-105; `skillModuleDestinationFor` at lines 108-117; `instructionsDestinationFor` at lines 120-138).
 - **What it does today** — The skill installer detects and writes for **eight** frameworks: `claude`, `copilot`, `gemini`, `cursor`, `cline`, `windsurf`, `antigravity`, `generic`. Each gets its own per-framework skill destination, instructions destination, and detection rule (presence of `.gemini/`, `.cursor/`, `.cline/`, `.windsurf/`, `.claude/`).
@@ -417,7 +458,7 @@ These are features that exist for claude but not for the other adapters. They ar
   2. **Installer narrows** — drop the non-runtime frameworks from the installer; document that EH only integrates with the three it can drive.
   3. **Split semantics** — keep installer at 8 (it really is the right thing to write skill files for any agent the user has), runtime at 3, and have a separate "supported runtime adapter" list surfaced in the portal.
 
-Option 3 is the closest fit to user expectation. The follow-up ticket should pick.
+Option 3 is the closest fit to user expectation. **FLUX-907 picked it** (see the resolution banner above).
 
 ---
 
@@ -467,6 +508,8 @@ ClaudeCodeAdapter|claude-code\.js
 
 If a new claude-only surface is added after this audit, it MUST appear in this set or the set MUST be extended.
 
+> **Automated now (FLUX-938).** This grep set is enforced by [`engine/scripts/check-adapter-boundary.mjs`](../../../engine/scripts/check-adapter-boundary.mjs) (`npm run check:boundary`), which fails on any per-CLI leak **outside `engine/src/agents/`** that isn't in `adapter-boundary-allowlist.json`. The allowlist is seeded with today's known leaks (the C/E rows above) and **only shrinks**: each epic cleanup ticket (FLUX-902 rename, FLUX-904 board lift, FLUX-905 route/MCP hygiene, FLUX-906 portal) re-seeds it after removing its leaks (`--seed`, with the diff reviewed). A brand-new coupling fails CI rather than silently joining the ~50-leak pile. Add a pattern to the script when a new category of coupling needs guarding.
+
 ---
 
 ## Follow-ups this doc enables (created separately)
@@ -479,7 +522,7 @@ The implementation work batches by disposition. **One follow-up ticket per batch
 4. **BoardAdapter interface (Phase 2)** — B.8, C.1, C.2, C.4, C.11, C.12.
 5. **Route + MCP defaults hygiene (Phase 2)** — C.3, C.7, C.9, C.14, C.15, C.17.
 6. **Portal decoupling (Phase 2)** — E.1, E.2, E.3, E.4, E.6, E.7, E.8.
-7. **Runtime ↔ installer reconciliation (Phase 3, design ticket first)** — F.
-8. **Test safety net (Phase 1a)** — separate ticket; informed by this doc so the tests target the right invariants (originally proposed for FLUX-700 itself, moved out).
+7. **Runtime ↔ installer reconciliation (Phase 3, design ticket first)** — F. ✅ **Landed (FLUX-907):** picked Option 3 (split semantics) — engine serves `runtimeFrameworks` on `/api/config`; portal badges install-only frameworks "Skills only" in the framework picker + onboarding. No new runtime adapter authored. **This was the epic's final ticket — FLUX-851 acceptance met.**
+8. **Test safety net (Phase 1a)** — separate ticket; informed by this doc so the tests target the right invariants (originally proposed for FLUX-700 itself, moved out). ✅ **Landed (FLUX-903):** [`engine/src/adapter-contract.test.ts`](../../../engine/src/adapter-contract.test.ts) — the HARD GATE before Phase 2. Enabled locks: A.6 `cleanChildEnv` (HITL env set for every framework), the `CLI_CAPABILITIES` contract (completeness + B.1–B.7 Claude-only), and a per-adapter spawn smoke (skip-with-reason if the CLI binary is absent). Skip-with-reason scaffolds map to their enabling tickets: the A.1 stdout-parse contract → ✅ **flipped to real fixture tests in FLUX-932** (feeds each adapter's real `attachStdoutProcessing` captured-shape JSONL through a fake `ChildProcess`, asserts on session-state transitions — this is what caught the second Gemini `cumulativeOutput` gap above); the B.8 `__board__` contract → FLUX-904.
 
 No code change here. Each follow-up is its own ticket.

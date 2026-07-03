@@ -87,6 +87,14 @@ export let configCache: any = {
     debounceMs: 30000,
     maxWaitMs: 300000,
   },
+  // FLUX-1063: global defaults for the Furnace rate-limit cooldown. A burn session that dies from a
+  // transient usage/rate limit (5-hour session limit / 429 / quota) is not parked — the ticket cools
+  // down and auto-retries every `rateLimitRetryIntervalMs` up to `rateLimitMaxWaitMs`, then fails
+  // outright. New batches inherit these as their per-batch defaults (overridable via furnace_update).
+  furnaceSettings: {
+    rateLimitRetryIntervalMs: 20 * 60 * 1000, // 20 min
+    rateLimitMaxWaitMs: 5 * 60 * 60 * 1000,   // 5 h
+  },
   agentProgress: {
     enabled: true,
     inlineDelay: 2,
@@ -101,6 +109,11 @@ export let configCache: any = {
     ticketDefault: 'skip',
   },
   modules: [],
+  terminalCommands: [
+    { id: 'restart-dev', label: 'Restart dev server', command: 'npm run dev', runMode: 'current' },
+    { id: 'run-tests', label: 'Run tests', command: 'npm test', runMode: 'new' },
+    { id: 'git-status', label: 'Git status', command: 'git status', runMode: 'current' },
+  ] as Array<{ id: string; label: string; command: string; runMode: 'current' | 'new' }>,
 };
 
 export async function loadConfig() {

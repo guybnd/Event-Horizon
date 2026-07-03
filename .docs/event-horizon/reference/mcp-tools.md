@@ -26,12 +26,78 @@ Key properties:
 
 - **Per-session isolation.** Each session gets its own `StreamableHTTPServerTransport`, keyed by the `Mcp-Session-Id` header the transport assigns on `initialize`; transports are removed on close. Concurrent sessions never cross-talk.
 - **Raw stream, not pre-parsed.** The `/mcp` routes are registered **before** `express.json()` so the JSON-RPC request stream reaches the transport unparsed — `express.json()` would otherwise consume the body and the transport would hang.
-- **Per-ticket write serialization.** With one shared server, concurrent sessions can issue concurrent read-modify-write on the same ticket's history. `updateTaskWithHistory` ([`engine/src/task-store.ts`](../../../engine/src/task-store.ts)) serializes writes per `ticketId` (a promise chain) so near-simultaneous `add_comment`/`log_progress`/`change_status` calls on one ticket no longer drop history entries; writes to *different* tickets stay parallel.
+- **Per-ticket write serialization.** With one shared server, concurrent sessions can issue concurrent read-modify-write on the same ticket's history. `updateTaskWithHistory` ([`engine/src/task-store.ts`](../../../engine/src/task-store.ts)) serializes writes per `ticketId` (a promise chain) so near-simultaneous `add_note`/`change_status` calls on one ticket no longer drop history entries; writes to *different* tickets stay parallel.
 - **Engine-restart reconnect caveat.** The MCP connection is bound to the engine process, so restarting the engine (e.g. the tsx-watch dev loop restarting on a code edit, or a customer update/crash) drops the connection. Claude Code reconnects on its next call; mid-call work in flight at the moment of restart is lost. This is the accepted residual for the single-process design.
 
 ### Stdio (headless `--mcp` fallback)
 
 `startMcpServer()` keeps the original stdio behaviour for the headless entry point (`engine/src/index.ts --mcp --workspace /path/to/project`). It calls the same `buildMcpServer()` then connects a `StdioServerTransport`. Logs go to stderr so they never corrupt protocol framing on stdout. The worktree-redirect machinery (`EH_CANONICAL_WORKSPACE` / `resolveMainWorktree`) that lets a stdio server in a worktree bind to the canonical store is retained for this path (its broader fate is tracked in FLUX-646).
+
+## Server instructions & tool annotations (FLUX-948)
+
+Beyond the tool list, `buildMcpServer()` exposes two pieces of standard MCP metadata so the server behaves well with **any** client, not just a Claude Code harness that loads [`.claude/rules/event-horizon.md`](../../../.claude/rules/event-horizon.md):
+
+- **Server `instructions`** — the second argument to the `McpServer` constructor (`ServerOptions.instructions`). On `initialize` the client folds this string into its system prompt (the "MCP Server Instructions" block). It is a deliberately compact projection of the orchestrator contract: manage tickets only through these tools, never edit `.flux/`/`.flux-store/` directly, `get_ticket` before acting, move columns with `change_status` (comment required for Require Input / Ready), end every working turn on a board action, and raise every decision through a structured surface (`ask_user_question` / Require Input) rather than chat prose. Keep it short — it bills every session.
+- **Tool annotations** — each read-only and destructive tool is registered with the `tool(name, description, schema, annotations, cb)` overload. `ToolAnnotations` is `{ title?, readOnlyHint?, destructiveHint?, idempotentHint?, openWorldHint? }`; all fields are **hints** a client may use to render a label, auto-allow reads, or gate destructive calls. They are advisory only — EH's own approval gating still lives in [`permission_prompt`](#permission_prompt) and the engine, not in these hints.
+
+| Annotation | Tools |
+|------------|-------|
+| `readOnlyHint: true` (+ `openWorldHint: false`) | `get_ticket`, `get_session_log`, `list_tickets`, `get_board_config`, `get_project_group`, `list_available_agents`, `get_board_state`, `permission_prompt` |
+| `destructiveHint: true` | `archive`, `merge_tickets`, `finish_ticket` (also `openWorldHint: true` — it merges/pushes via `gh`) |
+
+Multiplexed tools whose actions span read and mutation (`branch`, `group_doc`) are left without a blanket read-only/destructive hint this pass, since no single hint is accurate for all of their actions.
+
+> Richer protocol capabilities from the FLUX-947 epic — **structured output** (`outputSchema`/`structuredContent`, FLUX-950) and **resources & resource templates** (FLUX-949) — are now exposed (the two sections below). **Prompts / slash-commands** (FLUX-951) and **elicitation** (FLUX-952) are **not** yet.
+
+## Resources & resource templates (FLUX-949)
+
+Beyond tools, `buildMcpServer()` registers a set of **read-only resources** so a client (Claude Code, Cursor, raw SDK) can `@`-mention Event Horizon content straight into context **without spending a tool call**. Resources are pull-only by protocol — there is no `resources/write` — so they need no `permission_prompt` gating (they are the resource analogue of the `readOnlyHint: true` tools). `registerResource(...)` auto-enables the server's `resources` capability, exactly the way `tool(...)` enables `tools`; the resources are served unchanged over **both** transports above (no transport change).
+
+**Every resource reuses the matching tool's projection verbatim** — there is no second data shape to drift. A resource read returns byte-identical content to the tool it mirrors.
+
+| URI | Kind | MIME | Source projection (reused) |
+|-----|------|------|----------------------------|
+| `board://config` | fixed | `application/json` | `buildBoardConfigProjection()` — identical to [`get_board_config`](#get_board_config) |
+| `board://state` | fixed | `application/json` | `GET /api/board/state` — identical to [`get_board_state`](#get_board_state) |
+| `ticket://{id}` | template | `application/json` | `serializeTaskForAgent(task)` with `_path` stripped — identical to [`get_ticket`](#get_ticket) (oversized bodies get the same `truncateBodyForAgent` treatment) |
+| `docs://{+path}` | template | `text/markdown` | `docsCache[normalizeDocPathInput(path)].body` — the repo's own `.docs/` markdown |
+
+### `resources/list` vs `resources/templates/list`
+
+- **`resources/list`** returns the two fixed resources (`board://config`, `board://state`) **plus** the entries each template's `list` callback enumerates:
+  - `ticket://{id}` enumerates **active (non-terminal) tickets only** (via `selectTicketsForList`, the same active screen as `list_tickets`), so a board with hundreds of Done/Released/Archived tickets never dumps them all into the resource list (which would re-bill discovery on every client refresh).
+  - `docs://{+path}` enumerates the repo's `.docs/` entries (bounded, ~dozens); cross-project **group docs are excluded** — read those via the [`group_doc`](#group_doc) tool.
+- **`resources/templates/list`** advertises the two templates: `ticket://{id}` and `docs://{+path}`.
+
+### `docs://` path handling — `{+path}` and traversal safety
+
+The docs template is registered as `docs://{+path}` (RFC 6570 **reserved expansion**), **not** `docs://{path}`. A plain `{path}` compiles to `([^/,]+)` and stops at the first `/`, so a multi-segment URI like `docs://event-horizon/reference/mcp-tools` would never bind; `{+path}` compiles to `(.+)` and captures the whole path. (`docs://INDEX` resolves `.docs/INDEX.md` because `normalizeDocPathInput('INDEX')` keys `docsCache['INDEX']`; `docs://INDEX.md` resolves the same key — the `.md` suffix is stripped.)
+
+Every doc lookup is routed through `normalizeDocPathInput`, which rejects `..`, `.`, absolute, and empty segments (→ `null`), and **only ever indexes `docsCache`** — it never builds a filesystem path from the URI. A read outside `.docs/` is therefore impossible: `docs://../engine/src/mcp-server.ts` is refused before any file is touched.
+
+### Read errors (not empty content)
+
+A resource read that cannot be satisfied throws an `McpError` carrying a machine-readable discriminant in its `data.code` (mirroring the tool [error model](#error-model)) — it never returns empty content:
+
+| Case | `data.code` |
+|------|-------------|
+| `ticket://{id}` unknown id, or `docs://{+path}` unknown path | `not_found` |
+| `ticket://949` (bare number — ambiguous project key) | `validation_failed` |
+| `docs://…/..` (traversal / malformed path) | `validation_failed` |
+| `board://state` when the engine HTTP API is unreachable | `channel_unavailable` |
+
+## Structured output (FLUX-950)
+
+The core read tools — `get_ticket`, `list_tickets`, `get_board_config` — are registered with `registerTool(name, { description, inputSchema, outputSchema, annotations }, cb)` and return their payload as **`structuredContent`** (typed JSON the client validates against the advertised `outputSchema`) instead of a stringified text blob.
+
+**One representation on the wire (AXI #1).** `structuredContent` *replaces* the text JSON — it is **not** emitted alongside a second full copy. The `content` block is empty (`[]`). Returning both would put two copies of the payload on the wire and double per-call tokens, the exact opposite of AXI #1 (token budget is first-class). The helper is `structuredResult(obj)` in [`mcp-server.ts`](../../../engine/src/mcp-server.ts) — the structured successor to `jsonResult` — and it keeps `content: []` explicit so the SDK still runs `structuredContent` through the tool's `outputSchema` as a guardrail. Measured on a representative `get_ticket`, the structured payload is *smaller* than the old compact-text shape (it drops the JSON-in-a-JSON-string escaping and the text wrapper), so the change never inflates the payload.
+
+- **Schemas are loose** — `z.object({ … }).catchall(z.unknown())` with every field optional. The SDK's client-side validator enforces the generated JSON Schema strictly (`additionalProperties: false` by default), which would otherwise reject the rich, open-ended task projection (and the shared error envelope). Loose + optional documents the stable fields for typed clients while tolerating extra/absent fields.
+- **`structuredContent` is always an object**, never a bare array — so `list_tickets` always returns the `{ tickets, note? }` envelope (the pre-FLUX-950 bare-array success shape is gone from the wire).
+- **Error path unchanged** — `errorResult` still emits a human-readable text block *and* `structuredContent: { code, message }`, and the SDK skips `outputSchema` validation for `isError` results, so a client that ignores `structuredContent` still reads the failure from text.
+- **Backward-compat tradeoff** — a client on an older protocol that does not read `structuredContent` sees an empty `content` for these three tools. EH's supported agent CLIs negotiate structured output; dropping the duplicate text copy is the deliberate, measured AXI #1 choice. The remaining tools still return text via `jsonResult` and are unaffected.
+
+Round-trip, no-duplicate-text, and token-delta coverage: [`mcp-structured-output.test.ts`](../../../engine/src/mcp-structured-output.test.ts).
 
 ## Tool index
 
@@ -46,26 +112,22 @@ Key properties:
 | [`delegate_to_agent`](#delegate_to_agent) | Orchestrator (delegation) | spawns child session |
 | [`delegate_parallel`](#delegate_parallel) | Orchestrator (delegation) | spawns child sessions |
 | [`get_project_group`](#get_project_group) | Read | — |
-| [`list_group_docs`](#list_group_docs) | Group docs — Read | — |
-| [`read_group_doc`](#read_group_doc) | Group docs — Read | — |
-| [`submit_group_doc`](#submit_group_doc) | Group docs — Write | yes |
-| [`delete_group_doc`](#delete_group_doc) | Group docs — Write | yes |
+| [`group_doc`](#group_doc) | Group docs — Read/Write | yes (submit/delete) |
 | [`extract_ticket`](#extract_ticket) | Mutation (gated) | yes (CONFIRM) |
 | [`merge_tickets`](#merge_tickets) | Mutation (gated) | yes (CONFIRM) |
+| [`create_ticket`](#create_ticket) | Mutation | yes |
 | [`update_ticket`](#update_ticket) | Mutation | yes |
 | [`change_status`](#change_status) | Mutation | yes (enforced) |
-| [`archive_ticket`](#archive_ticket) | Mutation | yes |
-| [`unarchive_ticket`](#unarchive_ticket) | Mutation | yes |
-| [`add_comment`](#add_comment) | Mutation | yes |
-| [`log_progress`](#log_progress) | Mutation | yes |
+| [`archive`](#archive) | Mutation | yes |
+| [`add_note`](#add_note) | Mutation | yes |
 | [`publish_artifact`](#publish_artifact) | Mutation | yes |
 | [`finish_ticket`](#finish_ticket) | Lifecycle (atomic) | yes |
-| [`create_subtask`](#create_subtask) | Mutation | yes |
-| [`create_branch`](#create_branch) | Branch | yes |
-| [`get_branch`](#get_branch) | Branch | — |
-| [`delete_branch`](#delete_branch) | Branch | yes |
+| [`branch`](#branch) | Branch | yes (delete) |
+| [`delegate`](#delegate) | Delegation | — |
 | [`permission_prompt`](#permission_prompt) | Internal (gating) | — |
 | [`ask_user_question`](#ask_user_question) | Interaction (blocking) | — |
+
+> **FLUX-882 consolidation:** several single-op tools were folded into action/type-dispatched tools (hard cut — old names removed, no aliases). See the [migration map](#flux-882-tool-consolidation-migration) at the end of this page.
 
 ---
 
@@ -83,7 +145,7 @@ Read a ticket by ID. Returns an **agent digest**, not the raw file: history is d
 | `fullHistory` | boolean | no | Return all history uncollapsed. Discouraged — re-inflates context; prefer `expand`. |
 | `fullBody` | boolean | no | Return the full `body` even when it is oversized. By default a very large body is truncated with a recoverable size hint (FLUX-879); normal bodies are never truncated. |
 
-**Output:** JSON — full frontmatter + `body` + digested `history`. The internal `_path` field is stripped. Digest rules (`serializeTaskForAgent` in [`task-store.ts`](../../../engine/src/task-store.ts), `digestHistoryForAgent` in [`history.ts`](../../../engine/src/history.ts)):
+**Output:** returned as `structuredContent` (typed JSON; the text `content` block is empty — see [Structured output](#structured-output-flux-950)) — full frontmatter + `body` + digested `history`. The internal `_path` field is stripped. Digest rules (`serializeTaskForAgent` in [`task-store.ts`](../../../engine/src/task-store.ts), `digestHistoryForAgent` in [`history.ts`](../../../engine/src/history.ts)):
 
 - `agent_session` entries lose their `progress[]` array and gain a `progressCount` instead — fetch the raw log via [`get_session_log`](#get_session_log) when needed. All other fields (`sessionId`, `status`, `outcome`, `startedAt`, `endedAt`, …) are preserved.
 - `status_change` entries are dropped from the digest (the current status is already in the frontmatter); `comment` and `activity` entries pass through.
@@ -134,11 +196,11 @@ List or filter tickets. **Active-by-default and bounded (FLUX-489):** a no-filte
 | `limit` | number | no | Max rows returned. Default **40**. Ignored when `includeAll` is true. |
 | `includeAll` | boolean | no | Escape hatch — return every matched row, ignoring both the active-default screen and the limit. |
 
-**Output:** JSON array of summaries `{ id, title, status, priority, effort, assignee, tags }`. Bodies and history are not included — use `get_ticket` for full content.
+**Output:** returned as `structuredContent` (the text `content` block is empty — see [Structured output](#structured-output-flux-950)). Always the object envelope `{ tickets: [...], note? }` — `structuredContent` must be an object, so the success shape is never a bare array (FLUX-950). Each row is a summary `{ id, title, status, priority, effort, assignee, tags }`; bodies and history are not included — use `get_ticket` for full content.
 
-When rows are omitted — by the active-default screen or by the `limit` — the result is instead `{ tickets: [...], note }`, where `note` reports how many terminal tickets were hidden and/or `Showing N of M matched`, plus how to widen the call (`includeAll:true`, raise `limit`, or pass an explicit `status`). This keeps the new default lean **and** discoverable — a bounded result is never silently truncated (FLUX-489).
+When rows are omitted — by the active-default screen or by the `limit` — the `note` reports how many terminal tickets were hidden and/or `Showing N of M matched`, plus how to widen the call (`includeAll:true`, raise `limit`, or pass an explicit `status`). This keeps the new default lean **and** discoverable — a bounded result is never silently truncated (FLUX-489).
 
-On **zero matches** it instead returns a definitive empty state `{ tickets: [], note }` that echoes the active filters (AXI #5, FLUX-878) — e.g. `No tickets match status=Done, tag=mcp.` — so an agent can tell "the filter matched nothing" from "I queried the wrong field." (`list_available_agents` does the same on an empty roster: `{ agents: [], note }`.)
+On **zero matches** it returns a definitive empty state `{ tickets: [], note }` that echoes the active filters (AXI #5, FLUX-878) — e.g. `No tickets match status=Done, tag=mcp.` — so an agent can tell "the filter matched nothing" from "I queried the wrong field." (`list_available_agents` does the same on an empty roster: `{ agents: [], note }`.)
 
 ### `get_board_config`
 
@@ -146,7 +208,7 @@ Read board configuration.
 
 **Input:** none.
 
-**Output:** `{ statuses, projects, tags, priorities, users, requireInputStatus, readyForMergeStatus }`. `statuses` merges visible columns and hidden statuses.
+**Output:** returned as `structuredContent` (the text `content` block is empty — see [Structured output](#structured-output-flux-950)): `{ statuses, projects, tags, priorities, users, requireInputStatus, readyForMergeStatus }`. `statuses` merges visible columns and hidden statuses.
 
 This is an **agent-facing projection** (FLUX-928), trimmed because the orchestrator reads it every session and the result re-bills each turn: `tags` is a bare `string[]` of tag names (the Tailwind `color` class is dropped), and `priorities` is `{ name, icon }[]` (the `color` is dropped). The handler **clones** these from `configCache` and never mutates it — the portal/REST `GET /api/config` path still returns the full config (tags as `{ name, color }`, priorities with `color`) with colors intact.
 
@@ -178,7 +240,7 @@ The **board-rebase ritual** (FLUX-659) — the orchestrator's structured way to 
 
 **Verb registry (v1):** all verbs run live — `leave` / `status` / `archive` / `dispatch`, plus `promote` ([FLUX-656](../architecture/code-map.md) `extractTicket()`) and `fold` (FLUX-657 `mergeTickets()`), both now registered. Their turn-slicing rests on the FLUX-658 substrate.
 
-**Teeth:** the mutating verbs `change_status`, `archive_ticket`, `extract_ticket`, and `merge_tickets` are in the [`permission_prompt`](#permission_prompt) **Confirm** tier, so a *direct* orchestrator call to mutate is gated even if it bypasses this ritual — "never silently restructure" is enforced by the gate, not just the prompt.
+**Teeth:** the mutating verbs `change_status`, `archive`, `extract_ticket`, and `merge_tickets` are in the [`permission_prompt`](#permission_prompt) **Confirm** tier, so a *direct* orchestrator call to mutate is gated even if it bypasses this ritual — "never silently restructure" is enforced by the gate, not just the prompt.
 
 ### `delegate_to_agent`
 
@@ -240,59 +302,26 @@ Read the multi-repo group when one is configured (a committed `group.json` in th
 
 Read-only and side-effect-free: it reflects the group context loaded by `activateWorkspace` ([`group.ts`](../../../engine/src/group.ts)); it does not re-scan repos. `pathExists` is re-checked live on each call (a single stat per member), so it reflects whether a member is checked out *now* — not a stale load-time snapshot.
 
-### `list_group_docs`
+### `group_doc`
 
-List the shared group docs (the cross-project knowledge base) by path and title. Works from any workspace — **parent or bound member** — because both resolve the store via `activeGroupStoreDir()` ([`task-store.ts`](../../../engine/src/task-store.ts)).
-
-**Input:** none.
-
-**Output (docs present):**
-```jsonc
-{ "docs": [{ "path": "Product/features/payments-api", "title": "Payments API", "directory": "Product/features" }], "label": "Product" }
-```
-
-**Output (empty store):** `{ "docs": [], "message": "No group docs found — the shared store may be empty." }`
-
-**Output (no group):** `{ "docs": [], "message": "No group configured …" }` — not an error; single-repo returns this.
-
-### `read_group_doc`
-
-Read the full body of a shared group doc.
+Read or write the shared group docs (the cross-project knowledge base). One tool dispatched by `action`; works from any workspace — **parent or bound member** — because both resolve the store via `activeGroupStoreDir()` ([`task-store.ts`](../../../engine/src/task-store.ts)). The two write actions (`submit`/`delete`) commit on `flux-group-docs` in the parent's canonical store and fan out to all members. **(FLUX-882: merged `list_group_docs` / `read_group_doc` / `submit_group_doc` / `delete_group_doc`.)**
 
 | Input | Type | Required | Notes |
 |-------|------|----------|-------|
-| `path` | string | yes | As returned by `list_group_docs`, e.g. `"Product/features/payments-api"` |
+| `action` | `'list'` \| `'read'` \| `'submit'` \| `'delete'` | yes | Which group-doc operation to run. |
+| `path` | string | conditional | Required for `read`/`delete` (full doc path incl. group prefix, e.g. `"Product/features/payments-api"`). For `submit`: store-relative path **without** the group prefix and **without** `.md` (e.g. `"features/payments-api"`); no `..`, no absolute paths. |
+| `title` | string | conditional | `submit` only — document title (prepended as H1). |
+| `body` | string | conditional | `submit` only — full markdown body (title heading not included). |
+| `message` | string | no | `submit` only — git commit message; auto-generated when omitted. |
 
-**Output:** `{ path, title, body, directory }`.
+**Outputs by action:**
 
-**Errors:** `Group doc '<path>' not found. Use list_group_docs to see available paths.`
+- `list` — `{ docs: [{ path, title, directory }], label }`. Empty store: `{ docs: [], message: "No group docs found …" }`. No group: `{ docs: [], message: "No group configured …" }` (not an error).
+- `read` — `{ path, title, body, directory }`.
+- `submit` — `{ applied, committed, pushed, failed, members: [{ name, ok, diverged?, error? }] }`. The `members` array reports per-member fan-out outcomes.
+- `delete` — `{ deleted, committed, pushed, failed, members }`.
 
-### `submit_group_doc`
-
-Create or update a shared group doc. Commits on `flux-group-docs` in the parent's canonical store and fans out to all members. Works from any workspace — **parent or bound member**.
-
-| Input | Type | Required | Notes |
-|-------|------|----------|-------|
-| `path` | string | yes | Store-relative path **without** the group prefix and **without** `.md`: e.g. `"features/payments-api"`, `"architecture/overview"`. No `..`, no absolute paths. |
-| `title` | string | yes | Document title (prepended as H1). |
-| `body` | string | yes | Full markdown body (title heading not included). |
-| `message` | string | no | Git commit message. Auto-generated when omitted. |
-
-**Output:** `{ applied, committed, pushed, failed, members: [{ name, ok, diverged?, error? }] }`. The `members` array reports per-member fan-out outcomes so the agent knows which repos received the change.
-
-**Errors:** `No group writer is available …` when the workspace is neither a parent nor a bound member.
-
-### `delete_group_doc`
-
-Delete a shared group doc. Commits the deletion on `flux-group-docs` and fans out.
-
-| Input | Type | Required | Notes |
-|-------|------|----------|-------|
-| `path` | string | yes | Full doc path including the group prefix, as returned by `list_group_docs` (e.g. `"Product/features/payments-api"`). |
-
-**Output:** `{ deleted, committed, pushed, failed, members }`.
-
-**Errors:** `'<path>' is not a valid group doc path …` when the path doesn't start with the group prefix.
+**Errors:** `path is required for action "<action>"` (validation); `Group doc '<path>' not found. Use group_doc action:"list" to see available paths.`; `No group writer is available …` (submit/delete when the workspace is neither a parent nor a bound member); `'<path>' is not a valid group doc path …` (delete, when the path doesn't start with the group prefix).
 
 ---
 
@@ -307,11 +336,12 @@ All mutation tools:
 
 ### `create_ticket`
 
-Create a new ticket.
+Create a new ticket. **Pass `parentId` to create it as a linked subtask** (FLUX-882 — absorbed the old `create_subtask` tool).
 
 | Input | Type | Required | Default |
 |-------|------|----------|---------|
 | `title` | string | yes | — |
+| `parentId` | string | no | — — when set, the new ticket is created as a linked subtask of this parent |
 | `status` | string | no | `Todo` |
 | `priority` | string | no | `None` |
 | `effort` | string | no | `None` |
@@ -320,11 +350,11 @@ Create a new ticket.
 | `body` | string | no | `''` |
 | `author` | string | no | `Agent` |
 
-**Output:** `{ id, title, status, nextSteps }`. `nextSteps` is a terse AXI #9 contextual-disclosure hint (FLUX-877) pointing at the likely next move (`start_session` / `update_ticket`). When `body` exceeds 10,000 chars the output also carries a `warning` field — the write is accepted, but the agent is nudged to keep bodies a concise plan and move bulk material to `.docs/`.
+**Output (no parent):** `{ id, title, status, nextSteps }`. **Output (with `parentId`):** `{ id, parentId, title, status, nextSteps }`. `nextSteps` is a terse AXI #9 contextual-disclosure hint pointing at the likely next move (`start_session` / `update_ticket`). When `body` exceeds 10,000 chars the output also carries a `warning` field — the write is accepted, but the agent is nudged to keep bodies a concise plan and move bulk material to `.docs/`.
 
-**Side effects:** assigns the next `<projectKey>-N` id, writes `.flux/<id>.md`, seeds a creation activity entry in history.
+**Side effects:** assigns the next `<projectKey>-N` id, writes `.flux/<id>.md`, seeds a creation activity entry in history. **With `parentId`** (the merged subtask path): the child is created with `skipBroadcast`, then linked into the parent's `subtasks` array via a TOCTOU-safe read-modify-write, and only then is `taskCreated { id, parentId }` broadcast — so a failed parent write never emits an event for an orphan child.
 
-**Errors:** `Workspace is activating, please retry`; `Schema validation failed: …`.
+**Errors:** `Parent ticket <id> not found` (when `parentId` is unknown); `Workspace is activating, please retry`; `Schema validation failed: …`.
 
 ### `extract_ticket`
 
@@ -402,10 +432,13 @@ Update metadata. Does **not** change status — use `change_status` for that.
 | `ticketId` | string (required) | |
 | `title`, `priority`, `effort`, `assignee`, `body`, `implementationLink` | string | omit to leave unchanged |
 | `tags` | string[] | replaces the array (not a merge) |
+| `parentId` | string \| null | **FLUX-1068** — (re)link an **existing** ticket under a parent. A string sets/moves the parent; `null` detaches. Omit to leave the link unchanged. |
 
 **Output:** `Updated <id>`. When a provided `body` exceeds 10,000 chars, a soft warning is appended to the output (the write still succeeds).
 
 **Side effects:** appends a single `activity` history entry summarizing the field changes (e.g. *"Updated title. Changed priority to High."*).
+
+**Re-parenting (`parentId`, FLUX-1068).** Unlike `create_ticket` (which links a *brand-new* child), `update_ticket` re-links a ticket that already exists — the only MCP way to re-parent, previously a raw REST `PUT`. Setting `parentId` runs the same **bidirectional parentId ⇄ `subtasks` sync** the REST route uses (extracted into one shared helper in `task-store.ts`): the child's `parentId` is written, the new parent's `subtasks` gains the id, and any old parent's `subtasks` loses it. Passing `parentId: null` deletes the `parentId` key (not a null) and removes the child from the old parent's `subtasks`. **Guards:** self-parenting and cycles (A→B→A) are rejected before any write with a `validation_failed` error; an unknown parent id returns `not_found`.
 
 ### `change_status`
 
@@ -426,9 +459,9 @@ Move a ticket to a new status.
 - Transitioning **to** `Require Input` requires `comment` (the question to ask the user).
 - Transitioning **to** `Ready` requires `comment` (the completion summary), unless `config.requireCommentOnStatusChange === false`.
 - **Commit-before-Ready for worktree branches (FLUX-730).** Transitioning **to** `Ready` is **refused** (error result, status unchanged) when the ticket's branch has a dedicated worktree **and** the branch has **0 commits ahead** of the default branch — an uncommitted worktree can never open a PR, so the move would land a silent "Ready, no PR". The error distinguishes "work done but uncommitted" (worktree has changes) from "no changes yet" and tells the agent to commit then retry. **Scoped to worktree branches only:** plain-branch tickets keep the soft warning (notification + activity, move still proceeds), and branchless tickets are unaffected (they legitimately stay uncommitted until `finish`). On a successful `Ready` move for a branch with commits, the engine pushes and opens the PR (`implementationLink` + `open-pr` swimlane).
-- **Dirty-root backstop for engine-driven switches (FLUX-741).** Sibling to the commit-before-Ready discipline, but for the **main/root checkout** rather than worktrees. Whenever the engine *must* switch or fast-forward the root tree off a branch during post-merge cleanup (`cleanupMergedBranch`'s `git checkout <default>` and `syncDefaultBranch`'s in-place `merge --ff-only`), it first **stashes any uncommitted/untracked root work** (`stashDirtyTree`, reusing the detach stash pattern) so the switch can never silently discard it — the root-clobber that lost work in the FLUX-734/739 incidents. The stashed work stays recoverable (`git stash apply <ref>`) and the ref is surfaced in a notification. Worktree mutation points are already guarded (`removeTaskWorktree` refuses a dirty tree; `detachTaskWorktree` stashes); this closes the gap on the root tree only. The complementary fix is **worktree-by-default** (see `create_branch`): isolating agent sessions in their own worktree means the shared root is rarely the place edits live in the first place.
+- **Dirty-root backstop for engine-driven switches (FLUX-741).** Sibling to the commit-before-Ready discipline, but for the **main/root checkout** rather than worktrees. Whenever the engine *must* switch or fast-forward the root tree off a branch during post-merge cleanup (`cleanupMergedBranch`'s `git checkout <default>` and `syncDefaultBranch`'s in-place `merge --ff-only`), it first **stashes any uncommitted/untracked root work** (`stashDirtyTree`, reusing the detach stash pattern) so the switch can never silently discard it — the root-clobber that lost work in the FLUX-734/739 incidents. The stashed work stays recoverable (`git stash apply <ref>`) and the ref is surfaced in a notification. Worktree mutation points are already guarded (`removeTaskWorktree` refuses a dirty tree; `detachTaskWorktree` stashes); this closes the gap on the root tree only. The complementary fix is **worktree-by-default** (see `branch` `action:'create'`): isolating agent sessions in their own worktree means the shared root is rarely the place edits live in the first place.
 - The `Require Input` / `Ready` status names are read from `configCache.requireInputStatus` / `readyForMergeStatus` and may be renamed in board config.
-- **Scatter-gather guard:** If the ticket has 2+ active sessions where at least one has `patternPosition: 'step'`, status changes are rejected unless `callerRole` is `'orchestrator'` or `'lead'`. This prevents individual reviewers from moving the ticket while peers are still reviewing. Affected sessions should use `add_comment` instead.
+- **Scatter-gather guard:** If the ticket has 2+ active sessions where at least one has `patternPosition: 'step'`, status changes are rejected unless `callerRole` is `'orchestrator'` or `'lead'`. This prevents individual reviewers from moving the ticket while peers are still reviewing. Affected sessions should use `add_note` (`type: 'comment'`) instead.
 
 **Output:** `<id> moved to <status>`.
 
@@ -436,64 +469,41 @@ Move a ticket to a new status.
 
 - **Stale parked-session reaping (FLUX-721).** On a genuine **forward** transition (any `newStatus` other than `Require Input`, where parking is legitimate), the ticket's sessions still parked at `waiting-input` on an **earlier phase** are terminalized (`reapStaleParkedSessions`). This prevents grooming/implementation sessions left parked after the ticket advances from lingering as zombies that gate merges (the [`POST /:id/pr/merge`](rest-api.md) Tier-2 guard) or 409 new session starts. The live calling agent (`running`) and the persistent per-ticket **`chat`** session (`phase: 'chat'`) are preserved. An `activity` entry records any reap.
 
-### `archive_ticket`
+### `archive`
 
-Safely remove a ticket from the active board by moving it to the **Archived** status (`config.archiveStatus`, default `Archived`). This is the reversible alternative to deletion: history is preserved and the ticket can be restored with [`unarchive_ticket`](#unarchive_ticket). **There is no hard-delete MCP tool** — prefer archiving.
-
-| Input | Type | Required | Notes |
-|-------|------|----------|-------|
-| `ticketId` | string | yes | |
-| `comment` | string | no | Reason for archiving (recorded as a `comment` entry) |
-
-**Behavior:** no-op-safe — returns `<id> is already <Archived>` if the ticket is already archived. Clears any active swimlane (and dismisses its notifications) so the archived ticket doesn't carry a stale blocked flag. Reaps stale parked **phase** sessions (`waiting-input`, non-`chat`) so an archived ticket leaves no session zombies behind (FLUX-721).
-
-**Output:** `<id> archived (moved to <Archived>)`.
-
-### `unarchive_ticket`
-
-Bring an archived ticket back onto the active board by moving it out of the Archived status.
+Archive or unarchive a ticket. One tool dispatched by `action` (FLUX-882 — merged `archive_ticket` / `unarchive_ticket`). Archiving is the reversible alternative to deletion: history is preserved and the ticket can be restored. **There is no hard-delete MCP tool** — prefer archiving.
 
 | Input | Type | Required | Notes |
 |-------|------|----------|-------|
 | `ticketId` | string | yes | |
-| `toStatus` | string | no | Status to restore to (default `Todo`); must not be the archive status |
+| `action` | `'archive'` \| `'unarchive'` | yes | Whether to archive or unarchive. |
+| `comment` | string | no | `archive` only — reason for archiving (recorded as a `comment` entry). |
+| `toStatus` | string | no | `unarchive` only — status to restore to (default `Todo`); must not be the archive status. |
 
-**Errors:** `<id> is not archived (status is <status>).` if the ticket isn't currently archived.
+**Behavior:**
 
-**Output:** `<id> unarchived (moved to <toStatus>)`.
+- `archive` → moves the ticket to the **Archived** status (`config.archiveStatus`, default `Archived`). No-op-safe: returns `<id> is already <Archived>` if already archived. Clears any active swimlane (and dismisses its notifications) so the archived ticket doesn't carry a stale blocked flag. Reaps stale parked **phase** sessions (`waiting-input`, non-`chat`) so an archived ticket leaves no session zombies behind (FLUX-721). Output: `<id> archived (moved to <Archived>)`.
+- `unarchive` → moves the ticket out of the Archived status to `toStatus` (default `Todo`). Output: `<id> unarchived (moved to <toStatus>)`. **Errors:** `<id> is not archived (status is <status>).` if not currently archived.
 
-### `add_comment`
+### `add_note`
 
-Append a comment to history.
-
-| Input | Type | Required |
-|-------|------|----------|
-| `ticketId` | string | yes |
-| `comment` | string | yes |
-| `user` | string | no — defaults to `Agent` |
-| `summary` | string | no — a faithful one-paragraph summary; shown in the agent digest once the comment ages past the recent window (full text via `get_ticket` `expand`). Provide for substantial comments; keep it concise but lossless. |
-| `pin` | boolean | no — never collapse this comment in the agent digest (review handoffs / key decisions). |
-| `supersedes` | string[] | no — ids of earlier history entries this comment makes obsolete (a decision reversed/replaced). The superseded entries collapse to a one-line marker in the agent digest (still recoverable via `expand`). A `pin: true`/user-authored target is advisory-only (kept full). Set ONLY when genuinely retiring a now-wrong entry. |
-
-**Output:** `Comment added to <id>`.
-
-### `log_progress`
-
-Append an `activity` entry (different from a comment — used for "agent did X" updates).
+Append a note to a ticket's history. One tool dispatched by `type` (FLUX-882 — merged `add_comment` / `log_progress`): `'comment'` records a human-facing comment; `'activity'` logs an agent progress update ("agent did X"). The optional `summary`/`pin`/`supersedes` apply to both.
 
 | Input | Type | Required |
 |-------|------|----------|
 | `ticketId` | string | yes |
-| `message` | string | yes |
-| `summary` | string | no — faithful summary shown in the agent digest once this note ages past the recent window (full text via `get_ticket` `expand`). |
-| `pin` | boolean | no — never collapse this note in the agent digest. |
-| `supersedes` | string[] | no — ids of earlier history entries this note makes obsolete. The superseded entries collapse to a one-line marker in the agent digest (recoverable via `expand`); a `pin: true`/user-authored target is advisory-only (kept full). |
+| `type` | `'comment'` \| `'activity'` | yes — `comment` = human-facing comment; `activity` = agent progress/activity update |
+| `message` | string | yes — the comment body or progress message |
+| `user` | string | no — author (default `Agent`); honored for `type: 'comment'`, while `activity` is always attributed to `Agent` |
+| `summary` | string | no — a faithful summary; shown in the agent digest once the note ages past the recent window (full text via `get_ticket` `expand`). Provide for substantial notes; concise but lossless. |
+| `pin` | boolean | no — never collapse this note in the agent digest (review handoffs / key decisions). |
+| `supersedes` | string[] | no — ids of earlier history entries this note makes obsolete (a decision reversed/replaced). The superseded entries collapse to a one-line marker in the agent digest (still recoverable via `expand`). A `pin: true`/user-authored target is advisory-only (kept full). Set ONLY when genuinely retiring a now-wrong entry. |
 
-**Output:** `Progress logged on <id>`.
+**Output:** `Comment added to <id>` (type `comment`) or `Progress logged on <id>` (type `activity`).
 
 ### `publish_artifact`
 
-Publish a self-contained HTML **grooming artifact** (FLUX-873) so the user reasons against a concrete rendering — a mockup, an architecture/flow diagram, an interactive prototype — instead of imagining it from prose. Whether to emit is an **agent heuristic** (no tag gate): emit for UI/UX, architecture, or "shape of the thing" tickets; skip bug fixes / XS-S / backend plumbing; default OFF when unsure. The grooming skill carries the full heuristic.
+Publish a self-contained HTML **artifact** (FLUX-873) so the user reasons against a concrete rendering instead of imagining it from prose. It spans **both lifecycle ends** — not grooming-only: at plan time a **grooming artifact** (mockup / architecture-flow diagram / interactive prototype), and at `Ready` a **visual recap** of the implementation diff (touched-file tree + key diff hunks + plain-language summary — FLUX-976). The tool is **not status-gated**; it accepts any `ticketId` at any point in the lifecycle. Whether to emit is an **agent heuristic** (no tag gate): emit for UI/UX, architecture, or "shape of the thing" work; skip bug fixes / XS-S / backend plumbing; default OFF when unsure. The grooming skill and the implementation skill's "Visual Recap Artifact" section carry the full heuristics; a recap tags its `title`/`note` with "recap" so the portal labels the panel accordingly.
 
 Each call is a **new revision** (history is kept — never an overwrite). The HTML is stored in a traversal-guarded sidecar at `.flux/artifacts/{ID}/{rev}.html` (never inlined in the body) and a revision-keyed pointer (`artifacts: { latest, revisions[] }`) is written to the ticket frontmatter. The tool broadcasts `taskUpdated` + `artifactReady { ticketId, rev }` over SSE, and the portal renders the artifact in a sandboxed iframe via [`GET /api/tasks/:id/artifact`](rest-api.md).
 
@@ -533,70 +543,45 @@ Atomic close-out: set `implementationLink`, append a completion comment, move st
 
 ---
 
-## Branch tools
+## Branch tool
 
-These wrap git operations through [`branch-manager.ts`](../../../engine/src/branch-manager.ts). Branches are named `flux/<lowercased-ticket-id>-<slug>`.
+### `branch`
 
-### `create_branch`
+Manage the git branch for a ticket. One tool dispatched by `action` (FLUX-882 — merged `create_branch` / `get_branch` / `delete_branch`). Wraps git operations through [`branch-manager.ts`](../../../engine/src/branch-manager.ts). Branches are named `flux/<lowercased-ticket-id>-<slug>`.
 
-| Input | Type | Required | Default |
-|-------|------|----------|---------|
-| `ticketId` | string | yes | — |
-| `baseBranch` | string | no | `master` |
-| `worktree` | boolean | no | **`true`** (agent sessions are worktree-isolated by default, FLUX-741) |
+| Input | Type | Required | Notes |
+|-------|------|----------|-------|
+| `ticketId` | string | yes | |
+| `action` | `'create'` \| `'status'` \| `'delete'` | yes | Which branch operation to run. |
+| `baseBranch` | string | no | `create` only — base branch (default `master`). |
+| `worktree` | boolean | no | `create` only — default **`true`** (agent sessions are worktree-isolated by default). |
+| `force` | boolean | no | `delete` only — force delete even if unmerged (default `false`). **Invalid for other actions** — passing it on create/status returns a `validation_failed` error. |
 
-**Output:** `{ branch: "<name>", worktree?: "<path>", worktreeError?: "<msg>", nextSteps }`. `nextSteps` is a terse AXI #9 next-step hint (FLUX-877) — implement, commit, then `change_status` to `Ready` to open the PR.
+**`action: 'create'`** — creates the branch (and, by default, a dedicated worktree) and stores its name on the ticket. **Output:** `{ branch: "<name>", worktree?: "<path>", worktreeError?: "<msg>", nextSteps }`. **Worktree-by-default:** this is the **agent** branch-creation path, so it defaults `worktree` to `true` — every agent branch session lands in its own worktree at `<repoParent>/.eh-worktrees/<repo>-<id>` and runs isolated there, so two parallel ticket sessions never share one checkout. Pass **`worktree: false`** for the single-checkout / human-manual escape. (The portal/human "Start task" path — `POST /:id/branch` — is *separate* and keeps its own default off.) The branch is always created first, so a worktree failure (e.g. hitting the concurrency cap of 4) is reported in `worktreeError` without failing the call. See [`task-worktree.ts`](../../../engine/src/task-worktree.ts). **Errors:** ticket not found; `Ticket <id> already has branch: <name>`; git failure.
 
-**Worktree-by-default (FLUX-741).** This tool is the **agent** branch-creation path, so it **defaults `worktree` to `true`** — every agent branch session lands in its own dedicated git worktree at `<repoParent>/.eh-worktrees/<repo>-<id>` and runs isolated there (FLUX-516), so two parallel ticket sessions never share one checkout (the FLUX-734/739 root-clobber class of bug). The escape for **single-checkout / human-manual** branch work is to pass **`worktree: false`** explicitly — the agent then runs in the shared main tree. (The portal/human "Start task" path — `POST /:id/branch` — is *separate* and keeps its own default off, governed by the workspace `worktreeByDefault` setting; this default flip is agent-only.) The branch is always created first, so a worktree failure (e.g. hitting the concurrency cap of 4) is reported in `worktreeError` without failing the call. See [`task-worktree.ts`](../../../engine/src/task-worktree.ts).
+**`action: 'status'`** — **Output:** `{ name, exists, aheadCount, behindCount }`. If the ticket has no branch, returns `{ name: null, exists: false, aheadCount: 0, behindCount: 0 }`.
 
-**Errors:** ticket not found; `Ticket <id> already has branch: <name>`; git failure.
+**`action: 'delete'`** — **Output:** `Branch <name> deleted`. Refuses to delete unmerged branches unless `force === true`. If the ticket has a dedicated worktree, the session is stopped and the worktree detached first (a branch can't be deleted while a worktree holds it checked out). As an **abandon**, any uncommitted work is preserved as a recoverable stash ref but NOT applied onto master. **Idempotent:** if the git branch is already gone (e.g. deleted by post-merge cleanup), the local delete is skipped rather than erroring, and the tool still clears the ticket's stale `branch` field — the way to detach a dead branch from a reopened ticket (FLUX-588).
 
-### `get_branch`
+> **Worktree teardown on finish:** `finish_ticket` stops the session and tears the ticket's worktree down (via detach) after the work is committed and the PR merged. If the worktree still has **uncommitted** changes, they are surfaced onto master and noted on the ticket, never discarded. The manual `POST /:id/worktree/detach` escape hatch behaves the same.
 
-| Input | Type | Required |
-|-------|------|----------|
-| `ticketId` | string | yes |
-
-**Output:** `{ name, exists, aheadCount, behindCount }`. If the ticket has no branch, returns `{ name: null, exists: false, aheadCount: 0, behindCount: 0 }`.
-
-### `delete_branch`
-
-| Input | Type | Required | Default |
-|-------|------|----------|---------|
-| `ticketId` | string | yes | — |
-| `force` | boolean | no | `false` |
-
-**Output:** `Branch <name> deleted`.
-
-**Enforcement:** refuses to delete unmerged branches unless `force === true`. If the ticket has a dedicated worktree, the session is stopped and the worktree detached first (a branch can't be deleted while a worktree holds it checked out). As an **abandon**, any uncommitted work is preserved as a recoverable stash ref but NOT applied onto master.
-
-**Idempotent:** if the git branch is already gone (e.g. it was deleted by post-merge cleanup), the local delete is skipped rather than erroring, and the tool still clears the ticket's stale `branch` field. This makes it the way to detach a dead branch from a reopened ticket (FLUX-588).
-
-> **Worktree teardown on finish:** `finish_ticket` stops the session and tears the ticket's worktree down (via detach) after the work is committed and the PR merged (FLUX-521). If the worktree still has **uncommitted** changes — e.g. someone was editing it by accident — they are surfaced onto master and noted on the ticket, never discarded. The manual `POST /:id/worktree/detach` escape hatch behaves the same.
+> **Subtasks (FLUX-882):** the old `create_subtask` tool is gone — create a subtask with [`create_ticket`](#create_ticket) passing `parentId`. Same atomic parent-link behavior (child created with `skipBroadcast`, TOCTOU-safe link into the parent's `subtasks` array, then `taskCreated { id, parentId }` broadcast).
 
 ---
 
-## Subtask tool
+## Delegation tool
 
-### `create_subtask`
+### `delegate`
 
-Create a child ticket and link it from the parent's `subtasks` array atomically.
+Delegate one or more tasks to specialist agents and wait for them to finish (FLUX-882 — merged `delegate_to_agent` / `delegate_parallel`). One delegation runs serially; multiple run in parallel via `Promise.allSettled`. **Always returns a JSON array**, one entry per delegation.
 
-| Input | Type | Required | Default |
-|-------|------|----------|---------|
-| `parentId` | string | yes | — |
-| `title` | string | yes | — |
-| `status`, `priority`, `effort`, `assignee`, `body` | string | no | as `create_ticket` |
-| `tags` | string[] | no | `[]` |
+| Input | Type | Required | Notes |
+|-------|------|----------|-------|
+| `ticketId` | string | yes | The ticket the delegations are for. |
+| `delegations` | array (≥1) | yes | Each: `{ personaId, task, effort?, model? }`. Length 1 = serial; >1 = parallel. |
+| `timeout` | number | no | Seconds for ALL delegations (default 300, max 600). |
 
-**Output:** `{ id, parentId, title, status, nextSteps }`. `nextSteps` is a terse AXI #9 next-step hint (FLUX-877).
-
-**Side effects:**
-
-- Allocates a new id from the same project key as the parent.
-- Writes the child file with a creation activity entry referencing the parent.
-- Rewrites the parent file to append the new id to its `subtasks` array.
-- Broadcasts `taskCreated` with the `parentId` for portal hierarchy cues.
+**Output:** `[{ persona, succeeded, status, output }, …]` — one entry per delegation, in input order. A rejected delegation yields `{ persona, succeeded: false, status: 'error', output: <reason> }`. (`model` is an optional per-delegation override, kept forward-compatible with the delegate-model-override work on another branch.)
 
 ---
 
@@ -615,8 +600,10 @@ Create a child ticket and link it from the parent's `subtasks` array atomically.
 
 **Policy** (`permissionDecisionFor` in [`mcp-server.ts`](../../../engine/src/mcp-server.ts)):
 
-- **Auto-allow** — reads and safe tools (`get_ticket`, `list_tickets`, `get_board_config`, `Read`, `Glob`, `Grep`, `WebFetch`, …) and anything not in the confirm set.
-- **Confirm** — destructive ops `change_status`, `delete_branch`, `finish_ticket`, `Bash`, and the restructuring verbs `archive_ticket` / `extract_ticket` / `merge_tickets` (FLUX-659 teeth) route through a human Allow/Deny round-trip: the tool POSTs to [`/api/board/permission-request`](rest-api.md), which parks the call until a human resolves it in the portal (or 120s elapses → auto-deny). The synchronous CLI contract is satisfied by holding the HTTP response open until resolution.
+- **Auto-allow** — reads and safe tools (`get_ticket`, `list_tickets`, `get_board_config`, `group_doc`, `Read`, `Glob`, `Grep`, `WebFetch`, …) and anything not in the confirm set.
+- **Confirm** — destructive ops `change_status`, `finish_ticket`, `archive`, `Bash`, the restructuring verbs `extract_ticket` / `merge_tickets` (FLUX-659 teeth), and **`branch` with `action: 'delete'`** route through a human Allow/Deny round-trip: the tool POSTs to [`/api/board/permission-request`](rest-api.md), which parks the call until a human resolves it in the portal (or 120s elapses → auto-deny). The synchronous CLI contract is satisfied by holding the HTTP response open until resolution.
+  - **Decision normalization (FLUX-1026):** whatever the resolve endpoint returns, `permission_prompt` re-shapes it at the CLI boundary before forwarding so the union is always valid — a bare `{ behavior: 'allow' }` (the portal Approve POST omits `updatedInput`) becomes `{ behavior: 'allow', updatedInput: <original input> }` (the human approved running the tool *as proposed*), a deny without a message gets a default one, and a malformed/empty body falls back to a deny. Without this, a human-approved confirm-tier call forwarded an allow with no `updatedInput`, failing Claude Code's Zod union and crashing the CLI on every approval.
+  - **Action-aware gating (FLUX-882):** the merged tools gate on their action/type param, not just the bare name. `branch` is confirm-gated **only** when `action: 'delete'` (the old `delete_branch` gate) — `create`/`status` auto-allow. `archive` stays confirm in **both** directions (archive + unarchive). `add_note`, `delegate`, `group_doc`, `swimlane`, and `create_ticket` (incl. the subtask path) are auto-allow.
 
 The confirm round-trip emits the `permission-request` / `permission-resolved` realtime events ([realtime channels](realtime-channels.md)) so the portal can show the approval prompt. Gating is per-session: see [permission mode](#permission-mode) below.
 
@@ -648,6 +635,99 @@ Ask the user a **structured multiple-choice question** and block until they answ
 **Behavior:** the handler POSTs to [`/api/board/ask-question`](rest-api.md) with the questions + the session's `EH_CONVERSATION_ID`, and **blocks on the held-open HTTP response** until the user answers in the portal (or a 4-minute timeout — held under undici's 300s `headersTimeout` so the long-poll fetch doesn't abort before the park resolves). The reuse of the FLUX-605 round-trip is exact; the only difference is the payload — chosen option label(s) + an optional note, not allow/deny. It emits the `ask-question` / `ask-question-resolved` realtime events ([realtime channels](realtime-channels.md)) so the portal can render the picker inline in the originating chat (or a global overlay when unrouted).
 
 **Output:** `{ answers: { [questionText]: chosenLabel | chosenLabel[] }, notes? }` (JSON text). On timeout the agent receives a plain-text "the user did not answer in time — proceed with your best judgment" so a parked question never crashes the turn. **FLUX-826:** a timeout on a ticket-bound question (the `EH_CONVERSATION_ID` is a real ticket id) also raises a persistent **"Needs Action"** flag + notification on that ticket, so a missed question survives even when the user wasn't watching the live picker — this is what makes the structured route safe on a resting/terminal ticket where `Require Input` (status-coupled) doesn't fit.
+
+---
+
+## Furnace tools
+
+The Furnace (FLUX-1008) is the overnight autonomous ticket runner — see the [Furnace reference](furnace.md) for the full data model, REST surface, and realtime events.
+
+### `furnace_get`
+
+Read Furnace run(s). Pass `runId` for one run (its full magazine + config + burn report); omit it to list every run.
+
+| Input | Type | Required | Notes |
+|-------|------|----------|-------|
+| `runId` | string | no | A specific run id; omit to list all runs. |
+
+**Output:** the run object (or an array of runs) as JSON text.
+
+### `furnace_build`
+
+Build a Furnace magazine from the groomed backlog and create a `building` run you can edit and then ignite. Deterministically scans `Todo` tickets, reasons about independence (excludes parent/child pairs; flags — never blocks — likely file overlaps and orders them apart), and returns the created run plus what it excluded and why.
+
+| Input | Type | Required | Notes |
+|-------|------|----------|-------|
+| `tag` | string | no | Only load tickets carrying this tag (an overnight/furnace opt-in hint). |
+| `statuses` | string[] | no | Statuses that count as groomed & ready (default `["Todo"]`). |
+| `limit` | number | no | Cap the magazine to at most this many charges. |
+| `burnRate` | number | no | Initial concurrency for the run (default 1). |
+| `mode` | enum | no | Initial burn mode. |
+| `title` | string | no | Human label for the run. |
+
+**Output:** `{ runId, run, excluded, notes }` — the created `building` run plus the excluded tickets (with reasons) and human-facing build notes.
+
+### `furnace_update`
+
+Live-adjust a run's config — `burnRate` (concurrency), `mode`, `reviewDepth`, `retryCap`, `hardStop` (`{ at?, maxTickets?, maxConsecutiveFailures? }`), and `title`. Changes are honored on the next stoke tick. Does **not** ignite, pause, or stop a run — dedicated tools (`furnace_build` / `furnace_ignite` / `furnace_stop`, added in S2/S3/S5) handle those.
+
+| Input | Type | Required | Notes |
+|-------|------|----------|-------|
+| `runId` | string | yes | The run to update. |
+| `burnRate` | number | no | Charges that may burn at once (clamped to the worktree cap). |
+| `mode` | enum | no | `sequential` \| `parallel` \| `parallel-implement-serial-review`. |
+| `reviewDepth` | enum | no | `single` \| `scatter`. |
+| `retryCap` | number | no | Re-implementation attempts before parking (default 2). |
+| `hardStop` | object | no | `{ at?, maxTickets?, maxConsecutiveFailures? }` — merged over the current hard-stop config. |
+| `title` | string | no | Human label for the run. |
+
+### `furnace_ignite`
+
+Ignite a built run: move it `building`→`burning` and start the Stoker. Enforces at most one active run at a time. The Stoker then burns each charge unattended — implement → review → re-implement (≤ retryCap) → **leave the PR open at Ready** — and never merges.
+
+| Input | Type | Required | Notes |
+|-------|------|----------|-------|
+| `runId` | string | yes | The run to ignite. |
+
+### `furnace_stop`
+
+Stop a run. Default is a **graceful** stop: stop feeding new charges, let in-flight charges finish (open PRs stay open for review), then the run stops. `hard: true` is an immediate cutoff that kills in-flight sessions, parks them, and skips the rest.
+
+| Input | Type | Required | Notes |
+|-------|------|----------|-------|
+| `runId` | string | yes | The run to stop. |
+| `reason` | string | no | Why it is being stopped (recorded on the run). |
+| `hard` | boolean | no | Immediate cutoff: kill in-flight sessions instead of letting them drain. |
+
+---
+
+## FLUX-882 tool consolidation (migration)
+
+The MCP surface was consolidated from **34 tools to 24** by folding single-op tools behind an `action`/`type` discriminator (and folding `create_subtask` into `create_ticket`). This was a **hard cut — the old tool names were removed, with no aliases.** An agent calling an old name gets an "unknown tool" error and must use the new name. The forced-reinstall path (orphan sweep + one-time bootstrap migration, see [agent-integrations](../agent-integrations.md)) cleans stale skill files so updated users converge on the new surface.
+
+| Old tool(s) | New tool | How to call |
+|-------------|----------|-------------|
+| `delegate_to_agent`, `delegate_parallel` | `delegate` | `delegate({ ticketId, delegations: [{ personaId, task, effort?, model? }], timeout? })` — length-1 serial, >1 parallel; always returns a JSON array |
+| `create_subtask` | `create_ticket` | `create_ticket({ title, parentId, … })` — `parentId` triggers the atomic subtask-link path |
+| `create_branch` | `branch` | `branch({ ticketId, action: 'create', baseBranch?, worktree? })` |
+| `get_branch` | `branch` | `branch({ ticketId, action: 'status' })` |
+| `delete_branch` | `branch` | `branch({ ticketId, action: 'delete', force? })` |
+| `list_group_docs` | `group_doc` | `group_doc({ action: 'list' })` |
+| `read_group_doc` | `group_doc` | `group_doc({ action: 'read', path })` |
+| `submit_group_doc` | `group_doc` | `group_doc({ action: 'submit', path, title, body, message? })` |
+| `delete_group_doc` | `group_doc` | `group_doc({ action: 'delete', path })` |
+| `set_swimlane` | `swimlane` | `swimlane({ ticketId, action: 'set', swimlane, comment? })` |
+| `clear_swimlane` | `swimlane` | `swimlane({ ticketId, action: 'clear', comment? })` |
+| `add_comment` | `add_note` | `add_note({ ticketId, type: 'comment', message, user?, summary?, pin?, supersedes? })` |
+| `log_progress` | `add_note` | `add_note({ ticketId, type: 'activity', message, summary?, pin?, supersedes? })` |
+| `archive_ticket` | `archive` | `archive({ ticketId, action: 'archive', comment? })` |
+| `unarchive_ticket` | `archive` | `archive({ ticketId, action: 'unarchive', toStatus? })` |
+
+**Kept separate (NOT merged):** `update_ticket` (metadata only — never moves status) and `change_status` (the state machine — the only tool that moves status). Their descriptions were retightened so the distinction is unmistakable.
+
+**Permission gating** stayed equivalent through the rename and is now **action-aware**: `branch` is confirm-gated only on `action: 'delete'`; `archive` is confirm in both directions; `change_status` / `extract_ticket` / `merge_tickets` / `finish_ticket` remain confirm; `add_note` / `delegate` / `group_doc` / `swimlane` / `create_ticket` are auto-allow. See [`permission_prompt`](#permission_prompt).
+
+> `swimlane` (set/clear) was not previously documented as its own section here; it lives in [`mcp-server.ts`](../../../engine/src/mcp-server.ts) `buildMcpServer()` like the rest. The `'require-input'` swimlane keeps its special-cased session-parking behavior under `swimlane({ action: 'set', swimlane: 'require-input', comment })`, mirroring `change_status` → Require Input.
 
 ---
 

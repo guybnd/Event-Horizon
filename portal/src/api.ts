@@ -1,4 +1,5 @@
-import type { Task, Config, Doc, CliFramework, CliSessionSummary, ModuleDeclaration } from './types';
+import type { Task, Config, Doc, CliFramework, CliSessionSummary, ModuleDeclaration, TerminalSessionInfo } from './types';
+import type { FurnaceBatch, BatchKind, BatchTrigger, BatchStatus, SlotInfo, ExcludedTicket } from './furnaceTypes';
 
 export const API_URL = '/api';
 
@@ -6,8 +7,9 @@ function encodeDocPath(docPath: string) {
   return docPath.split('/').map((segment) => encodeURIComponent(segment)).join('/');
 }
 
-export async function fetchTasks(): Promise<Task[]> {
-  const res = await fetch(`${API_URL}/tasks`);
+export async function fetchTasks(opts?: { active?: boolean }): Promise<Task[]> {
+  const query = opts?.active ? '?active=true' : '';
+  const res = await fetch(`${API_URL}/tasks${query}`);
   if (!res.ok) throw new Error('Failed to fetch tasks');
   return res.json();
 }
@@ -437,7 +439,15 @@ export async function switchWorkspace(wsPath: string, force?: boolean): Promise<
 export async function fetchConfig(): Promise<Config> {
   const res = await fetch(`${API_URL}/config`);
   if (!res.ok) throw new Error('Failed to fetch config');
-  return res.json();
+  const config: Config = await res.json();
+  // FLUX-906 (audit E.1/E.8): the board sentinel must stay in lockstep with the engine. The portal
+  // keeps a sync constant (BOARD_CONVERSATION_ID, needed at module-eval by 30+ call sites that can't
+  // await config), but cross-check it against the engine-served value in dev so drift is caught
+  // immediately instead of silently splitting the orchestrator chat across two ids.
+  if (import.meta.env.DEV && config.boardConversationId && config.boardConversationId !== BOARD_CONVERSATION_ID) {
+    console.warn(`[config] boardConversationId drift: engine='${config.boardConversationId}' portal='${BOARD_CONVERSATION_ID}' — update portal/src/api.ts to match engine/src/agents/board.ts.`);
+  }
+  return config;
 }
 
 export async function fetchModuleCatalog(): Promise<ModuleDeclaration[]> {
@@ -595,7 +605,10 @@ export async function fetchTaskCliSession(taskId: string): Promise<CliSessionSum
 }
 
 export interface StartSessionOptions {
-  framework: CliFramework;
+  /** FLUX-906: optional — omit it to let the ENGINE resolve the configured default
+   *  (`resolveDefaultFramework()`), so a fresh chat follows `defaultAgent` instead of being
+   *  hardcoded to Claude. Callers that already know the framework (launchers) still pass it. */
+  framework?: CliFramework;
   appendPrompt?: string;
   /** Resolve the prompt server-side from a persona catalog id (preferred). */
   personaId?: string;
@@ -624,7 +637,9 @@ export interface StartSessionOptions {
 
 export async function startTaskCliSessionEx(taskId: string, opts: StartSessionOptions): Promise<CliSessionSummary> {
   const { framework, appendPrompt, personaId, focusComment, skipPermissions = true, effortOverride, model, permissionMode, phase, role, pattern, patternPosition, groupId, groupSeq, groupTotal, groupType, groupVariant, lockedPaths, attachments } = opts;
-  const body: Record<string, unknown> = { framework, skipPermissions };
+  const body: Record<string, unknown> = { skipPermissions };
+  // FLUX-906: omit `framework` when unset so the engine resolves the configured default.
+  if (framework) body.framework = framework;
   if (appendPrompt) body.appendPrompt = appendPrompt;
   if (attachments?.length) body.attachments = attachments;
   if (personaId) body.personaId = personaId;
@@ -936,7 +951,11 @@ export async function fetchTaskCliSessions(taskId: string): Promise<CliSessionSu
   return payload.sessions || [];
 }
 
-/** FLUX-604: reserved conversation id for the board-level orchestrator chat. */
+/** FLUX-604: reserved conversation id for the board-level orchestrator chat.
+ *  FLUX-906 (audit E.1/E.8): this is the portal's single SYNC source — 30+ call sites compare against
+ *  it at render/handler time and can't await /api/config, so the constant stays. It mirrors
+ *  engine/src/agents/board.ts (`BOARD_CONVERSATION_ID`) and is served on /api/config as
+ *  `boardConversationId`; `fetchConfig()` cross-checks the two in dev so drift can't go unnoticed. */
 export const BOARD_CONVERSATION_ID = '__board__';
 
 /** FLUX-674: an image attached to a user chat turn (paste / drop / file picker). */
@@ -1277,12 +1296,19 @@ export interface ConflictInfo {
   remoteContent: string;
 }
 
+/** Engine-owned, copy-paste fix steps for an auth sync failure (FLUX-895). */
+export interface SyncRemediation {
+  reason: string;
+  commands: string[];
+}
+
 export interface SyncStatus {
   state: 'idle' | 'syncing' | 'synced' | 'conflict' | 'error';
   lastSyncTime?: string;
   conflicts?: ConflictInfo[];
   error?: string;
   errorType?: 'network' | 'auth' | 'conflict' | 'unknown';
+  remediation?: SyncRemediation;
 }
 
 export async function fetchSyncStatus(): Promise<SyncStatus> {
@@ -1313,22 +1339,51 @@ export function subscribeSyncStatus(callback: (status: SyncStatus) => void): () 
 }
 
 export async function triggerSync(): Promise<void> {
-  await fetch(`${API_URL}/sync-status/sync`, { method: 'POST' });
+  // FLUX-989: bound the trigger so a wedged engine can't leave the caller's promise
+  // pending forever. Fire-and-observe: a timeout is swallowed (the sync indicator reflects
+  // real state via the SSE stream), we just don't hang on the POST.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  try {
+    await fetch(`${API_URL}/sync-status/sync`, { method: 'POST', signal: controller.signal });
+  } catch {
+    /* engine slow/unreachable — the sync-status stream is the source of truth */
+  } finally {
+    clearTimeout(timer);
+  }
 }
+
+// Matches the engine's RESOLVE_CONFLICTS_TIMEOUT_MS (90s) with a small margin so, in the
+// normal slow case, the server's clean error body wins the race over a client-side abort
+// (FLUX-989). Guarantees ConflictResolutionModal surfaces a real error state instead of an
+// infinite "Resolving…" spinner if the round trip ever wedges.
+const RESOLVE_CONFLICTS_TIMEOUT_MS = 95_000;
 
 export async function resolveConflicts(
   resolutions: Array<{ ticketId: string; strategy: 'use-remote' | 'rename-local' | 'manual'; newContent?: string }>
 ): Promise<{ ok: boolean }> {
-  const res = await fetch(`${API_URL}/storage/resolve-conflicts`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ resolutions }),
-  });
-  if (!res.ok) {
-    const payload = await res.json().catch(() => ({}));
-    throw new Error(payload.error || 'Failed to resolve conflicts');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), RESOLVE_CONFLICTS_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${API_URL}/storage/resolve-conflicts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resolutions }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      throw new Error(payload.error || 'Failed to resolve conflicts');
+    }
+    return res.json();
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new Error('Conflict resolution timed out. The sync may still be finishing — check the sync status and retry if it persists.', { cause: err });
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
   }
-  return res.json();
 }
 
 // ─── Notifications ───────────────────────────────────────────────────────────
@@ -2452,4 +2507,253 @@ export async function deleteOnboardingAsset(kind: 'page' | 'feature', id: string
     const payload = await res.json().catch(() => ({}));
     throw new Error(payload.error || 'Failed to delete onboarding image');
   }
+}
+
+// ─── Terminal API ─────────────────────────────────────────────────────────────
+
+export async function createTerminalSession(cols?: number, rows?: number, title?: string): Promise<TerminalSessionInfo> {
+  const body: Record<string, unknown> = {};
+  if (cols !== undefined) body.cols = cols;
+  if (rows !== undefined) body.rows = rows;
+  if (title !== undefined) body.title = title;
+  const res = await fetch(`${API_URL}/terminal/sessions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    // FLUX-1030: surface the engine's real error (e.g. a node-pty spawn failure) instead of a
+    // generic string, so the UI can show the user why "+" / a quick-launch did nothing.
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to create terminal session');
+  }
+  return res.json();
+}
+
+export async function listTerminalSessions(): Promise<TerminalSessionInfo[]> {
+  const res = await fetch(`${API_URL}/terminal/sessions`);
+  if (!res.ok) throw new Error('Failed to list terminal sessions');
+  return res.json();
+}
+
+export async function getTerminalSession(id: string): Promise<TerminalSessionInfo & { scrollback: string }> {
+  const res = await fetch(`${API_URL}/terminal/sessions/${encodeURIComponent(id)}`);
+  if (!res.ok) throw new Error('Failed to get terminal session');
+  return res.json();
+}
+
+export async function destroyTerminalSession(id: string): Promise<void> {
+  const res = await fetch(`${API_URL}/terminal/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error('Failed to destroy terminal session');
+}
+
+export async function killTerminalSession(id: string): Promise<void> {
+  const res = await fetch(`${API_URL}/terminal/sessions/${encodeURIComponent(id)}/kill`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to kill terminal session');
+}
+
+export async function renameTerminalSession(id: string, title: string): Promise<void> {
+  const res = await fetch(`${API_URL}/terminal/sessions/${encodeURIComponent(id)}/title`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  });
+  if (!res.ok) throw new Error('Failed to rename terminal session');
+}
+
+export function getTerminalWsUrl(sessionId: string): string {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}/api/terminal/ws/${encodeURIComponent(sessionId)}`;
+}
+
+// ── The Furnace — batches (FLUX-1053) ───────────────────────────────────────────
+
+export async function fetchFurnaceBatches(status?: BatchStatus): Promise<FurnaceBatch[]> {
+  const q = status ? `?status=${encodeURIComponent(status)}` : '';
+  const res = await fetch(`${API_URL}/furnace${q}`);
+  if (!res.ok) throw new Error('Failed to fetch furnace batches');
+  return res.json();
+}
+
+export async function fetchFurnaceSlots(): Promise<SlotInfo> {
+  const res = await fetch(`${API_URL}/furnace/slots`);
+  if (!res.ok) throw new Error('Failed to fetch worktree slots');
+  return res.json();
+}
+
+export interface CreateBatchOptions {
+  title: string;
+  kind?: BatchKind;
+  ticketIds?: string[];
+  burnRate?: number;
+  trigger?: BatchTrigger;
+}
+
+export async function createFurnaceBatch(opts: CreateBatchOptions): Promise<FurnaceBatch> {
+  const res = await fetch(`${API_URL}/furnace`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(opts),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error || 'Failed to create batch');
+  }
+  return res.json();
+}
+
+/** Build a batch from the groomed backlog (MCP furnace_build's HTTP-less twin lives on the MCP tool). */
+export interface BuildBatchOptions {
+  tag?: string;
+  statuses?: string[];
+  limit?: number;
+  kind?: BatchKind;
+  burnRate?: number;
+  title?: string;
+}
+
+export interface BuildBatchResult {
+  batchId: string;
+  batch: FurnaceBatch;
+  excluded: ExcludedTicket[];
+  notes: string[];
+}
+
+export async function updateFurnaceBatch(
+  id: string,
+  // No `status` — transitions go through ignite/stop, never a raw PUT (the route rejects it).
+  patch: { title?: string; kind?: BatchKind; branch?: string; burnRate?: number; trigger?: BatchTrigger | null; ticketIds?: string[] },
+): Promise<FurnaceBatch> {
+  const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error('Failed to update furnace batch');
+  return res.json();
+}
+
+/** Append a single ticket to an existing batch (draft or burning). */
+export async function appendFurnaceTicket(id: string, ticketId: string): Promise<FurnaceBatch> {
+  const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}/ticket`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ticketId }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error || 'Failed to append ticket');
+  }
+  return res.json();
+}
+
+/** Remove a ticket from a batch (disallowed while it is actively burning). */
+export async function removeFurnaceTicket(id: string, ticketId: string): Promise<FurnaceBatch> {
+  const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}/ticket/${encodeURIComponent(ticketId)}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error || 'Failed to remove ticket');
+  }
+  return res.json();
+}
+
+/** Result of an ignite attempt — `noSlots` is the worktree-pool-full case (HTTP 409). */
+export interface IgniteResult {
+  ok: boolean;
+  batch?: FurnaceBatch;
+  noSlots?: boolean;
+  used?: number;
+  max?: number;
+  error?: string;
+}
+
+export async function igniteFurnaceBatch(id: string): Promise<IgniteResult> {
+  const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}/ignite`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+  if (res.ok) return { ok: true, batch: await res.json() };
+  const err = await res.json().catch(() => ({}));
+  if (res.status === 409 && err?.error === 'no_slots') return { ok: false, noSlots: true, used: err.used, max: err.max };
+  return { ok: false, error: err?.error || 'Failed to ignite batch' };
+}
+
+export async function stopFurnaceBatch(id: string, opts?: { reason?: string; hard?: boolean }): Promise<FurnaceBatch> {
+  const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}/stop`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(opts ?? {}),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error || 'Failed to stop batch');
+  }
+  return res.json();
+}
+
+export async function deleteFurnaceBatch(id: string): Promise<void> {
+  const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error('Failed to delete furnace batch');
+}
+
+/** Merge a batch's PR(s): a specific one by `prBranch`, else every approved PR. Marks them `merged`. */
+export async function mergeFurnaceBatch(id: string, prBranch?: string): Promise<{ batch: FurnaceBatch; merged: string[]; failed: Array<{ branch: string; error: string }> }> {
+  const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}/merge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(prBranch ? { prBranch } : {}),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error || 'Failed to merge batch PR(s)');
+  }
+  return res.json();
+}
+
+// ── Recovery actions (FLUX-1066) — retry / resume / dismiss / takeover / hand-back ────────────────
+
+/** Retry a single parked/failed ticket → reset to queued with a fresh attempt budget. */
+export async function retryFurnaceTicket(id: string, ticketId: string): Promise<FurnaceBatch> {
+  const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}/tickets/${encodeURIComponent(ticketId)}/retry`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error || 'Failed to retry ticket');
+  }
+  return res.json();
+}
+
+/** Resume a halted/finished batch → burning. `noSlots` when the worktree pool is full (HTTP 409). */
+export async function resumeFurnaceBatch(id: string): Promise<IgniteResult> {
+  const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}/resume`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+  if (res.ok) return { ok: true, batch: await res.json() };
+  const err = await res.json().catch(() => ({}));
+  if (res.status === 409 && err?.error === 'no_slots') return { ok: false, noSlots: true, used: err.used, max: err.max };
+  return { ok: false, error: err?.error || 'Failed to resume batch' };
+}
+
+/** Dismiss the Furnace-raised flag on a ticket ("I've got this") — no re-queue. */
+export async function dismissFurnaceTicket(id: string, ticketId: string): Promise<FurnaceBatch> {
+  const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}/tickets/${encodeURIComponent(ticketId)}/dismiss`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error || 'Failed to dismiss ticket flag');
+  }
+  return res.json();
+}
+
+/** Take over a ticket (owner → human): the Furnace yields. */
+export async function takeoverFurnaceTicket(id: string, ticketId: string): Promise<FurnaceBatch> {
+  const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}/tickets/${encodeURIComponent(ticketId)}/takeover`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error || 'Failed to take over ticket');
+  }
+  return res.json();
+}
+
+/** Hand a taken-over ticket back to the Furnace (owner → furnace): re-queue with a fresh attempt budget. */
+export async function handBackFurnaceTicket(id: string, ticketId: string): Promise<FurnaceBatch> {
+  const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}/tickets/${encodeURIComponent(ticketId)}/handback`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error || 'Failed to hand ticket back');
+  }
+  return res.json();
 }

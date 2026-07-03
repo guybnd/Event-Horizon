@@ -23,14 +23,11 @@ const SORT_OPTIONS: { value: SortMode; label: string }[] = [
   { value: 'recent', label: 'Recently active' },
 ];
 
-/** Recency for the "Recently active" sort — derived from history since Task has no updatedAt. */
+/** Recency for the "Recently active" sort — derived from history since Task has no updatedAt.
+ *  FLUX-725: the max-activity date is pre-computed on the list digest (was a scan over full history). */
 function lastActivityDate(task: Task): number {
-  let max = 0;
-  for (const h of task.history ?? []) {
-    const t = Date.parse(h.date);
-    if (!Number.isNaN(t) && t > max) max = t;
-  }
-  return max;
+  const t = Date.parse(task.historyDigest?.lastActivityAt ?? '');
+  return Number.isNaN(t) ? 0 : t;
 }
 
 /**

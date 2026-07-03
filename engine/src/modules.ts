@@ -116,7 +116,7 @@ function resolveEnvVars(env: Record<string, string>, vars: Record<string, string
   return result;
 }
 
-export function getModuleMcpServers(phase?: string, tags?: string[]): Record<string, { command: string; args: string[]; env?: Record<string, string> }> {
+export function getModuleMcpServers(phase?: string, tags?: string[], framework?: string): Record<string, { command: string; args: string[]; env?: Record<string, string> }> {
   const active = getActiveModules(phase, tags);
   const servers: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {};
   let activeFluxDir: string | undefined;
@@ -125,9 +125,16 @@ export function getModuleMcpServers(phase?: string, tags?: string[]): Record<str
   if (!activeFluxDir) {
     console.warn('[modules] getActiveFluxDir() failed — ${ACTIVE_FLUX_DIR} template vars will not be resolved in MCP server env');
   }
+  // FLUX-955 (audit C.15): resolve the per-framework Serena `--context` placeholder for the spawning
+  // framework. Defaults to 'claude-code' (the only Serena profile EH targets today — see serenaContextFor).
+  const serenaContext = serenaContextFor(framework);
   for (const m of active) {
     if (m.mcpServer) {
       const resolved = { ...m.mcpServer };
+      // Map to a NEW args array (don't mutate the shared BUILTIN_MODULES const).
+      if (resolved.args.some((a) => a.includes('${SERENA_CONTEXT}'))) {
+        resolved.args = resolved.args.map((a) => a.replace('${SERENA_CONTEXT}', serenaContext));
+      }
       if (resolved.env) {
         resolved.env = resolveEnvVars(resolved.env, vars);
       }
@@ -135,6 +142,20 @@ export function getModuleMcpServers(phase?: string, tags?: string[]): Record<str
     }
   }
   return servers;
+}
+
+// FLUX-955 (audit C.15): Serena's `--context` tunes it to a host agent's conventions. Serena ships a
+// `claude-code` profile, which EH has always used. There is no Copilot/Gemini-specific Serena profile
+// yet, so every framework falls back to `claude-code` — a tuning HINT, not a correctness gap (Serena
+// still works for the other agents, just tuned for Claude's conventions). This is the seam: when Serena
+// adds a matching profile, map the framework here and it flows through automatically (the spawning
+// framework is threaded into getModuleMcpServers / substituteArgs, which resolve the `${SERENA_CONTEXT}`
+// placeholder in the Serena module args).
+const SERENA_CONTEXT_BY_FRAMEWORK: Record<string, string> = {
+  claude: 'claude-code',
+};
+export function serenaContextFor(framework?: string): string {
+  return (framework && SERENA_CONTEXT_BY_FRAMEWORK[framework]) || 'claude-code';
 }
 
 export function getModulePromptFragments(phase?: string, tags?: string[]): string {
@@ -162,12 +183,16 @@ export const BUILTIN_MODULES: ModuleDeclaration[] = [
     description: 'Adds semantic code search, refactoring, and symbol navigation tools via Serena MCP',
     enabled: false,
     mcpServer: {
+      // FLUX-955 (C.15): `${SERENA_CONTEXT}` is resolved per spawning framework by getModuleMcpServers
+      // (defaults to 'claude-code'). This stdio path is Claude-only today, so it resolves to claude-code.
       command: 'serena',
-      args: ['start-mcp-server', '--context', 'claude-code', '--project-from-cwd', '--open-web-dashboard', 'False', '--enable-gui-log-window', 'False'],
+      args: ['start-mcp-server', '--context', '${SERENA_CONTEXT}', '--project-from-cwd', '--open-web-dashboard', 'False', '--enable-gui-log-window', 'False'],
     },
     sharedHttp: {
+      // FLUX-955 (C.15): the shared HTTP server is one-per-project (framework-agnostic), so its context
+      // is resolved with no framework → 'claude-code' (substituteArgs in shared-mcp-server.ts).
       command: 'serena',
-      args: ['start-mcp-server', '--context', 'claude-code', '--project', '${PROJECT}', '--transport', 'streamable-http', '--port', '${PORT}', '--enable-web-dashboard', 'False', '--enable-gui-log-window', 'False'],
+      args: ['start-mcp-server', '--context', '${SERENA_CONTEXT}', '--project', '${PROJECT}', '--transport', 'streamable-http', '--port', '${PORT}', '--enable-web-dashboard', 'False', '--enable-gui-log-window', 'False'],
     },
     installDocs: {
       requires: 'uv (Python package manager)',

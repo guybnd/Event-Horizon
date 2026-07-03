@@ -10,7 +10,7 @@ import { TaskDescriptionSurface } from './TaskDescriptionSurface';
 import { normalizeTaskMarkdownBody } from '../taskMarkdownUtils';
 import { motion, AnimatePresence } from 'framer-motion';
 import { TaskMarkdown } from './TaskMarkdown';
-import type { Task, TaskLiveEvent, HistoryEntry } from '../types';
+import type { Task, TaskLiveEvent } from '../types';
 import { ParseErrorButton } from './ParseErrorButton';
 
 function BacklogRow({
@@ -183,16 +183,10 @@ export function BacklogScreen() {
   const handleStatusChange = async (newStatus: string) => {
     if (!selectedTask) return;
     
-    const newHistory: HistoryEntry[] = [...(selectedTask.history || []), {
-      type: 'status_change',
-      from: selectedTask.status,
-      to: newStatus,
-      user: currentUser,
-      date: new Date().toISOString()
-    }];
-
     try {
-      await updateTask(selectedTask.id, { status: newStatus, history: newHistory, updatedBy: currentUser });
+      // FLUX-725: send only the status; the engine records the status_change itself (the backlog
+      // task carries only a history digest now, so we can't rebuild the full history client-side).
+      await updateTask(selectedTask.id, { status: newStatus, updatedBy: currentUser });
       triggerRefresh();
       setSelectedTaskId(null);
     } catch(err) {

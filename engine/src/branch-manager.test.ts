@@ -5,7 +5,7 @@ import os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { setWorkspaceRoot } from './workspace.js';
-import { deleteTicketBranch, planFinishPr, type PrStatus } from './branch-manager.js';
+import { deleteTicketBranch, planFinishPr, checkGhAuth, type PrStatus } from './branch-manager.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -190,4 +190,26 @@ describe('planFinishPr (FLUX-741 / FLUX-656)', () => {
     expect(plan.action).toBe('blocked');
     expect(plan.reason).toMatch(/no commits/i);
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FLUX-998 regression — checkGhAuth() MUST NOT go through the runner's default
+// (buildGitSyncEnv()) env-building path. buildGitSyncEnv() itself calls checkGhAuth() to decide
+// whether to inject gh's credential helper, so routing checkGhAuth's own probe through that same
+// path recurses infinitely: buildGitSyncEnv → checkGhAuth → runGh → buildGitSyncEnv → … This was
+// hit live while routing this module through the S1 runner (a real RangeError: Maximum call stack
+// size exceeded, surfaced as this exact test timing out). checkGhAuth's runGh call MUST pass an
+// explicit `env` override to opt out of buildGitSyncEnv() — see git-exec.ts's GitExecOptions.env
+// and branch-manager.ts's checkGhAuth for the fix + full explanation.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('checkGhAuth (FLUX-998: must not recurse through buildGitSyncEnv)', () => {
+  it('resolves to a boolean promptly — does not hang/stack-overflow via buildGitSyncEnv', async () => {
+    // Whether `gh` is installed/authed in the test environment is irrelevant here; the invariant
+    // under test is "this returns, at all" — a reintroduced recursion bug would time this out.
+    await expect(checkGhAuth()).resolves.toEqual(expect.any(Boolean));
+    // Per-test timeout raised above runGh's own 60s ceiling: when `gh` is installed and authed,
+    // `gh auth status` makes a network round-trip to github.com to validate the token, which on a
+    // slow/congested CI network can exceed vitest's default 5s and flake this test. 65s comfortably
+    // clears runGh's 60s worst case so a false timeout can't masquerade as a recursion regression.
+  }, 65_000);
 });

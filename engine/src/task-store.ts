@@ -1,22 +1,25 @@
 import { log } from './log.js';
+import { finalMessageNeedsUser } from './final-message-heuristic.js';
 import fs from 'fs/promises';
 import { renameSync, realpathSync } from 'fs';
 import path from 'path';
 import matter from 'gray-matter';
 import chokidar from 'chokidar';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
+// FLUX-999 (epic FLUX-996): getMaxIdFromRemote's git fetch used to be a bare execFileAsync — no
+// timeout, no non-interactive env — so it could hang EVERY create_ticket in orphan mode forever
+// on a slow/unreachable remote or a stalled credential prompt. Route through the S1 runner.
+import { runGit } from './git-exec.js';
 import { getActiveFluxDir, getTaskAssetsDir, getFluxStoreDir, isOrphanMode, setWorkspaceRoot, workspaceRoot, getWorkspacesList } from './workspace.js';
 import { attachWorktreeIfPresent, migrateStrandedFluxTickets } from './storage-sync.js';
 import { startSyncWatcher, allocateNewTicketId } from './sync-watcher.js';
 import { configCache, loadConfig, autoRegisterUnknownTags } from './config.js';
 import { loadCustomPersonas } from './orchestration-personas.js';
-import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate, getHistoryTimestamp, digestHistoryForAgent, digestTerminalSessionProgress, compactSessionProgress, extractRecentUserComments, extractLaunchFocus } from './history.js';
+import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate, getHistoryTimestamp, digestHistoryForAgent, buildHistoryDigest, compactSessionProgress, extractRecentUserComments, extractLaunchFocus } from './history.js';
 import { generatePromptNotification, generateCompletionNotification, clearNotifications, checkSkillStaleness, addNotification } from './notifications.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
 import { broadcastEvent } from './events.js';
 import { rehydrateOpenPrompts } from './hitl-prompts.js';
-import { getCliSessionSummaryForTask, getAllSessionSummariesForTask, getListSessionSummariesForTask, slimSessionSummaryForAgent, cliSessionsById, cliSessionIdByTaskId } from './session-store.js';
+import { getCliSessionSummaryForTask, getAllSessionSummariesForTask, getListSessionSummariesForTask, slimSessionSummaryForAgent, cliSessionsById, cliSessionIdByTaskId, rehydrateSessionStubs, armReclaimGrace } from './session-store.js';
 import { isTopLevelTaskFile, getDocsDir, isDocFile, getDocPathFromFile, titleFromDocPath, slugifyDocValue, parseDocOrder } from './file-utils.js';
 import type { StoredDoc } from './file-utils.js';
 import { resolveEmbeddedDocsRoot, copyDir, buildStarterProjectOverview } from './docs-seeder.js';
@@ -137,6 +140,17 @@ export function serializeTaskForAgent(task: any, historyLimit?: number, opts: { 
     ...task,
     // AXI #3 body truncation (FLUX-879): override the spread `body` only when oversized.
     ...truncateBodyForAgent(task.body, opts.fullBody),
+    // FLUX-985: coerce nullable/absent frontmatter. A hand-edited or legacy ticket can carry
+    // status/priority/effort/assignee = null or tags = null (an empty YAML line parses to null),
+    // and the engine's own validator permits it. The MCP get_ticket outputSchema is strict on
+    // these declared fields — and .optional() REJECTS null — so an un-coerced null would make the
+    // whole read return "Output validation error" instead of the ticket. Normalize to the same
+    // defaults create_ticket uses so agents never see null (FLUX-950 regression).
+    status: task.status ?? '',
+    priority: task.priority ?? 'None',
+    effort: task.effort ?? 'None',
+    assignee: task.assignee ?? 'unassigned',
+    tags: Array.isArray(task.tags) ? task.tags.filter((x: any) => typeof x === 'string') : [],
     history,
     ...(olderHistoryEntries > 0 ? { olderHistoryEntries } : {}),
     ...(collapsedCount ? { collapsedCount } : {}),
@@ -154,6 +168,15 @@ export function serializeTaskForAgent(task: any, historyLimit?: number, opts: { 
 }
 
 /**
+ * Terminal statuses shared by the MCP `list_tickets` active-by-default screen
+ * (FLUX-489) and the REST `GET /api/tasks?active=true` filter (FLUX-970) — one
+ * definition so both surfaces agree on what "resting" means.
+ */
+export function getTerminalStatuses(): string[] {
+  return ['Done', 'Released', (configCache as any)?.archiveStatus || 'Archived'];
+}
+
+/**
  * List-endpoint serializer. Like {@link serializeTaskForApi} but attaches a
  * capped `cliSessions[]` (active sessions + most-recent completed group, with
  * truncated `liveOutput`) so `GET /api/tasks` payload doesn't grow with session
@@ -161,9 +184,22 @@ export function serializeTaskForAgent(task: any, historyLimit?: number, opts: { 
  */
 export function serializeTaskForList(task: any) {
   const cliSessions = getListSessionSummariesForTask(task.id);
+  // FLUX-725: replace the raw `history[]` (fetched + parsed on every ~3s poll / `taskUpdated` SSE on
+  // a large board) with a compact derived `historyDigest` the cards + attention surfaces read for
+  // their aggregates (flow arrows, done-streak, rust, time-in-column, speed-demon, unread, require-
+  // input). The bulk — every status_change, activity, and terminal agent_session (the latter carrying
+  // long finalMessage/summary/token metadata) — is dropped. We KEEP the entry types the card renders
+  // INLINE: `comment` (the hover comment popover shows text + threaded replies) and the ACTIVE
+  // agent_session (the card's inline live-progress reads it, keyed by sessionId). The detail endpoint
+  // (serializeTaskForApi) still carries full `history` for the modal/chat, which lazy-fetch on open.
+  const fullHistory = Array.isArray(task.history) ? task.history : [];
+  const { history: _history, ...rest } = task;
   return {
-    ...task,
-    history: digestTerminalSessionProgress(Array.isArray(task.history) ? task.history : []),
+    ...rest,
+    history: fullHistory.filter(
+      (e: any) => e?.type === 'comment' || (e?.type === 'agent_session' && e?.status === 'active'),
+    ),
+    historyDigest: buildHistoryDigest(fullHistory, task.status, task.swimlane),
     cliSession: getCliSessionSummaryForTask(task.id),
     cliSessions: cliSessions.length > 0 ? cliSessions : undefined,
   };
@@ -234,22 +270,25 @@ export async function updateAgentSession(taskId: string, sessionId: string, upda
   // per-second progress chunks once the session leaves 'active'.
   compactSessionProgress(history[sessionIndex]);
 
-  // FLUX-570 safety-net: if a session ended with a final message that reads like it needs
-  // the user's input, but the agent did NOT route it to the board (no require-input
-  // swimlane), surface it as a notification — so a blocking question can't die silently in
-  // the session log (as happened on the FLUX-556 finalize). Deduped per session.
+  // FLUX-570/777/945 safety-net: if a session ended with a final message that reads like it needs
+  // the user's input, but the agent did NOT route it to the board (no require-input swimlane),
+  // surface it — so a blocking question can't die silently in the session log (as happened on the
+  // FLUX-556 finalize). The heuristic (extracted + unit-tested in final-message-heuristic.ts) keeps
+  // the FLUX-777 "looks done" false-positive guard BUT lets a TRAILING question override it: an
+  // agent that summarizes what it did AND then asks "…or leave it?" (FLUX-941) must not be buried.
+  // Deduped per session.
   const sess = history[sessionIndex];
   if (sess?.status && sess.status !== 'active' && sess.finalMessage && !surfacedFinalMessages.has(sessionId)) {
     const fm = String(sess.finalMessage);
-    const needsInput = /\?|\breply\b|\bwhich\b|\bconfirm\b|\bchoose\b|\bdecision\b|\blet me know\b|\bproceed\b/i.test(fm);
-    // FLUX-777: a "looks done" guard so a completion/merge summary (which often contains words like
-    // "proceed" or a "?") is NOT mis-flagged as a pending question (the false-positive bug). A real
-    // escaped question is high-pertinence — an agent blocked on you — so this is Action-needed
-    // ('prompt'), above a Ready hand-off.
-    const looksDone = /\b(done|completed?|finished|merged|shipped)\b|moved to done|implementation link|no further action|nothing (?:more |else )?(?:needed|to do|required)/i.test(fm);
-    const properlyRouted = frontmatter.swimlane === 'require-input';
-    if (needsInput && !looksDone && !properlyRouted) {
+    if (finalMessageNeedsUser(fm, frontmatter.swimlane)) {
       surfacedFinalMessages.add(sessionId);
+      // FLUX-945: raise the PERSISTENT needsAction flag in addition to the transient notification, so
+      // the question survives even when the same session moved the ticket to a terminal status (Done/
+      // Ready) — a notification alone evaporates the moment the user looks away. Set inline: we are
+      // already mutating + persisting `frontmatter` below, so this avoids a re-entrant ticket write.
+      if (!frontmatter.needsAction) {
+        frontmatter.needsAction = `Agent may need your input: ${fm.length > 200 ? fm.slice(0, 200) + '…' : fm}`;
+      }
       addNotification({
         type: 'prompt',
         title: `${taskId}: agent may need your input`,
@@ -298,6 +337,9 @@ export function updateTaskWithHistory(taskId: string, options: {
   updatedBy?: string;
   nextStatus?: string;
   extraFields?: Record<string, any>;
+  // FLUX-1068: frontmatter keys to REMOVE (not just null out) — e.g. detaching a parent should
+  // delete `parentId` entirely, matching the REST PUT route rather than persisting `parentId: null`.
+  deleteFields?: string[];
   // FLUX-788: opt-in title/body replacement so metadata-edit callers (update_ticket) can route
   // through this locked + atomic path. Both default to "keep what's on disk" — existing callers
   // are unaffected. `newTitle` is honored here because extraFields deliberately strips `title`.
@@ -313,6 +355,7 @@ async function updateTaskWithHistoryLocked(taskId: string, options: {
   updatedBy?: string;
   nextStatus?: string;
   extraFields?: Record<string, any>;
+  deleteFields?: string[];
   newTitle?: string;
   newBody?: string;
   tokenMetadata?: { inputTokens: number; outputTokens: number; costUSD: number; costIsEstimated: boolean; cacheReadTokens?: number; cacheCreationTokens?: number } | undefined;
@@ -364,6 +407,15 @@ async function updateTaskWithHistoryLocked(taskId: string, options: {
     }
   }
 
+  // FLUX-1068: remove keys outright (e.g. detach a parent by deleting `parentId`) — id/title/history
+  // are load-bearing and never deletable through this path.
+  if (options.deleteFields) {
+    for (const field of options.deleteFields) {
+      if (field === 'id' || field === 'title' || field === 'history') continue;
+      delete frontmatter[field];
+    }
+  }
+
   // FLUX-788: explicit title replacement (extraFields strips `title` to prevent accidental loss).
   if (options.newTitle !== undefined) frontmatter.title = options.newTitle;
   // FLUX-788: explicit body replacement; otherwise keep whatever was on disk.
@@ -399,6 +451,118 @@ async function updateTaskWithHistoryLocked(taskId: string, options: {
   return tasksCache[taskId];
 }
 
+/**
+ * Normalize a ticket's `subtasks` frontmatter (string ids or legacy inline `{id}` objects)
+ * to a plain string[] of child ids. Shared by the parent/subtask link sync (FLUX-1068).
+ */
+export function subtaskIds(subtasks: any): string[] {
+  return (Array.isArray(subtasks) ? subtasks : [])
+    .map((s: any) => (typeof s === 'string' ? s : s?.id))
+    .filter(Boolean);
+}
+
+/**
+ * Guard against self-parenting and cycles before (re)linking a child to a parent (FLUX-1068).
+ * Walks the prospective parent's ancestor chain via the cache; if it reaches the child, the link
+ * would create a cycle (A→B→A). Returns a human-readable error string, or null when the link is
+ * valid. A pre-existing cycle in the data stops the walk rather than looping forever.
+ */
+export function validateParentLink(childId: string, newParentId: string | null | undefined): string | null {
+  if (!newParentId) return null;
+  if (newParentId === childId) return `Cannot set ${childId} as its own parent.`;
+  const seen = new Set<string>();
+  let cursor: string | null | undefined = newParentId;
+  while (cursor) {
+    if (cursor === childId) {
+      return `Cannot set parent ${newParentId} on ${childId}: it would create a cycle (${childId} is already an ancestor of ${newParentId}).`;
+    }
+    if (seen.has(cursor)) break; // pre-existing cycle in the data — don't loop
+    seen.add(cursor);
+    cursor = tasksCache[cursor]?.parentId || null;
+  }
+  return null;
+}
+
+/**
+ * Bidirectional parentId ⇄ parent.subtasks sync (FLUX-1068). When a ticket's `parentId` and/or
+ * `subtasks` changed, update the OTHER affected tickets on disk + cache: the old/new parent's
+ * `subtasks` array, and any added/removed child's `parentId`. The ticket itself is written by the
+ * caller — this only reconciles its relations. Shared by the REST PUT route (`routes/tasks.ts`) and
+ * the MCP `update_ticket` tool so the link invariant has ONE implementation (no duplicated logic).
+ */
+export async function syncParentSubtaskLinks(opts: {
+  id: string;
+  oldParentId: string | null;
+  newParentId: string | null;
+  oldSubtasks?: string[];
+  newSubtasks?: string[];
+  actor: string;
+}): Promise<void> {
+  const { id, oldParentId, newParentId, actor } = opts;
+  const oldSubtasks = opts.oldSubtasks ?? [];
+  const newSubtasks = opts.newSubtasks ?? [];
+
+  const writeParentSubtasks = async (parentId: string, subtasks: string[]) => {
+    const parent = tasksCache[parentId];
+    if (!parent) return;
+    const parentRaw = await fs.readFile(parent._path, 'utf-8');
+    const parentParsed = matter(parentRaw);
+    parentParsed.data.subtasks = subtasks;
+    parentParsed.data.updatedBy = actor;
+    recentEngineWrites.add(parent._path);
+    await atomicWriteFile(parent._path, matter.stringify(parentParsed.content, parentParsed.data));
+    tasksCache[parentId] = { ...tasksCache[parentId], subtasks, updatedBy: actor };
+    broadcastEvent('taskUpdated', { id: parentId });
+  };
+
+  const writeChildParent = async (childId: string, parentId: string | null) => {
+    const child = tasksCache[childId];
+    if (!child) return;
+    const childRaw = await fs.readFile(child._path, 'utf-8');
+    const childParsed = matter(childRaw);
+    if (parentId) childParsed.data.parentId = parentId;
+    else delete childParsed.data.parentId;
+    childParsed.data.updatedBy = actor;
+    recentEngineWrites.add(child._path);
+    await atomicWriteFile(child._path, matter.stringify(childParsed.content, childParsed.data));
+    tasksCache[childId] = { ...tasksCache[childId], parentId: parentId ?? undefined, updatedBy: actor };
+    broadcastEvent('taskUpdated', { id: childId });
+  };
+
+  // parentId changed → remove from old parent's subtasks, add to new parent's subtasks.
+  if (newParentId !== oldParentId) {
+    if (oldParentId && tasksCache[oldParentId]) {
+      const cur = subtaskIds(tasksCache[oldParentId].subtasks);
+      const filtered = cur.filter((sid) => sid !== id);
+      if (filtered.length !== cur.length) await writeParentSubtasks(oldParentId, filtered);
+    }
+    if (newParentId && tasksCache[newParentId]) {
+      const cur = subtaskIds(tasksCache[newParentId].subtasks);
+      if (!cur.includes(id)) await writeParentSubtasks(newParentId, [...cur, id]);
+    }
+  }
+
+  // subtasks array changed → sync each added/removed child's parentId.
+  const removedChildren = oldSubtasks.filter((sid) => !newSubtasks.includes(sid));
+  const addedChildren = newSubtasks.filter((sid) => !oldSubtasks.includes(sid));
+
+  for (const childId of removedChildren) {
+    const child = tasksCache[childId];
+    if (child && child.parentId === id) await writeChildParent(childId, null);
+  }
+  for (const childId of addedChildren) {
+    const child = tasksCache[childId];
+    if (child && child.parentId !== id) {
+      // Remove the child from its previous parent's subtasks before re-linking it here.
+      if (child.parentId && tasksCache[child.parentId]) {
+        const prev = subtaskIds(tasksCache[child.parentId].subtasks).filter((sid) => sid !== childId);
+        await writeParentSubtasks(child.parentId, prev);
+      }
+      await writeChildParent(childId, id);
+    }
+  }
+}
+
 export interface CreateTaskOptions {
   title: string;
   status?: string;
@@ -430,17 +594,13 @@ export interface CreateTaskResult {
   task: any;
 }
 
-const execFileAsync = promisify(execFile);
-
 async function getMaxIdFromRemote(projectKey: string): Promise<number> {
   if (!isOrphanMode()) return 0;
 
   const storeDir = getFluxStoreDir();
   try {
-    await execFileAsync('git', ['-C', storeDir, 'fetch', 'origin', 'flux-data'], { windowsHide: true });
-    const { stdout } = await execFileAsync('git', [
-      '-C', storeDir, 'ls-tree', '-r', '--name-only', 'origin/flux-data'
-    ], { windowsHide: true });
+    await runGit(['fetch', 'origin', 'flux-data'], { cwd: storeDir });
+    const { stdout } = await runGit(['ls-tree', '-r', '--name-only', 'origin/flux-data'], { cwd: storeDir });
 
     let maxId = 0;
     stdout.split('\n').forEach(file => {
@@ -1294,6 +1454,13 @@ export async function startWatchers() {
       // each record, but wrap the call too (review M1) so nothing it does can throw out of this
       // synchronous chokidar `ready` listener and crash boot.
       try { rehydrateOpenPrompts(); } catch (err) { console.error('[hitl] rehydrate failed', err); }
+      // FLUX-1060: restore persisted active-session stubs so the worktree-reclaim guard (and chat
+      // resume) see pre-restart running/waiting-input sessions again — otherwise the first reclaim
+      // sweep deletes a `waiting-input` session's worktree out from under it. Arm the short post-
+      // restart reclaim grace once rehydration has run (covers the sub-sync-interval no-stub gap).
+      void rehydrateSessionStubs()
+        .then(() => armReclaimGrace())
+        .catch((err) => console.error('[session] stub rehydrate failed', err));
     })
     .on('unlink', (filePath) => {
       if (isTopLevelTaskFile(filePath)) {

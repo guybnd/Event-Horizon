@@ -29,11 +29,12 @@ function parseArgs(argv: string[]) {
     target: args.get('target') || process.cwd(),
     framework: (args.get('framework') || 'auto') as Framework,
     dryRun: args.get('dry-run') === 'true',
+    force: args.get('force') === 'true',
   };
 }
 
 async function main() {
-  const { target, framework, dryRun } = parseArgs(process.argv.slice(2));
+  const { target, framework, dryRun, force } = parseArgs(process.argv.slice(2));
   const repoRoot = path.resolve(__dir, '..', '..');
   const targetDir = path.resolve(target);
 
@@ -43,7 +44,7 @@ async function main() {
     return;
   }
 
-  const result = await installWorkspaceWorkflow({ sourceRoot: repoRoot, targetDir, framework });
+  const result = await installWorkspaceWorkflow({ sourceRoot: repoRoot, targetDir, framework, force });
   log.info(`Installed Event Horizon workflow to ${result.skillInstalledPath}`);
   if (result.instructionsInstalledPath) {
     log.info(`Patched Copilot instructions at ${result.instructionsInstalledPath}`);

@@ -17,6 +17,7 @@ import { tasksCache } from '../task-store.js';
 import { findWorktreeForBranch } from '../task-worktree.js';
 import { isEditorAvailable, openEditorWindow } from '../editor-launcher.js';
 import { cleanupMergedBranch } from '../pr-cleanup.js';
+import { triggerSync } from '../sync-watcher.js';
 
 const router = express.Router();
 
@@ -92,6 +93,14 @@ router.post('/:id/action', async (req, res) => {
   if (actionId === 'view') {
     markRead(notification.id);
     return res.json({ ok: true, action: 'viewed', ticketId: notification.ticketId });
+  }
+
+  // FLUX-895 — "Retry sync" on the sync-auth notification kicks an immediate sync
+  // (which re-detects gh auth). The notification clears itself on success.
+  if (actionId === 'retry-sync') {
+    triggerSync();
+    markRead(notification.id);
+    return res.json({ ok: true, action: 'retry-sync' });
   }
 
   // Post-merge worktree cleanup notifications (FLUX-557). Both resolve the branch via the

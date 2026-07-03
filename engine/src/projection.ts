@@ -111,7 +111,10 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
  *  resolves to a 2+ group. `start_session` is deliberately excluded — it spawns a standalone,
  *  ungrouped phase session (no `groupId`), so it never forms a group and tagging it would only
  *  suppress its transcript row with no block to stand in for it. */
-const DELEGATION_TOOLS = new Set(['delegate_parallel', 'delegate_to_agent']);
+// FLUX-882: `delegate` is the merged delegation tool. The old `delegate_to_agent` /
+// `delegate_parallel` names are kept here for read-side projection of transcripts recorded
+// before the merge — historical tool-call rows still anchor their orchestration block correctly.
+const DELEGATION_TOOLS = new Set(['delegate', 'delegate_parallel', 'delegate_to_agent']);
 
 /** FLUX-794: phase → chip label for the synthetic `action` turn recorded when a non-chat
  *  phase session is launched (the pressed Groom / Implement / Review / Finalize button). */
@@ -393,6 +396,31 @@ export function projectTranscript(
       // no duration token when absent (older rows / paths that left startedAt undefined).
       if (typeof evt.startedAt === 'string') msg.startedAt = evt.startedAt;
       out.push(tag(msg, turn));
+    } else if (evt?.type === 'assistant.message') {
+      // FLUX-969: Copilot CLI's message event (its streaming deltas are excluded from the tee in
+      // copilot.ts, so this is the only place its assistant text ever appears). Distinct from
+      // Claude's `assistant` + `message.content[]` schema below and Gemini's native `message`/`role`
+      // schema below that — each CLI's stdout parser (attachStdoutProcessing) already knows its own
+      // schema for live activity; this is the equivalent knowledge for the durable, schema-agnostic
+      // transcript render. Tool calls (`assistant.tool_call*`) are not yet rendered here.
+      //
+      // Copilot narration lands in TWO fields, and the original FLUX-969 render read only the first,
+      // so on a tool-heavy turn most narration silently vanished from the chat while still showing in
+      // the history/progress video (the live delta stream feeds both):
+      //   - `data.reasoningText` — the model's inter-tool narration ("Let me look at …"). This is the
+      //     ONLY text on a tool-call turn (where `data.content` is ''), which is the common case.
+      //   - `data.content` — the final reply text (present on terminal / non-tool messages).
+      // Render reasoning first (it precedes the action), then content, so the chat matches the
+      // activity feed. Both may be present on one message (a lead-in + its reasoning); emit each.
+      const reasoning = typeof evt.data?.reasoningText === 'string' ? evt.data.reasoningText.trim() : '';
+      const content = typeof evt.data?.content === 'string' ? evt.data.content.trim() : '';
+      if (reasoning) out.push(tag({ role: 'assistant', text: reasoning, ts: turn.ts }, turn));
+      if (content) out.push(tag({ role: 'assistant', text: content, ts: turn.ts }, turn));
+    } else if (evt?.type === 'message' && evt.role === 'assistant' && typeof evt.content === 'string' && evt.content.trim()) {
+      // FLUX-969: Gemini CLI's native assistant-message schema (its "Claude Code schema" fallback
+      // path already renders via the branch below, since it's the same shape as Claude's). Tool
+      // calls (`tool_use`) are not yet rendered here — same scoping note as Copilot above.
+      out.push(tag({ role: 'assistant', text: evt.content, ts: turn.ts }, turn));
     } else if (evt?.type === 'assistant' && Array.isArray(evt.message?.content)) {
       for (const b of evt.message.content) {
         if (b?.type === 'text' && typeof b.text === 'string' && b.text.trim()) {

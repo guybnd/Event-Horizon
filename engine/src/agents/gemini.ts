@@ -1,5 +1,6 @@
 import { log } from '../log.js';
-import { spawn, execSync, type ChildProcessWithoutNullStreams } from 'child_process';
+import { spawn, exec, type ChildProcessWithoutNullStreams } from 'child_process';
+import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs';
 import { configCache } from '../config.js';
@@ -11,12 +12,12 @@ import { broadcastEvent } from '../events.js';
 import { killProcessTree } from '../kill-process-tree.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
 import { captureTurnStartState, clearNeedsActionIfSet, flagIfParked } from '../parked-ticket.js';
-import { getModulePromptFragments } from '../modules.js';
 import { buildMemberScopeArgs } from '../group.js';
 import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
+import { appendTranscriptLine } from '../transcript.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, enqueueSessionWrite, flushSessionOutput } from './shared.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt } from './shared.js';
 
 const TOOL_ACTIVITY_MAP: Record<string, string> = {
   Bash: 'Running command',
@@ -28,57 +29,6 @@ const TOOL_ACTIVITY_MAP: Record<string, string> = {
   Agent: 'Delegating',
   TodoWrite: 'Planning',
 };
-
-export function buildInitialPrompt(task: any, appendPrompt: string, opts?: { phase?: string | undefined }): string {
-  const readyStatus = (configCache as any)?.readyForMergeStatus || 'Ready';
-  const taskStatus = (task as any).status || 'Unknown';
-  const mcpNote = 'CRITICAL: Use the "event-horizon" MCP tools (change_status, update_ticket, add_comment, log_progress) for ALL ticket updates. Do NOT edit .flux/ files directly — direct edits corrupt session tracking.';
-  const actionInstruction = (() => {
-    if (taskStatus === 'Grooming' || taskStatus === 'Require Input') {
-      return `The ticket is in ${taskStatus}. Your job is to GROOM this ticket:\n` +
-        `1. Use update_ticket to fill metadata (priority, effort, tags) and rewrite the body with a Problem/Motivation section and Implementation Plan.\n` +
-        `2. If questions are unresolved, use change_status to move to "Require Input" with a comment containing your question.\n` +
-        `3. When grooming is complete, use change_status to move to "Todo".\n` +
-        mcpNote;
-    }
-    if (taskStatus === 'In Progress') {
-      return `The ticket is currently In Progress. If the implementation is already complete, use change_status to move it to "${readyStatus}" with a completion summary comment. If work remains, complete it then move to "${readyStatus}". Do not exit without updating the ticket status.\n${mcpNote}`;
-    }
-    if (taskStatus === 'Todo') {
-      return `The ticket is in Todo. Begin implementation: use change_status to move to "In Progress", complete the work, then use change_status to move to "${readyStatus}" when done.\n${mcpNote}`;
-    }
-    if (taskStatus === readyStatus) {
-      return `The ticket is in ${readyStatus} awaiting user review. Do not move it further — wait for the user to say "finish ${task.id}".`;
-    }
-    return 'Respond with implementation progress updates and blockers. Keep updates concise.';
-  })();
-
-  const moduleFragments = getModulePromptFragments(opts?.phase, Array.isArray(task.tags) ? task.tags : undefined);
-
-  const lines = [
-    `You are working on ticket ${task.id}.`,
-    `Title: ${task.title || 'Untitled ticket'}`,
-    `Current status: ${taskStatus}`,
-    '',
-    'Ticket description:',
-    (task.body || '').trim() || '(No description)',
-    '',
-    'Latest activity:',
-    ...(Array.isArray(task.history) ? task.history.filter((e: any) => e?.type !== 'agent_message').slice(-3).map((entry: any) => {
-      if (entry?.type === 'status_change') {
-        return `- [${entry.date || ''}] ${entry.user || 'Unknown'} moved ${entry.from || '?'} -> ${entry.to || '?'}`;
-      }
-      return `- [${entry?.date || ''}] ${entry?.user || 'Unknown'}: ${entry?.comment || entry?.type || 'activity'}`;
-    }) : ['- (No history)']),
-    '',
-    ...(moduleFragments ? [moduleFragments, ''] : []),
-    actionInstruction,
-    ...(appendPrompt ? ['', appendPrompt] : []),
-  ];
-  // Node's spawn rejects strings containing null bytes; strip them to prevent
-  // ticket content (e.g. bad escape sequences) from breaking the spawn call.
-  return lines.join('\n').replace(/\0/g, '');
-}
 
 export function buildGeminiScopeArgs(workspaceRoot: string): string[] {
   const scopeArgs = [...buildMemberScopeArgs(), ...buildGroupDocsScopeArg(workspaceRoot)];
@@ -92,33 +42,172 @@ export function buildGeminiScopeArgs(workspaceRoot: string): string[] {
   return geminiScopeArgs;
 }
 
+const execAsync = promisify(exec);
+
+interface GeminiWindowsLaunch {
+  /** Resolved system node executable, or 'node' bare name as a last-resort fallback. */
+  nodeCmd: string;
+  entryPoint: string | null;
+  exePath: string | null;
+}
+
+// FLUX-1003 (epic FLUX-996): was three SYNCHRONOUS `execSync` calls (`where node`, `npm prefix -g`,
+// `where gemini`) run on EVERY spawnGemini call — i.e. every turn, not just cold start — blocking
+// the whole Node event loop for their combined duration each time. Unlike Claude (FLUX-975) and
+// Copilot (FLUX-974), this resolution was never cached at all. Converted to async `exec` (kept in
+// the shell-based family — `npm`/`gemini` resolve to `.cmd` wrappers on Windows, which `execFile`
+// can't invoke without `shell:true`) plus a module-scoped cache.
+//
+// Caching mirrors FLUX-975's philosophy: cache a resolution only when it's DEFINITIVE. `npm prefix
+// -g` succeeding is the definitive signal here (mirrors resolveClaudeExePath) — the derived
+// entryPoint/exePath candidates can't change without a reinstall + engine restart, whether or not
+// they were found. A transient failure (the subprocess itself couldn't run — timeout, spawn error)
+// is NOT cached, so the next spawn retries full resolution rather than being stuck on a bad guess
+// until restart.
+let cachedGeminiWindowsLaunch: GeminiWindowsLaunch | undefined;
+
+async function resolveGeminiWindowsLaunch(binaryName: string): Promise<GeminiWindowsLaunch> {
+  if (cachedGeminiWindowsLaunch !== undefined) return cachedGeminiWindowsLaunch;
+
+  // CRITICAL: spawn('node', ...) from within a pkg binary resolves to the pkg binary itself (not
+  // system node) due to Windows CreateProcess search order — we must resolve the full path via
+  // 'where node'. This step alone isn't cache-gating (a missing system node doesn't block us; we
+  // fall back to the bare 'node' name), so its own failure doesn't affect `definitive` below.
+  let systemNodePath: string | null = null;
+  try {
+    const prefixEnv = cleanChildEnv('gemini');
+    const { stdout } = await execAsync('where node', { env: prefixEnv, timeout: 10_000, windowsHide: true });
+    const whereResult = stdout.trim().split(/\r?\n/);
+    // Filter out our own exe — pkg binaries ARE node binaries and 'where' may list them.
+    const selfExe = process.execPath.toLowerCase();
+    systemNodePath = whereResult.find(p => p.toLowerCase() !== selfExe && fs.existsSync(p)) || whereResult[0] || null;
+  } catch {
+    // 'where node' failed — will fall back to 'node' bare name (may break in pkg context).
+  }
+
+  // Prefer the JS entry point with system node over gemini.exe — the exe is a pkg binary that
+  // crashes when NODE_OPTIONS carries V8 flags leaked from VS Code terminals or other tools.
+  let entryPoint: string | null = null;
+  let exePath: string | null = null;
+  let npmPrefixSucceeded = false;
+  try {
+    const prefixEnv = cleanChildEnv('gemini');
+    const { stdout } = await execAsync('npm prefix -g', { env: prefixEnv, timeout: 10_000, windowsHide: true });
+    npmPrefixSucceeded = true;
+    const npmPrefix = stdout.trim();
+    const candidateJs = path.join(npmPrefix, 'node_modules', '@google', 'gemini-cli', 'bundle', 'gemini.js');
+    const candidateExe = path.join(npmPrefix, 'node_modules', '@google', 'gemini-cli', 'bin', 'gemini.exe');
+    if (fs.existsSync(candidateJs)) {
+      entryPoint = candidateJs;
+    } else if (fs.existsSync(candidateExe)) {
+      exePath = candidateExe;
+    }
+  } catch (err) {
+    log.info('[gemini] Failed to resolve gemini via npm prefix:', err);
+  }
+
+  // Second attempt: use 'where' to find the gemini cmd/exe and resolve the JS entry relative to it.
+  if (!entryPoint && !exePath) {
+    try {
+      const prefixEnv = cleanChildEnv('gemini');
+      const { stdout } = await execAsync(`where ${binaryName}`, { env: prefixEnv, timeout: 10_000, windowsHide: true });
+      const wherePath = stdout.trim().split(/\r?\n/)[0];
+      if (wherePath) {
+        // The .cmd is usually in the same dir as the npm prefix bin — try to find the JS bundle
+        // relative to it, then the parent-directory npm-global layout pattern.
+        const binDir = path.dirname(wherePath);
+        const candidateJs = path.join(binDir, 'node_modules', '@google', 'gemini-cli', 'bundle', 'gemini.js');
+        const parentCandidate = path.join(binDir, '..', 'node_modules', '@google', 'gemini-cli', 'bundle', 'gemini.js');
+        if (fs.existsSync(candidateJs)) {
+          entryPoint = candidateJs;
+        } else if (fs.existsSync(parentCandidate)) {
+          entryPoint = parentCandidate;
+        }
+      }
+    } catch {
+      // where command failed — will fall through to the cmd.exe shell fallback at spawn time.
+    }
+  }
+
+  const result: GeminiWindowsLaunch = { nodeCmd: systemNodePath || 'node', entryPoint, exePath };
+  if (npmPrefixSucceeded) cachedGeminiWindowsLaunch = result;
+  return result;
+}
+
+/**
+ * Resolve and spawn the gemini CLI process. Factored out of `startCliSession`/`sendCliSessionInput`
+ * (which both inlined this same Windows JS-entry/exe/shell-fallback resolution) so the board
+ * orchestrator's Gemini `BoardSpec` (FLUX-959) can reuse it without a third copy.
+ */
+export async function spawnGemini(geminiArgs: string[], executionRoot: string, conversationId?: string): Promise<ReturnType<typeof spawn>> {
+  const binaryName = 'gemini';
+  // Preserve the per-session log tag the two inlined call sites used (`[${id}]`) rather than a
+  // flat `[gemini]` — important for grepping logs when multiple sessions run concurrently.
+  const logTag = `[${conversationId ?? 'gemini'}]`;
+  if (process.platform === 'win32') {
+    // On Windows, find the JS entry point or .exe instead of using cmd.exe wrapper (see
+    // resolveGeminiWindowsLaunch for why, and its caching rationale).
+    const { nodeCmd, entryPoint, exePath } = await resolveGeminiWindowsLaunch(binaryName);
+    const env = cleanChildEnv('gemini', conversationId);
+    if (entryPoint) {
+      log.info(`${logTag} Windows spawn (node=${nodeCmd}): ${entryPoint}`);
+      return spawn(nodeCmd, [entryPoint, ...geminiArgs], {
+        cwd: executionRoot,
+        env,
+        stdio: 'pipe',
+        windowsHide: true,
+      });
+    } else if (exePath) {
+      log.info(`${logTag} Windows spawn (exe): ${exePath}`);
+      return spawn(exePath, geminiArgs, {
+        cwd: executionRoot,
+        env,
+        stdio: 'pipe',
+        windowsHide: true,
+      });
+    }
+    // Last resort: use shell. Remove NODE_OPTIONS via explicit prefix to prevent
+    // .cmd wrappers from re-injecting it.
+    log.info(`${logTag} Windows spawn (fallback): ${binaryName}`);
+    return spawn('cmd.exe', ['/c', `set "NODE_OPTIONS=" && ${binaryName}`, ...geminiArgs], {
+      cwd: executionRoot,
+      env,
+      stdio: 'pipe',
+      windowsHide: true,
+    });
+  }
+  return spawn(binaryName, geminiArgs, {
+    cwd: executionRoot,
+    env: cleanChildEnv('gemini', conversationId),
+    stdio: 'pipe',
+  });
+}
+
 export function attachStdoutProcessing(
   proc: ReturnType<typeof spawn>,
   session: CliSessionRecord,
   taskId: string,
 ) {
-  const commitPendingAssistantText = () => {
-    if (session.pendingAssistantText) {
-      appendSessionOutput(session, session.pendingAssistantText, 'stdout', true, false);
-      flushSessionOutput(session, false, 'text');
-      session.pendingAssistantText = '';
-    }
-  };
+  // FLUX-932: shared line-buffer / JSON.parse / commitPendingAssistantText skeleton lives in shared.ts.
+  // This supplies Gemini's per-CLI parser (handles BOTH the Gemini `message`/`tool_use` schema AND the
+  // Claude-schema `assistant.content[]` fallback). narrationType 'text' → styled Narration block.
+  // (The Gemini blank-output fix now lives in shared `appendSessionOutput` — every adapter accumulates.)
+  return sharedAttachStdoutProcessing(proc, session, {
+    onEvent: (evt, trimmed, commitPendingAssistantText) => {
+        // FLUX-969: tee every raw event line to the durable per-ticket transcript, mirroring
+        // claude-code.ts's attachStdoutProcessing (which has done this since FLUX-602). This
+        // adapter never called appendTranscriptLine at all — it only updated the live SSE buffer
+        // + in-memory session progress, neither of which the chat window (GET /transcript) reads
+        // from. Invisible for a per-ticket DISPATCHED session (its final reply lands as a ticket
+        // comment on exit instead) but fatal for the board orchestrator chat, which has no ticket
+        // to comment on and relies entirely on the transcript: a real reply happened, the chat
+        // window showed nothing. Unlike copilot.ts, Gemini's parser has no separate streaming-delta
+        // event type to exclude — every event here is already a complete message/tool/result.
+        appendTranscriptLine(taskId, trimmed);
 
-  let lineBuf = '';
-  proc.stdout!.on('data', (chunk: Buffer) => {
-    lineBuf += chunk.toString();
-    const lines = lineBuf.split('\n');
-    lineBuf = lines.pop() ?? '';
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        const evt = JSON.parse(trimmed);
-        
         // Gemini CLI uses 'init' or 'message' for role=assistant
-        if (!session.claudeSessionId && evt.session_id) {
-          session.claudeSessionId = evt.session_id;
+        if (!session.resumeSessionId && evt.session_id) {
+          session.resumeSessionId = evt.session_id;
         }
 
         if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
@@ -126,7 +215,7 @@ export function attachStdoutProcessing(
           const toolBlock = evt.message.content.find((b: any) => b.type === 'tool_use');
           if (toolBlock) {
             session.pendingAssistantText = '';
-            const newActivity = TOOL_ACTIVITY_MAP[toolBlock.name] ?? 'Working';
+            const newActivity = activityFor(TOOL_ACTIVITY_MAP, toolBlock.name);
             const activityChanged = session.currentActivity !== newActivity;
             session.currentActivity = newActivity;
 
@@ -188,17 +277,21 @@ export function attachStdoutProcessing(
           broadcastEvent('activity', { taskId, activity: session.currentActivity });
           
           if (typeof evt.content === 'string' && evt.content.trim()) {
-            // Append to output buffers for tracking and eventual flush
-            session.liveOutputBuffer += evt.content;
-            session.outputBuffer += evt.content;
-            session.lastOutputAt = new Date().toISOString();
+            // FLUX-932: route through the shared appendSessionOutput (isAssistantText=true) instead of
+            // poking liveOutputBuffer/outputBuffer directly, so THIS branch — the real Gemini CLI schema
+            // (per FLUX-969's commit message: "Gemini's native message/role:'assistant' event") — also
+            // accumulates into session.cumulativeOutput. The Claude-schema-fallback branch above got the
+            // FLUX-932 cumulativeOutput fix (dropping appendSessionOutput's dead trackCumulative=false),
+            // but this native branch — what an actual Gemini CLI session emits — still bypassed it
+            // entirely, so a real Gemini session's captured output stayed '' even after that fix landed.
+            appendSessionOutput(session, evt.content, 'stdout', true);
             // Trigger debounced flush to broadcast progress via SSE (matching Claude behavior)
             flushSessionOutput(session, false, 'text');
           }
         } else if (evt.type === 'tool_use') {
           // Gemini CLI tool use schema
           session.pendingAssistantText = '';
-          const newActivity = TOOL_ACTIVITY_MAP[evt.tool_name] ?? 'Working';
+          const newActivity = activityFor(TOOL_ACTIVITY_MAP, evt.tool_name);
           const activityChanged = session.currentActivity !== newActivity;
           session.currentActivity = newActivity;
 
@@ -251,16 +344,10 @@ export function attachStdoutProcessing(
         } else if (evt.type === 'tool_result') {
           if (evt.is_error) {
             console.error(`[${taskId}] Tool ${evt.tool_name || 'unknown'} failed:`, evt.error);
-            
-            // Accumulate in memory only
-            if (session.sessionHistoryEntry) {
-              session.sessionHistoryEntry.progress.push({ 
-                timestamp: new Date().toISOString(), 
-                message: `Tool failed: ${evt.tool_name || 'unknown'}`,
-                type: 'info',
-                data: { toolName: evt.tool_name, error: evt.error }
-              });
-            }
+            // FLUX-981: previously this only accumulated an in-memory progress row — no SSE broadcast,
+            // no flush — so a tool error never reached the live chat. Route it through the shared
+            // helper so it broadcasts a `progress` SSE immediately (and still persists to progress[]).
+            appendErrorToSession(session, `Tool failed: ${evt.tool_name || 'unknown'}${evt.error ? ` — ${evt.error}` : ''}`);
           }
         } else {
           if (evt.type !== 'tool_use' && evt.type !== 'tool_result' && evt.type !== 'message' && evt.type !== 'init') {
@@ -293,7 +380,7 @@ export function attachStdoutProcessing(
           if (typeof evt.stats.total_cost_usd === 'number') {
             session.costUSD = (session.costUSD ?? 0) + evt.stats.total_cost_usd;
           } else {
-            session.costUSD = (session.costUSD ?? 0) + estimateCostUSD(session.claudeSessionId, inputTok, outputTok);
+            session.costUSD = (session.costUSD ?? 0) + estimateCostUSD(session.resumeSessionId, inputTok, outputTok);
             session.costIsEstimated = true;
           }
         } else if (evt.type === 'result' && evt.usage) {
@@ -310,7 +397,7 @@ export function attachStdoutProcessing(
           if (typeof evt.total_cost_usd === 'number') {
             session.costUSD = (session.costUSD ?? 0) + evt.total_cost_usd;
           } else {
-            session.costUSD = (session.costUSD ?? 0) + estimateCostUSD(session.claudeSessionId, inputTok, outputTok);
+            session.costUSD = (session.costUSD ?? 0) + estimateCostUSD(session.resumeSessionId, inputTok, outputTok);
             session.costIsEstimated = true;
           }
         }
@@ -328,19 +415,22 @@ export function attachStdoutProcessing(
               entries: [buildActivityEntry(`${session.label} blocked: ${reason}`, 'Agent', new Date().toISOString())],
             });
           });
+        } else if (evt.type === 'result' && evt.is_error) {
+          // FLUX-981: a non-permission result error (API error, overload, invalid request) was
+          // previously dropped — it doesn't match the permission regex and has no other handler.
+          // Surface it inline. Do NOT flip to waiting-input: the exit handler still runs after.
+          appendErrorToSession(session, `Agent error: ${evt.error || evt.subtype || 'unknown'}`);
         }
-      } catch {
-        appendSessionOutput(session, trimmed, 'stdout', false);
-        // Broadcast that we received some output even if it wasn't valid JSON
-        if (!session.currentActivity) {
-          session.currentActivity = 'Working';
-          broadcastEvent('activity', { taskId, activity: session.currentActivity });
-        }
+    },
+    onParseError: (trimmed) => {
+      appendSessionOutput(session, trimmed, 'stdout', false);
+      // Broadcast that we received some output even if it wasn't valid JSON
+      if (!session.currentActivity) {
+        session.currentActivity = 'Working';
+        broadcastEvent('activity', { taskId, activity: session.currentActivity });
       }
-    }
-  });
-
-  return commitPendingAssistantText;
+    },
+  }, 'text');
 }
 
 export async function startCliSession(session: CliSessionRecord, task: any, appendPrompt: string, effortOverrideRaw: string, workspaceRoot: string) {
@@ -352,9 +442,19 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   const executionRoot = await resolveTaskExecutionRoot(task, workspaceRoot);
   session.executionRoot = executionRoot;
 
+  // FLUX-1018: fail closed on the fresh-spawn path. A task WITH a branch must run
+  // in that branch's worktree, never the main checkout (master). resolveTaskExecutionRoot
+  // already self-heals/throws, but assert here too as a belt-and-suspenders guard.
+  if (task?.branch && executionRoot === workspaceRoot) {
+    throw new Error(
+      `Refusing to start ${framework} for ${id} on branch '${task.branch}': its worktree is missing and ` +
+        `execution resolved to the main checkout (master). Recreate the worktree and retry.`,
+    );
+  }
+
   log.info(`[${id}] Starting ${framework} session in ${workspaceRoot}`);
 
-  checkBinaryInstalled(binaryName);
+  await checkBinaryInstalled(binaryName);
 
   const geminiIntegration = (configCache as any).integrations?.geminiCli;
   const groomingStatuses = [(configCache as any).requireInputStatus || 'Require Input', 'Grooming'];
@@ -394,7 +494,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     : task.status === ((configCache as any)?.readyForMergeStatus || 'Ready') ? 'review'
     : undefined;
 
-  const initialPrompt = buildInitialPrompt(task, appendPrompt, { phase: taskPhase });
+  const initialPrompt = buildInitialPrompt(task, appendPrompt, { phase: taskPhase, framework: 'gemini' });
 
   const geminiArgs = [
     ...(selectedModel ? ['--model', selectedModel] : []),
@@ -419,104 +519,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     geminiArgs.push(effortCap.flag, effectiveEffort);
   }
 
-  let proc: ReturnType<typeof spawn>;
-  if (process.platform === 'win32') {
-    // On Windows, find the JS entry point or .exe instead of using cmd.exe wrapper.
-    // Prefer JS entry point with system node over gemini.exe — the exe is a pkg
-    // binary that crashes when NODE_OPTIONS contains V8 flags (e.g. --max-old-space-size)
-    // leaked from VS Code terminals or other tools.
-    //
-    // CRITICAL: spawn('node', ...) from within a pkg binary resolves to the pkg binary
-    // itself (not system node) due to Windows CreateProcess search order.
-    // We must resolve the full path to system node via 'where node'.
-    let exePath: string | null = null;
-    let entryPoint: string | null = null;
-    let systemNodePath: string | null = null;
-    try {
-      const prefixEnv = cleanChildEnv('gemini');
-      const whereResult = execSync('where node', { encoding: 'utf8', env: prefixEnv, timeout: 10_000, windowsHide: true }).trim().split(/\r?\n/);
-      // Filter out our own exe — pkg binaries ARE node binaries and 'where' may list them
-      const selfExe = process.execPath.toLowerCase();
-      systemNodePath = whereResult.find(p => p.toLowerCase() !== selfExe && fs.existsSync(p)) || null;
-      if (!systemNodePath) systemNodePath = whereResult[0] || null;
-    } catch {
-      // 'where node' failed — will fall back to 'node' bare name (may break in pkg context)
-    }
-    try {
-      const prefixEnv = cleanChildEnv('gemini');
-      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', env: prefixEnv, timeout: 10_000, windowsHide: true }).trim();
-      const candidateJs = path.join(npmPrefix, 'node_modules', '@google', 'gemini-cli', 'bundle', 'gemini.js');
-      const candidateExe = path.join(npmPrefix, 'node_modules', '@google', 'gemini-cli', 'bin', 'gemini.exe');
-      
-      if (fs.existsSync(candidateJs)) {
-        entryPoint = candidateJs;
-      } else if (fs.existsSync(candidateExe)) {
-        exePath = candidateExe;
-      }
-    } catch (err) {
-      log.info(`[${id}] Failed to resolve gemini via npm prefix:`, err);
-    }
-
-    // Second attempt: use 'where' to find the gemini cmd/exe and resolve the JS entry
-    if (!entryPoint && !exePath) {
-      try {
-        const prefixEnv = cleanChildEnv('gemini');
-        const wherePath = execSync(`where ${binaryName}`, { encoding: 'utf8', env: prefixEnv, timeout: 10_000, windowsHide: true }).trim().split(/\r?\n/)[0];
-        if (wherePath) {
-          // The .cmd is usually in the same dir as the npm prefix bin — try to find the JS bundle relative to it
-          const binDir = path.dirname(wherePath);
-          const candidateJs = path.join(binDir, 'node_modules', '@google', 'gemini-cli', 'bundle', 'gemini.js');
-          if (fs.existsSync(candidateJs)) {
-            entryPoint = candidateJs;
-          } else {
-            // Try parent directory pattern (npm global: prefix/bin/gemini.cmd, prefix/node_modules/...)
-            const parentCandidate = path.join(binDir, '..', 'node_modules', '@google', 'gemini-cli', 'bundle', 'gemini.js');
-            if (fs.existsSync(parentCandidate)) {
-              entryPoint = parentCandidate;
-            }
-          }
-        }
-      } catch {
-        // where command failed — will fall through to shell fallback
-      }
-    }
-
-    const env = cleanChildEnv('gemini', id);
-    const nodeCmd = systemNodePath || 'node';
-    if (entryPoint) {
-      log.info(`[${id}] Windows spawn (node=${nodeCmd}): ${entryPoint}`);
-      proc = spawn(nodeCmd, [entryPoint, ...geminiArgs], {
-        cwd: executionRoot,
-        env,
-        stdio: 'pipe',
-        windowsHide: true,
-      });
-    } else if (exePath) {
-      log.info(`[${id}] Windows spawn (exe): ${exePath}`);
-      proc = spawn(exePath, geminiArgs, {
-        cwd: executionRoot,
-        env,
-        stdio: 'pipe',
-        windowsHide: true,
-      });
-    } else {
-      // Last resort: use shell. Remove NODE_OPTIONS via explicit prefix to prevent
-      // .cmd wrappers from re-injecting it.
-      log.info(`[${id}] Windows spawn (fallback): ${binaryName}`);
-      proc = spawn('cmd.exe', ['/c', `set "NODE_OPTIONS=" && ${binaryName}`, ...geminiArgs], {
-        cwd: executionRoot,
-        env,
-        stdio: 'pipe',
-        windowsHide: true,
-      });
-    }
-  } else {
-    proc = spawn(binaryName, geminiArgs, {
-      cwd: executionRoot,
-      env: cleanChildEnv('gemini', id),
-      stdio: 'pipe',
-    });
-  }
+  const proc = await spawnGemini(geminiArgs, executionRoot, id);
   session.proc = proc as ChildProcessWithoutNullStreams;
   session.pid = proc.pid;
   session.status = 'running';
@@ -541,6 +544,8 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     session.status = 'failed';
     session.endedAt = new Date().toISOString();
     commitPending();
+    // FLUX-981: surface the spawn failure inline in the chat, not only as a history activity entry.
+    appendErrorToSession(session, `Failed to start agent: ${error.message}`);
     flushSessionOutput(session, true, 'text');
     await session.writeQueue;
 
@@ -557,7 +562,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     } else {
       await updateTaskWithHistory(id, {
         updatedBy: 'Agent',
-        entries: [buildActivityEntry(outcome, 'Agent', session.endedAt)],
+        entries: [buildActivityEntry(outcome, 'Agent', session.endedAt!)],
       });
     }
 
@@ -604,16 +609,28 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     commitPending();
     flushSessionOutput(session, true, 'text');
     await session.writeQueue;
-    session.endedAt = new Date().toISOString();
 
-    let finalStatus: 'completed' | 'failed' | 'cancelled';
+    let finalStatus: 'completed' | 'failed' | 'cancelled' | 'waiting-input';
     if (session.requestedStop) {
+      session.endedAt = new Date().toISOString();
       session.status = 'cancelled';
       finalStatus = 'cancelled';
+    } else if (session.pausedForInput) {
+      // FLUX-985: agent moved the ticket to Require Input and was told to stop mid-turn. Mirror
+      // claude-code.ts — stay resumable (waiting-input, no endedAt) rather than force 'completed',
+      // which would post the agent's mid-turn question as a bogus completion comment, prematurely
+      // fire the group-terminal barrier, and drop the session from the active/parked view while it
+      // is genuinely awaiting the user. The resume route already accepts 'waiting-input'
+      // (routes/cli-session.ts), so resumability is unaffected. Pause branch ONLY — gemini stays
+      // persistentChat:false, so a normal chat turn still goes 'completed'.
+      session.status = 'waiting-input';
+      finalStatus = 'waiting-input';
     } else if (code === 0) {
+      session.endedAt = new Date().toISOString();
       session.status = 'completed';
       finalStatus = 'completed';
     } else {
+      session.endedAt = new Date().toISOString();
       session.status = 'failed';
       finalStatus = 'failed';
     }
@@ -636,6 +653,35 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
         })()
       : null;
 
+    // FLUX-985: paused for user input — flush tokens + mark the session entry waiting-input, but do
+    // NOT go terminal: no completion comment (the last text is the agent's Require-Input message, not
+    // a result), no group-barrier notify, no delegation-complete, no parked-flag, no endedAt.
+    if (finalStatus === 'waiting-input') {
+      if (tokenUpdate) {
+        await updateTaskWithHistory(id, { updatedBy: 'Agent', entries: [], tokenMetadata: tokenUpdate });
+      }
+      if (session.sessionHistoryEntry?.sessionId) {
+        await updateAgentSession(id, session.sessionHistoryEntry.sessionId, (sessionEntry) => {
+          sessionEntry.status = 'waiting-input';
+          sessionEntry.outcome = `${label} paused — waiting for user input.`;
+          sessionEntry.progress = session.sessionHistoryEntry.progress || [];
+        });
+      }
+      broadcastEvent('taskUpdated', { id });
+      return;
+    }
+
+    // FLUX-981: a nonzero/signal exit the user did NOT cancel surfaces inline in the chat, in addition
+    // to the outcome/activity record. finalStatus is 'failed' only for a genuine failure (requestedStop
+    // → 'cancelled', pausedForInput returned above) — this preserves the cancelled-guard. Await the
+    // write queue so the injected ⚠️ line lands in progress[] before it's snapshotted below.
+    if (finalStatus === 'failed') {
+      const stderrHint = session.stderrCapture?.trim();
+      const fullMessage = stderrHint ? `${outcome}\n${stderrHint}` : outcome;
+      appendErrorToSession(session, fullMessage);
+      await session.writeQueue;
+    }
+
     // Close the session entry with outcome and flush accumulated progress
     if (session.sessionHistoryEntry && session.sessionHistoryEntry.sessionId) {
       const accumulatedProgress = session.sessionHistoryEntry.progress || [];
@@ -655,7 +701,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
         const commentBody = lastText.length > maxCommentLen ? lastText.slice(0, maxCommentLen) + '...' : lastText;
         await updateTaskWithHistory(id, {
           updatedBy: 'Agent',
-          entries: [buildCommentEntry(label, commentBody, session.endedAt)],
+          entries: [buildCommentEntry(label, commentBody, session.endedAt!)],
           tokenMetadata: tokenUpdate ?? undefined,
         });
       } else if (tokenUpdate) {
@@ -669,7 +715,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
       // Fallback to old behavior
       await updateTaskWithHistory(id, {
         updatedBy: 'Agent',
-        entries: [buildActivityEntry(outcome, 'Agent', session.endedAt)],
+        entries: [buildActivityEntry(outcome, 'Agent', session.endedAt!)],
         tokenMetadata: tokenUpdate ?? undefined,
       });
     }
@@ -729,12 +775,21 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   const binaryName = session.command;
   // FLUX-519 review: resume in the SAME root the session started in; refuse to fall
   // back onto master if the worktree was removed (e.g. the ticket was finished).
-  const executionRoot = session.executionRoot ?? await resolveTaskExecutionRoot(tasksCache[id], workspaceRoot);
+  // FLUX-1018: on the resume fallback resolve READ-ONLY (create:false) — never spin up
+  // a fresh worktree mid-resume for a legacy session that lost its recorded
+  // executionRoot; the spawn path owns creation. Then fail closed two ways: a
+  // branch-bearing ticket that resolved to the main checkout (no live worktree) must
+  // not resume on master, and a recorded worktree path that has since vanished (ticket
+  // finished) is refused as before.
+  const executionRoot = session.executionRoot ?? await resolveTaskExecutionRoot(tasksCache[id], workspaceRoot, { create: false });
+  if (tasksCache[id]?.branch && executionRoot === workspaceRoot) {
+    throw new Error(`Worktree for ${id} is missing — refusing to resume the agent on master. Restart the session to recreate an isolated worktree.`);
+  }
   if (executionRoot !== workspaceRoot && !fs.existsSync(executionRoot)) {
     throw new Error(`Worktree for ${id} no longer exists (ticket likely finished) — refusing to resume the agent on master.`);
   }
 
-  checkBinaryInstalled(binaryName);
+  await checkBinaryInstalled(binaryName);
 
   const inputAt = new Date().toISOString();
   session.lastInputAt = inputAt;
@@ -755,91 +810,11 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
 
   const safeMessage = message.replace(/\0/g, '');
   const geminiScopeArgs = buildGeminiScopeArgs(workspaceRoot);
-  const resumeArgs = session.claudeSessionId
-    ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--screen-reader', '--yolo', '--skip-trust', ...geminiScopeArgs]
+  const resumeArgs = session.resumeSessionId
+    ? ['-p', safeMessage, '--resume', session.resumeSessionId, '--output-format', 'stream-json', '--screen-reader', '--yolo', '--skip-trust', ...geminiScopeArgs]
     : ['-p', safeMessage, '--output-format', 'stream-json', '--screen-reader', '--yolo', '--skip-trust', ...geminiScopeArgs];
 
-  let replyProc: ReturnType<typeof spawn>;
-  if (process.platform === 'win32') {
-    let exePath: string | null = null;
-    let entryPoint: string | null = null;
-    let systemNodePath: string | null = null;
-    try {
-      const prefixEnv = cleanChildEnv('gemini');
-      const whereResult = execSync('where node', { encoding: 'utf8', env: prefixEnv, timeout: 10_000, windowsHide: true }).trim().split(/\r?\n/);
-      const selfExe = process.execPath.toLowerCase();
-      systemNodePath = whereResult.find(p => p.toLowerCase() !== selfExe && fs.existsSync(p)) || null;
-      if (!systemNodePath) systemNodePath = whereResult[0] || null;
-    } catch {}
-    try {
-      const prefixEnv = cleanChildEnv('gemini');
-      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', env: prefixEnv, timeout: 10_000, windowsHide: true }).trim();
-      const candidateJs = path.join(npmPrefix, 'node_modules', '@google', 'gemini-cli', 'bundle', 'gemini.js');
-      const candidateExe = path.join(npmPrefix, 'node_modules', '@google', 'gemini-cli', 'bin', 'gemini.exe');
-      
-      if (fs.existsSync(candidateJs)) {
-        entryPoint = candidateJs;
-      } else if (fs.existsSync(candidateExe)) {
-        exePath = candidateExe;
-      }
-    } catch (err) {
-      log.info(`[${id}] Failed to resolve gemini path for reply:`, err);
-    }
-
-    // Second attempt: use 'where' to find the JS entry
-    if (!entryPoint && !exePath) {
-      try {
-        const prefixEnv = cleanChildEnv('gemini');
-        const wherePath = execSync(`where ${binaryName}`, { encoding: 'utf8', env: prefixEnv, timeout: 10_000, windowsHide: true }).trim().split(/\r?\n/)[0];
-        if (wherePath) {
-          const binDir = path.dirname(wherePath);
-          const candidateJs = path.join(binDir, 'node_modules', '@google', 'gemini-cli', 'bundle', 'gemini.js');
-          if (fs.existsSync(candidateJs)) {
-            entryPoint = candidateJs;
-          } else {
-            const parentCandidate = path.join(binDir, '..', 'node_modules', '@google', 'gemini-cli', 'bundle', 'gemini.js');
-            if (fs.existsSync(parentCandidate)) {
-              entryPoint = parentCandidate;
-            }
-          }
-        }
-      } catch {}
-    }
-
-    const env = cleanChildEnv('gemini', id);
-    const nodeCmd = systemNodePath || 'node';
-    if (entryPoint) {
-      log.info(`[${id}] Windows reply spawn (node=${nodeCmd}): ${entryPoint}`);
-      replyProc = spawn(nodeCmd, [entryPoint, ...resumeArgs], {
-        cwd: executionRoot,
-        env,
-        stdio: 'pipe',
-        windowsHide: true,
-      });
-    } else if (exePath) {
-      log.info(`[${id}] Windows reply spawn (exe): ${exePath}`);
-      replyProc = spawn(exePath, resumeArgs, {
-        cwd: executionRoot,
-        env,
-        stdio: 'pipe',
-        windowsHide: true,
-      });
-    } else {
-      log.info(`[${id}] Windows reply spawn (fallback): ${binaryName}`);
-      replyProc = spawn('cmd.exe', ['/c', `set "NODE_OPTIONS=" && ${binaryName}`, ...resumeArgs], {
-        cwd: executionRoot,
-        env,
-        stdio: 'pipe',
-        windowsHide: true,
-      });
-    }
-  } else {
-    replyProc = spawn(binaryName, resumeArgs, {
-      cwd: executionRoot,
-      env: cleanChildEnv('gemini', id),
-      stdio: 'pipe',
-    });
-  }
+  const replyProc = await spawnGemini(resumeArgs, executionRoot, id);
   session.proc = replyProc as ChildProcessWithoutNullStreams;
   session.pid = replyProc.pid;
 
@@ -858,6 +833,11 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       session.status = 'waiting-input';
     }
     commitReplyPending();
+    // FLUX-981: surface the reply spawn failure inline in the chat, not only as an activity entry.
+    // Skip when the user cancelled — a stop that races the spawn error isn't a fault.
+    if (!session.requestedStop) {
+      appendErrorToSession(session, `Failed to resume agent: ${error.message}`);
+    }
     flushSessionOutput(session, true, 'text');
     await updateTaskWithHistory(id, {
       updatedBy: 'Agent',
@@ -866,9 +846,18 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     console.error(`[${id}] Failed to spawn ${binaryName} for reply:`, error.message);
   });
 
-  replyProc.on('exit', async () => {
+  replyProc.on('exit', async (code, signal) => {
     commitReplyPending();
     flushSessionOutput(session, true, 'text');
+    // FLUX-981: a crashed resumed turn (nonzero/signal, not user-stopped) was silent in the chat.
+    // Also exclude pausedForInput (mirrors claude-code.ts): when the agent parked for Require Input
+    // mid-turn and the process then exits nonzero/signaled, that's a legitimate HITL pause — not a
+    // failure — so labeling it "reply ended with code N" would mislabel it as a crash.
+    if (!session.requestedStop && !session.pausedForInput && (code !== 0 || signal)) {
+      const replyOutcome = `${session.label} reply ended with ${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`}.`;
+      const stderrHint = session.stderrCapture?.trim();
+      appendErrorToSession(session, stderrHint ? `${replyOutcome}\n${stderrHint}` : replyOutcome);
+    }
     // FLUX-915: a user-requested stop stays 'cancelled' instead of reverting to 'waiting-input'
     // (which counted the killed session as active forever). Otherwise the resumable conversation
     // stays waiting-input.

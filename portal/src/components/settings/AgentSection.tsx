@@ -267,6 +267,11 @@ export function AgentSection({
         </div>
       </div>
 
+      {/* FLUX-906 (audit E.7): documented leave-with-justification. These per-framework model-settings
+          cards are framework-IDENTITY config ("Claude Code Models" → `integrations.claudeCode`), not a
+          capability gate — there is no `cliCapabilities` flag for "has a model name input", and the copy
+          is intrinsically per-CLI. Gating them off the served capability table would be miscategorizing
+          identity as capability. Kept allowlisted in adapter-boundary-allowlist.json. */}
       {(targetFramework === 'claude' || targetFramework === 'auto') && (
         <div className="mt-6 rounded-2xl border border-gray-200 bg-gray-50/80 p-5 dark:border-white/10 dark:bg-black/10">
           <div className="flex items-center gap-2 mb-1">

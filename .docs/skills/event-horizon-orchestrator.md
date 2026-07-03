@@ -12,7 +12,7 @@ Scope: Route the agent to the correct phase-specific skill based on ticket statu
 
 # Event Horizon Agent — Orchestrator
 
-Version: 2.5.0
+Version: 2.7.0
 
 ## Overview
 
@@ -42,16 +42,22 @@ Tickets have these fields (relevant when calling `update_ticket` or reading `get
 | `effort` | string | `None`, `XS`, `S`, `M`, `L`, `XL` |
 | `assignee` | string | User name or `unassigned` |
 | `tags` | string[] | From board config |
-| `body` | markdown | Description / plan in the ticket body |
-| `subtasks` | string[] | Child ticket IDs — use `create_subtask` to add |
+| `body` | markdown | Description / plan. MUST open with a one-glance, plain-language **TL;DR** blockquote — see "Body convention" below |
+| `subtasks` | string[] | Child ticket IDs — use `create_ticket` with `parentId` to add |
 | `implementationLink` | string | Commit hash or PR URL — set by `finish_ticket` |
-| `branch` | string | Git branch name (e.g. `flux/FLUX-41-add-effort-field`) — set by `create_branch` or portal Start Task prompt |
+| `branch` | string | Git branch name (e.g. `flux/FLUX-41-add-effort-field`) — set by `branch` (`action:'create'`) or portal Start Task prompt |
 
-History is an append-only event log (types: `comment`, `status_change`, `activity`, `agent_session`). You read it via `get_ticket` and append to it via `add_comment`, `change_status`, `log_progress`. Never construct history entries manually.
+**Body convention — lead with a TL;DR (FLUX-953).** Every time you write or rewrite a ticket `body` (via `update_ticket` or `create_ticket`), the FIRST thing in it MUST be a short, plain-language **TL;DR** — one to three jargon-free, ELI5 sentences saying what the ticket is and what "done" looks like — so the user (and the next agent) can grasp it at a glance without reading the whole body. Format it as a leading blockquote, then the detailed Problem / Plan prose follows:
+
+> **TL;DR** — one to three plain sentences summarizing what the ticket is and what done looks like.
+
+Keep it honest and current: if a later body rewrite changes the gist, update the TL;DR in the same edit. Skip it only for a trivially short body (a line or two) where a TL;DR would just repeat it.
+
+History is an append-only event log (types: `comment`, `status_change`, `activity`, `agent_session`). You read it via `get_ticket` and append to it via `add_note`, `change_status`. Never construct history entries manually.
 
 `get_ticket` returns a digest: `agent_session` entries come back without their `progress[]` array (a `progressCount` is kept), and history is windowed to the most recent ~20 entries (`olderHistoryEntries` reports how many were omitted; pass `historyLimit` for more). Use `get_session_log` only when you need a specific prior session's raw progress.
 
-Older entries that carry an agent `summary` are shown **collapsed** — `{ type, user, date, summary, id, collapsed: true }` instead of the full text (`status_change` entries are dropped entirely). Read the summary first; only when it isn't enough, fetch the full text with `get_ticket(ticketId, expand: ["<id>"])` (avoid `fullHistory: true` — it re-inflates context). Recent comments, `pin`ned entries, and anything without a summary are never collapsed. When you write a substantial comment or `log_progress` note, pass a faithful `summary` (and `pin: true` for review handoffs / key decisions) so it stays cheap-but-recoverable for the next agent.
+Older entries that carry an agent `summary` are shown **collapsed** — `{ type, user, date, summary, id, collapsed: true }` instead of the full text (`status_change` entries are dropped entirely). Read the summary first; only when it isn't enough, fetch the full text with `get_ticket(ticketId, expand: ["<id>"])` (avoid `fullHistory: true` — it re-inflates context). Recent comments, `pin`ned entries, and anything without a summary are never collapsed. When you write a substantial `add_note` comment or activity note, pass a faithful `summary` (and `pin: true` for review handoffs / key decisions) so it stays cheap-but-recoverable for the next agent.
 
 **Delegating:** a delegate reads the ticket itself via `get_ticket` and gets the same collapsed digest. Put the task-relevant context in the delegation `task` string; if the delegate needs a specific collapsed comment, inline it (or its id) rather than making it hunt. Delegates can `expand` selectively.
 
@@ -113,25 +119,20 @@ The MCP tools handle schema validation, timestamps, history normalization, and p
 | `get_session_log` | Reading one prior agent session's full progress log (rare — debugging only) |
 | `list_tickets` | Finding tickets by status, assignee, tag, or priority |
 | `get_board_config` | Checking valid statuses, tags, project key |
-| `create_ticket` | Creating a new ticket |
-| `create_subtask` | Creating a child ticket linked to a parent |
-| `update_ticket` | Changing metadata (title, priority, effort, tags, assignee, body) |
+| `create_ticket` | Creating a new ticket — pass `parentId` to create it as a linked subtask |
+| `update_ticket` | Changing metadata ONLY (title, priority, effort, tags, assignee, body) — does NOT move status |
 | `change_status` | Moving to a new status (comment required for Require Input/Ready) |
-| `archive_ticket` | Safely removing a ticket from the active board (moves to `Archived`; reversible — there is no hard-delete tool) |
-| `unarchive_ticket` | Restoring an archived ticket to the active board (default `Todo`) |
-| `extract_ticket` | Carving a topic-slice out of a chat stream into a NEW card (the promotion gate, FLUX-656). Human-approved only (CONFIRM gate / board-rebase `promote`); additive + un-doable |
-| `merge_tickets` | Folding several tickets/chat-streams into ONE survivor effort (the inverse of extract, FLUX-657). Sources are tombstoned + archived (never deleted); the survivor re-derives the chronological union. Human-approved only (CONFIRM gate / board-rebase `fold`) |
-| `add_comment` | Adding a comment to ticket history |
-| `log_progress` | Logging a progress update |
+| `archive` | `action:'archive'` removes a ticket from the active board (moves to `Archived`; reversible — there is no hard-delete tool); `action:'unarchive'` restores it (default `Todo`, or `toStatus`) |
+| `extract_ticket` | Carving a topic-slice out of a chat stream into a NEW card (the promotion gate). Human-approved only (CONFIRM gate / board-rebase `promote`); additive + un-doable |
+| `merge_tickets` | Folding several tickets/chat-streams into ONE survivor effort (the inverse of extract). Sources are tombstoned + archived (never deleted); the survivor re-derives the chronological union. Human-approved only (CONFIRM gate / board-rebase `fold`) |
+| `add_note` | Adding a `type:'comment'` (human-facing comment) or `type:'activity'` (agent progress update) to ticket history |
 | `finish_ticket` | Completing a ticket (sets implementationLink + Done atomically) |
-| `create_branch` | Create a git feature branch for a ticket (`flux/<ID>-<slug>`) and store its name on the ticket |
-| `get_branch` | Get branch name + existence + ahead/behind counts vs master |
-| `delete_branch` | Delete the branch associated with a ticket (refuses unmerged unless `force: true`) |
+| `branch` | `action:'create'` makes a feature branch (`flux/<ID>-<slug>`) + worktree; `action:'status'` returns name/existence/ahead-behind; `action:'delete'` removes it (refuses unmerged unless `force:true`) |
 
 Notes:
 - `change_status` enforces comment requirements: you MUST provide a `comment` when transitioning to `Require Input` (the question) or `Ready` (the completion summary).
 - `finish_ticket` is atomic: it sets the implementation link, adds a completion comment, and moves status to Done in one operation. When the ticket has a `branch`, it also pushes the branch and creates a PR via `gh` — the PR URL becomes the `implementationLink`.
-- `create_subtask` creates a child ticket file and links it to the parent's `subtasks` array atomically.
+- `create_ticket` with `parentId` creates a child ticket file and links it to the parent's `subtasks` array atomically.
 - All tools handle timestamps, history normalization, and schema validation server-side.
 - There is **no** `switch_branch` tool. Agents stay on their ticket branch for the full session. Switching branches requires explicit user confirmation in chat.
 

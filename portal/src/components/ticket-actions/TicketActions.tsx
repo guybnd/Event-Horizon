@@ -101,7 +101,7 @@ export function TicketActionsView({
 /** The launcher modal + Todo start-prompt portals. Rendered once per controller instance. */
 export function TicketActionsLaunchers({ ctl }: { ctl: UseTicketActions }) {
   const config = useConfig();
-  const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
+  const framework = resolveEffectiveAgent(undefined, config?.defaultFramework);
   const task = ctl.task;
   return (
     <>
@@ -115,6 +115,7 @@ export function TicketActionsLaunchers({ ctl }: { ctl: UseTicketActions }) {
           onClose={ctl.closeLauncher}
           onLaunch={(plan) => void ctl.onLaunch(plan)}
           busy={ctl.launcherBusy}
+          error={ctl.launcherError}
         />
       )}
       {ctl.startPromptOpen &&

@@ -2,8 +2,6 @@ import { log } from './log.js';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import {
   GROUP_DOCS_BRANCH,
   GROUP_STORE_DIRNAME,
@@ -11,6 +9,11 @@ import {
   type GroupContext,
   type ResolvedMember,
 } from './group.js';
+// FLUX-1000 (epic FLUX-996): defaultGitRunner used to be a bare execFileAsync — no timeout, no
+// non-interactive env. Called from group-sync.ts's syncGroup() after the fan-out, so a hung
+// fetch/reset here could still block a group sync/edit even once fanOutGroupDocs itself is
+// bounded. Route through the S1 runner.
+import { runGit } from './git-exec.js';
 
 /**
  * Member-side worktree management for the shared group docs (FLUX-422).
@@ -31,13 +34,10 @@ import {
  * Agents receive `--add-dir .flux-group` so they can read docs as real files.
  */
 
-const execFileAsync = promisify(execFile);
-
 // Defined locally to avoid a circular import with group-sync.ts.
 type GitRunner = (cwd: string, args: string[]) => Promise<{ stdout: string; stderr: string }>;
 
-const defaultGitRunner: GitRunner = (cwd, args) =>
-  execFileAsync('git', args, { cwd, windowsHide: true });
+const defaultGitRunner: GitRunner = (cwd, args) => runGit(args, { cwd });
 
 /** Remote-tracking ref the member uses to track the parent's canonical branch. */
 const GROUP_PARENT_TRACKING_REF = 'refs/remotes/group-parent/docs';

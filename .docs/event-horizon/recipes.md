@@ -40,7 +40,7 @@ Goal: surface a new piece of structured data on every ticket (e.g. `severity`).
 
 ## 2. Add an MCP tool
 
-Goal: expose a new capability to agents (e.g. `archive_ticket`).
+Goal: expose a new capability to agents (e.g. a new `action` on `archive`, or a brand-new tool).
 
 1. **Tool definition** — [`engine/src/mcp-server.ts`](../../engine/src/mcp-server.ts)
    - Define the zod input schema. Match the style of existing tools — required ids by string, optional fields nullable.
@@ -130,7 +130,7 @@ Goal: add a field to an existing entry type (e.g. add `severity` to `comment`), 
    - If the new entry type appears in `normalizeHistoryEntries`, decide whether to dedupe / collapse it.
 3. **Writers** — anywhere that appends history needs to know about the new shape:
    - `task-store.ts` `updateTaskWithHistory` is the typical path.
-   - MCP `add_comment`, `change_status`, `log_progress`, and the agent adapters in `engine/src/agents/`.
+   - MCP `add_note`, `change_status`, and the agent adapters in `engine/src/agents/`.
 4. **Portal rendering** — [`portal/src/components/TaskModal.tsx`](../../portal/src/components/TaskModal.tsx) (history feed). Add a renderer for the new type or new field.
 5. **Docs** — update the per-type table in [Reference: Ticket Schema](reference/ticket-schema.md#per-type-fields).
 

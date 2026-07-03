@@ -5,6 +5,7 @@ import path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { BUILTIN_MODULES } from './modules.js';
+import { buildGitSyncEnv, GIT_SYNC_TIMEOUT_MS } from './git-sync-env.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -28,8 +29,13 @@ export async function scaffoldModuleDirs(storeDir: string, dirs: string[]): Prom
   }
 }
 
-function git(cwd: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
-  return execFileAsync('git', args, { cwd, windowsHide: true });
+// FLUX-895: startup pull / orphan-migrate git calls share the sync's non-interactive +
+// gh-authenticated env, so they can't pop a credential window during boot either.
+async function git(cwd: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
+  const env = await buildGitSyncEnv();
+  // FLUX-989: bound every startup/migrate git call — a hung pull/fetch/push (large
+  // divergence, stalled credential prompt, dead network) must not wedge boot forever.
+  return execFileAsync('git', args, { cwd, windowsHide: true, env, timeout: GIT_SYNC_TIMEOUT_MS });
 }
 
 /**
@@ -39,7 +45,7 @@ function git(cwd: string, args: string[]): Promise<{ stdout: string; stderr: str
  * revert on every fetch and leak between clones. They stay on disk locally; they
  * just stop being version-controlled in the orphan store.
  */
-const STORE_LOCAL_IGNORES = ['config.json', 'read-state.json', 'open-prompts.json', 'open-prompts.json.tmp', 'session-binding-secret', 'session-binding-secret.tmp'];
+const STORE_LOCAL_IGNORES = ['config.json', 'read-state.json', 'open-prompts.json', 'open-prompts.json.tmp', 'session-binding-secret', 'session-binding-secret.tmp', 'sessions/'];
 
 /** Ensure the store-root `.gitignore` lists the local-only files. Returns true if it changed. */
 async function ensureStoreLocalGitignore(storeDir: string): Promise<boolean> {

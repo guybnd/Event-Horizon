@@ -165,9 +165,10 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
 
   const columnUnreadByTask = useMemo(() => tasks.map(task => {
     const readIds = new Set(readComments[task.id] ?? []);
-    const ids = (task.history ?? [])
-      .filter(e => e.type === 'comment' && e.id && !readIds.has(e.id))
-      .map(e => e.id!);
+    // FLUX-725: comment {id} list comes from the list digest (was a filter over full history).
+    const ids = (task.historyDigest?.comments ?? [])
+      .filter(c => c.id && !readIds.has(c.id))
+      .map(c => c.id);
     return { taskId: task.id, ids };
   }).filter(t => t.ids.length > 0), [tasks, readComments]);
   const hasColumnUnread = columnUnreadByTask.length > 0;

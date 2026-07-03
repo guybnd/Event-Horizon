@@ -103,7 +103,7 @@ append time. Ordering of record is always `seq`, never `ts`.
 
 ### 4.2 Synthetic `resume-preamble` event (FLUX-655)
 
-On a **warm-resumed** turn (the session already has a `claudeSessionId`), `claude-code.ts`
+On a **warm-resumed** turn (the session already has a `resumeSessionId`), `claude-code.ts`
 re-grounds the agent in the moved working tree by prepending a compact *situational update*
 to the CLI prompt — only when the world actually moved (branch fell behind, the default
 branch rewrote files underneath the branch, or sibling tickets reached a terminal/merged
@@ -189,7 +189,7 @@ best-effort/queued, so a transcript failure never blocks resolving the permissio
 ### 4.5 Board cold-resume re-prime (FLUX-838)
 
 The board orchestrator (`__board__`) is "a persistent chat for the whole board," but the CLI
-session store is **in-memory only** — an engine restart wipes the board's `claudeSessionId`,
+session store is **in-memory only** — an engine restart wipes the board's `resumeSessionId`,
 so the next turn falls through to the cold `startBoardSession` path with no `--resume`. The
 durable `__board__.jsonl` transcript is the orchestrator's *only* memory (unlike per-ticket
 chats, which the launch prompt re-primes from ticket body + history), so without intervention
@@ -295,6 +295,23 @@ turns in, returns `TranscriptMessage[]`. `transcript.ts`'s `readTranscriptMessag
 routes through it (`readTurns` → `projectTranscript`), proving the rendered transcript is
 a *function of* the substrate, not an independent store. There is **no user-visible
 change**: the same messages render, now provably re-derivable.
+
+**Per-CLI schema coverage (FLUX-969).** The projector's if/else chain has no fallback branch —
+a raw event whose `type` it doesn't recognize is silently dropped, not rendered as anything.
+It was written against Claude's stream-json schema only (`evt.type === 'assistant'` +
+`message.content[]`) since Claude was the only adapter that ever fed it real turns. When
+FLUX-959 made the board multi-framework, Copilot's and Gemini's raw events reached the
+substrate (once `attachStdoutProcessing` in each adapter started teeing them — see below) but
+the projector had no branch for either schema, so their assistant replies were durably
+recorded yet never rendered: the chat window showed the user's message and then nothing,
+forever. Fixed by adding two more branches — Copilot's complete `assistant.message` /
+`data.content` event, and Gemini's native `message` / `role:'assistant'` / `content` event
+(Gemini's Claude-schema-fallback messages already rendered via the existing branch, since
+it's literally the same shape). Tool-call rows (Copilot's `assistant.tool_call*`, Gemini's
+`tool_use`) are NOT yet projected — scoped out as a follow-up; only the missing assistant
+*text* was blocking the board chat entirely. Any adapter added in the future needs its own
+branch here, mirroring whatever schema its own `attachStdoutProcessing` already parses for
+live activity — there is no schema-detection magic, just an explicit case per CLI.
 
 ### 6.1 The op-log (shape only — verbs deferred)
 

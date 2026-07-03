@@ -325,7 +325,8 @@ function RebaseRow({ item, checked, onToggle }: { item: BoardRebaseItem; checked
 function TicketRef({ id, intoBadge }: { id: string; intoBadge?: boolean }) {
   const task = useTaskById(id);
   const { openChat } = useDockActions();
-  const lastUpdate = task?.history?.length ? task.history[task.history.length - 1]?.date : undefined;
+  // FLUX-725: last-entry date comes from the list digest (was full history's last element).
+  const lastUpdate = task?.historyDigest?.lastEntry?.date || undefined;
   const rel = formatRelative(lastUpdate);
 
   return (

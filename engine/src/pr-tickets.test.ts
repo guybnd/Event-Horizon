@@ -10,12 +10,11 @@ vi.mock('./task-store.js', () => ({
 }));
 vi.mock('./events.js', () => ({ broadcastEvent: vi.fn() }));
 
-// syncPrTickets shells out to `gh` via promisify(execFile); mock child_process so the test feeds
+// syncPrTickets shells out to `gh` via runGh (git-exec.js, FLUX-1001); mock it so the test feeds
 // a canned `gh pr list --json …` payload (FLUX-751: asserting the PR body is threaded through).
 const ghState = vi.hoisted(() => ({ stdout: '[]' }));
-vi.mock('child_process', () => ({
-  execFile: (_file: string, _args: string[], _opts: unknown, cb: (e: unknown, r: { stdout: string; stderr: string }) => void) =>
-    cb(null, { stdout: ghState.stdout, stderr: '' }),
+vi.mock('./git-exec.js', () => ({
+  runGh: vi.fn(async () => ({ stdout: ghState.stdout, stderr: '' })),
 }));
 
 import { tasksCache, upsertManagedTicket } from './task-store.js';

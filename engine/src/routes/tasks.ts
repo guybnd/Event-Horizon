@@ -10,7 +10,7 @@ import {
   normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry,
   summarizeFieldChanges, hasAppendedStatusChange, findEarliestHistoryDate,
 } from '../history.js';
-import { tasksCache, serializeTaskForApi, serializeTaskForAgent, serializeTaskForList, updateTaskWithHistory, upsertManagedTicket, workspaceActivating, parseErrors, atomicWriteFile, createTask } from '../task-store.js';
+import { tasksCache, serializeTaskForApi, serializeTaskForAgent, serializeTaskForList, updateTaskWithHistory, upsertManagedTicket, workspaceActivating, parseErrors, atomicWriteFile, createTask, getTerminalStatuses, syncParentSubtaskLinks, validateParentLink, subtaskIds } from '../task-store.js';
 import { generatePromptNotification, generateCompletionNotification } from '../notifications.js';
 import { validateTicketFrontmatter, formatValidationErrors } from '../schema.js';
 import {
@@ -22,14 +22,20 @@ import { getAdapter } from '../agents/index.js';
 import { computeAgentPayloadMetrics } from '../agent-payload-metrics.js';
 import { computeContextBudget } from '../context-budget-metrics.js';
 import { probeAllMcpSchemas } from '../mcp-schema-probe.js';
-import { getEffectiveSpawnServers, BOARD_CONVERSATION_ID } from '../agents/claude-code.js';
+import { getEffectiveSpawnServers } from '../agents/claude-code.js';
+import { BOARD_CONVERSATION_ID } from '../agents/board.js';
 import { diffFilesForBranch } from '../diff-aggregator.js';
 import { ARTIFACT_CSP, injectArtifactScripts, isSafeTicketId, parseRevParam, readArtifactRevision } from '../artifacts.js';
 import { selectMembers, sharedNonDoneSiblings, resolveMergedPrTickets } from '../pr-tickets.js';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
+// FLUX-999 (epic FLUX-996): every git call in this file used to be a bare execFileAsync — no
+// timeout, no non-interactive env — so e.g. `git fetch`/`git push` in the update-branch route
+// (below) could hang that request forever on a slow/unreachable remote. Route through the S1
+// runner via this tiny local wrapper (mirrors pr-cleanup.ts's `git(cwd, args)` helper).
+import { runGit } from '../git-exec.js';
 
-const execFileAsync = promisify(execFile);
+function git(cwd: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
+  return runGit(args, { cwd });
+}
 
 const router = express.Router();
 
@@ -37,7 +43,16 @@ router.get('/', (req, res) => {
   // FLUX-846: self-heal any session stuck 'running' after a missed terminal event before serializing,
   // so the served `cliSession` status is authoritative and the portal's active-sessions panel clears.
   reconcileDeadSessions();
-  res.json(Object.values(tasksCache).map(serializeTaskForList));
+  let tasks = Object.values(tasksCache);
+  // FLUX-970: the live 3s poll only needs non-terminal tickets — the board already filters
+  // Released/Archived out client-side (Board.tsx). Opt in with ?active=true so the hot poll
+  // path stops shipping/parsing/diffing thousands of resting tickets on every tick; default
+  // (no param) stays the full set for callers that still need everything (Releases, search).
+  if (req.query.active === 'true') {
+    const terminalStatuses = getTerminalStatuses();
+    tasks = tasks.filter((task: any) => !terminalStatuses.includes(task.status));
+  }
+  res.json(tasks.map(serializeTaskForList));
 });
 
 router.get('/errors', (req, res) => {
@@ -50,7 +65,7 @@ router.get('/errors', (req, res) => {
 async function resolveDefaultBranch(root: string): Promise<string> {
   for (const candidate of ['master', 'main']) {
     try {
-      await execFileAsync('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `refs/heads/${candidate}`], { windowsHide: true });
+      await git(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${candidate}`]);
       return candidate;
     } catch {
       /* try next */
@@ -73,9 +88,8 @@ router.get('/worktrees', async (_req, res) => {
         const changedFiles = await worktreeChangeCount(w.path).catch(() => 0);
         // Commits this worktree is ahead of the default branch (FLUX-582) — pairs with
         // changedFiles for the panel's "↑N · M vs master" divergence badge. Best-effort.
-        const aheadCount = await execFileAsync(
-          'git', ['-C', w.path, 'rev-list', '--count', `${defaultBranch}..HEAD`], { windowsHide: true },
-        ).then((r) => parseInt(r.stdout.trim(), 10) || 0).catch(() => 0);
+        const aheadCount = await git(w.path, ['rev-list', '--count', `${defaultBranch}..HEAD`])
+          .then((r) => parseInt(r.stdout.trim(), 10) || 0).catch(() => 0);
         return {
           path: w.path,
           branch: w.branch,
@@ -174,9 +188,9 @@ router.post('/commit', async (req, res) => {
   }
   try {
     // Stage the selected paths (covers untracked + deletions), then commit only them.
-    await execFileAsync('git', ['-C', root, 'add', '--', ...files], { windowsHide: true });
-    await execFileAsync('git', ['-C', root, 'commit', '-m', message, '--', ...files], { windowsHide: true });
-    const { stdout } = await execFileAsync('git', ['-C', root, 'rev-parse', '--short', 'HEAD'], { windowsHide: true });
+    await git(root, ['add', '--', ...files]);
+    await git(root, ['commit', '-m', message, '--', ...files]);
+    const { stdout } = await git(root, ['rev-parse', '--short', 'HEAD']);
     res.json({ hash: stdout.trim() });
   } catch (err: any) {
     const detail = (err?.stderr || err?.message || 'Commit failed').toString().trim();
@@ -461,7 +475,15 @@ router.put('/:id', async (req, res) => {
     date: activityTimestamp,
   }));
   nextHistory = [...existingHistory, ...novelEntries];
-  if (task.status !== frontmatter.status && !hasAppendedStatusChange(existingHistory, nextHistory, task.status, frontmatter.status)) {
+  // FLUX-725: the portal status-move writers now send the `status_change` (and any required
+  // comment) as `appendHistory` deltas instead of a reconstructed full `history` array. Those
+  // deltas are pushed below (after this block), so `hasAppendedStatusChange` — which only scans
+  // the `novelEntries` derived from the submitted `history` — won't see them. Detect a matching
+  // status_change in the appendHistory delta too, so we don't auto-add a SECOND one (double-move).
+  const appendHasStatusChange = appendHistoryEntries.some(
+    (e: any) => e?.type === 'status_change' && e?.from === task.status && e?.to === frontmatter.status,
+  );
+  if (task.status !== frontmatter.status && !appendHasStatusChange && !hasAppendedStatusChange(existingHistory, nextHistory, task.status, frontmatter.status)) {
     nextHistory.push({
       type: 'status_change',
       from: task.status,
@@ -494,6 +516,13 @@ router.put('/:id', async (req, res) => {
   // Bidirectional parentId sync
   const oldParentId = task.parentId || null;
   const newParentId = frontmatter.parentId !== undefined ? (frontmatter.parentId || null) : oldParentId;
+  // FLUX-1068: reject self-parenting / cycles before writing (shared with MCP update_ticket).
+  if (newParentId !== oldParentId) {
+    const linkError = validateParentLink(id, newParentId);
+    if (linkError) {
+      return res.status(400).json({ error: 'INVALID_PARENT_LINK', message: linkError });
+    }
+  }
   if (newParentId) {
     frontmatter.parentId = newParentId;
   } else {
@@ -521,83 +550,16 @@ router.put('/:id', async (req, res) => {
       }
     }
 
-    // Sync parent's subtasks array when parentId changes
-    if (newParentId !== oldParentId) {
-      // Remove from old parent's subtasks
-      if (oldParentId && tasksCache[oldParentId]) {
-        const oldParent = tasksCache[oldParentId];
-        const oldParentSubtasks: string[] = (Array.isArray(oldParent.subtasks) ? oldParent.subtasks : [])
-          .map((s: any) => typeof s === 'string' ? s : s.id).filter(Boolean);
-        const filtered = oldParentSubtasks.filter((sid: string) => sid !== id);
-        if (filtered.length !== oldParentSubtasks.length) {
-          const parentRaw = await fs.readFile(oldParent._path, 'utf-8');
-          const parentParsed = matter(parentRaw);
-          parentParsed.data.subtasks = filtered;
-          parentParsed.data.updatedBy = actor;
-          await atomicWriteFile(oldParent._path, matter.stringify(parentParsed.content, parentParsed.data));
-          tasksCache[oldParentId] = { ...tasksCache[oldParentId], subtasks: filtered, updatedBy: actor };
-        }
-      }
-      // Add to new parent's subtasks
-      if (newParentId && tasksCache[newParentId]) {
-        const newParent = tasksCache[newParentId];
-        const newParentSubtasks: string[] = (Array.isArray(newParent.subtasks) ? newParent.subtasks : [])
-          .map((s: any) => typeof s === 'string' ? s : s.id).filter(Boolean);
-        if (!newParentSubtasks.includes(id)) {
-          newParentSubtasks.push(id);
-          const parentRaw = await fs.readFile(newParent._path, 'utf-8');
-          const parentParsed = matter(parentRaw);
-          parentParsed.data.subtasks = newParentSubtasks;
-          parentParsed.data.updatedBy = actor;
-          await atomicWriteFile(newParent._path, matter.stringify(parentParsed.content, parentParsed.data));
-          tasksCache[newParentId] = { ...tasksCache[newParentId], subtasks: newParentSubtasks, updatedBy: actor };
-        }
-      }
-    }
-
-    // When subtasks array changes, sync children's parentId
-    const oldSubtasks: string[] = (Array.isArray(task.subtasks) ? task.subtasks : [])
-      .map((s: any) => typeof s === 'string' ? s : s.id).filter(Boolean);
-    const newSubtasks: string[] = (Array.isArray(frontmatter.subtasks) ? frontmatter.subtasks : [])
-      .map((s: any) => typeof s === 'string' ? s : s.id).filter(Boolean);
-    const removedChildren = oldSubtasks.filter((sid: string) => !newSubtasks.includes(sid));
-    const addedChildren = newSubtasks.filter((sid: string) => !oldSubtasks.includes(sid));
-
-    for (const childId of removedChildren) {
-      const child = tasksCache[childId];
-      if (child && child.parentId === id) {
-        const childRaw = await fs.readFile(child._path, 'utf-8');
-        const childParsed = matter(childRaw);
-        delete childParsed.data.parentId;
-        childParsed.data.updatedBy = actor;
-        await atomicWriteFile(child._path, matter.stringify(childParsed.content, childParsed.data));
-        tasksCache[childId] = { ...tasksCache[childId], parentId: undefined, updatedBy: actor };
-      }
-    }
-    for (const childId of addedChildren) {
-      const child = tasksCache[childId];
-      if (child && child.parentId !== id) {
-        // Remove child from its previous parent if any
-        if (child.parentId && tasksCache[child.parentId]) {
-          const prevParent = tasksCache[child.parentId];
-          const prevSubs: string[] = (Array.isArray(prevParent.subtasks) ? prevParent.subtasks : [])
-            .map((s: any) => typeof s === 'string' ? s : s.id).filter(Boolean)
-            .filter((sid: string) => sid !== childId);
-          const prevRaw = await fs.readFile(prevParent._path, 'utf-8');
-          const prevParsed = matter(prevRaw);
-          prevParsed.data.subtasks = prevSubs;
-          prevParsed.data.updatedBy = actor;
-          await atomicWriteFile(prevParent._path, matter.stringify(prevParsed.content, prevParsed.data));
-          tasksCache[child.parentId] = { ...tasksCache[child.parentId], subtasks: prevSubs, updatedBy: actor };
-        }
-        const childRaw = await fs.readFile(child._path, 'utf-8');
-        const childParsed = matter(childRaw);
-        childParsed.data.parentId = id;
-        childParsed.data.updatedBy = actor;
-        await atomicWriteFile(child._path, matter.stringify(childParsed.content, childParsed.data));
-        tasksCache[childId] = { ...tasksCache[childId], parentId: id, updatedBy: actor };
-      }
-    }
+    // FLUX-1068: bidirectional parentId ⇄ subtasks reconciliation now lives in one shared helper
+    // (task-store.ts) that both this route and the MCP update_ticket tool call.
+    await syncParentSubtaskLinks({
+      id,
+      oldParentId,
+      newParentId,
+      oldSubtasks: subtaskIds(task.subtasks),
+      newSubtasks: subtaskIds(frontmatter.subtasks),
+      actor,
+    });
 
     broadcastEvent('taskUpdated', { id });
     res.json(serializeTaskForApi(tasksCache[id]));
@@ -1101,9 +1063,9 @@ router.post('/:id/finish', async (req, res) => {
   //    other staged changes in the index never ride along).
   let hash: string;
   try {
-    await execFileAsync('git', ['-C', workspaceRoot, 'add', '--', ...files], { windowsHide: true });
-    await execFileAsync('git', ['-C', workspaceRoot, 'commit', '-m', message, '--', ...files], { windowsHide: true });
-    const { stdout } = await execFileAsync('git', ['-C', workspaceRoot, 'rev-parse', '--short', 'HEAD'], { windowsHide: true });
+    await git(workspaceRoot, ['add', '--', ...files]);
+    await git(workspaceRoot, ['commit', '-m', message, '--', ...files]);
+    const { stdout } = await git(workspaceRoot, ['rev-parse', '--short', 'HEAD']);
     hash = stdout.trim();
   } catch (err: any) {
     const detail = (err?.stderr || err?.message || 'Commit failed').toString().trim();
@@ -1304,21 +1266,21 @@ router.post('/:id/pr/update-branch', async (req, res) => {
   if (!worktree) {
     return res.status(409).json({ error: 'No active worktree holds this branch — open the worktree before updating.' });
   }
-  const { stdout: porcelain } = await execFileAsync('git', ['-C', worktree, 'status', '--porcelain'], { windowsHide: true }).catch(() => ({ stdout: 'err' }));
+  const { stdout: porcelain } = await git(worktree, ['status', '--porcelain']).catch(() => ({ stdout: 'err' }));
   if (porcelain.trim().length > 0) {
     return res.status(409).json({ error: 'Worktree has uncommitted changes — commit or stash them first.' });
   }
 
   try {
     const def = await getDefaultBranch();
-    await execFileAsync('git', ['-C', worktree, 'fetch', 'origin', def], { windowsHide: true });
+    await git(worktree, ['fetch', 'origin', def]);
     try {
-      await execFileAsync('git', ['-C', worktree, 'merge', '--no-edit', `origin/${def}`], { windowsHide: true });
+      await git(worktree, ['merge', '--no-edit', `origin/${def}`]);
     } catch (mergeErr: any) {
-      await execFileAsync('git', ['-C', worktree, 'merge', '--abort'], { windowsHide: true }).catch(() => {});
+      await git(worktree, ['merge', '--abort']).catch(() => {});
       return res.status(409).json({ error: `Update hit conflicts with ${def} — resolve them in the worktree, then push. (${mergeErr.message})` });
     }
-    await execFileAsync('git', ['-C', worktree, 'push', 'origin', branch], { windowsHide: true }).catch(() => {});
+    await git(worktree, ['push', 'origin', branch]).catch(() => {});
     broadcastEvent('taskUpdated', { id });
     res.json({ updated: true, branch });
   } catch (err: any) {

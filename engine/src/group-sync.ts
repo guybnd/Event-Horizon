@@ -1,13 +1,14 @@
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { GROUP_DOCS_BRANCH, getGroupStoreDir, type GroupContext, type ResolvedMember } from './group.js';
 import { validateGitRemote } from './group-setup.js';
 import { refreshMemberWorktrees } from './group-member-worktree.js';
-
-const execFileAsync = promisify(execFile);
+// FLUX-1000 (epic FLUX-996): defaultGitRunner used to be a bare execFileAsync — no timeout, no
+// non-interactive env — so ONE slow/unreachable member's `git push` in fanOutGroupDocs's loop
+// could hang the whole doc-save request forever (the per-member try/catch below never runs
+// against a call that never settles). Route through the S1 runner.
+import { runGit } from './git-exec.js';
 
 /**
  * Group fan-out sync (FLUX-396).
@@ -25,8 +26,7 @@ const execFileAsync = promisify(execFile);
 
 export type GitRunner = (cwd: string, args: string[]) => Promise<{ stdout: string; stderr: string }>;
 
-const defaultGitRunner: GitRunner = (cwd, args) =>
-  execFileAsync('git', args, { cwd, windowsHide: true });
+const defaultGitRunner: GitRunner = (cwd, args) => runGit(args, { cwd });
 
 async function gitWithRetry(runner: GitRunner, cwd: string, args: string[], maxRetries = 3): Promise<{ stdout: string; stderr: string }> {
   let attempts = 0;

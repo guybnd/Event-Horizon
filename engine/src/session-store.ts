@@ -1,7 +1,13 @@
 import { createHash } from 'node:crypto';
-import type { CliSessionRecord, CliSessionSummary, CliFramework, ExecutionPattern, PatternPosition } from './agents/types.js';
+import fs from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+import type { CliSessionRecord, CliSessionSummary, CliFramework, ExecutionPattern, PatternPosition, LaunchPhase } from './agents/types.js';
 import { CLI_CAPABILITIES as capabilities } from './agents/types.js';
 import { killProcessTree } from './kill-process-tree.js';
+import { settleOpenPromptsForConversation } from './hitl-prompts.js';
+import { getActiveFluxDir } from './workspace.js';
+import { BOARD_CONVERSATION_ID } from './agents/board.js';
 
 export const cliSessionsById = new Map<string, CliSessionRecord>();
 export const cliSessionsByTaskId = new Map<string, string[]>();
@@ -77,10 +83,10 @@ function toSummary(session: CliSessionRecord): CliSessionSummary {
   if (session.lockedPaths) summary.lockedPaths = session.lockedPaths;
   if (session.outputData) summary.outputData = session.outputData;
   // FLUX-606: the chat can continue (`claude --resume`) any terminal-or-active session
-  // that has a known claudeSessionId — including a dispatched grooming session that ended
+  // that has a known resumeSessionId — including a dispatched grooming session that ended
   // `completed`. Expose a boolean (not the raw id) so the frontend resumes that thread
   // instead of starting a fresh, amnesiac chat.
-  summary.resumable = ['running', 'waiting-input', 'completed'].includes(session.status) && !!session.claudeSessionId;
+  summary.resumable = ['running', 'waiting-input', 'completed'].includes(session.status) && !!session.resumeSessionId;
   return summary;
 }
 
@@ -616,6 +622,200 @@ export function getActiveSessionCount(): number {
   return count;
 }
 
+// ── Persistent active-session stubs — restart-safe worktree reclaim (FLUX-1060) ──
+//
+// `cliSessionsById` is in-memory only, so an engine restart (update / crash / dev reload) wipes
+// every session record. The worktree-reclaim guard (`isWorktreeReclaimable`, pr-cleanup.ts) reads
+// that map to answer "is a live session still on this branch?" — after a restart it sees none, so a
+// ticket resting at Ready with a `waiting-input` session (the normal between-turns state, which can
+// persist for hours) looks idle and the next reclaim sweep deletes its worktree out from under the
+// still-resumable session (incident FLUX-1053). We persist a tiny stub per RUNNING/WAITING-INPUT
+// task session under `<activeFluxDir>/sessions/<id>.json` and rehydrate them at boot as
+// `waiting-input` (resumable) records, so the guard — and the chat's resume — see them again.
+//
+// Stubs are LOCAL runtime state: gitignored in the repo checkout and excluded from the orphan
+// `flux-data` sync (storage-sync `STORE_LOCAL_IGNORES`), so they never travel between machines.
+// `getActiveFluxDir()` is pinned to the engine workspace root, so a worktree agent can't redirect
+// the write. Everything here is best-effort — a disk error never throws into a caller.
+
+/** Statuses worth persisting: a live turn (`running`) or the resumable resting state
+ *  (`waiting-input`). `pending` (pre-spawn) is skipped — no resume id / committed work yet, and its
+ *  ticket is In Progress, which is never reclaimable. Terminal states are never persisted. */
+const STUB_PERSIST_STATUSES: ReadonlySet<string> = new Set(['running', 'waiting-input']);
+
+interface SessionStub {
+  id: string;
+  taskId: string;
+  framework: CliFramework;
+  label: string;
+  startedAt: string;
+  status: 'waiting-input'; // always rehydrated as the resumable resting state (the proc is dead)
+  resumeSessionId?: string;
+  lastOutputAt?: string;
+  phase?: LaunchPhase;
+  role?: string;
+}
+
+// Guard so a sync can't wipe the on-disk stubs before boot rehydration has read them back: an
+// empty pre-rehydrate `cliSessionsById` would otherwise look like "no active sessions → delete all".
+let stubsRehydrated = false;
+
+function sessionStubsDir(): string {
+  return path.join(getActiveFluxDir(), 'sessions');
+}
+function sessionStubFileName(id: string): string {
+  // Session ids are UUIDs; sanitize as defence-in-depth so an id can never escape the dir.
+  return `${id.replace(/[^A-Za-z0-9._-]/g, '_')}.json`;
+}
+function sessionStubPath(id: string): string {
+  return path.join(sessionStubsDir(), sessionStubFileName(id));
+}
+
+/** The stub payload for a session, or null when it must not be persisted (terminal/pending, or the
+ *  board orchestrator conversation — it owns no task worktree, so the reclaim guard never asks about it). */
+function stubFor(session: CliSessionRecord): SessionStub | null {
+  if (!STUB_PERSIST_STATUSES.has(session.status)) return null;
+  if (!session.taskId || session.taskId === BOARD_CONVERSATION_ID) return null;
+  const stub: SessionStub = {
+    id: session.id,
+    taskId: session.taskId,
+    framework: session.framework,
+    label: session.label,
+    startedAt: session.startedAt,
+    status: 'waiting-input',
+  };
+  if (session.resumeSessionId) stub.resumeSessionId = session.resumeSessionId;
+  if (session.lastOutputAt) stub.lastOutputAt = session.lastOutputAt;
+  if (session.phase) stub.phase = session.phase;
+  if (session.role) stub.role = session.role;
+  return stub;
+}
+
+async function writeStub(stub: SessionStub): Promise<void> {
+  const file = sessionStubPath(stub.id);
+  const body = JSON.stringify(stub, null, 2);
+  const tmp = `${file}.tmp`;
+  try {
+    await fs.writeFile(tmp, body, 'utf-8');
+    await fs.rename(tmp, file);
+  } catch {
+    // rename can fail on some FS setups — fall back to a direct write.
+    await fs.writeFile(file, body, 'utf-8').catch(() => {});
+    await fs.unlink(tmp).catch(() => {});
+  }
+}
+
+function rehydratedRecord(stub: SessionStub): CliSessionRecord {
+  return {
+    id: stub.id,
+    taskId: stub.taskId,
+    framework: stub.framework,
+    status: 'waiting-input',
+    command: stub.framework,
+    args: [],
+    startedAt: stub.startedAt,
+    label: stub.label,
+    outputBuffer: '',
+    liveOutputBuffer: '',
+    pendingAssistantText: '',
+    cumulativeOutput: '',
+    requestedStop: false,
+    writeQueue: Promise.resolve(),
+    skipPermissions: true,
+    ...(stub.resumeSessionId ? { resumeSessionId: stub.resumeSessionId } : {}),
+    ...(stub.lastOutputAt ? { lastOutputAt: stub.lastOutputAt } : {}),
+    ...(stub.phase ? { phase: stub.phase } : {}),
+    ...(stub.role ? { role: stub.role } : {}),
+  };
+}
+
+/**
+ * Reconcile the on-disk stub directory with the current in-memory active set (FLUX-1060). Writes a
+ * stub for every running/waiting-input task session and deletes any stub whose session is no longer
+ * active (it ended since the last sweep — so a genuinely dead session leaves no stub to rehydrate,
+ * preserving FLUX-1031's "reclaim Ready tickets with dead sessions"). Called on the engine reconcile
+ * tick. No-op until stubs have been rehydrated at boot. Best-effort; never throws.
+ */
+export async function syncActiveSessionStubs(): Promise<void> {
+  if (!stubsRehydrated) return;
+  try {
+    const dir = sessionStubsDir();
+    const stubs: SessionStub[] = [];
+    const keep = new Set<string>();
+    for (const session of cliSessionsById.values()) {
+      const stub = stubFor(session);
+      if (!stub) continue;
+      stubs.push(stub);
+      keep.add(sessionStubFileName(stub.id));
+    }
+    await fs.mkdir(dir, { recursive: true });
+    for (const stub of stubs) await writeStub(stub);
+    const files = await fs.readdir(dir).catch(() => [] as string[]);
+    for (const file of files) {
+      if (!file.endsWith('.json') || keep.has(file)) continue;
+      await fs.unlink(path.join(dir, file)).catch(() => {});
+    }
+  } catch {
+    /* best-effort — a stub-sync failure must never break the reconcile tick */
+  }
+}
+
+/**
+ * Boot recovery (FLUX-1060): load persisted stubs back into `cliSessionsById` as `waiting-input`
+ * (resumable) records so the reclaim guard and chat resume see pre-restart sessions again. Marks
+ * rehydration done so a later {@link syncActiveSessionStubs} can safely prune. Best-effort; never
+ * throws. Returns the number of stubs rehydrated.
+ */
+export async function rehydrateSessionStubs(): Promise<number> {
+  let count = 0;
+  try {
+    const dir = sessionStubsDir();
+    if (existsSync(dir)) {
+      const files = await fs.readdir(dir).catch(() => [] as string[]);
+      for (const file of files) {
+        if (!file.endsWith('.json')) continue;
+        try {
+          const raw = await fs.readFile(path.join(dir, file), 'utf-8');
+          const stub = JSON.parse(raw) as SessionStub;
+          if (!stub || typeof stub.id !== 'string' || typeof stub.taskId !== 'string') continue;
+          if (stub.taskId === BOARD_CONVERSATION_ID) continue;
+          if (cliSessionsById.has(stub.id)) continue; // a live session already owns this id
+          cliSessionsById.set(stub.id, rehydratedRecord(stub));
+          registerSession(stub.taskId, stub.id);
+          count++;
+        } catch {
+          /* skip a malformed stub rather than abort the whole rehydrate */
+        }
+      }
+    }
+  } catch {
+    /* best-effort */
+  }
+  stubsRehydrated = true;
+  return count;
+}
+
+// ── Post-restart reclaim grace (FLUX-1060, belt-and-suspenders) ───────────────
+// A short window after boot during which the worktree-reclaim guard also honors a ticket's OWN
+// recent session history (pr-cleanup `hasRecentSessionActivity`). It covers the narrow gap where a
+// session entered `waiting-input` AFTER the last stub sweep but BEFORE the restart, so no stub was
+// ever written for it. Armed once at boot (right after rehydration); inert otherwise, so steady-
+// state reclaim timing (FLUX-1031) is unchanged.
+export const RECLAIM_GRACE_MS = 5 * 60_000;
+let reclaimGraceUntil = 0;
+export function armReclaimGrace(now: number = Date.now()): void {
+  reclaimGraceUntil = now + RECLAIM_GRACE_MS;
+}
+export function isWithinReclaimGrace(now: number = Date.now()): boolean {
+  return now < reclaimGraceUntil;
+}
+
+// Test-only: reset the stub/grace module state between cases.
+export function __resetSessionStubStateForTests(): void {
+  stubsRehydrated = false;
+  reclaimGraceUntil = 0;
+}
+
 export function stopAllCliSessions(reason: string) {
   for (const session of cliSessionsById.values()) {
     if (!session.proc) continue;
@@ -658,6 +858,16 @@ export function stopAllSessionsForTask(taskId: string, reason: string) {
         console.warn(`Failed to stop session ${session.id} for task ${taskId} during ${reason}:`, error);
       }
     }
+  }
+  // FLUX-985: every session for this task is being torn down (worktree detach / ticket delete /
+  // stop&merge), so any HITL prompt still parked on this conversation can never be answered — settle
+  // it now instead of letting it linger to its full timeout (which would fire a spurious needsAction
+  // on a deliberately-stopped ticket and res.json() a closed socket). Not done in stopAllCliSessions
+  // (shutdown), where the durable index must survive for rehydrateOpenPrompts.
+  try {
+    settleOpenPromptsForConversation(taskId);
+  } catch (error) {
+    console.warn(`Failed to settle open prompts for task ${taskId} during ${reason}:`, error);
   }
 }
 

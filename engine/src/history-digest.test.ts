@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { digestHistoryForAgent, digestTerminalSessionProgress, compactSessionProgress, normalizeHistoryEntries } from './history.js';
+import { digestHistoryForAgent, digestTerminalSessionProgress, compactSessionProgress, normalizeHistoryEntries, buildHistoryDigest } from './history.js';
 
 function sessionEntry(sessionId: string, progressEntries: number) {
   return {
@@ -337,6 +337,95 @@ describe('digestTerminalSessionProgress', () => {
       null,
     ];
     expect(digestTerminalSessionProgress(entries as any[])).toEqual(entries);
+  });
+});
+
+describe('buildHistoryDigest (FLUX-725)', () => {
+  const NOW = Date.parse('2026-06-10T12:00:00.000Z');
+  const sc = (from: string, to: string, date: string, extra: Record<string, any> = {}) =>
+    ({ type: 'status_change', from, to, user: 'Agent', date, ...extra });
+
+  it('derives length, lastEntry, and lastActivityAt (max date, even when unsorted)', () => {
+    const entries = [
+      comment('first', '2026-06-09T00:00:00.000Z'),
+      sc('Todo', 'In Progress', '2026-06-10T11:00:00.000Z'),
+      // an out-of-order older entry as the array tail: lastEntry is the tail, lastActivityAt is the max
+      { type: 'activity', user: 'Agent', comment: 'note', date: '2026-06-09T06:00:00.000Z' },
+    ];
+    const d = buildHistoryDigest(entries, 'In Progress', null, NOW);
+    expect(d.length).toBe(3);
+    expect(d.lastEntry).toEqual({ date: '2026-06-09T06:00:00.000Z', type: 'activity' });
+    expect(d.lastActivityAt).toBe('2026-06-10T11:00:00.000Z');
+  });
+
+  it('records the most recent status_change into the current status (time-in-column)', () => {
+    const entries = [
+      sc('Todo', 'In Progress', '2026-06-09T00:00:00.000Z'),
+      sc('In Progress', 'Ready', '2026-06-09T06:00:00.000Z'),
+      sc('Ready', 'In Progress', '2026-06-10T09:00:00.000Z'), // moved back in
+    ];
+    const d = buildHistoryDigest(entries, 'In Progress', null, NOW);
+    expect(d.enteredCurrentStatusAt).toBe('2026-06-10T09:00:00.000Z');
+  });
+
+  it('enteredCurrentStatusAt is null when never moved into the current status', () => {
+    const d = buildHistoryDigest([sc('Todo', 'In Progress', '2026-06-09T00:00:00.000Z')], 'Todo', null, NOW);
+    expect(d.enteredCurrentStatusAt).toBeNull();
+  });
+
+  it('windows statusChanges24h and keeps both from/to (flow arrows + done streak)', () => {
+    const entries = [
+      sc('Todo', 'In Progress', '2026-06-08T00:00:00.000Z'), // > 24h ago → excluded
+      sc('In Progress', 'Ready', '2026-06-10T01:00:00.000Z'),
+      sc('Ready', 'Done', '2026-06-10T11:30:00.000Z'),
+    ];
+    const d = buildHistoryDigest(entries, 'Done', null, NOW);
+    expect(d.statusChanges24h).toEqual([
+      { from: 'In Progress', to: 'Ready', date: '2026-06-10T01:00:00.000Z' },
+      { from: 'Ready', to: 'Done', date: '2026-06-10T11:30:00.000Z' },
+    ]);
+  });
+
+  it('flags a speed demon from FULL history even when the in-progress move is older than 24h', () => {
+    const entries = [
+      sc('Todo', 'In Progress', '2026-06-01T10:00:00.000Z'),
+      sc('In Progress', 'Done', '2026-06-01T11:30:00.000Z'), // 1.5h later, both > 24h ago
+    ];
+    expect(buildHistoryDigest(entries, 'Done', null, NOW).isSpeedDemon).toBe(true);
+    const slow = [
+      sc('Todo', 'In Progress', '2026-06-01T10:00:00.000Z'),
+      sc('In Progress', 'Done', '2026-06-01T13:00:00.000Z'), // 3h later
+    ];
+    expect(buildHistoryDigest(slow, 'Done', null, NOW).isSpeedDemon).toBe(false);
+  });
+
+  it('carries comment {id,user,date} without text, skipping id-less comments', () => {
+    const entries = [
+      comment('the secret plan', '2026-06-09T00:00:00.000Z'), // has id c-<date>
+      { type: 'comment', user: 'guybnd', comment: 'no id here', date: '2026-06-09T01:00:00.000Z' },
+    ];
+    const d = buildHistoryDigest(entries, 'Todo', null, NOW);
+    expect(d.comments).toEqual([{ id: 'c-2026-06-09T00:00:00.000Z', user: 'guybnd', date: '2026-06-09T00:00:00.000Z' }]);
+    expect(JSON.stringify(d)).not.toContain('the secret plan'); // no comment text shipped
+  });
+
+  it('pre-computes requireInput only for a require-input ticket', () => {
+    const entries = [
+      comment('please clarify the scope', '2026-06-09T00:00:00.000Z'),
+      { type: 'swimlane_change', action: 'set', swimlane: 'require-input', user: 'Agent', comment: 'Which API should I target?', date: '2026-06-10T09:00:00.000Z' },
+    ];
+    expect(buildHistoryDigest(entries, 'In Progress', 'require-input', NOW).requireInput)
+      .toEqual({ question: 'Which API should I target?', setDate: '2026-06-10T09:00:00.000Z' });
+    // not in the swimlane ⇒ null (question text not shipped board-wide)
+    expect(buildHistoryDigest(entries, 'In Progress', null, NOW).requireInput).toBeNull();
+  });
+
+  it('tolerates malformed entries and empty history', () => {
+    const empty = buildHistoryDigest([], 'Todo', null, NOW);
+    expect(empty).toMatchObject({ length: 0, lastEntry: null, lastActivityAt: '', enteredCurrentStatusAt: null, isSpeedDemon: false, statusChanges24h: [], comments: [], requireInput: null });
+    const d = buildHistoryDigest([null, 'garbage', { type: 'status_change' }] as any[], 'Todo', null, NOW);
+    expect(d.length).toBe(3);
+    expect(d.statusChanges24h).toEqual([]); // status_change with no from/to/date dropped
   });
 });
 

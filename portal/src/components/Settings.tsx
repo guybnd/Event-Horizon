@@ -14,6 +14,7 @@ import { WorktreeSection } from './settings/WorktreeSection';
 import { ReleaseNotesSection } from './settings/ReleaseNotesSection';
 import { AgentSection } from './settings/AgentSection';
 import { AgentProgressSection } from './settings/AgentProgressSection';
+import { FurnaceSection } from './settings/FurnaceSection';
 import { CostTokensSection } from './settings/CostTokensSection';
 import { ModulesSection } from './settings/ModulesSection';
 import { McpPhasesSection } from './settings/McpPhasesSection';
@@ -97,6 +98,8 @@ export function Settings() {
   const [syncMaxWaitMs, setSyncMaxWaitMs] = useState(300000);
   const [agentProgressEnabled, setAgentProgressEnabled] = useState(true);
   const [agentProgressDelay, setAgentProgressDelay] = useState(2);
+  const [furnaceRetryIntervalMs, setFurnaceRetryIntervalMs] = useState(20 * 60 * 1000);
+  const [furnaceMaxWaitMs, setFurnaceMaxWaitMs] = useState(5 * 60 * 60 * 1000);
   const [modules, setModules] = useState<ModuleDeclaration[]>([]);
   const [mcpServerPhases, setMcpServerPhases] = useState<Record<string, string[]>>({});
   const [boardFx, setBoardFx] = useState<NonNullable<Config['boardFx']>>({ columnFire: true, ticketAgeRust: true, dragTrail: true, idleDust: true, boardWeather: true, columnFlowArrows: true, heartbeat: true, speedDemon: true, doneStreak: true, ticketDna: true });
@@ -173,6 +176,8 @@ export function Settings() {
       setSyncMaxWaitMs(config.syncSettings?.maxWaitMs ?? 300000);
       setAgentProgressEnabled(config.agentProgress?.enabled ?? true);
       setAgentProgressDelay(config.agentProgress?.inlineDelay ?? 2);
+      setFurnaceRetryIntervalMs(config.furnaceSettings?.rateLimitRetryIntervalMs ?? 20 * 60 * 1000);
+      setFurnaceMaxWaitMs(config.furnaceSettings?.rateLimitMaxWaitMs ?? 5 * 60 * 60 * 1000);
       setModules(config.modules || []);
       setMcpServerPhases((config as ConfigWithMcpPhases).mcpServerPhases || {});
       setBoardFx({ columnFire: true, ticketAgeRust: true, dragTrail: true, idleDust: true, boardWeather: true, columnFlowArrows: true, heartbeat: true, speedDemon: true, doneStreak: true, ticketDna: true, ...(config.boardFx ?? {}) });
@@ -306,6 +311,10 @@ export function Settings() {
           enabled: agentProgressEnabled,
           inlineDelay: agentProgressDelay,
         },
+        furnaceSettings: {
+          rateLimitRetryIntervalMs: furnaceRetryIntervalMs,
+          rateLimitMaxWaitMs: furnaceMaxWaitMs,
+        },
         modules,
         mcpServerPhases,
         boardFx,
@@ -379,6 +388,8 @@ export function Settings() {
     setSyncMaxWaitMs(config.syncSettings?.maxWaitMs ?? 300000);
     setAgentProgressEnabled(config.agentProgress?.enabled ?? true);
     setAgentProgressDelay(config.agentProgress?.inlineDelay ?? 2);
+    setFurnaceRetryIntervalMs(config.furnaceSettings?.rateLimitRetryIntervalMs ?? 20 * 60 * 1000);
+    setFurnaceMaxWaitMs(config.furnaceSettings?.rateLimitMaxWaitMs ?? 5 * 60 * 60 * 1000);
     setModules(config.modules || []);
     setMcpServerPhases((config as ConfigWithMcpPhases).mcpServerPhases || {});
     setBoardFx({ columnFire: true, ticketAgeRust: true, dragTrail: true, idleDust: true, boardWeather: true, columnFlowArrows: true, heartbeat: true, speedDemon: true, doneStreak: true, ticketDna: true, ...(config.boardFx ?? {}) });
@@ -442,6 +453,8 @@ export function Settings() {
       geminiImplementationModel,
       agentProgressEnabled,
       agentProgressDelay,
+      furnaceRetryIntervalMs,
+      furnaceMaxWaitMs,
       tokenDisplayMode,
       tokenCostThresholds,
     },
@@ -500,6 +513,8 @@ export function Settings() {
       geminiImplementationModel: config.integrations?.geminiCli?.implementationModel || '',
       agentProgressEnabled: config.agentProgress?.enabled ?? true,
       agentProgressDelay: config.agentProgress?.inlineDelay ?? 2,
+      furnaceRetryIntervalMs: config.furnaceSettings?.rateLimitRetryIntervalMs ?? 20 * 60 * 1000,
+      furnaceMaxWaitMs: config.furnaceSettings?.rateLimitMaxWaitMs ?? 5 * 60 * 60 * 1000,
       tokenDisplayMode: config.tokenDisplayMode ?? 'cost',
       tokenCostThresholds: config.tokenCostThresholds ?? { green: 0.10, yellow: 0.50 },
     },
@@ -664,6 +679,12 @@ export function Settings() {
                     setAgentProgressEnabled={setAgentProgressEnabled}
                     agentProgressDelay={agentProgressDelay}
                     setAgentProgressDelay={setAgentProgressDelay}
+                  />
+                  <FurnaceSection
+                    rateLimitRetryIntervalMs={furnaceRetryIntervalMs}
+                    setRateLimitRetryIntervalMs={setFurnaceRetryIntervalMs}
+                    rateLimitMaxWaitMs={furnaceMaxWaitMs}
+                    setRateLimitMaxWaitMs={setFurnaceMaxWaitMs}
                   />
                   <CostTokensSection
                     tokenDisplayMode={tokenDisplayMode}

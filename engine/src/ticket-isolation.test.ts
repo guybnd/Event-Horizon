@@ -6,7 +6,11 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // (hoist-safe) and the test configures them via the imported binding + vi.mocked (mirrors
 // board-reprime.test.ts).
 vi.mock('./branch-manager.js', () => ({ createTicketBranch: vi.fn() }));
-vi.mock('./task-worktree.js', () => ({ createTaskWorktree: vi.fn() }));
+vi.mock('./task-worktree.js', () => ({ createTaskWorktree: vi.fn(), reclaimWorktrees: vi.fn(async () => []) }));
+// FLUX-1031: ticket-isolation now sources its reclaimability predicate from pr-cleanup. Stub it so
+// this unit test doesn't pull in pr-cleanup's whole graph; the under-pressure test mocks
+// reclaimWorktrees anyway, so the predicate body is never exercised here.
+vi.mock('./pr-cleanup.js', () => ({ isWorktreeReclaimable: vi.fn(() => true) }));
 vi.mock('./task-store.js', () => ({ tasksCache: {}, updateTaskWithHistory: vi.fn(async () => {}) }));
 vi.mock('./events.js', () => ({ broadcastEvent: vi.fn() }));
 vi.mock('./history.js', () => ({
@@ -17,6 +21,7 @@ vi.mock('./workspace.js', () => ({ workspaceRoot: '/fake/workspace' }));
 import { ensureTicketIsolation } from './ticket-isolation.js';
 import { createTicketBranch } from './branch-manager.js';
 import { createTaskWorktree } from './task-worktree.js';
+import { reclaimWorktrees } from './task-worktree.js';
 import { tasksCache, updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
 import { buildActivityEntry } from './history.js';
@@ -87,6 +92,23 @@ describe('ensureTicketIsolation (FLUX-845 chokepoint, FLUX-852 hardening)', () =
     expect(res.worktreeError).toContain('worktree limit reached');
     // two writes: the branch field, then the lost-isolation history entry
     expect(updateTaskWithHistory).toHaveBeenCalledTimes(2);
+  });
+
+  it('self-heals a full cap: reclaims stale terminal worktrees then retries once (FLUX-1018)', async () => {
+    cache['FLUX-6'] = { id: 'FLUX-6', title: 'Cap self-heal' };
+    vi.mocked(createTicketBranch).mockResolvedValue('flux/FLUX-6-cap-self-heal');
+    // First attempt hits the cap; after reclaim frees a slot the retry succeeds.
+    vi.mocked(createTaskWorktree)
+      .mockRejectedValueOnce(new Error('Task worktree limit reached (4/4).'))
+      .mockResolvedValueOnce('/fake/.eh-worktrees/FLUX-6');
+    vi.mocked(reclaimWorktrees).mockResolvedValueOnce(['FLUX-998']);
+
+    const res = await ensureTicketIsolation('FLUX-6', { worktree: true });
+
+    expect(reclaimWorktrees).toHaveBeenCalledTimes(1);
+    expect(createTaskWorktree).toHaveBeenCalledTimes(2); // original + retry
+    expect(res.worktree).toBe('/fake/.eh-worktrees/FLUX-6');
+    expect(res.worktreeError).toBeUndefined();
   });
 
   it('attributes the worktree-error history entry to the resolved updatedBy, not a hardcoded "Agent" (FLUX-852)', async () => {

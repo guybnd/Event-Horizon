@@ -14,9 +14,9 @@ describe('nextStepForStatus (FLUX-877 contextual next-step hints)', () => {
     expect(h).toContain('finish_ticket');
   });
 
-  it('points In Progress at log_progress and names the configured Ready/Require-Input labels', () => {
+  it('points In Progress at add_note and names the configured Ready/Require-Input labels', () => {
     const h = nextStepForStatus('In Progress', opts);
-    expect(h).toContain('log_progress');
+    expect(h).toContain('add_note');
     expect(h).toContain('Ready');
     expect(h).toContain('Require Input');
   });
@@ -30,7 +30,7 @@ describe('nextStepForStatus (FLUX-877 contextual next-step hints)', () => {
   });
 
   it('matches status case-insensitively', () => {
-    expect(nextStepForStatus('in progress', opts)).toContain('log_progress');
+    expect(nextStepForStatus('in progress', opts)).toContain('add_note');
   });
 
   it('returns no hint for terminal/unknown statuses', () => {

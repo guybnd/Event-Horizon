@@ -29,8 +29,9 @@ import {
   type PendingCombinerSpec,
   type PendingRelaySpec,
 } from '../session-store.js';
-import { getAdapter } from '../agents/index.js';
-import { BOARD_CONVERSATION_ID, startBoardSession, sendBoardInput, resolveAttachmentAbsPaths, attachmentReadInstruction } from '../agents/claude-code.js';
+import { getAdapter, getBoardAdapter, resolveDefaultFramework, isKnownFramework, getRuntimeFrameworks } from '../agents/index.js';
+import { BOARD_CONVERSATION_ID } from '../agents/board.js';
+import { resolveAttachmentAbsPaths, attachmentReadInstruction, appendErrorToSession } from '../agents/shared.js';
 import type { ChatAttachment } from '../projection.js';
 import { updateTaskWithHistory } from '../task-store.js';
 import { broadcastEvent } from '../events.js';
@@ -216,6 +217,21 @@ async function spawnSession(task: any, opts: SpawnOptions): Promise<CliSessionRe
   try {
     await adapter.start(session, task, opts.appendPrompt, opts.effortOverride, workspaceRoot!);
   } catch (error) {
+    // FLUX-981: a pre-spawn failure (binary missing, worktree/isolation resolution error, etc.) throws
+    // BEFORE any child process spawns, so the adapter's own proc.on('error') handler never runs — the
+    // failure would otherwise be a portal-toast-only HTTP 500 with nothing in the chat. Surface it
+    // inline (live `progress` SSE via appendErrorToSession) AND record a durable ticket activity entry.
+    // Best-effort: never let the surfacing mask the original throw the caller must still see.
+    const message = error instanceof Error ? error.message : String(error);
+    try {
+      appendErrorToSession(session, `Failed to start agent: ${message}`);
+      await updateTaskWithHistory(task.id, {
+        updatedBy: 'Agent',
+        entries: [buildActivityEntry(`${label} session failed to start: ${message}`, 'Agent', new Date().toISOString())],
+      });
+    } catch {
+      /* surfacing is best-effort */
+    }
     unregisterSession(task.id, sessionId);
     cliSessionsById.delete(sessionId);
     throw error;
@@ -380,7 +396,7 @@ router.post('/:id/cli-session/start', async (req, res) => {
     // Block only while a turn is genuinely IN FLIGHT (a live proc is running). A session parked
     // at 'waiting-input' is idle — claude -p already exited — so a fresh start should supersede
     // it rather than 409. The frontend prefers resume for a resumable parked session; when it
-    // falls back to start (e.g. the parked turn never captured a claudeSessionId and so isn't
+    // falls back to start (e.g. the parked turn never captured a resumeSessionId and so isn't
     // resumable), this lets a fresh orchestrator turn through instead of wedging forever (FLUX-667).
     if (existing && (existing.status === 'running' || existing.status === 'pending')) {
       return res.status(409).json({ error: 'Orchestrator session already active', session: getCliSessionSummaryForTask(BOARD_CONVERSATION_ID) });
@@ -389,12 +405,21 @@ router.post('/:id/cli-session/start', async (req, res) => {
       existing.status = 'cancelled';
       existing.endedAt = new Date().toISOString();
     }
+    // FLUX-959: the board picker can request any registered runtime framework — same
+    // validation as the per-ticket start route below. Unknown/absent resolves to the default.
+    // FLUX-984: registry-backed (isKnownFramework), not a hardcoded literal list — an
+    // adapter-boundary leak fixed alongside the same guard failure the Copilot MCP fix surfaced.
+    const boardFrameworkRaw = String(req.body?.framework || resolveDefaultFramework()).trim().toLowerCase();
+    if (!isKnownFramework(boardFrameworkRaw)) {
+      return res.status(400).json({ error: `framework must be one of: ${getRuntimeFrameworks().join(', ')}` });
+    }
+    const fw = boardFrameworkRaw as CliFramework;
     const boardSession: CliSessionRecord = {
       id: randomUUID(),
       taskId: BOARD_CONVERSATION_ID,
-      framework: 'claude',
+      framework: fw,
       status: 'pending',
-      command: 'claude',
+      command: fw,
       args: [],
       startedAt: new Date().toISOString(),
       label: 'Orchestrator',
@@ -423,7 +448,7 @@ router.post('/:id/cli-session/start', async (req, res) => {
       'board',
     );
     try {
-      await startBoardSession(boardSession, firstMessage, workspaceRoot!, { attachments: chatAttachments });
+      await getBoardAdapter(fw).startBoardSession(boardSession, firstMessage, workspaceRoot!, { attachments: chatAttachments });
       return res.status(201).json({ session: getCliSessionSummaryForTask(BOARD_CONVERSATION_ID) });
     } catch (error: any) {
       unregisterSession(BOARD_CONVERSATION_ID, boardSession.id);
@@ -435,9 +460,10 @@ router.post('/:id/cli-session/start', async (req, res) => {
   const task = tasksCache[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
-  const frameworkRaw = String(req.body?.framework || 'claude').trim().toLowerCase();
-  if (frameworkRaw !== 'claude' && frameworkRaw !== 'copilot' && frameworkRaw !== 'gemini') {
-    return res.status(400).json({ error: 'framework must be claude, copilot or gemini' });
+  const frameworkRaw = String(req.body?.framework || resolveDefaultFramework()).trim().toLowerCase();
+  // FLUX-984: registry-backed (isKnownFramework), not a hardcoded literal list.
+  if (!isKnownFramework(frameworkRaw)) {
+    return res.status(400).json({ error: `framework must be one of: ${getRuntimeFrameworks().join(', ')}` });
   }
   const framework = frameworkRaw as CliFramework;
   const skipPermissions = req.body?.skipPermissions !== false;
@@ -516,13 +542,13 @@ router.post('/:id/cli-session/start', async (req, res) => {
   if (!role && activeSessions.length > 0) {
     const blockingSession = activeSessions.find(s => !s.role);
     if (blockingSession) {
-      // FLUX-915: a session parked at waiting-input with NO claudeSessionId can never resume (the
+      // FLUX-915: a session parked at waiting-input with NO resumeSessionId can never resume (the
       // input route 409s on a missing session id) yet counts as active and reconcileDeadSessions
       // skips waiting-input — a permanent wedge (the per-ticket twin of the board's FLUX-667
       // self-heal). Terminalize it so a fresh start supersedes it instead of 409-ing forever. A
-      // genuinely resumable parked session (has claudeSessionId) still blocks — the user should
+      // genuinely resumable parked session (has resumeSessionId) still blocks — the user should
       // send input to it, not spawn a duplicate.
-      if (blockingSession.status === 'waiting-input' && !blockingSession.claudeSessionId) {
+      if (blockingSession.status === 'waiting-input' && !blockingSession.resumeSessionId) {
         blockingSession.status = 'cancelled';
         blockingSession.endedAt = new Date().toISOString();
       } else {
@@ -628,9 +654,10 @@ router.post('/:id/cli-session/register-combiner', (req, res) => {
   const task = tasksCache[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
-  const frameworkRaw = String(req.body?.framework || 'claude').trim().toLowerCase();
-  if (frameworkRaw !== 'claude' && frameworkRaw !== 'copilot' && frameworkRaw !== 'gemini') {
-    return res.status(400).json({ error: 'framework must be claude, copilot or gemini' });
+  const frameworkRaw = String(req.body?.framework || resolveDefaultFramework()).trim().toLowerCase();
+  // FLUX-984: registry-backed (isKnownFramework), not a hardcoded literal list.
+  if (!isKnownFramework(frameworkRaw)) {
+    return res.status(400).json({ error: `framework must be one of: ${getRuntimeFrameworks().join(', ')}` });
   }
   const groupId = typeof req.body?.groupId === 'string' ? req.body.groupId.trim() : '';
   const role = typeof req.body?.role === 'string' ? req.body.role.trim() : '';
@@ -689,9 +716,10 @@ router.post('/:id/cli-session/register-relay', (req, res) => {
   const task = tasksCache[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
-  const frameworkRaw = String(req.body?.framework || 'claude').trim().toLowerCase();
-  if (frameworkRaw !== 'claude' && frameworkRaw !== 'copilot' && frameworkRaw !== 'gemini') {
-    return res.status(400).json({ error: 'framework must be claude, copilot or gemini' });
+  const frameworkRaw = String(req.body?.framework || resolveDefaultFramework()).trim().toLowerCase();
+  // FLUX-984: registry-backed (isKnownFramework), not a hardcoded literal list.
+  if (!isKnownFramework(frameworkRaw)) {
+    return res.status(400).json({ error: `framework must be one of: ${getRuntimeFrameworks().join(', ')}` });
   }
   const groupId = typeof req.body?.groupId === 'string' ? req.body.groupId.trim() : '';
   if (!groupId) return res.status(400).json({ error: 'groupId is required' });
@@ -741,9 +769,10 @@ router.post('/:id/cli-session/delegate', async (req, res) => {
   const task = tasksCache[id];
   if (!task) return res.status(404).json({ error: 'Task not found' });
 
-  const frameworkRaw = String(req.body?.framework || 'claude').trim().toLowerCase();
-  if (frameworkRaw !== 'claude' && frameworkRaw !== 'copilot' && frameworkRaw !== 'gemini') {
-    return res.status(400).json({ error: 'framework must be claude, copilot or gemini' });
+  const frameworkRaw = String(req.body?.framework || resolveDefaultFramework()).trim().toLowerCase();
+  // FLUX-984: registry-backed (isKnownFramework), not a hardcoded literal list.
+  if (!isKnownFramework(frameworkRaw)) {
+    return res.status(400).json({ error: `framework must be one of: ${getRuntimeFrameworks().join(', ')}` });
   }
   const framework = frameworkRaw as CliFramework;
   const personaId = typeof req.body?.personaId === 'string' ? req.body.personaId.trim() : '';
@@ -913,19 +942,21 @@ router.post('/:id/cli-session/input', async (req, res) => {
     const boardSession = sid ? cliSessionsById.get(sid) : undefined;
     if (!boardSession) return res.status(409).json({ error: 'No orchestrator session — start one first' });
     // FLUX-714: a turn already in flight must not be double-sent. A second resume against the same
-    // claudeSessionId spawns a concurrent `claude --resume` that races the first on the session
+    // resumeSessionId spawns a concurrent `claude --resume` that races the first on the session
     // JSONL and loses turns. Mirror the start-path guard (line ~347): 409 while genuinely running.
     if (boardSession.status === 'running' || boardSession.status === 'pending') {
       return res.status(409).json({ error: 'Orchestrator is mid-turn — wait for the current turn to finish.', session: getCliSessionSummaryForTask(BOARD_CONVERSATION_ID) });
     }
-    if (!boardSession.claudeSessionId) {
+    if (!boardSession.resumeSessionId) {
       return res.status(409).json({ error: 'Session ID not yet available — wait for the initial response to complete' });
     }
     if (typeof req.body?.model === 'string') boardSession.model = req.body.model.trim() || undefined;
     if (typeof req.body?.effortOverride === 'string') boardSession.effortOverride = req.body.effortOverride.trim() || undefined;
     if (req.body?.permissionMode === 'gated' || req.body?.permissionMode === 'skip') boardSession.permissionMode = req.body.permissionMode;
     try {
-      await sendBoardInput(boardSession, boardMessage, workspaceRoot!, { attachments: boardAttachments });
+      // FLUX-959: framework is fixed for a board session's life — resolve via the session
+      // record, not the request (resumeSessionId is CLI-specific; switching = a new session).
+      await getBoardAdapter(boardSession.framework).sendBoardInput(boardSession, boardMessage, workspaceRoot!, { attachments: boardAttachments });
       return res.json({ session: getCliSessionSummaryForTask(BOARD_CONVERSATION_ID) });
     } catch (error: any) {
       return res.status(500).json({ error: error.message || 'Failed to send message to orchestrator' });
@@ -958,7 +989,7 @@ router.post('/:id/cli-session/input', async (req, res) => {
     return res.status(400).json({ error: `Unsupported framework: ${session.framework}` });
   }
 
-  if (!session.claudeSessionId) {
+  if (!session.resumeSessionId) {
     return res.status(409).json({ error: 'Session ID not yet available — wait for the initial response to complete' });
   }
 

@@ -22,8 +22,9 @@ export type { Turn, TranscriptMessage } from './projection.js';
  * Each line is one **turn envelope** (FLUX-658):
  *   { v, turnId, streamId, seq, ts, role, raw }
  * where `raw` is the original event — either a synthetic user/ask turn
- * ({ type: 'user', text, timestamp }) or a raw stream-json event from the `claude` CLI,
- * stored verbatim. The envelope adds stable addressing (a monotonic per-stream `seq` and
+ * ({ type: 'user', text, timestamp }) or a raw streamed event from the spawning agent CLI (any
+ * adapter's JSONL — Claude's stream-json, Copilot/Gemini event lines, etc.), stored verbatim. The
+ * format is generic JSONL, not Claude-specific. The envelope adds stable addressing (a monotonic per-stream `seq` and
  * `turnId = ${streamId}:${seq}`) without rewriting `raw`, so turns are sliceable
  * (`readTurns` / `sliceTurns`) — the primitives the curation verbs will call. Legacy
  * lines written before the envelope existed are still read losslessly (see `readTurns`).
@@ -62,7 +63,7 @@ export function isSafeStreamId(id: string): boolean {
 /** Envelope schema version written to disk (FLUX-658). */
 const ENVELOPE_VERSION = 1;
 
-// Serialize appends per stream so concurrent stream-json lines never interleave.
+// Serialize appends per stream so concurrent transcript (JSONL) lines never interleave.
 const writeQueues = new Map<string, Promise<void>>();
 // Monotonic per-stream line count — the next turn's `seq`. Lazily seeded from the file on
 // first append in this process (so seq survives restarts and continues past legacy lines).

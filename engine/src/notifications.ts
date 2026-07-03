@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { getWorkflowInstallStatus, checkSkillVersionStaleness, type Framework } from './workflow-installer.js';
+import { getWorkflowInstallStatus, checkSkillVersionStaleness, detectWorkspaceFrameworks, type Framework, type ResolvedFramework } from './workflow-installer.js';
 import { workspaceRoot, resolveSkillSourceRoot } from './workspace.js';
 import { broadcastEvent } from './events.js';
 import { configCache } from './config.js';
@@ -231,6 +231,53 @@ export function generateCompletionNotification(ticketId: string, ticketTitle: st
   });
 }
 
+/**
+ * FLUX-895 — background sync can't authenticate to GitHub (git push/fetch credential
+ * missing/expired). The login popup is suppressed (non-interactive git env), so this is
+ * the channel that tells the user re-auth is needed and how — even when the sync indicator
+ * isn't in view. Title-scoped dedup (it isn't ticket-bound) so repeated failures refresh
+ * ONE entry instead of stacking; cleared automatically on the next successful sync via
+ * {@link clearSyncAuthNotification}.
+ */
+const SYNC_AUTH_NOTIFICATION_TITLE = 'GitHub sign-in needed';
+
+export function generateSyncAuthNotification(): void {
+  const message =
+    'Sync is paused — git push/fetch can’t authenticate to GitHub. Fix: run `gh auth login` then `gh auth setup-git`, then retry sync.';
+  const existing = notifications.find(
+    n => n.type === 'error' && n.title === SYNC_AUTH_NOTIFICATION_TITLE && !n.dismissed
+  );
+  if (existing) {
+    existing.message = message;
+    existing.read = false;
+    existing.createdAt = new Date().toISOString();
+    broadcastEvent('notification', { notification: existing, unreadCount: getUnreadCount() });
+    return;
+  }
+  addNotification({
+    type: 'error',
+    title: SYNC_AUTH_NOTIFICATION_TITLE,
+    message,
+    actions: [
+      { label: 'Retry sync', actionId: 'retry-sync' },
+      { label: 'Dismiss', actionId: 'dismiss' },
+    ],
+  });
+}
+
+/** Dismiss the standing sync-auth notification (called on a successful sync — FLUX-895). */
+export function clearSyncAuthNotification(): void {
+  let changed = false;
+  for (const n of notifications) {
+    if (n.type === 'error' && n.title === SYNC_AUTH_NOTIFICATION_TITLE && !n.dismissed) {
+      n.dismissed = true;
+      changed = true;
+    }
+  }
+  // Engine-internal clear (not a portal action) — broadcast so the bell/toast update.
+  if (changed) broadcastEvent('notification', { notification: null, unreadCount: getUnreadCount() });
+}
+
 export async function checkFrameworkHealth(framework: Framework): Promise<void> {
   if (!workspaceRoot) return;
 
@@ -274,13 +321,25 @@ export async function checkSkillStaleness(framework: Framework): Promise<void> {
 
   try {
     const sourceRoot = resolveSkillSourceRoot();
-    const result = await checkSkillVersionStaleness({
-      sourceRoot,
-      targetDir: workspaceRoot,
-      framework,
-    });
+    // Check EVERY framework the workspace uses (configured/primary + already-installed), not just the
+    // single auto-resolved one. Otherwise a multi-framework workspace false-warns about whichever
+    // framework auto-resolution happens to pick (e.g. `.github` → Copilot) while the framework the
+    // user actually runs is current (FLUX-942). After the multi-framework reinstall on activation
+    // none should be stale; this is the safety net that reports any that genuinely are.
+    const frameworks = detectWorkspaceFrameworks(workspaceRoot, framework);
+    const stale: { framework: ResolvedFramework; installed: string; source: string }[] = [];
+    for (const fw of frameworks) {
+      const result = await checkSkillVersionStaleness({ sourceRoot, targetDir: workspaceRoot, framework: fw });
+      if (result?.isStale) {
+        stale.push({
+          framework: result.resolvedFramework,
+          installed: result.installedVersion || 'unknown',
+          source: result.sourceVersion,
+        });
+      }
+    }
 
-    if (!result || !result.isStale) return;
+    if (stale.length === 0) return;
 
     // Don't duplicate existing staleness notifications
     const existing = notifications.find(
@@ -288,20 +347,21 @@ export async function checkSkillStaleness(framework: Framework): Promise<void> {
     );
     if (existing) return;
 
-    const installedLabel = result.installedVersion || 'unknown';
-    const resolvedFramework = result.resolvedFramework;
+    const first = stale[0]!;
+    const detail = stale.map(s => `${s.framework} v${s.installed}`).join(', ');
+    const sourceVersion = first.source;
     addNotification({
       type: 'error',
       title: 'Agent skills outdated',
-      message: `Installed skills are v${installedLabel} but source is v${result.sourceVersion}. Agent may not follow current rules. Reinstall to update.`,
-      framework: resolvedFramework,
+      message: `Outdated installed skills — ${detail} (source v${sourceVersion}). Reinstall to update.`,
+      framework: first.framework,
       actions: [
         { label: 'Reinstall', actionId: 'reinstall' },
         { label: 'Dismiss', actionId: 'dismiss' },
       ],
     });
 
-    console.warn(`[skills] Installed skills (v${installedLabel}) are outdated — source is v${result.sourceVersion}. Reinstall recommended.`);
+    console.warn(`[skills] Outdated installed skills — ${detail} (source v${sourceVersion}). Reinstall recommended.`);
   } catch (err) {
     console.error('[notifications] Skill staleness check failed:', err);
   }

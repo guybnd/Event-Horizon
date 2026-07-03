@@ -1,0 +1,11 @@
+{
+  "_comment": "Ratcheting allowlist for check-git-exec.mjs (FLUX-997, epic FLUX-996). Each key is `relPath :: git|gh`; the value is the count of KNOWN bare spawns still to migrate to runGit()/runGh(). This set must only SHRINK — re-seed only after ROUTING calls through the runner (S2–S5), and review the diff. A new bare spawn (absent key, or count above the allowed value) fails CI.",
+  "allow": {
+    "engine/src/diff-aggregator.ts :: git": 1,
+    "engine/src/group-discovery.ts :: git": 1,
+    "engine/src/group-setup.ts :: git": 1,
+    "engine/src/group.ts :: git": 1,
+    "engine/src/storage-sync.ts :: git": 1,
+    "engine/src/sync-watcher.ts :: git": 22
+  }
+}

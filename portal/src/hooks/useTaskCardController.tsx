@@ -327,15 +327,14 @@ export function useTaskCardController({
       if (sessionResumable) {
         await sendTaskCliInput(task.id, message, currentUser);
       } else {
+        // FLUX-725: append the reply as a delta (the card task carries only a history digest now).
         const replyEntry = {
           type: 'comment' as const,
           user: currentUser,
-          date: new Date().toISOString(),
           comment: message,
           replyTo: parentId,
         };
-        const newHistory = [...(task.history || []), replyEntry];
-        await updateTask(task.id, { history: newHistory, updatedBy: currentUser } as Partial<Task>);
+        await updateTask(task.id, { appendHistory: [replyEntry], updatedBy: currentUser } as Partial<Task>);
       }
       triggerRefresh();
       setPopoverReplyTarget(null);

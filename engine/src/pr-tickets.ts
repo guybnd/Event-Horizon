@@ -1,10 +1,7 @@
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { tasksCache, upsertManagedTicket, updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
 import { TERMINAL_TICKET_STATUSES } from './schema.js';
-
-const execFileAsync = promisify(execFile);
+import { runGh } from './git-exec.js';
 
 // Membership is WORK-GATED (FLUX-565 decision #4): a ticket folds into a PR only once it's
 // being developed on the branch. Todo/Grooming/Backlog tickets that merely point at the
@@ -167,10 +164,9 @@ async function bounceMembersToInProgress(memberIds: string[], comment: string): 
 
 async function listOpenPrs(workspaceRoot: string): Promise<GhPr[]> {
   try {
-    const { stdout } = await execFileAsync(
-      'gh',
+    const { stdout } = await runGh(
       ['pr', 'list', '--state', 'open', '--json', 'number,title,url,state,headRefName,reviewDecision,isDraft,body'],
-      { cwd: workspaceRoot, windowsHide: true },
+      { cwd: workspaceRoot },
     );
     const arr = JSON.parse(stdout);
     return Array.isArray(arr) ? arr : [];
@@ -238,7 +234,7 @@ export async function syncPrTickets(workspaceRoot: string): Promise<void> {
 /** Definitive gh state (OPEN/MERGED/CLOSED) for a PR by number — reliable after branch delete. */
 async function getPrStateByNumber(workspaceRoot: string, n: number): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync('gh', ['pr', 'view', String(n), '--json', 'state', '--jq', '.state'], { cwd: workspaceRoot, windowsHide: true });
+    const { stdout } = await runGh(['pr', 'view', String(n), '--json', 'state', '--jq', '.state'], { cwd: workspaceRoot });
     return stdout.trim() || null;
   } catch {
     return null;

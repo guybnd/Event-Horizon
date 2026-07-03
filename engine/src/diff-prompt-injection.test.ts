@@ -74,7 +74,7 @@ describe('buildInitialPrompt — Step 2: diff block injection', () => {
   };
 
   it('injects diffBlock into the prompt when provided as 3rd argument', async () => {
-    const { buildInitialPrompt } = await import('./agents/claude-code.js');
+    const { buildInitialPrompt } = await import('./agents/shared.js');
     const diffBlock = '## Scoped Diff (auto-injected)\n\nThe following diff represents the changes under review (abc123..my-branch):\n\n```diff\n+hello world\n```';
 
     const result = buildInitialPrompt(mockTask, 'persona suffix', { diffBlock });
@@ -83,20 +83,20 @@ describe('buildInitialPrompt — Step 2: diff block injection', () => {
   });
 
   it('does NOT include diff content when diffBlock is omitted', async () => {
-    const { buildInitialPrompt } = await import('./agents/claude-code.js');
+    const { buildInitialPrompt } = await import('./agents/shared.js');
     const result = buildInitialPrompt(mockTask, 'persona suffix');
     expect(result).not.toContain('Scoped Diff');
     expect(result).not.toContain('auto-injected');
   });
 
   it('does NOT include diff content when diffBlock is empty string', async () => {
-    const { buildInitialPrompt } = await import('./agents/claude-code.js');
+    const { buildInitialPrompt } = await import('./agents/shared.js');
     const result = buildInitialPrompt(mockTask, 'persona suffix', { diffBlock: '' });
     expect(result).not.toContain('Scoped Diff');
   });
 
   it('positions diffBlock AFTER "Latest activity" section', async () => {
-    const { buildInitialPrompt } = await import('./agents/claude-code.js');
+    const { buildInitialPrompt } = await import('./agents/shared.js');
     const diffBlock = '## Scoped Diff (auto-injected)\n\ndiff content here';
 
     const result = buildInitialPrompt(mockTask, 'persona', { diffBlock });
@@ -109,7 +109,7 @@ describe('buildInitialPrompt — Step 2: diff block injection', () => {
   });
 
   it('positions diffBlock BEFORE the action instruction (MCP CRITICAL note)', async () => {
-    const { buildInitialPrompt } = await import('./agents/claude-code.js');
+    const { buildInitialPrompt } = await import('./agents/shared.js');
     const diffBlock = '## Scoped Diff (auto-injected)\n\ndiff content here';
 
     const result = buildInitialPrompt(mockTask, 'persona', { diffBlock });
@@ -122,7 +122,7 @@ describe('buildInitialPrompt — Step 2: diff block injection', () => {
   });
 
   it('positions diffBlock BEFORE appendPrompt (persona suffix) for cache stability', async () => {
-    const { buildInitialPrompt } = await import('./agents/claude-code.js');
+    const { buildInitialPrompt } = await import('./agents/shared.js');
     const diffBlock = '## Scoped Diff (auto-injected)\n\ndiff content';
     const personaSuffix = 'UNIQUE_PERSONA_MARKER_FOR_TEST';
 
@@ -221,7 +221,7 @@ describe('diff injection gating — Step 3: only scatter-gather sessions', () =>
   };
 
   it('scatter-gather reviewer gets diff injected into prompt', async () => {
-    const { buildInitialPrompt } = await import('./agents/claude-code.js');
+    const { buildInitialPrompt } = await import('./agents/shared.js');
 
     // When the scatter-gather spawn path calls buildInitialPrompt with diffBlock
     const diffBlock = '## Scoped Diff (auto-injected)\n\n```diff\n+feature code\n```';
@@ -231,14 +231,14 @@ describe('diff injection gating — Step 3: only scatter-gather sessions', () =>
   });
 
   it('standalone session (no diffBlock passed) does NOT see diff in prompt', async () => {
-    const { buildInitialPrompt } = await import('./agents/claude-code.js');
+    const { buildInitialPrompt } = await import('./agents/shared.js');
     const prompt = buildInitialPrompt(mockTask, 'implementer persona prompt');
     expect(prompt).not.toContain('Scoped Diff');
     expect(prompt).not.toContain('auto-injected');
   });
 
   it('relay session (no diffBlock passed) does NOT see diff in prompt', async () => {
-    const { buildInitialPrompt } = await import('./agents/claude-code.js');
+    const { buildInitialPrompt } = await import('./agents/shared.js');
     const prompt = buildInitialPrompt(mockTask, 'relay step prompt');
     expect(prompt).not.toContain('Scoped Diff');
   });

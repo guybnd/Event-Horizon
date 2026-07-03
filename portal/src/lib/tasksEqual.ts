@@ -37,11 +37,14 @@ export function tasksEqual(a: Task, b: Task): boolean {
   if (!stringArraysEqual(a.tags, b.tags)) return false;
   if (!subtasksEqual(a.subtasks, b.subtasks)) return false;
 
-  const aHist = a.history || [];
-  const bHist = b.history || [];
-  if (aHist.length !== bHist.length) return false;
-  const aLast = aHist[aHist.length - 1];
-  const bLast = bHist[bHist.length - 1];
+  // FLUX-725: history change-detection now reads the list digest (length + last-entry key) instead
+  // of the raw `history[]`, which the list payload no longer carries. Any new entry bumps `length`
+  // and `lastEntry`, so a new comment / status change is still detected with no missed re-render.
+  const aDig = a.historyDigest;
+  const bDig = b.historyDigest;
+  if ((aDig?.length ?? 0) !== (bDig?.length ?? 0)) return false;
+  const aLast = aDig?.lastEntry ?? null;
+  const bLast = bDig?.lastEntry ?? null;
   const aLastKey = aLast ? (aLast.date || '') + (aLast.type || '') : null;
   const bLastKey = bLast ? (bLast.date || '') + (bLast.type || '') : null;
   if (aLastKey !== bLastKey) return false;

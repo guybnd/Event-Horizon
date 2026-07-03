@@ -15,6 +15,7 @@ import { spawn, type ChildProcess } from 'child_process';
 import net from 'net';
 import path from 'path';
 import type { ModuleDeclaration } from './modules.js';
+import { serenaContextFor } from './modules.js';
 
 // Platforms where the shared HTTP server is proven and on by default.
 const PROVEN_PLATFORMS = new Set<NodeJS.Platform>(['win32']);
@@ -29,6 +30,15 @@ const PORT_SCAN_START = 9200;
 const PORT_SCAN_END = 9299;
 const HANDSHAKE_TIMEOUT_MS = 45_000;
 const HANDSHAKE_POLL_MS = 1_000;
+// FLUX-1004 (epic FLUX-996): bounds a SINGLE mcpHandshakeOk attempt — distinct from
+// HANDSHAKE_TIMEOUT_MS, which bounds the whole poll loop. Without this, a Serena that
+// accepts the TCP connection but never answers `initialize` hung the `fetch` indefinitely
+// (Node 22 undici's connect phase has a ~10s timeout, but the header/response wait once
+// the socket is open is unbounded) — one such attempt could eat the entire 45s budget by
+// itself, or hang past it. Large enough that a legitimately slow (but working) handshake
+// still succeeds, small enough that a genuinely hung one leaves several retries within
+// the 45s deadline instead of consuming it in one un-preemptible attempt.
+const HANDSHAKE_FETCH_MS = 5_000;
 
 interface SharedServer {
   moduleId: string;
@@ -82,7 +92,10 @@ async function findFreePort(): Promise<number | null> {
 }
 
 // A successful MCP `initialize` over streamable-http returns HTTP 200.
-async function mcpHandshakeOk(port: number): Promise<boolean> {
+// Exported (only) for shared-mcp-server.test.ts to verify the FLUX-1004 abort behavior directly
+// against a real TCP server that accepts the connection but never responds — the platform gate
+// on `ensureSharedServer` (win32-only by default) makes that unreachable to test end-to-end here.
+export async function mcpHandshakeOk(port: number): Promise<boolean> {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
       method: 'POST',
@@ -91,6 +104,10 @@ async function mcpHandshakeOk(port: number): Promise<boolean> {
         jsonrpc: '2.0', id: 1, method: 'initialize',
         params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'event-horizon', version: '1.0' } },
       }),
+      // FLUX-1004: without this, a server that accepts the TCP connection but never answers
+      // `initialize` hangs this fetch indefinitely (see HANDSHAKE_FETCH_MS above) — a caught
+      // AbortError still lands in the catch below and reports `false`, same as any other failure.
+      signal: AbortSignal.timeout(HANDSHAKE_FETCH_MS),
     });
     return res.status === 200;
   } catch {
@@ -151,7 +168,9 @@ export async function ensureSharedServer(m: ModuleDeclaration, projectPath: stri
       return null;
     }
     const isWin = process.platform === 'win32';
-    const args = substituteArgs(m.sharedHttp!.args, { PROJECT: projectPath, PORT: String(port) });
+    // FLUX-955 (C.15): the shared server is one-per-project, not per-framework, so resolve the Serena
+    // `${SERENA_CONTEXT}` placeholder with no framework → the 'claude-code' default.
+    const args = substituteArgs(m.sharedHttp!.args, { PROJECT: projectPath, PORT: String(port), SERENA_CONTEXT: serenaContextFor() });
     let child: ChildProcess;
     try {
       child = spawn(m.sharedHttp!.command, args, {

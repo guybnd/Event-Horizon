@@ -1,7 +1,7 @@
 {
   "name": "portal",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Event Horizon portal — React UI for the local-first agent ticket board.",
   "homepage": "https://github.com/guybnd/Event-Horizon#readme",
   "repository": {
@@ -33,6 +33,9 @@
     "@tiptap/extension-table-row": "^3.22.5",
     "@tiptap/react": "^3.22.5",
     "@tiptap/starter-kit": "^3.22.5",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/xterm": "^6.0.0",
     "canvas-confetti": "^1.9.4",
     "framer-motion": "^12.38.0",
     "lucide-react": "^1.14.0",

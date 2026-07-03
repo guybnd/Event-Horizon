@@ -1,3 +1,5 @@
+import { MODEL_FAMILIES } from './agents/types.js';
+
 export function buildCommentEntry(user: string, comment: string, date: string, extra: Record<string, unknown> = {}) {
   return {
     type: 'comment',
@@ -265,7 +267,10 @@ export function digestHistoryForAgent(
 // toward treating an author as a USER when uncertain: surfacing one extra agent
 // comment is harmless, while dropping a real user instruction is exactly the
 // bug FLUX-480 guards against.
-const AGENT_AUTHOR_PATTERN = /\b(agent|claude|gpt|copilot|gemini|opus|sonnet|haiku|codex)\b/i;
+// FLUX-905 (audit C.17): built from the framework + model-family names (MODEL_FAMILIES in
+// agents/types.ts) instead of a hardcoded list — a new framework/model is one edit there, not here.
+const AGENT_AUTHOR_TOKENS = ['agent', ...new Set(Object.values(MODEL_FAMILIES).flat())];
+const AGENT_AUTHOR_PATTERN = new RegExp(`\\b(${AGENT_AUTHOR_TOKENS.join('|')})\\b`, 'i');
 
 export function isAgentAuthor(user: unknown): boolean {
   if (typeof user !== 'string') return false;
@@ -330,6 +335,117 @@ export function digestTerminalSessionProgress(history: any[] = []) {
     const { progress, ...rest } = entry;
     return { ...rest, progressCount: Array.isArray(progress) ? progress.length : 0 };
   });
+}
+
+/**
+ * Compact, board-card-facing digest of a ticket's history (FLUX-725). The `/api/tasks`
+ * list payload ships THIS instead of the raw `history[]` array (fetched + parsed on every
+ * ~3s poll / `taskUpdated` SSE), so a large board no longer pays the per-ticket history
+ * parse/GC cost. Every signal the board cards + attention surfaces derive from history is
+ * pre-computed here from the FULL history; the modal/chat lazy-fetch the detail endpoint
+ * (`serializeTaskForApi`, full `history`) for the activity log. Keep it strictly DERIVED —
+ * no new persisted ticket fields. The 24h window mirrors the board readers' own cutoffs.
+ */
+export interface HistoryDigest {
+  /** Total entry count — change-detection (`tasksEqual`) + "has any history" checks. */
+  length: number;
+  /** The last array element's identity — `tasksEqual`'s last-entry key. */
+  lastEntry: { date: string; type: string } | null;
+  /** Max entry date (ticket-age "rust" + Epics "recently active" sort). */
+  lastActivityAt: string;
+  /** Date of the most recent status_change INTO the current status (time-in-column),
+   *  or null when the ticket was created directly in its status (chip hidden). */
+  enteredCurrentStatusAt: string | null;
+  /** In-progress → done in under 2h (the "speed demon" ⚡), derived from full history so a
+   *  done card older than 24h still qualifies (the 24h window below can't carry this). */
+  isSpeedDemon: boolean;
+  /** status_change entries within the last 24h — the board-wide flow arrows + done-streak. */
+  statusChanges24h: Array<{ from: string; to: string; date: string }>;
+  /** Comment entries with an id — per-column + global unread badges (author needed for the
+   *  own-vs-other filter; the engine can't know `currentUser`). Comment TEXT is omitted. */
+  comments: Array<{ id: string; user: string; date: string }>;
+  /** Pre-computed Require-Input question + set-date (attention dock). Only populated for a
+   *  ticket actually in the require-input swimlane, so question text isn't shipped board-wide. */
+  requireInput: { question: string; setDate: string } | null;
+}
+
+/** Server-side twin of the portal's `requireInputMeta` (pendingInteractions.tsx): the question
+ *  is the comment on the latest `swimlane_change → set require-input` entry, falling back to the
+ *  most recent comment, then a default. Replicated here so the attention dock reads it off the
+ *  digest instead of pulling full history. */
+function computeRequireInputMeta(entries: any[]): { question: string; setDate: string } {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (e?.type === 'swimlane_change' && e.action === 'set' && e.swimlane === 'require-input') {
+      return { question: e.comment || 'This ticket is waiting for your input.', setDate: e.date ?? '' };
+    }
+  }
+  let question = 'This ticket is waiting for your input.';
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i];
+    if (e?.type === 'comment' && e.comment) { question = e.comment; break; }
+  }
+  return { question, setDate: '' };
+}
+
+export function buildHistoryDigest(
+  history: any[] = [],
+  status: string,
+  swimlane?: string | null,
+  now: number = Date.now(),
+): HistoryDigest {
+  const entries = Array.isArray(history) ? history : [];
+  const cutoff = now - 86_400_000; // 24h, matching Board.tsx flow/streak cutoffs
+  let lastActivityAt = '';
+  let enteredCurrentStatusAt: string | null = null;
+  let firstInProgressAt: number | undefined;
+  let lastDoneAt: number | undefined;
+  const statusChanges24h: Array<{ from: string; to: string; date: string }> = [];
+  const comments: Array<{ id: string; user: string; date: string }> = [];
+
+  for (const e of entries) {
+    if (!e || typeof e !== 'object') continue;
+    const date: string = typeof e.date === 'string' ? e.date : '';
+    // ISO-8601 strings compare lexicographically == chronologically (matches the readers).
+    if (date && date > lastActivityAt) lastActivityAt = date;
+
+    if (e.type === 'status_change') {
+      const from = e.from;
+      const to = e.to;
+      // Last (most recent) move into the current status wins — equivalent to the readers'
+      // backwards walk that breaks on the first match.
+      if (date && to === status) enteredCurrentStatusAt = date;
+      const t = date ? new Date(date).getTime() : NaN;
+      if (!Number.isNaN(t)) {
+        if (t >= cutoff && from && to) statusChanges24h.push({ from, to, date });
+        if (/in.?progress/i.test(to ?? '') && firstInProgressAt === undefined) firstInProgressAt = t;
+        if (/done/i.test(to ?? '')) lastDoneAt = t;
+      }
+    } else if (e.type === 'comment' && e.id) {
+      comments.push({ id: e.id, user: e.user ?? '', date });
+    }
+  }
+
+  const isSpeedDemon =
+    firstInProgressAt !== undefined &&
+    lastDoneAt !== undefined &&
+    lastDoneAt - firstInProgressAt < 2 * 60 * 60 * 1000;
+
+  const last = entries.length > 0 ? entries[entries.length - 1] : null;
+  const lastEntry = last
+    ? { date: typeof last.date === 'string' ? last.date : '', type: typeof last.type === 'string' ? last.type : '' }
+    : null;
+
+  return {
+    length: entries.length,
+    lastEntry,
+    lastActivityAt,
+    enteredCurrentStatusAt,
+    isSpeedDemon,
+    statusChanges24h,
+    comments,
+    requireInput: swimlane === 'require-input' ? computeRequireInputMeta(entries) : null,
+  };
 }
 
 function buildCommentId(seed: string, usedIds: Set<string>, prefix = 'c') {

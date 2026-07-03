@@ -1,9 +1,12 @@
 import fs from 'fs/promises';
 import { existsSync, realpathSync } from 'fs';
 import path from 'path';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { evictSharedServersForPath } from './shared-mcp-server.js';
+// FLUX-999 (epic FLUX-996): defaultGitRunner used to be a bare execFileAsync — no timeout, no
+// non-interactive env — so `git worktree add` (the spawn-agent-with-isolation path) could hang
+// forever on a slow/unreachable remote or a stalled credential prompt. Route through the S1
+// runner; every caller here goes through this one default (or an injected test runner).
+import { runGit } from './git-exec.js';
 
 /**
  * Per-task-branch git worktree management (FLUX-517).
@@ -29,13 +32,10 @@ import { evictSharedServersForPath } from './shared-mcp-server.js';
  * and the launch/settings/detach UI (FLUX-521) live elsewhere.
  */
 
-const execFileAsync = promisify(execFile);
-
 /** Injectable git runner (matches group-member-worktree.ts for testability). */
 export type GitRunner = (cwd: string, args: string[]) => Promise<{ stdout: string; stderr: string }>;
 
-const defaultGitRunner: GitRunner = (cwd, args) =>
-  execFileAsync('git', args, { cwd, windowsHide: true });
+const defaultGitRunner: GitRunner = (cwd, args) => runGit(args, { cwd });
 
 /** Directory name (sibling of the repo) that holds all task worktrees. */
 export const EH_WORKTREES_DIRNAME = '.eh-worktrees';
@@ -171,8 +171,10 @@ async function localBranchExists(runner: GitRunner, workspaceRoot: string, branc
  * Create (or reuse) the task worktree for `ticketId` on `branch`.
  *
  * - Idempotent: if the target path is already a worktree on `branch`, returns it.
- * - Branch-exclusivity guard: throws if `branch` is checked out at another path
- *   (never uses --force).
+ * - Branch-exclusivity guard: if `branch` is already checked out at another
+ *   EH-managed path, throws (never uses --force) with the `git worktree remove`
+ *   remedy. If it is checked out OUTSIDE `.eh-worktrees/` (a manual checkout),
+ *   that external tree is reused in place as the execution root (FLUX-1059).
  * - Concurrency cap: throws if the repo already has `maxWorktrees` task worktrees.
  * - Creates `branch` from `baseBranch` when it doesn't exist yet.
  *
@@ -218,12 +220,64 @@ export async function createTaskWorktree(
     );
   }
 
-  // Branch-exclusivity guard — one branch = one worktree.
-  const elsewhere = worktrees.find((w) => w.branch === branch);
-  if (elsewhere) {
+  // FLUX-1018 — orphaned tree self-heal. The target DIRECTORY exists but git has
+  // no worktree record for it (the `worktree prune` above dropped the entry
+  // because its `<target>/.git` link file was deleted / points nowhere — the live
+  // "gitdir points to non-existent location" corruption). A plain `git worktree
+  // add <target> <branch>` would then fail with "already exists", so the branch
+  // could never get a working tree and the agent would fall back to master. Try
+  // `git worktree repair <target>` to re-link the existing tree; if that
+  // re-registers it on our branch, reuse it in place instead of recreating.
+  if (existsSync(target)) {
+    await runner(workspaceRoot, ['worktree', 'repair', target]).catch((err) =>
+      console.error('[task-worktree] worktree repair on orphaned tree failed:', err),
+    );
+    const repaired = (await listWorktrees(runner, workspaceRoot)).find((w) =>
+      pathsEqual(w.path, target),
+    );
+    if (repaired) {
+      if (repaired.branch === branch) {
+        if (opts.linkDependencies !== false) {
+          await linkWorktreeDependencies(workspaceRoot, target).catch((err) =>
+            console.error('[task-worktree] re-linking node_modules after repair failed:', err),
+          );
+        }
+        await writeWorktreeSerenaOverride(target);
+        return target;
+      }
+      throw new Error(
+        `A worktree already exists at ${target} on a different branch (${repaired.branch ?? 'detached'}).`,
+      );
+    }
+    // Repair could not re-register the tree (e.g. its .git metadata is gone
+    // entirely). Refuse rather than let `git worktree add` fail cryptically or,
+    // worse, degrade to master.
     throw new Error(
-      `Branch '${branch}' is already checked out at ${elsewhere.path}. ` +
-        `Refusing to create a second worktree for the same branch.`,
+      `A directory already exists at ${target} but is not a valid git worktree and could not be repaired. ` +
+        `Remove it and retry.`,
+    );
+  }
+
+  // Branch-exclusivity — git already refuses to check a branch out twice, so at
+  // most ONE live worktree holds `branch`. Where it lives decides what we do
+  // (FLUX-1059). A stale record whose dir is gone is skipped here — the prune
+  // above already dropped it, so `git worktree add` below can recreate cleanly.
+  const holder = worktrees.find((w) => w.branch === branch && existsSync(w.path));
+  if (holder) {
+    if (!isUnder(holder.path, base)) {
+      // Checked out OUTSIDE .eh-worktrees/ — a dev's manual checkout, or one the
+      // agent created as a workaround after an earlier failure. Not ours to
+      // manage: reuse it in place as the execution root rather than hard-blocking
+      // re-entry. Returned untouched (no dep-linking / Serena rebind), matching
+      // the findWorktreeForBranch happy path that already accepts external trees.
+      return holder.path;
+    }
+    // A genuine EH-managed collision (another task worktree on the same branch).
+    // Refuse — but name the blocking path and give the exact remedy.
+    throw new Error(
+      `Branch '${branch}' is already checked out at ${holder.path} ` +
+        `(an EH-managed worktree). Refusing to create a second worktree for the same branch. ` +
+        `Remove it with:\n  git worktree remove ${holder.path}\nthen retry.`,
     );
   }
 
@@ -453,23 +507,82 @@ export async function pruneTaskWorktrees(
  * whatever worktree currently holds **its branch** — its own dedicated worktree,
  * or one it has *joined* (a ticket whose `branch` is another ticket's branch
  * resolves to that branch's worktree, so review-bug fixes can ride along on the
- * same branch/worktree). When no worktree holds the branch, it falls back to the
- * engine workspace root (today's behavior). This is distinct from the engine
- * workspace root, which still owns the flux/ticket store, config, and watchers
- * (FLUX-520). Resolving by branch (not ticket id) is what makes "Join" work.
+ * same branch/worktree). This is distinct from the engine workspace root, which
+ * still owns the flux/ticket store, config, and watchers (FLUX-520). Resolving
+ * by branch (not ticket id) is what makes "Join" work.
+ *
+ * FLUX-1018 — **fail closed** on the spawn path. Previously, when `task.branch`
+ * was set but no live worktree held it (dir removed / `.git` link broken /
+ * pruned), this quietly returned `workspaceRoot` — the MAIN checkout, which sits
+ * on master. Adapters spawn with `cwd = executionRoot`, and a single-shot agent
+ * (Copilot `-p`) never checks the branch out itself, so it committed straight to
+ * master (the FLUX-972 incident: its commit landed on master, not its branch).
+ * Now the branch-set-but-no-worktree case **self-heals** by recreating the
+ * worktree (`createTaskWorktree`, idempotent), and only if that fails does it
+ * throw — it never silently degrades to master. `create:false` opts read-only
+ * callers (diff/status/tests) out of the side effect, preserving the old
+ * fall-back-to-root behavior for them.
+ *
+ * FLUX-1018 (follow-up) — this is deliberate: **a branch implies a worktree on
+ * the spawn path.** Even when a ticket was started "branch only" (worktree:false
+ * — see ticket-isolation.ts), the spawn resolves through here with `create`
+ * defaulting true, so it gets a dedicated worktree rather than running on the
+ * shared main checkout. That is the fail-closed invariant, not an accident:
+ * "branch but no worktree on master" is the unsafe mode that let a single-shot
+ * agent commit to master (FLUX-972). The genuine "run in the main tree" escape
+ * is to stay branchless (no `task.branch` → returns `workspaceRoot`); a branch
+ * always earns isolation. The RESUME fallback passes `create:false` so a legacy
+ * session missing its recorded `executionRoot` does not spin up a fresh worktree
+ * mid-resume — its adapter guard fails closed on the returned `workspaceRoot`
+ * instead.
  */
 export async function resolveTaskExecutionRoot(
   task: { id?: string; branch?: string } | undefined,
   workspaceRoot: string,
-  opts: { gitRunner?: GitRunner } = {},
+  opts: { gitRunner?: GitRunner; create?: boolean; baseBranch?: string | undefined; maxWorktrees?: number } = {},
 ): Promise<string> {
   const branch = task?.branch;
   if (!branch) return workspaceRoot;
   const match = await findWorktreeForBranch(workspaceRoot, branch, opts);
-  return match ?? workspaceRoot;
+  if (match) return match;
+
+  // No live worktree holds this branch. Read-only callers (create:false) keep the
+  // legacy behavior — resolve to the workspace root without side effects.
+  if (opts.create === false) return workspaceRoot;
+
+  // Spawn path (create defaults to true): recreate the missing worktree rather
+  // than silently running the agent on master. Requires a ticket id to name it.
+  const id = task?.id;
+  if (!id) return workspaceRoot;
+  try {
+    return await createTaskWorktree(
+      workspaceRoot,
+      id,
+      branch,
+      {
+        ...(opts.gitRunner ? { gitRunner: opts.gitRunner } : {}),
+        ...(opts.baseBranch ? { baseBranch: opts.baseBranch } : {}),
+        ...(opts.maxWorktrees != null ? { maxWorktrees: opts.maxWorktrees } : {}),
+      },
+    );
+  } catch (err: any) {
+    throw new Error(
+      `Worktree for ${id} on branch '${branch}' is missing and could not be recreated ` +
+        `(${err?.message ?? err}) — refusing to run the agent on master.`,
+    );
+  }
 }
 
-/** Absolute path of the worktree currently checked out on `branch`, or null. */
+/**
+ * Absolute path of the worktree currently checked out on `branch`, or null.
+ *
+ * Returns ANY worktree holding the branch whose directory still exists —
+ * INCLUDING one outside `.eh-worktrees/` (a manual/dev checkout). That is
+ * deliberate (FLUX-1059): such a tree is a valid execution root, so re-entry
+ * reuses it rather than refusing. The `existsSync` guard skips a stale git
+ * record whose dir is gone, so callers fall through to (re)create instead of
+ * resolving to a path that no longer exists.
+ */
 export async function findWorktreeForBranch(
   workspaceRoot: string,
   branch: string,
@@ -490,6 +603,60 @@ export async function listTaskWorktrees(
   const base = taskWorktreesBaseDir(workspaceRoot);
   const worktrees = await listWorktrees(runner, workspaceRoot);
   return worktrees.filter((w) => isUnder(w.path, base) && existsSync(w.path));
+}
+
+/**
+ * Recover the owning ticket id from a task worktree path. Worktrees are named
+ * `<repo>-<id>` (see {@link taskWorktreeDir}); reverse that. Returns null when
+ * the path is not a task worktree of this repo (so callers can skip it).
+ */
+export function ticketIdFromWorktreePath(workspaceRoot: string, worktreePath: string): string | null {
+  const base = taskWorktreesBaseDir(workspaceRoot);
+  if (!isUnder(worktreePath, base)) return null;
+  const prefix = `${path.basename(path.resolve(workspaceRoot))}-`;
+  const name = path.basename(path.resolve(worktreePath));
+  return name.startsWith(prefix) && name.length > prefix.length ? name.slice(prefix.length) : null;
+}
+
+/**
+ * Reclaim task worktrees whose owning ticket is reclaimable (e.g. in a terminal
+ * status) AND which hold no uncommitted work. This is how a full concurrency cap
+ * self-heals (FLUX-1018): stale Done/Released/Archived worktrees that post-merge
+ * cleanup left behind otherwise occupy slots forever, forcing a genuinely new
+ * task to fail isolation and fall back onto master. Never discards real work —
+ * the node_modules junctions are unlinked first (they aren't "work"), then a
+ * worktree is removed ONLY when its tree is genuinely clean; a dirty reclaimable
+ * worktree is skipped for explicit detach. Returns the ticket ids reclaimed.
+ */
+export async function reclaimWorktrees(
+  workspaceRoot: string,
+  isReclaimable: (ticketId: string) => boolean,
+  opts: { gitRunner?: GitRunner } = {},
+): Promise<string[]> {
+  const runner = opts.gitRunner ?? defaultGitRunner;
+  const reclaimed: string[] = [];
+  for (const wt of await listTaskWorktrees(workspaceRoot, opts)) {
+    const id = ticketIdFromWorktreePath(workspaceRoot, wt.path);
+    if (!id || !isReclaimable(id)) continue;
+    // Drop the shared node_modules junctions first so they don't read as dirty,
+    // then only remove when the tree is genuinely clean — never lose real work.
+    await unlinkWorktreeDependencies(wt.path).catch(() => {});
+    const { stdout } = await runner(wt.path, ['status', '--porcelain']).catch(() => ({ stdout: '' }));
+    if (stdout.trim().length > 0) continue; // real uncommitted work — leave it
+    // TOCTOU re-check (FLUX-1031): the awaits above (dependency unlink + git status) open a
+    // window in which a session can register on this worktree's branch — e.g. a fresh spawn
+    // between worktree resolution and `registerSession`, or a joined sibling starting work.
+    // Re-evaluate reclaimability immediately before removal so the sweep never yanks a slot
+    // from work that started mid-iteration.
+    if (!isReclaimable(id)) continue;
+    try {
+      await removeTaskWorktree(workspaceRoot, wt.path, opts);
+      reclaimed.push(id);
+    } catch {
+      // Best-effort — a lock/leftover reconciles on the next prune.
+    }
+  }
+  return reclaimed;
 }
 
 /**

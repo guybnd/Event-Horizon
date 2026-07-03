@@ -7,11 +7,39 @@ import chokidar from 'chokidar';
 import matter from 'gray-matter';
 import { isOrphanMode, getFluxStoreDir } from './workspace.js';
 import { configCache } from './config.js';
+import {
+  buildGitSyncEnv,
+  classifyGitError,
+  invalidateGhAuthCache,
+  GIT_SYNC_TIMEOUT_MS,
+  SYNC_AUTH_REMEDIATION,
+  type SyncRemediation,
+} from './git-sync-env.js';
+import { generateSyncAuthNotification, clearSyncAuthNotification } from './notifications.js';
 
 const execFileAsyncRaw = promisify(execFile);
-function execFileAsync(file: string, args: string[]) {
-  return execFileAsyncRaw(file, args, { windowsHide: true });
+// All sync git calls go through here so they share the non-interactive +
+// gh-authenticated environment (FLUX-895): no credential popup can fire, and a
+// gh-logged-in user authenticates without interaction.
+async function execFileAsync(file: string, args: string[]) {
+  const env = await buildGitSyncEnv();
+  try {
+    return await execFileAsyncRaw(file, args, { windowsHide: true, env, timeout: GIT_SYNC_TIMEOUT_MS });
+  } catch (err: any) {
+    // FLUX-989: Node kills a timed-out child with SIGTERM (SIGKILL if it ignores that).
+    // Rewrite the opaque "Command failed …" into a clear, classifiable message so the
+    // status indicator surfaces it and `classifyGitError` tags it `network` (it matches
+    // "timed out") — the retry timer then recovers instead of the promise hanging forever.
+    if (err && err.killed && (err.signal === 'SIGTERM' || err.signal === 'SIGKILL')) {
+      throw new Error(`git operation timed out after ${GIT_SYNC_TIMEOUT_MS / 1000}s: ${file} ${args.join(' ')}`);
+    }
+    throw err;
+  }
 }
+
+// On an auth failure, stop the 30s retry hammer — back the retry timer off to a
+// slow cadence. A successful sync (or a manual retry) clears it (FLUX-895).
+const AUTH_RETRY_DELAY_MS = 5 * 60_000;
 
 let watcher: ReturnType<typeof chokidar.watch> | null = null;
 let scheduler: ReturnType<typeof createScheduler> | null = null;
@@ -27,11 +55,24 @@ export type SyncStatus =
   | { state: 'syncing' }
   | { state: 'synced'; lastSyncTime: string }
   | { state: 'conflict'; conflicts: ConflictInfo[] }
-  | { state: 'error'; error: string; errorType: 'network' | 'auth' | 'conflict' | 'unknown' };
+  // FLUX-895: `remediation` carries engine-owned, copy-paste fix steps for the
+  // `auth` case so the portal renders an actionable "sign-in needed" panel
+  // instead of a raw error string.
+  | { state: 'error'; error: string; errorType: 'network' | 'auth' | 'conflict' | 'unknown'; remediation?: SyncRemediation };
 
 let currentStatus: SyncStatus = { state: 'idle' };
 const statusListeners: Array<(status: SyncStatus) => void> = [];
 let pendingConflicts: ConflictInfo[] | null = null;
+
+// FLUX-989: single in-process mutex shared by runSync() and resolveConflicts(). Both
+// touch the same .flux-store worktree; without it, resolveConflicts() writing the
+// resolved .md files re-triggers the chokidar watcher and can schedule a concurrent
+// runSync() tick — two git processes then race on one worktree (index.lock collisions,
+// or one side blocked on the network while the other proceeds). Acquire before touching
+// the worktree, release in a finally. runSync() no-ops when it's held; resolveConflicts()
+// (user-initiated) rejects with a clear "retry in a moment" so the caller isn't dropped
+// silently.
+let syncInFlight = false;
 
 function updateStatus(status: SyncStatus): void {
   currentStatus = status;
@@ -47,7 +88,63 @@ function updateStatus(status: SyncStatus): void {
   });
 }
 
+// A sync completed — mark synced and clear any standing auth re-login notice so
+// the indicator/notification recover on their own (FLUX-895 acceptance).
+function markSynced(): void {
+  updateStatus({ state: 'synced', lastSyncTime: new Date().toISOString() });
+  clearSyncAuthNotification();
+}
+
+// Report a git failure: classify it, and for an `auth` failure attach the
+// remediation payload, raise the persistent re-auth notification, drop the cached
+// gh-auth result (so a fresh `gh auth login` is re-detected next cycle), and back
+// the retry off so we stop hammering every 30s (FLUX-895). `onFail` re-arms the
+// retry timer with the supplied delay (default cadence when omitted).
+function reportSyncFailure(errorMsg: string, onFail?: (retryDelayMs?: number) => void): void {
+  const errorType = classifyGitError(errorMsg);
+  if (errorType === 'auth') {
+    invalidateGhAuthCache();
+    updateStatus({ state: 'error', error: errorMsg, errorType, remediation: SYNC_AUTH_REMEDIATION });
+    generateSyncAuthNotification();
+    onFail?.(AUTH_RETRY_DELAY_MS);
+    return;
+  }
+  updateStatus({ state: 'error', error: errorMsg, errorType });
+  onFail?.();
+}
+
 export function getSyncStatus(): SyncStatus {
+  return currentStatus;
+}
+
+// FLUX-989: `pendingConflicts` is trusted as ground truth once set, but the worktree can
+// be fixed out-of-band (manually, or by a prior partially-succeeded resolution) — the
+// banner then keeps showing a conflict that no longer exists until the engine restarts.
+// Re-derive the conflict from the live worktree before serving `state: 'conflict'`: if
+// there is no unmerged state anymore, drop it; if it's still unmerged, refresh the list
+// from disk. No-op unless we currently claim a conflict, so the common path stays cheap.
+// Skips while a sync/resolution holds the lock (the in-flight op owns the truth).
+export async function revalidateConflictState(): Promise<SyncStatus> {
+  if (currentStatus.state !== 'conflict' || !isOrphanMode() || syncInFlight) return currentStatus;
+  const storeDir = getFluxStoreDir();
+  try {
+    if (!(await hasUnmergedState(storeDir))) {
+      // Worktree is clean — the conflict was resolved out-of-band. Stop showing it; the
+      // next watcher tick / manual retry re-derives real sync state from here.
+      pendingConflicts = null;
+      updateStatus({ state: 'idle' });
+      log.info('[sync-watcher] Stale conflict cleared — worktree no longer has unmerged state.');
+    } else {
+      // Still genuinely conflicted — refresh the surfaced list from the live worktree.
+      const conflicts = await detectMergeConflicts(storeDir);
+      if (conflicts.length > 0) {
+        pendingConflicts = conflicts;
+        updateStatus({ state: 'conflict', conflicts });
+      }
+    }
+  } catch (err: any) {
+    log.info(`[sync-watcher] conflict re-validation failed: ${err.message || String(err)}`);
+  }
   return currentStatus;
 }
 
@@ -64,12 +161,17 @@ export function onSyncStatusChange(listener: (status: SyncStatus) => void): () =
 export function _resetSyncStateForTests(): void {
   pendingConflicts = null;
   currentStatus = { state: 'idle' };
+  syncInFlight = false;
 }
 
 export function triggerSync(): void {
   if (!isOrphanMode()) return;
+  // A manual sync (the "Retry" action / clicking the indicator) re-detects gh auth
+  // immediately rather than waiting out the cache, so a just-completed `gh auth
+  // login` takes effect on this attempt (FLUX-895).
+  invalidateGhAuthCache();
   const storeDir = getFluxStoreDir();
-  void runSync(storeDir, () => scheduler?.scheduleRetry());
+  void runSync(storeDir, (delayMs?: number) => scheduler?.scheduleRetry(delayMs));
 }
 
 export function triggerTestError(): void {
@@ -126,10 +228,30 @@ export async function resolveConflicts(
     throw new Error('No conflicts to resolve');
   }
 
-  const storeDir = getFluxStoreDir();
+  // FLUX-989: refuse to run while a background sync holds the worktree — racing git
+  // processes on one worktree corrupt the merge. Reject clearly so the HTTP caller can
+  // surface a real "retry in a moment" state instead of hanging behind the other side.
+  if (syncInFlight) {
+    throw new Error('A sync is currently in progress; please retry in a moment.');
+  }
 
+  const storeDir = getFluxStoreDir();
+  syncInFlight = true;
+  try {
+    await applyConflictResolutions(resolutions, storeDir);
+  } finally {
+    syncInFlight = false;
+  }
+}
+
+// The worktree-mutating body of resolveConflicts, run under the syncInFlight lock so a
+// chokidar-scheduled runSync() tick fired by our own .md writes no-ops instead of racing.
+async function applyConflictResolutions(
+  resolutions: Array<{ ticketId: string; strategy: 'use-remote' | 'rename-local' | 'manual'; newContent?: string }>,
+  storeDir: string
+): Promise<void> {
   for (const resolution of resolutions) {
-    const conflict = pendingConflicts.find(c => c.ticketId === resolution.ticketId)!;
+    const conflict = pendingConflicts!.find(c => c.ticketId === resolution.ticketId)!;
     const filePath = path.join(storeDir, `${resolution.ticketId}.md`);
 
     switch (resolution.strategy) {
@@ -183,11 +305,11 @@ export async function resolveConflicts(
 
   try {
     await execFileAsync('git', ['-C', storeDir, 'push', 'origin', 'flux-data']);
-    updateStatus({ state: 'synced', lastSyncTime: new Date().toISOString() });
+    markSynced();
     log.info('[sync-watcher] Pushed resolved conflicts to remote');
   } catch (pushErr: any) {
     const errorMsg = pushErr.message || String(pushErr);
-    updateStatus({ state: 'error', error: errorMsg, errorType: 'unknown' });
+    reportSyncFailure(errorMsg);
   }
 }
 
@@ -209,7 +331,15 @@ async function hasUnmergedState(storeDir: string): Promise<boolean> {
   }
 }
 
-export async function runSync(storeDir: string, onFail?: () => void): Promise<void> {
+export async function runSync(storeDir: string, onFail?: (retryDelayMs?: number) => void): Promise<void> {
+  // FLUX-989: a resolveConflicts() (or another sync tick) is already touching the
+  // worktree. Proceeding now would race two git processes on one worktree. No-op — the
+  // debounced scheduler / retry timer will re-run us after the lock frees.
+  if (syncInFlight) {
+    log.info('[sync-watcher] sync already in flight — skipping this tick');
+    return;
+  }
+
   // A conflict is already awaiting user resolution (in-memory fast path). Touching
   // the repo now would let Step 1's `git add -A`/commit bake the conflict markers
   // sitting in the worktree into a commit and corrupt the ticket YAML (FLUX-703).
@@ -220,6 +350,7 @@ export async function runSync(storeDir: string, onFail?: () => void): Promise<vo
     return;
   }
 
+  syncInFlight = true;
   updateStatus({ state: 'syncing' });
 
   try {
@@ -305,18 +436,16 @@ export async function runSync(storeDir: string, onFail?: () => void): Promise<vo
       await execFileAsync('git', ['-C', storeDir, 'fetch', 'origin', 'flux-data']);
     } catch (fetchErr: any) {
       const errorMsg = fetchErr.message || String(fetchErr);
-      const errorType: 'network' | 'auth' | 'unknown' =
-        errorMsg.includes('Could not resolve host') || errorMsg.includes('network') ? 'network' :
-        errorMsg.includes('Authentication failed') || errorMsg.includes('Permission denied') ? 'auth' :
-        'unknown';
-      log.info(`[sync-watcher] fetch failed (${errorType}): ${errorMsg}`);
+      log.info(`[sync-watcher] fetch failed (${classifyGitError(errorMsg)}): ${errorMsg}`);
       // Push what we have locally, remote will catch up later
       try {
         await execFileAsync('git', ['-C', storeDir, 'push', 'origin', 'flux-data']);
-        updateStatus({ state: 'synced', lastSyncTime: new Date().toISOString() });
-      } catch {
-        updateStatus({ state: 'error', error: errorMsg, errorType });
-        onFail?.();
+        markSynced();
+      } catch (pushErr: any) {
+        // Both fetch and push failed. Prefer the auth-classified message so a
+        // credential failure surfaces the actionable re-auth state (FLUX-895).
+        const pushMsg = pushErr.message || String(pushErr);
+        reportSyncFailure(classifyGitError(pushMsg) === 'auth' ? pushMsg : errorMsg, onFail);
       }
       return;
     }
@@ -360,22 +489,18 @@ export async function runSync(storeDir: string, onFail?: () => void): Promise<vo
       // Push from the worktree directory
       await execFileAsync('git', ['-C', storeDir, 'push', 'origin', 'flux-data']);
       log.info('[sync-watcher] Pushed flux-data to remote');
-      updateStatus({ state: 'synced', lastSyncTime: new Date().toISOString() });
+      markSynced();
     } catch (pushErr: any) {
       const errorMsg = pushErr.message || String(pushErr);
-      const errorType: 'network' | 'auth' | 'unknown' =
-        errorMsg.includes('Could not resolve host') || errorMsg.includes('network') ? 'network' :
-        errorMsg.includes('Authentication failed') || errorMsg.includes('Permission denied') ? 'auth' :
-        'unknown';
-      log.info(`[sync-watcher] push failed (${errorType}): ${errorMsg}`);
-      updateStatus({ state: 'error', error: errorMsg, errorType });
-      onFail?.();
+      log.info(`[sync-watcher] push failed (${classifyGitError(errorMsg)}): ${errorMsg}`);
+      reportSyncFailure(errorMsg, onFail);
     }
   } catch (err: any) {
     const errorMsg = err.message || String(err);
     console.error(`[sync-watcher] sync failed: ${errorMsg}`);
-    updateStatus({ state: 'error', error: errorMsg, errorType: 'unknown' });
-    onFail?.();
+    reportSyncFailure(errorMsg, onFail);
+  } finally {
+    syncInFlight = false;
   }
 }
 
@@ -383,7 +508,7 @@ export function createScheduler(
   getDebounceMs: () => number,
   getMaxWaitMs: () => number,
   onSync: () => void
-): { schedule: () => void; reset: () => void; scheduleRetry: () => void } {
+): { schedule: () => void; reset: () => void; scheduleRetry: (delayMs?: number) => void } {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let deadline: number | null = null;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -407,12 +532,16 @@ export function createScheduler(
     deadline = null;
   }
 
-  function scheduleRetry() {
+  // Re-arm the single retry timer. Default cadence is 30s; an auth failure passes
+  // AUTH_RETRY_DELAY_MS so a credential outage stops hammering every 30s (FLUX-895).
+  // The `if (retryTimer) return` guard means an already-armed (e.g. slow auth)
+  // retry is not shortened by a later default-cadence call.
+  function scheduleRetry(delayMs: number = 30000) {
     if (retryTimer) return;
     retryTimer = setTimeout(() => {
       retryTimer = null;
       onSync();
-    }, 30000);
+    }, delayMs);
   }
 
   return { schedule, reset, scheduleRetry };
@@ -427,7 +556,7 @@ export function startSyncWatcher(): void {
   scheduler = createScheduler(
     () => configCache.syncSettings?.debounceMs ?? 30000,
     () => configCache.syncSettings?.maxWaitMs ?? 300000,
-    () => { void runSync(storeDir, () => scheduler?.scheduleRetry()); }
+    () => { void runSync(storeDir, (delayMs?: number) => scheduler?.scheduleRetry(delayMs)); }
   );
 
   watcher = chokidar.watch(storeDir, {

@@ -1,4 +1,4 @@
-import { useState, useCallback, lazy, Suspense } from 'react';
+import { useState, useCallback, useEffect, lazy, Suspense } from 'react';
 import { AppProvider } from './AppContext';
 import { useAppSelector } from './store/useAppSelector';
 import { Header } from './components/Header';
@@ -17,6 +17,9 @@ import { WorkflowBuilder } from './components/WorkflowBuilder';
 import { WorkspaceSelector } from './components/WorkspaceSelector';
 import { OnboardingWizard } from './components/OnboardingWizard';
 import { FirstBootDialog } from './components/FirstBootDialog';
+import { TerminalPanel } from './components/TerminalPanel';
+import { fetchFurnaceBatches } from './api';
+import { FURNACE_REFRESH_EVENT } from './furnaceTypes';
 
 // Dev-only Onboarding Studio (FLUX-759, extends the FLUX-755 editor). The lazy()
 // — and thus the dynamic import() — lives inside an `import.meta.env.DEV` branch
@@ -33,6 +36,42 @@ function AppContent() {
   const isConnected = useAppSelector(s => s.isConnected);
   const onboardingComplete = useAppSelector(s => s.onboardingComplete);
   const [bootComplete, setBootComplete] = useState(false);
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const handleToggleTerminal = useCallback(() => setTerminalOpen(o => !o), []);
+  // FLUX-1035: the Furnace is a pop-open panel (like Activity), not a nav screen. Its open state lives
+  // here so the ChatDock's Flame icon (pinned next to the Orchestrator tab) can toggle it and the
+  // draggable FloatingPanel can render over any view.
+  const [furnaceOpen, setFurnaceOpen] = useState(false);
+  const handleToggleFurnace = useCallback(() => setFurnaceOpen(o => !o), []);
+  const handleCloseFurnace = useCallback(() => setFurnaceOpen(false), []);
+  // FLUX-1053: ambient "burning" signal for the collapsed dock flame — polls independently of the
+  // drawer (which unmounts when closed) so a user who closes the Furnace still sees that unattended
+  // work is in flight. Refreshes on the shared furnace-refresh event for immediacy after mutations.
+  const [furnaceBurning, setFurnaceBurning] = useState(false);
+  useEffect(() => {
+    if (!isConnected) { setFurnaceBurning(false); return; }
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const burning = await fetchFurnaceBatches('burning');
+        if (!cancelled) setFurnaceBurning(burning.length > 0);
+      } catch { /* transient — keep last known state */ }
+    };
+    void check();
+    const timer = setInterval(() => { void check(); }, 5000);
+    const onRefresh = () => { void check(); };
+    window.addEventListener(FURNACE_REFRESH_EVENT, onRefresh);
+    return () => { cancelled = true; clearInterval(timer); window.removeEventListener(FURNACE_REFRESH_EVENT, onRefresh); };
+  }, [isConnected]);
+  // FLUX-983: Board is the most-revisited screen and the most expensive to (re)mount — it builds
+  // every column + card in the DnD tree from scratch. Conditionally unmounting it like the other
+  // screens made every return to Board pay that full mount cost again (visible as a stall right
+  // after FLUX-982 removed the empty-flash that used to mask it). Mount it once on first visit and
+  // keep it alive thereafter, toggling visibility with CSS instead of unmounting.
+  const [hasVisitedBoard, setHasVisitedBoard] = useState(() => view === 'board');
+  useEffect(() => {
+    if (view === 'board') setHasVisitedBoard(true);
+  }, [view]);
 
   const handleBootComplete = useCallback(() => setBootComplete(true), []);
 
@@ -58,10 +97,17 @@ function AppContent() {
 
   return (
     <div className="min-h-dvh h-screen flex flex-col font-sans app-shell" style={{ background: 'var(--eh-base)', color: 'var(--eh-text-primary)' }}>
-      <Header />
+      <Header
+        onToggleTerminal={handleToggleTerminal}
+        terminalOpen={terminalOpen}
+      />
       <div className="relative flex min-h-0 flex-1 flex-col">
         <main className="flex-1 overflow-y-auto px-8 pt-2.5 pb-5">
-          {view === 'board' && <Board />}
+          {hasVisitedBoard && (
+            <div style={{ display: view === 'board' ? 'contents' : 'none' }}>
+              <Board furnaceOpen={furnaceOpen} onCloseFurnace={handleCloseFurnace} />
+            </div>
+          )}
           {view === 'backlog' && <BacklogScreen />}
           {view === 'changes' && <ChangesScreen />}
           {view === 'docs' && <DocsScreen />}
@@ -76,8 +122,9 @@ function AppContent() {
           )}
         </main>
         <TaskModal />
-        <ChatDock />
+        <ChatDock onToggleFurnace={handleToggleFurnace} furnaceOpen={furnaceOpen} furnaceBurning={furnaceBurning} />
       </div>
+      <TerminalPanel isOpen={terminalOpen} onClose={() => setTerminalOpen(false)} />
     </div>
   );
 }

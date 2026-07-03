@@ -2,6 +2,46 @@
 
 Notable changes are summarized here; detailed per-version notes for the dev line live in [`.docs/release-notes/`](.docs/release-notes/).
 
+## [1.2.0] — the Furnace, multi-CLI adapters, and a hardened core
+
+The headline is **the Furnace** — an overnight autonomous ticket runner — landing alongside a CLI-agnostic adapter layer (Claude, Copilot, Gemini) and a from-the-ground-up hardening of the git/session core. Full notes: [`.docs/release-notes/v1.2.0.md`](.docs/release-notes/v1.2.0.md).
+
+### The Furnace — overnight autonomous ticket runner
+
+- **Curate a batch, walk away.** The Furnace builds a magazine of burn-approved tickets and stokes them unattended — implement → review → reimplement → leave a PR open at Ready, never merging (#249, and the S1–S7 build FLUX-1008→1015).
+- **Batches are first-class**, driven from a board-anchored right-side drawer you drag tickets into — overlay (never squishing the board), closed-state pullout tab, click-to-rename with branch-rename, draft deletion, and enriched status chips (#262, #264, #255, #260, #261).
+- **Burn control** — burn-rate/concurrency modes, hard stops, a per-session watchdog + circuit breaker, and a burn-report summary event (FLUX-1012/1013/1015).
+- **Graceful under failure** — a reconciling controller with ownership handoff and a failure taxonomy (#267); park charges as *In Progress* + swimlane rather than a status move (#256); post a real `gh pr review --approve` on approval (FLUX-1033); detect token/context exhaustion and pause-then-retry instead of parking (#259); retry rate-limited burns on a configurable cooldown (FLUX-1063).
+- **Magazine curation asks the orchestrator** and loads only burn-approved tickets instead of dumping the backlog (#258); grouped same-branch sequential mode burns overlapping tickets as one stacked PR (#255); first-class explicit group definitions with dependencies (#261).
+
+### Multi-CLI — Claude, Copilot & Gemini adapter layer
+
+- **Genericized every Claude-only surface into a CLI-agnostic adapter layer** routed per framework — the 8-part epic (FLUX-851): capability flags + lifecycle hooks (#213), `claudeSessionId`→`resumeSessionId` rename (#208), a cross-adapter contract test net (#214), the `BoardAdapter` interface lifting `__board__` out of `claude-code.ts` (#215), route/MCP defaults hygiene (#218), portal decoupling that gates UI off capabilities instead of `=== 'claude'` (#219), and the runtime↔installer reconciliation design (#221).
+- **A ratcheting adapter-boundary CI guard** forbids per-CLI code outside `engine/src/agents/`, plus a PR CI workflow (typecheck + boundary + tests) (#209, FLUX-941).
+- **Copilot/Gemini parity fixes** — durable-transcript writes so board chat shows replies (#225), workspace `.mcp.json` injected in non-interactive mode (#230), cached binary-path resolution (#226, #228), a capability-driven initial-prompt builder (#227), and a Copilot effort-default dispatch fix (#229).
+
+### Stability & the hardened git runner
+
+- **A unified hardened git/gh runner** (timeout + non-interactive env + kill-tree) with a guard, then routed across branch-manager / ticket-isolation / pr-cleanup, task-store remote-fetch, task-worktree, inline routes, and the multi-repo group fan-out — the S1–S8 hardening epic FLUX-996 (#239, #242, #243, #244, #245).
+- **Async + cached binary resolution** and a bounded MCP/Serena handshake fetch de-gated from spawn (#240, #241); transient binary-check failures no longer poison a 30s negative cache (#250).
+- Dev-watcher never hard-kills active sessions on `engine/src` churn (#235); the sync-watcher no longer hangs forever on a conflict race (#236); SSE heartbeat on `sync-status/stream` (FLUX-995); deterministic HITL durability on SIGTERM/SIGINT (#207).
+
+### Worktree safety
+
+- **Fail closed when a ticket's worktree is missing** so agents can't commit on `master` (#248); reclaim worktrees when a ticket reaches Ready/pr-open (#254); fix worktree re-entry when the branch is checked out outside `.eh-worktrees/` (#263); stop the reclaim sweep from deleting a live session's worktree after an engine restart (#265).
+
+### MCP surface
+
+- **Consolidated the MCP tool surface** (33→~23) with a forced reinstall (#203, **breaking**); server instructions + tool annotations (#212); MCP resources + templates (`ticket://`, `board://`, `docs://`) (#217); structured output (`outputSchema` + `structuredContent`) (#216); `update_ticket` can now (re)link `parentId` without a new tool (#266).
+
+### Board performance & UX
+
+- **Slimmed the `/api/tasks` list payload** with derived history signals + lazy full-detail fetch (#220); stopped polling terminal tickets every 3s (FLUX-970); kept the Board mounted across view switches to kill the remount stall (FLUX-982/983); redesigned the agent-management window (#233); Visual Recap artifact on the move to Ready (#232).
+
+### Agent workflow & skills
+
+- Agents now **lead every ticket body with a plain-language TL;DR** (FLUX-953); grooming gained visual-plan discipline (FLUX-978) and a "Reground before starting" convention for point-in-time-analysis tickets (FLUX-1048); a needs-action backstop when a ticket closes with a pending question (#211).
+
 ## [1.1.0] — artifacts, redesigned cockpit, rock-solid sessions
 
 The first feature release on the 1.0 line. Full notes: [`.docs/release-notes/v1.1.0.md`](.docs/release-notes/v1.1.0.md).

@@ -68,7 +68,7 @@ export function ChatArtifactCard({ task, onOpen }: { task: Task; onOpen?: () => 
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div className="flex min-w-0 items-center gap-1.5 text-[12px]">
           <span className="font-semibold text-[var(--eh-text-primary)]">
-            {current.title || 'Grooming artifact'}
+            {current.title || 'Artifact'}
           </span>
           <span className="flex-shrink-0 rounded bg-primary/10 px-1.5 py-px text-[10px] font-semibold text-primary">
             rev {current.rev}

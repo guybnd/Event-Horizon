@@ -6,17 +6,18 @@ import { configCache } from '../config.js';
 import { buildActivityEntry, buildCommentEntry, buildAgentMessageEntry, buildAgentSessionEntry, appendSessionProgress, closeAgentSession, type AgentSessionEntry } from '../history.js';
 import { updateTaskWithHistory, updateAgentSession, tasksCache, estimateCostUSD } from '../task-store.js';
 import { resolveTaskExecutionRoot } from '../task-worktree.js';
-import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal, checkAutoRestart } from '../session-store.js';
+import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
 import { killProcessTree } from '../kill-process-tree.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
 import { captureTurnStartState, clearNeedsActionIfSet, flagIfParked } from '../parked-ticket.js';
 import { buildMemberScopeArgs } from '../group.js';
 import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
-import { getModulePromptFragments } from '../modules.js';
+import { appendTranscriptLine } from '../transcript.js';
+import { buildMcpServerEntry } from '../workflow-installer.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, enqueueSessionWrite, flushSessionOutput } from './shared.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt } from './shared.js';
 
 const TOOL_ACTIVITY_MAP: Record<string, string> = {
   powershell: 'Running command',
@@ -32,89 +33,42 @@ const TOOL_ACTIVITY_MAP: Record<string, string> = {
   sql: 'Working',
 };
 
-export function buildInitialPrompt(task: any, appendPrompt: string, opts?: { phase?: string | undefined }): string {
-  const readyStatus = (configCache as any)?.readyForMergeStatus || 'Ready';
-  const taskStatus = (task as any).status || 'Unknown';
-  const mcpNote = 'CRITICAL: Use the "event-horizon" MCP tools (change_status, update_ticket, add_comment, log_progress) for ALL ticket updates. Do NOT edit .flux/ files directly — direct edits corrupt session tracking.';
-  const actionInstruction = (() => {
-    if (taskStatus === 'Grooming' || taskStatus === 'Require Input') {
-      return `The ticket is in ${taskStatus}. Your job is to GROOM this ticket:\n` +
-        `1. Use update_ticket to fill metadata (priority, effort, tags) and rewrite the body with a Problem/Motivation section and Implementation Plan.\n` +
-        `2. If questions are unresolved, use change_status to move to "Require Input" with a comment containing your question.\n` +
-        `3. When grooming is complete, use change_status to move to "Todo".\n` +
-        mcpNote;
-    }
-    if (taskStatus === 'In Progress') {
-      return `The ticket is currently In Progress. If the implementation is already complete, use change_status to move it to "${readyStatus}" with a completion summary comment. If work remains, complete it then move to "${readyStatus}". Do not exit without updating the ticket status.\n${mcpNote}`;
-    }
-    if (taskStatus === 'Todo') {
-      return `The ticket is in Todo. Begin implementation: use change_status to move to "In Progress", complete the work, then use change_status to move to "${readyStatus}" when done.\n${mcpNote}`;
-    }
-    if (taskStatus === readyStatus) {
-      return `The ticket is in ${readyStatus} awaiting user review. Do not move it further — wait for the user to say "finish ${task.id}".`;
-    }
-    return 'Respond with implementation progress updates and blockers. Keep updates concise.';
-  })();
-
-  const moduleFragments = getModulePromptFragments(opts?.phase, Array.isArray(task.tags) ? task.tags : undefined);
-
-  const lines = [
-    `You are working on ticket ${task.id}.`,
-    `Title: ${task.title || 'Untitled ticket'}`,
-    `Current status: ${taskStatus}`,
-    '',
-    'Ticket description:',
-    (task.body || '').trim() || '(No description)',
-    '',
-    'Latest activity:',
-    ...(Array.isArray(task.history) ? task.history.filter((e: any) => e?.type !== 'agent_message').slice(-3).map((entry: any) => {
-      if (entry?.type === 'status_change') {
-        return `- [${entry.date || ''}] ${entry.user || 'Unknown'} moved ${entry.from || '?'} -> ${entry.to || '?'}`;
-      }
-      return `- [${entry?.date || ''}] ${entry?.user || 'Unknown'}: ${entry?.comment || entry?.type || 'activity'}`;
-    }) : ['- (No history)']),
-    '',
-    ...(moduleFragments ? [moduleFragments, ''] : []),
-    actionInstruction,
-    ...(appendPrompt ? ['', appendPrompt] : []),
-  ];
-  return lines.join('\n').replace(/\0/g, '');
-}
-
 export function attachStdoutProcessing(
   proc: ReturnType<typeof spawn>,
   session: CliSessionRecord,
   taskId: string,
 ) {
-  const commitPendingAssistantText = () => {
-    if (session.pendingAssistantText) {
-      appendSessionOutput(session, session.pendingAssistantText, 'stdout', true);
-      flushSessionOutput(session, false, 'text');
-      session.pendingAssistantText = '';
-    }
-  };
+  // FLUX-932: shared line-buffer / JSON.parse / commitPendingAssistantText skeleton lives in shared.ts.
+  // This supplies Copilot's per-CLI parser (assistant.message_delta / tool_call / turn_end usage).
+  // narrationType 'text' (4th arg below) → Copilot flushes the styled 'text' Narration block.
+  return sharedAttachStdoutProcessing(proc, session, {
+    onEvent: (evt, trimmed, commitPendingAssistantText) => {
 
-  let lineBuf = '';
-  let stdoutChunkCount = 0;
-  proc.stdout!.on('data', (chunk: Buffer) => {
-    stdoutChunkCount++;
-    lineBuf += chunk.toString();
-    const lines = lineBuf.split('\n');
-    lineBuf = lines.pop() ?? '';
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        const evt = JSON.parse(trimmed);
-
-        // Capture the session ID from the parentId chain for resume support.
-        // The session UUID appears in `assistant.turn_start` parentId or the initial user.message id.
-        if (evt.type === 'user.message' && evt.id) {
-          // The Copilot CLI session ID is embedded in the output — capture from
-          // the parentId of the first user.message or from session metadata.
-          if (!session.claudeSessionId && evt.parentId) {
-            session.claudeSessionId = evt.parentId;
-          }
+        // FLUX-969: tee raw event lines to the durable per-ticket transcript, mirroring
+        // claude-code.ts's attachStdoutProcessing (which has done this since FLUX-602). This
+        // adapter never called appendTranscriptLine at all — it only updated the live SSE
+        // buffer + in-memory session progress, neither of which the chat window (GET /transcript)
+        // reads from. Invisible for a per-ticket DISPATCHED session (its final reply lands as a
+        // ticket comment on exit instead — see the proc.on('exit', ...) handler below) but fatal
+        // for the board orchestrator chat, which has no ticket to comment on and relies entirely
+        // on the transcript: a real reply happened, the chat window showed nothing.
+        // Two exclusions (adversarial review caught the second one — the first pass only had
+        // the first exclusion):
+        //   1. Streaming delta chunks (arrive dozens-per-second) — same exclusion Claude's tee
+        //      makes for `stream_event` partial deltas. Tool-call params/output in the COMPLETE
+        //      events below (`assistant.tool_call*`, `assistant.tool_result`) are kept — Claude's
+        //      own tee already writes the equivalent (full `toolBlock.input`, e.g. file paths /
+        //      shell commands) verbatim today, so this is parity, not new exposure.
+        //   2. `session.*` housekeeping events (mcp_server_status_changed, mcp_servers_loaded,
+        //      skills_loaded, tools_updated) — these are Copilot-specific process-startup noise
+        //      with no Claude equivalent, fire on every spawn (not once per conversation), carry
+        //      zero conversational value, and can be large (skills_loaded includes every local
+        //      skill file's absolute path; mcp_servers_loaded includes full server configs).
+        if (
+          evt.type !== 'assistant.message_delta' && evt.type !== 'assistant.reasoning_delta' && evt.type !== 'assistant.tool_call_delta'
+          && typeof evt.type === 'string' && !evt.type.startsWith('session.')
+        ) {
+          appendTranscriptLine(taskId, trimmed);
         }
 
         // Handle Copilot CLI JSONL event types
@@ -140,7 +94,7 @@ export function attachStdoutProcessing(
           // Tool invocation started
           commitPendingAssistantText();
           const toolName = evt.data?.toolName || evt.data?.name || 'unknown';
-          const newActivity = TOOL_ACTIVITY_MAP[toolName] ?? 'Working';
+          const newActivity = activityFor(TOOL_ACTIVITY_MAP, toolName);
           const activityChanged = session.currentActivity !== newActivity;
           session.currentActivity = newActivity;
 
@@ -177,14 +131,10 @@ export function attachStdoutProcessing(
           // Tool completed
           if (evt.data?.is_error) {
             console.error(`[${taskId}] Tool failed:`, evt.data.error || evt.data.content);
-            if (session.sessionHistoryEntry) {
-              session.sessionHistoryEntry.progress.push({
-                timestamp: new Date().toISOString(),
-                message: `Tool failed: ${evt.data.toolName || 'unknown'}`,
-                type: 'info',
-                data: { error: evt.data.error || evt.data.content },
-              });
-            }
+            // FLUX-981: previously this only pushed an in-memory progress row — no SSE broadcast, no
+            // flush — so a tool error never reached the live chat. Route it through the shared helper
+            // so it broadcasts a `progress` SSE immediately (and still persists to progress[]).
+            appendErrorToSession(session, `Tool failed: ${evt.data.toolName || 'unknown'}${evt.data.error ? ` — ${evt.data.error}` : ''}`);
           }
         } else if (evt.type === 'assistant.turn_start') {
           // New turn
@@ -195,6 +145,24 @@ export function attachStdoutProcessing(
           commitPendingAssistantText();
           session.currentActivity = undefined;
           broadcastEvent('activity', { taskId, activity: null });
+
+          // FLUX-981: a session/turn-level error reported on the result event was previously dropped
+          // here — Claude and Gemini both surface this, Copilot didn't. Mirror them so an API /
+          // overload / invalid-request error reaches the chat. Not a permission HITL prompt, so this
+          // does NOT flip to waiting-input; the exit handler still runs afterward.
+          if (evt.is_error || evt.data?.is_error) {
+            appendErrorToSession(session, `Agent error: ${evt.error || evt.data?.error || evt.subtype || 'unknown'}`);
+          }
+
+          // FLUX-959: `result.sessionId` is the actual resumable Copilot CLI session id — verified
+          // live against the installed CLI. The previous capture (a `user.message` event's
+          // `parentId`) was a different id in the internal event-parent chain, NOT a value `copilot
+          // --resume <id>` accepts; every resumed turn failed with "No session, task, or name
+          // matched". `result` is the authoritative, final word for the turn, so this overwrites
+          // unconditionally rather than only-if-unset.
+          if (evt.type === 'result' && typeof evt.sessionId === 'string' && evt.sessionId) {
+            session.resumeSessionId = evt.sessionId;
+          }
 
           const usage = evt.data?.usage || evt.usage;
           if (usage) {
@@ -214,27 +182,47 @@ export function attachStdoutProcessing(
         } else if (evt.type === 'session.updated' || evt.type === 'session.created') {
           // Capture the session ID for resume support
           if (evt.data?.sessionId || evt.data?.id) {
-            session.claudeSessionId = evt.data.sessionId || evt.data.id;
+            session.resumeSessionId = evt.data.sessionId || evt.data.id;
           }
         }
         // Skip ephemeral session setup events (session.mcp_*, session.tools_updated, etc.)
-      } catch {
-        // Non-JSON output — treat as plain text activity
-        appendSessionOutput(session, trimmed + '\n', 'stdout', true);
-        flushSessionOutput(session, false, 'text');
-        if (!session.currentActivity) {
-          session.currentActivity = 'Working';
-          broadcastEvent('activity', { taskId, activity: session.currentActivity });
-        }
+    },
+    onParseError: (trimmed) => {
+      // Non-JSON output — treat as plain text activity
+      appendSessionOutput(session, trimmed + '\n', 'stdout', true);
+      flushSessionOutput(session, false, 'text');
+      if (!session.currentActivity) {
+        session.currentActivity = 'Working';
+        broadcastEvent('activity', { taskId, activity: session.currentActivity });
       }
-    }
-  });
-
-  return commitPendingAssistantText;
+    },
+  }, 'text');
 }
 
-/** Resolve the copilot binary path across platforms. */
-function resolveCopilotBinary(id: string): { nodePath: string | null; entryPoint: string | null; exePath: string } {
+type ResolvedCopilotBinary = { nodePath: string | null; entryPoint: string | null; exePath: string };
+
+// FLUX-974: the resolved binary path can't change during this process's lifetime (it would take
+// an engine restart to install/move the CLI), but `spawnCopilot` called `resolveCopilotBinary`
+// fresh on EVERY spawn — start AND every resumed turn — re-running its `where`/`npm prefix -g`
+// execSync chain each time. Measured at ~1s+ of pure overhead per turn on a machine without a
+// compiled copilot.exe (the common case, which falls to the slower node+npm-loader.js path).
+// Cache the result after the first resolution; only the id used for logging varies per call.
+// Tradeoff accepted: if the first resolution lands on the slower node+npm-loader.js fallback
+// (no .exe found yet) and a compiled .exe is installed later in this same process's lifetime,
+// the cache won't notice — it keeps using the already-working slow path until the next engine
+// restart. Never breaks anything (both paths function), just leaves a performance win on the
+// table until restart — an acceptable tradeoff for eliminating guaranteed per-turn overhead.
+let cachedCopilotBinary: ResolvedCopilotBinary | null = null;
+
+/** Resolve the copilot binary path across platforms — cached after the first call (FLUX-974). */
+function resolveCopilotBinary(id: string): ResolvedCopilotBinary {
+  if (cachedCopilotBinary) return cachedCopilotBinary;
+  const resolved = resolveCopilotBinaryUncached(id);
+  cachedCopilotBinary = resolved;
+  return resolved;
+}
+
+function resolveCopilotBinaryUncached(id: string): ResolvedCopilotBinary {
   const isWin = process.platform === 'win32';
 
   // 1. Try to find the compiled binary (copilot.exe on Windows, copilot on Unix).
@@ -346,7 +334,7 @@ function getVSCodeGlobalStoragePaths(): string[] {
 }
 
 /** Spawn the copilot process using the resolved binary info. */
-function spawnCopilot(id: string, args: string[], cwdRoot: string) {
+export function spawnCopilot(id: string, args: string[], cwdRoot: string) {
   const { nodePath, entryPoint, exePath } = resolveCopilotBinary(id);
 
   if (nodePath && entryPoint) {
@@ -369,12 +357,35 @@ function spawnCopilot(id: string, args: string[], cwdRoot: string) {
   });
 }
 
+// FLUX-984: Copilot never auto-loads the workspace .mcp.json in non-interactive (-p) mode —
+// confirmed live, no permission flag (--yolo, --allow-all, --allow-tool) changes it. `copilot mcp
+// list`/`get` detect the workspace config fine; a scripted -p run silently ignores it and falls
+// back to the model reading .flux/ files directly instead of calling the event-horizon MCP tools
+// at all. The documented fix is --additional-mcp-config, injecting the server explicitly. Exported
+// so copilot-board.ts (the board spec) can reuse it — same capability, same mechanism, both spawn
+// paths need it.
+export function buildAdditionalMcpConfigArgs(): string[] {
+  return ['--additional-mcp-config', JSON.stringify({ mcpServers: { 'event-horizon': buildMcpServerEntry() } })];
+}
+
 export async function startCliSession(session: CliSessionRecord, task: any, appendPrompt: string, effortOverrideRaw: string, workspaceRoot: string) {
   const label = session.label;
   const id = session.taskId;
   // FLUX-519: run the agent in this task's worktree when one exists (else engine root).
   const executionRoot = await resolveTaskExecutionRoot(task, workspaceRoot);
   session.executionRoot = executionRoot;
+
+  // FLUX-1018: fail closed on the fresh-spawn path. A task WITH a branch must run
+  // in that branch's worktree — never the main checkout (master). Copilot's `-p`
+  // mode never checks the branch out itself, so spawning with cwd = workspaceRoot
+  // would commit straight to master (the FLUX-972 incident). resolveTaskExecutionRoot
+  // already self-heals/throws, but assert here too as a belt-and-suspenders guard.
+  if (task?.branch && executionRoot === workspaceRoot) {
+    throw new Error(
+      `Refusing to start Copilot for ${id} on branch '${task.branch}': its worktree is missing and ` +
+        `execution resolved to the main checkout (master). Recreate the worktree and retry.`,
+    );
+  }
 
   log.info(`[${id}] Starting Copilot CLI session in ${workspaceRoot}`);
 
@@ -389,13 +400,15 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     : task.status === ((configCache as any)?.readyForMergeStatus || 'Ready') ? 'review'
     : undefined;
 
-  const initialPrompt = buildInitialPrompt(task, appendPrompt, { phase: taskPhase });
+  const initialPrompt = buildInitialPrompt(task, appendPrompt, { phase: taskPhase, framework: 'copilot' });
 
   const copilotArgs = [
     ...(selectedModel ? ['--model', selectedModel] : []),
     '-p', initialPrompt,
     '--output-format', 'json',
     ...(session.skipPermissions ? ['--yolo'] : ['--allow-all-tools']),
+    // FLUX-984: explicit MCP config injection — workspace .mcp.json is never auto-loaded in -p mode.
+    ...buildAdditionalMcpConfigArgs(),
     // Multi-repo group: put every checked-out member repo in scope (no-op single-repo).
     ...buildMemberScopeArgs(),
     // Member worktree: add local .flux-group/ so the agent reads shared group docs (FLUX-422).
@@ -406,13 +419,25 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   const globalEffort = (configCache as any).effortLevel as string | undefined;
   const taskEffort = (task as any).effortLevel as string | undefined;
   const effectiveEffort = (effortOverrideRaw || taskEffort || globalEffort || '') as string;
-  if (effortCap.supported && effortCap.flag && EFFORT_LEVELS.includes(effectiveEffort as EffortLevel)) {
-    copilotArgs.push(effortCap.flag, effectiveEffort);
+  // FLUX-977: Copilot CLI rejects --effort outright when no explicit --model is set (its default
+  // "auto" model "does not support reasoning effort configuration" — confirmed against the live
+  // CLI). Gate on `selectedModel` too, not just a resolved effort value, so a global effort
+  // default with no Copilot model configured (the common case — Copilot wasn't the previous
+  // default agent, so most users never set integrations.copilotCli) degrades quietly instead of
+  // crashing every single Copilot session outright.
+  const effortRequested = effortCap.supported && effortCap.flag && EFFORT_LEVELS.includes(effectiveEffort as EffortLevel);
+  if (effortRequested && selectedModel) {
+    copilotArgs.push(effortCap.flag!, effectiveEffort);
+  } else if (effortRequested && !selectedModel) {
+    // FLUX-977: don't just silently drop the user's requested effort level — that replaces the
+    // old crash with a new, quieter silent-failure pattern (effort visibly requested somewhere,
+    // invisibly ignored here). Log it so "why didn't effort do anything" is answerable from logs.
+    log.info(`[${id}] Dropping --effort "${effectiveEffort}" — no Copilot model configured (integrations.copilotCli); Copilot rejects --effort without an explicit --model.`);
   }
 
   log.info(`[${id}] Args: [${copilotArgs.map((a, i) => i === copilotArgs.indexOf(initialPrompt) ? `<prompt ${initialPrompt.length} chars>` : a).join(', ')}]`);
 
-  let proc = spawnCopilot(id, copilotArgs, executionRoot);
+  const proc = spawnCopilot(id, copilotArgs, executionRoot);
 
   session.proc = proc;
   session.pid = proc.pid;
@@ -438,6 +463,8 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     session.status = 'failed';
     session.endedAt = new Date().toISOString();
     commitPending();
+    // FLUX-981: surface the spawn failure inline in the chat, not only as a history activity entry.
+    appendErrorToSession(session, `Failed to start agent: ${error.message}`);
     flushSessionOutput(session, true, 'text');
     await session.writeQueue;
 
@@ -454,7 +481,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     } else {
       await updateTaskWithHistory(id, {
         updatedBy: 'Agent',
-        entries: [buildActivityEntry(outcome, 'Agent', session.endedAt)],
+        entries: [buildActivityEntry(outcome, 'Agent', session.endedAt!)],
       });
     }
 
@@ -498,16 +525,28 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     commitPending();
     flushSessionOutput(session, true, 'text');
     await session.writeQueue;
-    session.endedAt = new Date().toISOString();
 
-    let finalStatus: 'completed' | 'failed' | 'cancelled';
+    let finalStatus: 'completed' | 'failed' | 'cancelled' | 'waiting-input';
     if (session.requestedStop) {
+      session.endedAt = new Date().toISOString();
       session.status = 'cancelled';
       finalStatus = 'cancelled';
+    } else if (session.pausedForInput) {
+      // FLUX-985: agent moved the ticket to Require Input and was told to stop mid-turn. Mirror
+      // claude-code.ts — stay resumable (waiting-input, no endedAt) rather than force 'completed',
+      // which would post the agent's mid-turn question as a bogus completion comment, prematurely
+      // fire the group-terminal barrier, and drop the session from the active/parked view while it
+      // is genuinely awaiting the user. The resume route already accepts 'waiting-input'
+      // (routes/cli-session.ts), so resumability is unaffected. Pause branch ONLY — copilot stays
+      // persistentChat:false, so a normal chat turn still goes 'completed'.
+      session.status = 'waiting-input';
+      finalStatus = 'waiting-input';
     } else if (code === 0) {
+      session.endedAt = new Date().toISOString();
       session.status = 'completed';
       finalStatus = 'completed';
     } else {
+      session.endedAt = new Date().toISOString();
       session.status = 'failed';
       finalStatus = 'failed';
     }
@@ -530,6 +569,35 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
         })()
       : null;
 
+    // FLUX-985: paused for user input — flush tokens + mark the session entry waiting-input, but do
+    // NOT go terminal: no completion comment (the last text is the agent's Require-Input message, not
+    // a result), no group-barrier notify, no delegation-complete, no parked-flag, no endedAt.
+    if (finalStatus === 'waiting-input') {
+      if (tokenUpdate) {
+        await updateTaskWithHistory(id, { updatedBy: 'Agent', entries: [], tokenMetadata: tokenUpdate });
+      }
+      if (session.sessionHistoryEntry?.sessionId) {
+        await updateAgentSession(id, session.sessionHistoryEntry.sessionId, (sessionEntry) => {
+          sessionEntry.status = 'waiting-input';
+          sessionEntry.outcome = `${label} paused — waiting for user input.`;
+          sessionEntry.progress = session.sessionHistoryEntry.progress || [];
+        });
+      }
+      broadcastEvent('taskUpdated', { id });
+      return;
+    }
+
+    // FLUX-981: a nonzero/signal exit the user did NOT cancel surfaces inline in the chat, in addition
+    // to the outcome/activity record. finalStatus is 'failed' only for a genuine failure (requestedStop
+    // → 'cancelled', pausedForInput returned above) — this preserves the cancelled-guard. Await the
+    // write queue so the injected ⚠️ line lands in progress[] before it's snapshotted below.
+    if (finalStatus === 'failed') {
+      const stderrHint = session.stderrCapture?.trim();
+      const fullMessage = stderrHint ? `${outcome}\n${stderrHint}` : outcome;
+      appendErrorToSession(session, fullMessage);
+      await session.writeQueue;
+    }
+
     // Close the session entry with outcome and flush accumulated progress
     if (session.sessionHistoryEntry && session.sessionHistoryEntry.sessionId) {
       const accumulatedProgress = session.sessionHistoryEntry.progress || [];
@@ -547,7 +615,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
         const commentBody = lastText.length > maxCommentLen ? lastText.slice(0, maxCommentLen) + '...' : lastText;
         await updateTaskWithHistory(id, {
           updatedBy: 'Agent',
-          entries: [buildCommentEntry(label, commentBody, session.endedAt)],
+          entries: [buildCommentEntry(label, commentBody, session.endedAt!)],
           tokenMetadata: tokenUpdate ?? undefined,
         });
       } else if (tokenUpdate) {
@@ -560,7 +628,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     } else {
       await updateTaskWithHistory(id, {
         updatedBy: 'Agent',
-        entries: [buildActivityEntry(outcome, 'Agent', session.endedAt)],
+        entries: [buildActivityEntry(outcome, 'Agent', session.endedAt!)],
         tokenMetadata: tokenUpdate ?? undefined,
       });
     }
@@ -571,6 +639,13 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
       // FLUX-651: flag if the agent left the ticket parked in a working status without acting.
       await flagIfParked(session, id);
     }
+
+    // FLUX-985: settle any delegation awaiting this session (supervisor/delegate pattern). copilot.ts
+    // was the ONLY adapter that omitted this — claude-code.ts and gemini.ts both call it. Without it,
+    // a `delegate` to a Copilot specialist never resolves awaitDelegation on clean exit; the
+    // orchestrator blocks for the full delegation timeout (up to 600s) and then receives a bogus
+    // 'cancelled'/timeout result with the completed child's real output discarded.
+    notifyDelegationComplete(session);
 
     if (session.groupId) {
       notifyGroupSessionTerminal(session.taskId, session.groupId).catch(() => {});
@@ -616,7 +691,16 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   const id = session.taskId;
   // FLUX-519 review: resume in the SAME root the session started in; refuse to fall
   // back onto master if the worktree was removed (e.g. the ticket was finished).
-  const executionRoot = session.executionRoot ?? await resolveTaskExecutionRoot(tasksCache[id], workspaceRoot);
+  // FLUX-1018: on the resume fallback resolve READ-ONLY (create:false) — never spin up
+  // a fresh worktree mid-resume for a legacy session that lost its recorded
+  // executionRoot; the spawn path owns creation. Then fail closed two ways: a
+  // branch-bearing ticket that resolved to the main checkout (no live worktree) must
+  // not resume on master, and a recorded worktree path that has since vanished (ticket
+  // finished) is refused as before.
+  const executionRoot = session.executionRoot ?? await resolveTaskExecutionRoot(tasksCache[id], workspaceRoot, { create: false });
+  if (tasksCache[id]?.branch && executionRoot === workspaceRoot) {
+    throw new Error(`Worktree for ${id} is missing — refusing to resume the agent on master. Restart the session to recreate an isolated worktree.`);
+  }
   if (executionRoot !== workspaceRoot && !fs.existsSync(executionRoot)) {
     throw new Error(`Worktree for ${id} no longer exists (ticket likely finished) — refusing to resume the agent on master.`);
   }
@@ -636,11 +720,12 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   });
 
   const safeMessage = message.replace(/\0/g, '');
-  const resumeArgs = session.claudeSessionId
-    ? ['-p', safeMessage, '--resume', session.claudeSessionId, '--output-format', 'json', '--yolo']
-    : ['-p', safeMessage, '--output-format', 'json', '--yolo'];
+  // FLUX-984: explicit MCP config injection on the resume path too — the gap applies to every spawn.
+  const resumeArgs = session.resumeSessionId
+    ? ['-p', safeMessage, '--resume', session.resumeSessionId, '--output-format', 'json', '--yolo', ...buildAdditionalMcpConfigArgs()]
+    : ['-p', safeMessage, '--output-format', 'json', '--yolo', ...buildAdditionalMcpConfigArgs()];
 
-  log.info(`[${id}] Reply spawn, resume=${session.claudeSessionId || 'none'}`);
+  log.info(`[${id}] Reply spawn, resume=${session.resumeSessionId || 'none'}`);
   const replyProc = spawnCopilot(id, resumeArgs, executionRoot);
 
   session.proc = replyProc;
@@ -661,6 +746,11 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       session.status = 'waiting-input';
     }
     commitReplyPending();
+    // FLUX-981: surface the reply spawn failure inline in the chat, not only as an activity entry.
+    // Skip when the user cancelled — a stop that races the spawn error isn't a fault.
+    if (!session.requestedStop) {
+      appendErrorToSession(session, `Failed to resume agent: ${error.message}`);
+    }
     flushSessionOutput(session, true, 'text');
     await updateTaskWithHistory(id, {
       updatedBy: 'Agent',
@@ -669,9 +759,18 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     console.error(`[${id}] Failed to spawn copilot for reply:`, error.message);
   });
 
-  replyProc.on('exit', async () => {
+  replyProc.on('exit', async (code, signal) => {
     commitReplyPending();
     flushSessionOutput(session, true, 'text');
+    // FLUX-981: a crashed resumed turn (nonzero/signal, not user-stopped) was silent in the chat.
+    // Also exclude pausedForInput (mirrors claude-code.ts): when the agent parked for Require Input
+    // mid-turn and the process then exits nonzero/signaled, that's a legitimate HITL pause — not a
+    // failure — so labeling it "reply ended with code N" would mislabel it as a crash.
+    if (!session.requestedStop && !session.pausedForInput && (code !== 0 || signal)) {
+      const replyOutcome = `${session.label} reply ended with ${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`}.`;
+      const stderrHint = session.stderrCapture?.trim();
+      appendErrorToSession(session, stderrHint ? `${replyOutcome}\n${stderrHint}` : replyOutcome);
+    }
     // FLUX-915: a user-requested stop stays 'cancelled' instead of reverting to 'waiting-input'
     // (which counted the killed session as active forever). Otherwise the resumable conversation
     // stays waiting-input.

@@ -1,13 +1,16 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { DndContext, DragOverlay, pointerWithin } from '@dnd-kit/core';
 import type { DragEndEvent, DragStartEvent } from '@dnd-kit/core';
+import { FurnaceDrawer } from './FurnaceDrawer';
+import { FURNACE_NEW_DROP_ID, FURNACE_REFRESH_EVENT } from '../furnaceTypes';
+import { appendFurnaceTicket, createFurnaceBatch } from '../api';
 import { arrayMove } from '@dnd-kit/sortable';
 import { Column } from './Column';
 import { StatusBadge } from './StatusBadge';
 import { TaskCardInner } from './TaskCard';
 import { createTask, updateTask } from '../api';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
-import { buildStatusChangeHistory } from '../lib/ticketActions';
+import { buildStatusChangeHistory, applyOptimisticStatusChange } from '../lib/ticketActions';
 import type { Task } from '../types';
 import { normalizeSubtaskId } from '../types';
 import { Loader2, Upload, Sparkles } from 'lucide-react';
@@ -48,15 +51,21 @@ This is a starter ticket. **Launch an agent on it** (Grooming or Implementation)
 
 _Created by the "Bootstrap with AI" action on the empty board. Delete this ticket once your board is populated._`;
 
-export function Board() {
-  const [tasks, setTasks] = useState<Task[]>([]);
+export function Board({ furnaceOpen, onCloseFurnace }: { furnaceOpen?: boolean; onCloseFurnace?: () => void } = {}) {
+  const liveTasks = useAppSelector((s) => s.tasks);
+  // FLUX-982: seed local `tasks` from the already-loaded store snapshot instead of `[]`. Board
+  // fully unmounts/remounts on view switch (App.tsx `{view === 'board' && <Board />}`), and the
+  // effect below that syncs `liveTasks` into local state only runs AFTER the first commit — so an
+  // empty initial value meant every return to Board painted a blank board for a frame before
+  // popping in, reading as a "reload". `liveTasks` is already resolved above by the time this
+  // lazy initializer runs, so remounting now paints with real data immediately.
+  const [tasks, setTasks] = useState<Task[]>(() => liveTasks);
   const [activeTask, setActiveTask] = useState<Task | null>(null);
   const [releaseModalTasks, setReleaseModalTasks] = useState<Task[] | null>(null);
   const [showBootstrap, setShowBootstrap] = useState(false);
   const { triggerRefresh, openTaskModal } = useAppActions();
   const currentProject = useAppSelector((s) => s.currentProject);
   const [bootstrapping, setBootstrapping] = useState(false);
-  const liveTasks = useAppSelector((s) => s.tasks);
   const tasksLoading = useAppSelector((s) => s.tasksLoading);
   const taskLiveEvents = useAppSelector((s) => s.taskLiveEvents);
   const columnLiveEvents = useAppSelector((s) => s.columnLiveEvents);
@@ -168,12 +177,11 @@ export function Board() {
     const cutoff = Date.now() - 86_400_000;
     const counts: Record<string, number> = {};
     for (const task of tasks) {
-      for (const entry of task.history ?? []) {
-        if (entry.type !== 'status_change') continue;
-        const from = (entry as { from?: string }).from;
-        const to = (entry as { to?: string }).to;
-        if (!from || !to || new Date(entry.date).getTime() < cutoff) continue;
-        const key = `${from}→${to}`;
+      // FLUX-725: status_change stream now comes pre-filtered to 24h on the list digest; re-apply
+      // the cutoff so the count stays exact across the memo's lifetime.
+      for (const sc of task.historyDigest?.statusChanges24h ?? []) {
+        if (!sc.from || !sc.to || new Date(sc.date).getTime() < cutoff) continue;
+        const key = `${sc.from}→${sc.to}`;
         counts[key] = (counts[key] ?? 0) + 1;
       }
     }
@@ -190,11 +198,10 @@ export function Board() {
     const todayMs = todayStart.getTime();
     let count = 0;
     for (const task of tasks) {
-      for (const entry of task.history ?? []) {
-        if (entry.type !== 'status_change') continue;
-        const to = (entry as { to?: string }).to ?? '';
-        if (!/done/i.test(to)) continue;
-        if (new Date(entry.date).getTime() >= todayMs) { count++; break; }
+      // todayStart is always within the last 24h, so the digest's statusChanges24h is a superset.
+      for (const sc of task.historyDigest?.statusChanges24h ?? []) {
+        if (!/done/i.test(sc.to ?? '')) continue;
+        if (new Date(sc.date).getTime() >= todayMs) { count++; break; }
       }
     }
     return count;
@@ -360,6 +367,22 @@ export function Board() {
     const activeTaskId = active.id as string;
     const overId = over.id as string;
 
+    // FLUX-1053: a board card dropped onto a Furnace batch (append) or the new-batch zone (create).
+    if (overId.startsWith('furnace:')) {
+      try {
+        if (overId === FURNACE_NEW_DROP_ID) {
+          const dropped = tasks.find((x) => x.id === activeTaskId);
+          await createFurnaceBatch({ title: dropped?.title || activeTaskId, ticketIds: [activeTaskId] });
+        } else if (overId.startsWith('furnace:batch:')) {
+          await appendFurnaceTicket(overId.slice('furnace:batch:'.length), activeTaskId);
+        }
+        window.dispatchEvent(new CustomEvent(FURNACE_REFRESH_EVENT));
+      } catch (err) {
+        console.error('Furnace drop failed:', err instanceof Error ? err.message : err);
+      }
+      return;
+    }
+
     const activeTaskObj = tasks.find(t => t.id === activeTaskId);
     if (!activeTaskObj) return;
 
@@ -435,17 +458,24 @@ export function Board() {
     if (!task) return;
 
     // Shared with the chat action bar (FLUX-610) — `from` pinned to the explicit oldStatus
-    // so optimistic state never skews the recorded transition.
-    const newHistory = buildStatusChangeHistory({ ...task, status: oldStatus }, newStatus, currentUser, comment);
+    // so optimistic state never skews the recorded transition. FLUX-725: send the history DELTA via
+    // `appendHistory` (the list payload no longer carries full `history`), and fold the move into the
+    // optimistic card's digest so its history-derived chips stay correct until the server confirms.
+    const appendHistory = buildStatusChangeHistory({ ...task, status: oldStatus }, newStatus, currentUser, comment);
 
     const finalOrder = newOrder ?? (task.order || 0);
-    const optimisticTask = { ...task, status: newStatus, order: finalOrder, history: newHistory };
+    const optimisticTask = {
+      ...task,
+      status: newStatus,
+      order: finalOrder,
+      historyDigest: applyOptimisticStatusChange(task.historyDigest, oldStatus, newStatus, comment, currentUser),
+    };
 
     setMovingTaskIds(prev => new Set(prev).add(taskId));
     setOptimisticTasks(prev => ({ ...prev, [taskId]: optimisticTask }));
 
     try {
-      await updateTask(taskId, { status: newStatus, order: finalOrder, history: newHistory, updatedBy: currentUser });
+      await updateTask(taskId, { status: newStatus, order: finalOrder, appendHistory, updatedBy: currentUser } as Partial<Task>);
       triggerRefresh();
     } catch (err) {
       console.error(err);
@@ -500,7 +530,7 @@ export function Board() {
           <ParseErrorButton errors={parseErrors} />
         </div>
 
-        <div className="min-h-0 flex-1 overflow-auto">
+        <div className="min-h-0 flex-1 overflow-hidden">
           {boardTasks.length === 0 && !tasksLoading && (
             <div className="flex flex-col items-center justify-center gap-4 py-16">
               <p className="text-sm text-gray-500 dark:text-gray-400">No tickets yet.</p>
@@ -527,7 +557,8 @@ export function Board() {
             </div>
           )}
           <DndContext onDragStart={handleDragStart} onDragEnd={handleDragEnd} collisionDetection={pointerWithin}>
-            <div ref={scrollerRef} className="flex min-h-full gap-2 pb-4 items-stretch">
+            <div className="flex h-full min-h-0">
+            <div ref={scrollerRef} className="flex min-h-full flex-1 gap-2 pb-4 items-stretch overflow-x-auto">
               {allColumns.map((columnId, idx) => {
                 const prevCol = idx > 0 ? allColumns[idx - 1] : null;
                 const nextCol = idx < allColumns.length - 1 ? allColumns[idx + 1] : null;
@@ -556,6 +587,12 @@ export function Board() {
                   />
                 );
               })}
+            </div>
+            {furnaceOpen && (
+              <div className="w-[380px] shrink-0 h-full overflow-hidden border-l" style={{ borderColor: 'var(--eh-border)' }}>
+                <FurnaceDrawer onClose={onCloseFurnace} />
+              </div>
+            )}
             </div>
             <DragOverlay>
               {activeTask

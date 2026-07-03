@@ -2,9 +2,16 @@ import express from 'express';
 import { workspaceRoot, isOrphanMode } from '../workspace.js';
 import { migrateToOrphan, restoreToInRepo } from '../storage-sync.js';
 import { activateWorkspace } from '../task-store.js';
-import { startSyncWatcher, stopSyncWatcher, resolveConflicts, getSyncStatus } from '../sync-watcher.js';
+import { startSyncWatcher, stopSyncWatcher, resolveConflicts, getSyncStatus, revalidateConflictState } from '../sync-watcher.js';
 
 const router = express.Router();
+
+// FLUX-989: bound the resolve-conflicts round trip so the response never hangs. The
+// underlying git calls are each individually timed out (GIT_SYNC_TIMEOUT_MS), so this is
+// a backstop above their sum for the realistic slow path (a single push under heavy
+// divergence); on expiry we return a clear 504 instead of leaving the client's "Resolving…"
+// spinner up forever.
+const RESOLVE_CONFLICTS_TIMEOUT_MS = 90_000;
 
 router.get('/mode', (_req, res) => {
   res.json({ mode: isOrphanMode() ? 'orphan' : 'in-repo' });
@@ -85,10 +92,26 @@ router.post('/resolve-conflicts', async (req, res) => {
   }
 
   try {
-    await resolveConflicts(resolutions);
+    let timer: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`Conflict resolution timed out after ${RESOLVE_CONFLICTS_TIMEOUT_MS / 1000}s`)),
+        RESOLVE_CONFLICTS_TIMEOUT_MS,
+      );
+    });
+    try {
+      await Promise.race([resolveConflicts(resolutions), timeout]);
+    } finally {
+      clearTimeout(timer!);
+    }
     res.json({ ok: true });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    // On any failure/timeout, re-derive the real conflict state from the worktree so the
+    // banner reflects reality rather than the stale in-memory conflict (FLUX-989). No-ops
+    // while a resolution still holds the lock; the next status poll re-validates then.
+    await revalidateConflictState().catch(() => {});
+    const timedOut = /timed out/i.test(err?.message || '');
+    res.status(timedOut ? 504 : 500).json({ error: err.message });
   }
 });
 

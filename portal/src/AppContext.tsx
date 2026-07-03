@@ -5,7 +5,7 @@ import { fetchConfig, fetchTasks, fetchWorktrees, fetchHealth, saveConfig as api
 import { getArchiveStatus } from './workflow';
 import { collectPrMemberIds } from './lib/decks';
 import { tasksEqual } from './lib/tasksEqual';
-import { appStore } from './store/appStore';
+import { appStore, ENGINE_EVENTS_MAX } from './store/appStore';
 import type { AppStoreState, AppActions, AppView, AppTheme, TaskSortOption } from './store/appStore';
 import { AppActionsContext } from './store/useAppSelector';
 import { getElectronAPI, renderBadgeDataUrl } from './electronApi';
@@ -322,7 +322,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, [scheduleColumnEventClear, scheduleTaskEventClear]);
 
-  const loadTasks = useCallback(async () => {
+  const loadTasks = useCallback(async (activeOnly = false) => {
     if (isFetchingTasksRef.current) {
       return;
     }
@@ -334,8 +334,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
 
     try {
-      const fetchedTasks = normalizeTaskList(await fetchTasks());
       const previousTasks = tasksRef.current;
+      const fetchedActiveOrAll = normalizeTaskList(await fetchTasks(activeOnly ? { active: true } : undefined));
+      // FLUX-970: the routine 3s poll only fetches non-terminal tickets (the board already filters
+      // Released/Archived/Done out client-side, so they're dead weight on the hot path). Preserve
+      // previously-known terminal tickets — and anything the interval raced past mid-transition —
+      // instead of letting them vanish from `tasks`; SSE's `taskUpdated`/`open` handlers run a full
+      // (non-active-only) `loadTasks()` that authoritatively reconciles any real status transition.
+      // FLUX-980: re-sort back to the same id order a full fetch would produce. Board (App.tsx)
+      // conditionally mounts/unmounts on view switch, so it re-derives columns from whatever order
+      // `tasks` is in the moment it remounts — leaving this as [actives][preserved terminals]
+      // instead of a stable global order made cards visibly reshuffle position every time you
+      // navigated back to it, since the background poll kept flip-flopping the array shape.
+      const fetchedTasks = activeOnly
+        ? (() => {
+            const fetchedIds = new Set(fetchedActiveOrAll.map((task) => task.id));
+            return normalizeTaskList([...fetchedActiveOrAll, ...previousTasks.filter((task) => !fetchedIds.has(task.id))]);
+          })()
+        : fetchedActiveOrAll;
       const previousTasksById = new Map(previousTasks.map((task) => [task.id, task]));
       const nextTaskEvents: Record<string, TaskLiveEvent> = {};
       const nextColumnEvents: Record<string, ColumnLiveEvent> = {};
@@ -592,6 +608,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   };
 
+  // FLUX-1030: clear the shared Engine-events ring buffer (terminal "Clear log" / "Clear").
+  const clearEngineEvents = useCallback(() => {
+    appStore.patch({ engineEvents: [] });
+  }, []);
+
   const saveConfig = async (newConfig: Config) => {
     try {
       const updated = await apiSaveConfig(newConfig);
@@ -813,9 +834,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [isConnected, loadTasks, loadParseErrors]);
 
   useEffect(() => {
-    const refreshIfVisible = () => {
-      if (!document.hidden) {
-        void loadTasks();
+    // Guard every path on isConnected — otherwise the 3s tick and every focus/visibility event
+    // fire unconditionally, including during a cold engine boot (e.g. a large ticket store on
+    // first run after a fresh clone), hammering a server that isn't listening yet and flooding
+    // the console with "Failed to fetch" until it comes up.
+    const refreshIfVisible = (activeOnly = false) => {
+      if (!document.hidden && isConnected) {
+        void loadTasks(activeOnly);
         void loadParseErrors();
       }
     };
@@ -823,7 +848,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const handleVisibilityChange = () => {
       const visible = !document.hidden;
       setIsWindowVisible(visible);
-      if (visible) {
+      if (visible && isConnected) {
         void loadTasks();
         void loadParseErrors();
       }
@@ -834,7 +859,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       refreshIfVisible();
     };
 
-    const intervalId = window.setInterval(refreshIfVisible, LIVE_TASK_POLL_INTERVAL_MS);
+    // FLUX-970: the routine 3s tick fetches active-only — it's the hot loop that was re-shipping
+    // the whole board (incl. terminal tickets) every 3s. Focus/visibility resyncs stay full fetches.
+    const intervalId = window.setInterval(() => refreshIfVisible(true), LIVE_TASK_POLL_INTERVAL_MS);
     window.addEventListener('focus', handleFocus);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
@@ -843,7 +870,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       window.removeEventListener('focus', handleFocus);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [loadTasks, loadParseErrors]);
+  }, [loadTasks, loadParseErrors, isConnected]);
 
   // FLUX-611: one shared subscription bus over the single SSE connection below. Chat
   // surfaces (transcript, dock, approvals) register here and react to pushed events,
@@ -884,7 +911,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
       es = src;
       // FLUX-910: heartbeat keeps the watchdog's liveness clock fresh on an otherwise-idle stream.
       src.addEventListener('ping', () => { lastEventAt = Date.now(); });
-      for (const type of ['activity', 'progress', 'assistantDelta', 'taskUpdated', 'permission-request', 'permission-resolved', 'ask-question', 'ask-question-resolved', 'board-rebase-proposed', 'board-rebase-resolved', 'artifactReady']) {
+      // FLUX-1030: catch-all Engine-events log. The engine mirrors EVERY broadcastEvent onto the
+      // generic `eh-event` channel as `{type,data}`, so listening here (once, on the shared
+      // connection) captures every event type without a hardcoded allowlist. Buffered in the store
+      // so it accumulates from boot and survives the terminal panel being closed/minimized.
+      src.addEventListener('eh-event', (e: MessageEvent) => {
+        lastEventAt = Date.now();
+        try {
+          const { type, data } = JSON.parse(e.data) as { type: string; data: unknown };
+          const prev = appStore.getState().engineEvents;
+          const next = [...prev, { type, data, timestamp: Date.now() }];
+          appStore.patch({ engineEvents: next.length > ENGINE_EVENTS_MAX ? next.slice(-ENGINE_EVENTS_MAX) : next });
+        } catch { /* non-JSON payload — skip */ }
+      });
+      for (const type of ['activity', 'progress', 'assistantDelta', 'taskUpdated', 'permission-request', 'permission-resolved', 'ask-question', 'ask-question-resolved', 'board-rebase-proposed', 'board-rebase-resolved', 'artifactReady', 'furnace-updated', 'furnace-deleted']) {
         src.addEventListener(type, (e: MessageEvent) => {
           try { forward(type, JSON.parse(e.data)); } catch { /* non-JSON payload — skip */ }
         });
@@ -1054,6 +1094,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!isModalOpen || !modalTask?.id) return;
     const fresh = tasks.find((t) => t.id === modalTask.id);
     if (!fresh) return;
+    // FLUX-725: `fresh` is the LIST task (history-digested, no full `history`); `modalTask` holds the
+    // lazily-fetched DETAIL object (full `history`, no digest). Detect a history change via the digest
+    // length, but PRESERVE the fetched full history on merge so a background poll never blanks the open
+    // ticket's activity log — useTaskModalController re-fetches the detail (keyed on the same digest
+    // signature) to pull in the new entries.
+    const freshHistLen = fresh.historyDigest?.length ?? fresh.history?.length ?? 0;
+    const modalHistLen = modalTask.history?.length ?? modalTask.historyDigest?.length ?? 0;
     const changed =
       fresh.status !== modalTask.status ||
       fresh.title !== modalTask.title ||
@@ -1064,8 +1111,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       fresh.implementationLink !== modalTask.implementationLink ||
       fresh.tags?.length !== modalTask.tags?.length ||
       fresh.subtasks?.length !== modalTask.subtasks?.length ||
-      fresh.history?.length !== modalTask.history?.length;
-    if (changed) setModalTask(fresh);
+      freshHistLen !== modalHistLen;
+    if (changed) {
+      setModalTask((prev) => (prev && prev.id === fresh.id ? { ...fresh, history: prev.history ?? fresh.history } : fresh));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasks]);
 
@@ -1077,8 +1126,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return sum;
       }
       const readIds = new Set(readComments[task.id] ?? []);
-      const hasUnread = (task.history ?? []).some(
-        e => e.type === 'comment' && e.id && e.user !== currentUser && !readIds.has(e.id)
+      // FLUX-725: per-comment {id,user} comes from the list digest (was a scan over full history);
+      // author is carried so own comments are suppressed (the engine can't know currentUser).
+      const hasUnread = (task.historyDigest?.comments ?? []).some(
+        c => c.id && c.user !== currentUser && !readIds.has(c.id)
       );
       return sum + (hasUnread ? 1 : 0);
     }, 0);
@@ -1124,7 +1175,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     triggerRefresh, subscribeToEvent, notifyWorkspaceSet, switchWorkspace,
     refreshWorkspaces, saveConfig, ensureReadStateLoaded, markCommentRead,
     markAllCommentsRead, setAppTheme, toggleTheme, refreshNotifications,
-    markOnboardingComplete,
+    markOnboardingComplete, clearEngineEvents,
   };
 
   const actions = useMemo<AppActions>(() => ({
@@ -1163,6 +1214,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     toggleTheme: () => latest.current.toggleTheme(),
     refreshNotifications: () => latest.current.refreshNotifications(),
     markOnboardingComplete: () => latest.current.markOnboardingComplete(),
+    clearEngineEvents: () => latest.current.clearEngineEvents(),
   }), []);
 
   // Snapshot mirrored into the external store. Memoized sub-objects (taskById,
@@ -1176,6 +1228,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     openModalScrollToComments, openModalInFullView,
     tasks, taskById, prByBranch, prMemberIds, worktreeBranches, worktrees,
     liveSessions: appStore.getState().liveSessions,
+    engineEvents: appStore.getState().engineEvents,
     changesFocus, tasksLoading, taskLiveEvents, columnLiveEvents,
     refreshTrigger, lastRefreshAt, isWindowVisible, isConnected,
     workspaceConfigured, workspacePath, workspaces,

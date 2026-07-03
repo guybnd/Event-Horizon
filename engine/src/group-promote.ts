@@ -4,6 +4,11 @@ import path from 'path';
 import { getGroupStoreDir, type GroupContext } from './group.js';
 import { syncGroup, type GitRunner, type GroupSyncResult } from './group-sync.js';
 import { submitGroupEdit } from './group-edit.js';
+// FLUX-1000 (epic FLUX-996): defaultGitRunner used to be a bare execFileAsync (via dynamic
+// import) — no timeout, no non-interactive env — so the doc-promotion cascade (git rm/commit on
+// main + the fan-out it triggers via syncGroup) could hang POST /api/group/promote-docs/apply
+// forever. Route through the S1 runner.
+import { runGit } from './git-exec.js';
 
 /**
  * Promote existing `.docs/` into the group store (FLUX-404).
@@ -179,11 +184,7 @@ export async function collectPromotions(
   return collected;
 }
 
-const defaultGitRunner: GitRunner = async (cwd, args) => {
-  const { execFile } = await import('child_process');
-  const { promisify } = await import('util');
-  return promisify(execFile)('git', args, { cwd, windowsHide: true });
-};
+const defaultGitRunner: GitRunner = (cwd, args) => runGit(args, { cwd });
 
 /**
  * Remove a promoted source from its repo's working tree. `git rm` stages the

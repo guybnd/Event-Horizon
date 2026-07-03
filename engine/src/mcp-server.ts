@@ -1,6 +1,7 @@
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { McpError, ErrorCode as McpErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -9,8 +10,10 @@ import fs from 'fs/promises';
 import path from 'path';
 import matter from 'gray-matter';
 
-import { tasksCache, serializeTaskForAgent, updateTaskWithHistory, activateWorkspace, workspaceActivating, readTaskFromDisk, docsCache, createTask, atomicWriteFile, type CreateTaskOptions } from './task-store.js';
+import { tasksCache, serializeTaskForAgent, updateTaskWithHistory, activateWorkspace, workspaceActivating, readTaskFromDisk, docsCache, createTask, atomicWriteFile, getTerminalStatuses, syncParentSubtaskLinks, validateParentLink, type CreateTaskOptions } from './task-store.js';
 import { configCache, autoRegisterUnknownTags } from './config.js';
+import { normalizeDocPathInput, type StoredDoc } from './file-utils.js';
+import { resolveDefaultFramework } from './agents/index.js';
 import { broadcastEvent } from './events.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
 import { extractTicket } from './extract.js';
@@ -18,9 +21,9 @@ import { mergeTickets } from './merge.js';
 import { normalizeHistoryEntries, buildActivityEntry } from './history.js';
 import { getCliWorkspace, getActiveFluxDir, getWorkspacesList, workspaceRoot } from './workspace.js';
 import { getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, checkGhAuth, captureDiff, resolveCommit, planFinishPr, getDefaultBranch } from './branch-manager.js';
-import { detachTaskWorktree, taskWorktreeDir, findWorktreeForBranch, worktreeChangeCount } from './task-worktree.js';
+import { detachTaskWorktree, taskWorktreeDir, findWorktreeForBranch, worktreeChangeCount, reclaimWorktrees } from './task-worktree.js';
 import { ensureTicketIsolation } from './ticket-isolation.js';
-import { cleanupMergedBranch } from './pr-cleanup.js';
+import { cleanupMergedBranch, isWorktreeReclaimable } from './pr-cleanup.js';
 import { sharedNonDoneSiblings } from './pr-tickets.js';
 import { existsSync, statSync, readFileSync } from 'fs';
 import { getActiveSessionsForTask, stopAllSessionsForTask, reapStaleParkedSessions } from './session-store.js';
@@ -28,6 +31,10 @@ import { generatePromptNotification, generateReviewNotification, dismissNotifica
 import { getGroupContext, getMemberBinding, groupDocsLabel, summarizeGroup, groupDocPathToStoreRelative, activeGroupDocsLabel } from './group.js';
 import { submitGroupEdit } from './group-edit.js';
 import { writeArtifactRevision, isSafeTicketId } from './artifacts.js';
+import { ensureFurnaceLoaded, getFurnaceBatch, getFurnaceBatchesCache, updateFurnaceBatch, createFurnaceBatch, globalSlotsInUse, freeSlots, FURNACE_SLOT_CAP } from './furnace-store.js';
+import { buildBatchTickets, toBuildCandidate } from './furnace-builder.js';
+import { igniteBatch, stopBatch, burnRateClampWarning, retryTicket, resumeBatch, dismissTicketFlag, takeoverTicket, reconcileBatch, refreshWorktreePool } from './furnace-stoker.js';
+import type { BatchKind, BatchTrigger } from './models/furnace.js';
 
 function textResult(text: string) {
   return { content: [{ type: 'text' as const, text }] };
@@ -77,6 +84,19 @@ function jsonResult(data: unknown) {
   return textResult(JSON.stringify(data));
 }
 
+// FLUX-950: structured-output result for tools registered with an `outputSchema`.
+// Emits `structuredContent` as the SINGLE wire representation and leaves `content`
+// empty — the typed JSON is never *also* stringified into a text block. Returning
+// both would put two full copies of the payload on the wire and double per-call
+// tokens, the exact opposite of AXI #1 (token budget is first-class — the pinned
+// constraint on this ticket). There is therefore no text JSON left for FLUX-876 to
+// compact; structuredContent is the compact form. `content: []` is sent explicitly
+// (not omitted) so the SDK's `validateToolOutput` still runs the payload through the
+// tool's `outputSchema` as a guardrail (it early-returns when `content` is absent).
+function structuredResult(data: Record<string, unknown>) {
+  return { content: [] as { type: 'text'; text: string }[], structuredContent: data };
+}
+
 /**
  * AXI #9 contextual disclosure (FLUX-877): a terse next-step hint for a `change_status`
  * result, so the agent's next move is discoverable in the response itself rather than
@@ -104,7 +124,7 @@ export function nextStepForStatus(
   }
   switch (newStatus.toLowerCase()) {
     case 'in progress':
-      return `Next: log_progress as you work; change_status to ${opts.readyStatus} (or ${opts.requireInputStatus}) when done.`;
+      return `Next: add_note (type:"activity") as you work; change_status to ${opts.readyStatus} (or ${opts.requireInputStatus}) when done.`;
     case 'todo':
       return `Next: start_session to begin, or change_status to ${inProgressStatus} when you pick it up.`;
     case 'grooming':
@@ -112,6 +132,43 @@ export function nextStepForStatus(
     default:
       return '';
   }
+}
+
+// ─── Permission policy for gated sessions (--permission-prompt-tool) ──────────
+// Hoisted to module scope (pure, no closure state) so the action-aware gating can be exercised as a
+// unit — same idiom as nextStepForStatus. Used by the `permission_prompt` handler in buildMcpServer.
+
+const SAFE_PERMISSION_TOOLS = new Set([
+  'get_ticket', 'list_tickets', 'get_board_config', 'get_project_group', 'get_board_state',
+  'list_available_agents', 'group_doc', 'get_session_log',
+  // The proposal path is always safe — it parks a batch for human approval, never mutates.
+  'propose_board_rebase',
+  'Read', 'Glob', 'Grep', 'LS', 'WebFetch', 'WebSearch', 'TodoWrite', 'NotebookRead',
+]);
+// The restructuring verbs join the CONFIRM tier so a DIRECT orchestrator call to mutate the board
+// is gated even if it bypasses the board-rebase ritual — "never silently restructure" is enforced
+// by the gate, not just the prompt. `archive` (both directions) stays confirm-gated; `branch` is
+// action-aware (confirm only on delete — see permissionDecisionFor); the merged tools that absorbed
+// a confirm-tier op are handled there too.
+const CONFIRM_PERMISSION_TOOLS = new Set([
+  'change_status', 'finish_ticket', 'Bash',
+  'archive', 'extract_ticket', 'merge_tickets',
+]);
+
+/**
+ * Action-aware permission decision for a gated tool call. Pure + exported for test (FLUX-882): the
+ * 34→24 consolidation folded a destructive op into several merged tools, so gating can no longer key
+ * on the bare tool name alone — `branch` is allow EXCEPT `action:"delete"` (the old delete_branch
+ * gate). Everything else falls back to the static SAFE/CONFIRM tiers; the default is allow.
+ */
+export function permissionDecisionFor(toolName: string, input?: any): 'allow' | 'deny' | 'confirm' {
+  const bare = toolName.replace(/^mcp__.+?__/, '');
+  // `branch` folded create/status/delete: only delete is destructive → confirm-gate just that
+  // action (the old delete_branch gate); create/status stay allow.
+  if (bare === 'branch') return input?.action === 'delete' ? 'confirm' : 'allow';
+  if (SAFE_PERMISSION_TOOLS.has(bare)) return 'allow';
+  if (CONFIRM_PERMISSION_TOOLS.has(bare)) return 'confirm';
+  return 'allow';
 }
 
 /**
@@ -164,7 +221,6 @@ export type ListTicketRow = {
   tags: string[];
 };
 
-const TERMINAL_LIST_STATUSES = ['Done', 'Released', 'Archived'];
 const DEFAULT_LIST_LIMIT = 40;
 
 export function selectTicketsForList(
@@ -179,7 +235,7 @@ export function selectTicketsForList(
     limit?: number | undefined;
     includeAll?: boolean | undefined;
   },
-  terminalStatuses: string[] = TERMINAL_LIST_STATUSES,
+  terminalStatuses: string[] = getTerminalStatuses(),
 ): { rows: ListTicketRow[]; note?: string } {
   const { status, assignee, tag, priority, search, includeAll } = filters;
   // active defaults to true; an explicit status filter, or includeAll, overrides it.
@@ -215,14 +271,19 @@ export function selectTicketsForList(
   const capped = Number.isFinite(effectiveLimit) ? tasks.slice(0, effectiveLimit) : tasks;
   const droppedByLimit = matched - capped.length;
 
+  // FLUX-985: coerce nullable/absent frontmatter to the schema's declared string/array types.
+  // list_tickets' outputSchema rows are strict per-field (.partial() → optional, which still
+  // REJECTS null), so a single hand-edited/legacy ticket with an empty `priority:`/`assignee:`/
+  // `tags:` line (YAML → null) would otherwise fail SDK output validation and make the ENTIRE
+  // list_tickets call error out. Normalize here so one bad row can't poison the whole board.
   const rows: ListTicketRow[] = capped.map((t: any) => ({
-    id: t.id,
-    title: t.title,
-    status: t.status,
-    priority: t.priority,
-    effort: t.effort,
-    assignee: t.assignee,
-    tags: t.tags,
+    id: String(t.id ?? ''),
+    title: String(t.title ?? ''),
+    status: t.status ?? '',
+    priority: t.priority ?? 'None',
+    effort: t.effort ?? 'None',
+    assignee: t.assignee ?? 'unassigned',
+    tags: Array.isArray(t.tags) ? t.tags.filter((x: any) => typeof x === 'string') : [],
   }));
 
   const notes: string[] = [];
@@ -238,6 +299,146 @@ export function selectTicketsForList(
     );
   }
   return notes.length ? { rows, note: notes.join(' ') } : { rows };
+}
+
+// ─── MCP Resource resolvers (FLUX-949) ───────────────────────────────────────
+// The read-only resource surface (ticket:// board:// docs://) mirrors the
+// existing agent tool projections EXACTLY — no new data shaping. These resolvers
+// are factored as pure, cache-injected helpers so the not-found / traversal /
+// active-filter logic is unit-testable without spinning up a transport (mirrors
+// the selectTicketsForList / describeEmptyTicketList idiom).
+
+/** Machine-readable discriminant carried in a thrown McpError's `data.code`. */
+export type ResourceErrorCode = 'not_found' | 'validation_failed' | 'channel_unavailable';
+
+export type ResourceResolution<T> =
+  | ({ ok: true } & T)
+  | { ok: false; code: ResourceErrorCode; message: string };
+
+/**
+ * Resolve a `ticket://{id}` URI variable to a task. Exact-id match only — the
+ * canonical `FLUX-949` form every ticket tool uses. A bare numeric id (`949`) is
+ * rejected as ambiguous with `validation_failed` rather than silently guessing a
+ * project key; any other unmatched id is `not_found` (never empty content).
+ */
+export function resolveTicketResource(
+  rawId: unknown,
+  tasks: Record<string, any>,
+): ResourceResolution<{ task: any }> {
+  if (typeof rawId !== 'string' || !rawId.trim()) {
+    return { ok: false, code: 'validation_failed', message: `Invalid ticket id: ${String(rawId)}` };
+  }
+  const id = rawId.trim();
+  if (/^\d+$/.test(id)) {
+    return {
+      ok: false,
+      code: 'validation_failed',
+      message: `Ticket id "${id}" is a bare number — use the canonical id (e.g. FLUX-${id}).`,
+    };
+  }
+  const task = tasks[id];
+  if (!task) return { ok: false, code: 'not_found', message: `Ticket ${id} not found` };
+  return { ok: true, task };
+}
+
+/**
+ * Resolve a `docs://{path}` URI variable to a repo doc body. Routes EVERY lookup
+ * through `normalizeDocPathInput` (rejects `..`, `.`, absolute, empty → null) and
+ * only ever indexes `docsCache` — it never builds a filesystem path from the URI,
+ * so a read outside `.docs/` is impossible. Cross-project group docs (`Product/…`,
+ * surfaced read-only) are out of this surface's scope — read them via the
+ * `group_doc` tool — so they resolve as `not_found` here.
+ */
+export function resolveDocResource(
+  rawPath: unknown,
+  docs: Record<string, StoredDoc>,
+): ResourceResolution<{ key: string; title: string; body: string }> {
+  const key = normalizeDocPathInput(rawPath);
+  if (!key) {
+    return { ok: false, code: 'validation_failed', message: `Invalid doc path: ${String(rawPath)}` };
+  }
+  const doc = docs[key];
+  if (!doc || doc.group) {
+    return { ok: false, code: 'not_found', message: `Doc not found: ${key}` };
+  }
+  return { ok: true, key, title: doc.title, body: doc.body };
+}
+
+/**
+ * Enumerate `ticket://{id}` resources for `resources/list`. Active (non-terminal)
+ * tickets only — reuses `selectTicketsForList` so a board with hundreds of
+ * Done/Released/Archived tickets never dumps them all into the resource list
+ * (which would re-bill discovery on every client refresh).
+ */
+export function listActiveTicketResources(
+  tasks: Record<string, any>,
+  terminalStatuses: string[],
+): { uri: string; name: string; title: string; mimeType: string }[] {
+  const { rows } = selectTicketsForList(Object.values(tasks), { active: true }, terminalStatuses);
+  return rows.map((t) => ({
+    uri: `ticket://${t.id}`,
+    name: t.id,
+    title: t.title,
+    mimeType: 'application/json',
+  }));
+}
+
+/**
+ * Enumerate `docs://{path}` resources for `resources/list` — the repo's own
+ * `.docs/` entries (bounded, ~dozens). Group docs (`d.group`) are excluded; they
+ * belong to the `group_doc` surface, not the repo-docs resource.
+ */
+export function listDocResources(
+  docs: Record<string, StoredDoc>,
+): { uri: string; name: string; title: string; mimeType: string }[] {
+  return Object.values(docs)
+    .filter((d) => !d.group)
+    .sort((a, b) => a.path.localeCompare(b.path))
+    .map((d) => ({
+      uri: `docs://${d.path}`,
+      name: d.path,
+      title: d.title,
+      mimeType: 'text/markdown',
+    }));
+}
+
+/**
+ * Agent-facing board-config projection (FLUX-928). Shared by the `get_board_config`
+ * tool and the `board://config` resource so the two never diverge. CLONE — never
+ * mutates configCache (the portal/REST GET /api/config path keeps the full config
+ * with Tailwind colors).
+ */
+export function buildBoardConfigProjection() {
+  // FLUX-985: the get_board_config / board://config outputSchema types statuses & tag names as
+  // string[] and priority name/icon as string; a malformed config entry (missing/non-string name)
+  // would otherwise fail SDK output validation and make the whole config unreadable. Filter/coerce
+  // so a degraded config still returns.
+  const statuses = [
+    ...(configCache.columns || []).map((c: any) => c?.name),
+    ...(configCache.hiddenStatuses || []).map((s: any) => s?.name),
+  ].filter((n: any): n is string => typeof n === 'string');
+  const { projects, tags, priorities, users, requireInputStatus, readyForMergeStatus } = configCache;
+  const agentTags = (tags || []).map((t: any) => t?.name).filter((n: any): n is string => typeof n === 'string');
+  const agentPriorities = (priorities || [])
+    .filter((p: any) => p && typeof p.name === 'string')
+    .map((p: any) => ({ name: String(p.name), icon: typeof p.icon === 'string' ? p.icon : undefined }));
+  return { statuses, projects, tags: agentTags, priorities: agentPriorities, users, requireInputStatus, readyForMergeStatus };
+}
+
+/**
+ * Template URI variables (`Variables` = string | string[]) arrive raw from the
+ * UriTemplate regex match. Our `list` callbacks emit plain-ASCII URIs (ticket ids,
+ * doc slugs), but a client may percent-encode — decode defensively, falling back
+ * to the raw value when it isn't valid percent-encoding. A `{/path*}`-style array
+ * is re-joined with '/'.
+ */
+function decodeResourceVar(value: string | string[] | undefined): string {
+  const raw = Array.isArray(value) ? value.join('/') : value ?? '';
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
 }
 
 // Soft ceiling for ticket bodies written by agents. The body is injected in
@@ -368,28 +569,80 @@ export async function startMcpServer(): Promise<void> {
  * the tools operate on the engine's already-active task-store cache.
  */
 export function buildMcpServer(): McpServer {
-  const server = new McpServer({
-    name: 'event-horizon',
-    version: '1.0.0',
-  });
+  const server = new McpServer(
+    {
+      name: 'event-horizon',
+      version: '1.0.0',
+    },
+    {
+      // Server-level `instructions` are folded into the client's system prompt on
+      // `initialize` (the "MCP Server Instructions" block). This is a compact
+      // projection of the orchestrator contract from .claude/rules/event-horizon.md,
+      // so clients that never load that rules file (Cursor, raw SDK agents, …) still
+      // get the non-negotiable workflow rules. Keep it short — it bills every session.
+      instructions: [
+        'Event Horizon is a local-first, markdown-backed ticket board. Manage tickets EXCLUSIVELY through these tools.',
+        '',
+        'Rules:',
+        '- NEVER edit files under .flux/ or .flux-store/ directly — those paths are engine-managed. All ticket changes go through these tools.',
+        '- Read a ticket with get_ticket before acting on it. Find tickets with list_tickets; read board config with get_board_config.',
+        '- Move tickets between columns with change_status (NOT update_ticket). A comment is REQUIRED when moving to Require Input (the question) or Ready (the completion summary).',
+        '- End every working turn on a board action (status move / Require Input / created subtasks). Never finish work and only summarize in chat — the board flags such tickets "Needs Action".',
+        '- Raise ANY decision or question for the user through a structured surface — ask_user_question or a Require Input status — never plain chat prose, regardless of ticket status.',
+        '- Destructive actions (archive, merge_tickets, finish_ticket) are one-way or removal operations and may require explicit human approval.',
+      ].join('\n'),
+    },
+  );
 
   // ─── Context Tools ──────────────────────────────────────────────────────────
 
-  server.tool(
+  server.registerTool(
     'get_ticket',
-    'Read a ticket by ID — returns frontmatter, body, and recent history. agent_session entries are digested to one-line summaries (progress dropped, progressCount kept); history is windowed to the most recent entries, with the count of omitted older ones in olderHistoryEntries. Older entries that carry an agent summary are shown collapsed ({summary, id, collapsed:true}); pass their ids in `expand` to get the full text (or `fullHistory:true` for everything, discouraged).',
     {
+      title: 'Get ticket',
+      description: 'Read a ticket by ID — returns frontmatter, body, and a digested history (agent_session entries collapsed to summaries; older summarized entries shown collapsed with an id; windowed to recent entries). Pass `expand:[ids]` to un-collapse specific entries (prefer this over `fullHistory:true`).',
+      inputSchema: {
       ticketId: z.string().describe('Ticket ID, e.g. FLUX-42'),
       historyLimit: z.number().int().positive().optional().describe('Max history entries to return (default 20)'),
       expand: z.array(z.string()).optional().describe('History entry ids to return in FULL (un-collapse). Pass the `id` shown on a collapsed entry when its summary is not enough.'),
       fullHistory: z.boolean().optional().describe('Return all history uncollapsed. Discouraged — defeats the digest and re-inflates context; prefer expand:[ids].'),
-      fullBody: z.boolean().optional().describe('Return the full ticket body even when it is oversized. By default a very large body is truncated with a recoverable size hint to save context (FLUX-879); normal bodies are never truncated.'),
+      fullBody: z.boolean().optional().describe('Return the full ticket body even when it is oversized. By default a very large body is truncated with a recoverable size hint to save context; normal bodies are never truncated.'),
+      },
+      // FLUX-950: permissive/shallow output schema — every field optional so the
+      // SDK's structuredContent validation never throws on payload variation (a
+      // truncated body, a ticket missing optional frontmatter, extra fields). It
+      // documents the stable shape for typed clients without coupling to the full
+      // serializeTaskForAgent projection.
+      // `.catchall` keeps the schema LOOSE: the SDK's client-side validator enforces
+      // the generated JSON Schema strictly (additionalProperties:false by default),
+      // which would reject the rich, open-ended task projection (and the shared error
+      // envelope's {code,message}). Documented fields stay optional for typed clients.
+      // FLUX-985: frontmatter fields use .nullish() (accepts null AND undefined) not .optional()
+      // (undefined only). serializeTaskForAgent coerces the common ones, but a hand-edited/legacy
+      // ticket can still carry a null (e.g. parentId), and .optional() would make the SDK reject
+      // the whole structuredContent — turning get_ticket into an error instead of returning the
+      // ticket (the FLUX-950 outputSchema regression).
+      outputSchema: z.object({
+        id: z.string().optional().describe('Ticket ID'),
+        title: z.string().nullish(),
+        status: z.string().nullish(),
+        priority: z.string().nullish(),
+        effort: z.string().nullish(),
+        assignee: z.string().nullish(),
+        tags: z.array(z.string()).nullish(),
+        parentId: z.string().nullish(),
+        body: z.string().nullish().describe('Markdown body — may be truncated with a recoverable size hint when oversized (AXI #3 / FLUX-879)'),
+        history: z.array(z.unknown()).optional().describe('Digested history (agent_session entries collapsed to summaries; windowed to recent entries)'),
+        collapsedCount: z.number().optional(),
+        olderHistoryEntries: z.number().optional(),
+      }).catchall(z.unknown()),
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async ({ ticketId, historyLimit, expand, fullHistory, fullBody }) => {
       const task = tasksCache[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
       const { _path, ...output } = serializeTaskForAgent(task, historyLimit, { expand, fullHistory, fullBody });
-      return jsonResult(output);
+      return structuredResult(output);
     },
   );
 
@@ -401,6 +654,7 @@ export function buildMcpServer(): McpServer {
       sessionId: z.string().describe('Session ID from a get_ticket agent_session history entry'),
       tail: z.number().int().positive().optional().describe('Return only the last N progress entries'),
     },
+    { title: 'Get session log', readOnlyHint: true, openWorldHint: false },
     async ({ ticketId, sessionId, tail }) => {
       const task = tasksCache[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
@@ -424,10 +678,12 @@ export function buildMcpServer(): McpServer {
     },
   );
 
-  server.tool(
+  server.registerTool(
     'list_tickets',
-    'List tickets with optional filtering by status, assignee, tag, or priority. Active-by-default and bounded (FLUX-489): with no explicit status it returns only non-terminal tickets (excludes Done/Released/Archived) and caps at 40 rows. Use search to substring-match id+title, raise limit, or pass includeAll:true to see everything.',
     {
+      title: 'List tickets',
+      description: 'List tickets with optional filtering by status, assignee, tag, or priority. Active-by-default and bounded (FLUX-489): with no explicit status it returns only non-terminal tickets (excludes Done/Released/Archived) and caps at 40 rows. Use search to substring-match id+title, raise limit, or pass includeAll:true to see everything.',
+      inputSchema: {
       status: z.string().optional().describe('Filter by status (e.g. "In Progress", "Todo"). An explicit status overrides the active-by-default screen (so you CAN list Done/Released/Archived by naming the status).'),
       assignee: z.string().optional().describe('Filter by assignee'),
       tag: z.string().optional().describe('Filter by tag name'),
@@ -436,17 +692,30 @@ export function buildMcpServer(): McpServer {
       active: z.boolean().optional().describe('Default true: when no explicit status is given, return only NON-terminal tickets (exclude Done, Released, Archived). Set false to include terminal statuses.'),
       limit: z.number().int().positive().optional().describe('Max rows to return (default 40). Ignored when includeAll is true.'),
       includeAll: z.boolean().optional().describe('Escape hatch: return every matched row, ignoring the active-default screen AND the limit.'),
+      },
+      // FLUX-950: structuredContent must be an object, so the result is always the
+      // `{ tickets, note? }` envelope (never a bare array). Rows are permissive/partial
+      // and `note` carries the FLUX-489/878 disclosure so a bounded/empty result is
+      // never a silent truncation.
+      outputSchema: z.object({
+        tickets: z.array(z.object({
+          id: z.string(),
+          title: z.string(),
+          status: z.string(),
+          priority: z.string(),
+          effort: z.string(),
+          assignee: z.string(),
+          tags: z.array(z.string()),
+        }).partial()).optional().describe('Matching ticket rows (bounded; see `note` when a screen or limit omitted rows)'),
+        note: z.string().optional().describe('Disclosure note when the result was bounded or empty (FLUX-489 / FLUX-878)'),
+      }).catchall(z.unknown()),
+      annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async ({ status, assignee, tag, priority, search, active, limit, includeAll }) => {
-      const terminalStatuses = [
-        'Done',
-        'Released',
-        configCache.archiveStatus || 'Archived',
-      ];
       const { rows, note } = selectTicketsForList(
         Object.values(tasksCache),
         { status, assignee, tag, priority, search, active, limit, includeAll },
-        terminalStatuses,
+        getTerminalStatuses(),
       );
       // AXI #5 definitive empty state (FLUX-878): on zero matches return a
       // filter-echoing note instead of a bare [].
@@ -457,39 +726,40 @@ export function buildMcpServer(): McpServer {
         // it alongside the filter echo so the truncation is never silent and the
         // agent learns includeAll:true would reveal the hidden terminal tickets.
         const emptyNote = describeEmptyTicketList({ status, assignee, tag, priority });
-        return jsonResult({ tickets: [], note: note ? `${emptyNote} ${note}` : emptyNote });
+        return structuredResult({ tickets: [], note: note ? `${emptyNote} ${note}` : emptyNote });
       }
       // FLUX-489: when rows were omitted (active-default screen / limit), attach a
       // discoverability note so a bounded result is never silently truncated.
-      return jsonResult(note ? { tickets: rows, note } : rows);
+      // Always an object envelope (never a bare array) — structuredContent requires it.
+      return structuredResult(note ? { tickets: rows, note } : { tickets: rows });
     },
   );
 
-  server.tool(
+  server.registerTool(
     'get_board_config',
-    'Read board configuration — statuses, tags, priorities, project key',
-    {},
+    {
+      title: 'Get board config',
+      description: 'Read board configuration — statuses, tags, priorities, project key',
+      // FLUX-950: shallow/permissive output schema (all fields optional) — documents
+      // the agent-facing projection (FLUX-928) without coupling to configCache.
+      outputSchema: z.object({
+        statuses: z.array(z.string()).optional(),
+        projects: z.array(z.unknown()).optional(),
+        tags: z.array(z.string()).optional().describe('Tag names only (colors stripped for agents, FLUX-928)'),
+        priorities: z.array(z.object({ name: z.string().optional(), icon: z.string().optional() })).optional(),
+        users: z.array(z.unknown()).optional(),
+        requireInputStatus: z.string().optional(),
+        readyForMergeStatus: z.string().optional(),
+      }).catchall(z.unknown()),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
     async () => {
-      const statuses = [
-        ...(configCache.columns || []).map((c: any) => c.name),
-        ...(configCache.hiddenStatuses || []).map((s: any) => s.name),
-      ];
-      const { projects, tags, priorities, users, requireInputStatus, readyForMergeStatus } = configCache;
       // Agent-facing projection (FLUX-928): the orchestrator reads this every
       // session and the result re-bills each turn, so strip the Tailwind color
-      // classes agents never use. CLONE here — never mutate configCache (the
-      // portal/REST GET /api/config path must keep the full config with colors).
-      const agentTags = (tags || []).map((t: any) => t.name);
-      const agentPriorities = (priorities || []).map((p: any) => ({ name: p.name, icon: p.icon }));
-      return jsonResult({
-        statuses,
-        projects,
-        tags: agentTags,
-        priorities: agentPriorities,
-        users,
-        requireInputStatus,
-        readyForMergeStatus,
-      });
+      // classes agents never use. Shared with the `board://config` resource (FLUX-949)
+      // via buildBoardConfigProjection so the two never diverge; returned via the
+      // FLUX-950 structuredResult (structured output) rather than jsonResult.
+      return structuredResult(buildBoardConfigProjection());
     },
   );
 
@@ -497,6 +767,7 @@ export function buildMcpServer(): McpServer {
     'get_project_group',
     'Read the multi-repo group (if configured): group name + member repos (name, role, git remote, resolved local path, test command, registration state). Also reports `membership` when the current workspace is the parent or a bound member of a group. Returns a clear notice when no group is configured.',
     {},
+    { title: 'Get project group', readOnlyHint: true, openWorldHint: false },
     async () => {
       const registeredPaths = (await getWorkspacesList()).map((w) => w.path);
       const ctx = getGroupContext();
@@ -527,9 +798,10 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'create_ticket',
-    'Create a new ticket on the board',
+    'Create a new ticket on the board. Pass parentId to create it as a subtask — the child is linked into the parent\'s subtasks array atomically.',
     {
       title: z.string().describe('Ticket title'),
+      parentId: z.string().optional().describe('Parent ticket ID — when set, the new ticket is created as a linked subtask of this parent.'),
       status: z.string().optional().describe('Initial status (default: Todo)'),
       priority: z.string().optional().describe('Priority level (default: None)'),
       effort: z.string().optional().describe('Effort estimate: XS, S, M, L, XL, or None'),
@@ -538,11 +810,17 @@ export function buildMcpServer(): McpServer {
       body: z.string().optional().describe('Markdown body/description'),
       author: z.string().optional().describe('Author name (default: Agent)'),
     },
-    async ({ title, status, priority, effort, assignee, tags, body, author }) => {
+    async ({ title, parentId, status, priority, effort, assignee, tags, body, author }) => {
       if (workspaceActivating) return errorResult('Workspace is activating, please retry', 'transient_retry');
+
+      // Subtask path: resolve + validate the parent, create the child with skipBroadcast, then
+      // TOCTOU-safe link it into the parent's subtasks array before emitting taskCreated.
+      const parent = parentId ? tasksCache[parentId] : undefined;
+      if (parentId && !parent) return errorResult(`Parent ticket ${parentId} not found`, 'not_found');
 
       try {
         const opts: CreateTaskOptions = { title, author: author || 'Agent' };
+        if (parentId) { opts.parentId = parentId; opts.skipBroadcast = true; }
         if (status !== undefined) opts.status = status;
         if (priority !== undefined) opts.priority = priority;
         if (effort !== undefined) opts.effort = effort;
@@ -551,6 +829,29 @@ export function buildMcpServer(): McpServer {
         if (body !== undefined) opts.body = body;
         const { id, task } = await createTask(opts);
         const warning = bodySizeWarning(body);
+
+        if (parentId && parent) {
+          // Link to parent — derive subtasks from disk to avoid a TOCTOU race.
+          const parentRaw = await fs.readFile(parent._path, 'utf-8');
+          const parentParsed = matter(parentRaw);
+          const parentSubtasks: string[] = Array.isArray(parentParsed.data.subtasks)
+            ? parentParsed.data.subtasks.map((s: any) => typeof s === 'string' ? s : s.id).filter(Boolean)
+            : [];
+          parentSubtasks.push(id);
+          parentParsed.data.subtasks = parentSubtasks;
+          parentParsed.data.updatedBy = 'Agent';
+          const parentContent = matter.stringify(parentParsed.content, parentParsed.data);
+          await atomicWriteFile(parent._path, parentContent);
+          tasksCache[parentId] = { ...tasksCache[parentId], subtasks: parentSubtasks, updatedBy: 'Agent' };
+
+          // Now that both child + parent link are persisted, emit the deferred creation event.
+          broadcastEvent('taskCreated', { id, parentId });
+          return jsonResult({
+            id, parentId, title: task.title, status: task.status, ...(warning ? { warning } : {}),
+            nextSteps: `Created subtask ${id} under ${parentId}. Next: start_session on ${id}, or create_ticket with parentId again for more children.`,
+          });
+        }
+
         return jsonResult({
           id, title: task.title, status: task.status, ...(warning ? { warning } : {}),
           nextSteps: `Created ${id} (${task.status}). Next: start_session to begin work, or update_ticket to refine the plan first.`,
@@ -567,7 +868,7 @@ export function buildMcpServer(): McpServer {
   // It is additive (one op-log entry + a new ticket); the source turns are never moved.
   server.tool(
     'extract_ticket',
-    'Carve a topic-slice out of a conversation stream into a NEW ticket (the promotion gate). A chat starts as turns in the orchestrator thread and materializes into a card only when it crosses a threshold — promotion is EXTRACTION, not 1:1: address the slice by seq range on the source stream. Human-approved only (CONFIRM gate / board-rebase proposal); the source turns are never moved or copied — the new card re-derives the slice.',
+    'Carve a topic-slice out of a conversation stream into a NEW ticket (the promotion gate) — address the slice by seq range on the source stream. Human-approved only (CONFIRM gate / board-rebase proposal); the source turns are never moved or copied — the new card re-derives the slice.',
     {
       from: z.string().optional().describe('Source stream id to carve from (default: __board__, the orchestrator thread).'),
       fromSeq: z.number().int().describe('Inclusive start seq of the topic-slice on the source stream.'),
@@ -604,11 +905,12 @@ export function buildMcpServer(): McpServer {
   // turns are never moved, and each source is tombstoned + archived (not deleted).
   server.tool(
     'merge_tickets',
-    'Fold several tickets/chat-streams into ONE survivor effort — the inverse of extract, for when "three chats are really one effort." The survivor\'s transcript re-derives as the chronological union of its own turns plus every source stream\'s turns (source attribution preserved); each source ticket is tombstoned (mergedInto pointer + pinned comment) and archived, never deleted — its turns stay intact in the substrate. Additive and reversible (one op in the curation op-log). Human-approved only (CONFIRM gate / board-rebase `fold` proposal).',
+    'Fold several tickets/chat-streams into ONE survivor effort — the inverse of extract. The survivor re-derives as the chronological union of its own turns plus every source stream\'s turns; each source is tombstoned and archived, never deleted. Additive and reversible. Human-approved only (CONFIRM gate / board-rebase `fold` proposal).',
     {
       into: z.string().describe('Survivor ticket id the sources fold into.'),
       from: z.array(z.string()).describe('Source ticket/stream ids to fold into the survivor (each gets tombstoned + archived). Must be non-empty and exclude `into`.'),
     },
+    { title: 'Merge tickets', readOnlyHint: false, destructiveHint: true },
     async ({ into, from }) => {
       if (workspaceActivating) return errorResult('Workspace is activating, please retry', 'transient_retry');
       try {
@@ -622,7 +924,7 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'update_ticket',
-    'Update ticket metadata — title, priority, effort, tags, assignee, or body. Does NOT change status (use change_status for that).',
+    'Update ticket metadata ONLY — title, priority, effort, tags, assignee, body, implementationLink, or parentId. Does NOT move status (use change_status for that). Pass parentId to (re)link this ticket under a parent (updates the parent\'s subtasks and detaches it from any old parent); pass parentId:null to detach it entirely.',
     {
       ticketId: z.string().describe('Ticket ID'),
       title: z.string().optional().describe('New title'),
@@ -632,10 +934,24 @@ export function buildMcpServer(): McpServer {
       tags: z.array(z.string()).optional().describe('Replace tags array'),
       body: z.string().optional().describe('Replace markdown body'),
       implementationLink: z.string().optional().describe('PR URL or commit hash'),
+      // FLUX-1068: .nullish() — a string (re)parents this ticket, null detaches it. Omit to leave
+      // the parent link unchanged. The parent's subtasks array is kept in sync both ways.
+      parentId: z.string().nullish().describe('Parent ticket ID to (re)link under; null detaches. Self-parenting and cycles are rejected.'),
     },
-    async ({ ticketId, title, priority, effort, assignee, tags, body, implementationLink }) => {
+    async ({ ticketId, title, priority, effort, assignee, tags, body, implementationLink, parentId }) => {
       const task = tasksCache[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
+
+      // FLUX-1068: parentId (re)linking. A string sets/moves the parent; null detaches. Omitted →
+      // leave unchanged. Validate the target + reject self-parenting/cycles BEFORE any write.
+      const reparenting = parentId !== undefined;
+      const oldParentId = task.parentId || null;
+      const newParentId = reparenting ? (parentId ? parentId : null) : oldParentId;
+      if (reparenting && newParentId) {
+        if (!tasksCache[newParentId]) return errorResult(`Parent ticket ${newParentId} not found`, 'not_found');
+        const linkError = validateParentLink(ticketId, newParentId);
+        if (linkError) return errorResult(linkError, 'validation_failed');
+      }
 
       // Build the merged frontmatter for a pre-write schema check. The authoritative write below
       // re-reads + re-applies these inside the per-ticket lock (updateTaskWithHistory).
@@ -646,6 +962,10 @@ export function buildMcpServer(): McpServer {
       if (assignee !== undefined) frontmatter.assignee = assignee;
       if (tags !== undefined) frontmatter.tags = tags;
       if (implementationLink !== undefined) frontmatter.implementationLink = implementationLink;
+      if (reparenting) {
+        if (newParentId) frontmatter.parentId = newParentId;
+        else delete frontmatter.parentId;
+      }
 
       const validationErrors = validateTicketFrontmatter(frontmatter);
       if (validationErrors.length > 0) {
@@ -664,6 +984,9 @@ export function buildMcpServer(): McpServer {
       if (assignee !== undefined && assignee !== task.assignee) fieldChanges.push(`Changed assignee to ${assignee}.`);
       if (tags !== undefined) fieldChanges.push('Updated tags.');
       if (implementationLink !== undefined) fieldChanges.push('Updated implementation link.');
+      if (reparenting && newParentId !== oldParentId) {
+        fieldChanges.push(newParentId ? `Linked under ${newParentId}.` : 'Detached from parent.');
+      }
 
       const extraFields: Record<string, any> = {};
       if (priority !== undefined) extraFields.priority = priority;
@@ -671,6 +994,9 @@ export function buildMcpServer(): McpServer {
       if (assignee !== undefined) extraFields.assignee = assignee;
       if (tags !== undefined) extraFields.tags = tags;
       if (implementationLink !== undefined) extraFields.implementationLink = implementationLink;
+      // FLUX-1068: set parentId via extraFields; detach by deleting the key (not persisting null).
+      if (reparenting && newParentId) extraFields.parentId = newParentId;
+      const deleteFields: string[] = reparenting && !newParentId ? ['parentId'] : [];
 
       // FLUX-788: route through the locked + atomic write path (FLUX-645/290) instead of a bare
       // fs.writeFile read-modify-write, which raced concurrent add_comment/log_progress/change_status
@@ -682,12 +1008,19 @@ export function buildMcpServer(): McpServer {
             ? [buildActivityEntry(fieldChanges.join(' '), 'Agent', new Date().toISOString())]
             : [],
           ...(Object.keys(extraFields).length > 0 ? { extraFields } : {}),
+          ...(deleteFields.length > 0 ? { deleteFields } : {}),
           ...(title !== undefined ? { newTitle: title } : {}),
           ...(body !== undefined ? { newBody: body } : {}),
         });
         if (!result) return errorResult(`Failed to update ${ticketId}`);
       } catch (err: any) {
         return errorResult(`Failed to update ${ticketId}: ${err?.message || err}`);
+      }
+
+      // FLUX-1068: reconcile the parent's subtasks (and any old parent) through the shared helper —
+      // the child's own parentId was written above; this fixes up the related tickets.
+      if (reparenting && newParentId !== oldParentId) {
+        await syncParentSubtaskLinks({ id: ticketId, oldParentId, newParentId, actor: 'Agent' });
       }
 
       broadcastEvent('taskUpdated', { id: ticketId });
@@ -698,13 +1031,13 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'change_status',
-    'Move a ticket to a new status. A comment is REQUIRED when moving to Require Input or Ready. Set callerRole to your role (e.g. "orchestrator") when calling from a multi-session context.',
+    'Move a ticket to a new status (the board state machine) — this is the ONLY tool that changes status; update_ticket never does. A comment is REQUIRED when moving to Require Input or Ready. Set callerRole to your role (e.g. "orchestrator") when calling from a multi-session context.',
     {
       ticketId: z.string().describe('Ticket ID'),
       newStatus: z.string().describe('Target status'),
       comment: z.string().optional().describe('Required for Require Input/Ready transitions. Provide the question or completion summary.'),
       callerRole: z.string().optional().describe('Role of the calling session (e.g. "orchestrator"). Required to change status when scatter-gather sessions are active.'),
-      reviewState: z.enum(['approved', 'changes-requested']).nullable().optional().describe('FLUX-816: the EH review verdict to record on the card. Set "approved" when concluding a review to Ready, "changes-requested" when sending back to In Progress. Pass null to clear. Surfaces a review badge; distinct from the GitHub-synced reviewDecision.'),
+      reviewState: z.enum(['approved', 'changes-requested']).nullable().optional().describe('The EH review verdict to record on the card. Set "approved" when concluding a review to Ready, "changes-requested" when sending back to In Progress. Pass null to clear. Surfaces a review badge; distinct from the GitHub-synced reviewDecision.'),
     },
     async ({ ticketId, newStatus, comment, callerRole, reviewState }) => {
       const task = tasksCache[ticketId];
@@ -725,7 +1058,7 @@ export function buildMcpServer(): McpServer {
           return errorResult(
             `Cannot change status: ${activeStepSessions.length} scatter-gather sessions are active on ${ticketId}. ` +
             `Only the orchestrator can change status while parallel reviews are running. ` +
-            `Post your findings via add_comment instead.`,
+            `Post your findings via add_note (type:"comment") instead.`,
             'invalid_state'
           );
         }
@@ -878,6 +1211,23 @@ export function buildMcpServer(): McpServer {
 
       broadcastEvent('taskUpdated', { id: ticketId });
 
+      // FLUX-1031: reclaim this ticket's worktree the moment it reaches Ready — its work is
+      // committed (commit-before-Ready invariant, enforced above) and pushed to the PR branch,
+      // so freeing the slot from the board-wide pool loses nothing (resolveTaskExecutionRoot
+      // self-heals the worktree if the ticket bounces back to In Progress). isWorktreeReclaimable
+      // reads the just-written cache status and SKIPS while a session is still live on the
+      // worktree's branch — the caller that just moved it OR a joined sibling (FLUX-1031 review) —
+      // and the reconcile sweep reclaims it once that ends. The predicate is checked first
+      // (in-memory, cheap) so a live-session Ready move doesn't pay a git scan. The sweep predicate
+      // is scoped to THIS ticket's worktree AND re-runs `isWorktreeReclaimable` so the branch-sibling
+      // guard (+ the sweep's own TOCTOU re-check before removal) also apply on this eager path — not
+      // just the one-time check below. Best-effort — a reclaim failure must never fail the status move.
+      if (newStatus === readyStatus && task.branch && isWorktreeReclaimable(ticketId)) {
+        await reclaimWorktrees(workspaceRoot!, (rid) => rid === ticketId && isWorktreeReclaimable(rid)).catch((err) =>
+          console.error(`[mcp] Ready worktree reclaim for ${ticketId} failed:`, err),
+        );
+      }
+
       // FLUX-922: a concluded review (verdict recorded via reviewState) emits a first-class review
       // notification so the reviewer's verdict reaches the Updates panel, not just the card badge.
       // Gate on a *changed* verdict so a no-op re-affirm doesn't re-fire the notification (and
@@ -902,63 +1252,56 @@ export function buildMcpServer(): McpServer {
   );
 
   server.tool(
-    'archive_ticket',
-    'Safely remove a ticket from the active board by moving it to the Archived status. This is the reversible alternative to deletion — history is preserved and the ticket can be brought back with unarchive_ticket. There is no hard-delete tool; prefer archiving.',
+    'archive',
+    'Archive or unarchive a ticket. action: "archive" moves it to the Archived status (the reversible alternative to deletion — history is preserved; there is no hard-delete tool); "unarchive" brings it back to the active board (default Todo, or pass toStatus). comment applies to "archive"; toStatus applies to "unarchive".',
     {
       ticketId: z.string().describe('Ticket ID'),
-      comment: z.string().optional().describe('Optional reason for archiving (recorded in history).'),
+      action: z.enum(['archive', 'unarchive']).describe('Whether to archive or unarchive the ticket.'),
+      comment: z.string().optional().describe('archive only — optional reason for archiving (recorded in history).'),
+      toStatus: z.string().optional().describe('unarchive only — status to restore the ticket to (default: "Todo").'),
     },
-    async ({ ticketId, comment }) => {
+    { title: 'Archive / unarchive ticket', readOnlyHint: false, destructiveHint: true },
+    async ({ ticketId, action, comment, toStatus }) => {
       const task = tasksCache[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
 
       const archiveStatus = configCache.archiveStatus || 'Archived';
-      if (task.status === archiveStatus) {
-        return textResult(`${ticketId} is already ${archiveStatus}`);
+
+      if (action === 'archive') {
+        if (task.status === archiveStatus) {
+          return textResult(`${ticketId} is already ${archiveStatus}`);
+        }
+
+        const entries: any[] = [];
+        if (comment) {
+          entries.push({ type: 'comment', user: 'Agent', comment, date: new Date().toISOString() });
+        }
+
+        const extraFields: Record<string, any> = {};
+        // Clear any swimlane so the archived ticket doesn't keep a stale blocked flag.
+        if (task.swimlane) {
+          extraFields.swimlane = null;
+          entries.push({ type: 'swimlane_change', swimlane: task.swimlane, action: 'cleared', user: 'Agent', date: new Date().toISOString() });
+          dismissNotificationsForTicket(ticketId);
+        }
+
+        const result = await updateTaskWithHistory(ticketId, {
+          entries,
+          updatedBy: 'Agent',
+          nextStatus: archiveStatus,
+          ...(Object.keys(extraFields).length > 0 ? { extraFields } : {}),
+        });
+        if (!result) return errorResult(`Failed to archive ${ticketId}`);
+
+        // An archived ticket is off the active board — reap any sessions still parked on an
+        // earlier phase so they don't linger as zombies. Preserves the persistent 'chat' session.
+        reapStaleParkedSessions(ticketId, `ticket archived → ${archiveStatus}`);
+
+        broadcastEvent('taskUpdated', { id: ticketId });
+        return textResult(`${ticketId} archived (moved to ${archiveStatus})`);
       }
 
-      const entries: any[] = [];
-      if (comment) {
-        entries.push({ type: 'comment', user: 'Agent', comment, date: new Date().toISOString() });
-      }
-
-      const extraFields: Record<string, any> = {};
-      // Clear any swimlane so the archived ticket doesn't keep a stale blocked flag.
-      if (task.swimlane) {
-        extraFields.swimlane = null;
-        entries.push({ type: 'swimlane_change', swimlane: task.swimlane, action: 'cleared', user: 'Agent', date: new Date().toISOString() });
-        dismissNotificationsForTicket(ticketId);
-      }
-
-      const result = await updateTaskWithHistory(ticketId, {
-        entries,
-        updatedBy: 'Agent',
-        nextStatus: archiveStatus,
-        ...(Object.keys(extraFields).length > 0 ? { extraFields } : {}),
-      });
-      if (!result) return errorResult(`Failed to archive ${ticketId}`);
-
-      // FLUX-721: an archived ticket is off the active board — reap any sessions still parked on
-      // an earlier phase so they don't linger as zombies. Preserves the persistent 'chat' session.
-      reapStaleParkedSessions(ticketId, `ticket archived → ${archiveStatus}`);
-
-      broadcastEvent('taskUpdated', { id: ticketId });
-      return textResult(`${ticketId} archived (moved to ${archiveStatus})`);
-    },
-  );
-
-  server.tool(
-    'unarchive_ticket',
-    'Bring an archived ticket back onto the active board by moving it out of the Archived status. Defaults to "Todo"; pass toStatus to restore it to a specific column.',
-    {
-      ticketId: z.string().describe('Ticket ID'),
-      toStatus: z.string().optional().describe('Status to restore the ticket to (default: "Todo")'),
-    },
-    async ({ ticketId, toStatus }) => {
-      const task = tasksCache[ticketId];
-      if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
-
-      const archiveStatus = configCache.archiveStatus || 'Archived';
+      // action === 'unarchive'
       if (task.status !== archiveStatus) {
         return errorResult(`${ticketId} is not archived (status is ${task.status}).`, 'invalid_state');
       }
@@ -983,72 +1326,67 @@ export function buildMcpServer(): McpServer {
   // ─── Swimlane Tools ──────────────────────────────────────────────────────────
 
   server.tool(
-    'set_swimlane',
-    'Set a swimlane on a ticket (e.g. "require-input"). The ticket stays in its current status column but is visually flagged. A comment is required for swimlanes with commentRequired: true.',
+    'swimlane',
+    'Set or clear a swimlane on a ticket (the ticket stays in its status column but is visually flagged). action: "set" applies a swimlane (needs swimlane id; a comment is required for swimlanes with commentRequired, e.g. "require-input"); "clear" removes the active swimlane.',
     {
       ticketId: z.string().describe('Ticket ID'),
-      swimlane: z.string().describe('Swimlane ID (e.g. "require-input")'),
-      comment: z.string().optional().describe('Required for require-input swimlane (the question to ask)'),
+      action: z.enum(['set', 'clear']).describe('Whether to set or clear a swimlane.'),
+      swimlane: z.string().optional().describe('set only — swimlane ID (e.g. "require-input").'),
+      comment: z.string().optional().describe('set: required for commentRequired swimlanes (the question to ask). clear: optional comment explaining the resolution.'),
     },
-    async ({ ticketId, swimlane, comment }) => {
+    async ({ ticketId, action, swimlane, comment }) => {
       const task = tasksCache[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
 
-      const swimlanes: any[] = configCache.swimlanes || [];
-      const swimlaneDef = swimlanes.find((s: any) => s.id === swimlane);
-      if (!swimlaneDef) {
-        return errorResult(`Unknown swimlane '${swimlane}'. Available: ${swimlanes.map((s: any) => s.id).join(', ')}`, 'validation_failed');
-      }
+      if (action === 'set') {
+        if (!swimlane) return errorResult('swimlane is required for action "set".', 'validation_failed');
 
-      if (swimlaneDef.commentRequired && !comment) {
-        return errorResult(`Swimlane '${swimlane}' requires a comment (the question to ask).`, 'validation_failed');
-      }
-
-      const entries: any[] = [];
-
-      // If ticket already has a swimlane, emit a 'cleared' entry before setting the new one
-      if (task.swimlane && task.swimlane !== swimlane) {
-        entries.push({ type: 'swimlane_change', swimlane: task.swimlane, action: 'cleared', user: 'Agent', date: new Date().toISOString() });
-      } else if (task.swimlane === swimlane) {
-        return errorResult(`${ticketId} already has swimlane '${swimlane}'. Clear it first or use a different swimlane.`, 'invalid_state');
-      }
-
-      if (comment) {
-        entries.push({ type: 'comment', user: 'Agent', comment, date: new Date().toISOString() });
-      }
-      entries.push({ type: 'swimlane_change', swimlane, action: 'set', user: 'Agent', date: new Date().toISOString(), comment: comment || undefined });
-
-      const result = await updateTaskWithHistory(ticketId, {
-        entries,
-        updatedBy: 'Agent',
-        extraFields: { swimlane },
-      });
-      if (!result) return errorResult(`Failed to update ${ticketId}`);
-
-      if (swimlane === 'require-input') {
-        const sessions = getActiveSessionsForTask(ticketId);
-        for (const s of sessions) {
-          s.status = 'waiting-input';
-          s.pausedForInput = true;
+        const swimlanes: any[] = configCache.swimlanes || [];
+        const swimlaneDef = swimlanes.find((s: any) => s.id === swimlane);
+        if (!swimlaneDef) {
+          return errorResult(`Unknown swimlane '${swimlane}'. Available: ${swimlanes.map((s: any) => s.id).join(', ')}`, 'validation_failed');
         }
+
+        if (swimlaneDef.commentRequired && !comment) {
+          return errorResult(`Swimlane '${swimlane}' requires a comment (the question to ask).`, 'validation_failed');
+        }
+
+        const entries: any[] = [];
+
+        // If ticket already has a swimlane, emit a 'cleared' entry before setting the new one
+        if (task.swimlane && task.swimlane !== swimlane) {
+          entries.push({ type: 'swimlane_change', swimlane: task.swimlane, action: 'cleared', user: 'Agent', date: new Date().toISOString() });
+        } else if (task.swimlane === swimlane) {
+          return errorResult(`${ticketId} already has swimlane '${swimlane}'. Clear it first or use a different swimlane.`, 'invalid_state');
+        }
+
+        if (comment) {
+          entries.push({ type: 'comment', user: 'Agent', comment, date: new Date().toISOString() });
+        }
+        entries.push({ type: 'swimlane_change', swimlane, action: 'set', user: 'Agent', date: new Date().toISOString(), comment: comment || undefined });
+
+        const result = await updateTaskWithHistory(ticketId, {
+          entries,
+          updatedBy: 'Agent',
+          extraFields: { swimlane },
+        });
+        if (!result) return errorResult(`Failed to update ${ticketId}`);
+
+        // require-input parks active sessions (the same special-case change_status applies).
+        if (swimlane === 'require-input') {
+          const sessions = getActiveSessionsForTask(ticketId);
+          for (const s of sessions) {
+            s.status = 'waiting-input';
+            s.pausedForInput = true;
+          }
+        }
+
+        broadcastEvent('taskUpdated', { id: ticketId });
+        generatePromptNotification(ticketId, task.title || ticketId, swimlaneDef.label);
+        return textResult(`${ticketId} swimlane set to '${swimlane}'`);
       }
 
-      broadcastEvent('taskUpdated', { id: ticketId });
-      generatePromptNotification(ticketId, task.title || ticketId, swimlaneDef.label);
-      return textResult(`${ticketId} swimlane set to '${swimlane}'`);
-    },
-  );
-
-  server.tool(
-    'clear_swimlane',
-    'Clear the active swimlane from a ticket, returning it to normal board state.',
-    {
-      ticketId: z.string().describe('Ticket ID'),
-      comment: z.string().optional().describe('Optional comment explaining the resolution'),
-    },
-    async ({ ticketId, comment }) => {
-      const task = tasksCache[ticketId];
-      if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
+      // action === 'clear'
       if (!task.swimlane) return errorResult(`${ticketId} has no active swimlane to clear.`, 'invalid_state');
 
       const previousSwimlane = task.swimlane;
@@ -1072,67 +1410,50 @@ export function buildMcpServer(): McpServer {
   );
 
   server.tool(
-    'add_comment',
-    "Append a comment to a ticket's history",
+    'add_note',
+    'Append a note to a ticket\'s history. type "comment" records a decision/observation (a human-facing comment); type "activity" logs an agent progress update ("agent did X"). summary/pin/supersedes apply to both: write a faithful summary for substantial notes (shown in the agent digest once the note ages past the recent window), pin to never collapse it, and supersedes to retire an earlier now-wrong entry.',
     {
       ticketId: z.string().describe('Ticket ID'),
-      comment: z.string().describe('Comment text'),
-      user: z.string().optional().describe('Author of the comment (default: Agent)'),
-      summary: z.string().optional().describe('Faithful one-paragraph summary of this comment. Once it ages out of the recent window, the agent digest shows the summary instead of the full text (full text still fetchable on demand). Write it for a substantial comment; preserve the decision/why/anything actionable — concise but NOT lossy. Skip for short comments.'),
-      pin: z.boolean().optional().describe('Pin this comment so it is NEVER collapsed in the agent digest (use for review handoffs / key decisions that must always stay visible in full).'),
-      supersedes: z.array(z.string()).optional().describe('History entry id(s) this comment makes obsolete (e.g. it reverses or replaces an earlier decision). The superseded entries collapse to a one-line marker in the agent digest so the next session reads the live decision, not the dead one — still recoverable via get_ticket expand. Set this ONLY when genuinely retiring a now-wrong entry; a pinned or user-authored target is treated as advisory-only (kept full) — the engine will not bury human intent on an agent\'s say-so.'),
+      type: z.enum(['comment', 'activity']).describe('"comment" = a human-facing comment; "activity" = an agent progress/activity update.'),
+      message: z.string().describe('The note text (comment body or progress message).'),
+      user: z.string().optional().describe('Author (default: Agent). Honored for type "comment"; activity is always attributed to Agent.'),
+      summary: z.string().optional().describe('Faithful summary shown in the agent digest once this note ages past the recent window (full text fetchable on demand). Write it for a substantial/long note; concise but NOT lossy. Skip for short ones.'),
+      pin: z.boolean().optional().describe('Pin so this note is NEVER collapsed in the agent digest (review handoffs / key decisions).'),
+      supersedes: z.array(z.string()).optional().describe('History entry id(s) this note makes obsolete (it reverses/replaces an earlier decision). The superseded entries collapse to a one-line marker in the agent digest, still recoverable via get_ticket expand. Set ONLY when genuinely retiring a now-wrong entry; a pinned or user-authored target is advisory-only (kept full).'),
     },
-    async ({ ticketId, comment, user, summary, pin, supersedes }) => {
+    async ({ ticketId, type, message, user, summary, pin, supersedes }) => {
       const task = tasksCache[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
 
-      const actor = user || 'Agent';
-      const entries = [{
-        type: 'comment', user: actor, comment, date: new Date().toISOString(),
-        ...(summary && summary.trim() ? { summary: summary.trim() } : {}),
-        ...(pin ? { pin: true } : {}),
-        ...(Array.isArray(supersedes) && supersedes.length ? { supersedes } : {}),
-      }];
-      const result = await updateTaskWithHistory(ticketId, { entries, updatedBy: actor });
-      if (!result) return errorResult(`Failed to update ${ticketId}`);
-      broadcastEvent('taskUpdated', { id: ticketId });
-      return textResult(`Comment added to ${ticketId}`);
-    },
-  );
-
-  server.tool(
-    'log_progress',
-    'Log a progress update on a ticket — adds an activity entry to history',
-    {
-      ticketId: z.string().describe('Ticket ID'),
-      message: z.string().describe('Progress message'),
-      summary: z.string().optional().describe('Faithful summary shown in the agent digest once this note ages out of the recent window (full text fetchable on demand). Write it for a long note; concise but not lossy. Skip for short ones.'),
-      pin: z.boolean().optional().describe('Pin so this note is never collapsed in the agent digest.'),
-      supersedes: z.array(z.string()).optional().describe('History entry id(s) this note makes obsolete (it records that an earlier decision/plan no longer holds). The superseded entries collapse to a one-line marker in the agent digest — still recoverable via get_ticket expand. A pinned or user-authored target is advisory-only (kept full); the engine will not bury human intent on an agent\'s say-so.'),
-    },
-    async ({ ticketId, message, summary, pin, supersedes }) => {
-      const task = tasksCache[ticketId];
-      if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
-
-      const activityTimestamp = new Date().toISOString();
+      const ts = new Date().toISOString();
       const extra: Record<string, unknown> = {
         ...(summary && summary.trim() ? { summary: summary.trim() } : {}),
         ...(pin ? { pin: true } : {}),
         ...(Array.isArray(supersedes) && supersedes.length ? { supersedes } : {}),
       };
-      const entries = [buildActivityEntry(message, 'Agent', activityTimestamp, extra)];
-      const result = await updateTaskWithHistory(ticketId, { entries, updatedBy: 'Agent' });
+
+      let entries: any[];
+      let actor: string;
+      if (type === 'comment') {
+        actor = user || 'Agent';
+        entries = [{ type: 'comment', user: actor, comment: message, date: ts, ...extra }];
+      } else {
+        actor = 'Agent';
+        entries = [buildActivityEntry(message, 'Agent', ts, extra)];
+      }
+
+      const result = await updateTaskWithHistory(ticketId, { entries, updatedBy: actor });
       if (!result) return errorResult(`Failed to update ${ticketId}`);
       broadcastEvent('taskUpdated', { id: ticketId });
-      return textResult(`Progress logged on ${ticketId}`);
+      return textResult(type === 'comment' ? `Comment added to ${ticketId}` : `Progress logged on ${ticketId}`);
     },
   );
 
-  // ─── Grooming Artifact Tools (FLUX-873) ───────────────────────────────────────
+  // ─── Artifact Tools (FLUX-873, FLUX-976) ──────────────────────────────────────
 
   server.tool(
     'publish_artifact',
-    'Publish a self-contained HTML grooming artifact for a ticket so the user can REASON AGAINST a concrete rendering (a mockup, an architecture/flow diagram, an interactive prototype, acceptance criteria) instead of imagining it from prose. Each call is a NEW REVISION (history is kept — never an overwrite); the viewer defaults to the latest. The HTML is stored in a sidecar and rendered in a sandboxed iframe, so it must be a COMPLETE, SELF-CONTAINED document: inline <style>/<script>, plus optional Tailwind (cdn.tailwindcss.com) and Mermaid (cdn.jsdelivr.net) via <script> tags. Do NOT inline the HTML into the ticket body. WHEN TO USE — judge per ticket: emit for UI/UX, architecture, or "shape of the thing" work where seeing a rendering catches misunderstanding before code. SKIP for bug fixes, XS/S tickets, and backend plumbing; default to NOT emitting when unsure. Artifacts are the exception, not the norm.',
+    'Publish a self-contained HTML artifact so the user can reason against a concrete rendering instead of imagining it from prose. Spans both lifecycle ends: a plan-time grooming mockup/diagram/prototype AND a Ready-time visual recap of an implementation diff (touched-file tree + key diff hunks + plain-language summary; tag the recap title/note with "recap"). Each call is a NEW REVISION (never an overwrite). The HTML must be a COMPLETE, self-contained document (inline <style>/<script>; Tailwind via cdn.tailwindcss.com and Mermaid via cdn.jsdelivr.net are allowed) and renders in a sandboxed iframe with no network access. Judge per ticket: emit for UI/UX, architecture, or "shape of the thing" work; SKIP bug fixes, XS/S tickets, and backend plumbing; default OFF when unsure.',
     {
       ticketId: z.string().describe('Ticket ID, e.g. FLUX-42'),
       html: z.string().describe('Complete, self-contained HTML document (inline styles/scripts; Tailwind/Mermaid via CDN script tags are allowed). Rendered in a sandboxed opaque-origin iframe — it cannot reach the portal, cookies, or storage, and cannot make network requests (connect-src is blocked), so everything it needs must be inlined or loaded from the allowed CDNs.'),
@@ -1153,7 +1474,7 @@ export function buildMcpServer(): McpServer {
           entries: [{
             type: 'activity',
             user: 'Agent',
-            comment: `Published grooming artifact revision ${rev}${title ? ` — ${title}` : ''} (${bytes.toLocaleString()} bytes).`,
+            comment: `Published artifact revision ${rev}${title ? ` — ${title}` : ''} (${bytes.toLocaleString()} bytes).`,
             date: new Date().toISOString(),
           }],
         });
@@ -1163,7 +1484,7 @@ export function buildMcpServer(): McpServer {
         broadcastEvent('taskUpdated', { id: ticketId });
         broadcastEvent('artifactReady', { ticketId, rev });
         return textResult(
-          `Published artifact revision ${rev} for ${ticketId}. It appears in the ticket's "Grooming Artifact" panel (served at /api/tasks/${ticketId}/artifact?rev=${rev}). ` +
+          `Published artifact revision ${rev} for ${ticketId}. It appears in the ticket's artifact panel (served at /api/tasks/${ticketId}/artifact?rev=${rev}). ` +
           `Prior revisions are kept — re-publishing always creates a new revision, never overwrites.`,
         );
       } catch (err: any) {
@@ -1183,6 +1504,7 @@ export function buildMcpServer(): McpServer {
       completionComment: z.string().describe('Summary of what was implemented'),
       force: z.boolean().optional().describe('Override the shared-PR guard: merge even though the branch is shared by non-Done sibling tickets (their work merges + they advance to Done too).'),
     },
+    { title: 'Finish ticket (merge + Done)', readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     async ({ ticketId, implementationLink, completionComment, force }) => {
       const task = tasksCache[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
@@ -1215,7 +1537,7 @@ export function buildMcpServer(): McpServer {
       }
 
       let finalLink = implementationLink;
-      let noteForComment = '';
+      const noteForComment = '';
 
       // If ticket has a branch, merge the existing PR
       if (task.branch) {
@@ -1345,78 +1667,60 @@ export function buildMcpServer(): McpServer {
   // ─── Branch Tools ──────────────────────────────────────────────────────────
 
   server.tool(
-    'create_branch',
-    'Create a git feature branch for a ticket and store its name on the ticket. Optionally spin up a dedicated git worktree so the agent runs isolated from master (FLUX-516).',
+    'branch',
+    'Manage the git branch for a ticket. action: "create" makes a feature branch (and a dedicated worktree by default) and stores it on the ticket; "status" reports name + existence + ahead/behind counts; "delete" removes the branch (refuses unmerged unless force=true). baseBranch/worktree apply only to "create"; force applies only to "delete".',
     {
       ticketId: z.string().describe('Ticket ID'),
-      baseBranch: z.string().optional().describe('Base branch (default: master)'),
-      worktree: z.boolean().optional().describe('Create a dedicated git worktree for this branch. Agent branch sessions are worktree-isolated BY DEFAULT (FLUX-741) so parallel ticket sessions never share a checkout; pass `worktree:false` to run in the shared main tree instead (single-checkout / human-manual escape). Implies a branch.'),
+      action: z.enum(['create', 'status', 'delete']).describe('Which branch operation to run.'),
+      baseBranch: z.string().optional().describe('create only — base branch (default: master).'),
+      worktree: z.boolean().optional().describe('create only — create a dedicated git worktree. Agent branch sessions are worktree-isolated BY DEFAULT so parallel ticket sessions never share a checkout; pass false to run in the shared main tree (single-checkout / human-manual escape). Implies a branch.'),
+      force: z.boolean().optional().describe('delete only — force delete even if unmerged (default: false). Invalid for other actions.'),
     },
-    async ({ ticketId, baseBranch, worktree }) => {
+    async ({ ticketId, action, baseBranch, worktree, force }) => {
       const task = tasksCache[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
-      if (task.branch) return errorResult(`Ticket ${ticketId} already has branch: ${task.branch}`, 'invalid_state');
 
-      try {
-        // FLUX-521: optionally create a dedicated worktree (worktree ⇒ branch).
-        // FLUX-741: agent branch sessions are worktree-isolated BY DEFAULT — two parallel ticket
-        // sessions must never share one checkout (the FLUX-734/739 loss, where a shared-root switch
-        // discarded uncommitted work). The explicit `worktree` param is the per-call escape
-        // (`worktree:false` → run in the shared main tree). The portal/human "Start task" path keeps
-        // its own `worktreeByDefault` default (off, see routes/tasks.ts) — this flip is agent-only.
-        // FLUX-845: the branch+worktree mechanism is centralized in ensureTicketIsolation; this tool
-        // only resolves the agent POLICY (worktree-by-default) and delegates.
-        const result = await ensureTicketIsolation(ticketId, { worktree: worktree ?? true, baseBranch });
-        return jsonResult({
-          ...result,
-          nextSteps: `Branch ready. Next: implement on it and commit, then change_status to Ready to open the PR (finish_ticket merges it).`,
-        });
-      } catch (err: any) {
-        return errorResult(`Failed to create branch: ${err.message}`);
+      // `force` is only meaningful for delete — reject it on create/status so a misuse is loud.
+      if (force !== undefined && action !== 'delete') {
+        return errorResult(`force is only valid for action "delete" (got action "${action}").`, 'validation_failed');
       }
-    },
-  );
 
-  server.tool(
-    'get_branch',
-    'Get the branch status for a ticket — name, existence, and ahead/behind counts vs master',
-    {
-      ticketId: z.string().describe('Ticket ID'),
-    },
-    async ({ ticketId }) => {
-      const task = tasksCache[ticketId];
-      if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
-
-      const name: string | undefined = task.branch;
-      if (!name) return jsonResult({ name: null, exists: false, aheadCount: 0, behindCount: 0 });
-
-      try {
-        const status = await getTicketBranchStatus(name);
-        return jsonResult({ name, ...status });
-      } catch (err: any) {
-        return errorResult(`Failed to get branch status: ${err.message}`);
+      if (action === 'create') {
+        if (task.branch) return errorResult(`Ticket ${ticketId} already has branch: ${task.branch}`, 'invalid_state');
+        try {
+          // Optionally create a dedicated worktree (worktree ⇒ branch). Agent branch sessions are
+          // worktree-isolated BY DEFAULT — two parallel ticket sessions must never share one
+          // checkout. The explicit `worktree` param is the per-call escape (false → shared main
+          // tree). The branch+worktree mechanism is centralized in ensureTicketIsolation; this tool
+          // only resolves the agent POLICY (worktree-by-default) and delegates.
+          const result = await ensureTicketIsolation(ticketId, { worktree: worktree ?? true, baseBranch });
+          return jsonResult({
+            ...result,
+            nextSteps: `Branch ready. Next: implement on it and commit, then change_status to Ready to open the PR (finish_ticket merges it).`,
+          });
+        } catch (err: any) {
+          return errorResult(`Failed to create branch: ${err.message}`);
+        }
       }
-    },
-  );
 
-  server.tool(
-    'delete_branch',
-    'Delete the git branch associated with a ticket. Refuses unmerged branches unless force=true.',
-    {
-      ticketId: z.string().describe('Ticket ID'),
-      force: z.boolean().optional().describe('Force delete even if unmerged (default: false)'),
-    },
-    async ({ ticketId, force }) => {
-      const task = tasksCache[ticketId];
-      if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
+      if (action === 'status') {
+        const name: string | undefined = task.branch;
+        if (!name) return jsonResult({ name: null, exists: false, aheadCount: 0, behindCount: 0 });
+        try {
+          const status = await getTicketBranchStatus(name);
+          return jsonResult({ name, ...status });
+        } catch (err: any) {
+          return errorResult(`Failed to get branch status: ${err.message}`);
+        }
+      }
 
+      // action === 'delete'
       const name: string | undefined = task.branch;
       if (!name) return errorResult(`Ticket ${ticketId} has no associated branch`, 'not_found');
-
       try {
-        // FLUX-521: a branch can't be deleted while a worktree holds it checked out —
-        // stop the session (release the cwd lock) and detach. This is an ABANDON, so
-        // uncommitted work is preserved as a stash ref but NOT applied onto master.
+        // A branch can't be deleted while a worktree holds it checked out — stop the session
+        // (release the cwd lock) and detach. This is an ABANDON, so uncommitted work is preserved
+        // as a stash ref but NOT applied onto master.
         const wtPath = taskWorktreeDir(workspaceRoot!, ticketId);
         if (existsSync(wtPath)) {
           stopAllSessionsForTask(ticketId, 'Deleting branch — detaching worktree');
@@ -1428,64 +1732,6 @@ export function buildMcpServer(): McpServer {
         return textResult(`Branch ${name} deleted`);
       } catch (err: any) {
         return errorResult(`Failed to delete branch: ${err.message}`);
-      }
-    },
-  );
-
-  server.tool(
-    'create_subtask',
-    'Create a subtask and link it to a parent ticket',
-    {
-      parentId: z.string().describe('Parent ticket ID'),
-      title: z.string().describe('Subtask title'),
-      status: z.string().optional().describe('Initial status (default: Todo)'),
-      priority: z.string().optional().describe('Priority (default: None)'),
-      effort: z.string().optional().describe('Effort estimate (default: None)'),
-      body: z.string().optional().describe('Markdown body'),
-      tags: z.array(z.string()).optional().describe('Tags array'),
-      assignee: z.string().optional().describe('Assignee (default: unassigned)'),
-    },
-    async ({ parentId, title, status, priority, effort, body, tags, assignee }) => {
-      const parent = tasksCache[parentId];
-      if (!parent) return errorResult(`Parent ticket ${parentId} not found`, 'not_found');
-      if (workspaceActivating) return errorResult('Workspace is activating, please retry', 'transient_retry');
-
-      try {
-        // skipBroadcast: defer the taskCreated event until after the child is
-        // linked to its parent, so a failed parent write never emits an event
-        // for an orphan child (FLUX-435).
-        const opts: CreateTaskOptions = { title, author: 'Agent', parentId, skipBroadcast: true };
-        if (status !== undefined) opts.status = status;
-        if (priority !== undefined) opts.priority = priority;
-        if (effort !== undefined) opts.effort = effort;
-        if (assignee !== undefined) opts.assignee = assignee;
-        if (tags) opts.tags = tags;
-        if (body !== undefined) opts.body = body;
-        const { id: childId, task: childTask } = await createTask(opts);
-
-        // Link to parent — derive subtasks from disk to avoid TOCTOU race
-        const parentRaw = await fs.readFile(parent._path, 'utf-8');
-        const parentParsed = matter(parentRaw);
-        const parentSubtasks: string[] = Array.isArray(parentParsed.data.subtasks)
-          ? parentParsed.data.subtasks.map((s: any) => typeof s === 'string' ? s : s.id).filter(Boolean)
-          : [];
-        parentSubtasks.push(childId);
-        parentParsed.data.subtasks = parentSubtasks;
-        parentParsed.data.updatedBy = 'Agent';
-        const parentContent = matter.stringify(parentParsed.content, parentParsed.data);
-        await atomicWriteFile(parent._path, parentContent);
-        tasksCache[parentId] = { ...tasksCache[parentId], subtasks: parentSubtasks, updatedBy: 'Agent' };
-
-        // Now that both the child and the parent link are persisted, emit the
-        // creation event (FLUX-435).
-        broadcastEvent('taskCreated', { id: childId, parentId });
-
-        return jsonResult({
-          id: childId, parentId, title: childTask.title, status: childTask.status,
-          nextSteps: `Created subtask ${childId} under ${parentId}. Next: start_session on ${childId}, or create_subtask again for more children.`,
-        });
-      } catch (err: any) {
-        return errorResult(err.message || 'Failed to create subtask');
       }
     },
   );
@@ -1503,6 +1749,7 @@ export function buildMcpServer(): McpServer {
     {
       phase: z.string().optional().describe('Filter by phase (grooming, implementation, review, finalize). Omit to see all.'),
     },
+    { title: 'List available agents', readOnlyHint: true, openWorldHint: false },
     async ({ phase }) => {
       try {
         const url = phase
@@ -1537,68 +1784,23 @@ export function buildMcpServer(): McpServer {
   );
 
   server.tool(
-    'delegate_to_agent',
-    'Delegate a task to a specialist agent. Spawns the agent, waits for it to finish, and returns its output. Use this when specialist knowledge would produce better results than doing the work yourself.',
-    {
-      ticketId: z.string().describe('Ticket ID the delegation is for'),
-      personaId: z.string().describe('Agent persona ID to delegate to (from list_available_agents)'),
-      task: z.string().describe('Clear description of what the delegate should do. Be specific about files, scope, and expected output format.'),
-      effort: z.string().optional().describe('Effort level for the delegate: low, medium, high (default: medium). Use low for quick checks, high for thorough work.'),
-      model: z.string().optional().describe('Optional model override for THIS delegate (e.g. "sonnet", "opus"). Highest precedence among the delegate-model overrides (above the persona default and the configured delegate model). Currently honored only on Claude-framework boards; Gemini/Copilot delegates ignore it and use their configured model. Omit to let the persona/config/status-derived default apply (cheap personas already default to a cheaper tier).'),
-      timeout: z.number().optional().describe('Timeout in seconds (default: 300, max: 600). The delegation fails if the agent takes longer.'),
-    },
-    async ({ ticketId, personaId, task: delegationTask, effort, model, timeout }) => {
-      try {
-        const timeoutMs = timeout ? Math.min(timeout * 1000, 600_000) : 300_000;
-        const framework = process.env.EVENT_HORIZON_FRAMEWORK || 'claude';
-        const res = await fetch(`${ENGINE_URL}/api/tasks/${ticketId}/cli-session/delegate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            framework,
-            personaId,
-            task: delegationTask,
-            effortOverride: effort || '',
-            // FLUX-482: per-call model override (highest precedence). The route resolves
-            // persona.model / config.delegateModel / status-derived fallback when omitted.
-            ...(model ? { model } : {}),
-            skipPermissions: true,
-            timeout: timeoutMs,
-          }),
-        });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          return errorResult(`Delegation failed: ${err.error || res.statusText}`, 'channel_unavailable');
-        }
-        const result = await res.json();
-        if (!result.succeeded) {
-          return errorResult(`Delegate "${personaId}" ${result.status}: ${result.output || 'no output'}`);
-        }
-        return textResult(result.output || '(delegate produced no output)');
-      } catch (err: any) {
-        return errorResult(`Delegation error: ${err.message}`, 'channel_unavailable');
-      }
-    },
-  );
-
-  server.tool(
-    'delegate_parallel',
-    'Delegate tasks to multiple agents in parallel. All agents run simultaneously; returns when all finish. Use for independent work that benefits from different specialist perspectives.',
+    'delegate',
+    'Delegate one or more tasks to specialist agents and wait for them to finish. One delegation runs serially; multiple run in parallel (Promise.allSettled). Always returns a JSON array, one entry per delegation: { persona, succeeded, status, output }. Use when specialist knowledge produces better results than doing the work yourself.',
     {
       ticketId: z.string().describe('Ticket ID the delegations are for'),
       delegations: z.array(z.object({
-        personaId: z.string().describe('Agent persona ID'),
-        task: z.string().describe('What this specific delegate should do'),
-        effort: z.string().optional().describe('Effort level: low, medium, high'),
-        model: z.string().optional().describe('Optional model override for THIS delegate (e.g. "sonnet", "opus"). Highest precedence among the delegate-model overrides (above the persona default and the configured delegate model). Currently honored only on Claude-framework boards; Gemini/Copilot delegates ignore it and use their configured model. Omit to let the persona/config/status-derived default apply.'),
-      })).describe('Array of delegation specs to run in parallel'),
-      timeout: z.number().optional().describe('Timeout in seconds for ALL delegations (default: 300, max: 600)'),
+        personaId: z.string().describe('Agent persona ID (from list_available_agents)'),
+        task: z.string().describe('What this delegate should do — be specific about files, scope, and expected output format.'),
+        effort: z.string().optional().describe('Effort level: low, medium, high (default: medium).'),
+        model: z.string().optional().describe('Optional model override for this delegate.'),
+      })).min(1).describe('One or more delegation specs. Length 1 = serial; >1 = parallel.'),
+      timeout: z.number().optional().describe('Timeout in seconds for ALL delegations (default: 300, max: 600).'),
     },
     async ({ ticketId, delegations, timeout }) => {
       const timeoutMs = timeout ? Math.min(timeout * 1000, 600_000) : 300_000;
       const results = await Promise.allSettled(
         delegations.map(async (d) => {
-          const framework = process.env.EVENT_HORIZON_FRAMEWORK || 'claude';
+          const framework = process.env.EVENT_HORIZON_FRAMEWORK || resolveDefaultFramework();
           const res = await fetch(`${ENGINE_URL}/api/tasks/${ticketId}/cli-session/delegate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1637,17 +1839,17 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'start_session',
-    'Start an agent work session ON a ticket and return IMMEDIATELY (fire-and-forget). Use this to DISPATCH work: when the user asks to groom/implement/review/finalize a ticket, start the phase session on that ticket instead of doing the work yourself in this chat. The session runs in the ticket\'s own scope; the user opens that ticket\'s chat to drive it. Unlike delegate_to_agent, this does NOT wait for the session to finish.',
+    'Start an agent work session ON a ticket and return IMMEDIATELY (fire-and-forget). Use this to DISPATCH work: when the user asks to groom/implement/review/finalize a ticket, start the phase session on that ticket instead of doing the work yourself. The session runs in the ticket\'s own scope; the user opens that ticket\'s chat to drive it. Unlike delegate, this does NOT wait for the session to finish.',
     {
       ticketId: z.string().describe('Ticket ID to start the session on'),
       phase: z.enum(['grooming', 'implementation', 'review', 'finalize']).optional().describe('Work phase — drives the session mission. If omitted, the engine derives it from the ticket status.'),
       personaId: z.string().optional().describe('Optional persona to lead the session (from list_available_agents). Default: the phase\'s solo lead.'),
       effort: z.string().optional().describe('Effort level: low, medium, high, xhigh.'),
-      worktree: z.boolean().optional().describe('Isolate the session in a dedicated git worktree (FLUX-845). Defaults to TRUE: agent dispatch is unattended and often concurrent, so it must never share a checkout with another session. Pass `worktree:false` for the single-checkout / shared-tree escape (manual case).'),
+      worktree: z.boolean().optional().describe('Isolate the session in a dedicated git worktree. Defaults to TRUE: agent dispatch is unattended and often concurrent, so it must never share a checkout with another session. NOTE (FLUX-1018): a branch-bearing agent session is ALWAYS worktree-isolated at spawn — `worktree:false` only skips creating the worktree up front; the spawn still creates one (a branch on the shared main checkout let a single-shot agent commit to master). To run in the shared main tree, start the session branchless instead of passing worktree:false.'),
     },
     async ({ ticketId, phase, personaId, effort, worktree }) => {
       try {
-        const framework = process.env.EVENT_HORIZON_FRAMEWORK || 'claude';
+        const framework = process.env.EVENT_HORIZON_FRAMEWORK || resolveDefaultFramework();
         // FLUX-845: isolate by default — the engine creates the branch+worktree before spawning.
         const body: Record<string, unknown> = {
           framework,
@@ -1676,10 +1878,245 @@ export function buildMcpServer(): McpServer {
     },
   );
 
+  // ── The Furnace (FLUX-1008 → FLUX-1053 batches) ─────────────────────────────
+  // Read + live-mutate first-class Furnace batches. A batch burns its tickets (implement → review →
+  // re-implement ≤ retryCap → leave the PR open at Ready) and NEVER merges. Two kinds:
+  //   sequential — tickets share ONE branch + ONE PR on one worktree, burning in order (burnRate 1);
+  //   parallel   — each ticket its own worktree + PR, at burnRate (1–4) concurrency.
+  server.tool(
+    'furnace_get',
+    'Read Furnace batch(es). Pass `batchId` for one batch (its tickets + config + PRs + burn report); omit it to list every batch (optionally filter by `status`). A batch is a named bucket of tickets the Furnace burns unattended — implement → review → re-implement ≤ retryCap → leave the PR open at Ready — never merging. Also returns live worktree-slot usage.',
+    {
+      batchId: z.string().optional().describe('A specific batch id; omit to list all batches.'),
+      status: z.enum(['draft', 'burning', 'done', 'parked']).optional().describe('When listing, only batches in this status.'),
+    },
+    async ({ batchId, status }) => {
+      try {
+        await ensureFurnaceLoaded();
+        // FLUX-1066/1067: reconcile against ground truth on read so the orchestrator sees any ticket
+        // completed / taken over outside the Furnace, and the slot count matches the real worktree pool.
+        await refreshWorktreePool();
+        if (batchId) {
+          if (!getFurnaceBatch(batchId)) return errorResult(`Furnace batch ${batchId} not found.`, 'not_found');
+          await reconcileBatch(batchId);
+          const batch = getFurnaceBatch(batchId);
+          if (!batch) return errorResult(`Furnace batch ${batchId} not found.`, 'not_found');
+          return jsonResult(batch);
+        }
+        for (const b of getFurnaceBatchesCache()) await reconcileBatch(b.id);
+        let batches = getFurnaceBatchesCache();
+        if (status) batches = batches.filter((b) => b.status === status);
+        return jsonResult({ batches, slots: { used: globalSlotsInUse(), free: freeSlots(), max: FURNACE_SLOT_CAP } });
+      } catch (err: any) {
+        return errorResult(`Failed to read furnace batch(es): ${err.message}`);
+      }
+    },
+  );
+
+  server.tool(
+    'furnace_update',
+    'Live-adjust a Furnace batch — title, burn rate (parallel concurrency, 1–4), kind, retry cap, circuit breaker, auto-trigger. Changes are picked up on the next stoke tick. A title rename while burning updates the display name only — the branch is NOT renamed. `kind`/`branch` are only changeable while the batch is a draft. Does NOT ignite or stop — dedicated tools handle those.',
+    {
+      batchId: z.string().describe('The batch to update.'),
+      title: z.string().optional().describe('Display name. Safe to change while burning (branch unchanged).'),
+      kind: z.enum(['sequential', 'parallel']).optional().describe('sequential = shared branch/PR, ordered; parallel = per-ticket branch/PR. Only changeable while draft.'),
+      burnRate: z.number().int().positive().optional().describe('Parallel concurrency, 1–4 (clamped). Ignored for sequential (forced to 1).'),
+      retryCap: z.number().int().min(0).optional().describe('Re-implementation attempts before parking a ticket (default 2).'),
+      maxConsecutiveFailures: z.number().int().positive().optional().describe('Circuit breaker: halt the batch after N consecutive parks/failures.'),
+      rateLimitRetryIntervalMs: z.number().int().positive().optional().describe('FLUX-1063: how often (ms) a rate-limited (cooling-down) ticket auto-retries. Default 20m.'),
+      rateLimitMaxWaitMs: z.number().int().positive().optional().describe('FLUX-1063: max time (ms) a ticket may cool down after a rate limit before failing outright. Default 5h.'),
+      trigger: z.object({
+        type: z.enum(['batch', 'pr']).describe('Auto-ignite after a batch or a PR is merged.'),
+        ref: z.string().describe('A batch id (type "batch") or a PR url/#number (type "pr").'),
+      }).nullable().optional().describe('Auto-ignite this batch once the referenced batch/PR is merged. Pass null to clear.'),
+    },
+    async ({ batchId, title, kind, burnRate, retryCap, maxConsecutiveFailures, rateLimitRetryIntervalMs, rateLimitMaxWaitMs, trigger }) => {
+      try {
+        await ensureFurnaceLoaded();
+        const existing = getFurnaceBatch(batchId);
+        if (!existing) return errorResult(`Furnace batch ${batchId} not found.`, 'not_found');
+        const updated = await updateFurnaceBatch(batchId, {
+          ...(title !== undefined ? { title } : {}),
+          ...(kind !== undefined ? { kind: kind as BatchKind } : {}),
+          ...(burnRate !== undefined ? { burnRate } : {}),
+          ...(retryCap !== undefined ? { retryCap } : {}),
+          ...(maxConsecutiveFailures !== undefined ? { maxConsecutiveFailures } : {}),
+          ...(rateLimitRetryIntervalMs !== undefined ? { rateLimitRetryIntervalMs } : {}),
+          ...(rateLimitMaxWaitMs !== undefined ? { rateLimitMaxWaitMs } : {}),
+          ...(trigger !== undefined ? { trigger: (trigger as BatchTrigger | null) } : {}),
+        });
+        if (!updated) return errorResult(`Furnace batch ${batchId} not found.`, 'not_found');
+        const warning = burnRateClampWarning(burnRate);
+        return jsonResult(warning ? { batch: updated, warning } : updated);
+      } catch (err: any) {
+        return errorResult(`Failed to update furnace batch: ${err.message}`);
+      }
+    },
+  );
+
+  server.tool(
+    'furnace_build',
+    'Build a Furnace batch from the groomed backlog and create it as a `draft` you can edit and then ignite. Deterministically scans Todo tickets, reasons about independence (excludes parent/child pairs; flags — never blocks — likely file overlaps and orders them apart), and returns the created batch plus what it excluded and why. Defaults to a `parallel` batch (each ticket its own worktree + PR); pass kind `sequential` for tickets that must stack onto one shared branch + PR in order. Edit with furnace_update / the Furnace drawer before igniting.',
+    {
+      tag: z.string().optional().describe('Only load tickets carrying this tag (a furnace opt-in hint).'),
+      statuses: z.array(z.string()).optional().describe('Statuses that count as groomed & ready (default ["Todo"]).'),
+      limit: z.number().int().positive().optional().describe('Cap the batch to at most this many tickets.'),
+      kind: z.enum(['sequential', 'parallel']).optional().describe('Batch kind (default parallel).'),
+      burnRate: z.number().int().positive().optional().describe('Parallel concurrency, 1–4 (default 1). Ignored for sequential.'),
+      title: z.string().optional().describe('Human label for the batch.'),
+    },
+    async ({ tag, statuses, limit, kind, burnRate, title }) => {
+      try {
+        await ensureFurnaceLoaded();
+        const candidates = Object.values(tasksCache).map(toBuildCandidate);
+        const proposal = buildBatchTickets(candidates, {
+          ...(tag !== undefined ? { tag } : {}),
+          ...(statuses !== undefined ? { statuses } : {}),
+          ...(limit !== undefined ? { limit } : {}),
+        });
+        if (proposal.tickets.length === 0) {
+          return errorResult(
+            proposal.notes[0] ?? `No eligible tickets found in ${(statuses ?? ['Todo']).join('/')}${tag ? ` tagged #${tag}` : ''}. Groom some tickets to Todo first.`,
+            'invalid_state',
+          );
+        }
+        const batch = await createFurnaceBatch({
+          title: title ?? 'Backlog batch',
+          tickets: proposal.tickets,
+          ...(kind !== undefined ? { kind: kind as BatchKind } : {}),
+          ...(burnRate !== undefined ? { burnRate } : {}),
+          createdBy: 'furnace_build',
+        });
+        const notes = [...proposal.notes];
+        const warn = burnRateClampWarning(burnRate);
+        if (warn) notes.push(warn);
+        return jsonResult({ batchId: batch.id, batch, excluded: proposal.excluded, notes });
+      } catch (err: any) {
+        return errorResult(`Failed to build furnace batch: ${err.message}`);
+      }
+    },
+  );
+
+  server.tool(
+    'furnace_ignite',
+    'Ignite a Furnace batch: move it draft→burning and start burning its tickets. Claims a worktree slot — fails when the worktree pool is full (max 4 concurrent). A parallel batch clamps its burn rate to the free slots. The Stoker then burns each ticket unattended — implement → review → re-implement (≤ retryCap) → leave the PR open at Ready — and NEVER merges.',
+    {
+      batchId: z.string().describe('The batch to ignite.'),
+    },
+    async ({ batchId }) => {
+      try {
+        const r = await igniteBatch(batchId);
+        if (!r.ok) {
+          if (r.error === 'no_slots') return errorResult(`Cannot ignite ${batchId}: all ${r.max} worktree slots are in use (${r.used} used). Stop or wait for a batch to free a slot.`, 'invalid_state');
+          return errorResult(`Cannot ignite ${batchId}: ${r.error}`, 'invalid_state');
+        }
+        return jsonResult({ ignited: true, batch: r.batch });
+      } catch (err: any) {
+        return errorResult(`Failed to ignite furnace batch: ${err.message}`);
+      }
+    },
+  );
+
+  server.tool(
+    'furnace_stop',
+    'Stop a Furnace batch. Default is a GRACEFUL stop: stop feeding new tickets, let the in-flight ones finish (open PRs stay open for review), then the batch finalizes. Pass `hard: true` for an immediate cutoff that kills in-flight sessions, parks them, and skips the rest.',
+    {
+      batchId: z.string().describe('The batch to stop.'),
+      reason: z.string().optional().describe('Why it is being stopped (recorded on the batch).'),
+      hard: z.boolean().optional().describe('Immediate cutoff: kill in-flight sessions instead of letting them drain.'),
+    },
+    async ({ batchId, reason, hard }) => {
+      try {
+        const r = await stopBatch(batchId, reason || 'manual stop', hard ? { hard: true } : {});
+        if (!r.ok) return errorResult(`Cannot stop ${batchId}: ${r.error}`, 'invalid_state');
+        return jsonResult({ stopped: true, batch: r.batch });
+      } catch (err: any) {
+        return errorResult(`Failed to stop furnace batch: ${err.message}`);
+      }
+    },
+  );
+
+  // FLUX-1066: manual recovery — the escape hatch when a ticket parks or a batch halts. These let the
+  // orchestrator unstick a batch the same way the drawer does (this class of bug had NO tool to fix it).
+  server.tool(
+    'furnace_retry',
+    'Retry a single parked/failed ticket in a Furnace batch: reset it to `queued` with a FRESH attempt budget (re-implementation / context-exhaustion / spawn-failure counters cleared) and hand ownership back to the Furnace. It re-burns on the next tick if the batch is burning; a halted/finished batch must be resumed (furnace_resume) to pick it up.',
+    {
+      batchId: z.string().describe('The batch containing the ticket.'),
+      ticketId: z.string().describe('The parked/failed ticket to retry.'),
+    },
+    async ({ batchId, ticketId }) => {
+      try {
+        const r = await retryTicket(batchId, ticketId);
+        if (!r.ok) return errorResult(`Cannot retry ${ticketId}: ${r.error}`, r.error === 'Furnace batch not found' || r.error === 'Ticket not in batch' ? 'not_found' : 'invalid_state');
+        return jsonResult({ retried: true, batch: r.batch });
+      } catch (err: any) {
+        return errorResult(`Failed to retry ticket: ${err.message}`);
+      }
+    },
+  );
+
+  server.tool(
+    'furnace_resume',
+    'Resume a halted (`parked`) or finished (`done`) Furnace batch → `burning`: resets the circuit breaker, clears the stop request, re-queues tickets that were merely skipped by the halt, and claims a worktree slot (fails when the pool is full). Parked/failed tickets are NOT auto-re-queued — retry those individually with furnace_retry; `pr-open` successes are preserved.',
+    {
+      batchId: z.string().describe('The halted/finished batch to resume.'),
+    },
+    async ({ batchId }) => {
+      try {
+        const r = await resumeBatch(batchId);
+        if (!r.ok) {
+          if (r.error === 'no_slots') return errorResult(`Cannot resume ${batchId}: all ${r.max} worktree slots are in use (${r.used} used).`, 'invalid_state');
+          return errorResult(`Cannot resume ${batchId}: ${r.error}`, r.error === 'Furnace batch not found' ? 'not_found' : 'invalid_state');
+        }
+        return jsonResult({ resumed: true, batch: r.batch });
+      } catch (err: any) {
+        return errorResult(`Failed to resume furnace batch: ${err.message}`);
+      }
+    },
+  );
+
+  server.tool(
+    'furnace_dismiss',
+    'Dismiss the Furnace-raised flag on a parked/failed ticket ("I\'ve got this") — clears the board Require Input swimlane and marks it dismissed WITHOUT re-queuing. Works on a done/terminal batch too.',
+    {
+      batchId: z.string().describe('The batch containing the ticket.'),
+      ticketId: z.string().describe('The flagged ticket to dismiss.'),
+    },
+    async ({ batchId, ticketId }) => {
+      try {
+        const r = await dismissTicketFlag(batchId, ticketId);
+        if (!r.ok) return errorResult(`Cannot dismiss ${ticketId}: ${r.error}`, r.error === 'Furnace batch not found' || r.error === 'Ticket not in batch' ? 'not_found' : 'invalid_state');
+        return jsonResult({ dismissed: true, batch: r.batch });
+      } catch (err: any) {
+        return errorResult(`Failed to dismiss ticket flag: ${err.message}`);
+      }
+    },
+  );
+
+  server.tool(
+    'furnace_takeover',
+    'Take over a Furnace ticket (owner → human): the Furnace yields — it stops the session it was driving, never reclaims the worktree, and the drawer shows "you\'re driving this" instead of a park badge. Hand it back later with furnace_retry (which re-queues it under the Furnace).',
+    {
+      batchId: z.string().describe('The batch containing the ticket.'),
+      ticketId: z.string().describe('The ticket to take over.'),
+    },
+    async ({ batchId, ticketId }) => {
+      try {
+        const r = await takeoverTicket(batchId, ticketId);
+        if (!r.ok) return errorResult(`Cannot take over ${ticketId}: ${r.error}`, r.error === 'Furnace batch not found' || r.error === 'Ticket not in batch' ? 'not_found' : 'invalid_state');
+        return jsonResult({ takenOver: true, batch: r.batch });
+      } catch (err: any) {
+        return errorResult(`Failed to take over ticket: ${err.message}`);
+      }
+    },
+  );
+
   server.tool(
     'get_board_state',
     'Live snapshot of board activity: which tickets have ACTIVE agent sessions right now and what each is doing, plus ticket counts by status. Use this to see the field before dispatching work or to check on running sessions.',
     {},
+    { title: 'Get board state', readOnlyHint: true, openWorldHint: false },
     async () => {
       try {
         const res = await fetch(`${ENGINE_URL}/api/board/state`);
@@ -1691,16 +2128,121 @@ export function buildMcpServer(): McpServer {
     },
   );
 
+  // ─── MCP Resources + Resource Templates (FLUX-949) ──────────────────────────
+  // Read-only, @-mentionable context surfaces so a client (Claude Code, Cursor,
+  // raw SDK) can pull EH content into context WITHOUT spending a tool call. Each
+  // resource reuses the matching tool's projection verbatim — no new data shape.
+  // `registerResource` auto-enables the server's `resources` capability (the same
+  // way `tool()` enables `tools`); works unchanged over both the stdio and the
+  // in-process streamable-HTTP transports — no transport changes needed.
+  //
+  // Surfaces:
+  //   board://config   (fixed)    → buildBoardConfigProjection() (== get_board_config)
+  //   board://state    (fixed)    → GET /api/board/state         (== get_board_state)
+  //   ticket://{id}    (template) → serializeTaskForAgent, _path stripped (== get_ticket)
+  //   docs://{+path}   (template) → docsCache[normalizeDocPathInput(path)].body
+  //
+  // {+path} (RFC 6570 reserved expansion) is REQUIRED for the docs template: a
+  // plain {path} compiles to `([^/,]+)` and stops at the first '/', so a
+  // multi-segment URI like docs://event-horizon/reference/mcp-tools would never
+  // bind. {+path} compiles to `(.+)`, capturing the whole path; normalizeDocPathInput
+  // then rejects any `..`/absolute segment, so traversal stays impossible.
+
+  /** Translate a failed pure-resolver result into a thrown MCP resource error. */
+  const failResource = (code: ResourceErrorCode, message: string): never => {
+    const rpcCode = code === 'channel_unavailable' ? McpErrorCode.InternalError : McpErrorCode.InvalidParams;
+    throw new McpError(rpcCode, message, { code });
+  };
+
+  const resourceTerminalStatuses = () => ['Done', 'Released', configCache.archiveStatus || 'Archived'];
+
+  // board://config — fixed. Same projection as the get_board_config tool.
+  server.registerResource(
+    'board-config',
+    'board://config',
+    {
+      title: 'Board configuration',
+      description: 'Statuses, projects, tags, priorities, users — the agent-facing board config (same shape as the get_board_config tool).',
+      mimeType: 'application/json',
+    },
+    async (uri) => ({
+      contents: [{ uri: uri.toString(), mimeType: 'application/json', text: JSON.stringify(buildBoardConfigProjection()) }],
+    }),
+  );
+
+  // board://state — fixed. Live board activity via the engine HTTP API. Mirrors
+  // the get_board_state tool, including its channel_unavailable failure mode when
+  // the engine HTTP server is unreachable.
+  server.registerResource(
+    'board-state',
+    'board://state',
+    {
+      title: 'Board state',
+      description: 'Live snapshot of active agent sessions and ticket counts by status (same shape as the get_board_state tool).',
+      mimeType: 'application/json',
+    },
+    async (uri) => {
+      let res: Response;
+      try {
+        res = await fetch(`${ENGINE_URL}/api/board/state`);
+      } catch (err: any) {
+        return failResource('channel_unavailable', `Failed to get board state: ${err.message}`);
+      }
+      if (!res.ok) return failResource('channel_unavailable', `Failed to get board state: ${res.statusText}`);
+      const text = await res.text();
+      return { contents: [{ uri: uri.toString(), mimeType: 'application/json', text }] };
+    },
+  );
+
+  // ticket://{id} — template. JSON identical to the get_ticket tool (default
+  // projection, _path stripped). list enumerates active (non-terminal) tickets only.
+  server.registerResource(
+    'ticket',
+    new ResourceTemplate('ticket://{id}', {
+      list: async () => ({ resources: listActiveTicketResources(tasksCache, resourceTerminalStatuses()) }),
+    }),
+    {
+      title: 'Ticket',
+      description: 'A ticket by canonical id, e.g. ticket://FLUX-42 — JSON identical to the get_ticket tool. resources/list enumerates active (non-terminal) tickets only; a bare number (ticket://42) is rejected, an unknown id is not-found.',
+      mimeType: 'application/json',
+    },
+    async (uri, variables) => {
+      const resolved = resolveTicketResource(decodeResourceVar(variables.id), tasksCache);
+      if (!resolved.ok) return failResource(resolved.code, resolved.message);
+      const { _path, ...output } = serializeTaskForAgent(resolved.task, undefined, {});
+      return { contents: [{ uri: uri.toString(), mimeType: 'application/json', text: JSON.stringify(output) }] };
+    },
+  );
+
+  // docs://{+path} — template. Repo `.docs/` markdown by path (docs://INDEX,
+  // docs://event-horizon/reference/mcp-tools). Group docs use the group_doc tool.
+  server.registerResource(
+    'docs',
+    new ResourceTemplate('docs://{+path}', {
+      list: async () => ({ resources: listDocResources(docsCache) }),
+    }),
+    {
+      title: 'Project doc',
+      description: 'A .docs/ markdown file by path, e.g. docs://INDEX or docs://event-horizon/reference/mcp-tools. Repo docs only (group docs are read via the group_doc tool); a path with .. or any traversal segment is rejected, an unknown path is not-found.',
+      mimeType: 'text/markdown',
+    },
+    async (uri, variables) => {
+      const resolved = resolveDocResource(decodeResourceVar(variables.path), docsCache);
+      if (!resolved.ok) return failResource(resolved.code, resolved.message);
+      return { contents: [{ uri: uri.toString(), mimeType: 'text/markdown', text: resolved.body }] };
+    },
+  );
+
   // FLUX-659: the board-rebase ritual. The orchestrator emits a BATCH of proposed restructurings
   // for the human to approve in one pass; this parks the batch (engine-side) and broadcasts it —
   // it does NOT mutate. Fire-then-resolve: the tool returns immediately (unlike permission_prompt,
   // which blocks). "Propose, never silently restructure."
   server.tool(
     'propose_board_rebase',
-    'Propose a BATCH of board restructurings for the human to approve in one pass — the board-rebase ritual. Use this when asked to triage / "rebase the board" or at end-of-session, INSTEAD of mutating the board directly. Each item is a single action the user approves or rejects; nothing is applied until they click Apply approved. NEVER call the restructuring verbs (extract_ticket / merge_tickets / archive_ticket / change_status) directly to reorganize the board — emit them here as proposals. Returns immediately; the proposal is parked for approval.',
+    'Propose a BATCH of board restructurings for the human to approve in one pass — the board-rebase ritual. Use this when asked to triage / "rebase the board" or at end-of-session, INSTEAD of mutating the board directly. Each item is a single action the user approves or rejects; nothing is applied until they click Apply approved. NEVER call the restructuring verbs (extract_ticket / merge_tickets / archive / change_status) directly to reorganize the board — emit them here as proposals. Returns immediately; the proposal is parked for approval.',
     {
       items: z.array(z.object({
-        kind: z.enum(['promote', 'fold', 'archive', 'dispatch', 'status', 'leave']).describe('promote = extract a chat/turns into a new card (FLUX-656); fold = merge one stream into another (FLUX-657); archive = retire the ticket(s); dispatch = start a phase session; status = move a ticket to a new status; leave = keep it in the orchestrator thread (the safe default — never drop an item, leave it).'),
+        kind: z.enum(['promote', 'fold', 'archive', 'dispatch', 'status', 'leave']).describe('promote = extract a chat/turns into a new card; fold = merge one stream into another; archive = retire the ticket(s); dispatch = start a phase session; status = move a ticket to a new status; leave = keep it in the orchestrator thread (the safe default — never drop an item, leave it).'),
         targets: z.array(z.string()).describe('Ticket id(s) the item acts on, e.g. ["FLUX-123"]. For fold, the source stream(s) being merged.'),
         summary: z.string().describe('One-line human-readable description of the proposed action.'),
         rationale: z.string().optional().describe('Why you propose this — shown under the summary and recorded as a comment when applied.'),
@@ -1731,35 +2273,13 @@ export function buildMcpServer(): McpServer {
     },
   );
 
-  // FLUX-605: permission policy for gated sessions (--permission-prompt-tool).
-  const SAFE_PERMISSION_TOOLS = new Set([
-    'get_ticket', 'list_tickets', 'get_board_config', 'get_branch', 'get_project_group', 'get_board_state',
-    'list_available_agents', 'read_group_doc', 'list_group_docs', 'get_session_log',
-    // FLUX-659: the proposal path is always safe — it parks a batch for human approval, never mutates.
-    'propose_board_rebase',
-    'Read', 'Glob', 'Grep', 'LS', 'WebFetch', 'WebSearch', 'TodoWrite', 'NotebookRead',
-  ]);
-  // FLUX-659 teeth: the restructuring verbs join the CONFIRM tier so a DIRECT orchestrator call to
-  // mutate the board is gated even if it bypasses the board-rebase ritual — "never silently
-  // restructure" is enforced by the gate, not just the prompt. extract_ticket (FLUX-656) and
-  // merge_tickets (FLUX-657) are both live and registered above; they are gated here.
-  const CONFIRM_PERMISSION_TOOLS = new Set([
-    'change_status', 'delete_branch', 'finish_ticket', 'Bash',
-    'archive_ticket', 'extract_ticket', 'merge_tickets',
-  ]);
-  function permissionDecisionFor(toolName: string): 'allow' | 'deny' | 'confirm' {
-    const bare = toolName.replace(/^mcp__.+?__/, '');
-    if (SAFE_PERMISSION_TOOLS.has(bare)) return 'allow';
-    if (CONFIRM_PERMISSION_TOOLS.has(bare)) return 'confirm';
-    return 'allow';
-  }
-
   server.tool(
     'permission_prompt',
-    'Internal — Claude Code calls this via --permission-prompt-tool to decide if a tool call is permitted. Returns {behavior:"allow",updatedInput} or {behavior:"deny",message}. Reads auto-allow; destructive ops (change_status, delete_branch, finish_ticket, Bash) require human approval via the EH portal.',
+    'Internal — a gated agent CLI calls this via its permission-prompt hook (e.g. Claude Code\'s --permission-prompt-tool) to decide if a tool call is permitted. Returns {behavior:"allow",updatedInput} or {behavior:"deny",message}. Reads auto-allow; destructive ops (change_status, finish_ticket, archive, branch with action:"delete", Bash) require human approval via the EH portal.',
     { tool_name: z.string(), input: z.any().optional() },
+    { title: 'Permission decision', readOnlyHint: true, openWorldHint: false },
     async ({ tool_name, input }) => {
-      const decision = permissionDecisionFor(tool_name);
+      const decision = permissionDecisionFor(tool_name, input);
       if (decision === 'allow') return jsonResult({ behavior: 'allow', updatedInput: input ?? {} });
       if (decision === 'deny') return jsonResult({ behavior: 'deny', message: `${tool_name} is not permitted.` });
       try {
@@ -1769,7 +2289,17 @@ export function buildMcpServer(): McpServer {
           body: JSON.stringify({ tool_name, input, conversationId: process.env.EH_CONVERSATION_ID || null, conversationToken: process.env.EH_CONVERSATION_TOKEN || null }),
         });
         if (!res.ok) return jsonResult({ behavior: 'deny', message: 'Approval channel error — denied.' });
-        return jsonResult(await res.json());
+        // Normalize at the CLI-contract boundary (FLUX-1026): Claude Code's permission-prompt-tool
+        // requires {behavior:'allow', updatedInput:<record>} or {behavior:'deny', message:<string>}.
+        // A human ALLOW is POSTed without updatedInput; forwarding it verbatim crashes the CLI with a
+        // Zod invalid_union. This layer has the original `input`, so echo it — the human approved
+        // running the tool as proposed — mirroring the auto-allow branch above.
+        const decided: any = await res.json().catch(() => null);
+        if (decided?.behavior === 'allow')
+          return jsonResult({ behavior: 'allow', updatedInput: decided.updatedInput ?? input ?? {} });
+        if (decided?.behavior === 'deny')
+          return jsonResult({ behavior: 'deny', message: typeof decided.message === 'string' ? decided.message : `${tool_name} was denied.` });
+        return jsonResult({ behavior: 'deny', message: 'Malformed approval decision — denied.' });
       } catch (err: any) {
         return jsonResult({ behavior: 'deny', message: `Approval channel unavailable — denied (${err.message}).` });
       }
@@ -1818,58 +2348,44 @@ export function buildMcpServer(): McpServer {
   // ─── Group Docs Tools (FLUX-421 / FLUX-420) ─────────────────────────────────
 
   server.tool(
-    'list_group_docs',
-    'List the shared group docs (the cross-project knowledge base) by path and title. Works from any workspace — parent or bound member. Returns an empty list in single-repo mode.',
-    {},
-    async () => {
-      const label = activeGroupDocsLabel();
-      const docs = Object.values(docsCache)
-        .filter((d) => d.group === true)
-        .sort((a, b) => a.path.localeCompare(b.path))
-        .map((d) => ({ path: d.path, title: d.title, directory: d.directory }));
-      if (docs.length === 0) {
-        const inGroup = getGroupContext() != null || getMemberBinding() != null;
-        return jsonResult({
-          docs: [],
-          message: inGroup
-            ? 'No group docs found — the shared store may be empty.'
-            : `No group configured. This is a single-repo workspace. Group docs appear under the '${label}/' prefix once a group is set up.`,
-        });
-      }
-      return jsonResult({ docs, label });
-    },
-  );
-
-  server.tool(
-    'read_group_doc',
-    'Read the full body of a shared group doc by its path (e.g. "Product/features/payments"). Works from any workspace — parent or bound member.',
+    'group_doc',
+    'Read or write the shared group docs (the cross-project knowledge base). Works from any workspace — parent or bound member. action: "list" returns all docs by path+title; "read" returns one doc body (needs path); "submit" creates/updates a doc and fans it out to all members (needs path+title+body); "delete" removes a doc and fans out (needs path). submit/delete return per-member fan-out results.',
     {
-      path: z.string().describe('Doc path as returned by list_group_docs (e.g. "Product/features/payments")'),
+      action: z.enum(['list', 'read', 'submit', 'delete']).describe('Which group-doc operation to run.'),
+      path: z.string().optional().describe('read/delete: full doc path as returned by list (e.g. "Product/features/payments"). submit: store-relative path WITHOUT the group prefix and WITHOUT .md (e.g. "features/payments-api"); single safe segment, no ".." or absolute paths.'),
+      title: z.string().optional().describe('submit only — document title (written as the first H1 heading).'),
+      body: z.string().optional().describe('submit only — full markdown body (title heading prepended automatically).'),
+      message: z.string().optional().describe('submit only — optional git commit message. Defaults to an auto-generated message.'),
     },
-    async ({ path: docPath }) => {
-      const doc = docsCache[docPath];
-      if (!doc || !doc.group) {
-        return errorResult(
-          `Group doc '${docPath}' not found. Use list_group_docs to see available paths.`,
-          'not_found',
-        );
+    async ({ action, path: docPath, title, body, message }) => {
+      if (action === 'list') {
+        const label = activeGroupDocsLabel();
+        const docs = Object.values(docsCache)
+          .filter((d) => d.group === true)
+          .sort((a, b) => a.path.localeCompare(b.path))
+          .map((d) => ({ path: d.path, title: d.title, directory: d.directory }));
+        if (docs.length === 0) {
+          const inGroup = getGroupContext() != null || getMemberBinding() != null;
+          return jsonResult({
+            docs: [],
+            message: inGroup
+              ? 'No group docs found — the shared store may be empty.'
+              : `No group configured. This is a single-repo workspace. Group docs appear under the '${label}/' prefix once a group is set up.`,
+          });
+        }
+        return jsonResult({ docs, label });
       }
-      return jsonResult({ path: doc.path, title: doc.title, body: doc.body, directory: doc.directory });
-    },
-  );
 
-  server.tool(
-    'submit_group_doc',
-    'Create or update a shared group doc through the parent repo, committing to flux-group-docs and fanning out to all members. Works from any workspace — parent or bound member. Returns the per-member fan-out result so you know which members received the change.',
-    {
-      path: z.string().describe(
-        'Store-relative path for the doc, without the group prefix and without .md extension. Use forward slashes. Examples: "features/payments-api", "architecture/overview". Must be a single safe path segment (no .., no absolute paths).',
-      ),
-      title: z.string().describe('Document title (written as the first H1 heading).'),
-      body: z.string().describe('Full markdown body content (not including the title heading — that is prepended automatically).'),
-      message: z.string().optional().describe('Optional git commit message. Defaults to an auto-generated message.'),
-    },
-    async ({ path: storeRel, title, body, message }) => {
+      if (action === 'read') {
+        if (!docPath) return errorResult('path is required for action "read".', 'validation_failed');
+        const doc = docsCache[docPath];
+        if (!doc || !doc.group) {
+          return errorResult(`Group doc '${docPath}' not found. Use group_doc action:"list" to see available paths.`, 'not_found');
+        }
+        return jsonResult({ path: doc.path, title: doc.title, body: doc.body, directory: doc.directory });
+      }
+
+      // submit / delete both need a group writer.
       const writer = getGroupContext() ?? getMemberBinding()?.parentGroup ?? null;
       if (!writer) {
         return errorResult(
@@ -1877,61 +2393,46 @@ export function buildMcpServer(): McpServer {
           'invalid_state',
         );
       }
-      // Prepend the H1 title so the doc is self-contained.
-      const content = `# ${title}\n\n${body.replace(/^\s+/, '')}`;
-      try {
-        const result = await submitGroupEdit(
-          writer,
-          [{ path: storeRel.endsWith('.md') ? storeRel : `${storeRel}.md`, content }],
-          { message: message ?? `group: agent doc update (${storeRel})` },
-        );
-        const fanOut = result.sync.members.map((m) => ({
-          name: m.name,
-          ok: m.ok,
-          ...(m.diverged ? { diverged: true } : {}),
-          ...(m.error ? { error: m.error } : {}),
-        }));
-        return jsonResult({
-          applied: result.applied,
-          committed: result.sync.committed,
-          pushed: result.sync.pushed,
-          failed: result.sync.failed,
-          members: fanOut,
-        });
-      } catch (err: any) {
-        return errorResult(`Failed to submit group doc: ${err.message}`);
-      }
-    },
-  );
 
-  server.tool(
-    'delete_group_doc',
-    'Delete a shared group doc through the parent repo. Works from any workspace — parent or bound member. Returns the per-member fan-out result.',
-    {
-      path: z.string().describe(
-        'Doc path as returned by list_group_docs (e.g. "Product/features/payments"). The group prefix is required here.',
-      ),
-    },
-    async ({ path: docPath }) => {
-      const writer = getGroupContext() ?? getMemberBinding()?.parentGroup ?? null;
-      if (!writer) {
-        return errorResult(
-          'No group writer is available. This workspace is not a group parent and is not bound to one.',
-          'invalid_state',
-        );
+      if (action === 'submit') {
+        if (!docPath) return errorResult('path is required for action "submit".', 'validation_failed');
+        if (title === undefined) return errorResult('title is required for action "submit".', 'validation_failed');
+        if (body === undefined) return errorResult('body is required for action "submit".', 'validation_failed');
+        // Prepend the H1 title so the doc is self-contained.
+        const content = `# ${title}\n\n${body.replace(/^\s+/, '')}`;
+        try {
+          const result = await submitGroupEdit(
+            writer,
+            [{ path: docPath.endsWith('.md') ? docPath : `${docPath}.md`, content }],
+            { message: message ?? `group: agent doc update (${docPath})` },
+          );
+          const fanOut = result.sync.members.map((m) => ({
+            name: m.name, ok: m.ok,
+            ...(m.diverged ? { diverged: true } : {}),
+            ...(m.error ? { error: m.error } : {}),
+          }));
+          return jsonResult({
+            applied: result.applied,
+            committed: result.sync.committed,
+            pushed: result.sync.pushed,
+            failed: result.sync.failed,
+            members: fanOut,
+          });
+        } catch (err: any) {
+          return errorResult(`Failed to submit group doc: ${err.message}`);
+        }
       }
+
+      // action === 'delete'
+      if (!docPath) return errorResult('path is required for action "delete".', 'validation_failed');
       const storeRel = groupDocPathToStoreRelative(docPath);
       if (!storeRel) {
-        return errorResult(
-          `'${docPath}' is not a valid group doc path. It must start with the group docs prefix (e.g. 'Product/…').`,
-          'validation_failed',
-        );
+        return errorResult(`'${docPath}' is not a valid group doc path. It must start with the group docs prefix (e.g. 'Product/…').`, 'validation_failed');
       }
       try {
         const result = await submitGroupEdit(writer, [{ path: storeRel, delete: true }]);
         const fanOut = result.sync.members.map((m) => ({
-          name: m.name,
-          ok: m.ok,
+          name: m.name, ok: m.ok,
           ...(m.diverged ? { diverged: true } : {}),
           ...(m.error ? { error: m.error } : {}),
         }));

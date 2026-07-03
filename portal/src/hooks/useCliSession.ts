@@ -19,17 +19,19 @@ export function useCliSession({ isModalOpen, taskId, liveOutputRef, onSessionCha
   const [cliSessionBusy, setCliSessionBusy] = useState(false);
   const [cliSessionError, setCliSessionError] = useState('');
 
-  const [selectedCliFramework, setSelectedCliFramework] = useState<CliFramework>(() => 
-    resolveEffectiveAgent(undefined, config?.defaultAgent)
+  const [selectedCliFramework, setSelectedCliFramework] = useState<CliFramework>(() =>
+    resolveEffectiveAgent(undefined, config?.defaultFramework)
   );
   const [skipPermissions, setSkipPermissions] = useState(true);
 
-  // Keep selected framework in sync with config if it hasn't been manually changed in this session
+  // Keep selected framework in sync with config if it hasn't been manually changed in this session.
+  // FLUX-906: source the engine-resolved `defaultFramework` (concrete) rather than `defaultAgent`
+  // (which may be the `'auto'` sentinel) — the engine owns 'auto' resolution now.
   useEffect(() => {
-    if (config?.defaultAgent) {
-      setSelectedCliFramework(resolveEffectiveAgent(undefined, config.defaultAgent));
+    if (config?.defaultFramework) {
+      setSelectedCliFramework(resolveEffectiveAgent(undefined, config.defaultFramework));
     }
-  }, [config?.defaultAgent]);
+  }, [config?.defaultFramework]);
 
   const cliSessionRef = useRef<CliSessionSummary | null>(null);
   

@@ -1,8 +1,9 @@
 import { createTicketBranch } from './branch-manager.js';
-import { createTaskWorktree } from './task-worktree.js';
+import { createTaskWorktree, reclaimWorktrees } from './task-worktree.js';
 import { tasksCache, updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
 import { buildActivityEntry } from './history.js';
+import { isWorktreeReclaimable } from './pr-cleanup.js';
 import { workspaceRoot } from './workspace.js';
 
 /**
@@ -18,8 +19,21 @@ import { workspaceRoot } from './workspace.js';
  *
  * Idempotent: an existing `task.branch` is reused (never re-created), and
  * `createTaskWorktree` self-heals/reuses a worktree already at the target path.
- * A worktree failure is non-fatal — the branch still exists and the lost
- * isolation is surfaced on the ticket history rather than failing the launch.
+ * A worktree failure does not throw HERE — the branch still exists (a manual
+ * /branch caller wants it regardless) and the failure is surfaced on the ticket
+ * history. Note this is NOT "the agent runs on master": post-FLUX-1018 the spawn
+ * path fails closed, so a branch-bearing ticket whose worktree could not be
+ * created will fail to START rather than degrade to the main checkout.
+ *
+ * FLUX-1018 invariant — **a branch implies a worktree on the spawn path.** The
+ * two coherent isolation modes for an agent are (a) branch + dedicated worktree
+ * (the default, fully isolated) or (b) no branch at all (branchless, main tree,
+ * direct-commit flow). "Branch but no worktree, run on the shared main tree" is
+ * the unsafe middle that caused the FLUX-972 master-commit: a single-shot agent
+ * (Copilot `-p`) never checks the branch out, so it commits on master. So
+ * `worktree:false` only skips worktree creation for a *manual* branch (the
+ * /branch route / `branch` MCP tool — no agent spawn); when an agent is spawned,
+ * resolveTaskExecutionRoot creates the worktree anyway (fail closed).
  */
 export interface EnsureIsolationOptions {
   /** Create a dedicated worktree (implies a branch). When false, only the branch is created. */
@@ -57,27 +71,61 @@ export async function ensureTicketIsolation(
   let worktree: string | undefined;
   let worktreeError: string | undefined;
   if (opts.worktree) {
-    try {
-      worktree = await createTaskWorktree(
+    const createWorktree = () =>
+      createTaskWorktree(
         workspaceRoot!,
         ticketId,
-        branch,
+        branch!,
         opts.baseBranch ? { baseBranch: opts.baseBranch } : {},
       );
+    try {
+      worktree = await createWorktree();
     } catch (wtErr: any) {
-      // Branch is created — don't fail the whole call; the caller falls back to
-      // the main tree. Surface it on the ticket so the lost isolation isn't silent.
-      worktreeError = wtErr?.message ?? String(wtErr);
-      await updateTaskWithHistory(ticketId, {
-        updatedBy,
-        entries: [
-          buildActivityEntry(
-            `⚠️ Dedicated worktree NOT created: ${worktreeError}. The agent will run in the main tree (no isolation).`,
-            updatedBy,
-            new Date().toISOString(),
-          ),
-        ],
-      });
+      // FLUX-1018 / FLUX-1031: a full worktree cap is almost always slots held by
+      // tickets that no longer need their tree — stale Done/Released/Archived worktrees
+      // post-merge cleanup left behind (their node_modules junctions made them read as
+      // "dirty", so cleanup kept them), OR tickets resting at Ready awaiting review
+      // (freed eagerly at Ready + on the reconcile sweep, but reclaimed here too as the
+      // hard backstop so a spawn never deadlocks inside the sweep window). Reclaim any
+      // such clean, idle worktree (isWorktreeReclaimable skips live-session tickets) and
+      // retry ONCE before giving up — so a legit new task gets an isolated worktree
+      // instead of silently failing to start.
+      if (/limit reached/i.test(wtErr?.message ?? '')) {
+        const reclaimed = await reclaimWorktrees(
+          workspaceRoot!,
+          isWorktreeReclaimable,
+        ).catch(() => [] as string[]);
+        if (reclaimed.length > 0) {
+          try {
+            worktree = await createWorktree();
+          } catch (retryErr: any) {
+            wtErr = retryErr;
+          }
+        }
+      }
+      if (!worktree) {
+        // The branch exists, so this call still succeeds (a manual /branch caller
+        // wants the branch regardless). But do NOT claim "the agent will run in the
+        // main tree": post-FLUX-1018 the spawn path (resolveTaskExecutionRoot →
+        // adapter fresh-spawn guard) fails CLOSED — a branch-bearing ticket must run
+        // in its own worktree or not at all, never on master. So if the caller goes
+        // on to spawn an agent, that spawn will FAIL TO START rather than silently
+        // degrade. Surface that accurately so the next debugger isn't misled in the
+        // exact cap-exhaustion mode this ticket exists to make visible.
+        worktreeError = wtErr?.message ?? String(wtErr);
+        await updateTaskWithHistory(ticketId, {
+          updatedBy,
+          entries: [
+            buildActivityEntry(
+              `⚠️ Dedicated worktree NOT created: ${worktreeError}. Isolation could not be established; ` +
+                `a spawned agent session will FAIL TO START (it will not run on master). ` +
+                `Free a worktree slot (finish/abandon a task) or fix the error, then retry.`,
+              updatedBy,
+              new Date().toISOString(),
+            ),
+          ],
+        });
+      }
     }
   }
 

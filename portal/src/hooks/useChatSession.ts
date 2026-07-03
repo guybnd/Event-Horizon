@@ -232,7 +232,7 @@ export function useChatSession(conversationId: string, enabled = true, working =
       try {
         const current = await fetchTaskCliSession(conversationId);
         // FLUX-606: resume the most-recent session whenever the engine says it's resumable
-        // (terminal-or-active with a claudeSessionId) — this continues a dispatched grooming
+        // (terminal-or-active with a resumeSessionId) — this continues a dispatched grooming
         // session's thread instead of spawning a fresh, amnesiac chat. `completed` is now
         // included via the engine's `resumable` flag, not just running/waiting-input.
         resumable = !!current?.resumable;
@@ -241,7 +241,8 @@ export function useChatSession(conversationId: string, enabled = true, working =
       }
       const startFresh = () =>
         startTaskCliSessionEx(conversationId, {
-          framework: 'claude',
+          // FLUX-906 (audit E.4): no `framework` — the engine resolves the configured default
+          // (resolveDefaultFramework), so a fresh chat follows `defaultAgent` instead of Claude.
           phase: 'chat',
           appendPrompt: trimmed,
           skipPermissions: true,

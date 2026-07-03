@@ -6,7 +6,7 @@ import { getModuleMcpServers } from './modules.js';
 import { getEnginePort } from './packaged-mode.js';
 
 export type Framework = 'auto' | 'copilot' | 'antigravity' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'generic';
-type ResolvedFramework = Exclude<Framework, 'auto'>;
+export type ResolvedFramework = Exclude<Framework, 'auto'>;
 
 export const EVENT_HORIZON_INSTRUCTIONS_START = '<!-- EVENT_HORIZON_MANAGED_INSTRUCTIONS:START -->';
 export const EVENT_HORIZON_INSTRUCTIONS_END = '<!-- EVENT_HORIZON_MANAGED_INSTRUCTIONS:END -->';
@@ -22,6 +22,13 @@ interface WorkflowInstallerOptions {
   sourceRoot: string;
   targetDir: string;
   framework?: Framework;
+  /**
+   * Annotate the install as a manual hard-override reinstall (the `--force` CLI flag, FLUX-882). The
+   * install already overwrites every managed skill file and runs the orphaned-skill-file sweep on
+   * EVERY call, so this currently only affects log output — it changes neither what is written nor
+   * what is swept. Kept as an explicit intent/affordance for `npm run install-skill -- --force`.
+   */
+  force?: boolean;
 }
 
 export interface WorkflowInstallStatus {
@@ -137,6 +144,95 @@ function instructionsDestinationFor(targetDir: string, framework: ResolvedFramew
   }
 }
 
+// Every concrete (non-'auto') framework EH can install skills for. `gemini` precedes `antigravity`
+// so it wins the dedupe for their shared `.gemini/skills/event-horizon.md` target (the common label).
+const ALL_RESOLVED_FRAMEWORKS: readonly ResolvedFramework[] = [
+  'copilot', 'gemini', 'antigravity', 'cursor', 'cline', 'windsurf', 'claude', 'generic',
+];
+
+/** True when EH has ALREADY installed its skill file(s) for `framework` in `targetDir`. */
+function frameworkHasInstall(targetDir: string, framework: ResolvedFramework): boolean {
+  const probe = MODULAR_FRAMEWORKS.includes(framework)
+    ? skillModuleDestinationFor(targetDir, framework, 'orchestrator')
+    : skillDestinationFor(targetDir, framework);
+  return existsSync(probe);
+}
+
+/**
+ * The set of frameworks EH should keep current in `targetDir`. A workspace can legitimately use
+ * several agent frameworks at once, so this is the configured/primary framework PLUS every framework
+ * EH has ALREADY installed skills for (its skill file exists on disk). Detecting by an existing
+ * install — not merely a marker dir — avoids false positives (e.g. a bare `.github` CI dir that is
+ * NOT a Copilot setup). FLUX-942: the installer + staleness check previously handled only one
+ * framework, so a multi-framework workspace had its other frameworks silently go stale (and the
+ * staleness check false-warned about whichever it auto-resolved).
+ */
+export function detectWorkspaceFrameworks(targetDir: string, preferred: Framework = 'auto'): ResolvedFramework[] {
+  // Primary first so it wins any dedupe tie; then every framework with an existing install.
+  const candidates: ResolvedFramework[] = [resolveFramework(targetDir, preferred)];
+  for (const fw of ALL_RESOLVED_FRAMEWORKS) {
+    if (frameworkHasInstall(targetDir, fw)) candidates.push(fw);
+  }
+  // Collapse frameworks that install to the SAME skill destination (gemini & antigravity both write
+  // `.gemini/skills/event-horizon.md`) so we never install/check the identical file twice — first wins.
+  const byDest = new Map<string, ResolvedFramework>();
+  for (const fw of candidates) {
+    const key = path.resolve(skillDestinationFor(targetDir, fw));
+    if (!byDest.has(key)) byDest.set(key, fw);
+  }
+  return [...byDest.values()];
+}
+
+/**
+ * Hard-override sweep (FLUX-882, scoped in FLUX-942): delete any stale `event-horizon*` file inside
+ * the **resolved framework's own install dir(s)** that the current install no longer writes — e.g. a
+ * skill module renamed/removed in a newer release that would otherwise linger and shadow the new
+ * surface.
+ *
+ * Scoped to ONLY this framework's install dir(s) (derived from the dirnames of the files it writes),
+ * never the other frameworks' dirs. A workspace can legitimately use several frameworks at once, so
+ * another framework's `event-horizon*` file (e.g. `.gemini/skills/event-horizon.md` while installing
+ * for `claude`) is NOT an orphan and must be left alone — sweeping every framework's dir (the
+ * original FLUX-882 behavior) deleted those on every restart (FLUX-942). Within the swept dir we only
+ * ever touch `event-horizon*` regular files (never a user's own file, never a directory). Best-effort
+ * per file (a failed unlink is logged, not thrown).
+ */
+export async function cleanOrphanedSkillFiles(targetDir: string, framework: ResolvedFramework): Promise<string[]> {
+  // The skill file(s) THIS framework installs, resolved — the only files that legitimately belong in
+  // its install dir. The dir(s) to sweep are their dirnames, so we never reach another framework's dir.
+  const skillFiles = (MODULAR_FRAMEWORKS.includes(framework)
+    ? SKILL_MODULES.map((module) => skillModuleDestinationFor(targetDir, framework, module))
+    : [skillDestinationFor(targetDir, framework)]
+  ).map((f) => path.resolve(f));
+  const expected = new Set(skillFiles);
+  const sweepDirs = [...new Set(skillFiles.map((f) => path.dirname(f)))];
+  const removed: string[] = [];
+  for (const dir of sweepDirs) {
+    let entries: string[];
+    try {
+      entries = await fs.readdir(dir);
+    } catch {
+      continue; // dir doesn't exist (or unreadable) — nothing to sweep here
+    }
+    for (const name of entries) {
+      // Only ever touch event-horizon* files — never anything else in this dir.
+      if (!name.startsWith('event-horizon')) continue;
+      const full = path.resolve(dir, name);
+      if (expected.has(full)) continue; // a current, expected install file — keep
+      try {
+        const st = await fs.stat(full);
+        if (!st.isFile()) continue; // never recurse into / remove a directory
+        await fs.unlink(full);
+        removed.push(full);
+        log.info(`[installer] Removed orphaned skill file: ${full}`);
+      } catch (err: any) {
+        log.error(`[installer] Could not remove orphaned skill file ${full} (${err?.message || err}); skipping.`);
+      }
+    }
+  }
+  return removed;
+}
+
 function getSourcePaths(sourceRoot: string) {
   const skillsDir = path.join(sourceRoot, '.docs', 'skills');
   const skillSourcePaths = SKILL_MODULES.map(m => path.join(skillsDir, `event-horizon-${m}.md`));
@@ -245,7 +341,7 @@ export async function getWorkflowInstallStatus({ sourceRoot, targetDir, framewor
   const instructionsInstalledPath = instructionsDestinationFor(targetDir, resolvedFramework);
   const skillSourceExists = await pathExists(skillSourcePath);
   const skillInstalled = await pathExists(skillInstalledPath);
-  const instructionsSourceExists = !!instructionsInstalledPath ? await pathExists(instructionsSourcePath) : false;
+  const instructionsSourceExists = instructionsInstalledPath ? await pathExists(instructionsSourcePath) : false;
   let instructionsInstalled = false;
 
   if (instructionsInstalledPath && await pathExists(instructionsInstalledPath)) {
@@ -268,9 +364,9 @@ export async function getWorkflowInstallStatus({ sourceRoot, targetDir, framewor
   };
 }
 
-export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framework = 'auto' }: WorkflowInstallerOptions): Promise<WorkflowInstallResult> {
+export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framework = 'auto', force = false }: WorkflowInstallerOptions): Promise<WorkflowInstallResult> {
   const resolvedFramework = resolveFramework(targetDir, framework);
-  log.info(`[installer] Resolved framework: ${resolvedFramework}`);
+  log.info(`[installer] Resolved framework: ${resolvedFramework}${force ? ' (force reinstall)' : ''}`);
   const { skillSourcePath, skillSourcePaths, instructionsSourcePath } = getSourcePaths(sourceRoot);
   const skillInstalledPath = skillDestinationFor(targetDir, resolvedFramework);
   const instructionsInstalledPath = instructionsDestinationFor(targetDir, resolvedFramework);
@@ -315,6 +411,19 @@ export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framewor
   // Install MCP config for agent tool discovery
   await installMcpConfig(targetDir, sourceRoot, resolvedFramework);
 
+  // Hard-override sweep (FLUX-882): after writing the current skill files, delete any orphaned
+  // event-horizon* files a previous (pre-refactor) install left in the EH dirs — e.g. a skill
+  // module renamed/removed in a newer release. Runs on EVERY install (force-independent); it is
+  // idempotent and strictly EH-scoped, so this is safe and keeps the surface self-healing.
+  try {
+    const removed = await cleanOrphanedSkillFiles(targetDir, resolvedFramework);
+    if (removed.length > 0) {
+      log.info(`[installer] Orphan sweep removed ${removed.length} stale skill file(s)${force ? ' (force)' : ''}.`);
+    }
+  } catch (err: any) {
+    log.error(`[installer] Orphan sweep failed (non-fatal): ${err?.message || err}`);
+  }
+
   log.info(`[installer] Done.`);
   return {
     framework: resolvedFramework,
@@ -344,7 +453,7 @@ function mcpConfigPathFor(targetDir: string, framework: ResolvedFramework): stri
   }
 }
 
-function buildMcpServerEntry() {
+export function buildMcpServerEntry() {
   // FLUX-645: the engine serves the MCP server in-process over loopback HTTP, so the entry is
   // location-independent — no relative path, no --workspace, no worktree path. Every session
   // (main checkout or `.eh-worktrees/*` worktree) points at this one URL and shares the running
@@ -398,7 +507,9 @@ async function installMcpConfig(targetDir: string, sourceRoot: string, framework
   existing.mcpServers['event-horizon'] = serverEntry;
 
   // Merge module MCP servers (phase-independent at install time — phase gating happens at prompt/session time)
-  const moduleServers = getModuleMcpServers();
+  // FLUX-955 (C.15): pass the install target framework so Serena's `--context` is tuned for it (falls
+  // back to claude-code until Serena ships a profile for the target — see serenaContextFor).
+  const moduleServers = getModuleMcpServers(undefined, undefined, framework);
   if (Object.keys(moduleServers).length > 0) {
     log.info('[installer] Note: module MCP server paths are resolved against the current flux directory. If you later run "Migrate to orphan mode", re-run the installer to refresh module paths in .mcp.json.');
   }

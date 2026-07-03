@@ -1,6 +1,6 @@
 {
   "name": "engine",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Event Horizon engine — Express + TypeScript API, MCP server, and agent orchestration for the local-first ticket board.",
   "main": "dist/index.js",
   "bin": "dist/index.js",
@@ -39,11 +39,14 @@
   "type": "module",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@types/ws": "^8.18.1",
     "chokidar": "^5.0.0",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "gray-matter": "^4.0.3",
+    "node-pty": "^1.1.0",
     "systray": "^1.0.5",
+    "ws": "^8.21.0",
     "yaml": "^2.8.4",
     "zod": "^4.4.3"
   },

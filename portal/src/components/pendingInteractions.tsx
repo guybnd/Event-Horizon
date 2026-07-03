@@ -350,6 +350,11 @@ export function ChatPendingInteractions({ conversationId }: { conversationId: st
  *  `swimlane_change → set require-input` entry (question falls back to the most recent comment). */
 // eslint-disable-next-line react-refresh/only-export-components -- pure helper colocated with the require-input model; shared with the attention surface (FLUX-898).
 export function requireInputMeta(task: Task): { question: string; setDate: string } {
+  // FLUX-725: pre-computed on the list digest (the attention dock reads list tasks, which no longer
+  // carry full history). Fall back to scanning `history` for a DETAIL task (modal/chat) without a digest.
+  if (task.historyDigest) {
+    return task.historyDigest.requireInput ?? { question: 'This ticket is waiting for your input.', setDate: '' };
+  }
   const entries = task.history ?? [];
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i] as { type?: string; action?: string; swimlane?: string; comment?: string; date?: string };

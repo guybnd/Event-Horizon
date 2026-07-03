@@ -1,4 +1,3 @@
-import { useMemo } from 'react';
 import { User, Bot, GitCompare } from 'lucide-react';
 import { motion } from 'framer-motion';
 import type { Task } from '../../types';
@@ -8,21 +7,10 @@ import { reporterInitials } from './reporterInitials';
 import type { TaskCardController } from '../../hooks/useTaskCardController';
 import { useAppSelector } from '../../store/useAppSelector';
 
+// FLUX-725: in-progress→done-under-2h is pre-computed on the list digest (it needs the FULL
+// history, not the 24h window, so a done card older than a day still qualifies).
 function useSpeedDemon(task: Task): boolean {
-  return useMemo(() => {
-    const history = task.history ?? [];
-    let inProgressAt: number | undefined;
-    let doneAt: number | undefined;
-    for (const e of history) {
-      if (e.type !== 'status_change') continue;
-      const to = (e as { to?: string }).to ?? '';
-      const t = new Date(e.date).getTime();
-      if (/in.?progress/i.test(to) && !inProgressAt) inProgressAt = t;
-      if (/done/i.test(to)) doneAt = t;
-    }
-    if (!inProgressAt || !doneAt) return false;
-    return (doneAt - inProgressAt) < 2 * 60 * 60 * 1000; // < 2 hours
-  }, [task.history]);
+  return task.historyDigest?.isSpeedDemon ?? false;
 }
 
 export function CardFooterRow({ task, isOverlay, c }: { task: Task; isOverlay?: boolean; c: TaskCardController }) {

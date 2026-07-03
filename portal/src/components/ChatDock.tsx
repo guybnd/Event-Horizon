@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { Sparkles, MessageSquare, Minus, X, History, Square, RotateCcw, GitBranch, FolderGit2, GitPullRequest, ListChecks, Loader2, MessageCircleQuestion, PanelRight, PanelRightClose, Maximize2, Tag, Link2, Gauge, Save, ChevronDown, Check, CircleHelp, TriangleAlert, Circle, Play } from 'lucide-react';
+import { Sparkles, MessageSquare, Minus, X, History, Square, RotateCcw, GitBranch, FolderGit2, GitPullRequest, ListChecks, Loader2, MessageCircleQuestion, PanelRight, PanelRightClose, Maximize2, Tag, Link2, Gauge, Save, ChevronDown, Check, CircleHelp, TriangleAlert, Circle, Play, Flame } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
@@ -131,7 +131,10 @@ function splitId(id: string): { prefix: string; short: string } {
   return { prefix: id.slice(0, idx), short: id.slice(idx + 1) };
 }
 
-export function ChatDock() {
+// FLUX-1035: the Furnace toggle rides in the dock strip as a small square icon pinned next to the
+// Orchestrator ("Board") tab — the Furnace is a board-level concern, so it lives beside the board chat
+// rather than as a nav pill up top. Open state is owned by App and passed through.
+export function ChatDock({ onToggleFurnace, furnaceOpen, furnaceBurning }: { onToggleFurnace?: () => void; furnaceOpen?: boolean; furnaceBurning?: boolean } = {}) {
   const { subscribeToEvent } = useAppActions();
   const tasks = useAppSelector((s) => s.tasks);
   const config = useAppSelector((s) => s.config);
@@ -567,6 +570,35 @@ export function ChatDock() {
           onOpen={(el) => toggle(BOARD_CONVERSATION_ID, el)}
           onContextMenu={(e) => setMenu({ id: BOARD_CONVERSATION_ID, x: e.clientX, y: e.clientY })}
         />
+
+        {/* FLUX-1035: the Furnace open toggle — a small square icon pinned right of the Orchestrator tab.
+            Furnace orange when the panel is open. FLUX-1053: when closed but a batch is burning it keeps
+            an ambient orange treatment + a pulsing badge, so unattended work stays glanceable. */}
+        {onToggleFurnace && (
+          <button
+            type="button"
+            onClick={onToggleFurnace}
+            aria-label={furnaceBurning ? 'The Furnace — batches burning' : 'The Furnace'}
+            aria-pressed={!!furnaceOpen}
+            title={furnaceBurning ? 'The Furnace — batches burning' : 'The Furnace'}
+            className={`relative flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg border transition-colors ${
+              furnaceOpen
+                ? 'border-transparent text-white'
+                : furnaceBurning
+                  ? 'border-[#e05a00]/60 bg-[#e05a00]/10 text-[#e05a00]'
+                  : 'eh-border bg-[var(--eh-input-bg)] text-[var(--eh-text-muted)] hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5'
+            }`}
+            style={furnaceOpen ? { background: '#e05a00' } : undefined}
+          >
+            <Flame className={`h-4 w-4 ${!furnaceOpen && furnaceBurning ? 'animate-pulse' : ''}`} />
+            {!furnaceOpen && furnaceBurning && (
+              <span
+                aria-hidden="true"
+                className="absolute -right-0.5 -top-0.5 h-2 w-2 animate-pulse rounded-full bg-[#e05a00] ring-2 ring-[var(--eh-base)]"
+              />
+            )}
+          </button>
+        )}
 
         {/* FLUX-898: the unified attention surface — pinned immediately right of the Orchestrator.
             Replaces the old Pending tab + floating fallback: a 3-tier dynamic-label button
@@ -1891,6 +1923,12 @@ function ChatWindow({
   const [coldDismissed, setColdDismissed] = useState(false);
   const cold =
     orchestrator && !working && !session?.resumable && chat.messages.length > 0 && !coldDismissed;
+  // Re-arm the cold-open choice when the session goes warm again. Without this, a no-draft "Resume"
+  // dismiss latches `coldDismissed` for the ChatWindow lifetime, so a *second* cold (e.g. another
+  // engine restart in the same session) would never re-offer the strip (FLUX-860).
+  useEffect(() => {
+    if (working || session?.resumable) setColdDismissed(false);
+  }, [working, session?.resumable]);
   const coldResumeChoice = cold ? (
     <div className="flex flex-col gap-1.5 rounded-lg border border-dashed border-[var(--eh-border)] bg-[var(--eh-input-bg)] px-2.5 py-2 text-[12px]">
       <span className="text-[var(--eh-text-secondary)]">

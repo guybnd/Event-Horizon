@@ -197,7 +197,7 @@ When a ticket has 2+ active scatter-gather sessions, the `change_status` MCP too
 Each reviewer session:
 1. Reads the ticket description and history via MCP tools
 2. Inspects the diff via git commands
-3. Posts a structured comment via `add_comment` (starts with **APPROVED** or **CHANGES NEEDED**)
+3. Posts a structured comment via `add_note` (`type: 'comment'`, starts with **APPROVED** or **CHANGES NEEDED**)
 4. Exits — does NOT change status
 
 Multiple reviewers run simultaneously — each as an independent session tagged with `role: 'reviewer:<persona-id>'`.

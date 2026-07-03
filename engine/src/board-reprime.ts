@@ -1,10 +1,11 @@
 import { tailTranscriptMessages, type TranscriptMessage } from './transcript.js';
+import { BOARD_CONVERSATION_ID } from './agents/board.js';
 
 /**
  * FLUX-838: board cold-resume re-prime.
  *
  * The board orchestrator is a persistent chat for the whole board, but the CLI session store
- * is in-memory only — an engine restart wipes the board's `claudeSessionId`, so the next turn
+ * is in-memory only — an engine restart wipes the board's `resumeSessionId`, so the next turn
  * cold-starts a fresh `claude` with no `--resume` and no memory of the prior conversation. The
  * durable `__board__.jsonl` transcript is the orchestrator's only memory; this helper feeds a
  * bounded tail of it back into the spawn prompt so the revived orchestrator can honor the
@@ -14,10 +15,6 @@ import { tailTranscriptMessages, type TranscriptMessage } from './transcript.js'
  * unit-testable in isolation. It never appends to the transcript — the re-prime is read-only.
  */
 
-// Board sentinel stream id. Kept as a local literal (not imported from `claude-code.ts`) to
-// avoid a circular import; mirrors the parallel `BOARD_CONVERSATION_ID` in claude-code.ts /
-// portal api.ts.
-const BOARD_CONVERSATION_ID = '__board__';
 
 // One-time-per-session-lifecycle budget — this fires at most once when a cold board session
 // starts, so a generous verbatim tail is affordable. Too small loses commitments; too large

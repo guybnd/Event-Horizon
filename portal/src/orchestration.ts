@@ -7,7 +7,7 @@ export const ACTIVE_SESSION_STATUSES: CliSessionStatus[] = ['pending', 'running'
  *  chat keys off that to find the spawn point + render the inline orchestration block in its place.
  *  Only the group-forming delegate tools belong here; `start_session` is excluded because it spawns
  *  a standalone, ungrouped session that never resolves into a 2+ run group (see projection.ts). */
-export const DELEGATION_TOOLS = new Set(['delegate_parallel', 'delegate_to_agent']);
+export const DELEGATION_TOOLS = new Set(['delegate', 'delegate_parallel', 'delegate_to_agent']);
 
 export function isActiveSession(s: Pick<CliSessionSummary, 'status' | 'endedAt'>): boolean {
   // FLUX-846: a session that carries an `endedAt` is terminal — the engine stamps it together
@@ -79,6 +79,18 @@ export function groupSessions(sessions: CliSessionSummary[] | undefined | null):
   return groups;
 }
 
+/** FLUX-962: token/cost totals summed across a group's sessions — same shape TokenBadge consumes,
+ *  so a group card renders one aggregated badge instead of re-summing at the call site. */
+export interface GroupTokenTotals {
+  inputTokens: number;
+  outputTokens: number;
+  costUSD: number;
+  /** True when ANY session's cost is estimated — the whole-run figure is then estimated. */
+  costIsEstimated: boolean;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}
+
 export interface GroupAggregate {
   total: number;
   active: number;
@@ -90,6 +102,8 @@ export interface GroupAggregate {
   /** Non-lead worker sessions (reviewers / pipeline steps / peers). */
   steps: CliSessionSummary[];
   done: boolean;
+  /** FLUX-962: tokens/cost summed over every session in the group. */
+  tokens: GroupTokenTotals;
 }
 
 export function aggregateGroup(group: SessionGroup): GroupAggregate {
@@ -98,11 +112,25 @@ export function aggregateGroup(group: SessionGroup): GroupAggregate {
   );
   const steps = group.sessions.filter(s => s !== lead);
   let active = 0, completed = 0, failed = 0, waitingInput = 0;
+  const tokens: GroupTokenTotals = {
+    inputTokens: 0,
+    outputTokens: 0,
+    costUSD: 0,
+    costIsEstimated: false,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+  };
   for (const s of group.sessions) {
     if (s.status === 'completed') completed++;
     else if (s.status === 'failed' || s.status === 'cancelled') failed++;
     else if (s.status === 'waiting-input') { waitingInput++; active++; }
     else if (s.status === 'pending' || s.status === 'running') active++;
+    tokens.inputTokens += s.inputTokens ?? 0;
+    tokens.outputTokens += s.outputTokens ?? 0;
+    tokens.costUSD += s.costUSD ?? 0;
+    tokens.cacheReadTokens += s.cacheReadTokens ?? 0;
+    tokens.cacheCreationTokens += s.cacheCreationTokens ?? 0;
+    if (s.costIsEstimated) tokens.costIsEstimated = true;
   }
   return {
     total: group.sessions.length,
@@ -113,6 +141,7 @@ export function aggregateGroup(group: SessionGroup): GroupAggregate {
     lead,
     steps,
     done: active === 0,
+    tokens,
   };
 }
 

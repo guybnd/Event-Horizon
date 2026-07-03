@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react';
-import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, FileText, Tag, Plus, Workflow, Check, GitCompare, Target, FlaskConical } from 'lucide-react';
+import { Bell, Rocket, ListTodo, KanbanSquare, Settings as SettingsIcon, FileText, Tag, Plus, Workflow, Check, GitCompare, Target, FlaskConical, Terminal } from 'lucide-react';
 import { THEMES, type AppTheme, type AppView } from '../AppContext';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { NotificationPanel } from './NotificationPanel';
@@ -25,6 +25,7 @@ const NAV_TINTS: Record<AppView, string> = {
   settings: '#64748b',  // slate
   'dev-onboarding': '#f43f5e', // rose — dev-only, never rendered in prod nav
 };
+
 
 const NavItem = memo(function NavItem({
   view,
@@ -58,6 +59,7 @@ const NavItem = memo(function NavItem({
     </button>
   );
 });
+
 
 const THEME_SWATCH: Record<AppTheme, string> = {
   light: 'bg-gray-200 border border-gray-300',
@@ -189,7 +191,7 @@ const Heartbeat = memo(function Heartbeat() {
   );
 });
 
-export function Header() {
+export function Header({ onToggleTerminal, terminalOpen }: { onToggleTerminal?: () => void; terminalOpen?: boolean }) {
   const { setView, openTaskModal, refreshNotifications } = useAppActions();
   const view = useAppSelector((s) => s.view);
   const isConnected = useAppSelector((s) => s.isConnected);
@@ -262,6 +264,24 @@ export function Header() {
 
           {/* Sync status — global (orphan-branch store), so it lives in the top bar. */}
           <SyncStatusIndicator />
+
+          {/* Terminal launcher */}
+          {onToggleTerminal && (
+            <button
+              onClick={onToggleTerminal}
+              title="Toggle terminal"
+              className={`group flex shrink-0 cursor-pointer items-center gap-1.5 rounded-xl border px-2.5 py-1.5 text-left transition-all duration-200 overflow-hidden ${
+                terminalOpen
+                  ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400'
+                  : 'border-gray-200 bg-white/60 text-gray-500 hover:text-gray-700 dark:border-white/10 dark:bg-white/5 dark:text-gray-400 dark:hover:text-gray-200'
+              }`}
+            >
+              <Terminal className="h-3.5 w-3.5 shrink-0" />
+              <span className="max-w-0 overflow-hidden opacity-0 whitespace-nowrap text-[10px] font-bold uppercase tracking-wider transition-all duration-200 group-hover:max-w-[80px] group-hover:opacity-100 group-hover:ml-0.5">
+                Terminal
+              </span>
+            </button>
+          )}
 
           {/* Notifications bell — FLUX-898: demoted to a muted secondary entry. The primary count +
               pulse + the Activity feed now live in the dock-bar <AttentionDock/> (Updates / Activity

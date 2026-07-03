@@ -35,7 +35,17 @@ function killPort(port) {
 killPort(5167);
 killPort(3067);
 
-const engine = spawn(npm, ['run', 'dev', '-w', 'engine'], {
+// FLUX-988: `--no-watch` (or EH_NO_WATCH=1) runs the engine WITHOUT the file-watcher — for when
+// you're mostly orchestrating agents and want a hard guarantee that no engine/src edit or git
+// operation can auto-restart the engine and wipe a running session. Trade-off: you must restart
+// `npm run dev` manually to pick up engine code changes.
+const noWatch = process.argv.includes('--no-watch') || process.env.EH_NO_WATCH === '1';
+const engineScript = noWatch ? 'dev:no-watch' : 'dev';
+if (noWatch) {
+  console.log('  [dev] engine file-watch DISABLED (dev:stable) — restart `npm run dev` to load engine/src edits\n');
+}
+
+const engine = spawn(npm, ['run', engineScript, '-w', 'engine'], {
   cwd: root,
   stdio: 'pipe',
   shell: isWin,
@@ -142,34 +152,44 @@ function pipeLines(stream, onLine) {
   });
 }
 
-pipeLines(engine.stdout, (line) => {
+// FLUX-946: FLUX-351 moved engine diagnostics from stdout (`console.log`) to stderr with a
+// level prefix ("[info] …", engine/src/log.ts). The suppressors below are anchored to the bare
+// message and previously ran only on stdout, so both the noise filtering AND the port/Workspace
+// banner detection silently broke. Handle BOTH streams through one prefix-aware classifier, and
+// only suppress *informational* lines so a genuine [warn]/[error] is never swallowed.
+const LEVEL_RE = /^\[(info|warn|error|debug)\]\s+/;
+
+function handleEngineLine(line, out) {
   if (SUPPRESS_ALWAYS.some(re => re.test(line))) return;
 
+  const levelMatch = line.match(LEVEL_RE);
+  const level = levelMatch ? levelMatch[1] : null;
+  const msg = levelMatch ? line.slice(levelMatch[0].length) : line;
+
   // Detect engine port — consume line silently, triggers banner.
-  const portMatch = line.match(/running on port (\d+)/i);
+  const portMatch = msg.match(/running on port (\d+)/i);
   if (portMatch) { enginePort = portMatch[1]; maybePrintBanner(); return; }
 
   // Capture workspace for banner, schedule fallback port poll.
-  const wsMatch = line.match(/^Workspace: (.+)/);
+  const wsMatch = msg.match(/^Workspace: (.+)/);
   if (wsMatch) { workspacePath = wsMatch[1].trim(); scheduleEnginePortFallback(); return; }
 
-  countStartupLine(line);
+  countStartupLine(msg);
 
-  if (SUPPRESS_ENGINE_ALWAYS.some(re => re.test(line))) return;
-  if (!bannerPrinted && SUPPRESS_ENGINE_PRE_BANNER.some(re => re.test(line))) return;
+  // Only ever suppress informational noise — a real [warn]/[error] must always print.
+  const informational = level === null || level === 'info' || level === 'debug';
+  if (informational) {
+    if (SUPPRESS_ENGINE_ALWAYS.some(re => re.test(msg))) return;
+    if (!bannerPrinted && SUPPRESS_ENGINE_PRE_BANNER.some(re => re.test(msg))) return;
+    // Portal URL line the engine prints when portal dist is bundled — redundant with banner.
+    if (/^Portal:\s+http:\/\/localhost/.test(msg)) return;
+  }
 
-  // Portal URL line the engine prints when portal dist is bundled — redundant with banner.
-  if (/^Portal:\s+http:\/\/localhost/.test(line)) return;
+  if (line.trim()) out.write(`[engine] ${line}\n`);
+}
 
-  const out = line.trim();
-  if (out) process.stdout.write(`[engine] ${line}\n`);
-});
-
-pipeLines(engine.stderr, (line) => {
-  if (SUPPRESS_ALWAYS.some(re => re.test(line))) return;
-  const out = line.trim();
-  if (out) process.stderr.write(`[engine] ${line}\n`);
-});
+pipeLines(engine.stdout, (line) => handleEngineLine(line, process.stdout));
+pipeLines(engine.stderr, (line) => handleEngineLine(line, process.stderr));
 
 pipeLines(portal.stdout, (line) => {
   if (SUPPRESS_ALWAYS.some(re => re.test(line))) return;

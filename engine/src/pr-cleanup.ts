@@ -1,20 +1,116 @@
 import { log } from './log.js';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
-import { findWorktreeForBranch, removeTaskWorktree, detachTaskWorktree, stashDirtyTree } from './task-worktree.js';
+import { findWorktreeForBranch, removeTaskWorktree, detachTaskWorktree, stashDirtyTree, unlinkWorktreeDependencies, reclaimWorktrees } from './task-worktree.js';
 import { getDefaultBranch, deleteTicketBranch, getPullRequestStatus } from './branch-manager.js';
 import { addNotification } from './notifications.js';
-import { stopAllSessionsForTask } from './session-store.js';
+import { stopAllSessionsForTask, getActiveSessionsForTask, isWithinReclaimGrace, RECLAIM_GRACE_MS } from './session-store.js';
 import { tasksCache, updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
+import { configCache } from './config.js';
 import { TERMINAL_TICKET_STATUSES } from './schema.js';
-
-const execFileAsync = promisify(execFile);
+// FLUX-998 (epic FLUX-996): route every git/gh call in the post-merge cleanup + PR-reconcile
+// path through the S1 runner — a hung `git fetch`/`gh pr list` here used to block the merge
+// and the 90s reconcile poller forever (no timeout, no non-interactive env).
+import { runGit, runGh } from './git-exec.js';
 
 const DONE_STATUS = 'Done';
 
 function git(workspaceRoot: string, args: string[]) {
-  return execFileAsync('git', ['-C', workspaceRoot, ...args], { windowsHide: true });
+  return runGit(args, { cwd: workspaceRoot });
+}
+
+// ─── Worktree reclamation at Ready (FLUX-1031) ───────────────────────────────
+
+/**
+ * Whether a ticket's task worktree can be reclaimed (its slot returned to the
+ * board-wide pool) right now — FLUX-1031.
+ *
+ * The task-worktree pool is capped board-wide (DEFAULT_MAX_TASK_WORKTREES = 4).
+ * Before this, a slot was freed ONLY when a PR merged, so every ticket resting at
+ * Ready (awaiting review) kept holding one — stack up ~4 Ready tickets, or a
+ * Furnace batch that opens PRs back-to-back, and the next task's spawn failed with
+ * "worktree limit reached (4/4)". A ticket becomes reclaimable the moment it reaches
+ * Ready: the commit-before-Ready invariant (mcp-server `evaluateWorktreeReadyRefusal`)
+ * guarantees its work is committed on — and the PR push put it on the remote of — the
+ * feature branch, so removing the worktree loses nothing. If the ticket later bounces
+ * back to In Progress on a changes-requested round-trip, `resolveTaskExecutionRoot`
+ * self-heals the worktree (recreates it from the branch, which still carries every
+ * commit). Terminal tickets (Done/Released/Archived) are reclaimable for the same
+ * reason — their branch already merged or was abandoned.
+ *
+ * NEVER reclaim while a session is still live on the worktree's branch: that would
+ * yank a slot out from under work in flight — chiefly the very session that just moved
+ * the ticket to Ready and is still winding down. Such a worktree is left for the next
+ * sweep, which reclaims it once the session ends. (The lower-level `reclaimWorktrees`
+ * independently refuses to remove a tree with uncommitted tracked changes, so real work
+ * is doubly protected.)
+ *
+ * The live-session check spans EVERY ticket sharing the worktree's branch, not just the
+ * directory-owning ticket (FLUX-1031 review). A task runs in whatever worktree holds ITS
+ * branch, and a ticket can *Join* another ticket's branch — the documented mechanism for a
+ * review-bug fix to ride along on the same branch/worktree while the original ticket rests
+ * at Ready (see `resolveTaskExecutionRoot`). That joined sibling's live session runs inside
+ * this physical worktree even though the directory is named for `ticketId`, so keying the
+ * guard on `ticketId` alone would leave it invisible and let the sweep delete the worktree
+ * out from under it. Mirror `sharedNonDoneSiblings`' branch-scoped resolution instead.
+ */
+export function isWorktreeReclaimable(ticketId: string): boolean {
+  const t = (tasksCache as Record<string, any>)[ticketId];
+  if (!t) return false;
+  if (hasLiveSessionOnBranch(t.branch, ticketId)) return false; // never yank live work
+  // FLUX-1060: within the post-restart grace window, also protect a worktree whose ticket shows
+  // very recent session activity. After an engine restart the in-memory session map is empty and
+  // rehydrated from persisted stubs (session-store) — but a session that entered `waiting-input`
+  // just before the restart may have had no stub written yet, so the branch check above can't see
+  // it. Outside the grace window this is inert, so steady-state reclaim (FLUX-1031) is unchanged.
+  if (isWithinReclaimGrace() && hasRecentSessionActivity(t)) return false;
+  const readyStatus = configCache.readyForMergeStatus || 'Ready';
+  return t.status === readyStatus || TERMINAL_TICKET_STATUSES.has(t.status);
+}
+
+/**
+ * Did this ticket have an agent session that was active around the (recent) engine restart? Scans
+ * its own history for an `agent_session` entry whose last-known timestamp is within
+ * `RECLAIM_GRACE_MS` of now. `reconcileOrphanedSessions` stamps `endedAt`≈boot-time on every
+ * session that was still active at restart, so those read as "recent" for the grace window. Only
+ * consulted inside {@link isWithinReclaimGrace} (see caller). Owner-scoped: a joined branch sibling
+ * that was live at restart is already covered by the rehydrated-stub branch check.
+ */
+function hasRecentSessionActivity(t: any, now: number = Date.now()): boolean {
+  const history = Array.isArray(t?.history) ? t.history : [];
+  for (const h of history) {
+    if (h?.type !== 'agent_session') continue;
+    const ts = Date.parse(h.endedAt ?? h.date ?? h.startedAt ?? '');
+    if (!Number.isNaN(ts) && now - ts < RECLAIM_GRACE_MS) return true;
+  }
+  return false;
+}
+
+/**
+ * Is any session live on `branch` — the directory-owning ticket's OR a joined sibling's
+ * (any other ticket whose `branch` is this branch)? Branch-scoped so a ticket that Joined
+ * the worktree's branch (the review-bug-fix ride-along) can't be reclaimed out from under.
+ * Falls back to the owning-ticket-only check when the ticket carries no branch.
+ */
+function hasLiveSessionOnBranch(branch: string | undefined, ownerId: string): boolean {
+  if (getActiveSessionsForTask(ownerId).length > 0) return true;
+  if (!branch) return false;
+  for (const t of Object.values(tasksCache) as any[]) {
+    if (t.id === ownerId || t.branch !== branch) continue;
+    if (getActiveSessionsForTask(t.id).length > 0) return true;
+  }
+  return false;
+}
+
+/**
+ * Proactive board-wide sweep (FLUX-1031): reclaim every task worktree whose owning
+ * ticket is reclaimable (Ready or terminal) and idle (no live session, clean tree).
+ * Runs on the engine's reconcile interval so a Ready ticket's slot is freed shortly
+ * after its session ends — well before the pool can exhaust — without a per-adapter
+ * exit hook. `reclaimWorktrees` never discards real work (it removes only genuinely
+ * clean trees). Returns the reclaimed ticket ids. Best-effort; never throws.
+ */
+export async function reclaimReadyWorktrees(workspaceRoot: string): Promise<string[]> {
+  return reclaimWorktrees(workspaceRoot, isWorktreeReclaimable).catch(() => [] as string[]);
 }
 
 /**
@@ -180,6 +276,15 @@ export async function cleanupMergedBranch(workspaceRoot: string, branch: string,
   const worktree = await findWorktreeForBranch(workspaceRoot, branch).catch(() => null);
   let worktreeRemoved = false;
   if (worktree) {
+    // FLUX-1018: drop the shared node_modules junctions (FLUX-518) BEFORE the
+    // dirty check. They are untracked symlinks into the main tree, so they always
+    // make `git status --porcelain` non-empty — which used to make EVERY merged
+    // worktree read as "dirty", so cleanup kept it. Stale Done worktrees then
+    // piled up and filled the concurrency cap, forcing new isolated sessions to
+    // fall back onto master (the FLUX-972 incident). Unlinking first is safe
+    // (link-only deletes, never the target) and lets a genuinely clean worktree
+    // be removed while real uncommitted work still trips the guard below.
+    await unlinkWorktreeDependencies(worktree).catch(() => {});
     const { stdout: porcelain } = await git(worktree, ['status', '--porcelain']).catch(() => ({ stdout: '' }));
     if (porcelain.trim().length > 0) {
       const primary = branchTickets[0];
@@ -351,7 +456,7 @@ export async function pruneMergedBranches(workspaceRoot: string): Promise<void> 
   // 1. Recently-merged PR head refs (ours only).
   let mergedSet: Set<string>;
   try {
-    const { stdout } = await execFileAsync('gh', ['pr', 'list', '--state', 'merged', '--limit', '50', '--json', 'headRefName'], { cwd: workspaceRoot, windowsHide: true });
+    const { stdout } = await runGh(['pr', 'list', '--state', 'merged', '--limit', '50', '--json', 'headRefName'], { cwd: workspaceRoot });
     const refs = (JSON.parse(stdout) as any[]).map((p) => p?.headRefName).filter((b): b is string => typeof b === 'string' && b.startsWith('flux/'));
     mergedSet = new Set(refs);
   } catch {

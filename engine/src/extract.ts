@@ -3,6 +3,7 @@ import { broadcastEvent } from './events.js';
 import { createTask, deleteTask } from './task-store.js';
 import { sliceTurns } from './transcript.js';
 import { appendCurationOp, type ExtractOp } from './curation-ops.js';
+import { BOARD_CONVERSATION_ID } from './agents/board.js';
 
 /**
  * FLUX-656: the `extract` curation verb — carve a topic-slice out of a conversation stream
@@ -18,9 +19,9 @@ import { appendCurationOp, type ExtractOp } from './curation-ops.js';
  * direct call that hits the FLUX-605 CONFIRM gate.
  */
 
-/** The orchestrator stream id — mirrors `BOARD_CONVERSATION_ID` in agents/claude-code.ts.
- *  Kept as a local literal so this module doesn't pull in the heavy CLI-spawn module. */
-const DEFAULT_SOURCE_STREAM = '__board__';
+/** The orchestrator stream id — the default source stream for an extract. (FLUX-904: now the
+ *  single `BOARD_CONVERSATION_ID` from the dependency-free agents/board.ts seam.) */
+const DEFAULT_SOURCE_STREAM = BOARD_CONVERSATION_ID;
 
 export interface ExtractTicketOptions {
   /** Source stream the slice is carved from (default `__board__`). */

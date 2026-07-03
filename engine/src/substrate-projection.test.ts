@@ -137,6 +137,35 @@ describe('substrate vs projection (FLUX-658)', () => {
     ]);
   });
 
+  it('projectTranscript renders Copilot assistant.message reasoningText AND content (FLUX-969)', () => {
+    // Copilot CLI narration lands in two fields on the `assistant.message` event: `data.content`
+    // (the final reply text) and `data.reasoningText` (the inter-tool narration, which is the ONLY
+    // text on a tool-call turn where content is ''). The original render read only `content`, so
+    // reasoning-only messages — the bulk of a tool-heavy turn — vanished from the chat while still
+    // showing in the history/progress video. Both must project, reasoning before content.
+    const stream = 'COP';
+    const raws = [
+      { type: 'user', text: 'go', timestamp: 'T1' },
+      // reason-only (a tool-call turn): content is '' → reasoning is the only narration.
+      { type: 'assistant.message', data: { content: '', reasoningText: 'Let me look at the ticket.' } },
+      // content-only (a plain reply / non-tool turn).
+      { type: 'assistant.message', data: { content: 'Now updating shared.ts:', reasoningText: '' } },
+      // both — reasoning precedes the lead-in content; each emits its own bubble.
+      { type: 'assistant.message', data: { content: 'Let me check the race:', reasoningText: 'liveOutput is exposed but not on the progress stream.' } },
+      // neither (pure tool-call housekeeping) → nothing renders.
+      { type: 'assistant.message', data: { content: '   ', reasoningText: '' } },
+    ];
+    const turns: Turn[] = raws.map((raw, seq) => ({ turnId: `${stream}:${seq}`, streamId: stream, seq, ts: 'TENV', role: 'unknown', raw }));
+
+    expect(projectTranscript(turns)).toEqual([
+      { role: 'user', text: 'go', ts: 'T1' },
+      { role: 'assistant', text: 'Let me look at the ticket.', ts: 'TENV' },
+      { role: 'assistant', text: 'Now updating shared.ts:', ts: 'TENV' },
+      { role: 'assistant', text: 'liveOutput is exposed but not on the progress stream.', ts: 'TENV' },
+      { role: 'assistant', text: 'Let me check the race:', ts: 'TENV' },
+    ]);
+  });
+
   it('projectTranscript renders a resume-preamble as a system context-update note row (FLUX-745)', () => {
     const stream = 'RP';
     const raws = [

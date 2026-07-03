@@ -35,7 +35,7 @@ describe('parseRunProposal', () => {
   it('looks past trailing tool/note rows to the proposing assistant turn', () => {
     const p = parseRunProposal([
       msg('assistant', 'Here is the plan.\n<!-- eh-run intent="implement" -->'),
-      msg('tool', 'add_comment'),
+      msg('tool', 'add_note'),
       msg('note', 'context update'),
     ]);
     expect(p?.intent).toBe('implement');

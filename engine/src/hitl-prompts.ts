@@ -12,7 +12,7 @@ import { getActiveFluxDir } from './workspace.js';
  * prompt channels: gated-tool approvals (permission-prompts.ts, FLUX-605) and structured
  * questions (ask-questions.ts, FLUX-662). Both park a single held `fetch` from the agent's
  * MCP tool until a human resolves it (or it times out); their envelope is identical —
- * `{ id, kind, payload, conversationId, claudeSessionId, createdAt }` — so they share one core
+ * `{ id, kind, payload, conversationId, resumeSessionId, createdAt }` — so they share one core
  * here. The two original modules survive as thin, name-preserving wrappers so call sites and
  * the HTTP routes don't churn.
  *
@@ -32,7 +32,7 @@ import { getActiveFluxDir } from './workspace.js';
  *     settle, so a second settle (a late cross-restart answer racing a timeout that already wrote
  *     its `*-resolved`/`ask-answer` event) is a no-op and appends NO phantom transcript entry.
  *     In-process this used to be covered only by `clearTimeout`; the index makes it durable.
- *  4. Persisting `claudeSessionId` on each record (captured from the live session at park time)
+ *  4. Persisting `resumeSessionId` on each record (captured from the live session at park time)
  *     so a later Phase 3 has a `claude --resume` target after a restart — it lives only in-memory
  *     on the session record today and is lost when reconcileOrphanedSessions cancels the session.
  */
@@ -67,7 +67,7 @@ export interface OpenPromptRecord {
   payload: PermissionPayload | QuestionPayload;
   conversationId: string | null;
   /** The CLI session's `claude --resume` pointer at park time, if known — for Phase 3. */
-  claudeSessionId?: string;
+  resumeSessionId?: string;
   createdAt: string;
   /** Absolute timeout deadline (createdAt + the channel's timeoutMs). Persisted so a re-surfaced
    *  prompt can re-arm its timeout after a restart (FLUX-833 review M3). Optional for back-compat
@@ -277,7 +277,7 @@ export function parkPrompt(args: {
   kind: PromptKind;
   payload: PermissionPayload | QuestionPayload;
   conversationId: string | null;
-  claudeSessionId?: string | undefined;
+  resumeSessionId?: string | undefined;
   timeoutMs: number;
 }): Promise<any> {
   const id = randomUUID();
@@ -285,7 +285,7 @@ export function parkPrompt(args: {
   const createdAt = new Date(now).toISOString();
   const rec: OpenPromptRecord = {
     id, kind: args.kind, payload: args.payload, conversationId: args.conversationId,
-    ...(args.claudeSessionId ? { claudeSessionId: args.claudeSessionId } : {}),
+    ...(args.resumeSessionId ? { resumeSessionId: args.resumeSessionId } : {}),
     createdAt,
     expiresAt: new Date(now + args.timeoutMs).toISOString(),
   };
@@ -312,6 +312,28 @@ export function resolvePrompt(id: string, result: any): boolean {
 /** The open prompts of one kind, in the shape the legacy `listPending*` callers expect. */
 export function listOpenPrompts(kind: PromptKind): OpenPromptRecord[] {
   return Array.from(durable.values()).filter((r) => r.kind === kind);
+}
+
+/**
+ * FLUX-985: settle every OPEN prompt bound to a conversation (task) whose session(s) are being
+ * force-torn-down — worktree detach / ticket delete / stop&merge (see stopAllSessionsForTask).
+ * The held fetch belongs to a session that is being killed, so it can never be answered: without
+ * this it would linger to its full 120s/240s timeout and then (a) fire a spurious `needsAction`
+ * nudge on a ticket the user deliberately tore down, and (b) run `res.json()` on an already-closed
+ * socket. We settle with the channel's non-answer result (deny / unanswered) but WITHOUT the
+ * `'timeout'` reason, so the timer + durable record + held fetch clear immediately and NO needsAction
+ * fires (the prompt was cancelled, not ignored). Idempotent via `settle`. Returns the count settled.
+ *
+ * NOT called on graceful shutdown (stopAllCliSessions) — there the durable index must survive so
+ * `rehydrateOpenPrompts` can re-surface prompts after restart.
+ */
+export function settleOpenPromptsForConversation(conversationId: string): number {
+  let settled = 0;
+  for (const rec of Array.from(durable.values())) {
+    if (rec.conversationId !== conversationId) continue;
+    if (settle(rec.id, timeoutResult(rec))) settled++; // no 'timeout' reason ⇒ no needsAction nudge
+  }
+  return settled;
 }
 
 /**

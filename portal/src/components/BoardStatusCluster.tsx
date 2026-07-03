@@ -1,8 +1,7 @@
 import { useCallback, useState } from 'react';
 import { Bot } from 'lucide-react';
 import { AnimatePresence } from 'framer-motion';
-import { useAppSelector, useAppActions } from '../store/useAppSelector';
-import type { Task } from '../types';
+import { useAppSelector } from '../store/useAppSelector';
 import { ActiveSessionsPopover } from './ActiveSessionsPopover';
 import { LifetimeTokenStats } from './LifetimeTokenStats';
 
@@ -16,7 +15,6 @@ const ACTIVE_SESSION_STATUSES = new Set(['pending', 'running', 'waiting-input'])
  * the uncommitted-changes control sits next to the Worktrees chip.)
  */
 export function BoardStatusCluster() {
-  const { openTaskFullView } = useAppActions();
   const tasks = useAppSelector((s) => s.tasks);
   const [isSessionsPopoverOpen, setIsSessionsPopoverOpen] = useState(false);
 
@@ -25,7 +23,6 @@ export function BoardStatusCluster() {
   ).length;
 
   const handleCloseSessionsPopover = useCallback(() => setIsSessionsPopoverOpen(false), []);
-  const handleOpenTaskFromSessions = useCallback((t: Task) => openTaskFullView(t), [openTaskFullView]);
   const toggleSessionsPopover = useCallback(() => setIsSessionsPopoverOpen((prev) => !prev), []);
 
   return (
@@ -49,7 +46,6 @@ export function BoardStatusCluster() {
             <ActiveSessionsPopover
               tasks={tasks}
               onClose={handleCloseSessionsPopover}
-              openTask={handleOpenTaskFromSessions}
             />
           )}
         </AnimatePresence>

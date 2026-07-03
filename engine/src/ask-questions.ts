@@ -50,10 +50,10 @@ const ASK_TIMEOUT_MS = QUESTION_TIMEOUT_MS;
 export function requestAnswer(
   questions: AskQuestion[],
   conversationId: string | null,
-  claudeSessionId?: string,
+  resumeSessionId?: string,
 ): Promise<AnswerResult> {
   const payload: QuestionPayload = { questions };
-  return parkPrompt({ kind: 'question', payload, conversationId, claudeSessionId, timeoutMs: ASK_TIMEOUT_MS }) as Promise<AnswerResult>;
+  return parkPrompt({ kind: 'question', payload, conversationId, resumeSessionId, timeoutMs: ASK_TIMEOUT_MS }) as Promise<AnswerResult>;
 }
 
 export function resolveAnswer(id: string, result: AnswerResult): boolean {

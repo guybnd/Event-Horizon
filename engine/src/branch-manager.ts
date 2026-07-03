@@ -1,16 +1,18 @@
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { workspaceRoot } from './workspace.js';
-
-const execFileAsync = promisify(execFile);
+// FLUX-998 (epic FLUX-996): every git/gh call in this file used to be a bare execFileAsync —
+// no timeout, no non-interactive env — so a slow/unreachable remote or a stalled gh credential
+// prompt hung branch create/push/PR-raise/merge forever (the spawn/Ready/finish paths). Route
+// everything through the S1 runner (runGit/runGh), which always applies a bounded timeout,
+// buildGitSyncEnv's non-interactive+gh-authed env, and tree-kill on timeout/abort.
+import { runGit, runGh } from './git-exec.js';
 
 function git(args: string[]): Promise<{ stdout: string; stderr: string }> {
-  return execFileAsync('git', ['-C', workspaceRoot!, ...args], { windowsHide: true });
+  return runGit(args, { cwd: workspaceRoot! });
 }
 
 // Larger maxBuffer for `git diff` — defaults (1MB) truncate big diffs into ENOBUFS.
 function gitDiff(args: string[]): Promise<{ stdout: string; stderr: string }> {
-  return execFileAsync('git', ['-C', workspaceRoot!, ...args], { windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
+  return runGit(args, { cwd: workspaceRoot!, maxBuffer: 8 * 1024 * 1024 });
 }
 
 export function slugify(title: string): string {
@@ -116,7 +118,18 @@ export async function deleteTicketBranch(name: string, force = false): Promise<v
 
 export async function checkGhAuth(): Promise<boolean> {
   try {
-    await execFileAsync('gh', ['auth', 'status'], { windowsHide: true });
+    // FLUX-989: bound `gh auth status` — a hung gh (e.g. mid-prompt) would otherwise
+    // block buildGitSyncEnv() and every sync git call behind it forever. A timeout kills
+    // gh and we treat it as "not authenticated", so the sync proceeds non-interactively.
+    // FLUX-998: runGh's default timeout IS GIT_SYNC_TIMEOUT_MS, so no explicit override needed.
+    // MUST pass `env: process.env` (not the default buildGitSyncEnv() path): buildGitSyncEnv()
+    // calls checkGhAuth() itself to decide whether to inject gh's credential helper, so leaving
+    // this on the normal path recurses infinitely (buildGitSyncEnv → checkGhAuth → runGh →
+    // buildGitSyncEnv → …, RangeError: Maximum call stack size exceeded — caught by
+    // branch-manager.test.ts). Matches this probe's original behavior: it never had the
+    // non-interactive/askpass env either, since `gh auth status` reads gh's own stored auth state
+    // rather than prompting for git credentials the way push/fetch can.
+    await runGh(['auth', 'status'], { env: process.env });
     return true;
   } catch {
     return false;
@@ -125,22 +138,79 @@ export async function checkGhAuth(): Promise<boolean> {
 
 export async function createPullRequest(branch: string, title: string, body: string): Promise<string> {
   // Push latest commits on the branch before creating/updating the PR.
-  await execFileAsync('git', ['-C', workspaceRoot!, 'push', '-u', 'origin', branch], { windowsHide: true });
+  await runGit(['push', '-u', 'origin', branch], { cwd: workspaceRoot! });
 
   // If an OPEN PR already exists for this branch, return its URL rather than erroring. Gate on
   // state: `gh pr view <branch>` returns the most-recent PR regardless of state, so a previously
   // CLOSED/MERGED PR on this branch would otherwise be "reused" and block opening a fresh one
   // (a re-pushed branch whose old PR was closed never got a new PR — FLUX-597).
   try {
-    const { stdout: existing } = await execFileAsync('gh', ['pr', 'view', branch, '--json', 'url,state'], { windowsHide: true });
+    const { stdout: existing } = await runGh(['pr', 'view', branch, '--json', 'url,state']);
     const pr = JSON.parse(existing) as { url?: string; state?: string };
     if (pr?.url && pr.state === 'OPEN') return pr.url;
   } catch {
     // No existing PR (or unreadable) — fall through to create one.
   }
 
-  const { stdout } = await execFileAsync('gh', ['pr', 'create', '--title', title, '--body', body, '--head', branch], { windowsHide: true });
+  const { stdout } = await runGh(['pr', 'create', '--title', title, '--body', body, '--head', branch]);
   return stdout.trim();
+}
+
+/** What {@link postPrReview} managed to record on the PR. */
+export type PrReviewOutcome =
+  | 'approved'          // a real `--approve` review landed (green check on the PR)
+  | 'changes-requested' // a real `--request-changes` review landed
+  | 'commented'         // fell back to a plain `--comment` review (verdict visible, not a formal decision)
+  | 'failed';           // gh unavailable / no PR / unauthed — nothing posted (best-effort)
+
+/**
+ * Mirror an internal review verdict onto the real GitHub PR (FLUX-1033). `pr` may be a PR number,
+ * URL, or branch (all accepted by `gh pr review`).
+ *
+ * SELF-APPROVAL CAVEAT: GitHub rejects a formal `--approve`/`--request-changes` review when the
+ * authenticated `gh` user AUTHORED the PR — and the Furnace opens the PR under that same token, so
+ * the formal review usually fails. We therefore attempt the formal decision first (it lands cleanly
+ * when a distinct reviewer token is configured) and, on ANY failure, fall back to a plain `--comment`
+ * review so the verdict is still visible on the PR itself.
+ *
+ * Best-effort throughout: a total gh failure returns 'failed' and never throws — callers (the Furnace)
+ * must not fail a charge because the PR couldn't be annotated.
+ *
+ * `opts.commentOnly` forces a plain `--comment` review WITHOUT ever attempting the formal decision. The
+ * Furnace uses it for a non-final ticket of a sequential batch's shared PR (FLUX-1033/FLUX-1053): that
+ * ticket's verdict is worth recording as visible progress, but a real `--approve` must wait for the
+ * batch's final ticket — approving an incomplete shared PR (or one a later ticket will reject) is wrong.
+ */
+export async function postPrReview(
+  pr: string,
+  verdict: 'approved' | 'changes-requested',
+  body: string,
+  opts: { commentOnly?: boolean } = {},
+): Promise<PrReviewOutcome> {
+  if (opts.commentOnly) {
+    try {
+      await runGh(['pr', 'review', pr, '--comment', '--body', body]);
+      return 'commented';
+    } catch (commentErr: any) {
+      console.warn(`[branch] post PR comment review on ${pr} failed: ${commentErr?.message ?? commentErr}`);
+      return 'failed';
+    }
+  }
+  const flag = verdict === 'approved' ? '--approve' : '--request-changes';
+  try {
+    await runGh(['pr', 'review', pr, flag, '--body', body]);
+    return verdict;
+  } catch {
+    // Most commonly self-approval rejection ("Can not approve your own pull request"); could also be
+    // gh unavailable/unauthed. Fall back to a comment review so the verdict is still on the PR.
+    try {
+      await runGh(['pr', 'review', pr, '--comment', '--body', body]);
+      return 'commented';
+    } catch (commentErr: any) {
+      console.warn(`[branch] post PR review (${verdict}) on ${pr} failed: ${commentErr?.message ?? commentErr}`);
+      return 'failed';
+    }
+  }
 }
 
 export async function mergePullRequest(branch: string): Promise<void> {
@@ -149,7 +219,7 @@ export async function mergePullRequest(branch: string): Promise<void> {
   // throw AFTER the merge had already landed (FLUX-574). Branch deletion is handled by the
   // post-merge cleanup (`cleanupMergedBranch`) in the correct order: free the branch
   // (remove worktree / switch the main tree off it) → then force-delete local + remote.
-  await execFileAsync('gh', ['pr', 'merge', branch, '--squash'], { windowsHide: true });
+  await runGh(['pr', 'merge', branch, '--squash']);
 }
 
 /** Normalized PR state for a branch — what the EH PR card / swimlane render (FLUX-556). */
@@ -171,10 +241,8 @@ export interface PrStatus {
  */
 export async function getPullRequestStatus(branch: string): Promise<PrStatus | null> {
   try {
-    const { stdout } = await execFileAsync(
-      'gh',
+    const { stdout } = await runGh(
       ['pr', 'view', branch, '--json', 'number,state,url,title,reviewDecision,mergeable,statusCheckRollup'],
-      { windowsHide: true },
     );
     const raw = JSON.parse(stdout);
     if (!raw || typeof raw.number !== 'number') return null;

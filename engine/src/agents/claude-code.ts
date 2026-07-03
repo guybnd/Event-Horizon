@@ -1,31 +1,28 @@
 import { log } from '../log.js';
-import { spawn, execSync, type ChildProcessWithoutNullStreams } from 'child_process';
+import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { configCache } from '../config.js';
 import { buildActivityEntry, buildCommentEntry, buildAgentMessageEntry, buildAgentSessionEntry, appendSessionProgress, closeAgentSession, type AgentSessionEntry } from '../history.js';
 import { updateTaskWithHistory, updateAgentSession, tasksCache, estimateCostUSD } from '../task-store.js';
 import { resolveTaskExecutionRoot } from '../task-worktree.js';
-import { workspaceRoot as canonicalWorkspaceRoot, getActiveFluxDir, getTaskAssetsDir } from '../workspace.js';
-import { isPathInsideRoot } from '../file-utils.js';
+import { workspaceRoot as canonicalWorkspaceRoot } from '../workspace.js';
 import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
 import { appendTranscriptLine, appendTranscriptEvent } from '../transcript.js';
 import { killProcessTree } from '../kill-process-tree.js';
-import { checkFrameworkHealth, checkSkillStaleness, generateOrchestratorReplyNotification } from '../notifications.js';
+import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
 import { captureTurnStartState, clearNeedsActionIfSet, flagIfParked } from '../parked-ticket.js';
 import { buildMemberScopeArgs } from '../group.js';
 import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
-import { getModulePromptFragments, getModuleMcpServers, getActiveModules, getWorkspaceMcpServers } from '../modules.js';
+import { getModuleMcpServers, getActiveModules, getWorkspaceMcpServers } from '../modules.js';
 import { getProbeStatus } from '../module-probe.js';
 import { ensureSharedServer, getSharedServerUrl, isSharedHttpPlatformProven } from '../shared-mcp-server.js';
-import { buildBoardDigest } from '../board-digest.js';
 import { buildResumePreamble } from '../resume-preamble.js';
-import { buildBoardReprime } from '../board-reprime.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest, SendInputOptions } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, enqueueSessionWrite, flushSessionOutput } from './shared.js';
-import type { ChatAttachment } from '../projection.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, resolveAttachmentAbsPaths, attachmentReadInstruction, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, resolveClaudeExePath, buildInitialPrompt } from './shared.js';
+import { BOARD_CONVERSATION_ID } from './board.js';
 
 // Build --mcp-config JSON string for active module MCP servers.
 // Prefers an engine-managed shared HTTP server when one is ready (so all sessions
@@ -57,6 +54,17 @@ function buildModuleServerMap(phase?: string, tags?: string[], projectPath?: str
   return filtered;
 }
 
+// FLUX-1004 (epic FLUX-996): a few seconds, not HANDSHAKE_TIMEOUT_MS's full 45s — this is
+// a WAIT cap on the caller, not a change to how long ensureSharedServer itself is allowed
+// to keep trying. See the comment below for why capping only the wait is safe.
+const PRE_SPAWN_WAIT_CAP_MS = 5_000;
+
+/** Race a promise against a short cap; a still-pending promise is abandoned here (not cancelled) — its
+ * own work (and any cache/state it sets on completion) continues in the background regardless. */
+function raceWithCap<T>(p: Promise<T>, capMs: number): Promise<T | undefined> {
+  return Promise.race([p, new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), capMs))]);
+}
+
 /**
  * FLUX-579: start (or reuse) the per-worktree shared HTTP server for every active
  * shared-http module pinned to THIS session's execution root, BEFORE we build the
@@ -66,11 +74,23 @@ function buildModuleServerMap(phase?: string, tags?: string[], projectPath?: str
  * it would get NO shared server, or, pre-FLUX-579, the wrong workspace-root one.
  * Idempotent and best-effort: a single-checkout session whose root IS the
  * workspace root just reuses the probe's server.
+ *
+ * FLUX-1004 (epic FLUX-996): this is awaited on the spawn/chat-turn request path (below,
+ * and on the resume path) — a cold Serena start could block it for up to
+ * HANDSHAKE_TIMEOUT_MS (45s), stalling every spawn/turn behind a language-server boot.
+ * Cap the WAIT here to PRE_SPAWN_WAIT_CAP_MS rather than the underlying resolution: each
+ * server's readiness races against the cap, but a still-starting server's own promise
+ * keeps running in `ensureSharedServer`'s `inflight`/`servers` maps regardless of whether
+ * THIS caller gave up on it — so the NEXT turn's call finds it already ready (or already
+ * in flight) instead of restarting it. A server that isn't ready in time is simply omitted
+ * from THIS turn's MCP config: `buildModuleServerMap` already degrades gracefully on a
+ * proven platform (no stdio fallback, just skip — see its FLUX-579 comment), so the agent
+ * spawns without that one server for this turn rather than waiting on it.
  */
-async function ensureSharedServersForRoot(projectPath: string, phase?: string, tags?: string[]): Promise<void> {
+export async function ensureSharedServersForRoot(projectPath: string, phase?: string, tags?: string[]): Promise<void> {
   if (!projectPath || !isSharedHttpPlatformProven()) return;
   const shared = getActiveModules(phase, tags).filter(m => m.sharedHttp);
-  await Promise.all(shared.map(m => ensureSharedServer(m, projectPath).catch(() => null)));
+  await Promise.all(shared.map(m => raceWithCap(ensureSharedServer(m, projectPath).catch(() => null), PRE_SPAWN_WAIT_CAP_MS)));
 }
 
 function buildModuleMcpConfigArgs(phase?: string, tags?: string[], projectPath?: string): string[] {
@@ -105,7 +125,7 @@ export function filterMcpServersByPhase(
   return out;
 }
 
-function buildSpawnMcpConfigArgs(phase?: string, tags?: string[], projectPath?: string): string[] {
+export function buildSpawnMcpConfigArgs(phase?: string, tags?: string[], projectPath?: string): string[] {
   const serverPhases = (configCache as any).mcpServerPhases as Record<string, string[]> | undefined;
   const hasProfiles = !!serverPhases && typeof serverPhases === 'object' && Object.keys(serverPhases).length > 0;
   if (!hasProfiles) return buildModuleMcpConfigArgs(phase, tags, projectPath);
@@ -177,159 +197,12 @@ const TOOL_ACTIVITY_MAP: Record<string, string> = {
   TodoWrite: 'Planning',
   publish_artifact: 'Preparing artifact',
   ask_user_question: 'Asking',
-  add_comment: 'Commenting',
+  add_note: 'Commenting',
   change_status: 'Updating ticket',
   update_ticket: 'Updating ticket',
+  branch: 'Managing branch',
+  delegate: 'Delegating',
 };
-
-/**
- * FLUX-674: resolve chat image attachments (paste/drop in the composer) to absolute on-disk
- * paths under the per-ticket asset sidecar. Each attachment's `path` is flux-dir-relative
- * (`assets/<id>/foo.png`, as returned by the asset-upload route). We resolve against the active
- * flux dir and hard-guard that the result stays inside the assets root (defense-in-depth against
- * path traversal) and actually exists on disk; anything that fails is dropped. Returns the
- * absolute paths the agent will `Read`.
- */
-export function resolveAttachmentAbsPaths(attachments: ChatAttachment[] | undefined): string[] {
-  if (!Array.isArray(attachments) || attachments.length === 0) return [];
-  let assetsRoot: string;
-  let fluxDir: string;
-  try {
-    assetsRoot = getTaskAssetsDir();
-    fluxDir = getActiveFluxDir();
-  } catch {
-    return [];
-  }
-  const out: string[] = [];
-  for (const a of attachments) {
-    const rel = typeof a?.path === 'string' ? a.path.trim() : '';
-    if (!rel) continue;
-    const abs = path.resolve(fluxDir, rel);
-    if (!isPathInsideRoot(assetsRoot, abs)) continue;
-    if (!fs.existsSync(abs)) continue;
-    out.push(abs);
-  }
-  return out;
-}
-
-/**
- * FLUX-674: the prompt suffix that makes the agent see pasted images. The `claude` CLI is
- * driven via `-p "<prompt>"` (not a stream-json content-block stdin), so an image reaches the
- * model by referencing its absolute path and asking the agent to open it with the Read tool —
- * which renders images visually. Returns '' when there are no attachments.
- */
-export function attachmentReadInstruction(absPaths: string[]): string {
-  if (absPaths.length === 0) return '';
-  const n = absPaths.length;
-  const list = absPaths.map((p) => `- ${p}`).join('\n');
-  return `\n\n[The user attached ${n} image${n === 1 ? '' : 's'}. Use the Read tool to view ${n === 1 ? 'it' : 'them'} before responding:\n${list}\n]`;
-}
-
-export function buildInitialPrompt(task: any, appendPrompt: string, opts?: { diffBlock?: string | undefined; phase?: string | undefined }): string {
-  const readyStatus = (configCache as any)?.readyForMergeStatus || 'Ready';
-  const taskStatus = (task as any).status || 'Unknown';
-  const mcpNote = 'CRITICAL: Use the "event-horizon" MCP tools (change_status, update_ticket, add_comment, log_progress) for ALL ticket updates. Do NOT edit .flux/ files directly — direct edits corrupt session tracking.';
-  const actionInstruction = (() => {
-    // Phase-aware instructions take priority when the portal tells us the intent.
-    if (opts?.phase) {
-      switch (opts.phase) {
-        case 'chat':
-          // FLUX-602: free-form conversational session bound to a ticket. The user's
-          // message arrives via appendPrompt above — do NOT inject a mission.
-          // FLUX-651: but if the user asks for WORK (groom/implement/review/fix) and you DO it,
-          // you must end the turn on a board action — never finish work and just narrate it.
-          return `## Conversational session\n\n` +
-            `This is a free-form chat about ticket ${task.id}. Respond conversationally to the user's message above — answer questions, discuss, and help.\n` +
-            `For pure discussion or Q&A, do NOT change the ticket status, edit files, or commit unless asked — the user drives. Read-only tools (get_ticket, list_tickets, get_board_config) and add_comment / log_progress are always fine.\n\n` +
-            `END-OF-TURN ACTION CONTRACT (FLUX-651): if in THIS turn you actually performed grooming, implementation, or review work on the ticket, you MUST end the turn by taking the board action that reflects the outcome — do not finish the work and merely summarize it in chat:\n` +
-            `- Groomed it → change_status to "Todo" (or "Require Input" with your question).\n` +
-            `- Implemented it → change_status to "${readyStatus}" with a completion summary (or "Require Input" if blocked).\n` +
-            `- Reviewed it → change_status to "${readyStatus}", or back to "In Progress" with what to fix, or create_subtask for follow-ups, or "Require Input".\n` +
-            `Leaving the ticket parked in a working status with only a chat summary is a defect: the board flags it "Needs Action" and the user is notified. If you genuinely cannot decide, that itself is a "Require Input" — raise it, don't sit on it.\n\n` +
-            `To ask the user a structured question mid-turn, call the ask_user_question tool — it shows an interactive picker in this chat and returns their choice so you continue immediately. Never assume when a quick question would resolve ambiguity; ask.\n` +
-            `This holds REGARDLESS of the ticket's status (FLUX-826): even on a Done/Ready/closed ticket, any decision ("file a ticket / commit / leave it?") goes through ask_user_question — never as chat prose. A decision typed only into chat on a resting ticket has no picker, no notification, and no board flag, so it is lost if the user isn't watching live. (If ask_user_question times out unanswered on a ticket, the engine now leaves a persistent "Needs Action" flag as a backstop — but route it structurally, don't rely on the backstop.)\n\n` +
-            `ORCHESTRATION PROPOSALS (FLUX-805): you can spawn a fleet of subagents from this chat (list_available_agents to discover specialists, then delegate_parallel to run them). When the user expresses an orchestratable intent in plain language — "let's do a review", "groom this", "implement it with a few agents", "split this up" — do NOT silently launch a fleet: that spends tokens with no confirmation. Instead PROPOSE the run. Reply with one short line saying what you'd run (intent + roughly how many agents), and end your turn with this marker on its own final line:\n` +
-            `    <!-- eh-run intent="INTENT" label="BUTTON LABEL" -->\n` +
-            `where INTENT is exactly one of review | groom | implement | split, and BUTTON LABEL is what the confirm button should read (e.g. "Run review (3 agents)"). The marker is invisible in the chat — it renders as a one-click confirm button below the composer. ONLY after the user clicks it (their next message will explicitly confirm the launch) do you actually call delegate_parallel with the fleet you proposed — use list_available_agents to pick specialists fitting the intent and the ticket. That click is the cost guard: never launch a fleet without it. If the user instead asks a question or changes course, simply drop the proposal and carry on. Emit the marker only when genuinely proposing a multi-agent run — keep it conservative so you never offer a run the user didn't gesture at.\n\n` +
-            mcpNote;
-        case 'grooming':
-          return `## Your Mission: GROOM this ticket\n\n` +
-            `1. Use update_ticket to fill metadata (priority, effort, tags) and rewrite the body with a Problem/Motivation section and Implementation Plan.\n` +
-            `2. If questions are unresolved, use change_status to move to "Require Input" with a comment containing your question.\n` +
-            `3. When grooming is complete, use change_status to move to "Todo".\n\n` +
-            mcpNote;
-        case 'implementation':
-          return `## Your Mission: IMPLEMENT this ticket\n\n` +
-            `Write code to fulfill the ticket's plan. Move to "In Progress" if not already, complete the work, validate it, then use change_status to move to "${readyStatus}" with a completion summary.\n` +
-            `Do not exit without updating the ticket status.\n\n` +
-            mcpNote;
-        case 'review':
-          return `## Your Mission: REVIEW this ticket's implementation\n\n` +
-            `Assess the code changes for correctness, quality, edge cases, and alignment with the ticket's requirements. ` +
-            `Delegate to specialist reviewers if you are a supervisor — do NOT skip the review just because the work looks done.\n\n` +
-            `If you find issues:\n` +
-            `- Minor issues that don't block merging: create a follow-up ticket as a subtask using create_subtask with this ticket as the parent (do NOT just suggest one — actually create it), then note the subtask ID in your review summary.\n` +
-            `- Blocking issues: use change_status to move back to "In Progress" with a comment explaining what needs fixing.\n\n` +
-            `If the implementation passes review, use change_status to move to "${readyStatus}" with a summary of what you reviewed and your findings.\n\n` +
-            mcpNote;
-        case 'finalize':
-          return `## Your Mission: FINALIZE this ticket\n\n` +
-            `Stage all relevant files (code + docs), create a focused commit, then use finish_ticket with the commit hash or PR URL as implementationLink. ` +
-            `The ticket will be moved to Done atomically. If the ticket has a branch, the engine will push and create a PR automatically.\n\n` +
-            mcpNote;
-      }
-    }
-    // Fallback: derive intent from ticket status (backwards compat for direct API / child sessions).
-    if (taskStatus === 'Grooming' || taskStatus === 'Require Input') {
-      return `The ticket is in ${taskStatus}. Your job is to GROOM this ticket:\n` +
-        `1. Use update_ticket to fill metadata (priority, effort, tags) and rewrite the body with a Problem/Motivation section and Implementation Plan.\n` +
-        `2. If questions are unresolved, use change_status to move to "Require Input" with a comment containing your question.\n` +
-        `3. When grooming is complete, use change_status to move to "Todo".\n` +
-        mcpNote;
-    }
-    if (taskStatus === 'In Progress') {
-      return `The ticket is currently In Progress. If the implementation is already complete, use change_status to move it to "${readyStatus}" with a completion summary comment. If work remains, complete it then move to "${readyStatus}". Do not exit without updating the ticket status.\n${mcpNote}`;
-    }
-    if (taskStatus === 'Todo') {
-      return `The ticket is in Todo. Begin implementation: use change_status to move to "In Progress", complete the work, then use change_status to move to "${readyStatus}" when done.\n${mcpNote}`;
-    }
-    if (taskStatus === readyStatus) {
-      return `The ticket is in ${readyStatus} awaiting user review. Do not move it further — wait for the user to say "finish ${task.id}".`;
-    }
-    return 'Respond with implementation progress updates and blockers. Keep updates concise.';
-  })();
-
-  const moduleFragments = getModulePromptFragments(opts?.phase, Array.isArray(task.tags) ? task.tags : undefined);
-
-  const lines = [
-    `You are working on ticket ${task.id}.`,
-    `Title: ${task.title || 'Untitled ticket'}`,
-    `Current status: ${taskStatus}`,
-    '',
-    // Body single-source (FLUX-498): don't echo the full body here — it's also
-    // returned by get_ticket, which the workflow already requires the agent to
-    // call first. Echoing both double-counts ~2.3k of fresh spawn tokens.
-    `Read the full description and plan with get_ticket("${task.id}") — that is the source of truth; it is not echoed here to save context.`,
-    '',
-    'Latest activity:',
-    ...(Array.isArray(task.history) ? task.history.filter((e: any) => e?.type !== 'agent_message').slice(-3).map((entry: any) => {
-      if (entry?.type === 'status_change') {
-        return `- [${entry.date || ''}] ${entry.user || 'Unknown'} moved ${entry.from || '?'} -> ${entry.to || '?'}`;
-      }
-      return `- [${entry?.date || ''}] ${entry?.user || 'Unknown'}: ${entry?.comment || entry?.type || 'activity'}`;
-    }) : ['- (No history)']),
-    '',
-    ...(opts?.diffBlock ? [opts.diffBlock, ''] : []),
-    ...(appendPrompt ? [appendPrompt, ''] : []),
-    ...(moduleFragments ? [moduleFragments, ''] : []),
-    actionInstruction,
-    '',
-    'IMPORTANT: If you call change_status to "Require Input", STOP immediately after. Do not continue working — the user will reply and you will be resumed with their answer.',
-  ];
-  // Node's spawn rejects strings containing null bytes; strip them to prevent
-  // ticket content (e.g. bad escape sequences) from breaking the spawn call.
-  return lines.join('\n').replace(/\0/g, '');
-}
 
 /**
  * FLUX-849: a "dispatched" session is an unattended ticket work session — launched via
@@ -404,38 +277,69 @@ function teeDispatchActivityToBoard(
   }
 }
 
+/**
+ * FLUX-1047: does a CLI terminal-error message describe a CONTEXT-WINDOW overflow (the single session
+ * ran out of context), as opposed to a real crash / API error / permission denial? A context overflow is
+ * recoverable by re-driving with a FRESH session, so the Furnace stoker retries instead of parking when
+ * this matches. Kept a small, exported pure helper so it's unit-testable and reusable by the gemini/
+ * copilot adapters later (the durable seam FLUX-996 can build on).
+ *
+ * CONSERVATIVE by design: a false positive would retry a truly-broken charge (wasting a slot before it
+ * eventually parks), so we match only well-known Claude Code / Anthropic context-overflow phrasings and
+ * let anything else stay a hard `failed` → park. Explicitly does NOT match the 5-hour/quota usage limit
+ * (`rate_limit_event`) — a fresh session doesn't help there, so it's out of scope.
+ */
+export function isContextExhaustionError(message: string | undefined | null): boolean {
+  if (!message) return false;
+  const m = String(message).toLowerCase();
+  return (
+    /prompt is too long/.test(m) ||                       // Anthropic API: "prompt is too long: N tokens > M maximum"
+    /context[_ ]length[_ ]exceeded/.test(m) ||            // OpenAI-style code echoed by some tooling
+    /context[- ]window/.test(m) && /(exceed|too (long|large)|overflow|full)/.test(m) ||
+    /(input|conversation|request).{0,40}exceed.{0,20}context/.test(m) ||
+    /maximum context length/.test(m) ||
+    /too many tokens/.test(m)
+  );
+}
+
+/**
+ * FLUX-1063: does a CLI terminal-error message describe a usage/RATE-LIMIT exhaustion — the account hit
+ * its 5-hour session limit / quota / an HTTP 429 — as opposed to a context overflow or a real crash? This
+ * is a TRANSIENT condition: it clears at the provider's reset window, so the Furnace stoker cools the
+ * ticket down and auto-retries on a cadence rather than parking it (see furnace-stoker.decideTicketAction).
+ *
+ * CONSERVATIVE by design, and deliberately DISJOINT from `isContextExhaustionError` (a context overflow is
+ * recovered differently — a fresh session, not a cooldown). Matches the well-known Claude Code / Anthropic
+ * usage-limit phrasings; the caller additionally treats an explicit HTTP 429 (`api_error_status`) as a
+ * rate limit. Anything else stays a hard `failed` → park.
+ */
+export function isRateLimitError(message: string | undefined | null): boolean {
+  if (!message) return false;
+  const m = String(message).toLowerCase();
+  return (
+    /rate[-_ ]?limit/.test(m) ||                          // "rate limit", "rate_limit_event", "rate-limited"
+    /usage limit/.test(m) ||                              // Anthropic: "usage limit reached"
+    /session limit/.test(m) ||                            // Claude Code: "You've hit your session limit"
+    /\b429\b/.test(m) ||                                  // HTTP 429 echoed into the message
+    /too many requests/.test(m) ||                        // HTTP 429 canonical text
+    /quota (?:exceeded|reached|exhausted|limit)/.test(m) || // API quota — scoped so a bare "disk quota"/"quota config" doesn't false-positive
+    /\boverloaded\b/.test(m)                              // Anthropic 529-style transient overload
+  );
+}
+
 export function attachStdoutProcessing(
   proc: ReturnType<typeof spawn>,
   session: CliSessionRecord,
   taskId: string,
 ) {
-  const commitPendingAssistantText = () => {
-    if (session.pendingAssistantText) {
-      appendSessionOutput(session, session.pendingAssistantText, 'stdout', true);
-      flushSessionOutput(session);
-      // FLUX-911: do NOT tee per-narration 'working' rows to the board. Each was a durable line in
-      // __board__.jsonl PLUS a taskUpdated broadcast, so one chatty dispatched session (a) flooded
-      // the orchestrator chat/Activity with near-identical WORKING rows, (b) forced an O(file)
-      // board-transcript re-projection per narration on every open board chat, and (c) could starve
-      // real dialogue out of the bounded cold-resume re-prime. The board keeps the one-shot 'started'
-      // + terminal brackets (teed elsewhere); live per-narration progress remains available via the
-      // ephemeral `activity` SSE event and in the dispatched ticket's own chat. (FLUX-849 regression.)
-      session.pendingAssistantText = '';
-    }
-  };
-
-  let lineBuf = '';
-  proc.stdout!.on('data', (chunk: Buffer) => {
-    lineBuf += chunk.toString();
-    const lines = lineBuf.split('\n');
-    lineBuf = lines.pop() ?? '';
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        const evt = JSON.parse(trimmed);
-        if (!session.claudeSessionId && evt.session_id) {
-          session.claudeSessionId = evt.session_id;
+  // FLUX-932: the line-buffer / JSON.parse / commitPendingAssistantText transport skeleton now lives
+  // in shared.ts (sharedAttachStdoutProcessing). This supplies Claude's per-CLI parser: `stream_event`
+  // token deltas (--include-partial-messages) + complete `assistant` content[] blocks + `result` usage.
+  // narrationType is omitted → Claude flushes compact progress rows (not the 'text' Narration block).
+  return sharedAttachStdoutProcessing(proc, session, {
+    onEvent: (evt, trimmed, commitPendingAssistantText) => {
+        if (!session.resumeSessionId && evt.session_id) {
+          session.resumeSessionId = evt.session_id;
         }
         // FLUX-691: token-by-token live streaming. With `--include-partial-messages` the CLI
         // emits `stream_event` lines wrapping the raw Anthropic SSE events. Surface text deltas
@@ -466,23 +370,70 @@ export function attachStdoutProcessing(
             // immediately. (Still partial-only: don't tee the transcript or touch buffers.)
             const name = inner.content_block.name;
             const earlyActivity = name === 'publish_artifact'
-              ? 'Preparing grooming artifact…'
-              : (TOOL_ACTIVITY_MAP[name] ?? 'Working');
+              // Generic label: at stream-start the input hasn't arrived, so we can't yet tell a
+              // grooming artifact from a Ready-time visual recap (FLUX-976) — don't presume grooming.
+              ? 'Preparing artifact…'
+              : activityFor(TOOL_ACTIVITY_MAP, name);
             if (session.currentActivity !== earlyActivity) {
               session.currentActivity = earlyActivity;
               session.lastProgressLog = undefined;
               broadcastEvent('activity', { taskId, activity: session.currentActivity });
             }
           }
-          continue;
+          return; // FLUX-932: was `continue` — now a return from onEvent (the loop lives in shared.ts).
+        }
+        // FLUX-981: surface a real rate-limit throttle inline. Gate on the TOP-LEVEL
+        // `rate_limit_info.status` (e.g. anything other than 'allowed'), NOT `overageStatus` —
+        // a normal request carries `{status:'allowed', overageStatus:'rejected'}`, so gating on
+        // overageStatus would false-positive on every request. Note only; does not stop the session.
+        if (evt.type === 'rate_limit_event') {
+          const info = evt.rate_limit_info || {};
+          if (info.status && info.status !== 'allowed') {
+            // De-dup: the stream re-emits this event on every retry/backoff while throttled, so
+            // surface ONE ⚠️ line per distinct throttle state instead of flooding the chat.
+            const key = `${info.status}:${info.rateLimitType ?? ''}`;
+            if (session.lastRateLimitKey !== key) {
+              session.lastRateLimitKey = key;
+              // Number.isFinite (not typeof === 'number') so a NaN resetsAt doesn't reach
+              // new Date(NaN).toISOString() — which throws and reroutes the whole line to onParseError.
+              const resetsAt = Number.isFinite(info.resetsAt) ? ` (resets at ${new Date(info.resetsAt * 1000).toISOString()})` : '';
+              appendErrorToSession(session, `Rate limited: ${info.status}${info.rateLimitType ? ` [${info.rateLimitType}]` : ''}${resetsAt}`);
+            }
+          } else if (session.lastRateLimitKey) {
+            // Back to allowed — reset so a later re-throttle surfaces again.
+            session.lastRateLimitKey = undefined;
+          }
+          // FLUX-602: still tee the raw line to the durable transcript (the early return here used to
+          // skip it, silently dropping every rate_limit_event — including normal `allowed` ones —
+          // from the per-ticket transcript). Tee, THEN return.
+          appendTranscriptLine(taskId, trimmed);
+          return;
         }
         // FLUX-602: tee every raw stream-json line to the durable per-ticket transcript.
         appendTranscriptLine(taskId, trimmed);
+        // FLUX-981: surface individual tool-result errors inline. Claude delivers tool RESULTS as
+        // `user` messages whose content blocks carry `is_error` — previously never inspected, so a
+        // failed Bash/Edit/etc. mid-session was silently dropped (only a terminal result.is_error or
+        // a nonzero process exit ever surfaced). Copilot/Gemini already do this via appendErrorToSession.
+        if (evt.type === 'user' && Array.isArray(evt.message?.content)) {
+          for (const block of evt.message.content) {
+            if (block?.type === 'tool_result' && block.is_error) {
+              const toolName = (block.tool_use_id && session.toolNamesById?.[block.tool_use_id]) || 'unknown';
+              const raw = typeof block.content === 'string'
+                ? block.content
+                : Array.isArray(block.content)
+                  ? block.content.map((c: any) => (typeof c === 'string' ? c : c?.text || '')).join(' ')
+                  : '';
+              const detail = raw.trim().slice(0, 200);
+              appendErrorToSession(session, `Tool failed: ${toolName}${detail ? ` — ${detail}` : ''}`);
+            }
+          }
+        }
         if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
           const toolBlock = evt.message.content.find((b: any) => b.type === 'tool_use');
           if (toolBlock) {
             session.pendingAssistantText = '';
-            const newActivity = TOOL_ACTIVITY_MAP[toolBlock.name] ?? 'Working';
+            const newActivity = activityFor(TOOL_ACTIVITY_MAP, toolBlock.name);
             const activityChanged = session.currentActivity !== newActivity;
             session.currentActivity = newActivity;
 
@@ -531,6 +482,10 @@ export function attachStdoutProcessing(
               if (!toolBlock) {
                 session.pendingAssistantText += block.text;
               }
+            } else if (block.type === 'tool_use' && block.id && typeof block.name === 'string') {
+              // FLUX-981: remember id→name so a later `user` tool_result carrying is_error can be
+              // labeled with the tool that failed (the result block carries only tool_use_id).
+              (session.toolNamesById ??= {})[block.id] = block.name;
             }
           }
         } else {
@@ -543,6 +498,7 @@ export function attachStdoutProcessing(
         }
         if (evt.type === 'result') {
           session.currentActivity = undefined;
+          session.toolNamesById = undefined; // FLUX-981: turn ended — release the id→name map.
           broadcastEvent('activity', { taskId, activity: null });
         }
         if (evt.type === 'result' && evt.usage) {
@@ -558,7 +514,7 @@ export function attachStdoutProcessing(
           if (typeof evt.total_cost_usd === 'number') {
             session.costUSD = (session.costUSD ?? 0) + evt.total_cost_usd;
           } else {
-            session.costUSD = (session.costUSD ?? 0) + estimateCostUSD(session.claudeSessionId, inputTok, outputTok);
+            session.costUSD = (session.costUSD ?? 0) + estimateCostUSD(session.resumeSessionId, inputTok, outputTok);
             session.costIsEstimated = true;
           }
         }
@@ -576,19 +532,38 @@ export function attachStdoutProcessing(
               entries: [buildActivityEntry(`${session.label} blocked: ${reason}`, 'Agent', new Date().toISOString())],
             });
           });
+        } else if (evt.type === 'result' && evt.is_error) {
+          // FLUX-981: a non-permission result error (API error, overload, invalid request) was
+          // previously DROPPED — it doesn't match the permission regex above and there's no other
+          // handler, so it fell silently into liveOutputBuffer. Surface it inline. Do NOT flip to
+          // waiting-input: this isn't a HITL prompt, and the exit handler still runs afterward.
+          const errText = String(evt.error || evt.subtype || 'unknown');
+          appendErrorToSession(session, `Agent error: ${errText}`);
+          // FLUX-1047 / FLUX-1063: classify a RECOVERABLE terminal cause here — the only reliable point,
+          // since the exit funnel only sees an opaque nonzero code by the time this surfaces. Stamp the
+          // structured terminalReason BEFORE the exit funnel flips status to 'failed', so the Furnace
+          // stoker can read it and recover (fresh session / cooldown) instead of parking on the first
+          // strike. A rate limit hides in `result` + `api_error_status` (not `error`/`subtype`): the
+          // 5-hour-limit payload is `{is_error:true, subtype:"success", api_error_status:429,
+          // result:"You've hit your session limit …"}`, so `errText` alone is just "success".
+          const resultText = typeof evt.result === 'string' ? evt.result : '';
+          const combined = `${errText} ${resultText}`;
+          if (isContextExhaustionError(combined)) {
+            session.terminalReason = 'context-exhausted';
+          } else if (evt.api_error_status === 429 || isRateLimitError(combined)) {
+            session.terminalReason = 'rate-limited';
+          }
         }
-      } catch {
-        appendSessionOutput(session, trimmed, 'stdout', false);
-      }
-    }
+    },
+    onParseError: (trimmed) => {
+      appendSessionOutput(session, trimmed, 'stdout', false);
+    },
   });
-
-  return commitPendingAssistantText;
 }
 
 // FLUX-604: per-conversation --model/--effort args from the chat picker, read off
 // the session record. `defaultEffort` applies only when the user hasn't picked one.
-function modelEffortArgs(session: CliSessionRecord, defaultEffort?: string): string[] {
+export function modelEffortArgs(session: CliSessionRecord, defaultEffort?: string): string[] {
   const args: string[] = [];
   if (session.model) args.push('--model', session.model);
   const picked = session.effortOverride && (EFFORT_LEVELS as readonly string[]).includes(session.effortOverride)
@@ -601,7 +576,7 @@ function modelEffortArgs(session: CliSessionRecord, defaultEffort?: string): str
 // FLUX-605: permission flag per session. 'gated' routes tool decisions through the EH
 // permission_prompt MCP tool; 'skip' (or legacy skipPermissions) uses
 // --dangerously-skip-permissions. Mutually exclusive.
-function permissionArgs(session: CliSessionRecord): string[] {
+export function permissionArgs(session: CliSessionRecord): string[] {
   if (session.permissionMode === 'gated') return ['--permission-prompt-tool', 'mcp__event-horizon__permission_prompt'];
   if (session.permissionMode === 'skip' || session.skipPermissions) return ['--dangerously-skip-permissions'];
   return [];
@@ -612,7 +587,7 @@ function permissionArgs(session: CliSessionRecord): string[] {
 // Disallow it everywhere so it can never be reached; agents ask via the event-horizon
 // `ask_user_question` MCP tool instead, which surfaces a real portal picker. (Flag verified
 // against the installed CLI: `--disallowedTools, --disallowed-tools <tools...>`.)
-const DISALLOW_NATIVE_ASK = ['--disallowed-tools', 'AskUserQuestion'];
+export const DISALLOW_NATIVE_ASK = ['--disallowed-tools', 'AskUserQuestion'];
 
 export async function startCliSession(session: CliSessionRecord, task: any, appendPrompt: string, effortOverrideRaw: string, workspaceRoot: string) {
   const framework = session.framework;
@@ -623,7 +598,17 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   const executionRoot = await resolveTaskExecutionRoot(task, workspaceRoot);
   session.executionRoot = executionRoot;
 
-  checkBinaryInstalled(binaryName);
+  // FLUX-1018: fail closed on the fresh-spawn path. A task WITH a branch must run
+  // in that branch's worktree, never the main checkout (master). resolveTaskExecutionRoot
+  // already self-heals/throws, but assert here too as a belt-and-suspenders guard.
+  if (task?.branch && executionRoot === workspaceRoot) {
+    throw new Error(
+      `Refusing to start ${binaryName} for ${id} on branch '${task.branch}': its worktree is missing and ` +
+        `execution resolved to the main checkout (master). Recreate the worktree and retry.`,
+    );
+  }
+
+  await checkBinaryInstalled(binaryName);
 
   const claudeIntegration = (configCache as any).integrations?.claudeCode;
   const groomingStatuses = [(configCache as any).requireInputStatus || 'Require Input', 'Grooming'];
@@ -631,7 +616,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     ? (groomingStatuses.includes(task.status) ? claudeIntegration.groomingModel : claudeIntegration.implementationModel)
     : null;
 
-  const initialPrompt = buildInitialPrompt(task, appendPrompt, { diffBlock: session.diffBlock, phase: session.phase });
+  const initialPrompt = buildInitialPrompt(task, appendPrompt, { diffBlock: session.diffBlock, phase: session.phase, framework: 'claude' });
 
   // FLUX-579: ensure this session's per-worktree shared HTTP server(s) exist (keyed
   // by execution root) before building the MCP config that looks them up.
@@ -669,19 +654,9 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     // On Windows, find the actual .exe instead of using cmd.exe wrapper
     // The npm bin wrapper is a bash script that execs claude.exe
     // Direct spawn of .exe preserves stdio streams for JSON output
-    let exePath: string | null = null;
-    try {
-      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', timeout: 10_000, windowsHide: true }).trim();
-      const candidateExe = path.join(npmPrefix, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
-      if (fs.existsSync(candidateExe)) {
-        exePath = candidateExe;
-        log.info(`[${id}] Found claude.exe at: ${exePath}`);
-      } else {
-        log.info(`[${id}] claude.exe not found at ${candidateExe}`);
-      }
-    } catch (err) {
-      log.info(`[${id}] Failed to resolve claude.exe path:`, err);
-    }
+    // FLUX-975: resolveClaudeExePath caches the result across every spawn (start + resume,
+    // per-ticket + board) instead of re-running `npm prefix -g` on each one.
+    const exePath = await resolveClaudeExePath();
 
     if (!exePath) {
       throw new Error('claude.exe not found. Please install @anthropic-ai/claude-code globally: npm install -g @anthropic-ai/claude-code');
@@ -731,6 +706,8 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     session.status = 'failed';
     session.endedAt = new Date().toISOString();
     commitPending();
+    // FLUX-981: surface the spawn failure inline in the chat, not only as a history activity entry.
+    appendErrorToSession(session, `Failed to start agent: ${error.message}`);
     flushSessionOutput(session, true);
     await session.writeQueue;
 
@@ -866,6 +843,18 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
       ? `${label} session stopped by user.`
       : `${label} session ended with ${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`}.`;
 
+    // FLUX-981: a nonzero/signal exit that the user did NOT cancel surfaces inline in the chat, in
+    // addition to the outcome/activity record below. `finalStatus` is 'failed' ONLY for a genuine
+    // failure — requestedStop maps to 'cancelled' and pausedForInput returned above — so this keeps
+    // the cancelled-guard: a user-stopped session is never reported as an error. Await the write
+    // queue so the injected ⚠️ line lands in progress[] before it's snapshotted below.
+    if (finalStatus === 'failed') {
+      const stderrHint = session.stderrCapture?.trim();
+      const fullMessage = stderrHint ? `${outcome}\n${stderrHint}` : outcome;
+      appendErrorToSession(session, fullMessage);
+      await session.writeQueue;
+    }
+
     // FLUX-849: bracket the dispatched session's board narration with a terminal marker.
     // `finalStatus` here is one of completed / failed / cancelled (waiting-input returns above).
     teeDispatchActivityToBoard(session, id, finalStatus, DISPATCH_LIFECYCLE_LABEL[finalStatus]);
@@ -979,12 +968,21 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   const binaryName = session.command;
   // FLUX-519 review: resume in the SAME root the session started in; refuse to fall
   // back onto master if the worktree was removed (e.g. the ticket was finished).
-  const executionRoot = session.executionRoot ?? await resolveTaskExecutionRoot(tasksCache[id], workspaceRoot);
+  // FLUX-1018: on the resume fallback resolve READ-ONLY (create:false) — never spin up
+  // a fresh worktree mid-resume for a legacy session that lost its recorded
+  // executionRoot; the spawn path owns creation. Then fail closed two ways: a
+  // branch-bearing ticket that resolved to the main checkout (no live worktree) must
+  // not resume on master, and a recorded worktree path that has since vanished (ticket
+  // finished) is refused as before.
+  const executionRoot = session.executionRoot ?? await resolveTaskExecutionRoot(tasksCache[id], workspaceRoot, { create: false });
+  if (tasksCache[id]?.branch && executionRoot === workspaceRoot) {
+    throw new Error(`Worktree for ${id} is missing — refusing to resume the agent on master. Restart the session to recreate an isolated worktree.`);
+  }
   if (executionRoot !== workspaceRoot && !fs.existsSync(executionRoot)) {
     throw new Error(`Worktree for ${id} no longer exists (ticket likely finished) — refusing to resume the agent on master.`);
   }
 
-  checkBinaryInstalled(binaryName);
+  await checkBinaryInstalled(binaryName);
 
   const inputAt = new Date().toISOString();
   // FLUX-655: "since you last spoke" basis for the resume preamble — captured BEFORE we overwrite
@@ -1018,7 +1016,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   // recorded so the `resume-preamble` transcript event is ordered ahead of the `user` event for this
   // turn (FLUX-716 item 3). Fully best-effort: a null assemble (no delta / git hiccup) is a no-op.
   let resumePreamble: string | null = null;
-  if (session.claudeSessionId) {
+  if (session.resumeSessionId) {
     resumePreamble = await buildResumePreamble({
       taskId: id,
       branch: typeof task?.branch === 'string' ? task.branch : undefined,
@@ -1062,29 +1060,21 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   const moduleMcpArgs = buildSpawnMcpConfigArgs(session.phase, resumeTags, executionRoot);
   const meArgs = modelEffortArgs(session);
   // FLUX-691: `--include-partial-messages` → token-by-token live streaming on the resume/send path.
-  const resumeArgs = session.claudeSessionId
-    ? ['-p', promptForCli, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...memberScopeArgs, ...moduleMcpArgs]
+  const resumeArgs = session.resumeSessionId
+    ? ['-p', promptForCli, '--resume', session.resumeSessionId, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...memberScopeArgs, ...moduleMcpArgs]
     : ['-p', promptForCli, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...memberScopeArgs, ...moduleMcpArgs];
 
   let replyProc: ReturnType<typeof spawn>;
   if (process.platform === 'win32') {
     // On Windows, find the actual .exe instead of using cmd.exe wrapper
-    let exePath: string | null = null;
-    try {
-      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', timeout: 10_000, windowsHide: true }).trim();
-      const candidateExe = path.join(npmPrefix, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
-      if (fs.existsSync(candidateExe)) {
-        exePath = candidateExe;
-      }
-    } catch (err) {
-      log.info(`[${id}] Failed to resolve claude.exe path for reply:`, err);
-    }
+    // FLUX-975: resolveClaudeExePath caches the result across every spawn.
+    const exePath = await resolveClaudeExePath();
 
     if (!exePath) {
       throw new Error('claude.exe not found. Please install @anthropic-ai/claude-code globally: npm install -g @anthropic-ai/claude-code');
     }
 
-    log.info(`[${id}] Windows reply spawn: ${exePath} --resume ${session.claudeSessionId || '(new)'}`);
+    log.info(`[${id}] Windows reply spawn: ${exePath} --resume ${session.resumeSessionId || '(new)'}`);
     replyProc = spawn(exePath, resumeArgs, {
       cwd: executionRoot,
       env: cleanChildEnv('claude', id),
@@ -1121,6 +1111,11 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       session.status = 'waiting-input';
     }
     commitReplyPending();
+    // FLUX-981: surface the reply spawn failure inline in the chat, not only on the board / as an
+    // activity entry. Skip when the user cancelled — a stop that races the spawn error isn't a fault.
+    if (!session.requestedStop) {
+      appendErrorToSession(session, `Failed to resume agent: ${error.message}`);
+    }
     flushSessionOutput(session, true);
     // FLUX-849: a crashed resumed turn (reply spawn error) was previously invisible on the board —
     // the only tee on this path was the Require-Input pause. Bracket it with a 'failed' marker so a
@@ -1163,215 +1158,14 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
     } else if (session.requestedStop) {
       teeDispatchActivityToBoard(session, id, 'cancelled', DISPATCH_LIFECYCLE_LABEL['cancelled']);
     } else if (code !== 0 || signal) {
+      // FLUX-981: a crashed resumed turn (nonzero/signal, not user-stopped) was silent in the chat —
+      // it only reverted to waiting-input + a board marker. Surface it inline too.
+      const replyOutcome = `${session.label} reply ended with ${signal ? `signal ${signal}` : `code ${code ?? 'unknown'}`}.`;
+      const stderrHint = session.stderrCapture?.trim();
+      appendErrorToSession(session, stderrHint ? `${replyOutcome}\n${stderrHint}` : replyOutcome);
       teeDispatchActivityToBoard(session, id, 'failed', DISPATCH_LIFECYCLE_LABEL['failed']);
     }
     broadcastEvent('taskUpdated', { id });
   });
 }
 
-// ===========================================================================
-// FLUX-604: board-level orchestrator session — a persistent chat for the whole
-// board, NOT bound to any ticket. Isolated from the per-ticket path on purpose
-// (no regression risk). It deliberately has NO sessionHistoryEntry, so every
-// ticket-history write in the per-ticket lifecycle (all guarded by
-// `if (session.sessionHistoryEntry)`) is naturally skipped — the durable record
-// is the transcript (<fluxDir>/transcripts/__board__.jsonl) via attachStdoutProcessing.
-// ===========================================================================
-
-export const BOARD_CONVERSATION_ID = '__board__';
-
-function spawnClaudeForBoard(claudeArgs: string[], executionRoot: string): ReturnType<typeof spawn> {
-  if (process.platform === 'win32') {
-    let exePath: string | null = null;
-    try {
-      const npmPrefix = execSync('npm prefix -g', { encoding: 'utf8', timeout: 10_000, windowsHide: true }).trim();
-      const candidateExe = path.join(npmPrefix, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
-      if (fs.existsSync(candidateExe)) exePath = candidateExe;
-    } catch (err) {
-      log.info('[board] Failed to resolve claude.exe path:', err);
-    }
-    if (!exePath) {
-      throw new Error('claude.exe not found. Please install @anthropic-ai/claude-code globally: npm install -g @anthropic-ai/claude-code');
-    }
-    return spawn(exePath, claudeArgs, { cwd: executionRoot, env: cleanChildEnv('claude', BOARD_CONVERSATION_ID), stdio: 'pipe', windowsHide: true });
-  }
-  return spawn('claude', claudeArgs, { cwd: executionRoot, env: cleanChildEnv('claude', BOARD_CONVERSATION_ID), stdio: 'pipe', windowsHide: true });
-}
-
-function buildBoardPrompt(firstMessage: string, priorContext?: string): string {
-  const key = configCache.projects?.[0] || 'PROJECT';
-  const digest = buildBoardDigest();
-  return [
-    'You are the Event Horizon board orchestrator — a persistent chat for the whole board, not tied to any single ticket. You are powerful: you have the full "event-horizon" MCP toolset (list/get/create/update tickets, change_status, branches, comments, …) plus file reading, editing, bash, and subagents. Use whatever the task genuinely calls for.',
-    '',
-    'Match the weight of your response to the weight of the request. For a greeting or a simple question, just reply in a sentence or two — don\'t go investigate. When a task actually needs depth — reasoning across the board, doing real work on a ticket, parallel research — bring your full toolkit to bear, including subagents. Quick for quick, thorough for thorough: don\'t gather context you don\'t need, and don\'t skimp on work that does.',
-    'For board and ticket actions, prefer the event-horizon MCP tools over editing ticket files by hand.',
-    'When the user asks to GROOM, IMPLEMENT, REVIEW, or FINALIZE a specific ticket, DISPATCH it rather than doing that ticket\'s work here: call start_session(ticketId, phase) to launch the phase session on that ticket (it runs in the ticket\'s own scope and returns immediately), then tell the user to open that ticket\'s chat to drive it.',
-    'Propose and CONFIRM before anything destructive or irreversible (status changes, deletions). Don\'t silently restructure the board.',
-    'BOARD-REBASE RITUAL: when asked to triage, "rebase the board", or at the end of a session, do NOT mutate the board directly — call propose_board_rebase with a BATCH of items so the user approves/rejects them in one pass. Each item is { kind, targets, summary, rationale }, kind ∈ promote (extract a chat/turns into a new card) · fold (merge a stream into another) · archive (retire) · dispatch (start a phase session) · status (move a ticket) · leave (keep it in this thread). The restructuring verbs (extract_ticket, merge_tickets, archive_ticket) and change_status are GATED — reorganize the board through proposals, not direct calls. When unsure about an item, propose it as "leave" (it stays in this durable thread) — never drop it.',
-    'To ask the user a structured question, call the ask_user_question tool — it shows an interactive picker in this chat and returns their choice so you continue the same turn. Never assume when a quick question would resolve ambiguity; ask.',
-    `When you reference a ticket in prose, always write its full id (e.g. \`${key}-123\`) — every single time, including repeat mentions, shorthand lists, and x/y comparisons. Never abbreviate to a bare number (a bare \`123\` cannot render as a chip). The full id renders as an interactive chip; on first mention spell out the title too — \`${key}-123 (short title)\` — to keep the message readable before the reader hovers.`,
-    'You run at the workspace root, with the whole board in scope.',
-    '',
-    // FLUX-838: cold-resume re-prime — recovered prior dialogue (+ working-tree preamble) after an
-    // engine restart wiped the in-memory session. Ordered before the live digest, mirroring the
-    // warm-resume path in sendBoardInput (preamble first, then digest, then the message).
-    ...(priorContext ? [priorContext, ''] : []),
-    ...(digest ? [digest, ''] : []),
-    firstMessage,
-  ].join('\n');
-}
-
-function boardMcpArgs(projectPath?: string): string[] {
-  // FLUX-579: the board runs at the workspace root, so its shared server is keyed
-  // there. Pass the root explicitly (falls back to canonicalWorkspaceRoot in
-  // buildModuleServerMap when omitted).
-  return buildSpawnMcpConfigArgs(undefined, undefined, projectPath);
-}
-
-function wireBoardProc(proc: ReturnType<typeof spawn>, session: CliSessionRecord, onExitStatus: () => void) {
-  session.proc = proc as ChildProcessWithoutNullStreams;
-  session.pid = proc.pid;
-  const commitPending = attachStdoutProcessing(proc, session, BOARD_CONVERSATION_ID);
-  proc.stderr!.on('data', (chunk) => appendSessionOutput(session, chunk, 'stderr', false));
-  proc.on('error', (error) => {
-    session.status = 'failed';
-    session.endedAt = new Date().toISOString();
-    commitPending();
-    flushSessionOutput(session, true);
-    console.error('[board] spawn error:', error.message);
-  });
-  proc.on('exit', (code) => {
-    commitPending();
-    flushSessionOutput(session, true);
-    // Only a CLEAN turn becomes the resumable parked state (waiting-input). A turn that the
-    // user stopped, that exited non-zero, or that died before `claude` emitted its init message
-    // (so we never captured a claudeSessionId) must end TERMINAL — otherwise it sits at
-    // waiting-input forever: unresumable (no session id) yet "active" enough to 409 every new
-    // start, permanently wedging the orchestrator (FLUX-667).
-    if (session.requestedStop) {
-      session.status = 'cancelled';
-      session.endedAt = new Date().toISOString();
-    } else if (code !== 0 || !session.claudeSessionId) {
-      session.status = 'failed';
-      session.endedAt = new Date().toISOString();
-    } else {
-      onExitStatus();
-      // FLUX-810: a clean board turn === the orchestrator answered the user. This is the only
-      // self-noise-free hook (stopped/non-zero/crashed turns are handled above), so emit the
-      // "Orchestrator replied" notification-bar entry here and nowhere else.
-      generateOrchestratorReplyNotification();
-    }
-    broadcastEvent('taskUpdated', { id: BOARD_CONVERSATION_ID });
-  });
-}
-
-export async function startBoardSession(session: CliSessionRecord, firstMessage: string, workspaceRoot: string, opts?: SendInputOptions) {
-  checkBinaryInstalled('claude');
-  session.executionRoot = workspaceRoot;
-  // FLUX-579: ensure the workspace-root shared server(s) exist before building the board MCP config.
-  await ensureSharedServersForRoot(workspaceRoot);
-  // FLUX-838: cold-resume re-prime. The CLI session store is in-memory only, so an engine
-  // restart leaves an empty store and this start path runs with no `--resume`. Recover the
-  // orchestrator's memory from the durable `__board__.jsonl` transcript: a bounded verbatim
-  // tail of the prior dialogue, plus the working-tree situational update. Computed BEFORE this
-  // turn's `user` event is appended (below) so the just-sent message can't leak into the
-  // "prior" digest. A fresh / post-reset board (FLUX-659) yields null → no re-prime block.
-  const reprime = await buildBoardReprime();
-  let resumePreamble: string | null = null;
-  if (reprime) {
-    // sinceIso from the last prior transcript turn's ts — the in-memory lastOutputAt is gone
-    // after restart. Board scope has no branch → preamble degrades to ticket-movement only.
-    resumePreamble = await buildResumePreamble({
-      workspaceRoot: canonicalWorkspaceRoot ?? workspaceRoot,
-      sinceIso: reprime.sinceIso,
-    });
-  }
-  const priorContext = [resumePreamble, reprime?.digest].filter(Boolean).join('\n\n---\n\n') || undefined;
-  // FLUX-676: pasted-image attachments on the opening orchestrator turn. Reference their
-  // absolute sidecar paths in the spawn prompt (the agent Reads them); keep the clean refs
-  // for the transcript so the bubble re-renders the thumbnail on reload / cold resume.
-  const attachments = opts?.attachments ?? [];
-  const attachmentAbsPaths = resolveAttachmentAbsPaths(attachments);
-  const claudeArgs = [
-    '-p', `${buildBoardPrompt(firstMessage, priorContext)}${attachmentReadInstruction(attachmentAbsPaths)}`,
-    '--output-format', 'stream-json',
-    '--verbose',
-    // FLUX-691: token-by-token live streaming for the board orchestrator chat too.
-    '--include-partial-messages',
-    // medium by default; the chat picker (FLUX-604) overrides via session.model/effortOverride.
-    ...modelEffortArgs(session, 'medium'),
-    ...DISALLOW_NATIVE_ASK,
-    ...permissionArgs(session),
-    ...boardMcpArgs(workspaceRoot),
-  ];
-  session.status = 'running';
-  session.args = claudeArgs;
-  // FLUX-838: persist the working-tree preamble as a context-update note (mirrors the warm-resume
-  // path in sendBoardInput), ordered ahead of this turn's user event so it renders before the
-  // bubble. The re-prime dialogue digest is NOT appended — it is recovered from the transcript,
-  // and re-appending it would compound across successive restarts (criterion 6).
-  if (resumePreamble) {
-    appendTranscriptEvent(BOARD_CONVERSATION_ID, { type: 'resume-preamble', text: resumePreamble, timestamp: session.startedAt });
-  }
-  // First turn: record the user message in the transcript (mirrors the per-ticket chat /start).
-  appendTranscriptEvent(BOARD_CONVERSATION_ID, { type: 'user', text: firstMessage, attachments, timestamp: session.startedAt });
-  const proc = spawnClaudeForBoard(claudeArgs, workspaceRoot);
-  // Persistent conversation: a finished turn stays RESUMABLE (waiting-input), never
-  // terminal. If it ended 'completed', the next message would spawn a fresh session
-  // with no memory of this one (it wouldn't know about a ticket it just created).
-  wireBoardProc(proc, session, () => { session.status = 'waiting-input'; });
-}
-
-export async function sendBoardInput(session: CliSessionRecord, message: string, workspaceRoot: string, opts?: SendInputOptions) {
-  checkBinaryInstalled('claude');
-  const inputAt = new Date().toISOString();
-  // FLUX-655: capture the "since you last spoke" basis BEFORE overwriting lastInputAt (see the
-  // per-ticket path). Board scope has no branch, so the preamble degrades to ticket-movement only.
-  const sinceIso = session.lastOutputAt ?? session.lastInputAt;
-  session.lastInputAt = inputAt;
-  session.status = 'running';
-  session.pausedForInput = false;
-  // FLUX-915: clear any stale stop flag before resuming (see sendCliSessionInput) — the board
-  // session record is reused across turns, so a sticky requestedStop would mis-cancel a clean turn.
-  session.requestedStop = false;
-  // FLUX-676: pasted-image attachments for this turn. Resolve to absolute sidecar paths the
-  // agent can Read; keep the metadata on the transcript turn so the bubble re-renders.
-  const attachments = opts?.attachments ?? [];
-  const attachmentAbsPaths = resolveAttachmentAbsPaths(attachments);
-  // FLUX-655: on a RESUMED board turn, build the situational update (ticket-movement only at board
-  // scope). Computed BEFORE the user event is recorded so the `resume-preamble` transcript event is
-  // ordered ahead of the `user` event for this turn (FLUX-716 item 3). Best-effort: a null assemble
-  // (no delta / git hiccup) is a no-op.
-  let resumePreamble: string | null = null;
-  if (session.claudeSessionId) {
-    resumePreamble = await buildResumePreamble({
-      workspaceRoot: canonicalWorkspaceRoot ?? workspaceRoot,
-      sinceIso,
-    });
-    if (resumePreamble) {
-      appendTranscriptEvent(BOARD_CONVERSATION_ID, { type: 'resume-preamble', text: resumePreamble, timestamp: inputAt });
-    }
-  }
-  appendTranscriptEvent(BOARD_CONVERSATION_ID, { type: 'user', text: message, attachments, timestamp: inputAt });
-  // Effective prompt to the CLI = the user's text + a Read-the-image instruction (FLUX-676).
-  const safeMessage = `${message.replace(/\0/g, '')}${attachmentReadInstruction(attachmentAbsPaths)}`;
-  // Prepend the fresh triage digest to the prompt sent to claude — NOT to the transcript above,
-  // which keeps the user's verbatim message (FLUX-659 push half).
-  const digest = buildBoardDigest();
-  let promptForCli = digest ? `${digest}\n\n${safeMessage}` : safeMessage;
-  // FLUX-655: prepend the situational update (computed above) — same contract as the per-ticket chat.
-  if (resumePreamble) {
-    promptForCli = `${resumePreamble}\n\n---\n\n${promptForCli}`;
-  }
-  const meArgs = modelEffortArgs(session, 'medium');
-  // FLUX-579: ensure the workspace-root shared server(s) exist for this board turn.
-  await ensureSharedServersForRoot(workspaceRoot);
-  // FLUX-691: `--include-partial-messages` → token-by-token live streaming on the board send path.
-  const claudeArgs = session.claudeSessionId
-    ? ['-p', promptForCli, '--resume', session.claudeSessionId, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...boardMcpArgs(workspaceRoot)]
-    : ['-p', promptForCli, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...boardMcpArgs(workspaceRoot)];
-  session.args = claudeArgs;
-  const proc = spawnClaudeForBoard(claudeArgs, session.executionRoot ?? workspaceRoot);
-  wireBoardProc(proc, session, () => { session.status = 'waiting-input'; });
-}

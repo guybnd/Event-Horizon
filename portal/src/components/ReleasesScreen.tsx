@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useAppSelector } from '../store/useAppSelector';
 import { TaskCard } from './TaskCard';
 
@@ -18,21 +18,28 @@ function compareSemverDesc(a: string, b: string): number {
 
 export function ReleasesScreen() {
   const tasks = useAppSelector((s) => s.tasks);
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  // FLUX-973: track which versions are OPTED INTO expansion (default empty = everything starts
+  // collapsed) rather than a `collapsed` set defaulting empty (= everything starts expanded).
+  // Mounting all Released tickets as cards on open was the actual perf cost here — the data itself
+  // is already in memory via AppContext, this is a render-cost fix, not a fetch one.
+  const [expandedVersions, setExpandedVersions] = useState<Set<string>>(new Set());
 
-  const releasedTasks = tasks.filter(t => t.status === 'Released');
-
-  const releases = releasedTasks.reduce((acc, task) => {
-    const v = task.version || 'Unversioned';
-    if (!acc[v]) acc[v] = [];
-    acc[v].push(task);
-    return acc;
-  }, {} as Record<string, typeof releasedTasks>);
-
-  const sortedVersions = Object.keys(releases).sort(compareSemverDesc);
+  // FLUX-973: memoize on `tasks` so toggling a version's collapse state (local UI state, unrelated
+  // to `tasks` changing) doesn't re-filter/re-group the entire board on every click.
+  const { releases, sortedVersions } = useMemo(() => {
+    const releasedTasks = tasks.filter(t => t.status === 'Released');
+    const releases = releasedTasks.reduce((acc, task) => {
+      const v = task.version || 'Unversioned';
+      if (!acc[v]) acc[v] = [];
+      acc[v].push(task);
+      return acc;
+    }, {} as Record<string, typeof releasedTasks>);
+    const sortedVersions = Object.keys(releases).sort(compareSemverDesc);
+    return { releases, sortedVersions };
+  }, [tasks]);
 
   function toggleCollapse(version: string) {
-    setCollapsed(prev => {
+    setExpandedVersions(prev => {
       const next = new Set(prev);
       if (next.has(version)) next.delete(version);
       else next.add(version);
@@ -52,7 +59,7 @@ export function ReleasesScreen() {
             const firstTask = versionTasks[0];
             const releaseDate = firstTask?.releasedAt ? new Date(firstTask.releasedAt).toLocaleDateString() : '';
             const docPath = firstTask?.releaseDocPath;
-            const isCollapsed = collapsed.has(version);
+            const isCollapsed = !expandedVersions.has(version);
 
             return (
               <div key={version} className="border border-gray-200 dark:border-gray-800 rounded-lg bg-white dark:bg-gray-800/50">

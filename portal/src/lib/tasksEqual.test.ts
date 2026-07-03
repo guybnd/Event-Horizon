@@ -15,9 +15,17 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     order: 1,
     tags: ['perf', 'portal'],
     subtasks: ['FLUX-2', 'FLUX-3'],
-    history: [
-      { type: 'comment', user: 'Guy', date: '2026-06-18T00:00:00.000Z', comment: 'hi' },
-    ],
+    // FLUX-725: change-detection reads the list `historyDigest` (length + last-entry key), not raw history.
+    historyDigest: {
+      length: 1,
+      lastEntry: { date: '2026-06-18T00:00:00.000Z', type: 'comment' },
+      lastActivityAt: '2026-06-18T00:00:00.000Z',
+      enteredCurrentStatusAt: null,
+      isSpeedDemon: false,
+      statusChanges24h: [],
+      comments: [{ id: 'c1', user: 'Guy', date: '2026-06-18T00:00:00.000Z' }],
+      requireInput: null,
+    },
     ...overrides,
   } as Task;
 }
@@ -86,10 +94,16 @@ describe('tasksEqual', () => {
     ).toBe(true);
   });
 
-  it('detects history length and last-entry changes', () => {
+  it('detects history digest length and last-entry changes', () => {
     const a = makeTask();
-    const b = makeTask({ history: [...(a.history ?? []), { type: 'activity', user: 'Guy', date: '2026-06-18T01:00:00.000Z', comment: 'x' }] });
+    // A new entry bumps the digest length + last-entry key.
+    const b = makeTask({
+      historyDigest: { ...a.historyDigest!, length: 2, lastEntry: { date: '2026-06-18T01:00:00.000Z', type: 'activity' } },
+    });
     expect(tasksEqual(a, b)).toBe(false);
+    // Same length but a different last-entry key (e.g. a status_change replacing the tail) still differs.
+    const c = makeTask({ historyDigest: { ...a.historyDigest!, lastEntry: { date: '2026-06-18T00:00:00.000Z', type: 'status_change' } } });
+    expect(tasksEqual(a, c)).toBe(false);
   });
 
   it('detects cliSession status / activity / label changes', () => {
@@ -104,5 +118,19 @@ describe('tasksEqual', () => {
     expect(tasksEqual(a, b)).toBe(false);
     const c = makeTask({ tokenMetadata: { inputTokens: 10, outputTokens: 20, costUSD: 0.1 } });
     expect(tasksEqual(a, c)).toBe(true);
+  });
+
+  it('detects artifact changes (latest + revision count)', () => {
+    const rev = (rev: number) => ({ rev, createdAt: '2026-06-18T00:00:00.000Z', bytes: 100 });
+    const none = makeTask();
+    const first = makeTask({ artifacts: { latest: 1, revisions: [rev(1)] } });
+    // First publish: undefined -> { latest: 1, revisions: [...] }
+    expect(tasksEqual(none, first)).toBe(false);
+    // New revision: latest + revisions.length both increment.
+    const second = makeTask({ artifacts: { latest: 2, revisions: [rev(1), rev(2)] } });
+    expect(tasksEqual(first, second)).toBe(false);
+    // Identical artifacts are equal.
+    const firstAgain = makeTask({ artifacts: { latest: 1, revisions: [rev(1)] } });
+    expect(tasksEqual(first, firstAgain)).toBe(true);
   });
 });

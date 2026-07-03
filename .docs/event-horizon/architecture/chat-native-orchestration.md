@@ -22,8 +22,7 @@ order: 60
 The MCP delegation tools are **ungated by phase**. A `phase:'chat'` session (the per-ticket chat box
 *or* the always-on `__board__` orchestrator) can call them today:
 
-- `delegate_to_agent` — **blocking**: spawns one child and waits for it to reach a terminal state.
-- `delegate_parallel` — **blocking**: spawns N children and waits for all.
+- `delegate` — **blocking**: spawns one child (single delegation) or N children (multiple, in parallel) and waits for them to reach a terminal state. (FLUX-882 merged the former `delegate_to_agent` + `delegate_parallel`.)
 - `start_session` — **fire-and-forget**: spawns a phase session and returns immediately.
 - `list_available_agents` — discovery.
 
@@ -35,7 +34,7 @@ That endpoint:
   supervisor lead** on the ticket (`patternPosition === 'lead' && pattern === 'supervisor'`) and reuses its `groupId`.
 - Spawns the child via `spawnSession()` with `pattern:'supervisor'`, `patternPosition:'assistant'`,
   `groupType:'supervisor'`, `groupVariant:'combiner'` (`cli-session.ts:721-732`).
-- `delegate_to_agent`/`delegate_parallel` then block on `awaitDelegation(session.id)`
+- `delegate` then blocks on `awaitDelegation(session.id)` (per delegation)
   (tracked in [`engine/src/session-store.ts`](../../../engine/src/session-store.ts) via
   `awaitDelegation`/`notifyDelegationComplete`).
 
@@ -134,7 +133,7 @@ existing components, not a reimplementation. **Prerequisite: the `groupId` stamp
 ### Phase B — "Suggest a supervisor run" from a plain message *(UX, low risk)* → **[follow-up](#follow-ups)**
 When the chat agent recognizes an orchestratable intent ("let's do a review/groom/implement"), it proposes a run
 via the existing `actions`/`quickReplies` props on `ChatView` — e.g. a **"Run review (3 agents)"** button that
-fires `delegate_parallel`/`start_session`. The launch primitives already exist; this is mostly prompt/skill
+fires `delegate`/`start_session`. The launch primitives already exist; this is mostly prompt/skill
 guidance + wiring one action. The confirm-button default is the **cost guard**.
 
 ### Phase C — *(optional, gated)* auto-launch from intent → **[follow-up](#follow-ups)**

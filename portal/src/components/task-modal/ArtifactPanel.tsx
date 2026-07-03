@@ -179,7 +179,7 @@ export function ArtifactPanel({ task, onSendToChat }: { task: Task; onSendToChat
     const message =
       `🎯 **Artifact annotations** · rev ${revRef.current} · ${items.length} region${items.length === 1 ? '' : 's'}\n\n` +
       `${blocks}\n\n` +
-      `Please revise the grooming artifact to address ${items.length === 1 ? 'this' : 'these'} and call ` +
+      `Please revise the artifact to address ${items.length === 1 ? 'this' : 'these'} and call ` +
       `\`publish_artifact\` to publish the updated revision.`;
     send(message);
     setSentCount(items.length);
@@ -257,7 +257,7 @@ export function ArtifactPanel({ task, onSendToChat }: { task: Task; onSendToChat
   }, [fullscreen]);
 
   if (revisions.length === 0 || !latest) {
-    return <p className="px-1 py-2 text-[12px] text-[var(--eh-text-muted)]">No grooming artifact published yet.</p>;
+    return <p className="px-1 py-2 text-[12px] text-[var(--eh-text-muted)]">No artifact published yet.</p>;
   }
 
   const current = revisions.find((r) => r.rev === rev) ?? revisions[revisions.length - 1];
@@ -357,7 +357,7 @@ export function ArtifactPanel({ task, onSendToChat }: { task: Task; onSendToChat
         <iframe
           key={src}
           ref={iframeRef}
-          title={`Grooming artifact for ${task.id}`}
+          title={`Artifact for ${task.id}`}
           src={src}
           sandbox="allow-scripts"
           referrerPolicy="no-referrer"

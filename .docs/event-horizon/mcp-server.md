@@ -48,13 +48,15 @@ For the full per-tool reference (inputs, outputs, enforcement, examples), see [R
 | `get_session_log` | Read one prior agent session's full progress log | `ticketId`, `sessionId` |
 | `list_tickets` | List/filter tickets | `status?`, `assignee?`, `tag?`, `priority?` |
 | `get_board_config` | Read board config (statuses, tags, project key) | — |
-| `create_ticket` | Create a new ticket | `title` |
-| `create_subtask` | Create a child ticket linked to a parent | `parentId`, `title` |
+| `create_ticket` | Create a new ticket (pass `parentId` for a linked subtask) | `title` |
 | `update_ticket` | Update metadata (NOT status) | `ticketId` |
 | `change_status` | Move to new status | `ticketId`, `newStatus` |
-| `add_comment` | Append comment to history | `ticketId`, `comment` |
-| `log_progress` | Log progress activity | `ticketId`, `message` |
+| `add_note` | Append a `comment` or `activity` entry to history | `ticketId`, `type`, `message` |
+| `archive` | Archive / unarchive a ticket | `ticketId`, `action` |
+| `branch` | Create / status / delete the ticket's branch | `ticketId`, `action` |
 | `finish_ticket` | Atomic: link + Done + completion comment | `ticketId`, `implementationLink`, `completionComment` |
+
+> FLUX-882 folded several single-op tools behind `action`/`type` params (e.g. `create_subtask`→`create_ticket(parentId)`, `add_comment`/`log_progress`→`add_note(type)`, branch/group-doc/swimlane/archive/delegate). See the [migration map](reference/mcp-tools.md#flux-882-tool-consolidation-migration).
 
 ### Enforcement Rules
 

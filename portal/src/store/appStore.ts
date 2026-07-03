@@ -19,6 +19,21 @@ export interface LiveSession {
 }
 
 /**
+ * One engine SSE event captured for the terminal's Engine-events log (FLUX-1030). Lives in the
+ * store — not in the terminal component — so it accumulates from app boot and survives the panel
+ * being minimized/closed/reopened. Fed from the single `/api/events` connection in AppContext via
+ * the generic `eh-event` channel, so every engine event type is captured (no client allowlist).
+ */
+export interface EngineEvent {
+  type: string;
+  data: unknown;
+  timestamp: number;
+}
+
+/** Ring-buffer cap for the Engine-events log — bounds memory over a long-lived session. */
+export const ENGINE_EVENTS_MAX = 2000;
+
+/**
  * The pure-data half of the app state. Functions/actions live in {@link AppActions}
  * and are exposed via a stable `useAppActions()` so action-only consumers never
  * re-render. This object is read through `useAppSelector` so each consumer
@@ -54,6 +69,8 @@ export interface AppStoreState {
   worktrees: WorktreeInfo[];
   /** Fast-moving live session state, keyed by task id (FLUX-626). */
   liveSessions: Record<string, LiveSession>;
+  /** Bounded log of engine SSE events for the terminal's Engine-events tab (FLUX-1030). */
+  engineEvents: EngineEvent[];
   /** Pending focus for the Changes view (a branch ref) when opened via a board click-through. */
   changesFocus: string | null;
   tasksLoading: boolean;
@@ -123,6 +140,8 @@ export interface AppActions {
   refreshNotifications: () => void;
   /** Persist the onboarding-complete flag and flip the reactive store field (FLUX-758). */
   markOnboardingComplete: () => void;
+  /** Clear the terminal Engine-events log (FLUX-1030) — clears the shared buffer. */
+  clearEngineEvents: () => void;
 }
 
 function createInitialState(): AppStoreState {
@@ -152,6 +171,7 @@ function createInitialState(): AppStoreState {
     worktreeBranches: new Set(),
     worktrees: [],
     liveSessions: {},
+    engineEvents: [],
     changesFocus: null,
     tasksLoading: true,
     taskLiveEvents: {},

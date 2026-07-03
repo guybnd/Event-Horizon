@@ -18,7 +18,7 @@ import {
   type WorkflowTemplate,
 } from '../api';
 import type { FinishMergeState, MergeConfirmOpts } from '../components/task-modal/FinishMergeConfirm';
-import { resolveEffectiveAgent } from '../utils';
+import { resolveEffectiveAgent, frameworkSupports } from '../utils';
 import { isActiveSession } from '../orchestration';
 import { getArchiveStatus, getReadyForMergeStatus, getRequireInputStatus, isPromptableStatus } from '../workflow';
 import {
@@ -101,6 +101,7 @@ export interface UseTicketActions {
   launcherPhase: LaunchPhase;
   launcherTemplateId: string | undefined;
   launcherBusy: boolean;
+  launcherError: string;
   openLauncher: (phase: LaunchPhase, templateId?: string) => void;
   closeLauncher: () => void;
   onLaunch: (plan: OrchestrationLaunchPlan) => Promise<void>;
@@ -125,7 +126,7 @@ export function useTicketActions(task: Task): UseTicketActions {
   const requireInputStatus = getRequireInputStatus(config);
   const readyStatus = getReadyForMergeStatus(config);
   const archiveStatus = getArchiveStatus(config);
-  const framework = resolveEffectiveAgent(undefined, config?.defaultAgent);
+  const framework = resolveEffectiveAgent(undefined, config?.defaultFramework);
   const cardPhase = statusToPhase(task.status, { readyStatus });
 
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -134,6 +135,7 @@ export function useTicketActions(task: Task): UseTicketActions {
   const [launcherPhase, setLauncherPhase] = useState<LaunchPhase>(cardPhase);
   const [launcherTemplateId, setLauncherTemplateId] = useState<string | undefined>(undefined);
   const [launcherBusy, setLauncherBusy] = useState(false);
+  const [launcherError, setLauncherError] = useState('');
   const [startPromptOpen, setStartPromptOpen] = useState(false);
   const [finishMergeState, setFinishMergeState] = useState<FinishMergeState | null>(null);
   const [finishMergeBusy, setFinishMergeBusy] = useState(false);
@@ -299,7 +301,7 @@ export function useTicketActions(task: Task): UseTicketActions {
 
   // Launch the phase's single default; false ⇒ no persona resolved (caller opens the launcher UI).
   const launchPhaseSession = async (phase: LaunchPhase): Promise<boolean> => {
-    const result = await launchPhaseDefault({ taskId: task.id, framework, phase, currentUser, phaseDefaults: config?.phaseDefaults });
+    const result = await launchPhaseDefault({ taskId: task.id, framework, phase, currentUser, phaseDefaults: config?.phaseDefaults, supervisorCapable: frameworkSupports(config, framework, 'supervisor') });
     return result !== null;
   };
 
@@ -340,8 +342,13 @@ export function useTicketActions(task: Task): UseTicketActions {
   const returnToDev = async (reason: string) => {
     const comment = reason.trim();
     if (!comment) return;
-    const history = [...(task.history || []), { type: 'comment' as const, user: currentUser, date: new Date().toISOString(), comment }];
-    await updateTask(task.id, { status: 'In Progress', history, updatedBy: currentUser } as Partial<Task>);
+    // FLUX-725: send the reason comment as an appendHistory delta (the card task no longer carries
+    // full history); the engine appends it and auto-adds the status_change.
+    await updateTask(task.id, {
+      status: 'In Progress',
+      appendHistory: [{ type: 'comment', user: currentUser, comment }],
+      updatedBy: currentUser,
+    } as Partial<Task>);
     triggerRefresh();
   };
 
@@ -350,6 +357,7 @@ export function useTicketActions(task: Task): UseTicketActions {
   const onLaunch = async (plan: OrchestrationLaunchPlan) => {
     setLauncherOpen(false);
     setLauncherBusy(true);
+    setLauncherError('');
     try {
       if (plan.personas.length === 1) {
         await runAgentAction({
@@ -389,6 +397,9 @@ export function useTicketActions(task: Task): UseTicketActions {
         phase: launcherPhase,
       });
       triggerRefresh();
+    } catch (err) {
+      setLauncherError(err instanceof Error ? err.message : 'Failed to launch agent.');
+      setLauncherOpen(true);
     } finally {
       setLauncherBusy(false);
     }
@@ -424,7 +435,8 @@ export function useTicketActions(task: Task): UseTicketActions {
     archive: async () => { await updateTask(task.id, { status: archiveStatus, updatedBy: currentUser }); triggerRefresh(); },
     deleteTicket: async () => { await deleteTask(task.id); triggerRefresh(); },
     markCommentsRead: () => {
-      const ids = (task.history ?? []).filter((e) => e.type === 'comment' && e.id).map((e) => e.id!);
+      // FLUX-725: comment ids come from the list digest (derived from full history).
+      const ids = (task.historyDigest?.comments ?? []).map((c) => c.id);
       markAllCommentsRead(task.id, ids);
     },
     clearSwimlane: async () => { await updateTask(task.id, { swimlane: null, updatedBy: currentUser } as Partial<Task>); triggerRefresh(); },
@@ -479,8 +491,9 @@ export function useTicketActions(task: Task): UseTicketActions {
     launcherPhase,
     launcherTemplateId,
     launcherBusy,
+    launcherError,
     openLauncher,
-    closeLauncher: () => setLauncherOpen(false),
+    closeLauncher: () => { setLauncherOpen(false); setLauncherError(''); },
     onLaunch,
     startPromptOpen,
     confirmStartPrompt,

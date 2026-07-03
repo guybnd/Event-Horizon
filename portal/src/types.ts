@@ -49,6 +49,29 @@ export interface BasicHistoryEntry {
 
 export type HistoryEntry = BasicHistoryEntry | AgentSessionEntry;
 
+/**
+ * Compact, board-card-facing digest of a ticket's history (FLUX-725). The `/api/tasks` LIST
+ * payload ships this on `Task.historyDigest` INSTEAD of the raw `history[]` array; the cards +
+ * attention surfaces read every history-derived signal from here, and the modal/chat lazy-fetch
+ * the full `history` from the detail endpoint. Mirror of the engine's `buildHistoryDigest`.
+ */
+export interface HistoryDigest {
+  length: number;
+  lastEntry: { date: string; type: string } | null;
+  /** Max entry date — ticket-age rust + Epics "recently active" sort. */
+  lastActivityAt: string;
+  /** Most recent status_change INTO the current status (time-in-column), or null. */
+  enteredCurrentStatusAt: string | null;
+  /** In-progress → done in under 2h (the ⚡ speed-demon badge). */
+  isSpeedDemon: boolean;
+  /** status_change entries within the last 24h — board-wide flow arrows + done streak. */
+  statusChanges24h: Array<{ from: string; to: string; date: string }>;
+  /** Comment entries with an id (id + author for the own-vs-other unread filter). No text. */
+  comments: Array<{ id: string; user: string; date: string }>;
+  /** Pre-computed Require-Input question + set-date — only set for require-input tickets. */
+  requireInput: { question: string; setDate: string } | null;
+}
+
 // Type guard to check if a history entry is an agent session
 export function isAgentSession(entry: HistoryEntry): entry is AgentSessionEntry {
   return entry.type === 'agent_session';
@@ -113,7 +136,11 @@ export interface Task {
   tags?: string[];
   title?: string;
   body?: string;
+  /** Full history — present on the DETAIL payload (serializeTaskForApi); absent on the LIST
+   *  payload, which carries `historyDigest` instead (FLUX-725). */
   history?: HistoryEntry[];
+  /** Compact derived history digest — present on the LIST payload only (FLUX-725). */
+  historyDigest?: HistoryDigest;
   createdBy?: string;
   updatedBy?: string;
   order?: number;
@@ -143,7 +170,31 @@ export interface Task {
   sessionHistoryEntry?: AgentSessionEntry;
 }
 
+// FLUX-906 (audit E.3): the frontend mirrors this union and the capability shape below because
+// the portal and engine are separate TS builds with no shared package. This is a documented
+// leave-with-justification — it is a STRUCTURAL mirror, not a feature gate: the runtime source of
+// truth is the `cliCapabilities` table served on /api/config (engine/src/agents/types.ts), which
+// the UI reads to decide what to show. Keep these keys in lockstep with the engine union.
 export type CliFramework = 'claude' | 'copilot' | 'gemini';
+
+/** Mirror of the engine's CliCapabilities (engine/src/agents/types.ts), served on /api/config.
+ *  The UI gates features off these flags (FLUX-906) instead of `framework === 'claude'`. */
+export interface CliCapabilities {
+  resume: boolean;
+  background: boolean;
+  supervisor: boolean;
+  scatter: boolean;
+  toolGating: boolean;
+  structuredOutput: boolean;
+  effort: { supported: boolean; flag?: string };
+  persistentChat: boolean;
+  selfPause: boolean;
+  partialDeltas: boolean;
+  permissionGating: boolean;
+  nativeAskBlocked: boolean;
+  spawnTimeMcpConfig: boolean;
+  imageAttachments: boolean;
+}
 export type CliSessionStatus = 'pending' | 'running' | 'waiting-input' | 'completed' | 'failed' | 'cancelled';
 
 export type ExecutionPattern = 'relay' | 'scatter-gather' | 'supervisor';
@@ -324,6 +375,20 @@ export interface Config {
     };
   };
   defaultAgent?: CliFramework | 'auto';
+  // ─── FLUX-906: served by /api/config so the portal stops hardcoding Claude ───
+  /** Per-framework capability table (engine `CLI_CAPABILITIES`). The UI gates features off
+   *  these flags instead of `framework === 'claude'` — see `frameworkSupports()` in utils.ts. */
+  cliCapabilities?: Record<CliFramework, CliCapabilities>;
+  /** The engine-resolved `'auto'` framework (`resolveDefaultFramework()`), already concrete.
+   *  Pass THIS to `resolveEffectiveAgent`, not `defaultAgent` (which may be the `'auto'` sentinel). */
+  defaultFramework?: CliFramework;
+  /** The orchestrator-chat sentinel (`BOARD_CONVERSATION_ID`). The portal keeps a sync constant
+   *  in api.ts (needed at module-eval); this lets it be cross-checked against the engine. */
+  boardConversationId?: string;
+  /** FLUX-907 (split semantics): the frameworks EH can actually LAUNCH (the runtime adapter registry).
+   *  Narrower than the skill installer's framework list — the UI badges install-only frameworks
+   *  "Skills only". See `isRuntimeFramework()` in utils.ts. */
+  runtimeFrameworks?: CliFramework[];
   /** Workflow template the launcher pre-selects by default (empty = none). */
   defaultWorkflowId?: string;
   /** Per-phase default templates for one-click single / multi agent launches. */
@@ -335,6 +400,10 @@ export interface Config {
   syncSettings?: {
     debounceMs: number;
     maxWaitMs: number;
+  };
+  furnaceSettings?: {
+    rateLimitRetryIntervalMs: number;
+    rateLimitMaxWaitMs: number;
   };
   agentProgress?: {
     enabled: boolean;
@@ -349,6 +418,7 @@ export interface Config {
     ticketDefault?: 'gated' | 'skip';
   };
   modules?: ModuleDeclaration[];
+  terminalCommands?: TerminalCommand[];
   boardFx?: {
     /** Column count badge ignites as cards pile up */
     columnFire?: boolean;
@@ -371,5 +441,22 @@ export interface Config {
     /** Tiny generative waveform fingerprint on each card */
     ticketDna?: boolean;
   };
+}
+
+export interface TerminalSessionInfo {
+  id: string;
+  title: string;
+  status: 'running' | 'exited';
+  cols: number;
+  rows: number;
+  cwd: string;
+  createdAt: string;
+}
+
+export interface TerminalCommand {
+  id: string;
+  label: string;
+  command: string;
+  runMode: 'current' | 'new';
 }
 

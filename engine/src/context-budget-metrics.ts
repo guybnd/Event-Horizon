@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { resolveSkillSourceRoot } from './workspace.js';
-import { buildInitialPrompt } from './agents/claude-code.js';
+import { buildInitialPrompt } from './agents/shared.js';
 import { getModulePromptFragments } from './modules.js';
 import { computeAgentPayloadMetrics, type AgentPayloadMetrics } from './agent-payload-metrics.js';
 import { getCliSessionSummaryForTask } from './session-store.js';

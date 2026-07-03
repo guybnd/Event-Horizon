@@ -1,8 +1,23 @@
 import { useState, useRef, useEffect } from 'react';
 import { ChevronDown, Bot, Zap, Code, Cloud, Terminal, Cpu, Layout } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import { useConfig } from '../store/useAppSelector';
+import { isRuntimeFramework } from '../utils';
 
 export type ExtendedFramework = 'auto' | 'claude' | 'gemini' | 'copilot' | 'cursor' | 'cline' | 'windsurf' | 'antigravity' | 'generic';
+
+/** FLUX-907 (split semantics): a small pill marking a framework EH can install skills for but NOT
+ *  launch a session against. `auto` is never marked (it's a resolve-at-launch sentinel, not a CLI). */
+function SkillsOnlyBadge() {
+  return (
+    <span
+      title="Event Horizon installs its skill files for this agent, but can't launch or drive a session against it. Pick a runnable agent (Claude, Copilot, Gemini) to run tickets."
+      className="shrink-0 rounded bg-amber-100 px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-700 dark:bg-amber-500/15 dark:text-amber-400"
+    >
+      Skills only
+    </span>
+  );
+}
 
 interface Props {
   value: string;
@@ -27,6 +42,9 @@ const FRAMEWORKS: { id: ExtendedFramework; label: string; icon: LucideIcon; colo
 export function FrameworkSelector({ value, onChange, disabled, showAuto, allowedFrameworks }: Props) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const config = useConfig();
+  // FLUX-907: a framework is "install-only" when EH has no runtime adapter for it. `auto` is exempt.
+  const isInstallOnly = (id: ExtendedFramework) => id !== 'auto' && !isRuntimeFramework(config, id);
 
   const available = FRAMEWORKS.filter(f => {
     if (!showAuto && f.id === 'auto') return false;
@@ -58,6 +76,7 @@ export function FrameworkSelector({ value, onChange, disabled, showAuto, allowed
         <div className="flex items-center gap-2 truncate">
           <SelectedIcon className={`h-4 w-4 shrink-0 ${selected.color}`} />
           <span className="truncate">{selected.label}</span>
+          {isInstallOnly(selected.id) && <SkillsOnlyBadge />}
         </div>
         <ChevronDown className={`h-4 w-4 shrink-0 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
@@ -81,11 +100,16 @@ export function FrameworkSelector({ value, onChange, disabled, showAuto, allowed
               >
                 <Icon className={`h-4 w-4 shrink-0 ${f.color}`} />
                 <div className="flex-1 min-w-0">
-                  <div className="truncate text-sm">{f.label}</div>
-                  <div className="truncate text-[10px] font-normal opacity-60">{f.description}</div>
+                  <div className="flex items-center gap-1.5 truncate text-sm">
+                    <span className="truncate">{f.label}</span>
+                    {isInstallOnly(f.id) && <SkillsOnlyBadge />}
+                  </div>
+                  <div className="truncate text-[10px] font-normal opacity-60">
+                    {isInstallOnly(f.id) ? 'Installs EH skill files — EH can’t launch a session here' : f.description}
+                  </div>
                 </div>
                 {isSelected && (
-                  <div className="h-1.5 w-1.5 rounded-full bg-primary" />
+                  <div className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
                 )}
               </button>
             );

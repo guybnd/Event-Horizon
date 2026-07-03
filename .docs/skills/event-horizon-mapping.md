@@ -12,7 +12,7 @@ Scope: Scour the member repos of a multi-repo group and write the cross-project 
 
 # Event Horizon Agent — Mapping Skill
 
-Version: 1.0.0
+Version: 1.1.0
 
 ## When This Skill Applies
 

@@ -18,7 +18,10 @@
  *   4. Create a squashed commit via `git commit-tree` (tree = current HEAD,
  *      parent = current public/master tip) — no branch switching, no rebasing.
  *   5. Force-push that single commit to public/master.
- *   6. Create (or move) the version tag locally and push it to public.
+ *   6. Tag the dev HEAD and push the tag to origin, so the dev repo's
+ *      release workflow fires against real dev history.
+ *   7. Push the same tag name pointing at the squashed commit to public —
+ *      without moving the local tag off dev history.
  */
 
 import { execSync } from 'child_process';
@@ -99,11 +102,18 @@ console.log(`  squashed SHA  : ${squashedSha.slice(0, 10)}`);
 console.log('\nForce-pushing to public/master…');
 run(`git push public ${squashedSha}:refs/heads/master --force`);
 
-// 6. Create/move local tag and push to public.
-console.log(`\nTagging ${tag}…`);
+// 6. Tag the dev HEAD and push to origin. The tag must point at a commit
+//    that exists in dev history so the dev repo's release workflow can fire;
+//    the squashed commit only exists in the public repo's history.
+console.log(`\nTagging ${tag} on dev HEAD and pushing to origin…`);
 try { run(`git tag -d ${tag}`); } catch {}
-run(`git tag ${tag} ${squashedSha}`);
-run(`git push public ${tag} --force`);
+run(`git tag ${tag} ${localTip}`);
+run(`git push origin ${tag} --force`);
+
+// 7. Push the tag at the squashed commit to public via a refspec, keeping
+//    the local tag pointed at dev history.
+console.log(`\nPushing ${tag} (squashed commit) to public…`);
+run(`git push public ${squashedSha}:refs/tags/${tag} --force`);
 
 console.log(`\n✓ Done. ${tag} published to public as a single squashed commit (${squashedSha.slice(0, 10)}).\n`);
 console.log(`  https://github.com/guybnd/event-horizon/releases/tag/${tag}\n`);

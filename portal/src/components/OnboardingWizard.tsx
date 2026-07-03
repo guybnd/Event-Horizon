@@ -15,7 +15,8 @@ import {
   Package,
 } from 'lucide-react';
 import { pickWorkspaceFolder, setWorkspace, installWorkspaceSkill, fetchPathInfo, setupPath, migrateStorage, restoreStorage, fetchStorageMode, fetchConfig, saveConfig as apiSaveConfig } from '../api';
-import { useAppActions } from '../store/useAppSelector';
+import { useAppActions, useConfig } from '../store/useAppSelector';
+import { isRuntimeFramework } from '../utils';
 import { BootstrapPreview } from './BootstrapPreview';
 import { FEATURE_PANELS } from '../config/onboardingFeatures';
 import { OnboardingContentPage } from './onboarding/OnboardingContentPage';
@@ -74,6 +75,9 @@ function StepDots({ current, total }: { current: number; total: number }) {
 
 export function OnboardingWizard() {
   const { notifyWorkspaceSet, setView, markOnboardingComplete, setCurrentUser } = useAppActions();
+  // FLUX-907 (split semantics): which frameworks EH can actually run (registry, served on /api/config).
+  // Used to badge the install-only choices below so first-run users see the install-vs-runtime gap.
+  const config = useConfig();
 
   // Data-driven flow (FLUX-756 Phase 1). The wizard renders from the validated
   // flow config instead of a hardcoded step===N switch. validateFlow guarantees a
@@ -547,24 +551,43 @@ export function OnboardingWizard() {
           </p>
         </div>
 
-        <div className="grid grid-cols-2 gap-2 mb-6 sm:grid-cols-3">
-          {FRAMEWORKS.map((fw) => (
-            <button
-              key={fw.id}
-              onClick={() => setSelectedFramework(fw.id)}
-              className={`rounded-xl border px-4 py-3 text-sm font-medium transition-all text-left ${
-                selectedFramework === fw.id
-                  ? 'border-primary bg-primary/10 text-primary'
-                  : 'border-gray-200 bg-white text-gray-700 hover:border-primary/50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300'
-              }`}
-            >
-              {fw.label}
-              {fw.id === 'claude' && (
-                <span className="ml-1 text-xs opacity-60">(default)</span>
-              )}
-            </button>
-          ))}
+        <div className="grid grid-cols-2 gap-2 mb-2 sm:grid-cols-3">
+          {FRAMEWORKS.map((fw) => {
+            // FLUX-907 (split semantics): EH installs skill files for any of these, but can only LAUNCH
+            // sessions against the runtime adapters (claude/copilot/gemini). Mark the rest "Skills only".
+            const installOnly = !isRuntimeFramework(config, fw.id);
+            return (
+              <button
+                key={fw.id}
+                onClick={() => setSelectedFramework(fw.id)}
+                className={`rounded-xl border px-4 py-3 text-sm font-medium transition-all text-left ${
+                  selectedFramework === fw.id
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-gray-200 bg-white text-gray-700 hover:border-primary/50 dark:border-white/10 dark:bg-white/5 dark:text-gray-300'
+                }`}
+              >
+                {fw.label}
+                {/* FLUX-906 (audit E.7-adjacent): documented leave. This is the FIRST-RUN onboarding
+                    picker — the user hasn't chosen a default yet, so there's no `config.defaultFramework`
+                    to read; the badge means "Claude is the recommended out-of-box bootstrap default", an
+                    identity statement, not a capability gate. Kept allowlisted. */}
+                {fw.id === 'claude' && (
+                  <span className="ml-1 text-xs opacity-60">(default)</span>
+                )}
+                {installOnly && (
+                  <span className="ml-1 rounded bg-amber-100 px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-700 dark:bg-amber-500/15 dark:text-amber-400">
+                    Skills only
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
+        {/* FLUX-907 (split semantics): make the install-vs-runtime gap explicit at first run. */}
+        <p className="mb-6 text-[11px] leading-relaxed text-gray-400 dark:text-gray-500">
+          <strong className="font-semibold text-gray-500 dark:text-gray-400">Claude Code, Copilot &amp; Gemini</strong> can be launched and driven by Event Horizon.
+          The rest get EH's skill files installed (so their own agent can manage tickets), but EH can’t run sessions against them yet.
+        </p>
 
         <button
           onClick={() => onAdvance()}

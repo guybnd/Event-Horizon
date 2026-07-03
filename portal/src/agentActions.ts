@@ -120,8 +120,13 @@ export async function launchPhaseDefault(opts: {
   currentUser: string;
   phaseDefaults?: Partial<Record<LaunchPhase, { single?: string; multi?: string }>>;
   skipPermissions?: boolean;
+  /** FLUX-906 (audit E.6): whether `framework` supports the supervisor pattern, per the
+   *  /api/config capability table — pass `frameworkSupports(config, framework, 'supervisor')`.
+   *  Replaces the old `framework === 'claude' || framework === 'gemini'` hardcode. Defaults to
+   *  false (fail closed → standalone launch) if the caller hasn't loaded capabilities yet. */
+  supervisorCapable?: boolean;
 }): Promise<CliSessionSummary | null> {
-  const { taskId, framework, phase, currentUser, phaseDefaults, skipPermissions } = opts;
+  const { taskId, framework, phase, currentUser, phaseDefaults, skipPermissions, supervisorCapable } = opts;
   const defaultId = resolvePhaseDefaultId(phaseDefaults, phase, 'single');
   const list = await fetchWorkflows();
   const wf = list.find((w) => w.id === defaultId);
@@ -130,8 +135,8 @@ export async function launchPhaseDefault(opts: {
   const personaId = members[0];
   if (!personaId) return null;
 
-  if (cfg?.pattern === 'supervisor' && (framework === 'claude' || framework === 'gemini')) {
-    const combiner = phaseCombiner(phase, 'handoff');
+  if (cfg?.pattern === 'supervisor' && supervisorCapable) {
+    const combiner = phaseCombiner(phase);
     const lead = { role: personaId, label: combiner?.label || personaId, personaId };
     const result = await launchOrchestration({
       taskId,

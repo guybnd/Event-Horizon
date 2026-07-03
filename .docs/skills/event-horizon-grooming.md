@@ -11,7 +11,7 @@ Scope: Interpret requirements, update frontmatter, and handle `.flux` metadata d
 
 # Event Horizon Agent — Grooming Skill
 
-Version: 2.5.0
+Version: 2.9.0
 
 ## When This Skill Applies
 
@@ -27,17 +27,46 @@ Refer to the orchestrator skill for the ticket model, APIs, and end-to-end check
 1. Use `get_ticket` to read the full ticket, including all history.
 2. Read `.docs/INDEX.md` to identify relevant docs, then read only those files. Skip docs entirely for XS/S effort tickets.
 3. Treat `Grooming` as a planning phase — do not code. Use `update_ticket` to tighten the ticket body into a concrete plan and fill inferable metadata (`priority`, `effort`, `tags`, hierarchy links).
-4. If implementation-critical choices are unresolved, use `change_status` with `newStatus: 'Require Input'` and a `comment` containing one question + proposed defaults, then wait.
-5. Once resolved, use `update_ticket` to rewrite `body` with:
+4. If implementation-critical choices are unresolved, use `change_status` with `newStatus: 'Require Input'` and a `comment` containing one question + proposed defaults, then wait. For ambiguity that *isn't* blocking, see Plan Discipline item 3 below instead — don't flip status for something you can resolve with a stated default.
+5. Once resolved, use `update_ticket` to rewrite `body` with, in this order:
+   - **TL;DR** (FIRST, always): a 1–3 sentence plain-language / ELI5 summary as a leading `> **TL;DR** — …` blockquote, so the user grasps the ticket at a glance without reading the full plan (see the orchestrator skill's "Body convention").
    - **Problem / Motivation** (1–3 sentences): what problem, who benefits, why prioritised.
-   - **Implementation plan**: concrete steps so another agent could pick up without re-discovery.
+   - **Implementation plan**: concrete steps so another agent could pick up without re-discovery. Apply the Plan Discipline items below, scaled to the ticket's size and risk.
 6. Use `change_status` with `newStatus: 'Todo'`. **CRITICAL: Stop execution after moving to Todo — do not begin implementation.**
 
 All persistence uses MCP tools — see the orchestrator skill's "Persisting Changes" section.
 
-## Rich Grooming Artifacts (`publish_artifact`) — the exception, not the norm
+## Plan Discipline — scale to the ticket, don't apply blanket (FLUX-978)
 
-For tickets where the user has to *imagine* the result, you can publish a **self-contained HTML artifact** the user reasons *against* — a rendered mockup, an architecture/flow diagram, an interactive prototype, or acceptance criteria laid out visually. The user reacts to a concrete artifact and catches misunderstanding *before* code is written. Use the `publish_artifact` MCP tool; the artifact renders in the ticket's **Grooming Artifact** panel.
+Borrowed from Builder.io's `agent-native` `/visual-plan` skill. Like the artifact heuristic below, **none of this is a blanket rule.** A small UI bug fix or a one-line change should stay a two-sentence plan — apply these in proportion to the ticket's size and risk, not because the section exists. Each item states its own skip condition; read the skip condition *before* reaching for the item.
+
+1. **Anchor to real code, lead with reuse.** When the Implementation plan touches existing code, name the actual files/functions/symbols you found while reading the ticket and docs — not invented ones — and state what each step reuses (an existing action, component, or helper) before what it adds.
+   - *Skip for:* XS tickets and single-line fixes where "fix line N in file.ts" is the whole plan.
+2. **Call out hard-to-reverse decisions.** If the ticket touches wire format, public ids, data-model/schema shape, or auth/ownership boundaries, name those decisions explicitly in the plan and state what's deferred vs. decided now.
+   - *Skip for:* UI-only, XS/S, or bug-fix tickets — never add an empty section just to have covered it; only write it when such a decision genuinely exists.
+3. **Non-blocking ambiguity → an "Open Questions" note, not always `Require Input`.** Reserve `Require Input` (workflow step 4) for genuinely blocking, batched (2–4 max) choices. Anything resolvable with a stated assumption goes in a short `Open Questions (non-blocking) — using default: …` line inside the plan instead of a status flip.
+   - *Skip for:* the common case — most small tickets have no real ambiguity. Omit the line rather than force one.
+4. **Adversarial self-review before `Todo`.** Delegate one pass whose only job is to find what's weak, missing, or wrong in the plan you just wrote (not re-research the repo): unanchored steps, an implicit hard-to-reverse call, a menu of options where the plan should commit to one, an obvious missing decision. Fix clear-cut issues yourself; route genuine judgment calls to `Require Input`.
+   - *Reserve for:* L/XL effort tickets, or anything touching architecture, data-model, migration, multi-file changes, or an irreversible decision. This is the most expensive item here and the one most likely to be over-applied — **skip outright for XS/S, UI-only, or single-decision tickets.**
+
+## "Reground before starting" — tickets filed from point-in-time analysis (FLUX-1048)
+
+Tickets born from a **point-in-time codebase analysis** — tech-debt sweeps, refactor epics, audit/churn findings — cite file:line evidence that is only valid on the day of the analysis. When such a ticket is expected to be picked up **later** (Backlog/Todo queue, epic members), its body MUST include a `## ⚠️ Reground before starting` section (placed right after the TL;DR / Problem prose) that tells the implementer to:
+
+1. **State the snapshot date** — "the findings below are a snapshot from YYYY-MM-DD" — so staleness is visible at a glance.
+2. **Re-derive the evidence** — re-verify cited file:line references via Serena/grep against current code; recorded line numbers are historical, never trust them as-is.
+3. **Check for partial fixes already landed** — scan sibling tickets and recently Done/Released tickets; another ticket may have absorbed part (or all) of the work.
+4. **Update the plan against current reality before coding** — rewrite the body (keep the TL;DR honest) to match what the code looks like now. If the finding no longer exists, re-scope or propose archiving — implementing a stale plan is worse than doing nothing.
+
+See epic **FLUX-1043** and its subtasks **FLUX-1044/1045/1046** for the reference format. When grooming an analysis-derived ticket, add this section if it's missing. The section binds the *implementer* too — the implementation skill's "Reground Before Coding" section requires executing it before any code change.
+
+- *Skip for:* tickets being implemented immediately after grooming, and tickets whose plan cites no point-in-time evidence (pure feature requests, UI tweaks, bug reports with a live repro).
+
+## Rich Artifacts (`publish_artifact`) — the exception, not the norm
+
+`publish_artifact` spans **both ends of the lifecycle** — it is not grooming-exclusive. In grooming it publishes a plan-time **mockup / diagram / prototype** the user reasons *against* before code is written; at `Ready` the implementation skill uses the same tool to publish a **visual recap** of the diff (see the implementation skill's "Visual Recap Artifact" section). Same tool, same sandboxed viewer, same revision history — only the timing and content differ.
+
+For grooming: on tickets where the user has to *imagine* the result, publish a **self-contained HTML artifact** the user reasons *against* — a rendered mockup, an architecture/flow diagram, an interactive prototype, or acceptance criteria laid out visually. The user reacts to a concrete artifact and catches misunderstanding *before* code is written. Use the `publish_artifact` MCP tool; the artifact renders in the ticket's artifact panel.
 
 **Whether to emit is YOUR judgment per ticket — there is no tag gate.** Default OFF when unsure; artifacts must stay the exception so they don't become ceremony.
 
@@ -98,4 +127,4 @@ On open (and on every new revision) the viewer runs an automatic **layout audit*
 
 - Keep comments factual and short. End input requests with a concrete question and proposed default.
 - Prefer comments that help the next agent continue without re-discovery.
-- **Substantial comments: add a faithful `summary`** on `add_comment` / `log_progress` (preserve the decision / why / actionable detail; concise but not lossy; length scales with importance — don't force one line; skip for short notes). Older summarized comments show collapsed in the agent digest; the full text stays fetchable via `get_ticket` with `expand: ["<id>"]`. Set `pin: true` on entries that must never collapse. When a comment **replaces an earlier decision** in this ticket, pass `supersedes: ["<id>"]` so the dead entry collapses to a marker (a pinned/user-authored target stays full, advisory-only — the engine won't bury human intent).
+- **Substantial comments: add a faithful `summary`** on `add_note` (preserve the decision / why / actionable detail; concise but not lossy; length scales with importance — don't force one line; skip for short notes). Older summarized comments show collapsed in the agent digest; the full text stays fetchable via `get_ticket` with `expand: ["<id>"]`. Set `pin: true` on entries that must never collapse. When a comment **replaces an earlier decision** in this ticket, pass `supersedes: ["<id>"]` so the dead entry collapses to a marker (a pinned/user-authored target stays full, advisory-only — the engine won't bury human intent).

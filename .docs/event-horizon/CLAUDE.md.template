@@ -42,17 +42,13 @@ When starting work on a FLUX ticket, **read the Event Horizon orchestrator skill
 | `list_tickets` | Finding tickets by status, priority, assignee, tag |
 | `update_ticket` | Changing metadata (title, priority, effort, tags, assignee, body) |
 | `change_status` | Moving to a new status (requires comment for `Require Input` / `Ready`) |
-| `add_comment` | Adding a comment to ticket history (persists to ticket) |
-| `log_progress` | Recording progress updates (appears in history) |
-| `create_ticket` | Creating a new ticket |
-| `create_subtask` | Creating a child ticket linked to a parent |
+| `add_note` | Adding a `type:'comment'` (persists to ticket) or `type:'activity'` (progress update) to history |
+| `create_ticket` | Creating a new ticket (pass `parentId` to create a linked subtask) |
 | `finish_ticket` | Completing a ticket (atomic: sets link + adds comment + moves to Done) |
-| `create_branch` | Create a feature branch for the ticket |
-| `get_branch` | Check branch status, ahead/behind vs main |
-| `delete_branch` | Delete ticket branch (refuses unmerged unless `force: true`) |
+| `branch` | `action:'create'` a feature branch, `action:'status'` (ahead/behind vs main), `action:'delete'` (refuses unmerged unless `force:true`) |
 | `get_board_config` | Reading board configuration (statuses, tags) |
 
-**Do not use:** chat comments, `log_progress` alone for findings, or direct file edits. Ticket findings must be persisted via `add_comment` or `update_ticket`.
+**Do not use:** chat comments, `add_note` (`type:'activity'`) alone for findings, or direct file edits. Ticket findings must be persisted via `add_note` (`type:'comment'`) or `update_ticket`.
 
 ---
 
@@ -79,15 +75,16 @@ When starting work on a FLUX ticket, **read the Event Horizon orchestrator skill
 
 ### Adding a Finding to a Ticket
 
-Use `add_comment`, not `log_progress` or chat:
+Use `add_note` (`type:'comment'`), not `type:'activity'` or chat:
 ```
 // Read the ticket first
 const ticket = await get_ticket({id: "FLUX-42"})
 
 // Add your finding as a comment
-await add_comment({
+await add_note({
   ticketId: "FLUX-42",
-  comment: "Found a bug in the data validation. The null check is missing on line 47 of src/parser.ts. Suggests: add `if (!data) return error(...)` before line 48."
+  type: "comment",
+  message: "Found a bug in the data validation. The null check is missing on line 47 of src/parser.ts. Suggests: add `if (!data) return error(...)` before line 48."
 })
 ```
 
@@ -168,7 +165,7 @@ The MCP tools are the primary interface. Use the REST API below **only if MCP to
 Before marking a ticket `Ready` or `Done`:
 
 - ✅ Ticket read fully — relevant docs reviewed
-- ✅ Implementation plan posted as a comment (use `add_comment`)
+- ✅ Implementation plan posted as a comment (use `add_note`, `type:'comment'`)
 - ✅ Status moved at the right time (never skip status transitions)
 - ✅ Code changes validated (run tests, start the app, verify behavior)
 - ✅ Docs updated (`.docs/` matches new behavior; completion comment says so explicitly)

@@ -43,20 +43,20 @@ describe('hitl-prompts durable store (FLUX-833 Phase 2)', () => {
     return JSON.parse(raw);
   };
 
-  it('persists an open prompt (with claudeSessionId) to open-prompts.json and lists it', async () => {
+  it('persists an open prompt (with resumeSessionId) to open-prompts.json and lists it', async () => {
     // Park (do not await — it only settles on resolve/timeout) and let the microtask queue flush.
     void parkPrompt({
       kind: 'permission',
       payload: { toolName: 'change_status', input: { newStatus: 'Done' } },
       conversationId: 'FLUX-1',
-      claudeSessionId: 'sess-abc',
+      resumeSessionId: 'sess-abc',
       timeoutMs: 60_000,
     });
     await Promise.resolve();
 
     const open = listOpenPrompts('permission');
     expect(open).toHaveLength(1);
-    expect(open[0]!.claudeSessionId).toBe('sess-abc');
+    expect(open[0]!.resumeSessionId).toBe('sess-abc');
 
     await flushOpenPrompts();
     const onDisk = await readIndex();
@@ -64,7 +64,7 @@ describe('hitl-prompts durable store (FLUX-833 Phase 2)', () => {
     expect(onDisk[0]).toMatchObject({
       kind: 'permission',
       conversationId: 'FLUX-1',
-      claudeSessionId: 'sess-abc',
+      resumeSessionId: 'sess-abc',
       payload: { toolName: 'change_status', input: { newStatus: 'Done' } },
     });
     expect(typeof onDisk[0]!.id).toBe('string');
@@ -97,7 +97,7 @@ describe('hitl-prompts durable store (FLUX-833 Phase 2)', () => {
   it('rehydrates open prompts from disk on boot, keyed by their original id', async () => {
     // Two kinds parked durably.
     void parkPrompt({ kind: 'permission', payload: { toolName: 'Write', input: {} }, conversationId: 'FLUX-3', timeoutMs: 60_000 });
-    void parkPrompt({ kind: 'question', payload: { questions: [{ header: 'H', question: 'Q?', options: [{ label: 'A' }] }] }, conversationId: 'FLUX-3', claudeSessionId: 'sess-q', timeoutMs: 60_000 });
+    void parkPrompt({ kind: 'question', payload: { questions: [{ header: 'H', question: 'Q?', options: [{ label: 'A' }] }] }, conversationId: 'FLUX-3', resumeSessionId: 'sess-q', timeoutMs: 60_000 });
     await Promise.resolve();
     const before = [...listOpenPrompts('permission'), ...listOpenPrompts('question')].map((r) => r.id).sort();
     expect(before).toHaveLength(2);
@@ -113,7 +113,7 @@ describe('hitl-prompts durable store (FLUX-833 Phase 2)', () => {
     const ques = listOpenPrompts('question');
     expect(perm).toHaveLength(1);
     expect(ques).toHaveLength(1);
-    expect(ques[0]!.claudeSessionId).toBe('sess-q');
+    expect(ques[0]!.resumeSessionId).toBe('sess-q');
     expect([...perm, ...ques].map((r) => r.id).sort()).toEqual(before);
   });
 

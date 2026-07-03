@@ -8,7 +8,7 @@ import type { TaskCardController } from '../hooks/useTaskCardController';
 import { TaskDeck } from './TaskDeck';
 import { mergePr, retryPr, updateTask, adoptPr, MergeParkedError } from '../api';
 import { launchPhaseDefault } from '../agentActions';
-import { resolveEffectiveAgent } from '../utils';
+import { resolveEffectiveAgent, frameworkSupports } from '../utils';
 
 // Shared PR action-button classes — equal-width (flex-1) + centered so the bar is symmetrical
 // regardless of label length. Module-level so they're allocated once, not per render.
@@ -145,12 +145,14 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
         appendHistory: [{ type: 'comment', user: currentUser, comment: `Sent back to dev — issue found before merge:\n\n${reason}` }],
       } as Partial<Task>);
       if (reworkStart) {
+        const fw = resolveEffectiveAgent(undefined, config?.defaultFramework);
         await launchPhaseDefault({
           taskId: task.id,
-          framework: resolveEffectiveAgent(undefined, config?.defaultAgent),
+          framework: fw,
           phase: 'implementation',
           currentUser,
           phaseDefaults: config?.phaseDefaults,
+          supervisorCapable: frameworkSupports(config, fw, 'supervisor'),
         }).catch(() => {});
       }
       triggerRefresh();
@@ -173,12 +175,14 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
     try {
       const { id } = await retryPr(task.id, { reason, createBranch: retryBranch || retryStart, updatedBy: currentUser });
       if (retryStart) {
+        const fw = resolveEffectiveAgent(undefined, config?.defaultFramework);
         await launchPhaseDefault({
           taskId: id,
-          framework: resolveEffectiveAgent(undefined, config?.defaultAgent),
+          framework: fw,
           phase: 'implementation',
           currentUser,
           phaseDefaults: config?.phaseDefaults,
+          supervisorCapable: frameworkSupports(config, fw, 'supervisor'),
         }).catch(() => {});
       }
       triggerRefresh();

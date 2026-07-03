@@ -35,11 +35,11 @@ Each step below is paired with the MCP tool that carries it out. The full tool r
 
 5.  Read the smallest nearby implementation surface once the ticket is concrete enough to support a specific change.
 
-6.  Add a short plan comment when transitioning from grooming into implementation (`add_comment`).
+6.  Add a short plan comment when transitioning from grooming into implementation (`add_note`, `type:'comment'`).
 
 7.  Move the ticket to `Todo` when grooming is complete (`change_status`). **CRITICAL: You MUST NOT begin implementation or move the ticket to `In Progress` during the Grooming session. Once the ticket is moved to `Todo`, you must stop, end your execution, and wait for the user to explicitly start the implementation phase.**
 
-8.  Move to `In Progress` (`change_status`) before the first substantive code change. Make focused changes and run a narrow validation as soon as the first real edit lands. Use `log_progress` when scope shifts, validation fails, or the user redirects.
+8.  Move to `In Progress` (`change_status`) before the first substantive code change. Make focused changes and run a narrow validation as soon as the first real edit lands. Use `add_note` (`type:'activity'`) when scope shifts, validation fails, or the user redirects.
 
 9.  If blocked on a ticket-specific question during implementation, move the ticket to `Require Input` (`change_status` with the question as `comment`).
 
@@ -49,7 +49,7 @@ Each step below is paired with the MCP tool that carries it out. The full tool r
 
 12.  When the user says `finish <ticket>`, perform the final commit and close-out sequence with `finish_ticket` (sets `implementationLink`, appends the completion comment, and moves status to `Done` atomically).
 
-13.  If the work needs to spawn child tickets, use `create_subtask` rather than `create_ticket` + manual linking \u2014 it wires the parent's `subtasks` array atomically.
+13.  If the work needs to spawn child tickets, use `create_ticket` with `parentId` rather than `create_ticket` + manual linking \u2014 it wires the parent's `subtasks` array atomically.
 
 
 ## Documentation touchpoints

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { X, Loader2 } from 'lucide-react';
 import { updateTask, fetchDoc, updateDoc, createDoc } from '../api';
-import type { BasicHistoryEntry, Task } from '../types';
+import type { Task } from '../types';
 
 interface ReleaseModalProps {
   tasks: Task[];
@@ -74,25 +74,17 @@ export function ReleaseModal({ tasks: initialTasks, onClose }: ReleaseModalProps
 
       // Update tasks
       await Promise.all(
-        tasksToRelease.map(t => {
-          const releaseEntry: BasicHistoryEntry = {
-            type: 'status_change',
-            from: t.status,
-            to: 'Released',
-            user: currentUser,
-            date: releasedAt,
-          };
-          const newHistory = [...(t.history || []), releaseEntry];
-
-          return updateTask(t.id, {
+        tasksToRelease.map(t =>
+          // FLUX-725: send only the status + release fields; the engine records the
+          // status_change → Released itself (the board task carries only a history digest now).
+          updateTask(t.id, {
             status: 'Released',
             version,
             releasedAt,
             releaseDocPath: docRelativePath,
-            history: newHistory,
             updatedBy: currentUser,
-          });
-        })
+          })
+        )
       );
 
       triggerRefresh();

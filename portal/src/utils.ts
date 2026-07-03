@@ -1,14 +1,49 @@
-import type { CliFramework } from './types';
+import type { CliFramework, CliCapabilities, Config } from './types';
 import type { GroupStatus, GroupMemberSummary } from './api';
 import type { WorkspaceInfo } from './api';
 import type { Doc } from './types';
 
 /**
- * Resolves the effective agent framework to use, following the 'auto' -> 'claude' logic.
+ * Resolve the effective agent framework for the UI. Pass `config.defaultFramework` (FLUX-906) as
+ * the second arg — that is the ENGINE-resolved `'auto'` value (`resolveDefaultFramework()`), already
+ * concrete, so the portal no longer decides what `'auto'` means. The `'auto' -> 'claude'` floor
+ * below is reached ONLY before /api/config has loaded (when `defaultFramework` is still undefined):
+ * a defensive pre-load default, NOT a framework gate. Once config is in hand the engine's choice wins.
  */
 export function resolveEffectiveAgent(target: string | undefined, defaultAgent: string | undefined): CliFramework {
   const framework = target || defaultAgent || 'auto';
   return (framework === 'auto' ? 'claude' : framework) as CliFramework;
+}
+
+/**
+ * FLUX-906 (audit E.6): does `framework` support `capability`, per the engine's capability table
+ * served on /api/config? This is the generic replacement for `framework === 'claude'` feature gates
+ * across the portal — the UI asks "can this agent do X?" instead of "is this Claude?". Returns false
+ * when the table hasn't loaded yet or the framework/flag is unknown (fail closed — hide the feature).
+ */
+export function frameworkSupports(
+  config: Config | null | undefined,
+  framework: CliFramework,
+  capability: keyof CliCapabilities,
+): boolean {
+  const cap = config?.cliCapabilities?.[framework];
+  return !!cap && cap[capability] === true;
+}
+
+/**
+ * FLUX-907 (split semantics): the frameworks EH can actually LAUNCH a session against — the runtime
+ * adapter registry, served on `/api/config` as `runtimeFrameworks`. This is NARROWER than the skill
+ * installer's framework list (cursor/cline/windsurf/antigravity/generic get skill files but no runtime).
+ * The fallback mirrors the shipped registry and is reached only before `/api/config` loads — the engine
+ * (`getRuntimeFrameworks()`) is the source of truth.
+ */
+export const DEFAULT_RUNTIME_FRAMEWORKS = ['claude', 'copilot', 'gemini'];
+export function runtimeFrameworks(config: Config | null | undefined): string[] {
+  return config?.runtimeFrameworks ?? DEFAULT_RUNTIME_FRAMEWORKS;
+}
+/** True when EH can launch a session against `framework` (vs install-only — "Skills only" in the UI). */
+export function isRuntimeFramework(config: Config | null | undefined, framework: string): boolean {
+  return runtimeFrameworks(config).includes(framework);
 }
 
 export function truncateMiddle(str: string, maxLen: number): string {

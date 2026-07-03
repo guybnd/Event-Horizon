@@ -2,13 +2,14 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Archive, ArrowRightLeft, Bot, ChevronRight, CircleX, Code2, ExternalLink, Filter,
-  FolderGit2, GitBranch, GitCompare, GitMerge, GitPullRequest, Link2, Loader2, MessageCircle, Play, Search, Square, Trash2, Undo2, X,
+  Archive, ArrowRightLeft, Bot, ChevronRight, CircleX, Code2, ExternalLink, Filter, Flame,
+  FolderGit2, GitBranch, GitCompare, GitMerge, GitPullRequest, Link2, Loader2, MessageCircle, Play, Plus, Search, Square, Trash2, Undo2, X,
 } from 'lucide-react';
 import type { Task } from '../types';
 import { normalizeSubtaskId } from '../types';
 import { useAppSelector, useAppActions, useLiveSession } from '../store/useAppSelector';
-import { fetchBranches, stopTaskCliSession, type BranchOption } from '../api';
+import { fetchBranches, stopTaskCliSession, fetchFurnaceBatches, appendFurnaceTicket, createFurnaceBatch, type BranchOption } from '../api';
+import type { FurnaceBatch } from '../furnaceTypes';
 import { getArchiveStatus, getReadyForMergeStatus } from '../workflow';
 import { searchTasks } from '../taskSearch';
 import { useTicketActions } from '../hooks/useTicketActions';
@@ -21,7 +22,7 @@ interface Props {
   onLaunchAgent: (templateId?: string) => void;
 }
 
-type TopMenu = 'launch' | 'transition' | 'worktree' | 'attachParent' | null;
+type TopMenu = 'launch' | 'transition' | 'worktree' | 'attachParent' | 'addFurnace' | null;
 type WtMenu = 'attachWorktree' | 'attachBranch' | null;
 
 // The CLI-session statuses that count as "still active" (mirrors the engine's stop-route filter
@@ -56,6 +57,7 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
   const [prBusy, setPrBusy] = useState(false);
   const [mergePrBusy, setMergePrBusy] = useState(false);
   const [branches, setBranches] = useState<BranchOption[] | null>(null);
+  const [furnaceBatches, setFurnaceBatches] = useState<FurnaceBatch[] | null>(null);
 
   // FLUX-717: the menu binds every transition/launch/pr/branch/lifecycle action to the unified
   // ticket-action registry instead of hand-rolling its own handlers. (Launcher-opening stays
@@ -80,6 +82,16 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
       .catch(() => { if (!cancelled) setBranches([]); });
     return () => { cancelled = true; };
   }, [openWt, branches]);
+
+  // Lazy-load Furnace batches when the "Add to Furnace" picker first opens.
+  useEffect(() => {
+    if (openTop !== 'addFurnace' || furnaceBatches !== null) return undefined;
+    let cancelled = false;
+    fetchFurnaceBatches()
+      .then((b) => { if (!cancelled) setFurnaceBatches(b); })
+      .catch(() => { if (!cancelled) setFurnaceBatches([]); });
+    return () => { cancelled = true; };
+  }, [openTop, furnaceBatches]);
 
   // Adjust position to keep the menu on screen; flyouts open toward the roomy side.
   const [pos, setPos] = useState(position);
@@ -115,7 +127,8 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
   ].filter((s, i, arr) => arr.indexOf(s) === i && s !== task.status);
 
   const archiveStatus = getArchiveStatus(config);
-  const commentIds = (task.history ?? []).filter((e) => e.type === 'comment' && e.id).map((e) => e.id!);
+  // FLUX-725: comment ids come from the list digest (was a filter over full history).
+  const commentIds = (task.historyDigest?.comments ?? []).map((c) => c.id);
   const readIds = new Set(readComments[task.id] ?? []);
   const hasUnread = commentIds.some((id) => !readIds.has(id));
   // ─── Phase templates (Launch agent flyout) — from the registry's resolved single/multi/other set ─
@@ -210,6 +223,8 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
   const handleAttachWorktree = (branch: string) => runOp(() => ctl.ops.joinWorktree(branch));
   const handleAttachBranch = (branch: string) => runOp(() => ctl.ops.attachBranch(branch));
   const handleAttachParent = (parentId: string) => runOp(() => ctl.ops.attachParent(parentId));
+  const addToBatch = (batchId: string) => runOp(() => appendFurnaceTicket(batchId, task.id));
+  const addToNewBatch = () => runOp(() => createFurnaceBatch({ title: task.title || task.id, ticketIds: [task.id] }));
 
   const setFilter = (v: string) => { onClose(); setFilterWorktree(v); };
 
@@ -470,6 +485,32 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
           </>)}
           onPick={(t) => void handleAttachParent(t.id)}
         />
+      </Flyout>
+
+      {/* Add this ticket to a Furnace batch (FLUX-1053) — existing batch or a new one. */}
+      <Flyout
+        icon={<Flame className="h-3.5 w-3.5" />}
+        label="Add to Furnace"
+        open={openTop === 'addFurnace'}
+        onToggle={() => setOpenTop(openTop === 'addFurnace' ? null : 'addFurnace')}
+      >
+        {furnaceBatches === null ? (
+          <div className="px-3 py-1.5 text-[11px] italic text-gray-400">Loading…</div>
+        ) : (
+          <>
+            {furnaceBatches
+              .filter((b) => b.status === 'draft' || b.status === 'burning')
+              .filter((b) => !b.tickets.some((t) => t.ticketId === task.id))
+              .map((b) => (
+                <MenuItem key={b.id} onClick={() => void addToBatch(b.id)}>
+                  <span className="flex-1 truncate">{b.title}</span>
+                  <span className="ml-2 text-[10px] text-gray-400">{b.status}</span>
+                </MenuItem>
+              ))}
+            <Divider />
+            <MenuItem icon={<Plus className="h-3.5 w-3.5" />} onClick={() => void addToNewBatch()}>New batch</MenuItem>
+          </>
+        )}
       </Flyout>
 
       {(hasUnread || task.swimlane) && <Divider />}

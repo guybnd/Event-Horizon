@@ -14,6 +14,13 @@
   --eh-accent: #e05a00;
   --eh-accent-hover: #c24d00;
   --eh-accent-glow: rgba(224, 90, 0, 0.12);
+  /* Furnace purple/violet identity (FLUX-1061): a CONSTANT, theme-independent accent for the Furnace so it
+     never inherits the per-theme `--eh-accent` (teal-green under matrix, etc). Matches the approved
+     mockup (image-12.png). Defined once here in :root and deliberately NOT overridden in any
+     [data-theme] block, so it cascades unchanged. */
+  --eh-furnace-accent: #7c3aed;
+  --eh-furnace-accent-hover: #6d28d9;
+  --eh-furnace-accent-glow: rgba(124, 58, 237, 0.12);
   --eh-base: #fafaf9;
   --eh-surface: #ffffff;
   --eh-surface-raised: #ffffff;
@@ -1391,6 +1398,14 @@ button:not(:disabled):active {
      pure-opacity, compositor-only animation; `will-change` promotes it to its own layer. */
   animation: foil-shimmer 4s ease-in-out infinite;
   will-change: opacity;
+}
+
+/* ─── FLUX-972: terminal chip arm-then-confirm drain animation ───────────────
+   The overlay div inside an armed quick-launch chip scales from full-width
+   (left origin) to zero over DRAIN_DURATION, giving the user a visual countdown. */
+@keyframes eh-chip-drain {
+  from { transform: scaleX(1); }
+  to   { transform: scaleX(0); }
 }
 
 /* ─── FLUX-790: blanket reduced-motion fallback ──────────────────────────────

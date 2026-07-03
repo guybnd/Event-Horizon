@@ -4,7 +4,7 @@
 // (open the PR). Both the chat bar and the board share `buildStatusChangeHistory` /
 // `changeTaskStatus` so status moves are constructed in exactly one place.
 
-import type { Config, HistoryEntry, Task } from '../types';
+import type { Config, HistoryDigest, HistoryEntry, Task } from '../types';
 import { updateTask } from '../api';
 import { getReadyForMergeStatus, getRequireInputStatus } from '../workflow';
 import type { LaunchPhase } from '../agentActions';
@@ -15,9 +15,13 @@ const TODO_STATUS = 'Todo';
 const IN_PROGRESS_STATUS = 'In Progress';
 
 /**
- * Build the history array for a status change: an optional comment entry (required by the
- * engine for Ready / Require Input) followed by the `status_change` entry. Extracted from
- * Board.tsx so the board and the chat action bar don't duplicate the shape.
+ * Build the history DELTA for a status change: an optional comment entry (required by the
+ * engine for Ready / Require Input) followed by the `status_change` entry. FLUX-725: this is
+ * the *new* entries only — NOT spread onto `task.history` — sent to the engine via `appendHistory`
+ * so the write path no longer depends on the client holding the full history (the list payload is
+ * now history-digested). The engine appends these to the on-disk history and, seeing the
+ * `status_change` in the delta, suppresses its own auto-add (no double-move). Shared by the board
+ * (drag) and the chat action bar so the shape lives in one place.
  */
 export function buildStatusChangeHistory(
   task: Task,
@@ -26,14 +30,14 @@ export function buildStatusChangeHistory(
   comment?: string,
 ): HistoryEntry[] {
   const timestamp = new Date().toISOString();
-  const history: HistoryEntry[] = [...(task.history || [])];
+  const delta: HistoryEntry[] = [];
 
   // A separate comment entry satisfies engine validation for Ready / Require Input.
   if (comment?.trim()) {
-    history.push({ type: 'comment', user: currentUser, date: timestamp, comment: comment.trim() });
+    delta.push({ type: 'comment', user: currentUser, date: timestamp, comment: comment.trim() });
   }
 
-  history.push({
+  delta.push({
     type: 'status_change',
     from: task.status,
     to: newStatus,
@@ -42,12 +46,40 @@ export function buildStatusChangeHistory(
     comment: comment?.trim() ? 'Included with comment' : undefined,
   });
 
-  return history;
+  return delta;
 }
 
 /**
- * Persist a status change (build history + PUT). The board keeps its own optimistic
- * wrapper around `buildStatusChangeHistory`; lightweight callers (the action bar) use
+ * Optimistically fold a status move into a list task's `historyDigest` (FLUX-725) so a dragged
+ * card's history-derived signals (time-in-column, flow arrows) stay correct during the brief
+ * window before the server confirms — the list payload carries only the digest, not full history,
+ * so we can't rebuild it the old way. The next poll/SSE replaces this with the authoritative digest.
+ */
+export function applyOptimisticStatusChange(
+  base: HistoryDigest | undefined,
+  from: string,
+  to: string,
+  comment: string | undefined,
+  _user: string,
+): HistoryDigest {
+  const now = new Date().toISOString();
+  const prior: HistoryDigest = base ?? {
+    length: 0, lastEntry: null, lastActivityAt: '', enteredCurrentStatusAt: null,
+    isSpeedDemon: false, statusChanges24h: [], comments: [], requireInput: null,
+  };
+  return {
+    ...prior,
+    length: prior.length + (comment?.trim() ? 2 : 1),
+    lastEntry: { date: now, type: 'status_change' },
+    lastActivityAt: now,
+    enteredCurrentStatusAt: now, // the card now displays `to`, entered just now (< 1min ⇒ chip hidden)
+    statusChanges24h: [...prior.statusChanges24h, { from, to, date: now }],
+  };
+}
+
+/**
+ * Persist a status change (build the delta + PUT via `appendHistory`). The board keeps its own
+ * optimistic wrapper around `buildStatusChangeHistory`; lightweight callers (the action bar) use
  * this directly.
  */
 export async function changeTaskStatus(
@@ -56,13 +88,13 @@ export async function changeTaskStatus(
   currentUser: string,
   opts?: { comment?: string; order?: number },
 ): Promise<void> {
-  const history = buildStatusChangeHistory(task, newStatus, currentUser, opts?.comment);
+  const appendHistory = buildStatusChangeHistory(task, newStatus, currentUser, opts?.comment);
   await updateTask(task.id, {
     status: newStatus,
     order: opts?.order ?? task.order ?? 0,
-    history,
+    appendHistory,
     updatedBy: currentUser,
-  });
+  } as Partial<Task>);
 }
 
 // ── The unified ticket-action registry (FLUX-715) ───────────────────────────

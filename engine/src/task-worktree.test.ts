@@ -11,6 +11,8 @@ import {
   detachTaskWorktree,
   pruneTaskWorktrees,
   listTaskWorktrees,
+  reclaimWorktrees,
+  ticketIdFromWorktreePath,
   resolveTaskExecutionRoot,
   taskWorktreeDir,
   taskWorktreesBaseDir,
@@ -148,6 +150,46 @@ describe('task-worktree', () => {
     it('guards a branch already checked out elsewhere (no --force)', async () => {
       await createTaskWorktree(repo, 'FLUX-1', 'flux/shared');
       await expect(createTaskWorktree(repo, 'FLUX-2', 'flux/shared')).rejects.toThrow(/already checked out/i);
+    });
+
+    it('names the blocking EH worktree and the git worktree remove remedy when the guard fires (FLUX-1059)', async () => {
+      const blocking = await createTaskWorktree(repo, 'FLUX-1', 'flux/shared');
+      const err = await createTaskWorktree(repo, 'FLUX-2', 'flux/shared').then(
+        () => null,
+        (e: Error) => e,
+      );
+      expect(err).toBeTruthy();
+      // The message pinpoints the blocking path (basename is realpath-agnostic) and the exact remedy.
+      expect(err!.message).toContain(path.basename(blocking));
+      expect(err!.message).toMatch(/git worktree remove/);
+      expect(err!.message).toContain('flux/shared');
+    });
+
+    it('reuses an external worktree (outside .eh-worktrees/) as the execution root instead of refusing (FLUX-1059)', async () => {
+      const branch = 'flux/FLUX-50-ext';
+      // A manual/dev checkout of the branch, OUTSIDE the EH-managed pool.
+      const external = path.join(parent, 'manual-checkout');
+      await execFileAsync('git', ['-C', repo, 'worktree', 'add', '-b', branch, external, 'master'], { windowsHide: true });
+
+      // Re-entry on the same branch must NOT throw — it reuses the external tree in place.
+      const resolved = await createTaskWorktree(repo, 'FLUX-50', branch);
+      expect(realpathSync(resolved)).toBe(realpathSync(external));
+      // ...and it did NOT spin up a second worktree at the EH target.
+      expect(existsSync(taskWorktreeDir(repo, 'FLUX-50'))).toBe(false);
+    });
+
+    it('recreates at the EH target when an external worktree record is stale (dir removed) (FLUX-1059)', async () => {
+      const branch = 'flux/FLUX-51-stale';
+      const external = path.join(parent, 'manual-stale');
+      await execFileAsync('git', ['-C', repo, 'worktree', 'add', '-b', branch, external, 'master'], { windowsHide: true });
+      // Remove the external dir WITHOUT pruning — git still reports a (now stale) record.
+      await fs.rm(external, { recursive: true, force: true });
+
+      // The prune inside createTaskWorktree clears the stale record; a fresh EH worktree is created.
+      const resolved = await createTaskWorktree(repo, 'FLUX-51', branch);
+      expect(realpathSync(resolved)).toBe(realpathSync(taskWorktreeDir(repo, 'FLUX-51')));
+      expect(existsSync(resolved)).toBe(true);
+      expect(await currentBranch(resolved)).toBe(branch);
     });
 
     it('enforces the configurable concurrency cap', async () => {
@@ -339,8 +381,71 @@ describe('task-worktree', () => {
     it('resolves a ticket to the worktree checked out on its branch', async () => {
       const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
       expect(sameDir(await resolveTaskExecutionRoot({ id: 'FLUX-1', branch: 'flux/FLUX-1' }, repo), wt)).toBe(true);
-      // A branch with no worktree → engine root.
-      expect(await resolveTaskExecutionRoot({ id: 'FLUX-2', branch: 'flux/FLUX-2' }, repo)).toBe(repo);
+    });
+
+    // FLUX-1018: read-only callers (create:false) keep the legacy fall-back — a
+    // branch with no worktree resolves to the engine root WITHOUT side effects.
+    it('create:false falls back to the engine root for a branch with no worktree (no recreation)', async () => {
+      expect(await resolveTaskExecutionRoot({ id: 'FLUX-2', branch: 'flux/FLUX-2' }, repo, { create: false })).toBe(repo);
+      // Nothing was created under .eh-worktrees.
+      expect(await listTaskWorktrees(repo)).toHaveLength(0);
+    });
+
+    // FLUX-1018: the spawn path (create defaults to true) must NEVER degrade to
+    // master — a branch whose worktree is missing is recreated in place.
+    it('recreates a missing worktree instead of falling back to master (spawn path)', async () => {
+      const root = await resolveTaskExecutionRoot({ id: 'FLUX-2', branch: 'flux/FLUX-2' }, repo);
+      // Resolved to a fresh worktree under .eh-worktrees, NOT the engine root.
+      expect(sameDir(root, repo)).toBe(false);
+      expect(root.startsWith(taskWorktreesBaseDir(repo))).toBe(true);
+      expect(sameDir(root, taskWorktreeDir(repo, 'FLUX-2'))).toBe(true);
+      expect(existsSync(root)).toBe(true);
+      expect(await currentBranch(root)).toBe('flux/FLUX-2');
+    });
+
+    // FLUX-1018: self-heal a worktree whose directory was deleted out of band.
+    it('recreates a worktree whose directory was removed out of band', async () => {
+      const wt = await createTaskWorktree(repo, 'FLUX-3', 'flux/FLUX-3');
+      await fs.rm(wt, { recursive: true, force: true });
+      const root = await resolveTaskExecutionRoot({ id: 'FLUX-3', branch: 'flux/FLUX-3' }, repo);
+      expect(existsSync(root)).toBe(true);
+      expect(sameDir(root, taskWorktreeDir(repo, 'FLUX-3'))).toBe(true);
+      expect(await currentBranch(root)).toBe('flux/FLUX-3');
+    });
+
+    // FLUX-1018: when recreation genuinely can't happen (concurrency cap), fail
+    // closed with a clear error rather than silently returning master.
+    it('throws (never returns master) when a missing worktree cannot be recreated', async () => {
+      // Fill the cap with OTHER branches, then ask for a capless branch with no worktree.
+      await createTaskWorktree(repo, 'FLUX-4', 'flux/FLUX-4', { maxWorktrees: 1 });
+      await expect(
+        resolveTaskExecutionRoot({ id: 'FLUX-5', branch: 'flux/FLUX-5' }, repo, { maxWorktrees: 1 }),
+      ).rejects.toThrow(/missing and could not be recreated|refusing to run the agent on master/i);
+    });
+
+    // FLUX-1031: the changes-requested round-trip. A Ready ticket's worktree is reclaimed to
+    // free its pool slot; when it bounces back to In Progress the spawn path transparently
+    // recreates the worktree — and because the work was committed on the branch (commit-before-
+    // Ready invariant), recreation re-checks-out a tree that still carries every commit.
+    it('recreates a reclaimed Ready worktree on bounce-back with the branch commits intact', async () => {
+      const wt = await createTaskWorktree(repo, 'FLUX-9', 'flux/FLUX-9');
+      // Commit work on the branch (as a real ticket would before reaching Ready).
+      await fs.writeFile(path.join(wt, 'work.txt'), 'committed work\n', 'utf8');
+      await execFileAsync('git', ['-C', wt, 'add', '.'], { windowsHide: true });
+      await execFileAsync('git', ['-C', wt, 'commit', '-m', 'ready work'], { windowsHide: true });
+
+      // Reclaim it (the FLUX-1031 at-Ready path frees the slot). The worktree is gone...
+      const reclaimed = await reclaimWorktrees(repo, () => true);
+      expect(reclaimed).toEqual(['FLUX-9']);
+      expect(existsSync(wt)).toBe(false);
+      expect(await listTaskWorktrees(repo)).toHaveLength(0);
+
+      // ...but the branch (with its commit) survives, so the bounce-back spawn recreates the tree.
+      const root = await resolveTaskExecutionRoot({ id: 'FLUX-9', branch: 'flux/FLUX-9' }, repo);
+      expect(existsSync(root)).toBe(true);
+      expect(await currentBranch(root)).toBe('flux/FLUX-9');
+      // The committed work is present in the recreated worktree — nothing was lost.
+      expect(await fs.readFile(path.join(root, 'work.txt'), 'utf8')).toContain('committed work');
     });
 
     it('resolves a JOINED ticket to the worktree holding the shared branch', async () => {
@@ -363,6 +468,65 @@ describe('task-worktree', () => {
       expect(sameDir(rootA, repo)).toBe(false);
       expect(sameDir(rootB, repo)).toBe(false);
       expect(sameDir(rootA, rootB)).toBe(false);
+    });
+  });
+
+  // FLUX-1018: reclaim stale terminal-ticket worktrees so a full cap self-heals
+  // instead of forcing a new task onto master.
+  describe('reclaimWorktrees (FLUX-1018 cap self-heal)', () => {
+    it('recovers the ticket id from a worktree path (and rejects foreign paths)', () => {
+      const wtPath = taskWorktreeDir(repo, 'FLUX-42');
+      expect(ticketIdFromWorktreePath(repo, wtPath)).toBe('FLUX-42');
+      expect(ticketIdFromWorktreePath(repo, repo)).toBeNull();
+      expect(ticketIdFromWorktreePath(repo, path.join(parent, 'somewhere-else'))).toBeNull();
+    });
+
+    it('removes clean reclaimable worktrees and frees the cap', async () => {
+      const a = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1', { maxWorktrees: 2 });
+      await createTaskWorktree(repo, 'FLUX-2', 'flux/FLUX-2', { maxWorktrees: 2 });
+      expect(await listTaskWorktrees(repo)).toHaveLength(2);
+
+      // FLUX-1 is "terminal" → reclaimable; FLUX-2 is not.
+      const reclaimed = await reclaimWorktrees(repo, (id) => id === 'FLUX-1');
+      expect(reclaimed).toEqual(['FLUX-1']);
+      expect(existsSync(a)).toBe(false);
+      // The non-reclaimable one survives...
+      expect(await listTaskWorktrees(repo)).toHaveLength(1);
+      // ...and the freed slot lets a new worktree be created under the same cap.
+      const c = await createTaskWorktree(repo, 'FLUX-3', 'flux/FLUX-3', { maxWorktrees: 2 });
+      expect(existsSync(c)).toBe(true);
+    });
+
+    it('never reclaims a worktree with real uncommitted work', async () => {
+      const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
+      await fs.writeFile(path.join(wt, 'precious.txt'), 'do not lose me\n', 'utf8');
+      const reclaimed = await reclaimWorktrees(repo, () => true);
+      expect(reclaimed).toEqual([]);
+      // The worktree and the work survive.
+      expect(existsSync(path.join(wt, 'precious.txt'))).toBe(true);
+    });
+
+    it('treats node_modules junctions as clean (reclaims despite them)', async () => {
+      // Seed real deps so createTaskWorktree junctions them into the worktree.
+      for (const sub of ['engine', 'portal']) {
+        await fs.mkdir(path.join(repo, sub), { recursive: true });
+        await fs.writeFile(path.join(repo, sub, '.gitkeep'), '', 'utf8');
+      }
+      await execFileAsync('git', ['-C', repo, 'add', '.'], { windowsHide: true });
+      await execFileAsync('git', ['-C', repo, 'commit', '-m', 'workspaces'], { windowsHide: true });
+      for (const sub of ['.', 'engine', 'portal']) {
+        await fs.mkdir(path.join(repo, sub, 'node_modules'), { recursive: true });
+        await fs.writeFile(path.join(repo, sub, 'node_modules', 'm.txt'), 'x\n', 'utf8');
+      }
+      const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
+      // The junctions make `git status` non-empty, but they are not real work.
+      const reclaimed = await reclaimWorktrees(repo, () => true);
+      expect(reclaimed).toEqual(['FLUX-1']);
+      expect(existsSync(wt)).toBe(false);
+      // The main tree's real deps survive the reclaim.
+      for (const sub of ['.', 'engine', 'portal']) {
+        expect(existsSync(path.join(repo, sub, 'node_modules', 'm.txt'))).toBe(true);
+      }
     });
   });
 

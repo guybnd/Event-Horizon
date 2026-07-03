@@ -8,17 +8,10 @@ import type { TaskCardController } from '../../hooks/useTaskCardController';
 
 
 function useTimeInColumn(task: Task): string | null {
+  // FLUX-725: the "entered current status" timestamp is pre-computed on the list digest (was a
+  // backwards walk over full history for the most recent status_change into the current status).
+  const enteredAt = task.historyDigest?.enteredCurrentStatusAt ?? null;
   return useMemo(() => {
-    const history = task.history ?? [];
-    // Walk backwards to find the most recent entry that moved us into the current status
-    let enteredAt: string | undefined;
-    for (let i = history.length - 1; i >= 0; i--) {
-      const e = history[i];
-      if (e.type === 'status_change' && (e as { to?: string }).to === task.status) {
-        enteredAt = e.date;
-        break;
-      }
-    }
     if (!enteredAt) return null;
     const ms = Date.now() - new Date(enteredAt).getTime();
     if (ms < 60_000) return null; // less than 1 min — not worth showing
@@ -28,7 +21,7 @@ function useTimeInColumn(task: Task): string | null {
     if (days >= 1) return `${days}d`;
     if (hours >= 1) return `${hours}h`;
     return `${mins}m`;
-  }, [task.history, task.status]);
+  }, [enteredAt]);
 }
 
 export function CardMetadataRow({ task, isOverlay, c }: { task: Task; isOverlay?: boolean; c: TaskCardController }) {

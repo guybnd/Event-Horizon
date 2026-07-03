@@ -59,10 +59,11 @@ function getSubsequenceScore(text: string, query: string) {
 }
 
 export function getTaskActivityTimestamp(task: Task) {
-  return (task.history || []).reduce((latest, entry) => {
-    const timestamp = entry.date ? new Date(entry.date).getTime() : 0;
-    return Number.isNaN(timestamp) ? latest : Math.max(latest, timestamp);
-  }, 0);
+  // FLUX-725: max-activity date is pre-computed on the list digest. (The list `history` is now
+  // filtered to comments + active sessions, so reducing over it would miss status_change/activity
+  // dates — read the digest, which is derived from the FULL history.)
+  const t = task.historyDigest?.lastActivityAt ? new Date(task.historyDigest.lastActivityAt).getTime() : 0;
+  return Number.isNaN(t) ? 0 : t;
 }
 
 export function filterAndSortTasks(tasks: Task[], config: Config, filters: TaskFilterState) {
@@ -81,8 +82,9 @@ export function filterAndSortTasks(tasks: Task[], config: Config, filters: TaskF
 
       if (filters.filterUnreadOnly) {
         const readIds = new Set(filters.readComments?.[task.id] ?? []);
-        const hasUnreadComment = task.history?.some(
-          (e) => e.type === 'comment' && e.id && !readIds.has(e.id)
+        // FLUX-725: comment {id} list comes from the list digest (derived from full history).
+        const hasUnreadComment = task.historyDigest?.comments?.some(
+          (c) => c.id && !readIds.has(c.id)
         ) ?? false;
         const isWaitingInput = task.swimlane === 'require-input' || (filters.requireInputStatus
           ? task.status === filters.requireInputStatus

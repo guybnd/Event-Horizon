@@ -29,10 +29,10 @@ export function requestApproval(
   toolName: string,
   input: unknown,
   conversationId: string | null,
-  claudeSessionId?: string,
+  resumeSessionId?: string,
 ): Promise<PermissionDecision> {
   const payload: PermissionPayload = { toolName, input };
-  return parkPrompt({ kind: 'permission', payload, conversationId, claudeSessionId, timeoutMs: APPROVAL_TIMEOUT_MS }) as Promise<PermissionDecision>;
+  return parkPrompt({ kind: 'permission', payload, conversationId, resumeSessionId, timeoutMs: APPROVAL_TIMEOUT_MS }) as Promise<PermissionDecision>;
 }
 
 export function resolveApproval(id: string, decision: PermissionDecision): boolean {

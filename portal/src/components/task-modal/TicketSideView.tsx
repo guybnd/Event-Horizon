@@ -121,15 +121,25 @@ function SideviewPane({
 }
 
 /**
- * FLUX-873: the rich grooming-artifact viewer, surfaced as its own collapsible section at the top of
+ * FLUX-873: the rich artifact viewer, surfaced as its own collapsible section at the top of
  * the panel (above Description) — but ONLY when the ticket has a published artifact, so the 99% of
  * tickets without one are unaffected. Open-state persists via DockProvider (keyed `artifact`),
  * defaulting open. Unlike the generic {@link Section} it does NOT height-cap its body — the artifact
  * iframe owns its own (large) height and would otherwise double-scroll inside a 40vh cap.
+ *
+ * FLUX-976: `publish_artifact` now spans both lifecycle ends — a plan-time grooming mockup AND a
+ * Ready-time "visual recap" of the diff. The label is derived from the latest revision (recaps tag
+ * their `title`/`note` with "recap") rather than hardcoded to "Grooming Artifact", which would be
+ * misleading for a post-implementation recap.
  */
 function ArtifactSection({ c, onSendToChat }: { c: SideViewController; onSendToChat?: (text: string) => void }) {
   const { sectionOpen, setSectionOpen } = useDock();
   const open = sectionOpen['artifact'] ?? true;
+  const arts = c.task.artifacts;
+  const latestRev =
+    arts?.revisions?.find((r) => r.rev === arts.latest) ?? arts?.revisions?.[(arts?.revisions?.length ?? 0) - 1];
+  const isRecap = latestRev ? /recap/i.test(`${latestRev.title ?? ''} ${latestRev.note ?? ''}`) : false;
+  const label = isRecap ? 'Visual Recap' : 'Artifact';
   return (
     <section className="eh-border shrink-0 overflow-hidden rounded-xl border bg-[var(--eh-input-bg)]">
       <button
@@ -140,7 +150,7 @@ function ArtifactSection({ c, onSendToChat }: { c: SideViewController; onSendToC
       >
         {open ? <ChevronDown className="h-3.5 w-3.5 flex-shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 flex-shrink-0" />}
         <LayoutTemplate className="h-3.5 w-3.5 flex-shrink-0" />
-        <span>Grooming Artifact</span>
+        <span>{label}</span>
       </button>
       {open && <div className="px-3 pb-3">{<ArtifactPanel task={c.task} onSendToChat={onSendToChat} />}</div>}
     </section>

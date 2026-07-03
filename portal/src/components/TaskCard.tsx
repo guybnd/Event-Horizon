@@ -102,17 +102,15 @@ export const TaskCardInner = memo(function TaskCardInner({
 
   const rustClass = useMemo(() => {
     if (boardFx?.ticketAgeRust === false || isOverlay || c.hasActiveCliSession) return '';
-    const lastEntry = task.history?.reduce<string | undefined>((latest, e) => {
-      if (!latest || e.date > latest) return e.date;
-      return latest;
-    }, undefined);
+    // FLUX-725: max-activity date is pre-computed on the list digest (was a reduce over full history).
+    const lastEntry = task.historyDigest?.lastActivityAt || undefined;
     if (!lastEntry) return '';
     const daysSince = (Date.now() - new Date(lastEntry).getTime()) / 86_400_000;
     if (daysSince >= 14) return 'card-rust-3';
     if (daysSince >= 7) return 'card-rust-2';
     if (daysSince >= 4) return 'card-rust-1';
     return '';
-  }, [boardFx?.ticketAgeRust, isOverlay, c.hasActiveCliSession, task.history]);
+  }, [boardFx?.ticketAgeRust, isOverlay, c.hasActiveCliSession, task.historyDigest?.lastActivityAt]);
 
   const CardContainer = c.animationsEnabled && !c.isDragging && !isOverlay ? motion.div : 'div';
 

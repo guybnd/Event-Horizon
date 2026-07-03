@@ -34,13 +34,14 @@ import { activateWorkspace, tasksCache } from './task-store.js';
 // lazy `seaRequire('mcp-server.js')` loaded a SECOND, never-activated task-store, so MCP
 // writes threw "Received null" and MCP reads were blind to tickets REST had written.
 import { handleMcpHttpRequest, startMcpServer } from './mcp-server.js';
-import { stopAllCliSessions, setAutoRestartCallback, getAllActiveSessions, getActiveSessionsForTask } from './session-store.js';
+import { stopAllCliSessions, setAutoRestartCallback, getAllActiveSessions, getActiveSessionsForTask, syncActiveSessionStubs } from './session-store.js';
 import { requestApproval, resolveApproval, listPendingApprovals } from './permission-prompts.js';
 import { requestAnswer, resolveAnswer, listPendingQuestions } from './ask-questions.js';
 import { isSafeStreamId } from './transcript.js';
 import { verifyConversation } from './session-binding.js';
 import { proposeBoardRebase, resolveBoardRebase, listPendingBoardRebases } from './board-rebase.js';
 import { shutdownSharedServers } from './shared-mcp-server.js';
+import { flushOpenPrompts } from './hitl-prompts.js';
 import { broadcastEvent } from './events.js';
 
 import tasksRouter, { bulkRenameHandler } from './routes/tasks.js';
@@ -61,6 +62,8 @@ import notificationsRouter from './routes/notifications.js';
 import settingsRouter from './routes/settings.js';
 import orchestrationRouter from './routes/orchestration.js';
 import workflowsRouter from './routes/workflows.js';
+import furnaceRouter from './routes/furnace.js';
+import { startStoker } from './furnace-stoker.js';
 import agentsRouter from './routes/agents.js';
 import bootstrapRouter from './routes/bootstrap.js';
 import groupRouter from './routes/group.js';
@@ -70,7 +73,9 @@ import devOnboardingAssetsRouter from './routes/dev-onboarding-assets.js';
 import devOnboardingDraftRouter from './routes/dev-onboarding-draft.js';
 import { checkForUpdate, getCachedUpdateInfo, getLocalVersion } from './update-check.js';
 import { checkGhAuth } from './branch-manager.js';
-import { reconcilePullRequests, pruneMergedBranches } from './pr-cleanup.js';
+import terminalRouter, { handleTerminalUpgrade } from './routes/terminal.js';
+import { reconcileOrphanedTerminalSessions, destroyAllTerminalSessions } from './terminal-session-store.js';
+import { reconcilePullRequests, pruneMergedBranches, reclaimReadyWorktrees } from './pr-cleanup.js';
 import { syncPrTickets } from './pr-tickets.js';
 
 const __dir = (() => {
@@ -177,9 +182,11 @@ app.use('/api/notifications', notificationsRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/orchestration', requireWorkspace, orchestrationRouter);
 app.use('/api/workflows', requireWorkspace, workflowsRouter);
+app.use('/api/furnace', requireWorkspace, furnaceRouter);
 app.use('/api/agents', requireWorkspace, agentsRouter);
 app.use('/api/bootstrap', requireWorkspace, bootstrapRouter);
 app.use('/api/group', requireWorkspace, groupRouter);
+app.use('/api/terminal', requireWorkspace, terminalRouter);
 
 // FLUX-755: dev-only onboarding-features editor endpoints. Mounted WITHOUT
 // requireWorkspace (the config file is repo-relative, not workspace-relative) and
@@ -230,7 +237,7 @@ app.get('/api/board/state', requireWorkspace, (_req, res) => {
 function resumePointerFor(conversationId: string | null): string | undefined {
   if (!conversationId) return undefined;
   for (const session of getActiveSessionsForTask(conversationId)) {
-    if (session.claudeSessionId) return session.claudeSessionId;
+    if (session.resumeSessionId) return session.resumeSessionId;
   }
   return undefined;
 }
@@ -274,8 +281,13 @@ app.post('/api/board/permission-request', requireWorkspace, async (req, res) => 
 });
 app.post('/api/board/permission-resolve', requireWorkspace, (req, res) => {
   const id = String(req.body?.id || '');
+  // FLUX-1026: omit updatedInput when absent rather than emitting `updatedInput: undefined`.
+  // The MCP permission_prompt layer is the authoritative fix (it echoes the original tool input
+  // on a bare allow); this just keeps the resolve payload clean.
   const decision = req.body?.behavior === 'allow'
-    ? { behavior: 'allow' as const, updatedInput: req.body?.updatedInput }
+    ? (req.body?.updatedInput !== undefined
+        ? { behavior: 'allow' as const, updatedInput: req.body.updatedInput }
+        : { behavior: 'allow' as const })
     : { behavior: 'deny' as const, message: typeof req.body?.message === 'string' ? req.body.message : 'Denied by user.' };
   res.json({ ok: resolveApproval(id, decision) });
 });
@@ -568,6 +580,7 @@ async function startServer() {
       console.warn('[FLUX] EH_ALLOW_REMOTE=1 — bound to 0.0.0.0 and accepting non-loopback connections. The API has NO authentication and can spawn agents with shell/file access; only enable this on a trusted network.');
     }
 
+    reconcileOrphanedTerminalSessions();
     await migrateFromLegacy();
 
     const cliWorkspace = getCliWorkspace();
@@ -632,15 +645,50 @@ async function startServer() {
     // Out-of-band PR reconcile (FLUX-557): catch PRs merged/closed directly on GitHub and
     // reconcile the board (advance + clean up, or bounce a closed PR back to In Progress).
     // Polling-based v1 (decision #10); only runs when gh is available and a workspace is active.
+    // FLUX-1001: in-flight guard — if a prior tick's sweep is still running (e.g. slow GitHub
+    // API), skip the new tick entirely so ticks can't pile up and saturate the event loop.
+    let prReconcileInFlight = false;
     setInterval(() => {
-      if (ghAuthAvailable && workspaceRoot) {
-        reconcilePullRequests(workspaceRoot).catch(() => {});
-        // FLUX-566: maintain the engine-managed PR-<n> tickets (the PR-as-first-class entity).
-        syncPrTickets(workspaceRoot).catch(() => {});
-        // FLUX-599: backstop — reclaim merged branches whose merge-time delete was missed.
-        pruneMergedBranches(workspaceRoot).catch(() => {});
+      if (prReconcileInFlight) return;
+      if (workspaceRoot) {
+        prReconcileInFlight = true;
+        Promise.all([
+          // FLUX-1060: refresh the on-disk active-session stubs (write current running/waiting-input
+          // task sessions, prune ended ones) so the reclaim guard survives an engine restart. Runs
+          // alongside the reclaim below — reclaim reads the in-memory map, this just keeps the disk
+          // mirror ≤ one tick stale for the NEXT restart.
+          syncActiveSessionStubs(),
+          // FLUX-1031: proactively free task-worktree slots held by tickets resting at Ready
+          // (or terminal) with no live session, so the board-wide pool doesn't exhaust while
+          // PRs await review. Independent of gh — reclamation is a local git/worktree op — so
+          // it runs even when GitHub CLI is unconfigured.
+          reclaimReadyWorktrees(workspaceRoot),
+          // The remaining reconcilers depend on gh; skip them when it's unavailable.
+          ...(ghAuthAvailable
+            ? [
+                reconcilePullRequests(workspaceRoot),
+                // FLUX-566: maintain the engine-managed PR-<n> tickets (the PR-as-first-class entity).
+                syncPrTickets(workspaceRoot),
+                // FLUX-599: backstop — reclaim merged branches whose merge-time delete was missed.
+                pruneMergedBranches(workspaceRoot),
+              ]
+            : []),
+        ]).catch(() => {}).finally(() => { prReconcileInFlight = false; });
       }
     }, PR_RECONCILE_INTERVAL_MS);
+
+    // The Furnace (FLUX-1008 / S3): background Stoker loop. A no-op until a run is ignited
+    // (it drives only the single `burning` run each tick), so it's always safe to start here.
+    startStoker();
+  });
+
+  // Terminal WebSocket upgrade handler — handles /api/terminal/ws/:sessionId.
+  server.on('upgrade', (req, socket, head) => {
+    if (req.url?.startsWith('/api/terminal/ws/')) {
+      handleTerminalUpgrade(req, socket, head);
+    } else {
+      socket.destroy();
+    }
   });
 
   // Without this, a listen failure (e.g. another Event Horizon instance already
@@ -663,8 +711,13 @@ async function startServer() {
 // ─── Graceful shutdown ────────────────────────────────────────────────────────
 
 async function gracefulShutdown(signal: string) {
+  destroyAllTerminalSessions();
   stopAllCliSessions(signal);
   shutdownSharedServers();
+  // FLUX-863: persist() in hitl-prompts is async + coalesced (FLUX-854), so on
+  // SIGTERM/SIGINT the final open-prompt write may still be in flight. Await it
+  // explicitly for deterministic durability instead of relying on the 400ms grace.
+  await flushOpenPrompts();
   await new Promise(r => setTimeout(r, 400));
   process.exit(0);
 }

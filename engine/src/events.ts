@@ -48,8 +48,29 @@ export function addSseClient(res: Response) {
   ensureKeepalive();
 }
 
+// FLUX-1030 (review follow-up): high-frequency, token-level internal streams that must NOT be
+// mirrored onto the generic `eh-event` channel. `assistantDelta` fires once per `text_delta` token
+// (thousands per agent response) — mirroring it would (1) evict the entire 2000-cap engineEvents
+// ring in the terminal within seconds, wiping the git/sync/worktree/session events the Engine-events
+// log exists to surface, and (2) fire a global `appStore.patch` notify per token, reintroducing the
+// whole-app re-render churn FLUX-625/626 deliberately removed. Token deltas carry no value in a
+// debug log, so they emit ONLY on their named channel (the open chat node's `subscribeToEvent`
+// consumer still gets them) and are never buffered. `ping` is written directly by the keepalive, not
+// via broadcastEvent, so it is already excluded.
+const UNMIRRORED_EVENTS = new Set(['assistantDelta']);
+
 export function broadcastEvent(event: string, data: unknown) {
-  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  // FLUX-1030: emit each event TWICE — once as its named SSE event (unchanged, so every existing
+  // consumer that listens on a specific name keeps working), and once on a generic `eh-event`
+  // channel carrying `{ type, data }`. The terminal's Engine-events log listens ONLY on `eh-event`
+  // and therefore surfaces every event type — including new ones — without the client needing a
+  // hardcoded allowlist that silently drops whatever isn't in it. Keep both frames in a single
+  // write so a client can never observe one without the other. High-frequency token streams
+  // (UNMIRRORED_EVENTS) skip the generic mirror to protect the ring buffer and avoid store churn.
+  const named = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  const payload = UNMIRRORED_EVENTS.has(event)
+    ? named
+    : named + `event: eh-event\ndata: ${JSON.stringify({ type: event, data })}\n\n`;
   // Iterate a snapshot so pruning a dead client mid-loop is safe, and so one dead socket's failed
   // write can't throw out of the loop and drop the event for every client behind it (FLUX-910).
   for (const res of [...clients]) writeOrDrop(res, payload);

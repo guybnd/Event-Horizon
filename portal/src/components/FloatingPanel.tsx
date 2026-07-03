@@ -235,8 +235,14 @@ export function FloatingPanel({
   const attention = tone === 'attention';
   // FLUX-809: an attention window reads as a loud amber surface (accent border + header + optional
   // pulse) instead of the neutral chat/dock surface; the default tone is unchanged.
+  // FLUX-1023: an attention prompt (agent question / approval / rebase) must draw ABOVE every other
+  // real window so the user always sees the thing blocking their agent. z-[70] clears the Task Modal
+  // (backdrop 55 / content 60), chat dock (40/50/60), and default floating panels (60) — the z-scale
+  // has nothing between 60 and ~999997, so this stays safely below transient context menus (1000000+).
+  // Only the attention tone is raised; the default tone stays at z-[60] so an idle activity/updates
+  // panel never starts covering modals.
   const panelClass = attention
-    ? 'fixed z-[60] flex flex-col overflow-hidden rounded-xl border border-amber-400/70 bg-[var(--eh-surface)] shadow-2xl shadow-amber-500/20 ring-1 ring-amber-400/40' +
+    ? 'fixed z-[70] flex flex-col overflow-hidden rounded-xl border border-amber-400/70 bg-[var(--eh-surface)] shadow-2xl shadow-amber-500/20 ring-1 ring-amber-400/40' +
       (pulse ? ' eh-taskcard-needs-input' : '')
     : 'eh-surface eh-border fixed z-[60] flex flex-col overflow-hidden rounded-xl border shadow-2xl';
   const headerClass = attention

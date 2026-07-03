@@ -192,12 +192,11 @@ Ticket operations are exposed as **MCP tools**, served in-process over loopback 
 | `get_ticket` | Read ticket (frontmatter + body + history) |
 | `list_tickets` | Filter by status, assignee, tag, priority |
 | `get_board_config` | Read board config (statuses, tags, project key) |
-| `create_ticket` | Create a new ticket |
-| `create_subtask` | Create a child ticket linked to a parent |
+| `create_ticket` | Create a new ticket (pass `parentId` to create a linked subtask) |
 | `update_ticket` | Update metadata (title, priority, effort, tags, body) |
 | `change_status` | Move to a new status (enforces a comment on Require Input / Ready) |
-| `add_comment` | Append a comment to history |
-| `log_progress` | Log progress activity |
+| `add_note` | Append a `type:'comment'` or `type:'activity'` entry to history |
+| `branch` | `action:'create'` / `'status'` / `'delete'` the ticket's git branch |
 | `finish_ticket` | Atomic: set implementationLink + completion comment + Done |
 
 Config is placed at the framework-appropriate path (`.mcp.json`, `.cursor/mcp.json`, `.gemini/settings.json`, …) during skill installation. The MCP tools and the REST API (`localhost:3067/api/`) share the same in-memory state — MCP is the primary path for agents; REST serves the portal and acts as a fallback.

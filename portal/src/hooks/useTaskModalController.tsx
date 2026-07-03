@@ -8,6 +8,7 @@ import { TaskMarkdown } from '../components/TaskMarkdown';
 import { isAgentSession } from '../types';
 import type { HistoryEntry, InlineSubtask, Task } from '../types';
 import { DEFAULT_READY_FOR_MERGE_STATUS, getRequireInputStatus } from '../workflow';
+import { frameworkSupports } from '../utils';
 import { useTaskForm } from './useTaskForm';
 import { useCliSession } from './useCliSession';
 import { useImageAttachment } from './useImageAttachment';
@@ -283,13 +284,22 @@ export function useTaskModalController() {
     window.history.replaceState({}, '', url);
   }, [isModalOpen, isFullView, modalTask?.id]);
 
+  // FLUX-725: the open popup/full modal holds the lazily-fetched DETAIL object (full history); the
+  // list payload is history-digested. Re-fetch the detail when the live list task's history digest
+  // changes (a new comment / status move) — not only on an explicit refreshTrigger — so the activity
+  // log stays live and complete without copying history off the (now history-less) list object.
+  const liveModalTask = allTasks.find((t) => t.id === modalTask?.id);
+  const liveHistSig = liveModalTask?.historyDigest
+    ? `${liveModalTask.historyDigest.length}:${liveModalTask.historyDigest.lastEntry?.date ?? ''}:${liveModalTask.historyDigest.lastEntry?.type ?? ''}`
+    : '';
   useEffect(() => {
     if (!isModalOpen || !modalTask?.id) return;
     setIsTaskLoading(true);
     fetchTask(modalTask.id)
       .then((task) => startTransition(() => { setModalTask(task); setIsTaskLoading(false); }))
       .catch((err) => { console.error(err); setIsTaskLoading(false); });
-  }, [isModalOpen, modalTask?.id, refreshTrigger]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- liveHistSig drives a history-change re-fetch
+  }, [isModalOpen, modalTask?.id, refreshTrigger, liveHistSig]);
 
   const allStatuses = config ? [...config.columns, ...config.hiddenStatuses].map((item) => item.name) : [];
   const allUsers = config?.users.map((item) => item.name) || [];
@@ -831,6 +841,7 @@ export function useTaskModalController() {
         currentUser,
         skipPermissions,
         phaseDefaults: config?.phaseDefaults,
+        supervisorCapable: frameworkSupports(config, selectedCliFramework, 'supervisor'),
       });
       setCliSession(session);
       triggerRefresh();
@@ -839,7 +850,7 @@ export function useTaskModalController() {
     } finally {
       setCliSessionBusy(false);
     }
-  }, [modalTask?.id, selectedCliFramework, skipPermissions, currentUser, config?.phaseDefaults, setCliSession, triggerRefresh, setCliSessionBusy, setCliSessionError]);
+  }, [modalTask?.id, selectedCliFramework, skipPermissions, currentUser, config, setCliSession, triggerRefresh, setCliSessionBusy, setCliSessionError]);
 
   const handleToggleReply = useCallback((entryId: string | undefined) => {
     setReplyTargetId((current) => current === entryId ? null : entryId || null);
