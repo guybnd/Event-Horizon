@@ -9,8 +9,10 @@ import { useTaskById, useConfig } from '../store/useAppSelector';
 import { useDockActions } from './DockProvider';
 import { getStatusTint, getStatusColorClass } from '../statusStyles';
 import { StatusBadge } from './StatusBadge';
+import { normalizeStatus } from '../workflow';
 import { TicketActions } from './ticket-actions/TicketActions';
 import { CopyButton } from './CopyButton';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 
 type TaskMarkdownImageMode = 'inline' | 'comment';
 
@@ -178,16 +180,15 @@ function TicketChip({ id }: { id: string }) {
       if (target instanceof Element && target.closest('[role="dialog"]')) return;
       setPinned(false);
     };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setPinned(false);
-    };
     document.addEventListener('mousedown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
+    return () => document.removeEventListener('mousedown', onDown);
   }, [pinned]);
+
+  // FLUX-1022: routed through the shared stack — this chip renders inline in chat messages and
+  // task descriptions, both of which can sit inside a dock ChatWindow or TaskModal that now have
+  // their own Escape handling; sharing the stack keeps one ESC press from unpinning just this
+  // popover instead of also collapsing/closing the host.
+  useEscapeKey(() => setPinned(false), { enabled: pinned });
 
   // Clear any pending hover-intent timer on unmount.
   useEffect(() => () => {
@@ -257,7 +258,7 @@ function TicketChip({ id }: { id: string }) {
           >
             <div className="flex items-center justify-between gap-2">
               <span className="font-mono text-xs text-primary">{id}</span>
-              <StatusBadge status={task.status} colorClass={statusColor} className="text-[10px]" />
+              <StatusBadge status={normalizeStatus(task.status)} colorClass={statusColor} className="text-[10px]" />
             </div>
             {task.title && (
               <div className="mt-1 text-sm font-semibold leading-snug text-[var(--eh-text-primary)]">{task.title}</div>
@@ -295,7 +296,7 @@ function TicketChip({ id }: { id: string }) {
               <div className="text-xs font-semibold leading-snug text-[var(--eh-text-primary)]">{task.title}</div>
             )}
             <div className="mt-1">
-              <StatusBadge status={task.status} colorClass={statusColor} className="text-[10px]" />
+              <StatusBadge status={normalizeStatus(task.status)} colorClass={statusColor} className="text-[10px]" />
             </div>
           </div>,
           document.body,

@@ -96,6 +96,27 @@ describe('cleanOrphanedSkillFiles (FLUX-882 orphan sweep, delete path)', () => {
   it('is a no-op (no throw) when the EH dirs do not exist', async () => {
     await expect(cleanOrphanedSkillFiles(root, 'claude')).resolves.toEqual([]);
   });
+
+  it('lstats (not stat) so a symlinked event-horizon* entry is classified as non-regular and skipped, not unlinked (FLUX-939)', async (ctx) => {
+    const target = await write('outside-target.md'); // outside the swept dir — the "attack" payload
+    const linkPath = path.join(root, '.claude/rules/event-horizon-evil-link.md');
+    await fs.mkdir(path.dirname(linkPath), { recursive: true });
+    try {
+      await fs.symlink(target, linkPath, 'file');
+    } catch {
+      ctx.skip(); // this host can't create symlinks without elevated privilege — nothing to verify
+      return;
+    }
+
+    const removed = await cleanOrphanedSkillFiles(root, 'claude');
+
+    // lstat sees the symlink itself (not a regular file) and skips it, same as a directory would be —
+    // so it's never unlinked, and its target (which a `stat`-based isFile() check would have followed
+    // into and "correctly" deemed a file) is never touched either.
+    expect(removed).toEqual([]);
+    expect(await exists('.claude/rules/event-horizon-evil-link.md')).toBe(true);
+    expect(await exists('outside-target.md')).toBe(true);
+  });
 });
 
 describe('detectWorkspaceFrameworks (FLUX-942 multi-framework)', () => {

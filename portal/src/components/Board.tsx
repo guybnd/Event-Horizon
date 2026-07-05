@@ -10,7 +10,7 @@ import { StatusBadge } from './StatusBadge';
 import { TaskCardInner } from './TaskCard';
 import { createTask, updateTask } from '../api';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
-import { buildStatusChangeHistory, applyOptimisticStatusChange } from '../lib/ticketActions';
+import { buildStatusChangeHistory, applyOptimisticStatusChange, isMissingCommentError } from '../lib/ticketActions';
 import type { Task } from '../types';
 import { normalizeSubtaskId } from '../types';
 import { Loader2, Upload, Sparkles } from 'lucide-react';
@@ -18,7 +18,7 @@ import { TaskViewControls } from './TaskViewControls';
 import { filterAndSortTasks } from '../taskSearch';
 import { getStatusColorClass } from '../statusStyles';
 import { ReleaseModal } from './ReleaseModal';
-import { getArchiveStatus, getRequireInputStatus } from '../workflow';
+import { getArchiveStatus, getRequireInputStatus, normalizeStatus } from '../workflow';
 import { collectPrMemberIds, collectEpicFoldedIds, collectCrossColumnClusters } from '../lib/decks';
 import { ParseErrorButton } from './ParseErrorButton';
 import { BootstrapPreview } from './BootstrapPreview';
@@ -26,10 +26,12 @@ import { BootstrapPreview } from './BootstrapPreview';
 // Stable empty array so columns with no tasks get a referentially-stable prop (memo-friendly).
 const EMPTY_TASKS: Task[] = [];
 
-// FLUX-795: per-session opt-out for the PROACTIVE "add a note?" status-change prompt. Stored in
-// sessionStorage so it lasts the browser session and resets on reload. Only suppresses the
-// proactive prompt (config.requireCommentOnStatusChange) — a backend-mandated note (Ready /
-// Require Input) still prompts reactively.
+// FLUX-795/FLUX-847 (Option 3, overriding the original FLUX-795 intent): per-session opt-out for
+// the "add a note?" status-change prompt. Stored in sessionStorage so it lasts the browser session
+// and resets on reload. With this on, Ready transfers go through SILENTLY — the skip flag rides
+// along on the PUT (see applyStatusChange) so the engine's config-gated Ready comment check is
+// relaxed too. Require Input still prompts reactively regardless: its comment IS the question,
+// a hard engine invariant the flag can never relax.
 const STATUS_NOTE_SKIP_KEY = 'eh-skip-status-note';
 function skipStatusNote(): boolean {
   try { return sessionStorage.getItem(STATUS_NOTE_SKIP_KEY) === '1'; } catch { return false; }
@@ -214,7 +216,9 @@ export function Board({ furnaceOpen, onCloseFurnace }: { furnaceOpen?: boolean; 
   ) : [], [tasks, config, archiveStatus]);
   const allColumns = useMemo(() => {
     if (!config) return [];
-    const extraStatuses = Array.from(new Set(boardTasks.map(t => t.status)))
+    // Normalize first (FLUX-1075): a missing/invalid status must not slip an `undefined` entry
+    // into this array — every downstream consumer (titleChars, Column props) assumes a string.
+    const extraStatuses = Array.from(new Set(boardTasks.map(t => normalizeStatus(t.status))))
       .filter(s => !config.columns?.find(c => c.name === s) && !config.hiddenStatuses?.find(h => h.name === s));
     const cols = [...(config.columns?.map(c => c.name).filter(c => c !== archiveStatus) || []), ...extraStatuses];
     // Hide the "Require Input" column when swimlanes are active — tickets stay in their workflow column.
@@ -322,9 +326,12 @@ export function Board({ furnaceOpen, onCloseFurnace }: { furnaceOpen?: boolean; 
   const columnTasksByStatus = useMemo(() => {
     const map = new Map<string, Task[]>();
     for (const t of deckedTasks) {
-      const arr = map.get(t.status);
+      // Same normalization as allColumns — keeps the bucket key in sync with the column id
+      // a status-less ticket actually renders under (FLUX-1075).
+      const status = normalizeStatus(t.status);
+      const arr = map.get(status);
       if (arr) arr.push(t);
-      else map.set(t.status, [t]);
+      else map.set(status, [t]);
     }
     return map;
   }, [deckedTasks]);
@@ -475,14 +482,22 @@ export function Board({ furnaceOpen, onCloseFurnace }: { furnaceOpen?: boolean; 
     setOptimisticTasks(prev => ({ ...prev, [taskId]: optimisticTask }));
 
     try {
-      await updateTask(taskId, { status: newStatus, order: finalOrder, appendHistory, updatedBy: currentUser } as Partial<Task>);
+      await updateTask(taskId, {
+        status: newStatus,
+        order: finalOrder,
+        appendHistory,
+        updatedBy: currentUser,
+        // FLUX-847: session skip relaxes only the engine's config-gated Ready check — Require
+        // Input still rejects comment-less moves below, which is what drives the reactive prompt.
+        ...(skipStatusNote() ? { skipCommentRequirement: true } : {}),
+      });
       triggerRefresh();
     } catch (err) {
       console.error(err);
 
-      const errMessage = err instanceof Error ? err.message : '';
-      // Reactive prompting: If backend requires a comment, show the modal
-      if (errMessage.includes('comment is required') || errMessage.includes('_MISSING_COMMENT')) {
+      // Reactive prompting: if the engine still requires a comment (Require Input, or Ready with
+      // skip off), show the modal instead of alerting.
+      if (isMissingCommentError(err)) {
         setMovingTaskIds(prev => {
           const next = new Set(prev);
           next.delete(taskId);
@@ -497,6 +512,7 @@ export function Board({ furnaceOpen, onCloseFurnace }: { furnaceOpen?: boolean; 
         return;
       }
 
+      const errMessage = err instanceof Error ? err.message : '';
       setMovingTaskIds(prev => {
         const next = new Set(prev);
         next.delete(taskId);

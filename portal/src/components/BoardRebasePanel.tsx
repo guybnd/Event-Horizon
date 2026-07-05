@@ -5,6 +5,7 @@ import { usePendingInteractions } from './pendingInteractions';
 import { useAppSelector, useTaskById } from '../store/useAppSelector';
 import { useDockActions } from './DockProvider';
 import { StatusBadge } from './StatusBadge';
+import { normalizeStatus } from '../workflow';
 import { formatRelative } from '../lib/relativeTime';
 import {
   resolveBoardRebase,
@@ -280,9 +281,9 @@ function RebaseRow({ item, checked, onToggle }: { item: BoardRebaseItem; checked
           </span>
           {item.kind === 'status' && item.newStatus && (
             <span className="inline-flex items-center gap-1">
-              {primary && <StatusBadge status={primary.status} className="text-[10px]" />}
+              {primary && <StatusBadge status={normalizeStatus(primary.status)} className="text-[10px]" />}
               <ArrowRight className="h-3 w-3 text-[var(--eh-text-muted)]" />
-              <StatusBadge status={item.newStatus} className="text-[10px]" />
+              <StatusBadge status={normalizeStatus(item.newStatus)} className="text-[10px]" />
               {noOp && <span className="text-[10px] font-medium text-[var(--eh-text-muted)]">already there</span>}
             </span>
           )}
@@ -346,7 +347,7 @@ function TicketRef({ id, intoBadge }: { id: string; intoBadge?: boolean }) {
       {task ? (
         <>
           <span className="truncate text-[11px] text-[var(--eh-text-primary)]">{task.title || '(untitled)'}</span>
-          <StatusBadge status={task.status} className="shrink-0 text-[10px]" />
+          <StatusBadge status={normalizeStatus(task.status)} className="shrink-0 text-[10px]" />
           {rel && <span className="shrink-0 text-[10px] text-[var(--eh-text-muted)]">· {rel}</span>}
         </>
       ) : (

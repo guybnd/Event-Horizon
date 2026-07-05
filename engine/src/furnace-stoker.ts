@@ -20,7 +20,8 @@
 // Per-ticket lifecycle (the invariant): implement -> review -> read reviewState ->
 //   approved          -> leave the PR open at Ready, mark `pr-open`  (NEVER finish_ticket)
 //   changes-requested -> re-implement while attempts < retryCap, else park
-//   no verdict / fail / waiting-input -> park (needs a human; stays In Progress + Require Input swimlane)
+//   no verdict, but the last comment looks like a verdict (FLUX-1078) -> ONE corrective nudge, then park
+//   no verdict (no marker) / fail / waiting-input -> park (needs a human; stays In Progress + Require Input swimlane)
 
 import { getEnginePort } from './packaged-mode.js';
 import { log } from './log.js';
@@ -34,7 +35,6 @@ import {
   getFurnaceBatchesCache,
   getBurningBatches,
   mutateFurnaceBatch,
-  updateFurnaceBatch,
   claimSlotsAndIgnite,
   ensureFurnaceLoaded,
   freeSlots,
@@ -51,7 +51,6 @@ import {
   type FailureClass,
   type TicketOwner,
   isActiveTicketState,
-  isTerminalTicketState,
   isHumanOwned,
   isBatchTerminal,
   nextQueuedTicket,
@@ -60,8 +59,8 @@ import {
   allTicketsSettled,
   assembleBurnReport,
   effectiveConcurrency,
-  sequentialAnchor,
   isSequentialFollower,
+  furnaceReservedTicketIds,
   clampBurnRate,
   MAX_BURN_RATE,
   DEFAULT_RATE_LIMIT_RETRY_INTERVAL_MS,
@@ -70,6 +69,8 @@ import {
 import { DEFAULT_MAX_TASK_WORKTREES, listTaskWorktrees, ticketIdFromWorktreePath } from './task-worktree.js';
 import { requireWorkspaceRoot } from './workspace.js';
 import { postPrReview } from './branch-manager.js';
+import { reclaimReadyWorktrees, worktreeUnreclaimableReason, type UnreclaimableReason } from './pr-cleanup.js';
+import { runGit } from './git-exec.js';
 
 const STOKE_INTERVAL_MS = 5_000;
 
@@ -85,6 +86,58 @@ export const FURNACE_WORKTREE_CAP = DEFAULT_MAX_TASK_WORKTREES;
 
 /** The focus handed to a re-implementation session (after changes-requested, or a rate-limit retry of one). */
 const REIMPLEMENT_FOCUS = 'Address the latest review feedback (changes-requested), commit, and return the ticket to Ready.';
+
+/**
+ * FLUX-1078: every built-in reviewer persona prompt (orchestration-personas.ts) says "do NOT call
+ * change_status unless your focus instructions explicitly say you are the SOLE reviewer" — a hedge for
+ * multi-reviewer synthesis flows. The Furnace only ever dispatches ONE reviewer per ticket, but never
+ * said so via `focusComment`, so the persona correctly (per its own prompt) withheld the `change_status`
+ * call, wrote a plain "**APPROVED**" comment, and the ticket got parked as if the review never happened.
+ * This focus note is what authorizes the persona to actually record its verdict.
+ */
+const SOLE_REVIEWER_FOCUS = 'You are the ONLY reviewer for this ticket in this Furnace run — no orchestrator will synthesize other reviews, so you own the decision. Your review is not complete until you call `change_status` with `reviewState` set to "approved" or "changes-requested" to match your verdict. Posting a comment that starts with **APPROVED** or **CHANGES NEEDED** is not enough by itself — without the `change_status` call, the ticket will be parked for a human to unblock even though your review already happened.';
+
+/** FLUX-1078: the one-shot corrective focus for a review session whose prior pass left a verdict-shaped comment but never called `change_status`. */
+const REVIEW_NUDGE_FOCUS = 'Your previous review comment on this ticket already reads like a verdict (it started with **APPROVED** or **CHANGES NEEDED**), but `change_status` was never called to record it, so the ticket was about to be parked for a human over that alone. You are the sole reviewer for this ticket. Read your own last review comment, then call `change_status` now with `reviewState` set to match it (\'approved\' or \'changes-requested\'), and end your turn. Do not re-review the diff from scratch.';
+
+/** Furnace review-phase dispatch options: the configured persona (if any) plus the sole-reviewer focus every review session needs to actually record its verdict. */
+function reviewDispatchOpts(batch: FurnaceBatch): { personaId?: string; focusComment: string } {
+  return { ...(batch.reviewPersonaId ? { personaId: batch.reviewPersonaId } : {}), focusComment: SOLE_REVIEWER_FOCUS };
+}
+
+/** Exported for tests (FLUX-1080): assert this exact string is what reaches the outgoing dispatch body. */
+export { SOLE_REVIEWER_FOCUS };
+
+/**
+ * FLUX-1078: narrow pattern-match on the known review-verdict convention — every built-in reviewer
+ * persona is told to start its `add_note` comment with **APPROVED** or **CHANGES NEEDED**. This is
+ * deliberately NOT a general sentiment/verdict classifier — it only recognizes that one documented
+ * prefix, and a false negative (no match) falls back to today's park behavior at zero extra cost.
+ */
+const VERDICT_MARKER_RE = /^\s*\*\*\s*(APPROVED|CHANGES\s+NEEDED)\s*\*\*/i;
+
+/**
+ * True when the ticket's most recent history comment POSTED DURING THE CURRENT REVIEW PASS matches the
+ * verdict-marker convention above. `sinceIso` scopes the scan to entries dated on/after it (the current
+ * review session's `sessionStartedAt`) so a stale comment from a PRIOR review round (before the ticket was
+ * re-implemented and re-reviewed) can't be mistaken for this round's verdict — see FLUX-1080. Entries whose
+ * date can't be confirmed to be within the window are skipped rather than counted, matching the safe
+ * (park-by-default) posture of the caller.
+ */
+export function lastCommentMatchesVerdictMarker(history: unknown, sinceIso?: string): boolean {
+  if (!Array.isArray(history)) return false;
+  const sinceMs = sinceIso ? Date.parse(sinceIso) : NaN;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const e = history[i];
+    if (!e || typeof e !== 'object') continue;
+    if (!Number.isNaN(sinceMs)) {
+      const entryMs = typeof e.date === 'string' ? Date.parse(e.date) : NaN;
+      if (Number.isNaN(entryMs) || entryMs < sinceMs) continue;
+    }
+    if (e.type === 'comment' && typeof e.comment === 'string') return VERDICT_MARKER_RE.test(e.comment);
+  }
+  return false;
+}
 
 /**
  * FLUX-1063: the phase that runs a given ticket state. Single source of truth for the state→phase
@@ -116,7 +169,11 @@ export type TicketAction =
   | { type: 'cooldown-rate-limited' }
   // FLUX-1063: a cooling-down ticket's retry window elapsed — restore its phase and spawn a FRESH
   // session (no `--resume`). `attempt` is the new rateLimitAttempts value to persist.
-  | { type: 'retry-rate-limited'; phase: FurnacePhase; attempt: number };
+  | { type: 'retry-rate-limited'; phase: FurnacePhase; attempt: number }
+  // FLUX-1078: the review session completed with `reviewState` unset, but its last comment matched the
+  // known verdict-marker convention — give it ONE corrective pass to record the verdict via
+  // `change_status` before falling back to a park. Capped by `ticket.reviewNudgeSent`.
+  | { type: 'review-nudge' };
 
 /**
  * Decide what to do next for a single active ticket, given its session status + the ticket's review
@@ -127,12 +184,19 @@ export function decideTicketAction(input: {
   ticket: BatchTicket;
   sessionStatus?: CliSessionStatus;
   terminalReason?: 'context-exhausted' | 'rate-limited';
+  // FLUX-1156: the failed/cancelled session's own recorded outcome (its agent_session entry's
+  // `outcome`, e.g. "Claude Code session failed to start: refusing to run the agent on master") — when
+  // present, folded into the park reason instead of the opaque generic "session ended failed" so a
+  // human (or a re-reading agent) sees WHY without having to dig through session history.
+  sessionOutcome?: string;
   reviewState?: 'approved' | 'changes-requested' | null;
   ticketStatus?: string;
   requireInputStatus?: string;
   retryCap: number;
   exhaustionRetryCap?: number;
   prUrl?: string;
+  // FLUX-1078: computed by the caller (I/O) from the ticket's last comment — see `lastCommentMatchesVerdictMarker`.
+  reviewVerdictMarkerSeen?: boolean;
   // FLUX-1063: rate-limit cooldown inputs (only consulted for the rate-limited paths).
   nowMs?: number;
   rateLimitRetryIntervalMs?: number;
@@ -188,7 +252,10 @@ export function decideTicketAction(input: {
 
   // Terminal but unsuccessful — a crash/cancel is a bad state, not a human question.
   if (sessionStatus === 'failed' || sessionStatus === 'cancelled') {
-    return { type: 'park', reason: `the ${currentPhase} session ended ${sessionStatus}`, failureClass: 'hard-fail' };
+    const reason = input.sessionOutcome
+      ? `the ${currentPhase} session ended ${sessionStatus} — ${input.sessionOutcome}`
+      : `the ${currentPhase} session ended ${sessionStatus}`;
+    return { type: 'park', reason, failureClass: 'hard-fail' };
   }
 
   // sessionStatus === 'completed'
@@ -207,6 +274,12 @@ export function decideTicketAction(input: {
     if (ticket.attempts < retryCap) return { type: 'reimplement', attempt: ticket.attempts + 1 };
     // Review kept requesting changes past the cap — a human must decide how to proceed.
     return { type: 'park', reason: `review still requesting changes after ${retryCap} re-implementation attempt(s)`, failureClass: 'needs-input' };
+  }
+  // FLUX-1078: no verdict, but the last comment already reads like one (**APPROVED**/**CHANGES NEEDED**)
+  // — give it ONE corrective pass before treating this as the anomaly it usually is. Capped by
+  // `reviewNudgeSent` so a persona that ignores the nudge can't loop forever.
+  if (input.reviewVerdictMarkerSeen && !ticket.reviewNudgeSent) {
+    return { type: 'review-nudge' };
   }
   // The reviewer finished but recorded no verdict — an anomaly (bad state), not a posed question.
   return { type: 'park', reason: 'review completed without a verdict (reviewState unset)', failureClass: 'hard-fail' };
@@ -231,9 +304,35 @@ const MAX_SPAWN_ATTEMPTS = 6;
 
 // ── I/O executors ─────────────────────────────────────────────────────────────
 
-function extractPrUrl(task: any): string | undefined {
+interface TicketWithPrLinks {
+  implementationLink?: string;
+  prUrl?: string;
+  pr?: { url?: string };
+  pullRequest?: { url?: string };
+}
+
+function extractPrUrl(task: TicketWithPrLinks | null | undefined): string | undefined {
   if (!task) return undefined;
   return task.implementationLink || task.prUrl || task.pr?.url || task.pullRequest?.url || undefined;
+}
+
+/**
+ * FLUX-1156: the ticket's own recorded `outcome` for a given session id, read straight off durable
+ * history (`tasksCache`, kept current by `updateTaskWithHistory`/`updateAgentSession`) rather than the
+ * in-memory `CliSessionRecord` — the adapters only ever mutate the ON-DISK entry's `outcome` via
+ * `updateAgentSession` (see claude-code.ts's exit handler), never the in-memory `sessionHistoryEntry`
+ * copy, so reading history here is what makes this work uniformly for BOTH a pre-spawn failure (which
+ * sets both copies) and an ordinary post-spawn one (which only ever updates the durable copy).
+ */
+export function findSessionOutcome(task: { history?: unknown[] } | null | undefined, sessionId: string | undefined): string | undefined {
+  if (!task || !sessionId || !Array.isArray(task.history)) return undefined;
+  for (let i = task.history.length - 1; i >= 0; i--) {
+    const e = task.history[i] as { type?: string; sessionId?: string; outcome?: string } | undefined;
+    if (e?.type === 'agent_session' && e.sessionId === sessionId && typeof e.outcome === 'string' && e.outcome.trim()) {
+      return e.outcome.trim();
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -263,14 +362,14 @@ async function dispatchSession(
       body: JSON.stringify(body),
     });
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      log.warn(`[furnace] spawn ${phase} for ${ticketId} refused (${res.status}): ${(err as any)?.error || res.statusText}`);
+      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      log.warn(`[furnace] spawn ${phase} for ${ticketId} refused (${res.status}): ${err?.error || res.statusText}`);
       return null;
     }
-    const j: any = await res.json().catch(() => ({}));
-    return j?.session?.id ?? null;
-  } catch (e: any) {
-    log.warn(`[furnace] spawn ${phase} for ${ticketId} failed: ${e?.message}`);
+    const j = (await res.json().catch(() => ({}))) as { session?: { id?: string } };
+    return j.session?.id ?? null;
+  } catch (e: unknown) {
+    log.warn(`[furnace] spawn ${phase} for ${ticketId} failed: ${e instanceof Error ? e.message : String(e)}`);
     return null;
   }
 }
@@ -281,15 +380,15 @@ async function clearReviewState(ticketId: string): Promise<void> {
   if (t && t.reviewState != null) {
     try {
       await updateTaskWithHistory(ticketId, { extraFields: { reviewState: null }, updatedBy: 'Furnace' });
-    } catch (e: any) {
-      log.warn(`[furnace] clear reviewState on ${ticketId} failed: ${e?.message}`);
+    } catch (e: unknown) {
+      log.warn(`[furnace] clear reviewState on ${ticketId} failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 }
 
 /** The In-Progress status a parked ticket should rest in (mirrors mcp-server's status derivation). */
 function inProgressStatus(): string {
-  const columnNames: string[] = (configCache.columns || []).map((c: any) => c.name);
+  const columnNames: string[] = (configCache.columns || []).map((c: { name: string }) => c.name);
   const i = columnNames.findIndex((c) => c.toLowerCase() === 'todo');
   return (i >= 0 && i + 1 < columnNames.length ? columnNames[i + 1] : undefined) || 'In Progress';
 }
@@ -308,8 +407,8 @@ async function parkTicketOnBoard(ticketId: string, reason: string): Promise<void
       extraFields: { swimlane: 'require-input' },
       updatedBy: 'Furnace',
     });
-  } catch (e: any) {
-    log.warn(`[furnace] park ${ticketId} swimlane flag failed: ${e?.message}`);
+  } catch (e: unknown) {
+    log.warn(`[furnace] park ${ticketId} swimlane flag failed: ${e instanceof Error ? e.message : String(e)}`);
   }
   try { stopAllSessionsForTask(ticketId, 'furnace parked ticket'); } catch { /* best effort */ }
 }
@@ -343,18 +442,81 @@ function isBoardSuccessStatus(status: string | undefined): boolean {
  *       of those on a Furnace ticket slipped through as still `owner: furnace`, while a legitimate
  *       grooming/finalize session tripped a handoff; and
  *   (b) it counted stalled `waiting-input` sessions (an abandoned stub) as an active takeover with no expiry.
+ *
+ * FLUX-1090: `isDispatching` is true while a spawn for this exact ticket is in flight (between `feedCoal`
+ * deciding to dispatch it and `setInFlight` recording the new session's id) — during that window the
+ * freshly-spawned session is live but genuinely not yet in `ticket.sessionIds`, so without this short-circuit
+ * the Furnace would misidentify its OWN session as a human's. See the `dispatching` set below.
  */
 export function isHumanTakeover(
   sessions: readonly { id: string; status: CliSessionStatus; phase?: string }[],
   ticket: Pick<BatchTicket, 'sessionIds'>,
+  isDispatching = false,
 ): boolean {
+  if (isDispatching) return false;
   return sessions.some(
     (s) => (s.status === 'pending' || s.status === 'running') && !ticket.sessionIds.includes(s.id),
   );
 }
 
+/**
+ * FLUX-1090: ticket ids with a `feedCoal` spawn currently in flight — added right before the dispatch
+ * (crash-adopt or `spawnOrCount`) and removed once `setInFlight` has recorded the session, so the window
+ * where the ticket is still `queued` (not yet caught by `isActiveTicketState`) but its new session is
+ * already live is never visible to `reconcileBatch` as a foreign session. In-memory only: a crash mid-spawn
+ * is already recovered by the pre-existing orphaned-session adoption in `feedCoal`/`reconcileTicket`.
+ */
+const dispatching = new Set<string>();
+
+/**
+ * FLUX-1095: true while `feedCoal` has a spawn for `ticketId` in flight (dispatched but not yet recorded
+ * onto the batch by `setInFlight`). Exported so callers outside this module — the `furnace_ticket`
+ * "remove" guard (mcp-server.ts) — can refuse to remove a ticket mid-spawn: during this window the
+ * ticket is still `queued`, so the ordinary "queued tickets can always be removed" rule would otherwise
+ * let a human orphan the freshly-spawned session (the same leaked-slot failure mode FLUX-1090 fixed for
+ * takeover, reappearing through the removal door).
+ */
+export function isDispatching(ticketId: string): boolean {
+  return dispatching.has(ticketId);
+}
+
+/**
+ * FLUX-1090 (defense in depth): ticket ids whose LAST reconcile pass observed what looked like a human
+ * takeover. `reconcileBatch` only ACTS on it once the condition holds on two consecutive passes — a lone
+ * transient blip (e.g. a poll that slips past the `dispatching` guard) can never misfire ownership on its
+ * own; it takes a second pass to confirm. Cleared as soon as a pass no longer sees it.
+ */
+const suspectedHumanTakeover = new Set<string>();
+
 function detectHumanTakeover(ticket: BatchTicket): boolean {
-  return isHumanTakeover(getActiveSessionsForTask(ticket.ticketId), ticket);
+  return isHumanTakeover(getActiveSessionsForTask(ticket.ticketId), ticket, dispatching.has(ticket.ticketId));
+}
+
+/**
+ * FLUX-1090: debounce a raw per-tick takeover observation into a confirmed one — true only the SECOND
+ * consecutive time `raw` is true for this ticket. Mutates `suspectedHumanTakeover` as its debounce memory.
+ */
+function debouncedTakeover(ticketId: string, raw: boolean): boolean {
+  if (!raw) {
+    suspectedHumanTakeover.delete(ticketId);
+    return false;
+  }
+  if (suspectedHumanTakeover.has(ticketId)) return true;
+  suspectedHumanTakeover.add(ticketId);
+  return false;
+}
+
+/**
+ * FLUX-1094: a ticket leaving Furnace ownership entirely (removed from a batch, or its batch discarded)
+ * must not carry stale takeover-debounce state into whatever comes next. Neither `suspectedHumanTakeover`
+ * nor `dispatching` was cleared on removal — only a later reconcile pass observing `raw === false` cleared
+ * the former, so a re-entrant ticket id could land in a NEW batch with a leftover "suspected" entry and have
+ * its very first transient blip there misread as the SECOND consecutive pass, confirming a takeover
+ * immediately and bypassing the two-pass debounce this Set exists to enforce.
+ */
+export function clearTakeoverTracking(ticketId: string): void {
+  suspectedHumanTakeover.delete(ticketId);
+  dispatching.delete(ticketId);
 }
 
 /** Clear the Furnace-raised `require-input` swimlane on a ticket (best-effort; no-op if not set). */
@@ -367,8 +529,8 @@ async function clearFurnaceFlag(ticketId: string, note?: string): Promise<void> 
       ...(note ? { entries: [{ type: 'comment', user: 'Furnace', comment: note, date: nowIso() }] } : {}),
       updatedBy: 'Furnace',
     });
-  } catch (e: any) {
-    log.warn(`[furnace] clear flag on ${ticketId} failed: ${e?.message}`);
+  } catch (e: unknown) {
+    log.warn(`[furnace] clear flag on ${ticketId} failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -427,7 +589,7 @@ export async function reconcileBatch(batchId: string): Promise<void> {
     const task = tasksCache[ticket.ticketId];
     const prUrl = extractPrUrl(task);
     const change = decideReconcile(ticket, {
-      takenOver: detectHumanTakeover(ticket),
+      takenOver: debouncedTakeover(ticket.ticketId, detectHumanTakeover(ticket)),
       boardSuccess: isBoardSuccessStatus(task?.status),
       ...(prUrl !== undefined ? { prUrl } : {}),
     });
@@ -451,8 +613,9 @@ export async function reconcileBatch(batchId: string): Promise<void> {
         delete t.currentPhase;
         clearCooldownState(t);
       } else if (c.owner === 'human') {
-        t.owner = 'human';
-        t.note = 'taken over — you are driving this ticket';
+        // FLUX-1090: settle it exactly like an EXPLICIT takeover (takeoverTicket) — minus stopping the
+        // session, which here is the human's own.
+        settleAsHumanOwned(t);
       }
       // B1: both a reflected success AND an auto-detected takeover clear the board flag — a human-owned
       // ticket must never be left carrying a require-input flag it can't dismiss.
@@ -463,6 +626,62 @@ export async function reconcileBatch(batchId: string): Promise<void> {
     if (isBatchTerminal(b.status)) b.report = assembleBurnReport(b, nowIso());
   });
   for (const ticketId of flaggedForDrop) await clearFurnaceFlag(ticketId);
+}
+
+// ── Read-path reconcile gating (FLUX-1145) ──────────────────────────────────────
+//
+// The portal polls GET /api/furnace every ~3s (FurnaceDrawer.tsx POLL_MS) and every poll used to run
+// `reconcileBatch` for EVERY batch before answering — measured at 1.1s avg / 3.4s worst-case. `reconcileBatch`
+// itself must stay uncached: `stokerTick`/`driveBurningBatches` call it directly, every drive-cycle tick,
+// and that is what actually closes the FLUX-1066/1067 ground-truth gap — this gate only throttles how often
+// a READ re-triggers it. Mirrors the `refreshWorktreePool` TTL + single-flight pattern above (FLUX-1069):
+// a call within the TTL of the last completed reconcile for that key is skipped outright, and concurrent
+// callers for the same key share one in-flight pass — so a stampede of polls racing past an expired TTL
+// runs the work once, not N times.
+const RECONCILE_READ_TTL_MS = 3_000;
+const reconcileReadInFlight = new Map<string, Promise<void>>();
+const reconcileReadAt = new Map<string, number>();
+
+async function gatedReconcile(key: string, run: () => Promise<void>): Promise<void> {
+  const inFlight = reconcileReadInFlight.get(key);
+  if (inFlight) return inFlight;
+  if (Date.now() - (reconcileReadAt.get(key) ?? 0) < RECONCILE_READ_TTL_MS) return;
+  const p = (async () => {
+    try {
+      await run();
+      // Only a successful pass counts as "fresh" — stamping this on a thrown error would mask the
+      // failure as a completed reconcile for the rest of the TTL window (FLUX-1145 review fix).
+      reconcileReadAt.set(key, Date.now());
+    } finally {
+      reconcileReadInFlight.delete(key);
+    }
+  })();
+  reconcileReadInFlight.set(key, p);
+  return p;
+}
+
+/** TTL-gated `reconcileBatch(batchId)` for read paths (GET /:id, furnace_get with a batchId). */
+export async function reconcileBatchCached(batchId: string): Promise<void> {
+  return gatedReconcile(batchId, () => reconcileBatch(batchId));
+}
+
+/** TTL-gated "reconcile every batch" for read paths (GET /, furnace_get without a batchId). */
+export async function reconcileAllBatchesCached(): Promise<void> {
+  return gatedReconcile('*', async () => {
+    for (const b of getFurnaceBatchesCache()) await reconcileBatch(b.id);
+  });
+}
+
+/**
+ * FLUX-1166: `deleteFurnaceBatch` lives in furnace-store.ts and never touches this module's read-gate
+ * caches, so a deleted batch's `reconcileReadAt`/`reconcileReadInFlight` entry (keyed on its id) would
+ * sit in the Map forever — a slow, in-memory-only leak of one timestamp per ever-deleted batch. Call
+ * sites of `deleteFurnaceBatch` (routes/furnace.ts, mcp-server.ts) invoke this right after a successful
+ * delete, mirroring the existing `clearTakeoverTracking` cleanup call.
+ */
+export function evictReconcileReadCache(batchId: string): void {
+  reconcileReadAt.delete(batchId);
+  reconcileReadInFlight.delete(batchId);
 }
 
 /**
@@ -485,8 +704,8 @@ async function ensureBatchBranchAssigned(batchId: string): Promise<void> {
     try {
       await updateTaskWithHistory(member.ticketId, { extraFields: { branch }, updatedBy: 'Furnace' });
       t.branch = branch;
-    } catch (e: any) {
-      log.warn(`[furnace] assign batch branch ${branch} to ${member.ticketId} failed: ${e?.message}`);
+    } catch (e: unknown) {
+      log.warn(`[furnace] assign batch branch ${branch} to ${member.ticketId} failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 }
@@ -500,9 +719,10 @@ async function setInFlight(
   sessionId: string,
   opts: { attempt?: number; markStarted?: boolean } = {},
 ): Promise<void> {
+  let orphaned = false;
   await mutateFurnaceBatch(batchId, (b) => {
     const t = findTicket(b, ticketId);
-    if (!t) return;
+    if (!t) { orphaned = true; return; }
     t.state = state;
     t.currentPhase = phase;
     t.currentSessionId = sessionId;
@@ -512,6 +732,14 @@ async function setInFlight(
     if (opts.attempt !== undefined) t.attempts = opts.attempt;
     if (opts.markStarted && !t.startedAt) t.startedAt = nowIso();
   });
+  // FLUX-1095 (defense in depth): the ticket vanished from the batch between the spawn and this write —
+  // e.g. removed via `furnace_ticket action:"remove"` while still `queued` (dispatching guard notwithstanding,
+  // in case of a gap elsewhere). No batch owns it, so nothing else would ever stop or account for this
+  // session — stop it now rather than leak it (and its worktree slot) forever.
+  if (orphaned) {
+    log.warn(`[furnace] ${ticketId} vanished from batch ${batchId} mid-spawn — stopping orphaned session ${sessionId}.`);
+    try { stopAllSessionsForTask(ticketId, 'furnace ticket removed from batch mid-spawn'); } catch { /* best effort */ }
+  }
 }
 
 /**
@@ -546,6 +774,26 @@ function clearCooldownState(t: BatchTicket): void {
   delete t.rateLimitAttempts;
   delete t.nextRetryAt;
   delete t.preCooldownState;
+}
+
+/**
+ * FLUX-1090/1095: settle a ticket as human-owned — mark it `owner: human` and, if it was active/cooling,
+ * park it as a settled row (no failure class) so it doesn't sit `implementing`/`reviewing` forever under
+ * a human's ownership (which would reject hand-back with "still burning" even though the Furnace already
+ * yielded it). Shared by an EXPLICIT takeover (`takeoverTicket`) and `reconcileBatch`'s auto-detected
+ * takeover — both settle identically; only who stops the live session differs (the explicit path stops
+ * the Furnace's own session, the auto-detected path leaves the human's session alone).
+ */
+function settleAsHumanOwned(t: BatchTicket): void {
+  t.owner = 'human';
+  t.note = 'taken over — you are driving this ticket';
+  if (isActiveTicketState(t.state) || t.state === 'cooling-down') {
+    t.state = 'parked';
+    delete t.failureClass;
+    delete t.currentSessionId;
+    delete t.currentPhase;
+    clearCooldownState(t);
+  }
 }
 
 /** Record a freshly-spawned session id onto a ticket already in its target state; reset spawn failures. */
@@ -658,9 +906,29 @@ async function advanceTicket(batchId: string, ticketId: string, action: TicketAc
       if (!batch) return;
       await advanceState(batchId, ticketId, 'reviewing');
       await clearReviewState(ticketId);
-      const opts = batch.reviewPersonaId ? { personaId: batch.reviewPersonaId } : {};
-      const r = await spawnOrCount(batchId, ticketId, 'review', opts);
+      // FLUX-1078: a fresh review pass gets a fresh nudge budget.
+      await mutateFurnaceBatch(batchId, (b) => {
+        const t = findTicket(b, ticketId);
+        if (t) t.reviewNudgeSent = false;
+      });
+      const r = await spawnOrCount(batchId, ticketId, 'review', reviewDispatchOpts(batch));
       if (r.sid) await recordSession(batchId, ticketId, r.sid);
+      break;
+    }
+
+    case 'review-nudge': {
+      const batch = getFurnaceBatch(batchId);
+      if (!batch) return;
+      await mutateFurnaceBatch(batchId, (b) => {
+        const t = findTicket(b, ticketId);
+        if (t) t.reviewNudgeSent = true;
+      });
+      const r = await spawnOrCount(batchId, ticketId, 'review', {
+        ...(batch.reviewPersonaId ? { personaId: batch.reviewPersonaId } : {}),
+        focusComment: REVIEW_NUDGE_FOCUS,
+      });
+      if (r.sid) await recordSession(batchId, ticketId, r.sid);
+      log.info(`[furnace] ${ticketId} review completed with reviewState unset but a verdict-shaped comment — nudging for the explicit change_status call instead of parking.`);
       break;
     }
 
@@ -701,7 +969,7 @@ async function advanceTicket(batchId: string, ticketId: string, action: TicketAc
     case 'redrive': {
       const batch = getFurnaceBatch(batchId);
       if (!batch) return;
-      const opts = action.phase === 'review' && batch.reviewPersonaId ? { personaId: batch.reviewPersonaId } : {};
+      const opts = action.phase === 'review' ? reviewDispatchOpts(batch) : {};
       const r = await spawnOrCount(batchId, ticketId, action.phase, opts);
       if (r.sid) await recordSession(batchId, ticketId, r.sid);
       break;
@@ -718,7 +986,7 @@ async function advanceTicket(batchId: string, ticketId: string, action: TicketAc
         delete t.sessionStartedAt;
       });
       try { stopAllSessionsForTask(ticketId, 'furnace retrying context-exhausted ticket'); } catch { /* best effort */ }
-      const opts = action.phase === 'review' && batch.reviewPersonaId ? { personaId: batch.reviewPersonaId } : {};
+      const opts = action.phase === 'review' ? reviewDispatchOpts(batch) : {};
       const r = await spawnOrCount(batchId, ticketId, action.phase, opts);
       if (r.sid) await recordSession(batchId, ticketId, r.sid);
       log.info(`[furnace] ${ticketId} ${action.phase} session ran out of context — retrying with a fresh session (attempt ${action.attempt}/${batch.exhaustionRetryCap}).`);
@@ -773,7 +1041,7 @@ async function advanceTicket(batchId: string, ticketId: string, action: TicketAc
       // Re-supply the re-implementation focus if we were mid-reimplement; else the phase's reviewer persona.
       const opts = restored === 'reimplementing'
         ? { focusComment: REIMPLEMENT_FOCUS }
-        : action.phase === 'review' && batch.reviewPersonaId ? { personaId: batch.reviewPersonaId } : {};
+        : action.phase === 'review' ? reviewDispatchOpts(batch) : {};
       const r = await spawnOrCount(batchId, ticketId, action.phase, opts);
       if (r.sid) await recordSession(batchId, ticketId, r.sid);
       log.info(`[furnace] ${ticketId} rate-limit cooldown elapsed — retrying ${action.phase} with a fresh session (attempt ${action.attempt}).`);
@@ -799,8 +1067,8 @@ async function noteCooldownOnBoard(ticketId: string, nextRetryAt: string, batch:
       }],
       updatedBy: 'Furnace',
     });
-  } catch (e: any) {
-    log.warn(`[furnace] cooldown note on ${ticketId} failed: ${e?.message}`);
+  } catch (e: unknown) {
+    log.warn(`[furnace] cooldown note on ${ticketId} failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -830,16 +1098,21 @@ async function reconcileTicket(batchId: string, ticketId: string): Promise<void>
   const batch = getFurnaceBatch(batchId);
   if (!batch) return;
   const prUrl = extractPrUrl(task);
+  const sessionOutcome = findSessionOutcome(task, sess?.id ?? ticket.currentSessionId);
   const action = decideTicketAction({
     ticket,
     ...(sess ? { sessionStatus: sess.status } : {}),
     ...(sess?.terminalReason ? { terminalReason: sess.terminalReason } : {}),
+    ...(sessionOutcome ? { sessionOutcome } : {}),
     reviewState: task?.reviewState ?? null,
     ...(task?.status ? { ticketStatus: task.status } : {}),
     ...(configCache.requireInputStatus ? { requireInputStatus: configCache.requireInputStatus } : {}),
     retryCap: batch.retryCap,
     exhaustionRetryCap: batch.exhaustionRetryCap,
     ...(prUrl !== undefined ? { prUrl } : {}),
+    // FLUX-1080: scoped to comments posted during THIS review pass — a stale prior-round verdict-shaped
+    // comment must not be mistaken for this round's, or the review-nudge could record a false verdict.
+    reviewVerdictMarkerSeen: lastCommentMatchesVerdictMarker(task?.history, ticket.sessionStartedAt),
   });
   // FLUX-1033: mirror the reviewer's verdict onto the real GitHub PR (before advanceTicket transitions
   // the ticket out of `reviewing`, so it fires exactly once per verdict). Best-effort.
@@ -901,7 +1174,7 @@ function isFinalSequentialApproval(batch: FurnaceBatch, ticket: BatchTicket): bo
 }
 
 /** Post the reviewer's verdict onto the real GitHub PR (best-effort), and reflect it on `batch.prs`. */
-async function mirrorReviewVerdictToPr(
+export async function mirrorReviewVerdictToPr(
   batch: FurnaceBatch,
   action: TicketAction,
   ticketId: string,
@@ -930,8 +1203,8 @@ async function mirrorReviewVerdictToPr(
   try {
     const outcome = await postPrReview(prUrl, verdict, body, { commentOnly });
     log.info(`[furnace] ${ticketId} PR review posted (${verdict}${commentOnly ? ', comment-only' : ''} → ${outcome}).`);
-  } catch (e: any) {
-    log.warn(`[furnace] ${ticketId} mirror review verdict to PR failed: ${e?.message ?? e}`);
+  } catch (e: unknown) {
+    log.warn(`[furnace] ${ticketId} mirror review verdict to PR failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -1013,8 +1286,8 @@ function emitBurnReportNotification(batch: FurnaceBatch): void {
   ].filter(Boolean).join(' ');
   try {
     addNotification({ type: 'completion', title, message, actions: [] });
-  } catch (e: any) {
-    log.warn(`[furnace] burn-report notification failed: ${e?.message}`);
+  } catch (e: unknown) {
+    log.warn(`[furnace] burn-report notification failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
@@ -1069,40 +1342,140 @@ async function feedCoal(batchId: string): Promise<void> {
 
     if (batch.kind === 'sequential') await ensureBatchBranchAssigned(batchId);
 
-    // Crash-safety: adopt an already-running impl session (a pre-crash spawn we never recorded).
-    const existing = activeSessionForPhase(next.ticketId, 'implementation');
-    if (existing) {
-      await setInFlight(batchId, next.ticketId, 'implementing', 'implementation', existing.id, { markStarted: true });
-      continue;
+    // FLUX-1090: the ticket is still `queued` (not yet `isActiveTicketState`) until `setInFlight` below
+    // records the new session, but that session is live from the moment it's dispatched/adopted — mark it
+    // `dispatching` for that whole window so a concurrent `reconcileBatch` (every tick AND every
+    // furnace_get/GET) can't mistake the Furnace's own in-flight spawn for a human takeover.
+    dispatching.add(next.ticketId);
+    try {
+      // Crash-safety: adopt an already-running impl session (a pre-crash spawn we never recorded).
+      const existing = activeSessionForPhase(next.ticketId, 'implementation');
+      if (existing) {
+        await setInFlight(batchId, next.ticketId, 'implementing', 'implementation', existing.id, { markStarted: true });
+        continue;
+      }
+      const r = await spawnOrCount(batchId, next.ticketId, 'implementation', {});
+      if (r.sid) {
+        await setInFlight(batchId, next.ticketId, 'implementing', 'implementation', r.sid, { markStarted: true });
+        continue;
+      }
+      if (r.parked) continue; // exhausted spawn attempts → parked; try the next queued ticket
+      return;                 // transient spawn failure — stop feeding this tick, retry next
+    } finally {
+      dispatching.delete(next.ticketId);
     }
-    const r = await spawnOrCount(batchId, next.ticketId, 'implementation', {});
-    if (r.sid) {
-      await setInFlight(batchId, next.ticketId, 'implementing', 'implementation', r.sid, { markStarted: true });
-      continue;
-    }
-    if (r.parked) continue; // exhausted spawn attempts → parked; try the next queued ticket
-    return;                 // transient spawn failure — stop feeding this tick, retry next
   }
 }
 
 // ── Worktree-pool reconciliation (FLUX-1067) ────────────────────────────────────
+
+// FLUX-1069: every Furnace read path (GET /, GET /slots, GET /:id, furnace_get, plus the 5s drive-cycle
+// tick) calls refreshWorktreePool() independently, so a single portal poll round-trip (the drawer fires
+// two of those reads via Promise.all) shells out to `git worktree list` twice for the same observed
+// state. Coalesce: concurrent callers share one in-flight call, and a call landing within the TTL of the
+// last completed one is skipped outright (the observed pool is still fresh).
+const WORKTREE_POOL_TTL_MS = 1_500;
+let worktreePoolInFlight: Promise<void> | null = null;
+let worktreePoolRefreshedAt = 0;
 
 /**
  * Observe the ACTUAL live task-worktree pool and feed the count to the slot accounting, so the gauge and
  * the ignite/burn-rate clamp reflect reality — including worktrees live for reasons the Furnace isn't
  * tracking (a manually resumed/driven session, a taken-over parked ticket). Best-effort: on any failure
  * (git error, no workspace) it keeps the last known count rather than falsely zeroing the pool.
+ *
+ * `opts.force` bypasses the freshness-window skip (FLUX-1157): igniting/resuming a batch reclaims stale
+ * worktrees right beforehand (see `igniteBatch`), and the whole point of that reclaim is to shrink the
+ * physical pool this function observes — a coalesced read landing inside the TTL would report the
+ * pre-reclaim count and refuse the ignite anyway.
+ *
+ * FLUX-1158: `force` must guarantee a `git worktree list` read that starts AFTER reclaim, not just any
+ * fresh-enough one. If a non-forced refresh (e.g. the 5s stoker tick) is already in flight when a forced
+ * call lands, naively returning that shared in-flight promise (the old single-flight shortcut above)
+ * could hand back a read that started BEFORE the reclaim — stale. So a forced call always waits out any
+ * in-flight read first, then issues its own — sequenced, not concurrent, so a slow in-flight read can't
+ * clobber the forced one's fresher result by finishing later.
  */
-export async function refreshWorktreePool(): Promise<void> {
-  try {
-    const root = requireWorkspaceRoot();
-    const worktrees = await listTaskWorktrees(root);
-    // FLUX-1067 (M3): feed the OWNING ticket id of each worktree (recovered from its path), not just a
-    // count, so the slot accounting can distinguish a Furnace-backed worktree from an independent one.
-    setObservedWorktrees(worktrees.map((w) => ticketIdFromWorktreePath(root, w.path)));
-  } catch {
-    /* best-effort — keep the last observed pool */
+export async function refreshWorktreePool(opts: { force?: boolean } = {}): Promise<void> {
+  if (worktreePoolInFlight && !opts.force) return worktreePoolInFlight;
+  if (!opts.force && Date.now() - worktreePoolRefreshedAt < WORKTREE_POOL_TTL_MS) return;
+  if (opts.force && worktreePoolInFlight) await worktreePoolInFlight.catch(() => {});
+  worktreePoolInFlight = (async () => {
+    try {
+      const root = requireWorkspaceRoot();
+      const worktrees = await listTaskWorktrees(root);
+      // FLUX-1067 (M3): feed the OWNING ticket id of each worktree (recovered from its path), not just a
+      // count, so the slot accounting can distinguish a Furnace-backed worktree from an independent one.
+      setObservedWorktrees(worktrees.map((w) => ticketIdFromWorktreePath(root, w.path)));
+    } catch {
+      /* best-effort — keep the last observed pool */
+    } finally {
+      worktreePoolRefreshedAt = Date.now();
+      worktreePoolInFlight = null;
+    }
+  })();
+  return worktreePoolInFlight;
+}
+
+/**
+ * FLUX-1187: whether at least one `refreshWorktreePool()` pass has completed since boot. Unlike the
+ * Furnace batch cache (loaded from disk by `ensureFurnaceLoaded()`), `observedWorktreeCount` has no
+ * on-disk source of truth — it starts at 0 and is only populated by an actual `git worktree list` scan.
+ * A read route can use this to block on just the very first call (so it never serves a stale/inflated
+ * slot count before the pool has been observed even once) while still treating every later call as
+ * stale-while-revalidate (fire the refresh in the background, answer from the cache immediately).
+ */
+export function hasScannedWorktreePool(): boolean {
+  return worktreePoolRefreshedAt > 0;
+}
+
+/** A ticket currently holding a worktree slot, with why — see {@link describeSlotHolders}. */
+export interface FurnaceSlotHolder {
+  ticketId: string;
+  reason: string;
+}
+
+const UNRECLAIMABLE_LABEL: Record<UnreclaimableReason, string> = {
+  'unknown-ticket': 'ticket not found on the board',
+  'live-session': 'a session is still live on its branch',
+  'recent-activity': 'recently active — briefly protected from reclaim',
+  status: 'ticket status is not yet reclaimable (not Ready/terminal)',
+};
+
+/**
+ * Name every ticket currently holding a worktree slot, with why reclaim didn't free it — surfaced on an
+ * ignite/resume `no_slots` refusal (FLUX-1157) so the user can act (finish/abandon/take over a specific
+ * ticket) instead of guessing which of the capped worktrees to look at. Best-effort: a listing failure
+ * yields an empty list rather than blocking the refusal response itself.
+ */
+export async function describeSlotHolders(workspaceRoot: string): Promise<FurnaceSlotHolder[]> {
+  const burning = new Set(getBurningBatches().flatMap((b) => furnaceReservedTicketIds(b)));
+  const worktrees = await listTaskWorktrees(workspaceRoot).catch(() => []);
+  const holders: FurnaceSlotHolder[] = [];
+  const seen = new Set<string>();
+  for (const wt of worktrees) {
+    const ticketId = ticketIdFromWorktreePath(workspaceRoot, wt.path);
+    if (!ticketId) continue;
+    seen.add(ticketId);
+    if (burning.has(ticketId)) { holders.push({ ticketId, reason: 'actively burning' }); continue; }
+    const unreclaimable = worktreeUnreclaimableReason(ticketId);
+    if (unreclaimable) { holders.push({ ticketId, reason: UNRECLAIMABLE_LABEL[unreclaimable] }); continue; }
+    // Reclaimable by status/session, yet still on disk — the only reason reclaimWorktrees would have
+    // skipped it is a dirty tree (uncommitted work reclaim never discards).
+    const { stdout } = await runGit(['status', '--porcelain'], { cwd: wt.path }).catch(() => ({ stdout: '' }));
+    holders.push({
+      ticketId,
+      reason: stdout.trim().length > 0 ? 'uncommitted changes (dirty tree) — reclaim left it alone' : 'idle — not yet reclaimed',
+    });
   }
+  // FLUX-1158: a reservation claimed by claimSlotsAndIgnite counts toward globalSlotsInUse the instant a
+  // batch flips to `burning` (via furnaceReservedTicketIds), but its worktree may not be materialized on
+  // disk yet (several batches igniting back-to-back). Without this, such a reservation is invisible to
+  // the loop above — a `no_slots` refusal could name fewer tickets than `used` implies. Name it too.
+  for (const ticketId of burning) {
+    if (!seen.has(ticketId)) holders.push({ ticketId, reason: 'reserved — worktree not yet created' });
+  }
+  return holders;
 }
 
 // ── Tick orchestration ────────────────────────────────────────────────────────
@@ -1167,8 +1540,8 @@ export async function stokerTick(batchId: string): Promise<void> {
         await finalizeBatch(batchId, 'done');
       }
     }
-  } catch (e: any) {
-    log.error(`[furnace] tick for ${batchId} failed: ${e?.message}`);
+  } catch (e: unknown) {
+    log.error(`[furnace] tick for ${batchId} failed: ${e instanceof Error ? e.message : String(e)}`);
   } finally {
     ticking.delete(batchId);
   }
@@ -1220,7 +1593,7 @@ export function isTriggerSatisfied(batch: FurnaceBatch): boolean {
 let checkingTriggers = false;
 
 /** Evaluate all draft batches with a trigger; auto-ignite any whose trigger is satisfied (slot permitting). */
-async function checkTriggers(): Promise<void> {
+export async function checkTriggers(): Promise<void> {
   if (checkingTriggers) return;
   checkingTriggers = true;
   try {
@@ -1232,8 +1605,8 @@ async function checkTriggers(): Promise<void> {
       const r = await igniteBatch(batch.id);
       if (r.ok) log.info(`[furnace] batch ${batch.id} auto-ignited — trigger ${batch.trigger.type}:${batch.trigger.ref} satisfied.`);
     }
-  } catch (e: any) {
-    log.warn(`[furnace] trigger check failed: ${e?.message}`);
+  } catch (e: unknown) {
+    log.warn(`[furnace] trigger check failed: ${e instanceof Error ? e.message : String(e)}`);
   } finally {
     checkingTriggers = false;
   }
@@ -1261,6 +1634,25 @@ export interface BatchControlResult {
   used?: number;
   max?: number;
   batch?: FurnaceBatch | null;
+  /** Named on a `no_slots` refusal (FLUX-1157) — which tickets hold the slots, and why. */
+  holders?: FurnaceSlotHolder[];
+}
+
+/** Package a failed {@link claimSlotsAndIgnite} result, naming the slot holders when it failed `no_slots`. */
+async function claimFailureResult(
+  claim: { error?: string; used?: number; max?: number },
+  workspaceRoot: string,
+): Promise<BatchControlResult> {
+  const holders = claim.error === 'no_slots'
+    ? await describeSlotHolders(workspaceRoot).catch(() => [] as FurnaceSlotHolder[])
+    : [];
+  return {
+    ok: false,
+    ...(claim.error ? { error: claim.error } : {}),
+    ...(claim.used !== undefined ? { used: claim.used } : {}),
+    ...(claim.max !== undefined ? { max: claim.max } : {}),
+    ...(holders.length ? { holders } : {}),
+  };
 }
 
 /** Ignite a batch: draft -> burning. Claims a worktree slot (409 `no_slots` when full), then kicks a tick. */
@@ -1272,18 +1664,19 @@ export async function igniteBatch(id: string): Promise<BatchControlResult> {
   if (isBatchTerminal(batch.status)) return { ok: false, error: `batch is ${batch.status} — create a new batch` };
   if (batch.tickets.length === 0) return { ok: false, error: 'batch is empty — add tickets first' };
 
+  const root = requireWorkspaceRoot();
+  // FLUX-1157: reclaim every worktree that's genuinely safe to release (Ready/terminal ticket, no live
+  // session, clean tree) BEFORE recounting. FLUX-1090 discounted a terminal-batch ticket's worktree from
+  // the gauge on the assumption it was reclaimed — it wasn't (takeover semantics never delete it), which
+  // let the gauge report a free slot the physical cap (createTaskWorktree) didn't actually have. Actually
+  // reclaiming it here means the slot is REALLY free, not just uncounted.
+  await reclaimReadyWorktrees(root).catch(() => [] as string[]);
   // FLUX-1067: reconcile the slot count against the real worktree pool BEFORE the atomic claim, so we
-  // never over-spawn past worktrees that are live for reasons the Furnace isn't tracking.
-  await refreshWorktreePool();
+  // never over-spawn past worktrees that are live for reasons the Furnace isn't tracking. `force` because
+  // the reclaim above may have just shrunk the physical pool the last refresh cached.
+  await refreshWorktreePool({ force: true });
   const claim = await claimSlotsAndIgnite(id, nowIso(), FURNACE_SLOT_CAP);
-  if (!claim.ok) {
-    return {
-      ok: false,
-      ...(claim.error ? { error: claim.error } : {}),
-      ...(claim.used !== undefined ? { used: claim.used } : {}),
-      ...(claim.max !== undefined ? { max: claim.max } : {}),
-    };
-  }
+  if (!claim.ok) return claimFailureResult(claim, root);
   void stokerTick(id); // don't wait for the next interval
   log.info(`[furnace] batch ${id} ignited (${batch.tickets.length} ticket(s), ${batch.kind}, burn rate ${claim.batch?.burnRate}).`);
   return { ok: true, batch: claim.batch ?? null };
@@ -1314,12 +1707,15 @@ export async function stopBatch(id: string, reason = 'manual stop', opts: { hard
  * FLUX-1066 (M2) pure guard for {@link retryTicket}. A retry re-queues a ticket for a FULL fresh burn,
  * wiping `prUrl`/`lastReviewState` — harmless for a parked/failed ticket, but DESTRUCTIVE for a `pr-open`
  * one: it already succeeded, so re-burning duplicates the work and drops the open PR link. The drawer gates
- * Retry to parked/failed, but `furnace_retry` (MCP + REST) takes a bare ticketId, so the guard lives here.
+ * Retry to parked/failed, but `furnace_ticket action:"retry"` (MCP + REST) takes a bare ticketId, so the guard lives here.
  * Returns the rejection reason, or null when the retry is allowed. `force` (the explicit hand-back path)
- * bypasses the pr-open guard.
+ * bypasses the pr-open guard AND the active-state guard (FLUX-1090) — `handBackTicket` stops any live
+ * session for the ticket itself before calling in, so a ticket whose bookkeeping state is stuck
+ * `implementing`/`reviewing` (a zombie auto-takeover, or a human who kept a session open) can always be
+ * reclaimed instead of hitting a dead "still burning" rejection with no session left to stop.
  */
 export function retryRejectionReason(ticket: BatchTicket, force: boolean): string | null {
-  if (isActiveTicketState(ticket.state)) return 'ticket is still burning — stop it first';
+  if (isActiveTicketState(ticket.state) && !force) return 'ticket is still burning — stop it first';
   if (ticket.state === 'pr-open' && !force) {
     return 'ticket already has an open PR (approved) — dismiss its flag or take it over instead; hand back re-burns it explicitly';
   }
@@ -1391,16 +1787,13 @@ export async function resumeBatch(id: string): Promise<BatchControlResult> {
     }
   });
 
-  await refreshWorktreePool();
+  // FLUX-1157: same reclaim-before-recount as igniteBatch — a resumed batch claims a slot exactly like a
+  // fresh ignite, so it must not be refused by a stale, actually-reclaimable worktree either.
+  const root = requireWorkspaceRoot();
+  await reclaimReadyWorktrees(root).catch(() => [] as string[]);
+  await refreshWorktreePool({ force: true });
   const claim = await claimSlotsAndIgnite(id, nowIso(), FURNACE_SLOT_CAP);
-  if (!claim.ok) {
-    return {
-      ok: false,
-      ...(claim.error ? { error: claim.error } : {}),
-      ...(claim.used !== undefined ? { used: claim.used } : {}),
-      ...(claim.max !== undefined ? { max: claim.max } : {}),
-    };
-  }
+  if (!claim.ok) return claimFailureResult(claim, root);
   void stokerTick(id);
   log.info(`[furnace] batch ${id} resumed — breaker reset, ${claim.batch?.status}.`);
   return { ok: true, batch: claim.batch ?? null };
@@ -1441,16 +1834,7 @@ export async function takeoverTicket(batchId: string, ticketId: string): Promise
   const updated = await mutateFurnaceBatch(batchId, (b) => {
     const x = findTicket(b, ticketId);
     if (!x) return;
-    x.owner = 'human';
-    x.note = 'taken over — you are driving this ticket';
-    // An active/cooling ticket is released to the human as a settled row (not a park — no failure class).
-    if (isActiveTicketState(x.state) || x.state === 'cooling-down') {
-      x.state = 'parked';
-      delete x.failureClass;
-      delete x.currentSessionId;
-      delete x.currentPhase;
-      clearCooldownState(x);
-    }
+    settleAsHumanOwned(x);
   });
   // B1: clear the Furnace-raised `require-input` flag on takeover — the "Take over" button is shown on
   // parked/failed rows where `parkTicketOnBoard` raised it, so without this the taken-over ticket keeps an
@@ -1472,8 +1856,13 @@ export async function handBackTicket(batchId: string, ticketId: string): Promise
   const t = findTicket(batch, ticketId);
   if (!t) return { ok: false, error: 'Ticket not in batch' };
   if (!isHumanOwned(t)) return { ok: false, error: 'ticket is not owned by a human' };
+  // FLUX-1090: stop any still-live session for the ticket FIRST (mirrors takeoverTicket's own use of this
+  // in the opposite direction) — this is what makes a hand-back robust on a ticket stuck in an active
+  // state (a zombie auto-takeover from before the race fix, or a human who left a session running):
+  // there's no live session left to reject on afterward.
+  try { stopAllSessionsForTask(ticketId, 'furnace hand-back — reclaiming from the human'); } catch { /* best effort */ }
   // force: an explicit hand-back may re-burn even a `pr-open` ticket (the human is deliberately returning it
-  // to the Furnace), bypassing retryTicket's pr-open guard (M2).
+  // to the Furnace), bypassing retryTicket's pr-open guard (M2) AND its active-state guard (FLUX-1090).
   return retryTicket(batchId, ticketId, { force: true });
 }
 

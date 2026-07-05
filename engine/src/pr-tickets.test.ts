@@ -17,7 +17,14 @@ vi.mock('./git-exec.js', () => ({
   runGh: vi.fn(async () => ({ stdout: ghState.stdout, stderr: '' })),
 }));
 
-import { tasksCache, upsertManagedTicket } from './task-store.js';
+// FLUX-1076: syncPrTickets checks isSyncUnhealthy() before creating a brand-new PR ticket.
+// Mock it with a mutable hoisted flag so tests can flip sync health per-case.
+const syncHealthState = vi.hoisted(() => ({ unhealthy: false }));
+vi.mock('./sync-watcher.js', () => ({
+  isSyncUnhealthy: vi.fn(() => syncHealthState.unhealthy),
+}));
+
+import { tasksCache, upsertManagedTicket, updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
 import { selectMembers, prTicketFields, prTicketId, sharedNonDoneSiblings, membersToBounce, prTicketsOnBranch, resolveMergedPrTickets, syncPrTickets } from './pr-tickets.js';
 
@@ -87,6 +94,18 @@ describe('prTicketFields (state mapping)', () => {
   it('a reopened PR detected via prState MERGED also resets to Ready', () => {
     const f = prTicketFields(base, [], { status: 'Done', prState: 'MERGED' });
     expect(f.status).toBe('Ready');
+  });
+
+  // FLUX-986: merge-conflict is set OUTSIDE this mapper (the portal-Merge conflict bounce); this
+  // poller doesn't own clearing it, so it must not stomp it back to null on the next 90s poll.
+  it('preserves an existing merge-conflict swimlane while the PR is still open (FLUX-986)', () => {
+    const f = prTicketFields(base, [], { status: 'In Progress', prState: 'OPEN', swimlane: 'merge-conflict' });
+    expect(f.swimlane).toBe('merge-conflict');
+  });
+
+  it('CHANGES_REQUESTED overrides a stale merge-conflict swimlane (FLUX-986)', () => {
+    const f = prTicketFields({ ...base, reviewDecision: 'CHANGES_REQUESTED' }, [], { status: 'In Progress', prState: 'OPEN', swimlane: 'merge-conflict' });
+    expect(f.swimlane).toBe('changes-requested');
   });
 
   it('prTicketId uses the gh number', () => {
@@ -246,5 +265,128 @@ describe('syncPrTickets (PR body carried into the card)', () => {
     await syncPrTickets('/repo');
 
     expect(vi.mocked(upsertManagedTicket)).toHaveBeenCalledWith('PR-10', expect.any(Object), '');
+  });
+});
+
+/**
+ * FLUX-1089: the changes-requested unwind bounces a Ready member back to In Progress — its
+ * `reviewState` (e.g. 'approved' from its own EH review) is now stale, since the member is active
+ * work again, not an approved-and-waiting ticket. bounceMembersToInProgress must clear it via the
+ * same updateTaskWithHistory call that moves the status, so the staleness never round-trips to disk.
+ */
+describe('syncPrTickets clears a bounced member\'s stale reviewState (FLUX-1089)', () => {
+  beforeEach(() => {
+    for (const k of Object.keys(tasksCache)) delete (tasksCache as Record<string, unknown>)[k];
+    vi.mocked(upsertManagedTicket).mockClear();
+    vi.mocked(updateTaskWithHistory).mockClear();
+    syncHealthState.unhealthy = false;
+  });
+
+  it('clears reviewState on the Ready member bounced by a CHANGES_REQUESTED PR', async () => {
+    Object.assign(tasksCache, {
+      'PR-13': { id: 'PR-13', kind: 'pr', branch: 'feature/v', prNumber: 13, status: 'Ready', prState: 'OPEN' },
+      'FLUX-1': { id: 'FLUX-1', branch: 'feature/v', status: 'Ready', reviewState: 'approved' },
+    });
+    ghState.stdout = JSON.stringify([
+      { number: 13, title: 'Thing', url: 'https://gh/pr/13', state: 'OPEN', headRefName: 'feature/v', reviewDecision: 'CHANGES_REQUESTED', isDraft: false, body: '' },
+    ]);
+
+    await syncPrTickets('/repo');
+
+    expect(vi.mocked(updateTaskWithHistory)).toHaveBeenCalledWith('FLUX-1', expect.objectContaining({
+      nextStatus: 'In Progress',
+      extraFields: { reviewState: null },
+    }));
+  });
+});
+
+/**
+ * FLUX-986: the portal-Merge conflict bounce (routes/tasks.ts) sets `swimlane: 'merge-conflict'`
+ * on a kind:'pr' deck-card ticket directly, outside syncPrTickets. The next 90s poll must not
+ * silently wipe it back to null — that would erase the "Launch Rebase Session" CTA within ~90s
+ * even though the underlying git conflict is still unresolved (the review round 2 catch).
+ */
+describe('syncPrTickets preserves the merge-conflict swimlane across a poll (FLUX-986)', () => {
+  beforeEach(() => {
+    for (const k of Object.keys(tasksCache)) delete (tasksCache as Record<string, unknown>)[k];
+    vi.mocked(upsertManagedTicket).mockClear();
+    syncHealthState.unhealthy = false;
+  });
+
+  it('does not clobber a merge-conflict swimlane on the next poll while the PR is still open', async () => {
+    Object.assign(tasksCache, {
+      'PR-20': { id: 'PR-20', kind: 'pr', branch: 'feature/conflict', prNumber: 20, status: 'In Progress', prState: 'OPEN', swimlane: 'merge-conflict' },
+    });
+    ghState.stdout = JSON.stringify([
+      { number: 20, title: 'Conflicted thing', url: 'https://gh/pr/20', state: 'OPEN', headRefName: 'feature/conflict', reviewDecision: null, isDraft: false, body: '' },
+    ]);
+
+    await syncPrTickets('/repo');
+
+    expect(vi.mocked(upsertManagedTicket)).toHaveBeenCalledWith('PR-20', expect.objectContaining({ swimlane: 'merge-conflict' }), '');
+  });
+
+  it('CHANGES_REQUESTED still overrides a stale merge-conflict swimlane during a poll', async () => {
+    Object.assign(tasksCache, {
+      'PR-21': { id: 'PR-21', kind: 'pr', branch: 'feature/conflict2', prNumber: 21, status: 'In Progress', prState: 'OPEN', swimlane: 'merge-conflict' },
+    });
+    ghState.stdout = JSON.stringify([
+      { number: 21, title: 'Conflicted then reviewed', url: 'https://gh/pr/21', state: 'OPEN', headRefName: 'feature/conflict2', reviewDecision: 'CHANGES_REQUESTED', isDraft: false, body: '' },
+    ]);
+
+    await syncPrTickets('/repo');
+
+    expect(vi.mocked(upsertManagedTicket)).toHaveBeenCalledWith('PR-21', expect.objectContaining({ swimlane: 'changes-requested' }), '');
+  });
+});
+
+/**
+ * FLUX-1076: while flux-data sync is wedged, tasksCache can be stale — a PR whose full ticket
+ * already exists on the remote just looks "missing" locally. Creating a fresh skeleton for it
+ * guarantees an add/add conflict on the next successful pull, which is how the incident this
+ * ticket hardens against kept re-triggering itself. Only NET-NEW creation defers; existing PR
+ * tickets keep getting their normal lifecycle updates.
+ */
+describe('syncPrTickets defers new-ticket creation while sync is unhealthy (FLUX-1076)', () => {
+  beforeEach(() => {
+    for (const k of Object.keys(tasksCache)) delete (tasksCache as Record<string, unknown>)[k];
+    vi.mocked(upsertManagedTicket).mockClear();
+    syncHealthState.unhealthy = false;
+  });
+
+  it('skips creating a brand-new PR ticket while sync is unhealthy', async () => {
+    syncHealthState.unhealthy = true;
+    ghState.stdout = JSON.stringify([
+      { number: 11, title: 'New PR', url: 'https://gh/pr/11', state: 'OPEN', headRefName: 'feature/z', reviewDecision: null, isDraft: false, body: '' },
+    ]);
+
+    await syncPrTickets('/repo');
+
+    expect(vi.mocked(upsertManagedTicket)).not.toHaveBeenCalled();
+  });
+
+  it('still updates an existing PR ticket while sync is unhealthy', async () => {
+    syncHealthState.unhealthy = true;
+    Object.assign(tasksCache, {
+      'PR-11': { id: 'PR-11', kind: 'pr', branch: 'feature/z', status: 'Ready', prState: 'OPEN' },
+    });
+    ghState.stdout = JSON.stringify([
+      { number: 11, title: 'New PR', url: 'https://gh/pr/11', state: 'OPEN', headRefName: 'feature/z', reviewDecision: 'CHANGES_REQUESTED', isDraft: false, body: '' },
+    ]);
+
+    await syncPrTickets('/repo');
+
+    expect(vi.mocked(upsertManagedTicket)).toHaveBeenCalledWith('PR-11', expect.any(Object), '');
+  });
+
+  it('creates a new PR ticket normally once sync is healthy again', async () => {
+    syncHealthState.unhealthy = false;
+    ghState.stdout = JSON.stringify([
+      { number: 12, title: 'Another PR', url: 'https://gh/pr/12', state: 'OPEN', headRefName: 'feature/w', reviewDecision: null, isDraft: false, body: '' },
+    ]);
+
+    await syncPrTickets('/repo');
+
+    expect(vi.mocked(upsertManagedTicket)).toHaveBeenCalledWith('PR-12', expect.any(Object), '');
   });
 });

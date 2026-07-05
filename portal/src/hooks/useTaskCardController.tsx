@@ -257,6 +257,13 @@ export function useTaskCardController({
   // `currentActivity` above), and keep `hasActiveCliSession` unchanged — other call sites depend on
   // it covering all three active statuses.
   const sessionState = classifyCardSessionState(task, liveSession?.status, config);
+  // S10 (epic FLUX-996): the SSE-fed failure detail (kind/reason), scoped to the task's CURRENT
+  // session — a stale failure from a superseded session (a retry that has since started a new
+  // one) must never outlive it and read as if the fresh attempt failed.
+  const operationFailure =
+    liveSession?.lastOperationFailure && liveSession.lastOperationFailure.sessionId === task.cliSession?.id
+      ? liveSession.lastOperationFailure
+      : undefined;
 
   // Multi-agent cluster: show the most recent multi-session run group while it is
   // still live (workers running, or a combiner still owed). Grouping ALL sessions
@@ -312,8 +319,16 @@ export function useTaskCardController({
       repliesByParentId.set(c.replyTo, bucket);
     }
   }
-  const unreadComments = comments.filter(c => c.id && !readCommentIds.has(c.id) && c.user !== currentUser);
-  const hasUnread = unreadComments.length > 0;
+  // FLUX-1144: the list payload now caps inline `comments` (full text) to the most recent few, so
+  // both the total COUNT and the unread COUNT must come from `historyDigest.comments` — the full,
+  // text-free id/user/date list every other unread surface (Column dots, GlobalSearch,
+  // ContextMenu, useTicketActions) already reads from. Using the capped array for either would
+  // silently undercount tickets with more comments than fit in the inline window.
+  const totalCommentCount = task.historyDigest?.comments?.length ?? comments.length;
+  const unreadCommentIds = (task.historyDigest?.comments ?? [])
+    .filter(c => !readCommentIds.has(c.id) && c.user !== currentUser)
+    .map(c => c.id);
+  const hasUnread = unreadCommentIds.length > 0;
 
   const submitPopoverReply = async (parentId: string) => {
     if (!popoverReplyDraft.trim()) return;
@@ -334,7 +349,7 @@ export function useTaskCardController({
           comment: message,
           replyTo: parentId,
         };
-        await updateTask(task.id, { appendHistory: [replyEntry], updatedBy: currentUser } as Partial<Task>);
+        await updateTask(task.id, { appendHistory: [replyEntry], updatedBy: currentUser });
       }
       triggerRefresh();
       setPopoverReplyTarget(null);
@@ -521,16 +536,21 @@ export function useTaskCardController({
   const [isAnimatingZ, setIsAnimatingZ] = useState(false);
   const [isHovering, setIsHovering] = useState(false);
   const rattleControls = useAnimationControls();
-  const prevLiveOutputLenRef = useRef<number>(task.cliSession?.liveOutput?.length ?? 0);
+  // FLUX-1144: was keyed off `liveOutput.length`, which the list payload now truncates to a
+  // fixed tail — once a session passes that length, the growth signal would flatline and the
+  // rattle would stop firing for the rest of a long session. `lastOutputAt` is a timestamp the
+  // engine bumps on every output chunk regardless of buffer size, so it isn't affected by
+  // truncation and still fires exactly once per genuinely new chunk.
+  const prevLastOutputAtRef = useRef<string | undefined>(task.cliSession?.lastOutputAt);
 
   useEffect(() => {
     if (!animationsEnabled || !hasActiveCliSession) return;
-    const currentLen = task.cliSession?.liveOutput?.length ?? 0;
-    if (currentLen > prevLiveOutputLenRef.current) {
-      prevLiveOutputLenRef.current = currentLen;
+    const currentLastOutputAt = task.cliSession?.lastOutputAt;
+    if (currentLastOutputAt && currentLastOutputAt !== prevLastOutputAtRef.current) {
+      prevLastOutputAtRef.current = currentLastOutputAt;
       rattleControls.start({ x: [0, -3, 3, -2, 2, 0], transition: { duration: 0.35, ease: 'easeInOut' } });
     }
-  }, [task.cliSession?.liveOutput, animationsEnabled, hasActiveCliSession, rattleControls]);
+  }, [task.cliSession?.lastOutputAt, animationsEnabled, hasActiveCliSession, rattleControls]);
   const [popupPos, setPopupPos] = useState({ cardTop: 0, cardHeight: 0, top: 0, left: 'auto' as number | string, right: 'auto' as number | string });
   const hoverTimeout = useRef<number | null>(null);
   const popupRef = useRef<HTMLDivElement>(null);
@@ -807,6 +827,7 @@ export function useTaskCardController({
     hasActiveCliSession,
     currentActivity,
     sessionState,
+    operationFailure,
     clusterGroup,
     clusterAgg,
     clusterCombinerPending,
@@ -818,7 +839,8 @@ export function useTaskCardController({
     comments,
     topLevelComments,
     repliesByParentId,
-    unreadComments,
+    totalCommentCount,
+    unreadCommentIds,
     hasUnread,
     submitPopoverReply,
     handleCardDetach,

@@ -1,4 +1,4 @@
-import { execFile } from 'child_process';
+import { execFile, type ExecFileException } from 'child_process';
 import { promisify } from 'util';
 import { listTaskWorktrees, findWorktreeForBranch } from './task-worktree.js';
 
@@ -295,8 +295,9 @@ export async function diffFileContent(
   try {
     const { stdout } = await runner(cwd, ['diff', '--no-index', '--', '/dev/null', file]);
     return stdout;
-  } catch (err: any) {
-    return typeof err?.stdout === 'string' ? err.stdout : '';
+  } catch (err) {
+    const execErr = err as ExecFileException;
+    return typeof execErr.stdout === 'string' ? execErr.stdout : '';
   }
 }
 

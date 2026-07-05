@@ -96,7 +96,7 @@ export async function deleteTicketBranch(name: string, force = false): Promise<v
     const flag = force ? '-D' : '-d';
     try {
       await git(['branch', flag, name]);
-    } catch (err: any) {
+    } catch (err) {
       // FORCE delete: tolerate failure (most often "checked out" — you can't `-D` the branch a
       // worktree / the main tree is on) so it doesn't block the REMOTE delete below. Otherwise
       // a merge whose branch is still checked out orphaned the branch on BOTH sides (the throw
@@ -104,7 +104,8 @@ export async function deleteTicketBranch(name: string, force = false): Promise<v
       // ref; the backstop prune reclaims it once it's no longer checked out.
       // NON-force (`-d`): rethrow — the failure is the "refuses unmerged" safety the caller wants.
       if (!force) throw err;
-      console.warn(`[branch] forced local delete of ${name} failed (likely checked out): ${err?.message ?? err}`);
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[branch] forced local delete of ${name} failed (likely checked out): ${message}`);
     }
   }
   // Remote delete — attempted REGARDLESS of the local outcome (independent of it). Best-effort:
@@ -191,8 +192,9 @@ export async function postPrReview(
     try {
       await runGh(['pr', 'review', pr, '--comment', '--body', body]);
       return 'commented';
-    } catch (commentErr: any) {
-      console.warn(`[branch] post PR comment review on ${pr} failed: ${commentErr?.message ?? commentErr}`);
+    } catch (commentErr) {
+      const message = commentErr instanceof Error ? commentErr.message : String(commentErr);
+      console.warn(`[branch] post PR comment review on ${pr} failed: ${message}`);
       return 'failed';
     }
   }
@@ -206,8 +208,9 @@ export async function postPrReview(
     try {
       await runGh(['pr', 'review', pr, '--comment', '--body', body]);
       return 'commented';
-    } catch (commentErr: any) {
-      console.warn(`[branch] post PR review (${verdict}) on ${pr} failed: ${commentErr?.message ?? commentErr}`);
+    } catch (commentErr) {
+      const message = commentErr instanceof Error ? commentErr.message : String(commentErr);
+      console.warn(`[branch] post PR review (${verdict}) on ${pr} failed: ${message}`);
       return 'failed';
     }
   }
@@ -222,6 +225,38 @@ export async function mergePullRequest(branch: string): Promise<void> {
   await runGh(['pr', 'merge', branch, '--squash']);
 }
 
+/**
+ * Distinguish a genuine git merge conflict from other `gh pr merge` failures (auth, network,
+ * rate-limit) so callers can offer a guided rebase CTA only when a conflict is actually the
+ * cause (FLUX-986). Auth/permission signatures are checked first and always win — they have
+ * their own recovery path (re-auth, not rebase) and must never trip the conflict CTA.
+ *
+ * FLUX-1104: does NOT match on the generic "not mergeable" / "mergeable state" phrasing —
+ * GitHub's own merge API returns that exact wording for merges blocked by required status
+ * checks or branch protection too (e.g. "is not mergeable: the base branch policy prohibits
+ * the merge", cli/cli#7518), which is not a git conflict and must not trip the rebase CTA.
+ * Only phrases specific to an actual conflicting merge state match (cli/cli#12773).
+ */
+export function isMergeConflict(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err ?? '');
+  const stderr = (err as { stderr?: string } | null)?.stderr ?? '';
+  const text = `${message}\n${stderr}`.toLowerCase();
+  if (
+    text.includes('gh auth') ||
+    text.includes('authentication') ||
+    text.includes('permission denied') ||
+    text.includes('could not read username') ||
+    text.includes('could not read password')
+  ) {
+    return false;
+  }
+  return (
+    text.includes('conflict') ||
+    text.includes('cannot be cleanly created') ||
+    text.includes('could not be cleanly created')
+  );
+}
+
 /** Normalized PR state for a branch — what the EH PR card / swimlane render (FLUX-556). */
 export interface PrStatus {
   number: number;
@@ -231,23 +266,45 @@ export interface PrStatus {
   reviewDecision: string | null;  // APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | null
   mergeable: string;              // MERGEABLE | CONFLICTING | UNKNOWN
   checks: { total: number; passed: number; failed: number; pending: number };
+  headRefName: string;            // the PR's source branch (FLUX-944: used to tell a sibling PR from this ticket's own)
+}
+
+/** A single `gh pr view` statusCheckRollup entry — either a CheckRun (status+conclusion) or a StatusContext (state). */
+interface GhCheckRollupEntry {
+  status?: string;
+  conclusion?: string;
+  state?: string;
+}
+
+/** Raw shape of `gh pr view --json number,state,url,title,reviewDecision,mergeable,statusCheckRollup,headRefName`. */
+interface GhPrViewRaw {
+  number?: number;
+  state?: string;
+  url?: string;
+  title?: string;
+  reviewDecision?: string | null;
+  mergeable?: string;
+  statusCheckRollup?: GhCheckRollupEntry[];
+  headRefName?: string;
 }
 
 /**
- * Best-effort PR state for a branch via `gh pr view`. Returns null when no PR exists
- * for the branch, or gh is unavailable/unauthed — callers degrade gracefully and never
- * surface a 500 (FLUX-556). statusCheckRollup is folded into a compact pass/fail/pending
- * tally; v1 surfaces (does not gate on) checks — CI gating is P3.
+ * Best-effort PR state for a branch via `gh pr view`. `selector` accepts anything `gh pr view`
+ * does — a branch name, PR number, or PR URL (FLUX-944 uses the URL form to look up a sibling
+ * ticket's PR from an `implementationLink`). Returns null when no PR exists for the selector, or
+ * gh is unavailable/unauthed — callers degrade gracefully and never surface a 500 (FLUX-556).
+ * statusCheckRollup is folded into a compact pass/fail/pending tally; v1 surfaces (does not gate
+ * on) checks — CI gating is P3.
  */
-export async function getPullRequestStatus(branch: string): Promise<PrStatus | null> {
+export async function getPullRequestStatus(selector: string): Promise<PrStatus | null> {
   try {
     const { stdout } = await runGh(
-      ['pr', 'view', branch, '--json', 'number,state,url,title,reviewDecision,mergeable,statusCheckRollup'],
+      ['pr', 'view', selector, '--json', 'number,state,url,title,reviewDecision,mergeable,statusCheckRollup,headRefName'],
     );
-    const raw = JSON.parse(stdout);
+    const raw = JSON.parse(stdout) as GhPrViewRaw;
     if (!raw || typeof raw.number !== 'number') return null;
 
-    const rollup: any[] = Array.isArray(raw.statusCheckRollup) ? raw.statusCheckRollup : [];
+    const rollup: GhCheckRollupEntry[] = Array.isArray(raw.statusCheckRollup) ? raw.statusCheckRollup : [];
     const checks = { total: rollup.length, passed: 0, failed: 0, pending: 0 };
     for (const c of rollup) {
       // gh exposes CheckRun (status + conclusion) or StatusContext (state) entries.
@@ -267,17 +324,23 @@ export async function getPullRequestStatus(branch: string): Promise<PrStatus | n
       reviewDecision: raw.reviewDecision ? String(raw.reviewDecision) : null,
       mergeable: String(raw.mergeable ?? 'UNKNOWN'),
       checks,
+      headRefName: String(raw.headRefName ?? ''),
     };
   } catch {
-    return null; // no PR for this branch, or gh unavailable — best-effort
+    return null; // no PR for this selector, or gh unavailable — best-effort
   }
 }
 
 /** How {@link finish_ticket} should obtain a mergeable PR for a branch (FLUX-741). */
 export interface FinishPrPlan {
-  /** 'reuse' = an OPEN PR already exists; 'created' = a fresh PR was opened; 'blocked' = can't open one (route to Require Input). */
-  action: 'reuse' | 'created' | 'blocked';
-  /** PR url for 'reuse'/'created'. */
+  /**
+   * 'reuse' = an OPEN PR already exists; 'created' = a fresh PR was opened; 'blocked' = can't
+   * open one (route to Require Input); 'folded' = the branch is deliberately empty because its
+   * work already landed via a sibling ticket's merged PR (FLUX-944) — finish with that link,
+   * no PR to create/merge on this branch.
+   */
+  action: 'reuse' | 'created' | 'blocked' | 'folded';
+  /** PR url for 'reuse'/'created'/'folded'. */
   url?: string;
   /** Why we couldn't open a PR (for the Require Input message) when action === 'blocked'. */
   reason?: string;
@@ -300,8 +363,12 @@ export interface FinishPrDeps {
  *  - OPEN PR            → reuse it (merge proceeds as before).
  *  - MERGED/CLOSED, or no PR at all → the old PR is dead; open a FRESH one via {@link createPullRequest}
  *    (its OPEN-only reuse logic already declines to reuse a dead PR), then merge that.
- *  - branch has 0 commits ahead of its base → a PR genuinely can't be opened (nothing to merge) →
- *    `blocked`; the caller routes to Require Input instead of throwing onto a dead branch.
+ *  - branch has 0 commits ahead of its base → a PR genuinely can't be opened (nothing to merge).
+ *    This is usually a real blocker (`blocked`; the caller routes to Require Input) — UNLESS
+ *    `siblingLink` (the caller's `implementationLink`) already points at a MERGED PR on a
+ *    DIFFERENT branch: that's the fold-together pattern (FLUX-944) — this ticket's deliverable
+ *    was deliberately committed onto a sibling ticket's branch/PR instead of its own, so its own
+ *    branch is empty ON PURPOSE. Detected that way, it's `folded`, not blocked.
  *
  * Never merges a non-OPEN PR. Deps are injectable for tests; defaults hit the real gh/git layer.
  */
@@ -310,6 +377,7 @@ export async function planFinishPr(
   title: string,
   body: string,
   deps: FinishPrDeps = {},
+  siblingLink?: string,
 ): Promise<FinishPrPlan> {
   const getStatus = deps.getStatus ?? getPullRequestStatus;
   const getBranchStatus = deps.getBranchStatus ?? getTicketBranchStatus;
@@ -324,6 +392,12 @@ export async function planFinishPr(
   // opening a PR with nothing ahead of the base fails, so route those to Require Input.
   const bs = await getBranchStatus(branch).catch(() => null);
   if (bs && bs.exists && bs.aheadCount === 0) {
+    if (siblingLink) {
+      const linked = await getStatus(siblingLink).catch(() => null);
+      if (linked && linked.state === 'MERGED' && linked.headRefName && linked.headRefName !== branch) {
+        return { action: 'folded', url: siblingLink };
+      }
+    }
     return {
       action: 'blocked',
       reason: existing
@@ -479,7 +553,7 @@ export async function captureDiff(branch?: string | null, baselineCommit?: strin
   const range = await resolveDiffRange(branch, baselineCommit, mode);
   if (!range) return null;
 
-  let summary: DiffFileSummary[] = [];
+  let summary: DiffFileSummary[];
   try {
     const { stdout } = await gitDiff(['diff', '--numstat', range]);
     summary = parseNumstat(stdout);
@@ -487,7 +561,7 @@ export async function captureDiff(branch?: string | null, baselineCommit?: strin
     return null;
   }
 
-  let fullDiff = '';
+  let fullDiff: string;
   let truncated = false;
   try {
     const { stdout } = await gitDiff(['diff', range]);

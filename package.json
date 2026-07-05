@@ -1,6 +1,6 @@
 {
   "name": "event-horizon",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "private": true,
   "description": "An IDE for the agent era — a local-first, markdown-backed ticket board and orchestration layer for coding agents.",
   "keywords": [
@@ -34,7 +34,7 @@
     "dev:stable": "node scripts/dev.mjs --no-watch",
     "build": "npm run build -w portal && npm run build -w engine",
     "typecheck": "npm run typecheck -w portal && npm run typecheck -w engine",
-    "lint": "npm run lint -w portal",
+    "lint": "npm run lint -w portal && npm run lint -w engine",
     "check:boundary": "node engine/scripts/check-adapter-boundary.mjs",
     "check:git-exec": "node engine/scripts/check-git-exec.mjs",
     "check": "npm run check:boundary && npm run check:git-exec && npm run typecheck && npm run lint && npm run test -w engine",

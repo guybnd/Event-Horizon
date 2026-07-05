@@ -5,8 +5,12 @@ import { selectTicketsForList } from './mcp-server.js';
  * FLUX-489: list_tickets active-by-default + limit + search. `selectTicketsForList` is
  * factored out of the handler so the selection/cap decision is a pure function (mirrors
  * the `describeEmptyTicketList` idiom).
+ *
+ * `over` intentionally allows arbitrary extra fields (not just `ListTicketRow`'s lean columns) —
+ * the "keeps lean columns only" test below stuffs full-ticket-shaped fields (`body`, `history`,
+ * `_path`) in to prove the selector trims them from its output.
  */
-function ticket(id: string, over: Partial<any> = {}) {
+function ticket(id: string, over: Record<string, unknown> = {}) {
   return {
     id,
     title: `${id} title`,

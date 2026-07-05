@@ -14,7 +14,11 @@ import type { StoredDoc } from './file-utils.js';
  * without spinning up an MCP transport (mirrors the selectTicketsForList idiom).
  */
 
-function ticket(id: string, over: Partial<any> = {}) {
+interface TicketOverrides {
+  status?: string;
+}
+
+function ticket(id: string, over: TicketOverrides = {}) {
   return {
     id,
     title: `${id} title`,
@@ -47,12 +51,12 @@ describe('resolveTicketResource (FLUX-949 ticket:// read)', () => {
   it('returns the task for an exact canonical id', () => {
     const r = resolveTicketResource('FLUX-949', tasks);
     expect(r.ok).toBe(true);
-    expect(r.ok && r.task.id).toBe('FLUX-949');
+    expect(r.ok && (r.task as { id: string }).id).toBe('FLUX-949');
   });
 
   it('trims surrounding whitespace before lookup', () => {
     const r = resolveTicketResource('  FLUX-1  ', tasks);
-    expect(r.ok && r.task.id).toBe('FLUX-1');
+    expect(r.ok && (r.task as { id: string }).id).toBe('FLUX-1');
   });
 
   it('rejects a bare numeric id as validation_failed (ambiguous project key)', () => {

@@ -19,8 +19,8 @@ export function CardCommentBadge({ task, c, compact = false, inline = false }: {
     startDescriptionTimer,
     isPromptStatus,
     hasUnread,
-    comments,
-    unreadComments,
+    totalCommentCount,
+    unreadCommentIds,
     config,
   } = c;
 
@@ -32,7 +32,7 @@ export function CardCommentBadge({ task, c, compact = false, inline = false }: {
     ? inline
       ? 'eh-unread-badge bg-amber-400 px-2 py-0.5 text-[10px] font-bold text-amber-950 ring-1 ring-amber-300 hover:bg-amber-300 active:scale-95 dark:ring-amber-500/30'
       : `${compact ? 'top-2 right-2' : isPromptStatus ? '-top-3.5 right-7' : '-top-3.5 right-3'} eh-unread-badge px-2.5 py-1 text-[11px] font-bold bg-amber-400 text-amber-950 ring-2 ring-white shadow-md hover:bg-amber-300 hover:scale-110 active:scale-95 dark:ring-[#1f2028]`
-    : comments.length > 0
+    : totalCommentCount > 0
       ? inline
         ? 'bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-500 hover:bg-primary/10 hover:text-primary active:scale-95 dark:bg-black/25 dark:text-gray-400 dark:hover:bg-primary/15 dark:hover:text-primary'
         : 'top-2 right-2 px-2 py-0.5 text-[10px] bg-gray-100/80 text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-primary/10 hover:text-primary hover:scale-105 active:scale-95 dark:bg-black/30 dark:text-gray-500 dark:hover:bg-primary/15 dark:hover:text-primary'
@@ -43,13 +43,13 @@ export function CardCommentBadge({ task, c, compact = false, inline = false }: {
   return (
     <button
       ref={commentBadgeRef}
-      onClick={comments.length > 0
+      onClick={totalCommentCount > 0
         ? openCommentPopover
         : (e) => { e.stopPropagation(); openTaskModal(task); }
       }
-      title={comments.length === 0 ? 'Add a comment' : undefined}
+      title={totalCommentCount === 0 ? 'Add a comment' : undefined}
       onMouseEnter={(e) => {
-        if (comments.length === 0) return;
+        if (totalCommentCount === 0) return;
         e.stopPropagation();
         // Cancel any pending close
         if (commentCloseTimeout.current !== null) {
@@ -91,7 +91,7 @@ export function CardCommentBadge({ task, c, compact = false, inline = false }: {
       className={`${inline ? 'flex flex-shrink-0' : 'absolute z-20 flex'} items-center gap-1 rounded-full font-semibold transition-all duration-200 ${stateCls}`}
     >
       <MessageCircle className="w-3.5 h-3.5" />
-      {hasUnread ? <span>{unreadComments.length}</span> : comments.length > 0 && <span>{comments.length}</span>}
+      {hasUnread ? <span>{unreadCommentIds.length}</span> : totalCommentCount > 0 && <span>{totalCommentCount}</span>}
     </button>
   );
 }

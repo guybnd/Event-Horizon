@@ -29,7 +29,7 @@ describe('session-binding (FLUX-841 session→ticket token)', () => {
     expect(verifyConversation('FLUX-841', null)).toBe(false);
     expect(verifyConversation('FLUX-841', undefined)).toBe(false);
     expect(verifyConversation('FLUX-841', '')).toBe(false);
-    expect(verifyConversation('FLUX-841', undefined as any)).toBe(false);
+    expect(verifyConversation('FLUX-841', undefined)).toBe(false);
   });
 
   it('rejects a tampered token (wrong value, wrong length)', () => {
@@ -95,7 +95,7 @@ describe('session-binding secret persistence across restart (FLUX-894)', () => {
   });
 
   it('falls back to an in-memory secret (sign/verify still consistent) when no workspace is bound', () => {
-    setWorkspaceRoot(null as any); // getActiveFluxDir throws → best-effort path, ephemeral secret
+    setWorkspaceRoot(null as unknown as string); // getActiveFluxDir throws → best-effort path, ephemeral secret
     __resetBindingSecretForTest();
     expect(verifyConversation('FLUX-1', signConversation('FLUX-1'))).toBe(true);
     expect(verifyConversation('FLUX-2', signConversation('FLUX-1'))).toBe(false);

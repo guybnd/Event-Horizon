@@ -78,7 +78,7 @@ export async function loadFurnaceBatches(): Promise<FurnaceBatch[]> {
   const dir = getFurnaceDir();
   const next: Record<string, FurnaceBatch> = {};
   if (existsSync(dir)) {
-    let files: string[] = [];
+    let files: string[];
     try { files = await fs.readdir(dir); } catch { files = []; }
     for (const file of files) {
       if (!file.endsWith('.json')) continue;
@@ -144,9 +144,19 @@ export function setObservedWorktrees(ticketIds: readonly (string | null)[]): voi
  * (live for a reason the Furnace isn't tracking — a manually resumed/taken-over ticket) with the Furnace's
  * own reservations, counting a reservation once whether or not its worktree is on disk yet. See
  * {@link computeSlotsInUse} for why the old `max(reservations, observed)` could undercount.
+ *
+ * FLUX-1157: counts EVERY observed worktree — no batch-state exclusion. FLUX-1090 used to drop an observed
+ * worktree belonging to a ticket in a terminal (done/parked) batch on the assumption that batch finalizing
+ * meant the worktree was reclaimed — it wasn't (takeover semantics never delete it, and a dirty tree or a
+ * non-reclaimable ticket status can leave it on disk indefinitely). That let the gauge report free slots
+ * while `createTaskWorktree`'s own physical count — which has no such exemption — was genuinely full, so
+ * ignite kept admitting batches into guaranteed spawn failures. The real fix is to actually reclaim what's
+ * reclaimable before counting (see `igniteBatch`/`resumeBatch` in furnace-stoker.ts, which run
+ * `reclaimReadyWorktrees` first), so what's left on disk here is the physical truth.
  */
 export function globalSlotsInUse(): number {
-  const reserved = Object.values(cache).flatMap((b) => furnaceReservedTicketIds(b));
+  const batches = Object.values(cache);
+  const reserved = batches.flatMap((b) => furnaceReservedTicketIds(b));
   return computeSlotsInUse(reserved, { count: observedWorktreeCount, ticketIds: [...observedWorktreeTicketIds] });
 }
 

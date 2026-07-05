@@ -1,4 +1,5 @@
 import { checkGhAuth } from './branch-manager.js';
+import { resolveRemoteHost } from './git-remote-host.js';
 
 /**
  * Non-interactive git environment for the background sync (FLUX-895).
@@ -69,7 +70,8 @@ async function ghAuthed(): Promise<boolean> {
 
 /**
  * Build the environment for a sync git spawn. Always non-interactive; injects
- * gh's credential helper for github.com when gh is authenticated.
+ * gh's credential helper for github.com when gh is authenticated AND `cwd`'s
+ * `origin` remote actually resolves to github.com.
  *
  * The gh injection uses git's `GIT_CONFIG_*` env config (git ≥ 2.31) so it applies
  * uniformly to every git call without per-command `-c` plumbing. It (a) RESETS the
@@ -77,8 +79,16 @@ async function ghAuthed(): Promise<boolean> {
  * never pop, even on this path) and (b) sets `!gh auth git-credential` as the sole
  * helper for `https://github.com`. `gh` must be on PATH for the spawned git's shell
  * — it is, since the same process just ran `gh auth status` to get here.
+ *
+ * FLUX-987: being logged into `gh` says nothing about which remote `cwd` actually
+ * points at — a flux-data (or main-repo) remote on GitLab/Bitbucket/GH-Enterprise/a
+ * self-hosted host would otherwise have its `credential.helper` chain reset to empty
+ * (step (a) above) with no replacement helper, permanently breaking auth for that
+ * remote. So the reset+injection only happens once `cwd`'s `origin` is confirmed to
+ * be github.com; every other host (including an unresolvable one, e.g. `cwd` omitted
+ * or not yet a git repo) keeps its inherited OS credential helper untouched.
  */
-export async function buildGitSyncEnv(): Promise<NodeJS.ProcessEnv> {
+export async function buildGitSyncEnv(cwd?: string): Promise<NodeJS.ProcessEnv> {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     GIT_TERMINAL_PROMPT: '0',
@@ -98,7 +108,7 @@ export async function buildGitSyncEnv(): Promise<NodeJS.ProcessEnv> {
       : 'ssh -o BatchMode=yes',
   };
 
-  if (await ghAuthed()) {
+  if (await ghAuthed() && cwd && (await resolveRemoteHost(cwd)) === 'github.com') {
     // Reset generic helpers, reset github.com-scoped helpers, then set gh as the
     // only github.com helper. An empty value clears the accumulated helper list.
     env.GIT_CONFIG_COUNT = '3';

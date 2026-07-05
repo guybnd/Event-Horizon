@@ -9,6 +9,10 @@ import { isPackaged } from '../packaged-mode.js';
 
 const router = express.Router();
 
+function errorMessage(err: unknown, fallback?: string): string | undefined {
+  return err instanceof Error && err.message ? err.message : fallback;
+}
+
 function spawnFolderPicker(): Promise<string | null> {
   return new Promise((resolve, reject) => {
     const platform = process.platform;
@@ -52,8 +56,8 @@ router.post('/pick', async (_req, res) => {
   try {
     const picked = await spawnFolderPicker();
     res.json({ path: picked });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to open folder picker' });
+  } catch (err) {
+    res.status(500).json({ error: errorMessage(err, 'Failed to open folder picker') });
   }
 });
 
@@ -118,8 +122,8 @@ router.get('/browse', async (req, res) => {
         { name: '/', path: '/' },
       ];
       return res.json({ path: '', parent: null, entries, roots: [home, '/'] });
-    } catch (err: any) {
-      return res.status(400).json({ error: err?.message || 'Failed to list roots' });
+    } catch (err) {
+      return res.status(400).json({ error: errorMessage(err, 'Failed to list roots') });
     }
   }
 
@@ -140,14 +144,17 @@ router.get('/browse', async (req, res) => {
     const parent = parentDir === resolved ? null : parentDir;
 
     res.json({ path: resolved, parent, entries });
-  } catch (err: any) {
-    const code = err?.code;
+  } catch (err) {
+    // fs.readdir rejects with a Node errno exception (has an optional `.code`); cast is safe
+    // because that's the only rejection shape this call produces.
+    const e = err as NodeJS.ErrnoException;
+    const code = e?.code;
     const msg =
       code === 'ENOENT'
         ? `Folder not found: ${resolved}`
         : code === 'EACCES' || code === 'EPERM'
           ? `Can't read this folder (permission denied): ${resolved}`
-          : err?.message || `Can't read this folder: ${resolved}`;
+          : e?.message || `Can't read this folder: ${resolved}`;
     res.status(400).json({ error: msg });
   }
 });
@@ -172,8 +179,8 @@ router.post('/', async (req, res) => {
     await saveAppSettings({ workspace: bound });
     await autoRegisterWorkspace(bound);
     res.json({ ok: true, path: bound });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err) {
+    res.status(500).json({ error: errorMessage(err) });
   }
 });
 
@@ -230,8 +237,8 @@ export async function handlePathSetup(req: express.Request, res: express.Respons
       }
     }
     return res.json({ ok: true, snippet });
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message || 'Failed to update PATH' });
+  } catch (err) {
+    return res.status(500).json({ error: errorMessage(err, 'Failed to update PATH') });
   }
 }
 

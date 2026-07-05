@@ -116,63 +116,65 @@ export function getGroupStoreDir(parentRoot: string): string {
  * Validate a parsed `group.json`. Returns an array of errors (empty = valid).
  * Mirrors the lightweight validation style of schema.ts.
  */
-export function validateGroupConfig(raw: any): GroupValidationError[] {
+export function validateGroupConfig(raw: unknown): GroupValidationError[] {
   const errors: GroupValidationError[] = [];
 
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return [{ path: '', message: 'group.json must be a JSON object' }];
   }
+  const cfg = raw as Record<string, unknown>;
 
-  if (!isNonEmptyString(raw.name)) {
+  if (!isNonEmptyString(cfg.name)) {
     errors.push({ path: 'name', message: 'missing or empty group name' });
   }
 
-  if (!Array.isArray(raw.members)) {
+  if (!Array.isArray(cfg.members)) {
     errors.push({ path: 'members', message: 'members must be an array' });
     return errors;
   }
-  if (raw.members.length === 0) {
+  if (cfg.members.length === 0) {
     errors.push({ path: 'members', message: 'members must be a non-empty array' });
   }
 
-  if (raw.docsLabel != null) {
-    if (!isNonEmptyString(raw.docsLabel)) {
+  if (cfg.docsLabel != null) {
+    if (!isNonEmptyString(cfg.docsLabel)) {
       errors.push({ path: 'docsLabel', message: 'docsLabel must be a non-empty string when present' });
-    } else if (!isSafeName(raw.docsLabel.trim())) {
+    } else if (!isSafeName(cfg.docsLabel.trim())) {
       errors.push({
         path: 'docsLabel',
-        message: `unsafe docsLabel '${raw.docsLabel}' (must be a single path segment: letters, digits, '.', '_', '-')`,
+        message: `unsafe docsLabel '${cfg.docsLabel}' (must be a single path segment: letters, digits, '.', '_', '-')`,
       });
     }
   }
 
   const seenNames = new Set<string>();
-  raw.members.forEach((member: any, index: number) => {
+  cfg.members.forEach((member: unknown, index: number) => {
     const at = `members[${index}]`;
     if (!member || typeof member !== 'object' || Array.isArray(member)) {
       errors.push({ path: at, message: 'member must be an object' });
       return;
     }
-    if (!isNonEmptyString(member.name)) {
+    const m = member as Record<string, unknown>;
+    if (!isNonEmptyString(m.name)) {
       errors.push({ path: `${at}.name`, message: 'missing or empty member name' });
-    } else if (!isSafeName(member.name)) {
+    } else if (!isSafeName(m.name)) {
       errors.push({
         path: `${at}.name`,
-        message: `unsafe member name '${member.name}' (must be a single path segment: letters, digits, '.', '_', '-')`,
+        message: `unsafe member name '${m.name}' (must be a single path segment: letters, digits, '.', '_', '-')`,
       });
     } else {
-      if (seenNames.has(member.name)) {
-        errors.push({ path: `${at}.name`, message: `duplicate member name '${member.name}' (names must be unique)` });
+      if (seenNames.has(m.name)) {
+        errors.push({ path: `${at}.name`, message: `duplicate member name '${m.name}' (names must be unique)` });
       }
-      seenNames.add(member.name);
+      seenNames.add(m.name);
     }
-    if (!isNonEmptyString(member.role)) {
+    if (!isNonEmptyString(m.role)) {
       errors.push({ path: `${at}.role`, message: 'missing or empty member role' });
     }
-    if (!isNonEmptyString(member.remote)) {
+    if (!isNonEmptyString(m.remote)) {
       errors.push({ path: `${at}.remote`, message: 'missing or empty member remote (git URL)' });
     }
-    if (member.testCommand != null && !isNonEmptyString(member.testCommand)) {
+    if (m.testCommand != null && !isNonEmptyString(m.testCommand)) {
       errors.push({ path: `${at}.testCommand`, message: 'testCommand must be a non-empty string when present' });
     }
   });
@@ -184,10 +186,10 @@ export function formatGroupValidationErrors(errors: GroupValidationError[]): str
   return errors.map((e) => (e.path ? `${e.path}: ${e.message}` : e.message)).join('; ');
 }
 
-async function readJsonIfPresent(filePath: string): Promise<any | null> {
+async function readJsonIfPresent(filePath: string): Promise<unknown | null> {
   if (!existsSync(filePath)) return null;
   const data = await fs.readFile(filePath, 'utf-8');
-  return JSON.parse(data);
+  return JSON.parse(data) as unknown;
 }
 
 /**
@@ -210,17 +212,19 @@ function resolveMemberPath(parentRoot: string, member: GroupMember, local: Group
  */
 export async function loadGroupContext(parentRoot: string): Promise<GroupContext | null> {
   const configFile = getGroupConfigFile(parentRoot);
-  const raw = await readJsonIfPresent(configFile);
-  if (raw == null) return null;
+  const rawJson = await readJsonIfPresent(configFile);
+  if (rawJson == null) return null;
 
-  const errors = validateGroupConfig(raw);
+  const errors = validateGroupConfig(rawJson);
   if (errors.length > 0) {
     throw new Error(`Invalid group.json: ${formatGroupValidationErrors(errors)}`);
   }
+  // Validated above — safe to treat as the well-formed shape from here on.
+  const raw = rawJson as GroupConfig;
 
   const config: GroupConfig = {
     name: raw.name,
-    members: raw.members.map((m: any) => ({
+    members: raw.members.map((m) => ({
       name: m.name,
       role: m.role,
       remote: m.remote,
@@ -231,7 +235,7 @@ export async function loadGroupContext(parentRoot: string): Promise<GroupContext
 
   let local: GroupLocalConfig | null = null;
   try {
-    local = await readJsonIfPresent(getGroupLocalFile(parentRoot));
+    local = (await readJsonIfPresent(getGroupLocalFile(parentRoot))) as GroupLocalConfig | null;
   } catch (err) {
     console.warn(`[group] Ignoring malformed ${GROUP_LOCAL_FILENAME}:`, err);
     local = null;
@@ -510,12 +514,13 @@ export function activeGroupDocsLabel(): string {
  * malformed (a malformed parent is simply skipped during the scan).
  */
 export async function peekGroupMembers(root: string): Promise<{ name: string; remote: string }[] | null> {
-  const raw = await readJsonIfPresent(getGroupConfigFile(root)).catch(() => null);
-  if (raw == null) return null;
-  if (validateGroupConfig(raw).length > 0) return null;
-  return (raw.members as any[])
+  const rawJson = await readJsonIfPresent(getGroupConfigFile(root)).catch(() => null);
+  if (rawJson == null) return null;
+  if (validateGroupConfig(rawJson).length > 0) return null;
+  const raw = rawJson as GroupConfig;
+  return raw.members
     .filter((m) => isNonEmptyString(m?.name) && isNonEmptyString(m?.remote))
-    .map((m) => ({ name: m.name as string, remote: m.remote as string }));
+    .map((m) => ({ name: m.name, remote: m.remote }));
 }
 
 /** Read a checkout's `origin` remote URL, or null if it isn't a git repo / has no origin. */
@@ -626,16 +631,17 @@ export async function resolveWorkspaceGroups(roots: string[]): Promise<Map<strin
   interface ParentEntry { parentPath: string; groupName: string; members: { name: string; key: string }[]; }
   const parents: ParentEntry[] = [];
   for (const root of normalizedRoots) {
-    const raw = await readJsonIfPresent(getGroupConfigFile(root)).catch(() => null);
-    if (raw == null || validateGroupConfig(raw).length > 0) continue;
-    const groupName = raw.name as string;
+    const rawJson = await readJsonIfPresent(getGroupConfigFile(root)).catch(() => null);
+    if (rawJson == null || validateGroupConfig(rawJson).length > 0) continue;
+    const raw = rawJson as GroupConfig;
+    const groupName = raw.name;
     result.set(root, { groupName, role: 'parent', parentPath: root });
     parents.push({
       parentPath: root,
       groupName,
-      members: (raw.members as any[])
+      members: raw.members
         .filter((m) => isNonEmptyString(m?.name) && isNonEmptyString(m?.remote))
-        .map((m) => ({ name: m.name as string, key: normalizeRemoteForCompare(m.remote) }))
+        .map((m) => ({ name: m.name, key: normalizeRemoteForCompare(m.remote) }))
         .filter((m) => m.key.length > 0),
     });
   }

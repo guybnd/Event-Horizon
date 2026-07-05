@@ -278,6 +278,52 @@ export function clearSyncAuthNotification(): void {
   if (changed) broadcastEvent('notification', { notification: null, unreadCount: getUnreadCount() });
 }
 
+/**
+ * FLUX-1076 — a flux-data merge conflict parks sync indefinitely until a human resolves it
+ * (SyncStatusIndicator's little toolbar pill is the only other signal, and it's invisible
+ * unless the portal happens to be open on that screen). A 2026-07-03 incident chain showed
+ * this reads as "silent": the sync-status SSE state flipped to 'conflict' correctly, but
+ * nothing persisted the fact anywhere a distracted/away user would see it, so the store sat
+ * unmerged and fell 315+ commits behind before anyone noticed. Mirrors the auth notification
+ * (FLUX-895) — same title-scoped dedup so a repeated detection refreshes ONE entry instead of
+ * stacking; cleared on the next successful sync via {@link clearSyncConflictNotification}.
+ */
+const SYNC_CONFLICT_NOTIFICATION_TITLE = 'Sync conflict needs resolution';
+
+export function generateSyncConflictNotification(conflictCount: number): void {
+  const message =
+    `Sync is paused — ${conflictCount} ticket file${conflictCount === 1 ? '' : 's'} have a merge ` +
+    'conflict that needs resolution before sync can continue. Click the sync indicator to resolve.';
+  const existing = notifications.find(
+    n => n.type === 'error' && n.title === SYNC_CONFLICT_NOTIFICATION_TITLE && !n.dismissed
+  );
+  if (existing) {
+    existing.message = message;
+    existing.read = false;
+    existing.createdAt = new Date().toISOString();
+    broadcastEvent('notification', { notification: existing, unreadCount: getUnreadCount() });
+    return;
+  }
+  addNotification({
+    type: 'error',
+    title: SYNC_CONFLICT_NOTIFICATION_TITLE,
+    message,
+    actions: [{ label: 'Dismiss', actionId: 'dismiss' }],
+  });
+}
+
+/** Dismiss the standing sync-conflict notification (called once sync recovers — FLUX-1076). */
+export function clearSyncConflictNotification(): void {
+  let changed = false;
+  for (const n of notifications) {
+    if (n.type === 'error' && n.title === SYNC_CONFLICT_NOTIFICATION_TITLE && !n.dismissed) {
+      n.dismissed = true;
+      changed = true;
+    }
+  }
+  if (changed) broadcastEvent('notification', { notification: null, unreadCount: getUnreadCount() });
+}
+
 export async function checkFrameworkHealth(framework: Framework): Promise<void> {
   if (!workspaceRoot) return;
 

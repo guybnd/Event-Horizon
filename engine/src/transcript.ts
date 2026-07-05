@@ -4,6 +4,7 @@ import { getActiveFluxDir } from './workspace.js';
 import {
   type Turn,
   type TranscriptMessage,
+  type TurnRole,
   classifyRole,
   projectTranscript,
 } from './projection.js';
@@ -74,20 +75,26 @@ async function countLines(file: string): Promise<number> {
   try {
     const raw = await fs.readFile(file, 'utf8');
     return raw.split('\n').filter((l) => l.trim()).length;
-  } catch (err: any) {
-    if (err?.code === 'ENOENT') return 0;
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return 0;
     throw err;
   }
 }
 
+/** Extract a raw event's `timestamp` field if it's a string, else undefined. */
+function rawTimestamp(raw: unknown): string | undefined {
+  const value = (raw as { timestamp?: unknown } | null | undefined)?.timestamp;
+  return typeof value === 'string' ? value : undefined;
+}
+
 /** Best-effort envelope timestamp: the event's own `timestamp` if present, else now. */
-function envelopeTs(raw: any): string {
-  return typeof raw?.timestamp === 'string' ? raw.timestamp : new Date().toISOString();
+function envelopeTs(raw: unknown): string {
+  return rawTimestamp(raw) ?? new Date().toISOString();
 }
 
 /** Wrap a raw event in a turn envelope and append it as one JSONL line. The seq is
  *  assigned inside the serialized queue so it is strictly monotonic per stream. */
-function appendEnveloped(streamId: string, raw: any): void {
+function appendEnveloped(streamId: string, raw: unknown): void {
   const file = getTranscriptFile(streamId);
   const prev = writeQueues.get(streamId) ?? Promise.resolve();
   const next = prev
@@ -121,7 +128,7 @@ function appendEnveloped(streamId: string, raw: any): void {
  *  is parsed back to its event object and wrapped in a turn envelope; an unparseable line
  *  is preserved verbatim as the envelope's `raw` so nothing is ever dropped. */
 export function appendTranscriptLine(taskId: string, line: string): void {
-  let raw: any;
+  let raw: unknown;
   try {
     raw = JSON.parse(line);
   } catch {
@@ -144,8 +151,8 @@ export async function clearTranscript(taskId: string): Promise<void> {
   const next = prev.then(async () => {
     try {
       await fs.unlink(file);
-    } catch (err: any) {
-      if (err?.code !== 'ENOENT') throw err; // a real unlink failure (EBUSY/EPERM) — file still on disk
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err; // a real unlink failure (EBUSY/EPERM) — file still on disk
     }
     // FLUX-917: reset the seq counter only when the file is actually gone (unlink succeeded or it was
     // already absent). Previously this lived in a `finally`, so a real unlink failure still deleted
@@ -169,8 +176,8 @@ export async function readTranscript(taskId: string): Promise<string[]> {
   try {
     const raw = await fs.readFile(getTranscriptFile(taskId), 'utf8');
     return raw.split('\n').filter((l) => l.trim());
-  } catch (err: any) {
-    if (err?.code === 'ENOENT') return [];
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return [];
     throw err;
   }
 }
@@ -181,17 +188,28 @@ export async function readTranscript(taskId: string): Promise<string[]> {
  *  a future v2 envelope will still carry turnId+seq+raw, so the trio remains stable across
  *  schema versions without a version-aware read branch. If a v2 shape ever removes one of
  *  these three fields, add an explicit `o.v === ENVELOPE_VERSION` guard here. */
-function isEnvelope(o: any): boolean {
-  return !!o && typeof o === 'object' && typeof o.turnId === 'string' && typeof o.seq === 'number' && 'raw' in o;
+interface EnvelopeLine {
+  turnId: string;
+  streamId?: unknown;
+  seq: number;
+  ts?: unknown;
+  role?: unknown;
+  raw: unknown;
+}
+
+function isEnvelope(o: unknown): o is EnvelopeLine {
+  if (!o || typeof o !== 'object') return false;
+  const rec = o as Record<string, unknown>;
+  return typeof rec.turnId === 'string' && typeof rec.seq === 'number' && 'raw' in rec;
 }
 
 /** Wrap a legacy (pre-envelope) line into a synthetic turn addressed by its line index. */
-function legacyTurn(streamId: string, seq: number, raw: any): Turn {
+function legacyTurn(streamId: string, seq: number, raw: unknown): Turn {
   return {
     turnId: `${streamId}:${seq}`,
     streamId,
     seq,
-    ts: typeof raw?.timestamp === 'string' ? raw.timestamp : '',
+    ts: rawTimestamp(raw) ?? '',
     role: classifyRole(raw),
     raw,
   };
@@ -200,7 +218,7 @@ function legacyTurn(streamId: string, seq: number, raw: any): Turn {
 /** Parse one transcript line into a `Turn`. Enveloped lines keep their stored identity;
  *  legacy un-enveloped (or unparseable) lines are wrapped with `legacySeq` as their seq. */
 function lineToTurn(streamId: string, line: string, legacySeq: number): Turn {
-  let obj: any;
+  let obj: unknown;
   try {
     obj = JSON.parse(line);
   } catch {
@@ -212,7 +230,7 @@ function lineToTurn(streamId: string, line: string, legacySeq: number): Turn {
       streamId: typeof obj.streamId === 'string' ? obj.streamId : streamId,
       seq: obj.seq,
       ts: typeof obj.ts === 'string' ? obj.ts : '',
-      role: obj.role ?? classifyRole(obj.raw),
+      role: (obj.role as TurnRole | undefined) ?? classifyRole(obj.raw),
       raw: obj.raw,
     };
   }
@@ -262,8 +280,8 @@ async function readTailLines(file: string, maxLines: number): Promise<string[]> 
     }
     const lines = buf.toString('utf8').split('\n').filter((l) => l.trim());
     return lines.slice(-maxLines);
-  } catch (err: any) {
-    if (err?.code === 'ENOENT') return [];
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return [];
     throw err;
   } finally {
     await handle?.close();

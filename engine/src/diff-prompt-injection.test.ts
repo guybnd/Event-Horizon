@@ -46,13 +46,13 @@ describe('captureDiffForPrompt — Step 1: prompt-sized diff capture', () => {
   it('exports DIFF_PROMPT_MAX_BYTES = 81920 (80KB)', async () => {
     const mod = await import('./branch-manager.js');
     expect(mod).toHaveProperty('DIFF_PROMPT_MAX_BYTES');
-    expect((mod as any).DIFF_PROMPT_MAX_BYTES).toBe(80 * 1024);
+    expect(mod.DIFF_PROMPT_MAX_BYTES).toBe(80 * 1024);
   });
 
   it('exports captureDiffForPrompt as a function', async () => {
     const mod = await import('./branch-manager.js');
     expect(mod).toHaveProperty('captureDiffForPrompt');
-    expect(typeof (mod as any).captureDiffForPrompt).toBe('function');
+    expect(typeof mod.captureDiffForPrompt).toBe('function');
   });
 });
 

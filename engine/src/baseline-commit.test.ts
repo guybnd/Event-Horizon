@@ -27,6 +27,19 @@ const execFileAsync = promisify(execFile);
 // Diffing C1..P1 shows a phantom removal of sibling.txt; C0..P1 is the truth.
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * `setWorkspaceRoot`'s declared param type is `string`, but the module state it
+ * assigns into (`workspaceRoot` in workspace.ts) is `string | null` — tests need to
+ * unbind it between runs. Routing `null` through this same-shaped function boundary
+ * keeps its static type as the real `string | null` (a bare `const x: string | null
+ * = null` gets narrowed back to the literal `null` by control-flow analysis, which
+ * makes even a single `as string` cast fail as "insufficiently overlapping") without
+ * reaching for `any`/`unknown`.
+ */
+function unbindWorkspaceRoot(root: string | null): string | null {
+  return root;
+}
+
 async function gitC(root: string, args: string[]): Promise<string> {
   const { stdout } = await execFileAsync('git', ['-C', root, ...args], { windowsHide: true });
   return stdout.trim();
@@ -81,7 +94,7 @@ describe('baselineCommit anchoring (FLUX-585)', () => {
   });
 
   afterEach(async () => {
-    setWorkspaceRoot(null as any);
+    setWorkspaceRoot(unbindWorkspaceRoot(null) as string);
     await fs.rm(parent, { recursive: true, force: true }).catch(() => {});
   });
 

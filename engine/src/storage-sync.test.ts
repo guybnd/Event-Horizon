@@ -5,7 +5,7 @@ import path from 'path';
 import os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { excludeLocalConfigFromSync } from './storage-sync.js';
+import { excludeLocalConfigFromSync, ensureUnionMergeAttributes } from './storage-sync.js';
 
 const execFileAsync = promisify(execFile);
 const git = (cwd: string, args: string[]) => execFileAsync('git', args, { cwd, windowsHide: true });
@@ -101,5 +101,59 @@ describe('storage-sync — local config exclusion (FLUX-532)', () => {
     const gi = await fs.readFile(path.join(storeDir, '.gitignore'), 'utf8');
     expect(gi).toContain('config.json');
     expect(await trackedFiles(storeDir)).not.toContain('config.json');
+  });
+});
+
+describe('storage-sync — union-merge attribute for transcripts (FLUX-1076)', () => {
+  let repo: string;
+  let storeDir: string;
+
+  beforeEach(async () => {
+    repo = await fs.mkdtemp(path.join(os.tmpdir(), 'eh-sync-'));
+    await git(repo, ['init', '-b', 'master']);
+    await git(repo, ['config', 'user.email', 'test@test.com']);
+    await git(repo, ['config', 'user.name', 'Test']);
+    await fs.writeFile(path.join(repo, 'README.md'), '# test\n', 'utf8');
+    await git(repo, ['add', '.']);
+    await git(repo, ['commit', '-m', 'init']);
+
+    storeDir = path.join(repo, '.flux-store');
+    await git(repo, ['worktree', 'add', '--orphan', '-b', 'flux-data', storeDir]);
+    await fs.writeFile(path.join(storeDir, 'FLUX-1.md'), '# ticket\n', 'utf8');
+    await git(storeDir, ['add', '-A']);
+    await git(storeDir, ['commit', '-m', 'init store']);
+  });
+
+  afterEach(async () => {
+    await git(repo, ['worktree', 'remove', '--force', storeDir]).catch(() => {});
+    await fs.rm(repo, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it('seeds .gitattributes with a union-merge rule for transcripts/*.jsonl and commits it', async () => {
+    await ensureUnionMergeAttributes(storeDir);
+
+    const ga = await fs.readFile(path.join(storeDir, '.gitattributes'), 'utf8');
+    expect(ga).toContain('transcripts/*.jsonl merge=union');
+    expect(await trackedFiles(storeDir)).toContain('.gitattributes');
+  });
+
+  it('is idempotent — a second run makes no new commit', async () => {
+    await ensureUnionMergeAttributes(storeDir);
+    const { stdout: firstHead } = await git(storeDir, ['rev-parse', 'HEAD']);
+    await ensureUnionMergeAttributes(storeDir);
+    const { stdout: secondHead } = await git(storeDir, ['rev-parse', 'HEAD']);
+    expect(secondHead.trim()).toBe(firstHead.trim());
+  });
+
+  it('preserves pre-existing .gitattributes content', async () => {
+    await fs.writeFile(path.join(storeDir, '.gitattributes'), '*.png binary\n', 'utf8');
+    await git(storeDir, ['add', '-A']);
+    await git(storeDir, ['commit', '-m', 'pre-existing attributes']);
+
+    await ensureUnionMergeAttributes(storeDir);
+
+    const ga = await fs.readFile(path.join(storeDir, '.gitattributes'), 'utf8');
+    expect(ga).toContain('*.png binary');
+    expect(ga).toContain('transcripts/*.jsonl merge=union');
   });
 });

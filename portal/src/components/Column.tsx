@@ -265,7 +265,7 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
           <span className="flex h-3 items-center justify-end text-[9px] font-semibold tabular-nums text-amber-600 dark:text-amber-400">
             {flowLeft > 0 && (
               <span className="flex items-center gap-0.5" style={{ opacity: 0.55 + Math.min(1, flowLeft / 10) * 0.45 }} title={`${flowLeft} moved back to the previous column in the last 24h`}>
-                <ArrowLeft className="h-2.5 w-2.5 flow-pip-back" />{flowLeft}
+                <ArrowLeft className="h-2.5 w-2.5" />{flowLeft}
               </span>
             )}
           </span>
@@ -273,7 +273,7 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
           <span className="flex h-3 items-center justify-start text-[9px] font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
             {flowRight > 0 && (
               <span className="flex items-center gap-0.5" style={{ opacity: 0.55 + Math.min(1, flowRight / 10) * 0.45 }} title={`${flowRight} moved forward to the next column in the last 24h`}>
-                {flowRight}<ArrowRight className="h-2.5 w-2.5 flow-pip-fwd" />
+                {flowRight}<ArrowRight className="h-2.5 w-2.5" />
               </span>
             )}
           </span>
@@ -405,7 +405,7 @@ export const Column = memo(function Column({ id, title, tasks, clusters, foldedB
                     <button
                       type="button"
                       title="Dismiss all needs-action flags"
-                      onClick={() => needsActionTasks.forEach(t => updateTask(t.id, { needsAction: null } as any))}
+                      onClick={() => needsActionTasks.forEach(t => updateTask(t.id, { needsAction: null }))}
                       className="flex items-center justify-center rounded p-0.5 text-rose-400 hover:bg-rose-100 hover:text-rose-600 dark:hover:bg-rose-800/30 dark:hover:text-rose-300 transition-colors"
                     >
                       <X className="w-3 h-3" />

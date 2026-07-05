@@ -21,6 +21,11 @@
   --eh-furnace-accent: #7c3aed;
   --eh-furnace-accent-hover: #6d28d9;
   --eh-furnace-accent-glow: rgba(124, 58, 237, 0.12);
+  /* FLUX-1050: the Furnace toggle's orange treatment (ChatDock flame button — open/burning states).
+     A CONSTANT, theme-independent accent so the toggle stays "Furnace orange" regardless of the active
+     theme's `--eh-accent` (teal-green under matrix, etc). Distinct from the drawer's purple identity
+     above. Defined once here in :root and deliberately NOT overridden in any [data-theme] block. */
+  --eh-furnace-orange: #e05a00;
   --eh-base: #fafaf9;
   --eh-surface: #ffffff;
   --eh-surface-raised: #ffffff;
@@ -265,13 +270,18 @@ body::before {
 
 /* ─── Matrix Theme Specifics ─────────────────────────────────────── */
 
-/* Full-screen CRT effect — scanlines + vignette + flicker */
+/* Full-screen CRT effect — scanlines + vignette + flicker.
+   FLUX-1189: explicit `will-change` so Blink promotes this full-viewport overlay to its
+   own compositor layer up front rather than deciding lazily — the animated property
+   (opacity) is already compositor-safe, this just removes any doubt for an element this
+   large. Paired with the `.eh-idle` pause above (index.css `.eh-idle` block). */
 :root[data-theme="matrix"] body::after {
   content: '';
   position: fixed;
   inset: 0;
   pointer-events: none;
   z-index: 9998;
+  will-change: opacity;
   background:
     /* Scanlines — 2px alternating bands */
     repeating-linear-gradient(
@@ -319,7 +329,8 @@ body::before {
   96% { opacity: 1; }
 }
 
-/* Scrolling highlight band — simulates CRT beam refresh */
+/* Scrolling highlight band — simulates CRT beam refresh.
+   FLUX-1189: `will-change: transform` for the same reason as the flicker overlay above. */
 :root[data-theme="matrix"] .app-shell::before {
   content: '';
   position: fixed;
@@ -329,6 +340,7 @@ body::before {
   height: 120px;
   pointer-events: none;
   z-index: 9997;
+  will-change: transform;
   background: linear-gradient(
     180deg,
     rgba(0, 212, 170, 0.015) 0%,
@@ -916,20 +928,29 @@ button:not(:disabled):active {
 }
 
 /* The logo doubles as the theme selector. A slow, occasional accent glow hints
-   that it is interactive without being noisy. Motivated affordance only. */
+   that it is interactive without being noisy. Motivated affordance only.
+   FLUX-1140: this ran unconditionally, forever, regardless of any app state — fine to
+   keep (it's a singleton, cheap either way) but animating `box-shadow` directly forces
+   a repaint every tick. Moved the animation onto a `::after` overlay with a FIXED
+   box-shadow value and an animated `opacity` instead — opacity is compositor-only, so
+   the glow no longer costs a paint. */
 @keyframes eh-logo-breathe {
-  0%, 86%, 100% {
-    box-shadow: 0 0 0 0 transparent;
-  }
-  90% {
-    box-shadow: 0 0 0 3px var(--eh-accent-glow), 0 0 14px var(--eh-accent-glow);
-  }
-  94% {
-    box-shadow: 0 0 0 2px var(--eh-accent-glow), 0 0 10px var(--eh-accent-glow);
-  }
+  0%, 86%, 100% { opacity: 0; }
+  90%           { opacity: 1; }
+  94%           { opacity: 0.7; }
 }
 
 .eh-logo-button {
+  position: relative;
+}
+.eh-logo-button::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: 0 0 0 3px var(--eh-accent-glow), 0 0 14px var(--eh-accent-glow);
+  opacity: 0;
   animation: eh-logo-breathe 7s ease-in-out infinite;
 }
 
@@ -1054,7 +1075,7 @@ button:not(:disabled):active {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .eh-logo-button,
+  .eh-logo-button::after,
   .eh-unread-badge,
   .eh-taskcard-working,
   .eh-taskcard-needs-input,
@@ -1207,26 +1228,18 @@ button:not(:disabled):active {
 }
 
 /* ─── Column fire badge ─────────────────────────────────────────────────── */
-@keyframes fire-flicker {
-  0%, 100% { text-shadow: 0 0 4px #f97316, 0 0 8px #ef4444; opacity: 1; }
-  25%       { text-shadow: 0 0 6px #fb923c, 0 0 14px #f97316, 0 0 20px #ef4444; opacity: 0.9; }
-  50%       { text-shadow: 0 0 3px #fbbf24, 0 0 10px #f97316; opacity: 1; }
-  75%       { text-shadow: 0 0 8px #ef4444, 0 0 18px #dc2626, 0 0 28px #f97316; opacity: 0.85; }
-}
+/* FLUX-1140: these tiers key off ticket COUNT (a static fact, re-evaluated only when a
+   card enters/leaves the column), not "something is happening right now" — yet the old
+   `fire-flicker`/`fire-shake` kept animating `text-shadow` (a paint, not compositor,
+   property) forever on every column past the threshold. On any backlog-heavy board
+   (the common case) that was 2-3 columns painting every ~0.9s indefinitely. The tiered
+   color/gradient/border already carries the "this column is overloaded" signal at a
+   glance without needing continuous motion, so the badges are now static. */
 
-@keyframes fire-shake {
-  0%, 100% { transform: translateX(0) rotate(0deg); }
-  20%       { transform: translateX(-1px) rotate(-1deg); }
-  40%       { transform: translateX(1px) rotate(1deg); }
-  60%       { transform: translateX(-1px) rotate(0deg); }
-  80%       { transform: translateX(1px) rotate(-1deg); }
-}
-
-/* Level 1 — warm, subtle flicker */
+/* Level 1 — warm */
 .column-fire-1 {
   background: linear-gradient(135deg, #fef3c7, #fde68a) !important;
   color: #92400e !important;
-  animation: fire-flicker 3s ease-in-out infinite;
   border: 1px solid #fbbf24;
 }
 .dark .column-fire-1 {
@@ -1235,11 +1248,10 @@ button:not(:disabled):active {
   border-color: #f59e0b80;
 }
 
-/* Level 2 — orange, faster flicker */
+/* Level 2 — orange */
 .column-fire-2 {
   background: linear-gradient(135deg, #fed7aa, #fdba74) !important;
   color: #7c2d12 !important;
-  animation: fire-flicker 1.8s ease-in-out infinite, fire-shake 2s ease-in-out infinite;
   border: 1px solid #f97316;
 }
 .dark .column-fire-2 {
@@ -1248,13 +1260,13 @@ button:not(:disabled):active {
   border-color: #ea580c80;
 }
 
-/* Level 3 — red hot, intense shake */
+/* Level 3 — red hot */
 .column-fire-3 {
   background: linear-gradient(135deg, #fecaca, #fca5a5) !important;
   color: #7f1d1d !important;
-  animation: fire-flicker 0.9s ease-in-out infinite, fire-shake 0.7s ease-in-out infinite;
   border: 1px solid #ef4444;
   font-weight: 800 !important;
+  text-shadow: 0 0 6px #f97316, 0 0 12px #ef4444;
 }
 .dark .column-fire-3 {
   background: linear-gradient(135deg, #7f1d1d90, #991b1ba0) !important;
@@ -1352,38 +1364,27 @@ button:not(:disabled):active {
   z-index: 10;
 }
 
-/* ─── Board FX: column flow pips (horizontal, under the column title — FLUX-723) ── */
-@keyframes flow-pip-fwd {
-  0%, 100% { transform: translateX(0); }
-  50%      { transform: translateX(2px); }
-}
-@keyframes flow-pip-back {
-  0%, 100% { transform: translateX(0); }
-  50%      { transform: translateX(-2px); }
-}
-.flow-pip-fwd { animation: flow-pip-fwd 2s ease-in-out infinite; }
-.flow-pip-back { animation: flow-pip-back 2.4s ease-in-out infinite; animation-delay: 0.6s; }
-@media (prefers-reduced-motion: reduce) {
-  .flow-pip-fwd, .flow-pip-back { animation: none; }
-}
+/* ─── Board FX: column flow pips (horizontal, under the column title — FLUX-723) ──
+   FLUX-1140: removed. These counted moves in the last 24h (a rolling stat, re-rendered
+   on data refresh) — not "a card is moving right now" — so an infinite wobble kept two
+   arrow icons per column animating for hours after the actual moves happened, on every
+   column including ones scrolled off-screen (the board strip isn't virtualized). The
+   opacity-by-magnitude styling already in Column.tsx carries the "how much" signal, so
+   the `flow-pip-fwd`/`flow-pip-back` classes were dropped from the arrows entirely
+   rather than kept as a static no-op. */
 
 /* ─── Board FX: Done-column release pulse — the Done title glows (farther the more tickets are
    waiting) to advertise that hovering it reveals "Release" (FLUX-723). --done-pulse scales the
-   glow radius with the ticket count; --done-glow is the column's hue. ──────────────────────── */
-@keyframes done-pulse {
-  0%, 100% { transform: scale(1);    box-shadow: 0 0 4px 0 var(--done-glow, rgba(16, 185, 129, 0.5)); }
-  50%      { transform: scale(1.04); box-shadow: 0 0 calc(4px + var(--done-pulse, 0px)) 1px var(--done-glow, rgba(16, 185, 129, 0.95)); }
-}
-.done-pulse { animation: done-pulse 1.5s ease-in-out infinite; transform-origin: center; }
-@media (prefers-reduced-motion: reduce) {
-  .done-pulse { animation: none; box-shadow: 0 0 5px 0 var(--done-glow, rgba(16, 185, 129, 0.6)); }
+   glow radius with the ticket count; --done-glow is the column's hue.
+   FLUX-1140: "Done has releasable tickets" is a static fact, not something moving — it doesn't
+   change until the user acts or a new ticket lands, so it no longer needs continuous motion to
+   read as "this needs attention." The ring is now static (still scales with ticket count via
+   --done-pulse, unchanged from Column.tsx) instead of looping forever while Done is non-empty. */
+.done-pulse {
+  box-shadow: 0 0 calc(4px + var(--done-pulse, 0px)) 1px var(--done-glow, rgba(16, 185, 129, 0.75));
 }
 
 /* ─── Board FX: Card foil (ticket DNA) ─────────────────────────────────── */
-@keyframes foil-shimmer {
-  0%, 100% { opacity: 0.055; }
-  50%       { opacity: 0.10; }
-}
 .card-foil {
   background: linear-gradient(
     135deg,
@@ -1393,11 +1394,12 @@ button:not(:disabled):active {
     transparent 100%
   );
   /* FLUX-724: was `mix-blend-mode: overlay/color-dodge`, which forced a per-frame backdrop
-     re-blend (a paint, not a compositor op) on EVERY card — N cards × a perpetual blended
-     animation drained GPU/paint even when idle. Dropping the blend mode makes the shimmer a
-     pure-opacity, compositor-only animation; `will-change` promotes it to its own layer. */
-  animation: foil-shimmer 4s ease-in-out infinite;
-  will-change: opacity;
+     re-blend (a paint, not a compositor op) on EVERY card. FLUX-1140: even after that fix,
+     this rendered on EVERY task card on the board (no virtualization) and animated forever —
+     an idle-board Paint/GPU trace showed it as a top contributor. The shimmer's opacity swing
+     (0.055–0.10) is barely perceptible, and it conveys no state (it's a static per-card hue,
+     not a live indicator), so it's now a fixed midpoint opacity instead of an animation. */
+  opacity: 0.075;
 }
 
 /* ─── FLUX-972: terminal chip arm-then-confirm drain animation ───────────────
@@ -1424,4 +1426,34 @@ button:not(:disabled):active {
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* ─── FLUX-1140: pause every animation while the tab is hidden ───────────────
+   The decorative loops above have no reason to keep the compositor/GPU warm when the
+   user can't see them (a backgrounded browser tab). `AppContext` toggles this class on
+   <html> from the visibilitychange listener it already maintains (`isWindowVisible`).
+   `animation-play-state: paused` (not `animation: none`) so a re-focused tab resumes
+   each loop mid-cycle instead of snapping back to its 0% frame. */
+.eh-tab-hidden,
+.eh-tab-hidden *,
+.eh-tab-hidden *::before,
+.eh-tab-hidden *::after {
+  animation-play-state: paused !important;
+}
+
+/* ─── FLUX-1189: pause purely-ambient loops while the user is idle ───────────
+   `.eh-tab-hidden` (above) only covers a backgrounded tab — a board left open and
+   VISIBLE but untouched (no click/scroll/keypress) still kept these running forever,
+   the leftover from FLUX-1135's idle trace. Unlike `.eh-tab-hidden` this must NOT be a
+   blanket `*` rule: `agent-session-pulse`/`bot-border-breathe`/`eh-taskcard-*`/
+   `eh-attention-*`/heartbeat etc. communicate real live state the user may be glancing
+   at without touching the mouse, so only the zero-signal decorative loops (CRT flicker/
+   beam, empty-column idle dust) are listed here. `AppContext` toggles `.eh-idle` on
+   <html> from a rolling mouse/keyboard/scroll/touch listener. `animation-play-state:
+   paused` (not `animation: none`) so activity resumes each loop mid-cycle. */
+.eh-idle :is(body, .app-shell)::before,
+.eh-idle :is(body, .app-shell)::after,
+.eh-idle .column-idle-dust::before,
+.eh-idle .column-idle-dust::after {
+  animation-play-state: paused !important;
 }

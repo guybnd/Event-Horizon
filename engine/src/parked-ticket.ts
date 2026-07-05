@@ -21,6 +21,23 @@ import { isAgentAuthor } from './history.js';
 import { broadcastEvent } from './events.js';
 import type { CliSessionRecord } from './agents/types.js';
 
+/** The subset of a ticket's shape this module reads/writes. Tickets are loosely-typed
+ *  gray-matter frontmatter records validated at runtime (schema.ts) — this covers only the
+ *  fields this module actually touches. */
+interface HistoryEntry {
+  type?: string;
+  user?: unknown;
+}
+
+interface ParkableTask {
+  status?: string;
+  swimlane?: string | null;
+  subtasks?: unknown[];
+  history?: HistoryEntry[];
+  needsAction?: string | null;
+  title?: string;
+}
+
 /** Statuses where an agent turn is expected to END on a board action. Grooming should leave
  *  for Todo/Require Input; In Progress should leave for Ready/Require Input. Resting columns
  *  (Todo/Backlog/Ready/Done/…) are not HARD-flagged — nothing is "stuck" there — but FLUX-826
@@ -32,7 +49,7 @@ function workingStatuses(): Set<string> {
 /** Count agent-authored `comment` entries in a ticket's history. Used to detect a NEW agent
  *  comment posted during a turn (the FLUX-826 soft backstop signal). User comments are excluded
  *  via {@link isAgentAuthor} so a human replying mid-turn never trips the nudge. */
-export function countAgentComments(task: any): number {
+export function countAgentComments(task: ParkableTask | undefined): number {
   const history = Array.isArray(task?.history) ? task.history : [];
   let n = 0;
   for (const e of history) {
@@ -96,7 +113,7 @@ export function isParked(s: ParkedSnapshot): boolean {
  *  turn-end backstop can tell whether the agent advanced the ticket or just parked. Also resets
  *  the per-turn `askedThisTurn` flag (set later if the agent calls `ask_user_question`). */
 export function captureTurnStartState(session: CliSessionRecord, taskId: string): void {
-  const task = tasksCache[taskId] as any;
+  const task = tasksCache[taskId] as ParkableTask | undefined;
   session.statusAtTurnStart = task?.status;
   session.subtaskCountAtTurnStart = Array.isArray(task?.subtasks) ? task.subtasks.length : 0;
   session.commentCountAtTurnStart = countAgentComments(task);
@@ -114,7 +131,7 @@ function isDelegatedMember(session: CliSessionRecord): boolean {
  *  resumed/poked ticket stops showing as parked the moment work restarts. No-op (no write)
  *  when the flag isn't set, so it costs nothing on the common path. */
 export async function clearNeedsActionIfSet(taskId: string): Promise<void> {
-  const task = tasksCache[taskId] as any;
+  const task = tasksCache[taskId] as ParkableTask | undefined;
   if (!task?.needsAction) return;
   await updateTaskWithHistory(taskId, { updatedBy: 'Agent', entries: [], extraFields: { needsAction: null } });
   broadcastEvent('taskUpdated', { id: taskId });
@@ -142,7 +159,7 @@ export async function raiseNeedsAction(taskId: string, message: string): Promise
       generateNeedsActionNotification(taskId, 'Orchestrator', '', message);
       return;
     }
-    const task = tasksCache[taskId] as any;
+    const task = tasksCache[taskId] as ParkableTask | undefined;
     if (!task) return;
     if (!task.needsAction) {
       await updateTaskWithHistory(taskId, {
@@ -152,9 +169,10 @@ export async function raiseNeedsAction(taskId: string, message: string): Promise
       });
       broadcastEvent('taskUpdated', { id: taskId });
     }
-    generateNeedsActionNotification(taskId, task.title || taskId, task.status, message);
-  } catch (err: any) {
-    console.error(`[parked-ticket] raiseNeedsAction failed for ${taskId}:`, err?.message);
+    generateNeedsActionNotification(taskId, task.title || taskId, task.status ?? '', message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[parked-ticket] raiseNeedsAction failed for ${taskId}:`, message);
   }
 }
 
@@ -166,10 +184,10 @@ export async function raiseNeedsAction(taskId: string, message: string): Promise
  */
 export async function flagIfParked(session: CliSessionRecord, taskId: string): Promise<void> {
   try {
-    const task = tasksCache[taskId] as any;
+    const task = tasksCache[taskId] as ParkableTask | undefined;
     if (!task) return;
 
-    const status: string = task.status;
+    const status: string = task.status ?? '';
     const isWorking = workingStatuses().has(status);
     const parked = isParked({
       status,
@@ -180,7 +198,7 @@ export async function flagIfParked(session: CliSessionRecord, taskId: string): P
       commentCount: countAgentComments(task),
       commentCountAtTurnStart: session.commentCountAtTurnStart,
       askedThisTurn: session.askedThisTurn,
-      requireInputStatus: (configCache as any).requireInputStatus || 'Require Input',
+      requireInputStatus: configCache.requireInputStatus || 'Require Input',
       isDelegated: isDelegatedMember(session),
     });
     if (!parked) return;
@@ -189,7 +207,8 @@ export async function flagIfParked(session: CliSessionRecord, taskId: string): P
       ? `Agent ended its turn with the ticket still in "${status}" without taking a board action (move it to Ready / Require Input, create subtasks, or resume).`
       : `Agent left a comment on this "${status}" ticket without raising a structured prompt or taking a board action — it may contain a decision/question that needs your attention.`;
     await raiseNeedsAction(taskId, message);
-  } catch (err: any) {
-    console.error(`[parked-ticket] flagIfParked failed for ${taskId}:`, err?.message);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[parked-ticket] flagIfParked failed for ${taskId}:`, message);
   }
 }

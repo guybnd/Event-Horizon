@@ -60,6 +60,22 @@ export interface QuestionPayload {
   questions: unknown[];
 }
 
+/** The decision/answer returned to a held fetch when a prompt settles — a permission verdict
+ *  (mirrors permission-prompts.ts's PermissionDecision) or a question answer (mirrors
+ *  ask-questions.ts's AnswerResult). Kept as a loose local union here, rather than importing
+ *  those types, because this core module is kind-agnostic and sits BELOW the two thin wrappers
+ *  in the dependency graph — they import from here, not the other way round. */
+export interface PromptResult {
+  /** Permission kind. */
+  behavior?: 'allow' | 'deny';
+  updatedInput?: unknown;
+  message?: string;
+  /** Question kind. */
+  answers?: Record<string, string | string[]>;
+  notes?: string;
+  unanswered?: boolean;
+}
+
 export interface OpenPromptRecord {
   id: string;
   kind: PromptKind;
@@ -77,7 +93,7 @@ export interface OpenPromptRecord {
 
 interface LivePrompt {
   /** Settles the held fetch from THIS process's parked turn (absent for rehydrated prompts). */
-  resolve: (result: any) => void;
+  resolve: (result: PromptResult) => void;
   timer: NodeJS.Timeout;
 }
 
@@ -142,10 +158,12 @@ export async function flushOpenPrompts(): Promise<void> {
  *  Guards the payload shape per kind — `broadcastRequest`/the transcript appends dereference
  *  payload fields, so a record with a valid id+kind but a missing/wrong payload would otherwise
  *  throw out of rehydrate. */
-function isValidRecord(rec: any): rec is OpenPromptRecord {
-  if (!rec || typeof rec.id !== 'string') return false;
-  if (rec.kind === 'permission') return !!rec.payload && typeof (rec.payload as any).toolName === 'string';
-  if (rec.kind === 'question') return !!rec.payload && Array.isArray((rec.payload as any).questions);
+function isValidRecord(rec: unknown): rec is OpenPromptRecord {
+  if (!rec || typeof rec !== 'object') return false;
+  const obj = rec as Record<string, unknown>;
+  if (typeof obj.id !== 'string') return false;
+  if (obj.kind === 'permission') return !!obj.payload && typeof (obj.payload as Record<string, unknown>).toolName === 'string';
+  if (obj.kind === 'question') return !!obj.payload && Array.isArray((obj.payload as Record<string, unknown>).questions);
   return false;
 }
 
@@ -201,7 +219,7 @@ function appendRequestTranscript(rec: OpenPromptRecord) {
 /** Durable record of the resolution. `reason` distinguishes a timeout from a human decision in
  *  the permission transcript; questions carry the answer (or the `unanswered` sentinel). An unrouted
  *  prompt echoes to the board thread; see `echoStream`. */
-function appendResolveTranscript(rec: OpenPromptRecord, result: any, reason?: 'timeout') {
+function appendResolveTranscript(rec: OpenPromptRecord, result: PromptResult, reason?: 'timeout') {
   const stream = echoStream(rec);
   if (!stream) return;
   const timestamp = new Date().toISOString();
@@ -220,7 +238,7 @@ function appendResolveTranscript(rec: OpenPromptRecord, result: any, reason?: 't
 }
 
 /** The timeout decision returned to the held fetch (deny for permission, unanswered for a question). */
-function timeoutResult(rec: OpenPromptRecord): any {
+function timeoutResult(rec: OpenPromptRecord): PromptResult {
   if (rec.kind === 'permission') {
     const p = rec.payload as PermissionPayload;
     return { behavior: 'deny', message: `Approval for ${p.toolName} timed out — denied.` };
@@ -243,7 +261,7 @@ function timeoutNeedsAction(rec: OpenPromptRecord): string {
  * reaches a now-restarted engine after a timeout already wrote its resolved event) finds nothing
  * and writes nothing — the terminal-state / phantom-write guard. Returns false when already settled.
  */
-function settle(id: string, result: any, reason?: 'timeout'): boolean {
+function settle(id: string, result: PromptResult, reason?: 'timeout'): boolean {
   const rec = durable.get(id);
   if (!rec) return false; // already settled or unknown id — guard against a double / phantom write
   durable.delete(id);
@@ -279,7 +297,7 @@ export function parkPrompt(args: {
   conversationId: string | null;
   resumeSessionId?: string | undefined;
   timeoutMs: number;
-}): Promise<any> {
+}): Promise<PromptResult> {
   const id = randomUUID();
   const now = Date.now();
   const createdAt = new Date(now).toISOString();
@@ -305,7 +323,7 @@ export function parkPrompt(args: {
  * rehydrated (post-restart) prompt the durable record is settled, the decision is recorded, and
  * the card clears — but the answer cannot reach the dead turn (Phase 3).
  */
-export function resolvePrompt(id: string, result: any): boolean {
+export function resolvePrompt(id: string, result: PromptResult): boolean {
   return settle(id, result);
 }
 

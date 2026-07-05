@@ -68,8 +68,21 @@ function cappedList(items: string[], max: number): string {
   return `${shown} (+${items.length - max} more)`;
 }
 
+/** Minimal shape of a cached task's history entry — only the fields this module reads. */
+interface CachedTaskHistoryEntry {
+  type?: string;
+  to?: string;
+  date?: string;
+}
+
+/** Minimal shape of a `tasksCache` entry — only the fields this module reads. */
+interface CachedTask {
+  id?: string;
+  history?: CachedTaskHistoryEntry[];
+}
+
 /** The most recent terminal status a ticket's history reached after `since` (epoch ms), or null. */
-function terminalMoveSince(task: any, since: number): string | null {
+function terminalMoveSince(task: CachedTask, since: number): string | null {
   const history = Array.isArray(task?.history) ? task.history : [];
   let reached: string | null = null;
   for (const h of history) {
@@ -121,7 +134,7 @@ export async function buildResumePreamble(opts: ResumePreambleOptions): Promise<
       const since = new Date(opts.sinceIso).getTime();
       if (Number.isFinite(since)) {
         const moved: string[] = [];
-        for (const task of Object.values(tasksCache) as any[]) {
+        for (const task of Object.values(tasksCache) as CachedTask[]) {
           if (!task || task.id === opts.taskId) continue;
           const reached = terminalMoveSince(task, since);
           if (reached) moved.push(`${task.id} (${reached})`);

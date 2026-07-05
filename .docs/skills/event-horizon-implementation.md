@@ -87,7 +87,7 @@ The grooming skill publishes a plan-time **"before"** artifact (a mockup/diagram
 
 **How to emit** (do this *before* `change_status → Ready`, so the recap is present when the PR opens):
 1. Build the diff against base — `git diff <baselineCommit>...HEAD` (branch/worktree tickets) or `git diff` on the uncommitted working tree (branchless). Pull out the touched-file list and the key hunks (the ones a reviewer actually needs — not the full raw patch).
-2. Author a **complete, self-contained HTML document** as `html`: a touched-file tree, styled key diff hunks (not the entire patch), and a short plain-language summary of what changed and why. Lean on the **`frontend-design`** skill for the rendering. Same sandbox rules as grooming artifacts (inline everything; Tailwind via `cdn.tailwindcss.com` / Mermaid via `cdn.jsdelivr.net` are the only loadable CDNs; no network at runtime — see the grooming skill's "Rich Artifacts" section for the full constraints and the annotation / layout-audit round-trips, which apply identically here).
+2. Author a **complete, self-contained HTML document** as `html`: a touched-file tree, styled key diff hunks (not the entire patch), and a short plain-language summary of what changed and why. Lean on the **`frontend-design`** skill for the rendering. Same sandbox rules as grooming artifacts (inline everything — default to hand-written inline CSS; Mermaid via `cdn.jsdelivr.net` is loadable for diagrams, and the Tailwind Play CDN via `cdn.tailwindcss.com` is allowed but a heavy last resort, not the default — see the grooming skill's "Rich Artifacts" section for why; no network at runtime; the annotation / layout-audit round-trips apply identically here).
 3. Call `publish_artifact` with a `title` and a `note` that both include the word **"recap"** — this is what tags the revision as an implementation recap (distinct from grooming revisions in history) and is what the portal reads to label the panel **"Visual Recap"** instead of "Artifact".
 4. Then proceed with the `Ready` move as normal.
 
@@ -101,6 +101,8 @@ The grooming skill publishes a plan-time **"before"** artifact (a mockup/diagram
 ## Reviewer Agent Handoff
 
 Reviewer agents are triggered manually by the user — not automatically when a ticket reaches `Ready`. When a reviewer sends a ticket back to `In Progress`, a structured comment explains what needs changing. Read that comment before making any changes. The review conversation lives on the ticket; the GitHub PR is the diff artifact.
+
+**A verdict isn't recorded until `change_status` says so (FLUX-1078).** When you are the reviewer of record — your focus instructions say you are the SOLE reviewer, so no orchestrator will synthesize other reviews and decide for you — posting a review comment is not the end of the job, no matter how clear it is. A comment starting with **APPROVED** or **CHANGES NEEDED** is a human-readable record, not a machine-readable one: the Furnace and the board only ever read the structured `reviewState` field. You MUST also call `change_status` with `reviewState: 'approved'` or `reviewState: 'changes-requested'` to match your verdict before ending your turn. Skipping that call strands the ticket — from the outside it looks like the review never happened, even though it did, and costs a human a round-trip to unblock it.
 
 All persistence uses MCP tools — see the orchestrator skill's "Persisting Changes" section.
 

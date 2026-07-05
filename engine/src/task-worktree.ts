@@ -67,6 +67,14 @@ export const WORKTREE_DEP_SUBDIRS = ['.', 'engine', 'portal'];
  */
 export const SERENA_PROJECT_LOCAL_RELPATH = path.join('.serena', 'project.local.yml');
 
+/**
+ * Same path as SERENA_PROJECT_LOCAL_RELPATH, but forward-slash-joined for use
+ * as a git pathspec/exclude pattern (FLUX-1155) — `info/exclude` lines are
+ * matched by git, not resolved by the OS, so a Windows backslash join would be
+ * a literal (non-matching) pattern rather than a path separator.
+ */
+export const SERENA_PROJECT_LOCAL_GITIGNORE_PATTERN = '.serena/project.local.yml';
+
 export interface DetachOptions {
   gitRunner?: GitRunner;
   /** Label used in the stash message / result (defaults to the worktree dir name). */
@@ -136,9 +144,8 @@ export function taskWorktreeDir(workspaceRoot: string, ticketId: string): string
 
 // ─── Git introspection ──────────────────────────────────────────────────────────
 
-/** Parse `git worktree list --porcelain` into { path, branch } entries. */
-async function listWorktrees(runner: GitRunner, workspaceRoot: string): Promise<WorktreeEntry[]> {
-  const { stdout } = await runner(workspaceRoot, ['worktree', 'list', '--porcelain']).catch(() => ({ stdout: '' }));
+/** Parse `git worktree list --porcelain` output into { path, branch } entries. */
+function parseWorktreeListPorcelain(stdout: string): WorktreeEntry[] {
   const entries: WorktreeEntry[] = [];
   let current: WorktreeEntry | null = null;
   for (const raw of stdout.split('\n')) {
@@ -154,6 +161,16 @@ async function listWorktrees(runner: GitRunner, workspaceRoot: string): Promise<
   }
   if (current) entries.push(current);
   return entries;
+}
+
+/** List registered worktrees, swallowing a query failure to an empty list — the existing,
+ *  established contract every OTHER caller in this file relies on (create/repair flows treat
+ *  "couldn't tell" as "none found" and proceed; worst case `git worktree add` itself fails loudly
+ *  on a genuine conflict). {@link isRegisteredWorktree} deliberately does NOT reuse this swallowing
+ *  variant — see its own comment for why. */
+async function listWorktrees(runner: GitRunner, workspaceRoot: string): Promise<WorktreeEntry[]> {
+  const { stdout } = await runner(workspaceRoot, ['worktree', 'list', '--porcelain']).catch(() => ({ stdout: '' }));
+  return parseWorktreeListPorcelain(stdout);
 }
 
 async function localBranchExists(runner: GitRunner, workspaceRoot: string, branch: string): Promise<boolean> {
@@ -212,7 +229,7 @@ export async function createTaskWorktree(
       }
       // Self-heal the Serena binding on reuse (worktree created before FLUX-843,
       // or a prior write failed) — best-effort, idempotent (FLUX-843).
-      await writeWorktreeSerenaOverride(target);
+      await writeWorktreeSerenaOverride(target, { gitRunner: runner });
       return target;
     }
     throw new Error(
@@ -242,7 +259,7 @@ export async function createTaskWorktree(
             console.error('[task-worktree] re-linking node_modules after repair failed:', err),
           );
         }
-        await writeWorktreeSerenaOverride(target);
+        await writeWorktreeSerenaOverride(target, { gitRunner: runner });
         return target;
       }
       throw new Error(
@@ -308,7 +325,7 @@ export async function createTaskWorktree(
 
   // Bind Serena to this worktree (not the main checkout) so its symbol-editing
   // tools write here — FLUX-843.
-  await writeWorktreeSerenaOverride(target);
+  await writeWorktreeSerenaOverride(target, { gitRunner: runner });
 
   return target;
 }
@@ -565,10 +582,103 @@ export async function resolveTaskExecutionRoot(
         ...(opts.maxWorktrees != null ? { maxWorktrees: opts.maxWorktrees } : {}),
       },
     );
-  } catch (err: any) {
+  } catch (err: unknown) {
     throw new Error(
       `Worktree for ${id} on branch '${branch}' is missing and could not be recreated ` +
-        `(${err?.message ?? err}) — refusing to run the agent on master.`,
+        `(${err instanceof Error ? err.message : err}) — refusing to run the agent on master.`,
+      { cause: err },
+    );
+  }
+}
+
+/**
+ * FLUX-1120: is `executionRoot` still a live, registered git worktree of the repo rooted at
+ * `workspaceRoot`? True only when `git worktree list` (run against the MAIN checkout, so a stale
+ * linked tree can't lie about its own registration) reports an entry whose path resolves to
+ * `executionRoot` AND that path still exists on disk. Stricter than a bare `existsSync`: a
+ * worktree directory can survive on disk after `git worktree remove` deregistered it (or after
+ * something removed it outside git's bookkeeping, leaving `.git`/index files behind), in which
+ * case every git command run inside it fails with an opaque `fatal: not a git repository` rather
+ * than a clear "this workspace was reclaimed" signal — this check catches that stale-but-present
+ * case, not just the fully-vanished one.
+ *
+ * Deliberately does NOT go through {@link listWorktrees} (which swallows a query failure to an
+ * empty list) — that swallowing is fine for create/repair flows (worst case they retry a
+ * `git worktree add` that fails loudly on a genuine conflict), but here it would turn a *transient*
+ * `git worktree list` hiccup (lock contention, a momentary spawn error) into a false-positive
+ * "this worktree has been reclaimed," permanently failing a perfectly healthy, resumable session
+ * (review finding). A genuine query failure falls back to the pre-FLUX-1120 `existsSync`-only
+ * signal instead — only a QUERY THAT SUCCEEDS and doesn't list the path counts as "reclaimed."
+ */
+export async function isRegisteredWorktree(
+  workspaceRoot: string,
+  executionRoot: string,
+  opts: { gitRunner?: GitRunner } = {},
+): Promise<boolean> {
+  const runner = opts.gitRunner ?? defaultGitRunner;
+  let stdout: string;
+  try {
+    ({ stdout } = await runner(workspaceRoot, ['worktree', 'list', '--porcelain']));
+  } catch {
+    return existsSync(executionRoot);
+  }
+  return parseWorktreeListPorcelain(stdout).some((w) => pathsEqual(w.path, executionRoot) && existsSync(w.path));
+}
+
+/**
+ * Resume-path fail-closed guard (FLUX-1018 / FLUX-1028) — shared by all three
+ * adapters' `sendCliSessionInput`, replacing what was a verbatim triple
+ * duplication. Resolves READ-ONLY (`create: false`): never spins up a fresh
+ * worktree mid-resume for a legacy session that lost its recorded
+ * `executionRoot` — the spawn path (`resolveTaskExecutionRoot` via
+ * {@link assertIsolatedSpawnRoot}) owns creation. Then fails closed two ways:
+ * a branch-bearing ticket that resolved to the main checkout (no live
+ * worktree) must not resume on master, and a recorded/resolved worktree path
+ * that is no longer a registered git worktree (FLUX-1120 — reclaimed, or
+ * vanished outright) is refused rather than silently resumed there.
+ */
+export async function resolveResumeExecutionRoot(
+  session: { executionRoot?: string; taskId: string },
+  task: { id?: string; branch?: string } | undefined,
+  workspaceRoot: string,
+  opts: { gitRunner?: GitRunner } = {},
+): Promise<string> {
+  const id = session.taskId;
+  const executionRoot =
+    session.executionRoot ?? (await resolveTaskExecutionRoot(task, workspaceRoot, { ...opts, create: false }));
+  if (task?.branch && executionRoot === workspaceRoot) {
+    throw new Error(
+      `Worktree for ${id} is missing — refusing to resume the agent on master. Restart the session to recreate an isolated worktree.`,
+    );
+  }
+  if (executionRoot !== workspaceRoot && !(await isRegisteredWorktree(workspaceRoot, executionRoot, opts))) {
+    throw new Error(
+      `Worktree for ${id} at ${executionRoot} has been reclaimed — it is no longer a registered git worktree — refusing to resume the agent there. Restart the session to recreate an isolated worktree.`,
+    );
+  }
+  return executionRoot;
+}
+
+/**
+ * Spawn-path fail-closed guard (FLUX-1018 / FLUX-1028) — shared by all three
+ * adapters' `startCliSession`, replacing what was a verbatim triple
+ * duplication. A task WITH a branch must run in that branch's worktree, never
+ * the main checkout (master); a single-shot agent spawned with
+ * `cwd = workspaceRoot` would commit straight to master (the FLUX-972
+ * incident). `resolveTaskExecutionRoot` already self-heals/throws on this
+ * path, but callers assert here too as a belt-and-suspenders guard.
+ */
+export function assertIsolatedSpawnRoot(
+  frameworkLabel: string,
+  id: string,
+  task: { branch?: string } | undefined,
+  executionRoot: string,
+  workspaceRoot: string,
+): void {
+  if (task?.branch && executionRoot === workspaceRoot) {
+    throw new Error(
+      `Refusing to start ${frameworkLabel} for ${id} on branch '${task.branch}': its worktree is missing and ` +
+        `execution resolved to the main checkout (master). Recreate the worktree and retry.`,
     );
   }
 }
@@ -660,6 +770,57 @@ export async function reclaimWorktrees(
 }
 
 /**
+ * Pathspec excludes for the `node_modules` junctions FLUX-518 shares into every worktree (see
+ * `WORKTREE_DEP_SUBDIRS`). `reclaimWorktrees`/`cleanupMergedBranch` keep dirty-checks accurate by
+ * unlinking those junctions before running git — safe there because they only ever act on
+ * terminal, reclaim-eligible worktrees. `worktreeChangeCount`/`worktreeIsDirty` below instead run
+ * against worktrees that may have a LIVE agent session using node_modules, so they can't unlink
+ * anything; a pathspec exclude is a pure git-side filter that never touches the filesystem, and
+ * unlike the unlink approach it doesn't depend on `.gitignore` covering `node_modules` either.
+ */
+export function depNodeModulesExcludePathspecs(): string[] {
+  return WORKTREE_DEP_SUBDIRS.map((sub) => (sub === '.' ? 'node_modules' : `${sub}/node_modules`)).map((p) => `:!${p}`);
+}
+
+/**
+ * Count how many files differ in `worktreePath` versus each of `baseBranches` — the
+ * worktree's current working state (committed + uncommitted tracked changes) plus
+ * untracked files. The untracked-file listing doesn't depend on the diff base, so it's
+ * spawned ONCE and reused across every base branch (FLUX-1126: `/uncommitted-count` used
+ * to call the single-base `worktreeChangeCount` twice per worktree — vs `HEAD` and vs
+ * `master` — spawning a duplicate, identical `ls-files` each time). Best-effort: every
+ * entry is 0 when the worktree is gone or git errors.
+ */
+export async function worktreeChangeCounts(
+  worktreePath: string,
+  baseBranches: string[],
+  opts: { gitRunner?: GitRunner } = {},
+): Promise<Record<string, number>> {
+  const runner = opts.gitRunner ?? defaultGitRunner;
+  const uniqueBranches = Array.from(new Set(baseBranches));
+  const zeroed = () => Object.fromEntries(uniqueBranches.map((b) => [b, 0]));
+  if (!existsSync(worktreePath)) return zeroed();
+  const countLines = (s: string) => s.split('\n').map((l) => l.trim()).filter(Boolean).length;
+  const excludes = depNodeModulesExcludePathspecs();
+  try {
+    const [{ stdout: untracked }, ...trackedResults] = await Promise.all([
+      runner(worktreePath, ['ls-files', '--others', '--exclude-standard', '--', '.', ...excludes]).catch(() => ({ stdout: '' })),
+      ...uniqueBranches.map((b) =>
+        runner(worktreePath, ['diff', '--name-only', b, '--', '.', ...excludes]).catch(() => ({ stdout: '' })),
+      ),
+    ]);
+    const untrackedCount = countLines(untracked);
+    const result: Record<string, number> = {};
+    uniqueBranches.forEach((b, i) => {
+      result[b] = countLines(trackedResults[i]?.stdout ?? '') + untrackedCount;
+    });
+    return result;
+  } catch {
+    return zeroed();
+  }
+}
+
+/**
  * Count how many files differ in `worktreePath` versus `baseBranch` — the
  * worktree's current working state (committed + uncommitted tracked changes)
  * plus untracked files. Powers the "N changed" badge on the board worktree chip
@@ -670,18 +831,22 @@ export async function worktreeChangeCount(
   baseBranch = 'master',
   opts: { gitRunner?: GitRunner } = {},
 ): Promise<number> {
+  const counts = await worktreeChangeCounts(worktreePath, [baseBranch], opts);
+  return counts[baseBranch] ?? 0;
+}
+
+/**
+ * Boolean dirty-check for a live worktree (FLUX-1125), excluding the shared node_modules
+ * junctions via `depNodeModulesExcludePathspecs` — see that helper's comment for why this can't
+ * unlink-then-check like `reclaimWorktrees` does. A failed git call reports dirty (fail-safe: the
+ * callers here gate a destructive-ish action, so an unknown state should never look clean).
+ */
+export async function worktreeIsDirty(worktreePath: string, opts: { gitRunner?: GitRunner } = {}): Promise<boolean> {
   const runner = opts.gitRunner ?? defaultGitRunner;
-  if (!existsSync(worktreePath)) return 0;
-  const countLines = (s: string) => s.split('\n').map((l) => l.trim()).filter(Boolean).length;
-  try {
-    const [{ stdout: tracked }, { stdout: untracked }] = await Promise.all([
-      runner(worktreePath, ['diff', '--name-only', baseBranch]).catch(() => ({ stdout: '' })),
-      runner(worktreePath, ['ls-files', '--others', '--exclude-standard']).catch(() => ({ stdout: '' })),
-    ]);
-    return countLines(tracked) + countLines(untracked);
-  } catch {
-    return 0;
-  }
+  const { stdout } = await runner(worktreePath, ['status', '--porcelain', '--', '.', ...depNodeModulesExcludePathspecs()]).catch(
+    () => ({ stdout: 'err' }),
+  );
+  return stdout.trim().length > 0;
 }
 
 /** Local branch names (`refs/heads/*`), for the "Attach to branch" picker (FLUX-516). */
@@ -727,7 +892,10 @@ export async function currentBranchName(
  * other worktrees. Best-effort: a failure here only degrades Serena binding, it
  * must not block worktree creation.
  */
-export async function writeWorktreeSerenaOverride(worktreePath: string): Promise<void> {
+export async function writeWorktreeSerenaOverride(
+  worktreePath: string,
+  opts: { gitRunner?: GitRunner } = {},
+): Promise<void> {
   // The unique name is the worktree dir name (`<repo>-<ticketId>`), already
   // guaranteed unique per ticket by taskWorktreeDir().
   const projectName = path.basename(worktreePath);
@@ -743,6 +911,54 @@ export async function writeWorktreeSerenaOverride(worktreePath: string): Promise
     await fs.writeFile(dest, body, 'utf8');
   } catch (err) {
     console.error(`[task-worktree] failed to write Serena override at ${dest}:`, err);
+  }
+  // Only the EventHorizon repo itself commits a `.serena/.gitignore` covering
+  // this file (FLUX-1155) — in any other repo the override above is untracked
+  // from birth, so `git status` never goes clean and reclaimWorktrees refuses
+  // to collect the worktree forever. Exclude it repo-locally instead.
+  await excludeSerenaOverrideFromGitStatus(worktreePath, opts.gitRunner ?? defaultGitRunner);
+}
+
+/**
+ * Append `.serena/project.local.yml` to this repo's local (never-committed)
+ * git-exclude file so the override written above doesn't leave worktrees
+ * permanently dirty in repos that don't already ignore it via a committed
+ * `.gitignore` (FLUX-1155 — see writeWorktreeSerenaOverride).
+ *
+ * Resolved via `git rev-parse --git-common-dir` rather than the worktree's own
+ * `.git` file, so the line is written ONCE to the dir shared by every worktree
+ * of this repo (`<main-repo>/.git/info/exclude`), not duplicated per worktree.
+ * `info/exclude` is repo-local and never committed — unlike touching the
+ * user's tracked `.gitignore`, this can't leak an EH-internal convention into
+ * their tree. Best-effort and idempotent, matching the override write itself.
+ */
+async function excludeSerenaOverrideFromGitStatus(
+  worktreePath: string,
+  gitRunner: GitRunner,
+): Promise<void> {
+  try {
+    const { stdout } = await gitRunner(worktreePath, ['rev-parse', '--git-common-dir']);
+    const gitCommonDir = path.resolve(worktreePath, stdout.trim());
+    const excludePath = path.join(gitCommonDir, 'info', 'exclude');
+    let existing = '';
+    try {
+      existing = await fs.readFile(excludePath, 'utf8');
+    } catch {
+      // info/exclude doesn't exist yet — created below.
+    }
+    const alreadyExcluded = existing
+      .split('\n')
+      .some((line) => line.trim() === SERENA_PROJECT_LOCAL_GITIGNORE_PATTERN);
+    if (alreadyExcluded) return;
+    await fs.mkdir(path.dirname(excludePath), { recursive: true });
+    const needsLeadingNewline = existing.length > 0 && !existing.endsWith('\n');
+    await fs.appendFile(
+      excludePath,
+      `${needsLeadingNewline ? '\n' : ''}${SERENA_PROJECT_LOCAL_GITIGNORE_PATTERN}\n`,
+      'utf8',
+    );
+  } catch (err) {
+    console.error(`[task-worktree] failed to exclude Serena override for ${worktreePath}:`, err);
   }
 }
 

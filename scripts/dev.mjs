@@ -9,25 +9,109 @@ const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const isWin = process.platform === 'win32';
 const npm = isWin ? 'npm.cmd' : 'npm';
 
-// Kill stale Vite process before spawning the portal so the new instance always
-// owns the port cleanly. dev-watcher did this too but it raced with the portal spawn.
-function killPort(port) {
+// ── Hijack guards (FLUX-1117) ───────────────────────────────────────────────────
+// Incident: a Furnace agent ran `npm run dev` inside its task worktree; the killPort below
+// tree-killed the user's REAL engine mid-burn and the agent's stack seized 3067/5167 bound to
+// the worktree as workspace. Three independent guards keep that from recurring.
+
+// 1) Never under an agent session. The engine stamps EVENT_HORIZON_FRAMEWORK into every agent
+//    child env (engine/src/agents/shared.ts, cleanChildEnv), so any descendant shell has it.
+if (process.env.EVENT_HORIZON_FRAMEWORK) {
+  console.error(
+    '[dev] Refusing to start: this shell belongs to an Event Horizon agent session ' +
+    '(EVENT_HORIZON_FRAMEWORK is set). Agents must not run the dev stack — its port takeover ' +
+    'would evict the user\'s engine. Validate with `npm run typecheck` or targeted tests instead.'
+  );
+  process.exit(1);
+}
+
+// 2) Never from a task worktree. A worktree-launched stack binds the board to the WORKTREE
+//    as workspace — silently serving/writing the wrong store.
+const inWorktree =
+  root.replace(/\\/g, '/').includes('/.eh-worktrees/') ||
+  (() => {
+    try {
+      const gitDir = execSync('git rev-parse --absolute-git-dir', { cwd: root, encoding: 'utf-8' }).trim();
+      const commonDir = execSync('git rev-parse --git-common-dir', { cwd: root, encoding: 'utf-8' }).trim();
+      return path.resolve(root, gitDir) !== path.resolve(root, commonDir);
+    } catch { return false; }
+  })();
+if (inWorktree && process.env.EH_ALLOW_WORKTREE_DEV !== '1') {
+  console.error(
+    '[dev] Refusing to start from a git worktree checkout. The dev stack must run from the main ' +
+    'checkout — starting here would evict the real engine and bind the board to this worktree. ' +
+    'Set EH_ALLOW_WORKTREE_DEV=1 to override deliberately.'
+  );
+  process.exit(1);
+}
+
+// 3) killPort only reaps processes provably OURS (see below) — a foreign port owner aborts startup.
+
+function ownerCommandLine(pid) {
   try {
     if (isWin) {
+      // wmic is removed on newer Win11 builds — query via PowerShell CIM instead.
+      return execSync(
+        `powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine"`,
+        { encoding: 'utf-8' }
+      ).trim() || null;
+    }
+    return execSync(`ps -p ${pid} -o args=`, { encoding: 'utf-8' }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+// A stale predecessor of THIS checkout's dev stack is recognizable by its command line
+// referencing this checkout's node_modules (tsx/vite loaders) or this script itself.
+function isOwnDevProcess(cmdline) {
+  if (!cmdline) return false;
+  const norm = cmdline.replace(/\\/g, '/').toLowerCase();
+  const ownRoot = root.replace(/\\/g, '/').toLowerCase();
+  return norm.includes(`${ownRoot}/node_modules`) || norm.includes(`${ownRoot}/scripts/dev.mjs`);
+}
+
+// Kill stale engine/Vite processes of THIS checkout before spawning, so the new instance always
+// owns the ports cleanly. dev-watcher did this too but it raced with the portal spawn.
+function killPort(port) {
+  try {
+    const pids = new Set();
+    if (isWin) {
       const output = execSync(`netstat -ano | findstr ":${port}" | findstr "LISTENING"`, { encoding: 'utf-8' });
-      const pids = new Set(
-        output.split('\n')
-          .map(line => line.trim().split(/\s+/).pop())
-          .filter((pid) => !!pid && /^\d+$/.test(pid))
-      );
-      for (const pid of pids) {
-        // /T = tree kill: the engine PLUS every agent session it spawned and their MCP servers
-        // (serena, context7, …). Without /T the engine died but its children orphaned and piled up
-        // across restarts — the 100+ stale-node-process leak that wedges the machine.
-        try { execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore' }); } catch {}
+      for (const line of output.split('\n')) {
+        const pid = line.trim().split(/\s+/).pop();
+        if (pid && /^\d+$/.test(pid)) pids.add(pid);
       }
     } else {
-      execSync(`lsof -ti:${port} | xargs -r kill -9`, { stdio: 'ignore' });
+      const output = execSync(`lsof -ti:${port}`, { encoding: 'utf-8' });
+      for (const pid of output.split('\n')) {
+        if (pid.trim() && /^\d+$/.test(pid.trim())) pids.add(pid.trim());
+      }
+    }
+    for (const pid of pids) {
+      const cmdline = ownerCommandLine(pid);
+      if (cmdline === null) {
+        // Process likely exited between netstat and query — if it IS still there, our own
+        // bind will fail loudly, which beats killing something we can't identify.
+        console.warn(`[dev] Port ${port} owner (pid ${pid}) could not be inspected — not killing it.`);
+        continue;
+      }
+      if (!isOwnDevProcess(cmdline)) {
+        console.error(
+          `[dev] Port ${port} is held by a process that is NOT this checkout's dev stack ` +
+          `(pid ${pid}: ${cmdline.slice(0, 160)}). Refusing to evict it — stop that process ` +
+          'yourself if this is intentional.'
+        );
+        process.exit(1);
+      }
+      // /T = tree kill: the engine PLUS every agent session it spawned and their MCP servers
+      // (serena, context7, …). Without /T the engine died but its children orphaned and piled up
+      // across restarts — the 100+ stale-node-process leak that wedges the machine.
+      if (isWin) {
+        try { execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore' }); } catch {}
+      } else {
+        try { execSync(`kill -9 ${pid}`, { stdio: 'ignore' }); } catch {}
+      }
     }
   } catch {}
 }
@@ -45,16 +129,30 @@ if (noWatch) {
   console.log('  [dev] engine file-watch DISABLED (dev:stable) — restart `npm run dev` to load engine/src edits\n');
 }
 
+// FLUX-1116: an ambient PORT env var (e.g. Claude Code's preview harness injects PORT=5167 to
+// match the portal entry in .claude/launch.json) otherwise leaks into these children. The engine
+// honors process.env.PORT in dev (engine/src/index.ts readPortConfig) and would silently bind to
+// 5167 instead of 3067 — colliding with Vite's own 5167, with no bind error, breaking the portal's
+// /api proxy (hardcoded to 3067) and the MCP endpoint. Strip it so children always land on their
+// fixed dev ports (3067 / 5167) regardless of the parent environment.
+const childEnv = { ...process.env };
+if (childEnv.PORT !== undefined) {
+  console.warn(`[dev] Ignoring ambient PORT=${childEnv.PORT} from the parent environment — engine binds 3067, portal binds 5167.`);
+  delete childEnv.PORT;
+}
+
 const engine = spawn(npm, ['run', engineScript, '-w', 'engine'], {
   cwd: root,
   stdio: 'pipe',
   shell: isWin,
+  env: childEnv,
 });
 
 const portal = spawn(npm, ['run', 'dev', '-w', 'portal'], {
   cwd: root,
   stdio: 'pipe',
   shell: isWin,
+  env: childEnv,
 });
 
 let enginePort = null;

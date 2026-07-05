@@ -40,9 +40,9 @@ router.get('/', async (_req, res) => {
   res.json(summarizeGroup(null, registeredPaths));
 });
 
-function parseBody(body: any): GroupSetupInput | { error: string } {
+function parseBody(body: unknown): GroupSetupInput | { error: string } {
   if (!body || typeof body !== 'object') return { error: 'Request body must be an object' };
-  const { name, members, force, allowLocalRemotes } = body;
+  const { name, members, force, allowLocalRemotes } = body as Record<string, unknown>;
   if (typeof name !== 'string' || name.trim().length === 0) {
     return { error: 'name must be a non-empty string' };
   }
@@ -50,8 +50,9 @@ function parseBody(body: any): GroupSetupInput | { error: string } {
     return { error: 'members must be a non-empty array' };
   }
   const parsed: GroupMember[] = [];
-  for (const m of members) {
-    if (!m || typeof m !== 'object') return { error: 'each member must be an object' };
+  for (const raw of members) {
+    if (!raw || typeof raw !== 'object') return { error: 'each member must be an object' };
+    const m = raw as Record<string, unknown>;
     if (typeof m.name !== 'string' || typeof m.role !== 'string' || typeof m.remote !== 'string') {
       return { error: 'each member needs name, role, and remote strings' };
     }
@@ -79,8 +80,8 @@ router.post('/plan', async (req, res) => {
   try {
     const plan = await planGroupSetup(input);
     res.json(plan);
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
+  } catch (err: unknown) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 
@@ -92,8 +93,8 @@ router.post('/apply', async (req, res) => {
   try {
     const result = await applyGroupSetup(input);
     res.json(result);
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
+  } catch (err: unknown) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 
@@ -119,8 +120,8 @@ router.post('/ensure-registered', async (_req, res) => {
   try {
     const result = await ensureGroupRegistered(group.parentRoot);
     res.json(result);
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
+  } catch (err: unknown) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 
@@ -134,8 +135,8 @@ router.get('/discover/registry', async (_req, res) => {
   try {
     const repos = await discoverFromRegistry();
     res.json({ repos });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err: unknown) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 
@@ -151,14 +152,14 @@ router.post('/discover/folder', async (req, res) => {
   try {
     const result = await scanFolderForRepos(folder);
     res.json(result);
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
+  } catch (err: unknown) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 
-function parseCreateParent(body: any): CreateParentInput | { error: string } {
+function parseCreateParent(body: unknown): CreateParentInput | { error: string } {
   if (!body || typeof body !== 'object') return { error: 'Request body must be an object' };
-  const { parentPath, name, members } = body;
+  const { parentPath, name, members } = body as Record<string, unknown>;
   if (typeof parentPath !== 'string' || parentPath.trim().length === 0) {
     return { error: 'parentPath must be a non-empty string' };
   }
@@ -169,8 +170,9 @@ function parseCreateParent(body: any): CreateParentInput | { error: string } {
     return { error: 'members must be a non-empty array' };
   }
   const parsed: CreateParentMember[] = [];
-  for (const m of members) {
-    if (!m || typeof m !== 'object') return { error: 'each member must be an object' };
+  for (const raw of members) {
+    if (!raw || typeof raw !== 'object') return { error: 'each member must be an object' };
+    const m = raw as Record<string, unknown>;
     if (typeof m.name !== 'string' || typeof m.role !== 'string' || typeof m.remote !== 'string') {
       return { error: 'each member needs name, role, and remote strings' };
     }
@@ -197,8 +199,8 @@ router.post('/create-parent', async (req, res) => {
   try {
     const result = await createDedicatedParent(input);
     res.json(result);
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
+  } catch (err: unknown) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 
@@ -210,27 +212,28 @@ router.post('/sync', async (_req, res) => {
   try {
     const result = await syncGroup(group);
     res.json(result);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err: unknown) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 
-function parseEdits(body: any): GroupEditFile[] | { error: string } {
+function parseEdits(body: unknown): GroupEditFile[] | { error: string } {
   if (!body || typeof body !== 'object') return { error: 'Request body must be an object' };
-  const { files } = body;
+  const { files } = body as Record<string, unknown>;
   if (!Array.isArray(files) || files.length === 0) {
     return { error: 'files must be a non-empty array' };
   }
   const parsed: GroupEditFile[] = [];
-  for (const f of files) {
-    if (!f || typeof f !== 'object' || typeof f.path !== 'string') {
+  for (const raw of files) {
+    if (!raw || typeof raw !== 'object' || typeof (raw as Record<string, unknown>).path !== 'string') {
       return { error: 'each file needs a path string' };
     }
+    const f = raw as Record<string, unknown> & { path: string };
     const del = Boolean(f.delete);
     if (!del && typeof f.content !== 'string') {
       return { error: `file ${f.path} needs string content (or delete: true)` };
     }
-    parsed.push({ path: f.path, ...(del ? { delete: true } : { content: f.content }) });
+    parsed.push({ path: f.path, ...(del ? { delete: true } : { content: f.content as string }) });
   }
   return parsed;
 }
@@ -248,8 +251,8 @@ router.post('/submit-edit', async (req, res) => {
   try {
     const result = await submitGroupEdit(group, edits);
     res.json(result);
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
+  } catch (err: unknown) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 
@@ -287,20 +290,24 @@ router.post('/promote-docs/plan', async (_req, res) => {
   try {
     const plan = await planDocsPromotion(workspaceRoot!);
     res.json(plan);
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
+  } catch (err: unknown) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 
-function parseSelections(body: any): PromotionSelection[] | { error: string } {
+function parseSelections(body: unknown): PromotionSelection[] | { error: string } {
   if (!body || typeof body !== 'object') return { error: 'Request body must be an object' };
-  const { selections } = body;
+  const { selections } = body as Record<string, unknown>;
   if (!Array.isArray(selections) || selections.length === 0) {
     return { error: 'selections must be a non-empty array' };
   }
   const parsed: PromotionSelection[] = [];
-  for (const s of selections) {
-    if (!s || typeof s !== 'object' || typeof s.source !== 'string' || typeof s.target !== 'string') {
+  for (const raw of selections) {
+    if (!raw || typeof raw !== 'object') {
+      return { error: 'each selection needs source and target strings' };
+    }
+    const s = raw as Record<string, unknown>;
+    if (typeof s.source !== 'string' || typeof s.target !== 'string') {
       return { error: 'each selection needs source and target strings' };
     }
     parsed.push({ source: s.source, target: s.target });
@@ -324,8 +331,8 @@ router.post('/promote-docs/apply', async (req, res) => {
         ? await applyDocsPromotion(origin.group, selections)
         : await applyMemberDocsPromotion(origin.memberRoot, origin.parentGroup, selections);
     res.json(result);
-  } catch (err: any) {
-    res.status(400).json({ error: err.message });
+  } catch (err: unknown) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 

@@ -85,8 +85,9 @@ router.post('/:id/action', async (req, res) => {
       }
       dismissNotification(notification.id);
       return res.json({ ok: true, action: 'reinstalled', result });
-    } catch (err: any) {
-      return res.status(500).json({ error: err.message || 'Reinstall failed' });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return res.status(500).json({ error: message || 'Reinstall failed' });
     }
   }
 
@@ -106,7 +107,7 @@ router.post('/:id/action', async (req, res) => {
   // Post-merge worktree cleanup notifications (FLUX-557). Both resolve the branch via the
   // notification's ticket, since the cleanup is branch-scoped.
   if ((actionId === 'cleanup-worktree' || actionId === 'open-worktree') && notification.ticketId && workspaceRoot) {
-    const task = tasksCache[notification.ticketId] as any;
+    const task = tasksCache[notification.ticketId] as { branch?: string } | undefined;
     const branch: string | undefined = task?.branch;
     if (!branch) return res.status(409).json({ error: 'Ticket no longer has a branch to clean up.' });
 

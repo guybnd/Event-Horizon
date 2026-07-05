@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, memo, lazy, Suspense } from 'react';
 import { Rnd } from 'react-rnd';
 import { X, Minus, Plus, Terminal, Check, MoreHorizontal } from 'lucide-react';
 import { Terminal as XTerm } from '@xterm/xterm';
@@ -14,6 +14,10 @@ import {
   getTerminalWsUrl,
 } from '../api';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
+import type { EngineEvent } from '../store/appStore';
+import { formatClockTime } from '../lib/formatClockTime';
+import { FilterChipRow } from './terminal/FilterChipRow';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 import type { TerminalCommand } from '../types';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -21,12 +25,20 @@ import type { TerminalCommand } from '../types';
 interface TerminalTab {
   id: string;
   title: string;
-  type: 'pty' | 'engine-events';
+  type: 'pty' | 'engine-events' | 'operations';
   sessionId?: string;
   initialCmd?: string;
 }
 
-type EventCategory = 'All' | 'Session' | 'Sync' | 'SSE' | 'Git' | 'Errors';
+// Dev-only Operations tab (S11, epic FLUX-996, FLUX-1007) — same dead-code-elimination
+// precedent as App.tsx's OnboardingStudioScreen: the lazy() (and its dynamic import()) lives
+// inside an `import.meta.env.DEV` branch that's statically `false` in a production build, so
+// the bundler drops the import and never emits the tab's chunk into prod dist at all.
+const OperationsTab = import.meta.env.DEV
+  ? lazy(() => import('./terminal/OperationsTab').then((m) => ({ default: m.OperationsTab })))
+  : null;
+
+type EventCategory = 'All' | 'Session' | 'Sync' | 'SSE' | 'Git' | 'Perf' | 'Errors';
 
 const PANEL_DEFAULT = { x: 80, y: 80, width: 700, height: 450 };
 const PANEL_MIN = { width: 400, height: 250 };
@@ -52,6 +64,7 @@ function saveGeom(g: typeof PANEL_DEFAULT) {
 }
 
 function categorizeEvent(type: string): EventCategory {
+  if (type === 'perf') return 'Perf';
   if (type.includes('error') || type.includes('fail') || type.includes('crash')) return 'Errors';
   if (type.includes('session') || type.includes('activity') || type.includes('progress')) return 'Session';
   if (type.includes('sync') || type.includes('storage')) return 'Sync';
@@ -60,7 +73,46 @@ function categorizeEvent(type: string): EventCategory {
   return 'All';
 }
 
+// Module scope (FLUX-1139) — was rebuilt on every row on every render inside the .map below.
+const EVENT_TAG_COLOR: Record<EventCategory, string> = {
+  All: 'text-gray-500',
+  Session: 'text-sky-400',
+  Sync: 'text-emerald-400',
+  SSE: 'text-yellow-500',
+  Git: 'text-teal-400',
+  Perf: 'text-orange-400',
+  Errors: 'text-red-400',
+};
+
+// Memoized so an appended event only mounts one new row — existing rows keep the same `ev`
+// object reference (the store appends, never mutates) and skip re-render entirely (FLUX-1139).
+const EngineEventRow = memo(function EngineEventRow({ ev, category }: { ev: EngineEvent; category: EventCategory }) {
+  const ts = formatClockTime(ev.timestamp);
+  return (
+    <div className="flex gap-2 min-w-0">
+      <span className="shrink-0 text-gray-600">{ts}</span>
+      <span className={`shrink-0 font-semibold ${EVENT_TAG_COLOR[category]}`}>{ev.type}</span>
+      <span className="text-gray-400 whitespace-pre">{JSON.stringify(ev.data)}</span>
+    </div>
+  );
+});
+
 // ─── PTY Tab ─────────────────────────────────────────────────────────────────
+
+// Guards focus wiring against stealing keystrokes from an open rename input, a modal
+// dialog, or the ticket chat box — only steal focus when nothing else "important" has it.
+function isSafeToFocusTerminal(container: HTMLElement | null): boolean {
+  const active = document.activeElement as HTMLElement | null;
+  if (!active || active === document.body) return true;
+  if (container?.contains(active)) return true;
+  // Also bail out of open (non-dialog) dropdown/menu/listbox overlays — e.g. ChatDock's
+  // model picker (role="listbox") or TicketActions' launch menu (role="menu") stay
+  // interactive alongside the terminal panel, so a plain role="dialog" check misses them.
+  if (active.closest('[role="dialog"],[role="menu"],[role="listbox"],[aria-expanded="true"]')) return false;
+  const tag = active.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || active.isContentEditable) return false;
+  return true;
+}
 
 function PtyTab({ sessionId, isActive, initialCmd }: { sessionId: string; isActive: boolean; initialCmd?: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -85,6 +137,8 @@ function PtyTab({ sessionId, isActive, initialCmd }: { sessionId: string; isActi
     fitAddon.fit();
     termRef.current = term;
     fitRef.current = fitAddon;
+    // A freshly opened tab should accept keystrokes immediately — no click required first.
+    if (isSafeToFocusTerminal(containerRef.current)) term.focus();
 
     // Load scrollback then connect WS
     getTerminalSession(sessionId)
@@ -152,7 +206,7 @@ function PtyTab({ sessionId, isActive, initialCmd }: { sessionId: string; isActi
     };
   }, [sessionId]);
 
-  // Fit when tab becomes active
+  // Fit + restore focus when tab becomes active (switched to)
   useEffect(() => {
     if (isActive && fitRef.current) {
       setTimeout(() => {
@@ -160,6 +214,7 @@ function PtyTab({ sessionId, isActive, initialCmd }: { sessionId: string; isActi
         if (wsRef.current?.readyState === WebSocket.OPEN && termRef.current) {
           wsRef.current.send(JSON.stringify({ type: 'resize', cols: termRef.current.cols, rows: termRef.current.rows }));
         }
+        if (isSafeToFocusTerminal(containerRef.current)) termRef.current?.focus();
       }, 50);
     }
   }, [isActive]);
@@ -169,6 +224,8 @@ function PtyTab({ sessionId, isActive, initialCmd }: { sessionId: string; isActi
       ref={containerRef}
       className="flex-1 overflow-hidden"
       style={{ display: isActive ? 'flex' : 'none', flexDirection: 'column', background: '#1e1e1e' }}
+      // Clicking inside the terminal body re-focuses it if focus was lost elsewhere.
+      onMouseDown={() => termRef.current?.focus()}
     />
   );
 }
@@ -177,7 +234,7 @@ function PtyTab({ sessionId, isActive, initialCmd }: { sessionId: string; isActi
 
 function EngineEventsTab({ isActive }: { isActive: boolean }) {
   const [filter, setFilter] = useState<EventCategory>('All');
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const isConnected = useAppSelector(s => s.isConnected);
   // FLUX-1030: the event buffer now lives in the shared store (fed by the single /api/events
   // connection in AppContext), so it accumulates from app boot and survives this panel being
@@ -185,36 +242,61 @@ function EngineEventsTab({ isActive }: { isActive: boolean }) {
   const events = useAppSelector(s => s.engineEvents);
   const { clearEngineEvents } = useAppActions();
 
-  useEffect(() => {
-    if (isActive) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  // Skip the filter + row-rendering work entirely while this tab isn't visible. It stays
+  // mounted (display:none) so its buffer survives tab switches, but without this gate it would
+  // otherwise fully re-render up to ENGINE_EVENTS_MAX rows on every single SSE tick even while
+  // the user is looking at a different tab.
+  const filtered = useMemo(() => {
+    if (!isActive) return [];
+    return filter === 'All' ? events : events.filter(e => categorizeEvent(e.type) === filter);
+  }, [events, filter, isActive]);
+
+  // "Stick to bottom" — only auto-follow new events when the user is already at (or very
+  // near) the bottom. Once they scroll up to read scrollback, leave the position alone and
+  // surface a "jump to bottom" affordance instead of yanking them back down.
+  const stuckToBottomRef = useRef(true);
+  const [stuckToBottom, setStuckToBottom] = useState(true);
+  // Snapshot of the *filtered* event count at the moment the user scrolled away from the
+  // bottom, so the "N new events" badge reflects the currently-visible category, not the
+  // unfiltered buffer (FLUX-1127).
+  const baselineCountRef = useRef(filtered.length);
+
+  const handleScroll = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const stuck = distanceFromBottom < 48;
+    if (stuck !== stuckToBottomRef.current) {
+      stuckToBottomRef.current = stuck;
+      setStuckToBottom(stuck);
+      if (!stuck) baselineCountRef.current = filtered.length;
     }
-  }, [events, isActive]);
+  }, [filtered.length]);
 
-  const filtered = useMemo(() => filter === 'All'
-    ? events
-    : events.filter(e => categorizeEvent(e.type) === filter),
-    [events, filter]);
+  const jumpToBottom = useCallback(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    stuckToBottomRef.current = true;
+    setStuckToBottom(true);
+  }, []);
 
-  const CATS: EventCategory[] = ['All', 'Session', 'Sync', 'SSE', 'Git', 'Errors'];
+  useEffect(() => {
+    if (isActive && stuckToBottomRef.current) {
+      const el = containerRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    }
+  }, [filtered.length, isActive]);
+
+  const unseenCount = !stuckToBottom ? Math.max(0, filtered.length - baselineCountRef.current) : 0;
+
+  const CATS: EventCategory[] = ['All', 'Session', 'Sync', 'SSE', 'Git', 'Perf', 'Errors'];
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden" style={{ display: isActive ? 'flex' : 'none' }}>
+    <div className="flex-1 flex flex-col overflow-hidden relative" style={{ display: isActive ? 'flex' : 'none' }}>
       {/* Filter chips — pill-shaped to match mockup */}
       <div className="flex items-center gap-1.5 px-3 py-2 border-b flex-wrap" style={{ borderColor: 'var(--eh-border)', background: 'var(--eh-column-bg)' }}>
-        {CATS.map(c => (
-          <button
-            key={c}
-            onClick={() => setFilter(c)}
-            className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold transition-colors cursor-pointer border ${
-              filter === c
-                ? 'border-[var(--eh-accent)] text-[var(--eh-accent)] bg-[var(--eh-accent-glow)]'
-                : 'border-transparent text-gray-500 hover:text-gray-300'
-            }`}
-          >
-            {c}
-          </button>
-        ))}
+        <FilterChipRow label="Filter events" options={CATS} value={filter} onChange={setFilter} />
         <div className="ml-auto flex items-center gap-1.5">
           <div className={`h-1.5 w-1.5 rounded-full ${isConnected ? 'bg-emerald-500' : 'bg-red-500 animate-pulse'}`} />
           <span className="text-[10px]" style={{ color: 'var(--eh-text-muted)' }}>{isConnected ? 'Connected' : 'Offline'}</span>
@@ -227,31 +309,31 @@ function EngineEventsTab({ isActive }: { isActive: boolean }) {
         </div>
       </div>
       {/* Log lines — overflow-x: auto so wide JSON lines can be scrolled horizontally */}
-      <div className="flex-1 overflow-y-auto overflow-x-auto font-mono text-[11px] p-2 space-y-0.5" style={{ background: '#1e1e1e', color: '#d4d4d4' }}>
+      <div
+        ref={containerRef}
+        onScroll={handleScroll}
+        className="flex-1 overflow-y-auto overflow-x-auto font-mono text-[11px] p-2 space-y-0.5"
+        style={{ background: '#1e1e1e', color: '#d4d4d4' }}
+      >
         {filtered.length === 0 && (
-          <div className="text-gray-500 italic py-4 text-center">No events yet — waiting for engine activity…</div>
+          <div className="text-gray-500 italic py-4 text-center">
+            {isActive ? 'No events yet — waiting for engine activity…' : ''}
+          </div>
         )}
-        {filtered.map((ev, i) => {
-          const cat = categorizeEvent(ev.type);
-          const ts = new Date(ev.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-          const tagColor: Record<EventCategory, string> = {
-            All: 'text-gray-500',
-            Session: 'text-sky-400',
-            Sync: 'text-emerald-400',
-            SSE: 'text-yellow-500',
-            Git: 'text-teal-400',
-            Errors: 'text-red-400',
-          };
-          return (
-            <div key={i} className="flex gap-2 min-w-0">
-              <span className="shrink-0 text-gray-600">{ts}</span>
-              <span className={`shrink-0 font-semibold ${tagColor[cat]}`}>{ev.type}</span>
-              <span className="text-gray-400 whitespace-pre">{JSON.stringify(ev.data)}</span>
-            </div>
-          );
-        })}
-        <div ref={bottomRef} />
+        {filtered.map((ev) => (
+          <EngineEventRow key={ev.id} ev={ev} category={categorizeEvent(ev.type)} />
+        ))}
       </div>
+      {/* Jump-to-bottom affordance — only while scrolled up with unseen new events */}
+      {!stuckToBottom && unseenCount > 0 && (
+        <button
+          onClick={jumpToBottom}
+          className="absolute bottom-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full text-[11px] font-semibold shadow-lg cursor-pointer border transition-colors"
+          style={{ background: 'var(--eh-accent)', borderColor: 'var(--eh-accent)', color: '#fff' }}
+        >
+          ↓ {unseenCount} new event{unseenCount !== 1 ? 's' : ''}
+        </button>
+      )}
     </div>
   );
 }
@@ -488,9 +570,11 @@ export function TerminalPanel({
 }) {
   const config = useAppSelector(s => s.config);
   const { clearEngineEvents } = useAppActions();
-  const [tabs, setTabs] = useState<TerminalTab[]>([
-    { id: 'engine-events', title: 'Engine events', type: 'engine-events' },
-  ]);
+  const [tabs, setTabs] = useState<TerminalTab[]>(() => {
+    const base: TerminalTab[] = [{ id: 'engine-events', title: 'Engine events', type: 'engine-events' }];
+    if (import.meta.env.DEV) base.push({ id: 'operations', title: 'Operations', type: 'operations' });
+    return base;
+  });
   const [activeTabId, setActiveTabId] = useState('engine-events');
   const [isMinimized, setIsMinimized] = useState(false);
   const [geom, setGeom] = useState(loadGeom);
@@ -517,7 +601,7 @@ export function TerminalPanel({
 
   const closeTab = useCallback(async (tabId: string) => {
     const tab = tabs.find(t => t.id === tabId);
-    if (!tab || tab.type === 'engine-events') return;
+    if (!tab || tab.type !== 'pty') return;
     if (tab.sessionId) {
       destroyTerminalSession(tab.sessionId).catch(() => {});
     }
@@ -579,6 +663,13 @@ export function TerminalPanel({
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [contextMenu]);
+
+  // FLUX-1022: Esc minimizes (never closes) the terminal window — but only when focus is on the
+  // window chrome. The default `ignoreWhenTyping` guard already excludes inputs/textareas/the
+  // xterm body (`.xterm`), which is exactly "never while the shell owns the keystroke" (vim, TUIs
+  // need Esc); the tab-rename input's own local Escape handler is unaffected since it lives on an
+  // <input>, which this hook already skips.
+  useEscapeKey(() => setIsMinimized(true), { enabled: isOpen && !isMinimized });
 
   if (!isOpen) return null;
 
@@ -654,6 +745,7 @@ export function TerminalPanel({
                 className="relative group shrink-0"
                 onContextMenu={e => {
                   e.preventDefault();
+                  if (tab.type === 'operations') return;
                   setContextMenu({ x: e.clientX, y: e.clientY, tabId: tab.id });
                 }}
               >
@@ -689,6 +781,8 @@ export function TerminalPanel({
                   >
                     {tab.type === 'engine-events'
                       ? <span className="text-[9px] font-bold" style={{ color: 'var(--eh-accent)' }}>⚡</span>
+                      : tab.type === 'operations'
+                      ? <span className="text-[9px] font-bold" style={{ color: 'var(--eh-accent)' }}>⚙</span>
                       : <Terminal className="w-3 h-3" />}
                     {tab.title}
                     {tab.type === 'pty' && (
@@ -741,6 +835,11 @@ export function TerminalPanel({
           {/* ── Tab content ── */}
           <div className="flex-1 flex flex-col overflow-hidden relative">
             <EngineEventsTab isActive={activeTabId === 'engine-events'} />
+            {import.meta.env.DEV && OperationsTab && (
+              <Suspense fallback={null}>
+                <OperationsTab isActive={activeTabId === 'operations'} />
+              </Suspense>
+            )}
             {tabs.filter(t => t.type === 'pty').map(tab => (
               <PtyTab
                 key={tab.id}
@@ -749,7 +848,7 @@ export function TerminalPanel({
                 initialCmd={tab.initialCmd}
               />
             ))}
-            {activeTabId !== 'engine-events' && !tabs.find(t => t.id === activeTabId && t.type === 'pty') && (
+            {activeTabId !== 'engine-events' && activeTabId !== 'operations' && !tabs.find(t => t.id === activeTabId && t.type === 'pty') && (
               <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">
                 Tab not found
               </div>

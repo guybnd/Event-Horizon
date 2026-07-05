@@ -35,7 +35,7 @@ export const AGENT_COMMANDS: AgentCommandDef[] = [
 export type AgentAction =
   | { kind: 'launch' }
   | { kind: 'command'; verb: AgentCommandVerb }
-  | { kind: 'prompt'; appendPrompt: string }
+  | { kind: 'prompt'; appendPrompt: string; focusComment?: string }
   | { kind: 'persona'; personaId: string; focusComment?: string };
 
 export interface RunAgentActionOptions {
@@ -88,6 +88,7 @@ export async function runAgentAction(opts: RunAgentActionOptions): Promise<CliSe
     appendPrompt = `${action.verb} ${taskId}`;
   } else if (action.kind === 'prompt') {
     appendPrompt = action.appendPrompt;
+    focusComment = action.focusComment;
   } else if (action.kind === 'persona') {
     personaId = action.personaId;
     focusComment = action.focusComment;

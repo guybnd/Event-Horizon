@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { StatusBadge } from '../StatusBadge';
 import { getStatusColorClass } from '../../statusStyles';
+import { normalizeStatus } from '../../workflow';
 import { TaskDescriptionSurface } from '../TaskDescriptionSurface';
 import { MetadataPanel } from './MetadataPanel';
 import { DiffViewer } from './DiffViewer';
@@ -109,7 +110,7 @@ export function TaskModalPopupView({
                 {isDirty && <span className="ml-1 lowercase italic normal-case text-amber-500">(Unsaved changes)</span>}
               </span>
               <StatusBadge
-                status={status}
+                status={normalizeStatus(status)}
                 colorClass={getStatusColorClass(config, status)}
                 className="text-[10px] font-bold uppercase tracking-[0.16em]"
               />

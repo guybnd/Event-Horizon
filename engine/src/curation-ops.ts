@@ -94,8 +94,8 @@ export async function readCurationOps(): Promise<CurationOpEntry[]> {
   let raw: string;
   try {
     raw = await fs.readFile(getCurationOpsFile(), 'utf8');
-  } catch (err: any) {
-    if (err?.code === 'ENOENT') return [];
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return [];
     throw err;
   }
   const ops: CurationOpEntry[] = [];

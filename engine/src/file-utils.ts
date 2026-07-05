@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import matter from 'gray-matter';
-import { getFluxDir, getActiveFluxDir, getTaskAssetsDir, workspaceRoot } from './workspace.js';
+import { getActiveFluxDir, getTaskAssetsDir, workspaceRoot } from './workspace.js';
 import { configCache } from './config.js';
 
 export const SUPPORTED_IMAGE_TYPES = new Map<string, string>([
@@ -181,8 +181,8 @@ export async function createUniqueAssetFileName(directoryPath: string, requested
       await fs.access(candidatePath);
       suffix += 1;
       candidate = `${baseName}-${suffix}${extension}`;
-    } catch (error: any) {
-      if (error.code === 'ENOENT') return candidate;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return candidate;
       throw error;
     }
   }

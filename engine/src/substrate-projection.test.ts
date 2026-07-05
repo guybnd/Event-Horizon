@@ -339,6 +339,29 @@ describe('substrate vs projection (FLUX-658)', () => {
     ]);
   });
 
+  it('projectTranscript degrades a malformed dispatch-activity lifecycle to undefined (FLUX-862)', () => {
+    const stream = 'DISP';
+    const raws = [
+      // A recognized lifecycle member passes through onto the note row.
+      { type: 'dispatch-activity', text: 'Working on it', lifecycle: 'working', sourceTask: 'FLUX-1', timestamp: 'T1' },
+      // An unrecognized/malformed string must NOT widen into `TranscriptMessage['lifecycle']` —
+      // it degrades to "no lifecycle" (the field is simply absent) rather than passing through raw.
+      { type: 'dispatch-activity', text: 'Bogus stage', lifecycle: 'bogus', sourceTask: 'FLUX-1', timestamp: 'T2' },
+      // Non-string lifecycle values are likewise rejected by the guard.
+      { type: 'dispatch-activity', text: 'Numeric stage', lifecycle: 42, sourceTask: 'FLUX-1', timestamp: 'T3' },
+    ];
+    const turns: Turn[] = raws.map((raw, seq) => ({ turnId: `${stream}:${seq}`, streamId: stream, seq, ts: 'TENV', role: 'unknown', raw }));
+
+    const msgs = projectTranscript(turns);
+    expect(msgs).toEqual([
+      { role: 'note', kind: 'dispatch', text: 'Working on it', ts: 'T1', sourceTask: 'FLUX-1', lifecycle: 'working' },
+      { role: 'note', kind: 'dispatch', text: 'Bogus stage', ts: 'T2', sourceTask: 'FLUX-1' },
+      { role: 'note', kind: 'dispatch', text: 'Numeric stage', ts: 'T3', sourceTask: 'FLUX-1' },
+    ]);
+    expect(msgs[1]!.lifecycle).toBeUndefined();
+    expect(msgs[2]!.lifecycle).toBeUndefined();
+  });
+
   it('readTranscriptMessages routes legacy + enveloped turns through the projector identically', async () => {
     const stream = freshStream();
     // One legacy bare line, then one enveloped append — both must render through projection.

@@ -25,6 +25,7 @@ import { ChatPendingInteractions, usePendingInteractions, useComposerAnswer } fr
 import { AttentionDock } from './attention/AttentionDock';
 import { useDock, MIN_SIDEVIEW_WIDTH, MAX_SIDEVIEW_WIDTH, DEFAULT_SIDEVIEW_WIDTH, type ComposerSelections, type AnchorRect, type WindowGeometry } from './DockProvider';
 import { useTicketSideView } from '../hooks/useTicketSideView';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 import { fireDesktopNotification } from '../hooks/useDesktopNotifications';
 import { getStatusTint, getStatusColorClass } from '../statusStyles';
 import { getRequireInputStatus } from '../workflow';
@@ -505,6 +506,8 @@ export function ChatDock({ onToggleFurnace, furnaceOpen, furnaceBurning }: { onT
           key={id}
           id={id}
           orchestrator={id === BOARD_CONVERSATION_ID}
+          // FLUX-1022: only the frontmost (last in paint order) window collapses on ESC.
+          isTopmost={id === open[open.length - 1]}
           task={allTasks.find((t) => t.id === id)}
           // FLUX-801: the clicked card's rect (pop-open origin) + bring-to-front on focus.
           originRect={anchorRects[id]}
@@ -585,16 +588,16 @@ export function ChatDock({ onToggleFurnace, furnaceOpen, furnaceBurning }: { onT
               furnaceOpen
                 ? 'border-transparent text-white'
                 : furnaceBurning
-                  ? 'border-[#e05a00]/60 bg-[#e05a00]/10 text-[#e05a00]'
+                  ? 'border-[var(--eh-furnace-orange)]/60 bg-[var(--eh-furnace-orange)]/10 text-[var(--eh-furnace-orange)]'
                   : 'eh-border bg-[var(--eh-input-bg)] text-[var(--eh-text-muted)] hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5'
             }`}
-            style={furnaceOpen ? { background: '#e05a00' } : undefined}
+            style={furnaceOpen ? { background: 'var(--eh-furnace-orange)' } : undefined}
           >
             <Flame className={`h-4 w-4 ${!furnaceOpen && furnaceBurning ? 'animate-pulse' : ''}`} />
             {!furnaceOpen && furnaceBurning && (
               <span
                 aria-hidden="true"
-                className="absolute -right-0.5 -top-0.5 h-2 w-2 animate-pulse rounded-full bg-[#e05a00] ring-2 ring-[var(--eh-base)]"
+                className="absolute -right-0.5 -top-0.5 h-2 w-2 animate-pulse rounded-full bg-[var(--eh-furnace-orange)] ring-2 ring-[var(--eh-base)]"
               />
             )}
           </button>
@@ -992,16 +995,14 @@ function DockContextMenu({
     const onDown = (e: PointerEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) dismiss();
     };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') dismiss();
-    };
     window.addEventListener('pointerdown', onDown);
-    window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('pointerdown', onDown);
-      window.removeEventListener('keydown', onKey);
-    };
+    return () => window.removeEventListener('pointerdown', onDown);
   }, [dismiss]);
+
+  // FLUX-1022: routed through the shared stack — this menu is opened over an open dock window,
+  // which now has its own Escape handling; sharing the stack keeps one ESC press from dismissing
+  // just this menu instead of also collapsing the window underneath it.
+  useEscapeKey(dismiss);
 
   // Clamp into the viewport (menu is roughly 196×148).
   const vw = typeof window !== 'undefined' ? window.innerWidth : 1280;
@@ -1141,16 +1142,16 @@ function BarDropdown({
     const onDown = (e: PointerEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
     // Re-position on scroll/resize would be ideal, but the menu closes on any outside interaction,
     // so a fixed snapshot taken at open time is sufficient.
     window.addEventListener('pointerdown', onDown);
-    window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('pointerdown', onDown);
-      window.removeEventListener('keydown', onKey);
-    };
+    return () => window.removeEventListener('pointerdown', onDown);
   }, [open]);
+
+  // FLUX-1022: routed through the shared stack — this dropdown lives inside a dock window's
+  // metadata bar, and that window now has its own Escape handling; sharing the stack keeps one
+  // ESC press from closing just the dropdown instead of also collapsing the host window.
+  useEscapeKey(() => setOpen(false), { enabled: open });
 
   // Move focus to the selected (or first) option when the listbox opens, so arrow keys work at once.
   useEffect(() => {
@@ -1273,14 +1274,14 @@ function BarPopover({
     const onDown = (e: PointerEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
     window.addEventListener('pointerdown', onDown);
-    window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('pointerdown', onDown);
-      window.removeEventListener('keydown', onKey);
-    };
+    return () => window.removeEventListener('pointerdown', onDown);
   }, [open]);
+
+  // FLUX-1022: routed through the shared stack — this popover lives inside a dock window's
+  // metadata bar, and that window now has its own Escape handling; sharing the stack keeps one
+  // ESC press from closing just the popover instead of also collapsing the host window.
+  useEscapeKey(() => setOpen(false), { enabled: open });
 
   // Clamp the fixed panel (w-64 = 256px) into the viewport; the bar opens it downward.
   // FLUX-742: when align='right', anchor the panel's RIGHT edge to the trigger's right edge so a
@@ -1577,6 +1578,7 @@ function TriageAction({ busy, onTriage }: { busy: boolean; onTriage: () => void 
 function ChatWindow({
   id,
   orchestrator,
+  isTopmost,
   task,
   session,
   anchorX,
@@ -1601,6 +1603,9 @@ function ChatWindow({
 }: {
   id: string;
   orchestrator: boolean;
+  /** FLUX-1022: whether this is the frontmost window in the dock's paint order — gates the
+   *  ESC-to-collapse hook so only the top-most/focused window responds to a press. */
+  isTopmost: boolean;
   /** The ticket this window is bound to (absent for the orchestrator → no action bar). */
   task?: Task;
   /** FLUX-686: the CLI session backing this conversation, for the quiet token/cost meter. */
@@ -1644,6 +1649,11 @@ function ChatWindow({
   /** Retire the card into History and close the window. Absent for the pinned orchestrator. */
   onClose?: () => void;
 }) {
+  // FLUX-1022: ESC collapses this floating chat window back to its dock card (session preserved,
+  // never destroyed) — but only while it's the frontmost window, so a press doesn't reach into
+  // background windows.
+  useEscapeKey(onMinimize, { enabled: isTopmost });
+
   // FLUX-748: pass `working` (live running session) so the hook's message queue auto-dispatches
   // on the turn-completion edge.
   const chat = useChatSession(id, true, working);

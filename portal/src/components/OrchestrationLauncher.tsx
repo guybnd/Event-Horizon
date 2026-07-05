@@ -18,6 +18,7 @@ import { type SessionGroup } from '../orchestration';
 import { useAppActions } from '../store/useAppSelector';
 import { OrchestrationTopology, TopologyGlyph } from './OrchestrationTopology';
 import { BranchSection, type StartMode } from './task-modal/BranchSection';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 
 export interface LauncherTicketInfo {
   id: string;
@@ -280,10 +281,15 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
     return () => { cancelled = true; };
   }, [open, phase, personas, personasLoading, templatesLoaded, templates, initialTemplateId, applyTemplate]);
 
+  // FLUX-1022: routed through the shared Escape stack (instead of this component's own listener)
+  // because the launcher can be nested inside TaskModal (opened for review from within an open
+  // ticket) — without sharing the stack, both TaskModal's Escape handler and this one would fire
+  // on the same press and close both surfaces at once.
+  useEscapeKey(() => onCloseRef.current(), { enabled: open });
+
   useEffect(() => {
     if (!open) return;
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onCloseRef.current();
       if (e.key === 'Tab' && dialogRef.current) {
         const focusable = dialogRef.current.querySelectorAll<HTMLElement>(
           'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'

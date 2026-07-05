@@ -4,7 +4,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import matter from 'gray-matter';
 import { existsSync } from 'fs';
-import { getFluxDir, getActiveFluxDir, getTaskAssetsDir, workspaceRoot } from '../workspace.js';
+import { getActiveFluxDir, getTaskAssetsDir, workspaceRoot } from '../workspace.js';
 import { configCache, autoRegisterUnknownTags } from '../config.js';
 import {
   normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry,
@@ -17,8 +17,7 @@ import {
   resolveSupportedImageExtension, sanitizeAssetBaseName, normalizeBase64Content,
   normalizeRelativePath, encodeAssetPath, createUniqueAssetFileName,
 } from '../file-utils.js';
-import { cliSessionIdByTaskId, cliSessionsById, stopAllSessionsForTask, getActiveSessionsForTask, getBlockingSessionsForTask, getParkedSessionsForTask, reconcileDeadSessions, reapStaleParkedSessions } from '../session-store.js';
-import { getAdapter } from '../agents/index.js';
+import { stopAllSessionsForTask, getBlockingSessionsForTask, getParkedSessionsForTask, reconcileDeadSessions, reapStaleParkedSessions } from '../session-store.js';
 import { computeAgentPayloadMetrics } from '../agent-payload-metrics.js';
 import { computeContextBudget } from '../context-budget-metrics.js';
 import { probeAllMcpSchemas } from '../mcp-schema-probe.js';
@@ -37,20 +36,92 @@ function git(cwd: string, args: string[]): Promise<{ stdout: string; stderr: str
   return runGit(args, { cwd });
 }
 
+// ─── Local types (lint burndown, FLUX-1073) ──────────────────────────────────
+// Ticket frontmatter has no canonical compile-time type in this codebase — it's validated at
+// RUNTIME by schema.ts (validateTicketFrontmatter), and `tasksCache` itself is declared
+// `Record<string, any>` in task-store.ts. This interface names only the fields THIS route file
+// actually reads/writes; every other frontmatter field still flows through via the index
+// signature rather than being invented here.
+interface TaskRecord {
+  id: string;
+  _path: string;
+  title?: string;
+  status?: string;
+  body?: string;
+  branch?: string | null;
+  baselineCommit?: string | null;
+  implementationLink?: string | null;
+  kind?: string;
+  prNumber?: number;
+  prState?: string;
+  members?: string[];
+  tags?: string[];
+  priority?: string;
+  updatedBy?: string;
+  [key: string]: unknown;
+}
+
+// Shape of one `history[]` entry as branched on by the PUT /:id handler below. history.ts's own
+// helpers (normalizeHistoryEntries, buildActivityEntry, …) take/return bare `any[]` — there is no
+// shared HistoryEntry type to import — so this names only the fields these routes read; comment
+// bodies, agent_session fields, etc. still pass through via the index signature.
+interface HistoryEntry {
+  type?: string;
+  from?: string;
+  to?: string;
+  comment?: string;
+  user?: string;
+  date?: string;
+  swimlane?: string;
+  action?: string;
+  [key: string]: unknown;
+}
+
+// git-exec.ts's runGit() attaches stdout/stderr to a plain Error on subprocess failure (no
+// exported type for it — branch-manager.ts:239 does the same local cast). Named here for the
+// several catch blocks below that need `.stderr` for a richer error message than `.message` alone.
+type GitExecError = Error & { stdout?: string; stderr?: string; code?: number | null };
+
+function errorMessage(err: unknown, fallback = 'Unexpected error'): string {
+  return err instanceof Error && err.message ? err.message : fallback;
+}
+
+function gitErrorDetail(err: unknown, fallback: string): string {
+  const e = err as GitExecError;
+  return (e?.stderr || e?.message || fallback).toString().trim();
+}
+
 const router = express.Router();
 
 router.get('/', (req, res) => {
-  // FLUX-846: self-heal any session stuck 'running' after a missed terminal event before serializing,
-  // so the served `cliSession` status is authoritative and the portal's active-sessions panel clears.
+  const activeOnly = req.query.active === 'true';
+  // FLUX-846: self-heal any session stuck 'running' after a missed terminal event BEFORE computing
+  // the ETag. This must run unconditionally, ahead of the If-None-Match check below: a missed exit
+  // is precisely the case where no broadcastEvent ever fired on its own, so it's only
+  // reconcileDeadSessions (via its own broadcastEvent, FLUX-1144) that can bump `tasksVersion` and
+  // invalidate a poller's cached ETag. Reordering this after the 304 short-circuit would let a
+  // settled ETag mask a reap forever, leaving the card stuck 'running' until unrelated board
+  // activity happens to bump the version.
   reconcileDeadSessions();
+  // FLUX-1144: conditional GET. `tasksVersion` bumps on every task mutation (broadcastEvent in
+  // events.ts); the two query variants (full vs ?active=true) serialize different sets, so the
+  // ETag is keyed on both. A match means nothing has changed since the client's last fetch —
+  // answer with a bodyless 304 and skip serialization entirely, so a routine unchanged poll (the
+  // common case on the 3s interval) costs a header round-trip instead of re-transferring/re-parsing
+  // the whole list.
+  const etag = `"tasks-${activeOnly ? 'active' : 'all'}-${getTasksVersion()}"`;
+  res.set('ETag', etag);
+  if (req.headers['if-none-match'] === etag) {
+    return res.status(304).end();
+  }
   let tasks = Object.values(tasksCache);
   // FLUX-970: the live 3s poll only needs non-terminal tickets — the board already filters
   // Released/Archived out client-side (Board.tsx). Opt in with ?active=true so the hot poll
   // path stops shipping/parsing/diffing thousands of resting tickets on every tick; default
   // (no param) stays the full set for callers that still need everything (Releases, search).
-  if (req.query.active === 'true') {
+  if (activeOnly) {
     const terminalStatuses = getTerminalStatuses();
-    tasks = tasks.filter((task: any) => !terminalStatuses.includes(task.status));
+    tasks = tasks.filter((task) => !terminalStatuses.includes(task.status));
   }
   res.json(tasks.map(serializeTaskForList));
 });
@@ -74,45 +145,91 @@ async function resolveDefaultBranch(root: string): Promise<string> {
   return 'master';
 }
 
+// ─── Stale-while-revalidate memo for the two hot polling endpoints (FLUX-1126, FLUX-1185) ───
+// Several portal components (AppContext, OrchestrationLauncher, WorktreesPanel,
+// StartTaskPrompt) each poll these endpoints independently, landing near-identical bursts
+// of git spawns roughly a second apart — on top of the steady 30s stoplight poll. FLUX-1126's
+// TTL cache deduped concurrent callers WITHIN the 4s window, but it was still expire-then-
+// recompute-inline: any call landing AFTER expiry blocked on the full per-worktree git fan-out
+// (700-950ms) — and since the portal polls every 30s against a 4s TTL, that was EVERY poll, not
+// just a rare miss. Serve stale-while-revalidate instead: every call after the very first
+// returns the last computed value INSTANTLY, and — only when that value is older than the TTL —
+// kicks a single-flighted background recompute that updates the cache for the NEXT call. A
+// failed background recompute leaves the last good value in place (retried on the next stale
+// trigger) rather than caching the rejection or evicting the value. Per the ticket's default: no
+// explicit invalidation on worktree create/detach — data can now be up to (poll interval +
+// refresh time) stale, invisible for these badge/gauge consumers.
+const HOT_POLL_TTL_MS = 4_000;
+
+/**
+ * Wraps `compute` for stale-while-revalidate serving — see block comment above. Only the very
+ * first call ever (no cached value yet) blocks; every call after that resolves from the cached
+ * value immediately, regardless of staleness.
+ */
+export function swrAsync<T>(ttlMs: number, compute: () => Promise<T>): () => Promise<T> {
+  let value: T | undefined;
+  let hasValue = false;
+  let updatedAt = 0;
+  let inFlight: Promise<T> | null = null;
+
+  function refresh(): Promise<T> {
+    if (inFlight) return inFlight;
+    const promise = compute();
+    inFlight = promise;
+    promise.then(
+      (v) => { value = v; hasValue = true; updatedAt = Date.now(); },
+      () => { /* keep the stale value (if any); the next stale trigger retries */ },
+    ).finally(() => { inFlight = null; });
+    return promise;
+  }
+
+  return () => {
+    if (!hasValue) return refresh(); // nothing to serve yet — this call alone blocks
+    if (Date.now() - updatedAt >= ttlMs) void refresh().catch(() => { /* swallow — the `.then` above already handled retaining the stale value */ });
+    return Promise.resolve(value as T);
+  };
+}
+
+async function computeWorktrees() {
+  const worktrees = await listTaskWorktrees(workspaceRoot!);
+  // Resolve the default branch once (master → main) for the per-worktree ahead count.
+  const defaultBranch = await resolveDefaultBranch(workspaceRoot!);
+  return Promise.all(
+    worktrees.map(async (w) => {
+      const ticket = (Object.values(tasksCache) as TaskRecord[]).find((t) => t.branch === w.branch);
+      // Changed-file count vs master — drives the board chip's "N changed" badge.
+      const changedFiles = await worktreeChangeCount(w.path).catch(() => 0);
+      // Commits this worktree is ahead of the default branch (FLUX-582) — pairs with
+      // changedFiles for the panel's "↑N · M vs master" divergence badge. Best-effort.
+      const aheadCount = await git(w.path, ['rev-list', '--count', `${defaultBranch}..HEAD`])
+        .then((r) => parseInt(r.stdout.trim(), 10) || 0).catch(() => 0);
+      return {
+        path: w.path,
+        branch: w.branch,
+        ticketId: ticket?.id ?? null,
+        ticketTitle: ticket?.title ?? null,
+        changedFiles,
+        aheadCount,
+      };
+    }),
+  );
+}
+
+const getWorktreesMemoized = swrAsync(HOT_POLL_TTL_MS, computeWorktrees);
+
 // List active task worktrees (FLUX-516). Registered before /:id so the literal
 // path wins. Maps each worktree to the ticket whose branch it holds (if any).
 router.get('/worktrees', async (_req, res) => {
   try {
-    const worktrees = await listTaskWorktrees(workspaceRoot!);
-    // Resolve the default branch once (master → main) for the per-worktree ahead count.
-    const defaultBranch = await resolveDefaultBranch(workspaceRoot!);
-    const result = await Promise.all(
-      worktrees.map(async (w) => {
-        const ticket = Object.values(tasksCache).find((t: any) => t.branch === w.branch) as any;
-        // Changed-file count vs master — drives the board chip's "N changed" badge.
-        const changedFiles = await worktreeChangeCount(w.path).catch(() => 0);
-        // Commits this worktree is ahead of the default branch (FLUX-582) — pairs with
-        // changedFiles for the panel's "↑N · M vs master" divergence badge. Best-effort.
-        const aheadCount = await git(w.path, ['rev-list', '--count', `${defaultBranch}..HEAD`])
-          .then((r) => parseInt(r.stdout.trim(), 10) || 0).catch(() => 0);
-        return {
-          path: w.path,
-          branch: w.branch,
-          ticketId: ticket?.id ?? null,
-          ticketTitle: ticket?.title ?? null,
-          changedFiles,
-          aheadCount,
-        };
-      }),
-    );
+    const result = await getWorktreesMemoized();
     res.json({ worktrees: result });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err: unknown) {
+    res.status(500).json({ error: errorMessage(err) });
   }
 });
 
-// Count of uncommitted files in the active workspace — working tree vs HEAD
-// (tracked changes) plus untracked. Powers the board header "uncommitted
-// changes" stoplight (FLUX-535). Registered before /:id so the literal path
-// wins. Best-effort: 0 when not a git repo or git errors (worktreeChangeCount
-// already swallows those).
-router.get('/uncommitted-count', async (_req, res) => {
-  if (!workspaceRoot) return res.json({ count: 0, branch: null, diverged: 0 });
+async function computeUncommittedCount() {
+  if (!workspaceRoot) return { count: 0, branch: null as string | null, diverged: 0 };
   const [mainCount, branch, worktrees] = await Promise.all([
     worktreeChangeCount(workspaceRoot, 'HEAD').catch(() => 0),
     currentBranchName(workspaceRoot).catch(() => null),
@@ -122,14 +239,28 @@ router.get('/uncommitted-count', async (_req, res) => {
   // tree — otherwise the badge reads 0 while 20+ files sit uncommitted in a worktree.
   // Alongside it, `diverged` sums each worktree's full divergence vs master (committed +
   // uncommitted) so the stoplight can show a secondary "vs master" count that survives a
-  // commit, unlike the uncommitted `count` (FLUX-582). Both best-effort.
-  const [wtCounts, wtDiverged] = await Promise.all([
-    Promise.all(worktrees.map((w) => worktreeChangeCount(w.path, 'HEAD').catch(() => 0))),
-    Promise.all(worktrees.map((w) => worktreeChangeCount(w.path, 'master').catch(() => 0))),
-  ]);
-  const count = mainCount + wtCounts.reduce((sum, n) => sum + n, 0);
-  const diverged = wtDiverged.reduce((sum, n) => sum + n, 0);
-  res.json({ count, branch, diverged });
+  // commit, unlike the uncommitted `count` (FLUX-582). Both best-effort. `HEAD` and
+  // `master` counts share one `ls-files` spawn per worktree via `worktreeChangeCounts`
+  // (FLUX-1126) — untracked files don't depend on the diff base, so computing them twice
+  // per worktree per poll was pure waste.
+  const wtCounts = await Promise.all(
+    worktrees.map((w) => worktreeChangeCounts(w.path, ['HEAD', 'master']).catch(() => ({ HEAD: 0, master: 0 }))),
+  );
+  const count = mainCount + wtCounts.reduce((sum, c) => sum + (c.HEAD ?? 0), 0);
+  const diverged = wtCounts.reduce((sum, c) => sum + (c.master ?? 0), 0);
+  return { count, branch, diverged };
+}
+
+const getUncommittedCountMemoized = swrAsync(HOT_POLL_TTL_MS, computeUncommittedCount);
+
+// Count of uncommitted files in the active workspace — working tree vs HEAD
+// (tracked changes) plus untracked. Powers the board header "uncommitted
+// changes" stoplight (FLUX-535). Registered before /:id so the literal path
+// wins. Best-effort: 0 when not a git repo or git errors (worktreeChangeCount
+// already swallows those).
+router.get('/uncommitted-count', async (_req, res) => {
+  const result = await getUncommittedCountMemoized();
+  res.json(result);
 });
 
 // Open the active workspace root in a new VS Code window (FLUX-544). Best-effort:
@@ -172,7 +303,7 @@ router.post('/commit', async (req, res) => {
   const ref = typeof req.body?.ref === 'string' ? req.body.ref.trim() : 'main';
   const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
   const files: string[] = Array.isArray(req.body?.files)
-    ? req.body.files.filter((f: any) => typeof f === 'string' && f.trim()).map((f: string) => f.trim())
+    ? req.body.files.filter((f: unknown): f is string => typeof f === 'string' && f.trim().length > 0).map((f: string) => f.trim())
     : [];
   if (!message) return res.status(400).json({ error: 'Commit message is required' });
   if (files.length === 0) return res.status(400).json({ error: 'No files selected' });
@@ -192,9 +323,8 @@ router.post('/commit', async (req, res) => {
     await git(root, ['commit', '-m', message, '--', ...files]);
     const { stdout } = await git(root, ['rev-parse', '--short', 'HEAD']);
     res.json({ hash: stdout.trim() });
-  } catch (err: any) {
-    const detail = (err?.stderr || err?.message || 'Commit failed').toString().trim();
-    res.status(500).json({ error: detail });
+  } catch (err: unknown) {
+    res.status(500).json({ error: gitErrorDetail(err, 'Commit failed') });
   }
 });
 
@@ -209,7 +339,7 @@ router.get('/branches', async (_req, res) => {
     ]);
     const worktreeBranches = new Set(worktrees.map((w) => w.branch));
     const ticketBranches = new Set(
-      Object.values(tasksCache).map((t: any) => t.branch).filter(Boolean),
+      (Object.values(tasksCache) as TaskRecord[]).map((t) => t.branch).filter(Boolean),
     );
     res.json({
       branches: names.map((name) => ({
@@ -218,8 +348,8 @@ router.get('/branches', async (_req, res) => {
         isTicketBranch: ticketBranches.has(name),
       })),
     });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err: unknown) {
+    res.status(500).json({ error: errorMessage(err) });
   }
 });
 
@@ -229,8 +359,8 @@ router.get('/branches', async (_req, res) => {
 router.get('/debug/mcp-schemas', async (req, res) => {
   try {
     res.json(await probeAllMcpSchemas());
-  } catch (err: any) {
-    res.status(500).json({ error: err?.message || 'Failed to probe MCP schemas' });
+  } catch (err: unknown) {
+    res.status(500).json({ error: errorMessage(err, 'Failed to probe MCP schemas') });
   }
 });
 
@@ -289,8 +419,8 @@ router.get('/:id/debug/budget', async (req, res) => {
   if (!task) return res.status(404).json({ error: 'Task not found' });
   try {
     res.json(await computeContextBudget(task));
-  } catch (err: any) {
-    res.status(500).json({ error: err?.message || 'Failed to compute context budget' });
+  } catch (err: unknown) {
+    res.status(500).json({ error: errorMessage(err, 'Failed to compute context budget') });
   }
 });
 
@@ -311,11 +441,12 @@ router.post('/', async (req, res) => {
       projectKey,
     });
     res.json(serializeTaskForApi(task));
-  } catch (err: any) {
-    if (err.message?.startsWith('Schema validation failed')) {
+  } catch (err: unknown) {
+    const message = errorMessage(err, '');
+    if (message.startsWith('Schema validation failed')) {
       return res.status(400).json({
         error: 'SCHEMA_VALIDATION_FAILED',
-        message: err.message,
+        message,
       });
     }
     console.error('Failed to create task:', err);
@@ -353,9 +484,7 @@ router.post('/:parentId/subtasks', async (req, res) => {
     // Link child to parent — derive subtasks from disk to avoid TOCTOU race
     const parentRaw = await fs.readFile(parent._path, 'utf-8');
     const parentParsed = matter(parentRaw);
-    const parentSubtasks: string[] = Array.isArray(parentParsed.data.subtasks)
-      ? parentParsed.data.subtasks.map((s: any) => typeof s === 'string' ? s : s.id).filter(Boolean)
-      : [];
+    const parentSubtasks: string[] = subtaskIds(parentParsed.data.subtasks);
     parentSubtasks.push(childId);
     parentParsed.data.subtasks = parentSubtasks;
     parentParsed.data.updatedBy = actor;
@@ -367,11 +496,12 @@ router.post('/:parentId/subtasks', async (req, res) => {
 
     log.info(`[subtasks] Created ${childId} as subtask of ${parentId}`);
     res.json(serializeTaskForApi(childTask));
-  } catch (err: any) {
-    if (err.message?.startsWith('Schema validation failed')) {
+  } catch (err: unknown) {
+    const message = errorMessage(err, '');
+    if (message.startsWith('Schema validation failed')) {
       return res.status(400).json({
         error: 'SCHEMA_VALIDATION_FAILED',
-        message: err.message,
+        message,
       });
     }
     console.error(`Failed to create subtask for ${parentId}:`, err);
@@ -389,8 +519,15 @@ router.put('/:id', async (req, res) => {
 
   const actor = updatedBy || task.updatedBy || 'Unknown';
 
-  const appendHistoryEntries: any[] = Array.isArray(updates.appendHistory) ? updates.appendHistory : [];
+  const appendHistoryEntries: HistoryEntry[] = Array.isArray(updates.appendHistory) ? updates.appendHistory : [];
   delete updates.appendHistory;
+
+  // FLUX-847: portal-only override for the session "don't ask again" skip. Never persisted to
+  // frontmatter (deleted below, mirroring appendHistory/requireInput). Relaxes ONLY the
+  // config-gated Ready comment check further down — must never touch the Require Input check,
+  // whose comment is the question being asked (a hard engine invariant).
+  const skipCommentRequirement = updates.skipCommentRequirement === true;
+  delete updates.skipCommentRequirement;
 
   if (updates.requireInput === true) {
     // Backwards-compat: requireInput flag now sets swimlane instead of changing status
@@ -403,11 +540,11 @@ router.put('/:id', async (req, res) => {
   const requireInputStatus = configCache.requireInputStatus || 'Require Input';
   // Backwards-compat: portal drag to "Require Input" column routes through swimlane
   if (updates.status === requireInputStatus && task.status !== requireInputStatus) {
-    const submittedHistory: any[] = Array.isArray(updates.history) ? updates.history : [];
+    const submittedHistory: HistoryEntry[] = Array.isArray(updates.history) ? updates.history : [];
     const existingLen = (task.history || []).length;
     const hasNewComment =
-      submittedHistory.slice(existingLen).some((e: any) => (e?.type === 'comment' || (e?.type === 'status_change' && e?.to === requireInputStatus && e?.comment))) ||
-      appendHistoryEntries.some((e: any) => (e?.type === 'comment' || (e?.type === 'status_change' && e?.to === requireInputStatus && e?.comment)));
+      submittedHistory.slice(existingLen).some((e) => (e?.type === 'comment' || (e?.type === 'status_change' && e?.to === requireInputStatus && e?.comment))) ||
+      appendHistoryEntries.some((e) => (e?.type === 'comment' || (e?.type === 'status_change' && e?.to === requireInputStatus && e?.comment)));
     if (!hasNewComment) {
       return res.status(400).json({
         error: 'REQUIRE_INPUT_MISSING_COMMENT',
@@ -436,12 +573,12 @@ router.put('/:id', async (req, res) => {
   // drag-to-Ready with no commits cannot silently open an empty PR either. If this ever needs to
   // refuse, reuse `evaluateWorktreeReadyRefusal` from mcp-server.ts rather than duplicating it.
   if (updates.status === readyStatus && task.status !== readyStatus) {
-    const submittedHistory: any[] = Array.isArray(updates.history) ? updates.history : [];
+    const submittedHistory: HistoryEntry[] = Array.isArray(updates.history) ? updates.history : [];
     const existingLen = (task.history || []).length;
     const hasNewComment =
-      submittedHistory.slice(existingLen).some((e: any) => (e?.type === 'comment' || (e?.type === 'status_change' && e?.to === readyStatus && e?.comment))) ||
-      appendHistoryEntries.some((e: any) => (e?.type === 'comment' || (e?.type === 'status_change' && e?.to === readyStatus && e?.comment)));
-    if (!hasNewComment && configCache.requireCommentOnStatusChange !== false) {
+      submittedHistory.slice(existingLen).some((e) => (e?.type === 'comment' || (e?.type === 'status_change' && e?.to === readyStatus && e?.comment))) ||
+      appendHistoryEntries.some((e) => (e?.type === 'comment' || (e?.type === 'status_change' && e?.to === readyStatus && e?.comment)));
+    if (!hasNewComment && configCache.requireCommentOnStatusChange !== false && !skipCommentRequirement) {
       return res.status(400).json({
         error: 'READY_MISSING_COMMENT',
         message: 'Transitioning to Ready requires a completion comment in the same request.',
@@ -481,7 +618,7 @@ router.put('/:id', async (req, res) => {
   // the `novelEntries` derived from the submitted `history` — won't see them. Detect a matching
   // status_change in the appendHistory delta too, so we don't auto-add a SECOND one (double-move).
   const appendHasStatusChange = appendHistoryEntries.some(
-    (e: any) => e?.type === 'status_change' && e?.from === task.status && e?.to === frontmatter.status,
+    (e) => e?.type === 'status_change' && e?.from === task.status && e?.to === frontmatter.status,
   );
   if (task.status !== frontmatter.status && !appendHasStatusChange && !hasAppendedStatusChange(existingHistory, nextHistory, task.status, frontmatter.status)) {
     nextHistory.push({
@@ -632,7 +769,7 @@ export async function bulkRenameHandler(req: express.Request, res: express.Respo
 
       if (frontmatter.history && Array.isArray(frontmatter.history)) {
         let historyChanged = false;
-        frontmatter.history.forEach((entry: any) => {
+        frontmatter.history.forEach((entry: HistoryEntry) => {
           if (entry.user && users[entry.user]) { entry.user = users[entry.user]; historyChanged = true; }
           if (entry.type === 'status_change') {
             if (entry.from && statuses[entry.from]) { entry.from = statuses[entry.from]; historyChanged = true; }
@@ -705,11 +842,11 @@ router.post('/:id/assets', async (req, res) => {
 
 // ─── Branch routes ────────────────────────────────────────────────────────────
 
-import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, extractFileFromDiff, captureDiff, createPullRequest, mergePullRequest, checkGhAuth, getPullRequestStatus, getDefaultBranch, resolveCommit } from '../branch-manager.js';
-import { createTaskWorktree, detachTaskWorktree, taskWorktreeDir, listTaskWorktrees, findWorktreeForBranch, worktreeChangeCount, listLocalBranches, currentBranchName } from '../task-worktree.js';
+import { createTicketBranch, getTicketBranchStatus, deleteTicketBranch, extractFileFromDiff, captureDiff, createPullRequest, mergePullRequest, checkGhAuth, getPullRequestStatus, getDefaultBranch, resolveCommit, isMergeConflict } from '../branch-manager.js';
+import { createTaskWorktree, detachTaskWorktree, taskWorktreeDir, listTaskWorktrees, findWorktreeForBranch, worktreeChangeCount, worktreeChangeCounts, worktreeIsDirty, listLocalBranches, currentBranchName } from '../task-worktree.js';
 import { isEditorAvailable, openEditorWindow, openEditorFile, isShellSafePath } from '../editor-launcher.js';
 import { cleanupMergedBranch } from '../pr-cleanup.js';
-import { broadcastEvent } from '../events.js';
+import { broadcastEvent, getTasksVersion } from '../events.js';
 import { ensureTicketIsolation } from '../ticket-isolation.js';
 
 router.post('/:id/branch', async (req, res) => {
@@ -723,13 +860,13 @@ router.post('/:id/branch', async (req, res) => {
   // this route only resolves the portal POLICY (config worktreeByDefault) and delegates.
   const useWorktree: boolean = typeof req.body?.worktree === 'boolean'
     ? req.body.worktree
-    : (configCache as any).worktreeByDefault === true;
+    : configCache.worktreeByDefault === true;
 
   try {
     const result = await ensureTicketIsolation(id, { worktree: useWorktree, baseBranch });
     res.json(result);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err: unknown) {
+    res.status(500).json({ error: errorMessage(err) });
   }
 });
 
@@ -747,8 +884,8 @@ router.get('/:id/branch', async (req, res) => {
   try {
     const status = await getTicketBranchStatus(name);
     res.json({ name, ...status, worktree });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err: unknown) {
+    res.status(500).json({ error: errorMessage(err) });
   }
 });
 
@@ -774,8 +911,8 @@ router.delete('/:id/branch', async (req, res) => {
     await deleteTicketBranch(name, force);
     await updateTaskWithHistory(id, { updatedBy: 'Agent', extraFields: { branch: null } });
     res.json({ deleted: name });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err: unknown) {
+    res.status(500).json({ error: errorMessage(err) });
   }
 });
 
@@ -798,8 +935,8 @@ router.post('/:id/worktree/detach', async (req, res) => {
     const result = await detachTaskWorktree(workspaceRoot!, wtPath, { ticketId: id });
     broadcastEvent('taskUpdated', { id });
     res.json(result);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err: unknown) {
+    res.status(500).json({ error: errorMessage(err) });
   }
 });
 
@@ -830,8 +967,8 @@ router.post('/:id/worktree/open', async (req, res) => {
     broadcastEvent('taskUpdated', { id });
     const seedPrompt = `Picking up ${id}: ${task.title || id}. Read the ticket and continue.`;
     res.json({ worktree, branch, opened, seedPrompt });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err: unknown) {
+    res.status(500).json({ error: errorMessage(err) });
   }
 });
 
@@ -856,8 +993,8 @@ router.post('/:id/worktree/join', async (req, res) => {
     await updateTaskWithHistory(id, { updatedBy: 'Agent', extraFields: { branch } });
     broadcastEvent('taskUpdated', { id });
     res.json({ branch, worktree, joined: true });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err: unknown) {
+    res.status(500).json({ error: errorMessage(err) });
   }
 });
 
@@ -912,7 +1049,7 @@ router.post('/:id/pr', async (req, res) => {
     // Stamp the PR link on every ticket sharing the branch (branch-scoped PR). The PR's surface
     // is now its own `PR-<n>` deck card (created by syncPrTickets on the next poll) — the FLUX-558
     // `open-pr` swimlane/glow on member tickets is retired (FLUX-569), so we no longer set it.
-    const branchTickets = (Object.values(tasksCache) as any[]).filter((t) => t.branch === task.branch);
+    const branchTickets = (Object.values(tasksCache) as TaskRecord[]).filter((t) => t.branch === task.branch);
     for (const t of branchTickets) {
       await updateTaskWithHistory(t.id, {
         updatedBy: 'Agent',
@@ -924,8 +1061,8 @@ router.post('/:id/pr', async (req, res) => {
     const pr = await getPullRequestStatus(task.branch).catch(() => null);
     broadcastEvent('taskUpdated', { id });
     res.json({ url, number: pr?.number ?? null });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err: unknown) {
+    res.status(500).json({ error: errorMessage(err) });
   }
 });
 
@@ -941,7 +1078,7 @@ router.post('/:id/pr/merge', async (req, res) => {
   if (!branch) return res.status(409).json({ error: 'Ticket has no branch / PR to merge.' });
 
   // Branch-scoped: a merge advances ALL tickets sharing this branch.
-  const sharedTickets = Object.values(tasksCache).filter((t: any) => t.branch === branch) as any[];
+  const sharedTickets = (Object.values(tasksCache) as TaskRecord[]).filter((t) => t.branch === branch);
 
   // Two-tier merge guard (FLUX-636):
   // Tier 1 — hard block: pending/running sessions are actively executing; merging would clobber in-flight work.
@@ -972,11 +1109,14 @@ router.post('/:id/pr/merge', async (req, res) => {
   // warm --resume) and *then* 409 with requiresForce, costing the resume without the merge.
   const force = req.body?.force === true;
   if (!force) {
-    const nonDone = sharedNonDoneSiblings(Object.values(tasksCache) as any[], branch, id);
+    // sharedNonDoneSiblings (pr-tickets.ts) declares a narrower TicketRecord return shape than
+    // this file's TaskRecord (no `title`) — the filtered entries are still the SAME tasksCache
+    // objects though, so re-key back into tasksCache for the field it doesn't carry.
+    const nonDone = sharedNonDoneSiblings(Object.values(tasksCache), branch, id);
     if (nonDone.length > 0) {
       return res.status(409).json({
         error: `Merging \`${branch}\` would advance ${nonDone.length} unfinished ticket(s) to Done: ${nonDone.map((t) => `${t.id} (${t.status})`).join(', ')}. Confirm to merge the whole shared PR anyway.`,
-        sharedNonDone: nonDone.map((t) => ({ id: t.id, status: t.status, title: t.title })),
+        sharedNonDone: nonDone.map((t) => ({ id: t.id, status: t.status, title: (tasksCache[t.id] as TaskRecord | undefined)?.title })),
         requiresForce: true,
       });
     }
@@ -998,8 +1138,20 @@ router.post('/:id/pr/merge', async (req, res) => {
 
   try {
     await mergePullRequest(branch); // squash + delete remote branch
-  } catch (err: any) {
-    return res.status(500).json({ error: `Merge failed: ${err.message}` });
+  } catch (err: unknown) {
+    // FLUX-986: unlike finish_ticket, this route otherwise returns a 500 without touching ticket
+    // state at all. On a genuine git conflict, flag `merge-conflict` so the portal can render the
+    // "Launch Rebase Session" CTA. Status is deliberately left untouched here — the ticket only
+    // bounces to In Progress once the user actually clicks that CTA (PrDeckCard.tsx), not silently
+    // out from under them the instant the merge fails.
+    if (isMergeConflict(err)) {
+      await updateTaskWithHistory(id, {
+        updatedBy: 'Agent',
+        extraFields: { swimlane: 'merge-conflict' },
+      });
+      broadcastEvent('taskUpdated', { id });
+    }
+    return res.status(500).json({ error: `Merge failed: ${errorMessage(err)}` });
   }
 
   // Post-merge cleanup (FLUX-557): advance all branch tickets → Done, fast-forward local
@@ -1026,7 +1178,7 @@ router.post('/:id/pr/merge', async (req, res) => {
 // sidecar, status → Done, reap stale parked sessions.
 router.post('/:id/finish', async (req, res) => {
   const { id } = req.params;
-  const task = tasksCache[id] as any;
+  const task = tasksCache[id] as TaskRecord;
   if (!task) return res.status(404).json({ error: `Ticket ${id} not found` });
 
   // Branch/PR tickets must finish through the PR-merge surface — never commit straight to their tree here.
@@ -1047,7 +1199,7 @@ router.post('/:id/finish', async (req, res) => {
     ? req.body.completionComment.trim()
     : message;
   const files: string[] = Array.isArray(req.body?.files)
-    ? req.body.files.filter((f: any) => typeof f === 'string' && f.trim()).map((f: string) => f.trim())
+    ? req.body.files.filter((f: unknown): f is string => typeof f === 'string' && f.trim().length > 0).map((f: string) => f.trim())
     : [];
   if (!message) return res.status(400).json({ error: 'A commit message is required to finish.' });
   // Explicit-staging contract (FLUX-618): the route NEVER sweeps the tree. The portal sends the exact
@@ -1067,13 +1219,12 @@ router.post('/:id/finish', async (req, res) => {
     await git(workspaceRoot, ['commit', '-m', message, '--', ...files]);
     const { stdout } = await git(workspaceRoot, ['rev-parse', '--short', 'HEAD']);
     hash = stdout.trim();
-  } catch (err: any) {
-    const detail = (err?.stderr || err?.message || 'Commit failed').toString().trim();
-    return res.status(500).json({ error: `Commit failed: ${detail}` });
+  } catch (err: unknown) {
+    return res.status(500).json({ error: `Commit failed: ${gitErrorDetail(err, 'Commit failed')}` });
   }
 
   // 2) Finish tail — verbatim mirror of finish_ticket's branchless path.
-  const finishExtraFields: Record<string, any> = { implementationLink: hash, swimlane: null };
+  const finishExtraFields: Record<string, unknown> = { implementationLink: hash, swimlane: null };
   try {
     // Lazy baseline repair: by finish time the new commit is HEAD, so a missing baseline anchors at
     // the parent (HEAD~1..HEAD); HEAD itself would yield an empty HEAD..HEAD range.
@@ -1090,8 +1241,8 @@ router.post('/:id/finish', async (req, res) => {
       const diffPath = path.join(getActiveFluxDir(), `${id}.diff`);
       await fs.writeFile(diffPath, diff.fullDiff, 'utf-8');
     }
-  } catch (err: any) {
-    console.error(`Diff capture failed for ${id}:`, err.message);
+  } catch (err: unknown) {
+    console.error(`Diff capture failed for ${id}:`, errorMessage(err));
   }
 
   const result = await updateTaskWithHistory(id, {
@@ -1124,10 +1275,10 @@ router.post('/:id/finish', async (req, res) => {
 // we recompute + stamp the PR ticket's members immediately rather than wait for the 90s poll.
 router.post('/:id/pr/adopt', async (req, res) => {
   const { id } = req.params;
-  const pr = tasksCache[id] as any;
+  const pr = tasksCache[id] as TaskRecord;
   if (!pr) return res.status(404).json({ error: `Ticket ${id} not found` });
   if (pr.kind !== 'pr') return res.status(409).json({ error: 'Adopt/create is only available for PR tickets.' });
-  const branch: string | undefined = pr.branch;
+  const branch: string | undefined = pr.branch ?? undefined;
   if (!branch) return res.status(409).json({ error: 'PR ticket has no branch to bind work to.' });
 
   const mode: string = (req.body?.mode ?? '').toString();
@@ -1137,7 +1288,7 @@ router.post('/:id/pr/adopt', async (req, res) => {
     let memberId: string;
     if (mode === 'adopt') {
       const targetId: string = (req.body?.ticketId ?? '').toString().trim();
-      const target = tasksCache[targetId] as any;
+      const target = tasksCache[targetId] as TaskRecord;
       if (!target) return res.status(404).json({ error: `Ticket ${targetId} not found` });
       if (target.kind === 'pr') return res.status(409).json({ error: 'Cannot adopt a PR ticket into another PR.' });
       // Don't silently re-point a ticket that's already bound to a DIFFERENT branch (FLUX-569
@@ -1174,13 +1325,13 @@ router.post('/:id/pr/adopt', async (req, res) => {
     }
 
     // Fold the new member into the PR deck immediately (don't wait for the 90s sync poll).
-    const members = selectMembers(Object.values(tasksCache) as any[], branch);
+    const members = selectMembers(Object.values(tasksCache), branch);
     await upsertManagedTicket(id, { members }).catch(() => {});
     broadcastEvent('taskUpdated', { id });
     broadcastEvent('taskUpdated', { id: memberId });
     res.json({ memberId, members });
-  } catch (err: any) {
-    res.status(500).json({ error: `Adopt/create failed: ${err.message}` });
+  } catch (err: unknown) {
+    res.status(500).json({ error: `Adopt/create failed: ${errorMessage(err)}` });
   }
 });
 
@@ -1190,7 +1341,7 @@ router.post('/:id/pr/adopt', async (req, res) => {
 // 'retries' link is the first instance of the typed-relationships model (epic FLUX-596).
 router.post('/:id/retry', async (req, res) => {
   const { id } = req.params;
-  const pr = tasksCache[id] as any;
+  const pr = tasksCache[id] as TaskRecord;
   if (!pr) return res.status(404).json({ error: `Ticket ${id} not found` });
   if (pr.kind !== 'pr') return res.status(409).json({ error: 'Retry is only available for PR tickets.' });
 
@@ -1203,7 +1354,7 @@ router.post('/:id/retry', async (req, res) => {
   const prUrl: string = pr.implementationLink || '';
   const baseTitle = (pr.title || `PR #${prNum}`).replace(/^PR #\d+:\s*/, ''); // drop "PR #n: " prefix
   const members: string[] = Array.isArray(pr.members) ? pr.members : [];
-  const memberTask = members.map((m) => tasksCache[m]).find(Boolean) as any;
+  const memberTask = members.map((m) => tasksCache[m]).find(Boolean) as TaskRecord | undefined;
   const tags: string[] = Array.isArray(memberTask?.tags) ? memberTask.tags : [];
 
   const stateWord = pr.prState === 'MERGED' ? 'merged' : pr.prState === 'CLOSED' ? 'was closed without merging' : 'is resolved';
@@ -1237,18 +1388,18 @@ router.post('/:id/retry', async (req, res) => {
       try {
         branch = await createTicketBranch(newId, task.title || newId);
         await updateTaskWithHistory(newId, { updatedBy: 'Agent', extraFields: { branch } });
-      } catch (err: any) {
+      } catch (err: unknown) {
         // Best-effort — the ticket exists regardless; note why the branch didn't get created.
         await updateTaskWithHistory(newId, {
           updatedBy: 'Agent',
-          entries: [{ type: 'comment', user: 'Agent', comment: `Retry branch could not be created automatically: ${err.message}. Create one via Start.`, date: new Date().toISOString() }],
+          entries: [{ type: 'comment', user: 'Agent', comment: `Retry branch could not be created automatically: ${errorMessage(err)}. Create one via Start.`, date: new Date().toISOString() }],
         });
       }
     }
     broadcastEvent('taskUpdated', { id: newId });
     res.json({ id: newId, branch: branch ?? null });
-  } catch (err: any) {
-    res.status(500).json({ error: `Failed to create retry ticket: ${err.message}` });
+  } catch (err: unknown) {
+    res.status(500).json({ error: `Failed to create retry ticket: ${errorMessage(err)}` });
   }
 });
 
@@ -1266,8 +1417,7 @@ router.post('/:id/pr/update-branch', async (req, res) => {
   if (!worktree) {
     return res.status(409).json({ error: 'No active worktree holds this branch — open the worktree before updating.' });
   }
-  const { stdout: porcelain } = await git(worktree, ['status', '--porcelain']).catch(() => ({ stdout: 'err' }));
-  if (porcelain.trim().length > 0) {
+  if (await worktreeIsDirty(worktree)) {
     return res.status(409).json({ error: 'Worktree has uncommitted changes — commit or stash them first.' });
   }
 
@@ -1276,15 +1426,15 @@ router.post('/:id/pr/update-branch', async (req, res) => {
     await git(worktree, ['fetch', 'origin', def]);
     try {
       await git(worktree, ['merge', '--no-edit', `origin/${def}`]);
-    } catch (mergeErr: any) {
+    } catch (mergeErr: unknown) {
       await git(worktree, ['merge', '--abort']).catch(() => {});
-      return res.status(409).json({ error: `Update hit conflicts with ${def} — resolve them in the worktree, then push. (${mergeErr.message})` });
+      return res.status(409).json({ error: `Update hit conflicts with ${def} — resolve them in the worktree, then push. (${errorMessage(mergeErr)})` });
     }
     await git(worktree, ['push', 'origin', branch]).catch(() => {});
     broadcastEvent('taskUpdated', { id });
     res.json({ updated: true, branch });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err: unknown) {
+    res.status(500).json({ error: errorMessage(err) });
   }
 });
 
@@ -1304,8 +1454,8 @@ router.get('/:id/diff', async (req, res) => {
       const diff = await captureDiff(task.branch ?? null, task.baselineCommit ?? null, 'working');
       if (!diff) return res.status(404).json({ error: 'Could not generate live diff' });
       fullDiff = diff.fullDiff;
-    } catch (err: any) {
-      return res.status(500).json({ error: `Live diff failed: ${err.message}` });
+    } catch (err: unknown) {
+      return res.status(500).json({ error: `Live diff failed: ${errorMessage(err)}` });
     }
   } else {
     // Committed diff: read the sidecar file stored at finish
@@ -1373,8 +1523,8 @@ router.get('/:id/branch-diff', async (req, res) => {
   try {
     const summary = await diffFilesForBranch(workspaceRoot!, task.branch);
     res.json(summary);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err: unknown) {
+    res.status(500).json({ error: errorMessage(err) });
   }
 });
 

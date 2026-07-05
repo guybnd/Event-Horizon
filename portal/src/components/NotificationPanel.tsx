@@ -20,7 +20,7 @@ import type { Notification } from '../api';
 import { markNotificationRead, markNotificationUnread, markAllNotificationsRead, dismissNotification, executeNotificationAction, stopTaskCliSession, BOARD_CONVERSATION_ID } from '../api';
 import { useAppSelector, useAppActions, useTaskById } from '../store/useAppSelector';
 import { useDockActions } from './DockProvider';
-import { relativeTime } from '../workflow';
+import { relativeTime, normalizeStatus } from '../workflow';
 import { notificationCategory } from './notificationCategory';
 import { useNotificationPrefs, isNotificationVisible } from '../hooks/useNotificationPrefs';
 import { getStatusColorClass } from '../statusStyles';
@@ -336,7 +336,7 @@ const NotificationCard = memo(function NotificationCard({
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
             {notification.ticketId && <TicketRefChip ticketId={notification.ticketId} />}
             {task && (
-              <StatusBadge status={task.status} colorClass={getStatusColorClass(boardConfig, task.status)} className="text-[10px]" />
+              <StatusBadge status={normalizeStatus(task.status)} colorClass={getStatusColorClass(boardConfig, task.status)} className="text-[10px]" />
             )}
             {verdict && (
               <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold ${verdict === 'approved' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300'}`}>

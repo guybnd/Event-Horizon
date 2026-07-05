@@ -14,9 +14,14 @@ import {
   reclaimWorktrees,
   ticketIdFromWorktreePath,
   resolveTaskExecutionRoot,
+  resolveResumeExecutionRoot,
+  isRegisteredWorktree,
   taskWorktreeDir,
   taskWorktreesBaseDir,
   worktreeChangeCount,
+  worktreeChangeCounts,
+  worktreeIsDirty,
+  depNodeModulesExcludePathspecs,
   listLocalBranches,
   stashDirtyTree,
 } from './task-worktree.js';
@@ -54,6 +59,21 @@ async function gitInit(root: string): Promise<void> {
 async function currentBranch(root: string): Promise<string> {
   const { stdout } = await execFileAsync('git', ['-C', root, 'rev-parse', '--abbrev-ref', 'HEAD'], { windowsHide: true });
   return stdout.trim();
+}
+
+/**
+ * git init on `master` WITHOUT mirroring EventHorizon's own committed
+ * `.serena/.gitignore` — i.e. a stand-in for every OTHER repo EH manages,
+ * which never adopted that convention (FLUX-1155).
+ */
+async function gitInitPlain(root: string): Promise<void> {
+  await fs.mkdir(root, { recursive: true });
+  await execFileAsync('git', ['-C', root, 'init', '-b', 'master'], { windowsHide: true });
+  await execFileAsync('git', ['-C', root, 'config', 'user.email', 'test@test.com'], { windowsHide: true });
+  await execFileAsync('git', ['-C', root, 'config', 'user.name', 'Test'], { windowsHide: true });
+  await fs.writeFile(path.join(root, 'README.md'), '# test\n', 'utf8');
+  await execFileAsync('git', ['-C', root, 'add', '.'], { windowsHide: true });
+  await execFileAsync('git', ['-C', root, 'commit', '-m', 'init'], { windowsHide: true });
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -101,6 +121,94 @@ describe('task-worktree', () => {
 
     it('returns 0 for a path that does not exist', async () => {
       expect(await worktreeChangeCount(path.join(parent, 'nope'))).toBe(0);
+    });
+
+    it('treats node_modules junctions as clean (FLUX-1125, regardless of .gitignore)', async () => {
+      // Seed real deps so createTaskWorktree junctions them into the worktree. This fixture's
+      // .gitignore does NOT cover node_modules, so this proves the fix doesn't depend on it.
+      for (const sub of ['engine', 'portal']) {
+        await fs.mkdir(path.join(repo, sub), { recursive: true });
+        await fs.writeFile(path.join(repo, sub, '.gitkeep'), '', 'utf8');
+      }
+      await execFileAsync('git', ['-C', repo, 'add', '.'], { windowsHide: true });
+      await execFileAsync('git', ['-C', repo, 'commit', '-m', 'workspaces'], { windowsHide: true });
+      for (const sub of ['.', 'engine', 'portal']) {
+        await fs.mkdir(path.join(repo, sub, 'node_modules'), { recursive: true });
+        await fs.writeFile(path.join(repo, sub, 'node_modules', 'm.txt'), 'x\n', 'utf8');
+      }
+      const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
+      expect(await worktreeChangeCount(wt)).toBe(0);
+
+      // Real untracked work outside the dep subdirs is still detected.
+      await fs.writeFile(path.join(wt, 'real-work.txt'), 'x\n', 'utf8');
+      expect(await worktreeChangeCount(wt)).toBe(1);
+    });
+  });
+
+  describe('worktreeChangeCounts (FLUX-1126 shared ls-files across base branches)', () => {
+    it('computes per-base counts that each include the shared untracked files', async () => {
+      const branch = 'flux/FLUX-2-counts';
+      const wt = await createTaskWorktree(repo, 'FLUX-2', branch);
+
+      // Commit a file (diverges HEAD from master) and leave one untracked file.
+      await fs.writeFile(path.join(wt, 'committed.txt'), 'y\n', 'utf8');
+      await execFileAsync('git', ['-C', wt, 'add', 'committed.txt'], { windowsHide: true });
+      await execFileAsync('git', ['-C', wt, 'commit', '-m', 'add committed'], { windowsHide: true });
+      await fs.writeFile(path.join(wt, 'untracked.txt'), 'x\n', 'utf8');
+
+      const counts = await worktreeChangeCounts(wt, ['HEAD', 'master']);
+      // vs HEAD: just the untracked file — the commit above already IS HEAD.
+      expect(counts.HEAD).toBe(1);
+      // vs master: the committed-ahead file + the untracked file.
+      expect(counts.master).toBe(2);
+    });
+
+    it('spawns ls-files exactly once no matter how many base branches are requested', async () => {
+      const branch = 'flux/FLUX-3-counts-spy';
+      const wt = await createTaskWorktree(repo, 'FLUX-3', branch);
+      await fs.writeFile(path.join(wt, 'untracked.txt'), 'x\n', 'utf8');
+
+      let lsFilesCalls = 0;
+      const spyRunner = async (cwd: string, args: string[]) => {
+        if (args[0] === 'ls-files') lsFilesCalls += 1;
+        const { stdout, stderr } = await execFileAsync('git', ['-C', cwd, ...args], { windowsHide: true });
+        return { stdout, stderr };
+      };
+
+      const counts = await worktreeChangeCounts(wt, ['HEAD', 'master'], { gitRunner: spyRunner });
+      expect(lsFilesCalls).toBe(1);
+      expect(counts.HEAD).toBe(1);
+      expect(counts.master).toBe(1);
+    });
+
+    it('returns 0 for every requested base when the path does not exist', async () => {
+      const counts = await worktreeChangeCounts(path.join(parent, 'nope'), ['HEAD', 'master']);
+      expect(counts).toEqual({ HEAD: 0, master: 0 });
+    });
+  });
+
+  describe('worktreeIsDirty (FLUX-1125 /pr/update-branch guard)', () => {
+    it('reports clean for a worktree with only node_modules junction contents', async () => {
+      for (const sub of ['.', 'engine', 'portal']) {
+        await fs.mkdir(path.join(repo, sub, 'node_modules'), { recursive: true });
+        await fs.writeFile(path.join(repo, sub, 'node_modules', 'm.txt'), 'x\n', 'utf8');
+      }
+      await fs.mkdir(path.join(repo, 'engine'), { recursive: true });
+      await fs.mkdir(path.join(repo, 'portal'), { recursive: true });
+      const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
+      expect(await worktreeIsDirty(wt)).toBe(false);
+    });
+
+    it('reports dirty for real uncommitted work', async () => {
+      const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
+      await fs.writeFile(path.join(wt, 'real-work.txt'), 'x\n', 'utf8');
+      expect(await worktreeIsDirty(wt)).toBe(true);
+    });
+  });
+
+  describe('depNodeModulesExcludePathspecs (FLUX-1125)', () => {
+    it('derives one exclude pathspec per dep subdir', () => {
+      expect(depNodeModulesExcludePathspecs()).toEqual([':!node_modules', ':!engine/node_modules', ':!portal/node_modules']);
     });
   });
 
@@ -229,6 +337,56 @@ describe('task-worktree', () => {
       // Reuse rewrites it.
       await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1-demo');
       expect(existsSync(override)).toBe(true);
+    });
+
+    describe('Serena override exclusion in repos without a committed .serena/.gitignore (FLUX-1155)', () => {
+      let userParent: string;
+      let userRepo: string;
+
+      beforeEach(async () => {
+        userParent = await makeParent();
+        userRepo = path.join(userParent, 'UserRepo');
+        await gitInitPlain(userRepo);
+      });
+
+      afterEach(async () => {
+        const wts = await listTaskWorktrees(userRepo).catch(() => []);
+        for (const w of wts) {
+          await execFileAsync('git', ['-C', userRepo, 'worktree', 'remove', '--force', w.path], { windowsHide: true }).catch(() => {});
+        }
+        await fs.rm(userParent, { recursive: true, force: true }).catch(() => {});
+      });
+
+      it('never leaves a worktree born dirty, without touching the user\'s tracked .gitignore', async () => {
+        const wt = await createTaskWorktree(userRepo, 'FLUX-1', 'flux/FLUX-1-demo');
+        const override = path.join(wt, '.serena', 'project.local.yml');
+        expect(existsSync(override)).toBe(true);
+
+        // The override is untracked but must not read as a dirty change — the
+        // repo-local git/info/exclude (NOT a tracked .gitignore) suppresses it.
+        const { stdout } = await execFileAsync('git', ['-C', wt, 'status', '--porcelain'], { windowsHide: true });
+        expect(stdout.trim()).toBe('');
+        expect(existsSync(path.join(userRepo, '.gitignore'))).toBe(false);
+
+        const excludeBody = await fs.readFile(path.join(userRepo, '.git', 'info', 'exclude'), 'utf8');
+        expect(excludeBody).toContain('.serena/project.local.yml');
+      });
+
+      it('appends the exclude pattern only once across repeated (self-heal) writes', async () => {
+        await createTaskWorktree(userRepo, 'FLUX-1', 'flux/FLUX-1-demo');
+        // Idempotent reuse re-runs writeWorktreeSerenaOverride on the same repo.
+        await createTaskWorktree(userRepo, 'FLUX-1', 'flux/FLUX-1-demo');
+        const excludeBody = await fs.readFile(path.join(userRepo, '.git', 'info', 'exclude'), 'utf8');
+        const matches = excludeBody.split('\n').filter((l) => l.trim() === '.serena/project.local.yml');
+        expect(matches).toHaveLength(1);
+      });
+
+      it('lets reclaimWorktrees collect a terminal-ticket worktree instead of skipping it as dirty', async () => {
+        const wt = await createTaskWorktree(userRepo, 'FLUX-1', 'flux/FLUX-1-demo');
+        const reclaimed = await reclaimWorktrees(userRepo, () => true);
+        expect(reclaimed).toEqual(['FLUX-1']);
+        expect(existsSync(wt)).toBe(false);
+      });
     });
   });
 
@@ -468,6 +626,85 @@ describe('task-worktree', () => {
       expect(sameDir(rootA, repo)).toBe(false);
       expect(sameDir(rootB, repo)).toBe(false);
       expect(sameDir(rootA, rootB)).toBe(false);
+    });
+  });
+
+  // FLUX-1120: a worktree can be reclaimed (or otherwise deregistered) while its directory
+  // survives on disk — a bare `existsSync` can't tell the two apart, and running an agent in
+  // such a stale directory produces opaque git errors instead of a clear "reclaimed" signal.
+  describe('isRegisteredWorktree (FLUX-1120)', () => {
+    it('is true for a live, registered worktree', async () => {
+      const wt = await createTaskWorktree(repo, 'FLUX-30', 'flux/FLUX-30');
+      await expect(isRegisteredWorktree(repo, wt)).resolves.toBe(true);
+    });
+
+    it('is false for a path that was never a worktree', async () => {
+      await expect(isRegisteredWorktree(repo, path.join(parent, 'not-a-worktree'))).resolves.toBe(false);
+    });
+
+    it('is false once removed, even if a directory reappears at the same path', async () => {
+      const wt = await createTaskWorktree(repo, 'FLUX-31', 'flux/FLUX-31');
+      await execFileAsync('git', ['-C', repo, 'worktree', 'remove', '--force', wt], { windowsHide: true });
+      // Simulate a stale/leftover directory surviving at the same path after reclaim (or a
+      // registration removed by something other than `removeTaskWorktree`).
+      await fs.mkdir(wt, { recursive: true });
+      expect(existsSync(wt)).toBe(true);
+      await expect(isRegisteredWorktree(repo, wt)).resolves.toBe(false);
+    });
+
+    // FLUX-1120 review: a transient failure of the `git worktree list` QUERY itself (lock
+    // contention, a momentary spawn hiccup) must NOT be treated as evidence of reclaim — that
+    // would falsely fail a perfectly healthy, resumable session. Falls back to the pre-FLUX-1120
+    // existsSync-only signal instead of confidently reporting "not registered".
+    it('falls back to existsSync (does not report "not registered") when the query itself fails', async () => {
+      const wt = await createTaskWorktree(repo, 'FLUX-32', 'flux/FLUX-32');
+      const flakyRunner = async (cwd: string, args: string[]) => {
+        if (args[0] === 'worktree' && args[1] === 'list') throw new Error('simulated transient git failure');
+        const { stdout, stderr } = await execFileAsync('git', ['-C', cwd, ...args], { windowsHide: true });
+        return { stdout, stderr };
+      };
+      await expect(isRegisteredWorktree(repo, wt, { gitRunner: flakyRunner })).resolves.toBe(true);
+      // ...and still correctly falls back to false for a path that plainly doesn't exist.
+      await expect(
+        isRegisteredWorktree(repo, path.join(parent, 'nope'), { gitRunner: flakyRunner }),
+      ).resolves.toBe(false);
+    });
+  });
+
+  describe('resolveResumeExecutionRoot (FLUX-1018 / FLUX-1120)', () => {
+    it('returns the cached executionRoot when it is still a registered worktree', async () => {
+      const wt = await createTaskWorktree(repo, 'FLUX-40', 'flux/FLUX-40');
+      const root = await resolveResumeExecutionRoot(
+        { executionRoot: wt, taskId: 'FLUX-40' },
+        { id: 'FLUX-40', branch: 'flux/FLUX-40' },
+        repo,
+      );
+      expect(root).toBe(wt);
+    });
+
+    // FLUX-1120: the actual gap this ticket closes — a bare `existsSync` passed for a stale
+    // directory left behind at a reclaimed worktree's path; the registered-worktree check catches it.
+    it('throws a clear "reclaimed" error when the cached path still exists but is no longer a registered worktree', async () => {
+      const wt = await createTaskWorktree(repo, 'FLUX-41', 'flux/FLUX-41');
+      await execFileAsync('git', ['-C', repo, 'worktree', 'remove', '--force', wt], { windowsHide: true });
+      await fs.mkdir(wt, { recursive: true });
+      await expect(
+        resolveResumeExecutionRoot({ executionRoot: wt, taskId: 'FLUX-41' }, { id: 'FLUX-41', branch: 'flux/FLUX-41' }, repo),
+      ).rejects.toThrow(/reclaimed|no longer a registered git worktree/i);
+    });
+
+    it('throws a clear error when the cached executionRoot has vanished entirely', async () => {
+      const wt = await createTaskWorktree(repo, 'FLUX-42', 'flux/FLUX-42');
+      await fs.rm(wt, { recursive: true, force: true });
+      await expect(
+        resolveResumeExecutionRoot({ executionRoot: wt, taskId: 'FLUX-42' }, { id: 'FLUX-42', branch: 'flux/FLUX-42' }, repo),
+      ).rejects.toThrow(/reclaimed|no longer a registered git worktree/i);
+    });
+
+    it('throws when no cached executionRoot is set and the branch has no live worktree', async () => {
+      await expect(
+        resolveResumeExecutionRoot({ taskId: 'FLUX-43' }, { id: 'FLUX-43', branch: 'flux/FLUX-43' }, repo),
+      ).rejects.toThrow(/missing — refusing to resume/i);
     });
   });
 

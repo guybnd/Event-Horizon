@@ -74,7 +74,7 @@ For grooming: on tickets where the user has to *imagine* the result, publish a *
 - **Skip when** it's a bug fix, an XS/S ticket, backend plumbing, or any change with no visual/structural "shape" to react to. A markdown plan is the right output for these.
 
 **How to emit:**
-- Pass a **complete, self-contained HTML document** as `html`: inline `<style>`/`<script>`. Tailwind (`https://cdn.tailwindcss.com`) and Mermaid (`https://cdn.jsdelivr.net`) are loadable via `<script>` tags. Lean on the **`frontend-design`** skill for high-quality markup.
+- Pass a **complete, self-contained HTML document** as `html`: inline `<style>`/`<script>`. **Default to hand-written inline CSS** — an artifact is a single document, so a small `<style>` block is enough and renders instantly. Mermaid (`https://cdn.jsdelivr.net`) is loadable via `<script>` tag for diagrams. The Tailwind Play CDN (`https://cdn.tailwindcss.com`) is still allowed but is a **heavy last resort, not the default**: it's an in-browser compiler that recompiles on every DOM mutation and has measured 1-2s+ main-thread freezes per load — reach for it only when a utility framework meaningfully speeds up a complex prototype. Lean on the **`frontend-design`** skill for high-quality markup.
 - It renders in a **sandboxed, opaque-origin iframe**: it CANNOT reach the portal, cookies, or storage, and CANNOT make network requests (no fetch/XHR — `connect-src` is blocked). Everything it needs must be inlined or come from the allowed CDNs. Do not rely on external API calls or `localStorage`.
 - Do **not** inline the HTML into the ticket body (the body is injected into every session and has a 10K soft limit) — `publish_artifact` stores it in a sidecar.
 - Every call is a **new revision** (history is kept — never an overwrite). Add a `title` and, when revising, a `note` on what changed. The viewer defaults to the latest revision.
@@ -96,9 +96,9 @@ Because the artifact is a **real HTML page** rendered entirely by the sandboxed 
     B --> C[GET /api/tasks/:id/artifact] --> D[sandboxed iframe]
   </pre>
   ```
-- **SVG mockups** — hand-author inline `<svg>` (or Tailwind-styled `<div>`s) for a UI wireframe the user can eyeball against their mental model.
+- **SVG mockups** — hand-author inline `<svg>` (or inline-CSS-styled `<div>`s) for a UI wireframe the user can eyeball against their mental model.
 - **Charts / data shapes** — inline SVG or a chart lib from an allowed CDN (jsDelivr/unpkg). No network calls at runtime (`connect-src` is blocked), so inline the data.
-- **Clickable Tailwind prototypes** — Tailwind from `https://cdn.tailwindcss.com` plus a little inline `<script>` for tab/toggle interactions, so the user can click through a flow.
+- **Clickable prototypes** — hand-written inline CSS plus a little inline `<script>` for tab/toggle interactions, so the user can click through a flow. Reach for the Tailwind Play CDN (`https://cdn.tailwindcss.com`) only for a complex, heavily-styled multi-state prototype where a utility framework earns its keep — it's a heavy last resort (see above), not the default.
 
 Everything still renders inside the same opaque-origin sandbox (no portal/cookie/storage access, no fetch/XHR) — keep it self-contained.
 

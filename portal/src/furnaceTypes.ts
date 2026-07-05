@@ -26,12 +26,6 @@ export type TicketOwner = 'furnace' | 'human';
 /** FLUX-1066: why a ticket parked — drives the drawer badge + next action. */
 export type FailureClass = 'transient' | 'recoverable' | 'needs-input' | 'hard-fail';
 
-/**
- * Reserved tag marking a ticket "good to burn". Mirrors engine FURNACE_SAFE_TAG
- * (engine/src/models/furnace.ts) — kept in sync by hand.
- */
-export const FURNACE_SAFE_TAG = 'furnace-safe';
-
 /** Hard cap on burn rate (= the worktree-slot cap). Mirrors engine MAX_BURN_RATE. */
 export const MAX_BURN_RATE = 4;
 
@@ -136,6 +130,12 @@ export interface SlotInfo {
   used: number;
   free: number;
   max: number;
+}
+
+/** A ticket holding a worktree slot on a `no_slots` refusal, with why reclaim didn't free it (FLUX-1157). */
+export interface FurnaceSlotHolder {
+  ticketId: string;
+  reason: string;
 }
 
 /** A ticket the builder deliberately excluded, with why. */

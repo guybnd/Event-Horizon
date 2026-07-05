@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import type { OnboardingImage as OnboardingImageType } from '../../config/onboardingFlow';
+import { VIDEO_EXTS, prefersReducedMotion } from './onboardingMediaUtils';
 
 /**
  * FLUX-763 — the SINGLE shared media element used everywhere an onboarding asset is
@@ -16,31 +17,14 @@ import type { OnboardingImage as OnboardingImageType } from '../../config/onboar
  *
  * It MUST NOT import anything from components/dev/** — it ships in prod (the real
  * wizard renders through it) and the Studio/upload path must stay DCE'd out.
+ *
+ * `VIDEO_EXTS`/`prefersReducedMotion` live in `onboardingMediaUtils.ts` (not here) so
+ * this file exports only the component — Fast Refresh requires component-only exports.
  */
 
 /** byte-identical to the original OnboardingImage <img> default class. */
 const DEFAULT_MEDIA_CLASS =
   'mb-6 max-h-64 w-full rounded-2xl border border-gray-200 object-contain dark:border-white/10';
-
-/**
- * Extensions rendered as looping muted video. Sniffing is extension-driven (NOT MIME)
- * because at render time only a URL string exists; the upload allowlist guarantees the
- * extension on disk is trustworthy.
- */
-export const VIDEO_EXTS = new Set(['.mp4', '.webm', '.mov']);
-
-/**
- * One-shot prefers-reduced-motion read (no matchMedia listener — onboarding renders
- * once). The single implementation; TutorialPopover imports this rather than keeping a
- * local copy.
- */
-export function prefersReducedMotion(): boolean {
-  return (
-    typeof window !== 'undefined' &&
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  );
-}
 
 /**
  * The SINGLE media renderer. Keeps the `image`-prop shape so it is a drop-in for the

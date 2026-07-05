@@ -8,6 +8,7 @@ import { killProcessTree } from './kill-process-tree.js';
 import { settleOpenPromptsForConversation } from './hitl-prompts.js';
 import { getActiveFluxDir } from './workspace.js';
 import { BOARD_CONVERSATION_ID } from './agents/board.js';
+import { broadcastEvent } from './events.js';
 
 export const cliSessionsById = new Map<string, CliSessionRecord>();
 export const cliSessionsByTaskId = new Map<string, string[]>();
@@ -106,6 +107,19 @@ export function getCliSessionSummaryForTask(taskId: string): CliSessionSummary |
   return lastSession ? toSummary(lastSession) : undefined;
 }
 
+/**
+ * List-scoped variant of {@link getCliSessionSummaryForTask} (FLUX-1144): truncates
+ * `liveOutput` to the same short tail {@link getListSessionSummariesForTask} already applies
+ * to the plural `cliSessions[]` field. Board cards only ever render the last line(s) of a
+ * running session; the modal fetches the untruncated summary via the dedicated
+ * `/api/tasks/:id/cli-session` endpoint (still backed by the unmodified function above), so
+ * this only shrinks the `GET /api/tasks` list payload.
+ */
+export function getListCliSessionSummaryForTask(taskId: string): CliSessionSummary | undefined {
+  const summary = getCliSessionSummaryForTask(taskId);
+  return summary ? truncateLiveOutput(summary) : undefined;
+}
+
 export function getAllSessionSummariesForTask(taskId: string): CliSessionSummary[] {
   const ids = cliSessionsByTaskId.get(taskId);
   if (!ids || ids.length === 0) return [];
@@ -137,7 +151,7 @@ function truncateLiveOutput(summary: CliSessionSummary): CliSessionSummary {
  * `argsChars` preserves a size hint. Also truncates `liveOutput`.
  */
 export function slimSessionSummaryForAgent(summary: CliSessionSummary): Omit<CliSessionSummary, 'args' | 'command' | 'pid'> & { argsChars?: number } {
-  const { args, command, pid, ...rest } = truncateLiveOutput(summary);
+  const { args, command: _command, pid: _pid, ...rest } = truncateLiveOutput(summary);
   const argsChars = args.reduce((total, arg) => total + arg.length, 0);
   return { ...rest, ...(argsChars > 0 ? { argsChars } : {}) };
 }
@@ -578,6 +592,13 @@ const DEAD_SESSION_GRACE_MS = 15_000;
  * forever (FLUX-846, the same bug from the opposite direction). Never 'waiting-input' (those
  * intentionally keep a dead `proc` between resumable turns) and never a live process. The lost-exit
  * scenario this heals always retains the now-dead child `proc`, so requiring one loses no coverage.
+ *
+ * FLUX-1144: broadcasts `taskUpdated` per reaped session. This is the ONLY path that self-heals a
+ * missed exit (a clean exit already broadcasts on its own), so without this a reap would silently
+ * bump nothing — leaving `/api/tasks`'s version-keyed ETag stale and the ticket's card stuck
+ * reporting 'running' behind a 304 until unrelated board activity happens to bump the version. It
+ * also fixes the pre-existing gap where other connected tabs never learned of a reap via SSE, only
+ * their own next poll.
  */
 export function reconcileDeadSessions(now: number = Date.now()): number {
   let reaped = 0;
@@ -595,6 +616,7 @@ export function reconcileDeadSessions(now: number = Date.now()): number {
     // scatter-gather/relay barriers or launch the combiner, so a truly-lost exit on a grouped worker
     // clears the card but can still leave the group/combiner stalled (acceptable — lost exits are rare).
     console.warn(`[session] reaped stale ${session.taskId} session ${session.id} (process exited, terminal event missed) → ${session.status}`);
+    broadcastEvent('taskUpdated', { id: session.taskId });
   }
   return reaped;
 }

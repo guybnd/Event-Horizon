@@ -1,18 +1,19 @@
 import { log } from '../log.js';
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import * as path from 'path';
-import * as fs from 'fs';
 import { configCache } from '../config.js';
-import { buildActivityEntry, buildCommentEntry, buildAgentMessageEntry, buildAgentSessionEntry, appendSessionProgress, closeAgentSession, type AgentSessionEntry } from '../history.js';
+import { buildActivityEntry, buildCommentEntry, buildAgentSessionEntry } from '../history.js';
 import { updateTaskWithHistory, updateAgentSession, tasksCache, estimateCostUSD } from '../task-store.js';
-import { resolveTaskExecutionRoot } from '../task-worktree.js';
+import { resolveTaskExecutionRoot, resolveResumeExecutionRoot, assertIsolatedSpawnRoot } from '../task-worktree.js';
 import { workspaceRoot as canonicalWorkspaceRoot } from '../workspace.js';
-import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart } from '../session-store.js';
+import { notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
+import { emitOperationEvent, type OperationOutcome } from '../operation-telemetry.js';
 import { appendTranscriptLine, appendTranscriptEvent } from '../transcript.js';
+import type { DispatchLifecycle } from '../projection.js';
 import { killProcessTree } from '../kill-process-tree.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
-import { captureTurnStartState, clearNeedsActionIfSet, flagIfParked } from '../parked-ticket.js';
+import { captureTurnStartState, clearNeedsActionIfSet, flagIfParked, raiseNeedsAction } from '../parked-ticket.js';
 import { buildMemberScopeArgs } from '../group.js';
 import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
 import { getModuleMcpServers, getActiveModules, getWorkspaceMcpServers } from '../modules.js';
@@ -21,16 +22,34 @@ import { ensureSharedServer, getSharedServerUrl, isSharedHttpPlatformProven } fr
 import { buildResumePreamble } from '../resume-preamble.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest, SendInputOptions } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, resolveAttachmentAbsPaths, attachmentReadInstruction, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, resolveClaudeExePath, buildInitialPrompt } from './shared.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, resolveAttachmentAbsPaths, attachmentReadInstruction, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, resolveClaudeExePath, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure } from './shared.js';
 import { BOARD_CONVERSATION_ID } from './board.js';
+
+/**
+ * One entry of the `--mcp-config` server map: either a shared HTTP endpoint (FLUX-579) or a
+ * per-session stdio spawn spec, plus whatever extra keys a workspace `.mcp.json` server or the
+ * `alwaysLoad` flag (FLUX-604) tack on. A precise union would trip excess-property checks on
+ * those additions, so this stays a permissive record — the shape is genuinely open-ended
+ * external config (module servers, workspace .mcp.json, gh-cli-adjacent MCP servers), not a type
+ * this file owns.
+ */
+type McpServerConfig = Record<string, unknown>;
+
+/** Narrow shape of the loosely-typed ticket record this adapter actually reads from. */
+interface ClaudeTask {
+  status?: string;
+  tags?: string[];
+  effortLevel?: string;
+  branch?: string;
+}
 
 // Build --mcp-config JSON string for active module MCP servers.
 // Prefers an engine-managed shared HTTP server when one is ready (so all sessions
 // reuse one language-server process); otherwise falls back to a per-session stdio
 // spawn. Skips modules whose probe status is 'error' to avoid cascading failures.
-function buildModuleServerMap(phase?: string, tags?: string[], projectPath?: string): Record<string, any> {
+function buildModuleServerMap(phase?: string, tags?: string[], projectPath?: string): Record<string, McpServerConfig> {
   const stdioServers = getModuleMcpServers(phase, tags);
-  const filtered: Record<string, any> = {};
+  const filtered: Record<string, McpServerConfig> = {};
   // FLUX-579: the shared HTTP server is keyed per (module, worktree). Look it up
   // for THIS session's execution root so a worktree session gets its own server,
   // not the workspace-root one. Falls back to the workspace root for board /
@@ -109,12 +128,12 @@ function buildModuleMcpConfigArgs(phase?: string, tags?: string[], projectPath?:
 // Pure: drop servers whose `serverPhases[id]` excludes the current phase.
 // event-horizon is never dropped. Empty/absent serverPhases → passthrough.
 export function filterMcpServersByPhase(
-  servers: Record<string, any>,
+  servers: Record<string, McpServerConfig>,
   serverPhases: Record<string, string[]> | undefined,
   phase?: string,
-): Record<string, any> {
+): Record<string, McpServerConfig> {
   if (!serverPhases || Object.keys(serverPhases).length === 0) return { ...servers };
-  const out: Record<string, any> = {};
+  const out: Record<string, McpServerConfig> = {};
   for (const [id, cfg] of Object.entries(servers)) {
     const phases = serverPhases[id];
     if (id !== 'event-horizon' && phase && Array.isArray(phases) && phases.length > 0 && !phases.includes(phase)) {
@@ -126,11 +145,11 @@ export function filterMcpServersByPhase(
 }
 
 export function buildSpawnMcpConfigArgs(phase?: string, tags?: string[], projectPath?: string): string[] {
-  const serverPhases = (configCache as any).mcpServerPhases as Record<string, string[]> | undefined;
+  const serverPhases = configCache.mcpServerPhases as Record<string, string[]> | undefined;
   const hasProfiles = !!serverPhases && typeof serverPhases === 'object' && Object.keys(serverPhases).length > 0;
   if (!hasProfiles) return buildModuleMcpConfigArgs(phase, tags, projectPath);
 
-  const merged: Record<string, any> = { ...getWorkspaceMcpServers() };
+  const merged: Record<string, McpServerConfig> = { ...getWorkspaceMcpServers() };
   for (const [id, cfg] of Object.entries(buildModuleServerMap(phase, tags, projectPath))) {
     if (!(id in merged)) merged[id] = cfg;
   }
@@ -157,7 +176,7 @@ export function buildSpawnMcpConfigArgs(phase?: string, tags?: string[], project
 // module servers (.mcp.json/user/global also load, not enumerated). In strict
 // mode the list is exactly what the agent gets.
 export function getEffectiveSpawnServers(phase?: string, tags?: string[]): { strict: boolean; servers: string[]; note: string } {
-  const serverPhases = (configCache as any).mcpServerPhases as Record<string, string[]> | undefined;
+  const serverPhases = configCache.mcpServerPhases as Record<string, string[]> | undefined;
   const hasProfiles = !!serverPhases && typeof serverPhases === 'object' && Object.keys(serverPhases).length > 0;
   if (!hasProfiles) {
     return {
@@ -166,7 +185,7 @@ export function getEffectiveSpawnServers(phase?: string, tags?: string[]): { str
       note: 'Merge mode: EH-injected module servers only; workspace .mcp.json + user/global servers also load (not listed).',
     };
   }
-  const merged: Record<string, any> = { ...getWorkspaceMcpServers() };
+  const merged: Record<string, McpServerConfig> = { ...getWorkspaceMcpServers() };
   for (const id of Object.keys(buildModuleServerMap(phase, tags))) if (!(id in merged)) merged[id] = {};
   const filtered = filterMcpServersByPhase(merged, serverPhases, phase);
   if (!('event-horizon' in filtered)) {
@@ -226,14 +245,6 @@ function isDispatchedSession(session: CliSessionRecord, taskId: string): boolean
   return taskId !== BOARD_CONVERSATION_ID && session.phase !== 'chat';
 }
 
-export type DispatchLifecycle =
-  | 'started'
-  | 'working'
-  | 'completed'
-  | 'failed'
-  | 'cancelled'
-  | 'waiting-input';
-
 /** FLUX-849: short human label for a dispatched session's lifecycle marker on the board chip. */
 const DISPATCH_LIFECYCLE_LABEL: Record<Exclude<DispatchLifecycle, 'working'>, string> = {
   started: 'started',
@@ -272,8 +283,10 @@ function teeDispatchActivityToBoard(
       timestamp: new Date().toISOString(),
     });
     broadcastEvent('taskUpdated', { id: BOARD_CONVERSATION_ID });
-  } catch {
-    /* best-effort: board narration must never break the dispatched session */
+  } catch (err) {
+    // FLUX-862: best-effort (board narration must never break the dispatched session it's
+    // narrating), but a persistent failure here was previously completely invisible — log it.
+    log.debug(`[teeDispatchActivityToBoard] failed to tee ${lifecycle} for ${taskId}:`, err);
   }
 }
 
@@ -327,6 +340,45 @@ export function isRateLimitError(message: string | undefined | null): boolean {
   );
 }
 
+/** Claude Code `--output-format stream-json` content block (`assistant`/`user` message content[]). */
+interface ClaudeContentBlock {
+  type?: string;
+  text?: string;
+  name?: string;
+  id?: string;
+  input?: Record<string, unknown>;
+  tool_use_id?: string;
+  is_error?: boolean;
+  content?: string | Array<{ type?: string; text?: string }>;
+}
+
+/** One line of Claude Code's `--output-format stream-json` JSONL — the shape this adapter parses.
+ *  Fields are a union of every event `type` Claude emits; only the ones this parser reads. */
+interface ClaudeCliEvent {
+  type?: string;
+  session_id?: string;
+  event?: {
+    type?: string;
+    delta?: { type?: string; text?: string };
+    content_block?: { type?: string; name?: string };
+  };
+  rate_limit_info?: { status?: string; rateLimitType?: string; resetsAt?: number };
+  message?: { content?: ClaudeContentBlock[] };
+  usage?: {
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+    input_tokens?: number;
+    output_tokens?: number;
+  };
+  total_cost_usd?: number;
+  is_error?: boolean;
+  error?: string;
+  subtype?: string;
+  api_error_status?: number;
+  result?: string;
+  tool_name?: string;
+}
+
 export function attachStdoutProcessing(
   proc: ReturnType<typeof spawn>,
   session: CliSessionRecord,
@@ -336,7 +388,7 @@ export function attachStdoutProcessing(
   // in shared.ts (sharedAttachStdoutProcessing). This supplies Claude's per-CLI parser: `stream_event`
   // token deltas (--include-partial-messages) + complete `assistant` content[] blocks + `result` usage.
   // narrationType is omitted → Claude flushes compact progress rows (not the 'text' Narration block).
-  return sharedAttachStdoutProcessing(proc, session, {
+  return sharedAttachStdoutProcessing<ClaudeCliEvent>(proc, session, {
     onEvent: (evt, trimmed, commitPendingAssistantText) => {
         if (!session.resumeSessionId && evt.session_id) {
           session.resumeSessionId = evt.session_id;
@@ -396,7 +448,10 @@ export function attachStdoutProcessing(
               session.lastRateLimitKey = key;
               // Number.isFinite (not typeof === 'number') so a NaN resetsAt doesn't reach
               // new Date(NaN).toISOString() — which throws and reroutes the whole line to onParseError.
-              const resetsAt = Number.isFinite(info.resetsAt) ? ` (resets at ${new Date(info.resetsAt * 1000).toISOString()})` : '';
+              const resetsAtRaw = info.resetsAt;
+              const resetsAt = typeof resetsAtRaw === 'number' && Number.isFinite(resetsAtRaw)
+                ? ` (resets at ${new Date(resetsAtRaw * 1000).toISOString()})`
+                : '';
               appendErrorToSession(session, `Rate limited: ${info.status}${info.rateLimitType ? ` [${info.rateLimitType}]` : ''}${resetsAt}`);
             }
           } else if (session.lastRateLimitKey) {
@@ -422,7 +477,7 @@ export function attachStdoutProcessing(
               const raw = typeof block.content === 'string'
                 ? block.content
                 : Array.isArray(block.content)
-                  ? block.content.map((c: any) => (typeof c === 'string' ? c : c?.text || '')).join(' ')
+                  ? block.content.map((c) => (typeof c === 'string' ? c : c?.text || '')).join(' ')
                   : '';
               const detail = raw.trim().slice(0, 200);
               appendErrorToSession(session, `Tool failed: ${toolName}${detail ? ` — ${detail}` : ''}`);
@@ -430,10 +485,10 @@ export function attachStdoutProcessing(
           }
         }
         if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
-          const toolBlock = evt.message.content.find((b: any) => b.type === 'tool_use');
+          const toolBlock = evt.message.content.find((b) => b.type === 'tool_use');
           if (toolBlock) {
             session.pendingAssistantText = '';
-            const newActivity = activityFor(TOOL_ACTIVITY_MAP, toolBlock.name);
+            const newActivity = activityFor(TOOL_ACTIVITY_MAP, toolBlock.name ?? '');
             const activityChanged = session.currentActivity !== newActivity;
             session.currentActivity = newActivity;
 
@@ -449,11 +504,11 @@ export function attachStdoutProcessing(
 
               // Add context for specific tools if available
               if (toolBlock.input) {
-                if (toolName === 'Read' && toolBlock.input.file_path) {
+                if (toolName === 'Read' && typeof toolBlock.input.file_path === 'string') {
                   progressMsg = `Reading ${path.basename(toolBlock.input.file_path)}`;
-                } else if (toolName === 'Edit' && toolBlock.input.file_path) {
+                } else if (toolName === 'Edit' && typeof toolBlock.input.file_path === 'string') {
                   progressMsg = `Editing ${path.basename(toolBlock.input.file_path)}`;
-                } else if (toolName === 'Write' && toolBlock.input.file_path) {
+                } else if (toolName === 'Write' && typeof toolBlock.input.file_path === 'string') {
                   progressMsg = `Writing ${path.basename(toolBlock.input.file_path)}`;
                 } else if (toolName === 'Bash' && toolBlock.input.command) {
                   const cmd = String(toolBlock.input.command).slice(0, 50);
@@ -589,7 +644,34 @@ export function permissionArgs(session: CliSessionRecord): string[] {
 // against the installed CLI: `--disallowedTools, --disallowed-tools <tools...>`.)
 export const DISALLOW_NATIVE_ASK = ['--disallowed-tools', 'AskUserQuestion'];
 
-export async function startCliSession(session: CliSessionRecord, task: any, appendPrompt: string, effortOverrideRaw: string, workspaceRoot: string) {
+// FLUX-926: ticket chat may edit files only while the ticket is In Progress —
+// grooming/discussion turns should not silently mutate the repo. Dispatched
+// implementation/grooming/review/finalize sessions and the board session are unaffected
+// (phase-scoped to 'chat'). --disallowed-tools is permission-mode-independent, so this covers
+// the default 'skip' chat path where permission_prompt never fires.
+export const FILE_MUTATION_TOOLS = [
+  'Write', 'Edit', 'MultiEdit', 'NotebookEdit',
+  // Known MCP file editors (Serena). Best-effort — --disallowed-tools is name-based, so a new
+  // file-writing MCP tool isn't covered automatically until added here.
+  'mcp__serena__replace_symbol_body', 'mcp__serena__insert_after_symbol',
+  'mcp__serena__insert_before_symbol', 'mcp__serena__replace_content',
+  'mcp__serena__rename_symbol', 'mcp__serena__safe_delete_symbol',
+];
+
+// Chat turns re-spawn the CLI each turn with the live task in scope, so this is recomputed per
+// turn: moving the ticket to In Progress re-enables editing on the very next turn.
+// Params are structural (only `phase`/`status` are read) so tests can pass minimal literals.
+export function isChatEditGated(session: { phase?: CliSessionRecord['phase'] | undefined }, task: { status?: string | undefined } | undefined): boolean {
+  return session.phase === 'chat' && task?.status !== 'In Progress';
+}
+
+export function disallowedToolsArgs(session: { phase?: CliSessionRecord['phase'] | undefined }, task: { status?: string | undefined } | undefined): string[] {
+  const tools = ['AskUserQuestion'];
+  if (isChatEditGated(session, task)) tools.push(...FILE_MUTATION_TOOLS);
+  return ['--disallowed-tools', ...tools];
+}
+
+export async function startCliSession(session: CliSessionRecord, task: ClaudeTask, appendPrompt: string, effortOverrideRaw: string, workspaceRoot: string) {
   const framework = session.framework;
   const binaryName = framework === 'claude' ? 'claude' : 'copilot';
   const label = session.label;
@@ -598,25 +680,19 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   const executionRoot = await resolveTaskExecutionRoot(task, workspaceRoot);
   session.executionRoot = executionRoot;
 
-  // FLUX-1018: fail closed on the fresh-spawn path. A task WITH a branch must run
-  // in that branch's worktree, never the main checkout (master). resolveTaskExecutionRoot
-  // already self-heals/throws, but assert here too as a belt-and-suspenders guard.
-  if (task?.branch && executionRoot === workspaceRoot) {
-    throw new Error(
-      `Refusing to start ${binaryName} for ${id} on branch '${task.branch}': its worktree is missing and ` +
-        `execution resolved to the main checkout (master). Recreate the worktree and retry.`,
-    );
-  }
+  // FLUX-1018 / FLUX-1028: fail closed on the fresh-spawn path (shared helper —
+  // see assertIsolatedSpawnRoot in task-worktree.ts).
+  assertIsolatedSpawnRoot(binaryName, id, task, executionRoot, workspaceRoot);
 
   await checkBinaryInstalled(binaryName);
 
-  const claudeIntegration = (configCache as any).integrations?.claudeCode;
-  const groomingStatuses = [(configCache as any).requireInputStatus || 'Require Input', 'Grooming'];
+  const claudeIntegration = configCache.integrations?.claudeCode;
+  const groomingStatuses = [configCache.requireInputStatus || 'Require Input', 'Grooming'];
   const selectedModel = claudeIntegration && framework === 'claude'
     ? (groomingStatuses.includes(task.status) ? claudeIntegration.groomingModel : claudeIntegration.implementationModel)
     : null;
 
-  const initialPrompt = buildInitialPrompt(task, appendPrompt, { diffBlock: session.diffBlock, phase: session.phase, framework: 'claude' });
+  const initialPrompt = buildInitialPrompt(task, appendPrompt, { diffBlock: session.diffBlock, phase: session.phase, framework: 'claude', editsGated: isChatEditGated(session, task) });
 
   // FLUX-579: ensure this session's per-worktree shared HTTP server(s) exist (keyed
   // by execution root) before building the MCP config that looks them up.
@@ -631,7 +707,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     '--verbose',
     // FLUX-691: emit partial assistant deltas for token-by-token live streaming in the chat.
     '--include-partial-messages',
-    ...DISALLOW_NATIVE_ASK,
+    ...disallowedToolsArgs(session, task),
     ...permissionArgs(session),
     // Multi-repo group: put every checked-out member repo in scope (no-op single-repo).
     ...buildMemberScopeArgs(),
@@ -642,13 +718,22 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   ];
 
   const effortCap = CLI_CAPABILITIES[framework].effort;
-  const globalEffort = (configCache as any).effortLevel as string | undefined;
-  const taskEffort = (task as any).effortLevel as string | undefined;
+  const globalEffort = configCache.effortLevel as string | undefined;
+  const taskEffort = task.effortLevel;
   const effectiveEffort = (session.effortOverride || effortOverrideRaw || taskEffort || globalEffort || '') as string;
   if (effortCap.supported && effortCap.flag && EFFORT_LEVELS.includes(effectiveEffort as EffortLevel)) {
     claudeArgs.push(effortCap.flag, effectiveEffort);
   }
 
+  // S9 (epic FLUX-996): telemetry for this spawn — cmd deliberately omits the full `-p` prompt
+  // (arbitrary-size user/ticket content, not itself a credential, but not fit for a telemetry
+  // buffer/SSE broadcast either).
+  const spawnStartedAt = Date.now();
+  const spawnCmd = `${binaryName}${modelToUse ? ` --model ${modelToUse}` : ''} (spawn)`;
+  // FLUX-1109: 'error' and 'exit' can BOTH fire for one failed spawn (Node's own child_process
+  // docs warn about this) — guard so only the first to fire records telemetry, not two events
+  // double-counting one failure in the ring buffer/SSE stream.
+  let telemetryEmitted = false;
   let proc: ReturnType<typeof spawn>;
   if (process.platform === 'win32') {
     // On Windows, find the actual .exe instead of using cmd.exe wrapper
@@ -697,6 +782,20 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   });
 
   proc.on('error', async (error) => {
+    if (!telemetryEmitted) {
+      telemetryEmitted = true;
+      emitOperationEvent({
+        kind: 'spawn',
+        ticketId: id,
+        sessionId: session.id,
+        cmd: spawnCmd,
+        startedAt: spawnStartedAt,
+        endedAt: Date.now(),
+        durationMs: Date.now() - spawnStartedAt,
+        outcome: 'error',
+        reason: error.message,
+      });
+    }
     // Clear heartbeat timer
     if (session.progressHeartbeat) {
       clearInterval(session.progressHeartbeat);
@@ -712,6 +811,10 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
     await session.writeQueue;
 
     const outcome = `${label} session failed to start: ${error.message}`;
+    // S10 (epic FLUX-996): a spawn that never got going is otherwise invisible on the board — no
+    // session ever ran to trip the parked-turn backstop. Raise it directly via the same
+    // needsAction + notification plumbing so it surfaces even when nobody is watching this ticket.
+    void raiseNeedsAction(id, `Failed to start agent: ${error.message}`);
 
     // FLUX-849: a spawn failure after the 'started' tee would otherwise leave the board chip
     // dangling — bracket it with a terminal 'failed' marker so the lifecycle is symmetric.
@@ -766,6 +869,35 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   }, 15000);
 
   proc.on('exit', async (code, signal) => {
+    if (!telemetryEmitted) {
+      telemetryEmitted = true;
+      const spawnEndedAt = Date.now();
+      // FLUX-1109: a Require-Input pause is a healthy, non-failure outcome regardless of exit
+      // code (mirrors how the rest of this handler already branches on pausedForInput below) —
+      // consult it here too so telemetry doesn't mislabel a normal HITL pause as 'error'.
+      const outcome: OperationOutcome = session.requestedStop
+        ? 'aborted'
+        : session.pausedForInput || code === 0
+          ? 'ok'
+          : 'error';
+      emitOperationEvent({
+        kind: 'spawn',
+        ticketId: id,
+        sessionId: session.id,
+        cmd: spawnCmd,
+        startedAt: spawnStartedAt,
+        endedAt: spawnEndedAt,
+        durationMs: spawnEndedAt - spawnStartedAt,
+        outcome,
+        reason: session.requestedStop ? 'stopped by user' : outcome === 'error' ? (signal ? `signal ${signal}` : `exit code ${code}`) : undefined,
+      });
+      // S10 (epic FLUX-996): surface a crashed spawn (non-zero/signalled exit, not a user stop or
+      // a healthy Require-Input pause) via the same needsAction + notification plumbing used
+      // elsewhere — this session never reaches the parked-turn backstop (it never really started).
+      if (outcome === 'error') {
+        void raiseNeedsAction(id, `Agent process exited unexpectedly (${signal ? `signal ${signal}` : `exit code ${code}`}).`);
+      }
+    }
     // Clear heartbeat timer
     if (session.progressHeartbeat) {
       clearInterval(session.progressHeartbeat);
@@ -823,11 +955,12 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
       if (tokenUpdate) {
         await updateTaskWithHistory(id, { updatedBy: 'Agent', entries: [], tokenMetadata: tokenUpdate });
       }
-      if (session.sessionHistoryEntry?.sessionId) {
-        await updateAgentSession(id, session.sessionHistoryEntry.sessionId, (sessionEntry) => {
+      const pausedHistoryEntry = session.sessionHistoryEntry;
+      if (pausedHistoryEntry?.sessionId) {
+        await updateAgentSession(id, pausedHistoryEntry.sessionId, (sessionEntry) => {
           sessionEntry.status = 'waiting-input';
           sessionEntry.outcome = `${label} paused — waiting for user input.`;
-          sessionEntry.progress = session.sessionHistoryEntry.progress || [];
+          sessionEntry.progress = pausedHistoryEntry.progress || [];
         });
       }
       // FLUX-651: a chat turn that ends without the agent moving the ticket = "sat on its
@@ -885,8 +1018,8 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
       });
 
       // Save the agent's final message as a comment on the ticket
-      const textEntries = accumulatedProgress.filter((p: any) => p.type === 'text' && p.message?.trim());
-      const lastText = textEntries.length > 0 ? textEntries[textEntries.length - 1].message : '';
+      const textEntries = accumulatedProgress.filter((p) => p.type === 'text' && p.message?.trim());
+      const lastText = textEntries.length > 0 ? textEntries[textEntries.length - 1]?.message : '';
       if (lastText && finalStatus === 'completed') {
         const maxCommentLen = 3000;
         const commentBody = lastText.length > maxCommentLen ? lastText.slice(0, maxCommentLen) + '...' : lastText;
@@ -949,7 +1082,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   }
 
   async start(session: CliSessionRecord, task: unknown, appendPrompt: string, effortOverride: string, workspaceRoot: string): Promise<void> {
-    return startCliSession(session, task, appendPrompt, effortOverride, workspaceRoot);
+    return startCliSession(session, task as ClaudeTask, appendPrompt, effortOverride, workspaceRoot);
   }
 
   async sendInput(session: CliSessionRecord, message: string, user: string, workspaceRoot: string, opts?: SendInputOptions): Promise<void> {
@@ -968,18 +1101,15 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   const binaryName = session.command;
   // FLUX-519 review: resume in the SAME root the session started in; refuse to fall
   // back onto master if the worktree was removed (e.g. the ticket was finished).
-  // FLUX-1018: on the resume fallback resolve READ-ONLY (create:false) — never spin up
-  // a fresh worktree mid-resume for a legacy session that lost its recorded
-  // executionRoot; the spawn path owns creation. Then fail closed two ways: a
-  // branch-bearing ticket that resolved to the main checkout (no live worktree) must
-  // not resume on master, and a recorded worktree path that has since vanished (ticket
-  // finished) is refused as before.
-  const executionRoot = session.executionRoot ?? await resolveTaskExecutionRoot(tasksCache[id], workspaceRoot, { create: false });
-  if (tasksCache[id]?.branch && executionRoot === workspaceRoot) {
-    throw new Error(`Worktree for ${id} is missing — refusing to resume the agent on master. Restart the session to recreate an isolated worktree.`);
-  }
-  if (executionRoot !== workspaceRoot && !fs.existsSync(executionRoot)) {
-    throw new Error(`Worktree for ${id} no longer exists (ticket likely finished) — refusing to resume the agent on master.`);
+  // FLUX-1018 / FLUX-1028: shared fail-closed guard — see resolveResumeExecutionRoot
+  // in task-worktree.ts. FLUX-1120: this throws BEFORE any child process spawns, so
+  // surface it the same way a spawn failure is surfaced instead of letting it vanish
+  // into an HTTP-500-only response — see surfaceResumeFailure in shared.ts.
+  let executionRoot: string;
+  try {
+    executionRoot = await resolveResumeExecutionRoot(session, tasksCache[id], workspaceRoot);
+  } catch (error) {
+    return surfaceResumeFailure(session, id, error);
   }
 
   await checkBinaryInstalled(binaryName);
@@ -1008,7 +1138,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   const attachments = opts?.attachments ?? [];
   const attachmentAbsPaths = resolveAttachmentAbsPaths(attachments);
 
-  const task = tasksCache[id] as any;
+  const task = tasksCache[id] as ClaudeTask;
 
   // FLUX-655: on a RESUMED turn, re-ground the agent in the moved tree. If the world actually
   // changed (branch fell behind, master rewrote files underneath us, sibling tickets merged), build
@@ -1050,7 +1180,12 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   // takes a single `-p` and with --resume there is no separate system channel, so prepending is the
   // mechanism. The preamble is recorded as its OWN durable transcript event above (NOT folded into
   // the user's message — FLUX-716 item 3 orders it before the user event).
-  const promptForCli = resumePreamble ? `${resumePreamble}\n\n---\n\n${safeMessage}` : safeMessage;
+  // FLUX-926: same "why is this blocked" note as the initial spawn, recomputed per resumed turn.
+  const editGateNote = isChatEditGated(session, task)
+    ? 'FLUX-926: this ticket is not In Progress, so file-mutation tools (Write/Edit/etc.) are disabled for this turn — the CLI will refuse them. Move the ticket to "In Progress" (or ask the user to) before making changes; discussion, planning, and read-only tools work as normal.'
+    : null;
+  const promptWithGateNote = editGateNote ? `${editGateNote}\n\n---\n\n${safeMessage}` : safeMessage;
+  const promptForCli = resumePreamble ? `${resumePreamble}\n\n---\n\n${promptWithGateNote}` : promptWithGateNote;
 
   // FLUX-579: ensure the per-worktree shared server exists for this resumed turn's
   // execution root before resolving the MCP config (engine may have restarted, or
@@ -1061,9 +1196,15 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   const meArgs = modelEffortArgs(session);
   // FLUX-691: `--include-partial-messages` → token-by-token live streaming on the resume/send path.
   const resumeArgs = session.resumeSessionId
-    ? ['-p', promptForCli, '--resume', session.resumeSessionId, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...memberScopeArgs, ...moduleMcpArgs]
-    : ['-p', promptForCli, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...DISALLOW_NATIVE_ASK, ...permissionArgs(session), ...memberScopeArgs, ...moduleMcpArgs];
+    ? ['-p', promptForCli, '--resume', session.resumeSessionId, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...disallowedToolsArgs(session, task), ...permissionArgs(session), ...memberScopeArgs, ...moduleMcpArgs]
+    : ['-p', promptForCli, '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...meArgs, ...disallowedToolsArgs(session, task), ...permissionArgs(session), ...memberScopeArgs, ...moduleMcpArgs];
 
+  // S9 (epic FLUX-996): telemetry for this resume spawn — see the initial-spawn comment above for
+  // why `cmd` omits the full prompt.
+  const spawnStartedAt = Date.now();
+  const spawnCmd = `${binaryName}${session.model ? ` --model ${session.model}` : ''} (resume)`;
+  // FLUX-1109: guard against the 'error'+'exit' double-fire, same as the initial spawn above.
+  let telemetryEmitted = false;
   let replyProc: ReturnType<typeof spawn>;
   if (process.platform === 'win32') {
     // On Windows, find the actual .exe instead of using cmd.exe wrapper
@@ -1099,22 +1240,31 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   });
 
   replyProc.on('error', async (error) => {
-    // FLUX-915: a stop racing a spawn error stays 'cancelled' rather than reverting to resumable.
-    if (session.requestedStop) {
-      session.status = 'cancelled';
-      session.endedAt = new Date().toISOString();
-    } else {
-      // FLUX-918: a crashed resumed turn is not a clean idle turn-end — flag it blocked so the card
-      // classifies it "Needs your input" (amber) rather than calm idle. classifyCardSessionState
-      // keys off blockedReason; without it this read as idle.
-      session.blockedReason = `Reply failed: ${error.message}`;
-      session.status = 'waiting-input';
+    if (!telemetryEmitted) {
+      telemetryEmitted = true;
+      emitOperationEvent({
+        kind: 'spawn',
+        ticketId: id,
+        sessionId: session.id,
+        cmd: spawnCmd,
+        startedAt: spawnStartedAt,
+        endedAt: Date.now(),
+        durationMs: Date.now() - spawnStartedAt,
+        outcome: 'error',
+        reason: error.message,
+      });
     }
+    // FLUX-915/918/921: a stop racing a spawn error stays 'cancelled' rather than reverting to
+    // resumable; otherwise flag the crashed reply blocked so the card classifies it "Needs your
+    // input" (amber) rather than calm idle — classifyCardSessionState keys off blockedReason.
+    terminalizeResumedExit(session, { blockedReason: `Reply failed: ${error.message}` });
     commitReplyPending();
     // FLUX-981: surface the reply spawn failure inline in the chat, not only on the board / as an
     // activity entry. Skip when the user cancelled — a stop that races the spawn error isn't a fault.
     if (!session.requestedStop) {
       appendErrorToSession(session, `Failed to resume agent: ${error.message}`);
+      // S10 (epic FLUX-996): same needsAction + notification surfacing as the initial-spawn path.
+      void raiseNeedsAction(id, `Failed to resume agent: ${error.message}`);
     }
     flushSessionOutput(session, true);
     // FLUX-849: a crashed resumed turn (reply spawn error) was previously invisible on the board —
@@ -1129,20 +1279,36 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   });
 
   replyProc.on('exit', async (code, signal) => {
+    if (!telemetryEmitted) {
+      telemetryEmitted = true;
+      const spawnEndedAt = Date.now();
+      // FLUX-1109: fold pausedForInput into 'ok' — same rationale as the initial spawn above.
+      const outcome: OperationOutcome = session.requestedStop
+        ? 'aborted'
+        : session.pausedForInput || code === 0
+          ? 'ok'
+          : 'error';
+      emitOperationEvent({
+        kind: 'spawn',
+        ticketId: id,
+        sessionId: session.id,
+        cmd: spawnCmd,
+        startedAt: spawnStartedAt,
+        endedAt: spawnEndedAt,
+        durationMs: spawnEndedAt - spawnStartedAt,
+        outcome,
+        reason: session.requestedStop ? 'stopped by user' : outcome === 'error' ? (signal ? `signal ${signal}` : `exit code ${code}`) : undefined,
+      });
+    }
     commitReplyPending();
     flushSessionOutput(session, true);
-    // FLUX-915: terminalize a user-requested stop as 'cancelled' instead of blindly reverting to
+    // FLUX-915/921: terminalize a user-requested stop as 'cancelled' instead of blindly reverting to
     // 'waiting-input'. The stop route synchronously set status='cancelled'+endedAt and killed the
     // proc; this async exit handler used to overwrite that back to 'waiting-input', so Stop never
     // stuck and the session showed active forever (getActiveSessionsForTask counts waiting-input;
     // reconcileDeadSessions skips it). A clean OR crashed resumed turn stays resumable — a persistent
     // conversation recovers via --resume, and the board tee below still surfaces a crash.
-    if (session.requestedStop) {
-      session.status = 'cancelled';
-      session.endedAt = new Date().toISOString();
-    } else {
-      session.status = 'waiting-input';
-    }
+    terminalizeResumedExit(session);
     // FLUX-651: resumed chat turn ended — flag if the agent parked without acting. Skip a turn the
     // agent paused for Require Input (that IS an action) or one the user stopped (FLUX-915).
     if (!session.pausedForInput && !session.requestedStop) await flagIfParked(session, id);
@@ -1164,6 +1330,8 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       const stderrHint = session.stderrCapture?.trim();
       appendErrorToSession(session, stderrHint ? `${replyOutcome}\n${stderrHint}` : replyOutcome);
       teeDispatchActivityToBoard(session, id, 'failed', DISPATCH_LIFECYCLE_LABEL['failed']);
+      // S10 (epic FLUX-996): same needsAction + notification surfacing as the initial-spawn path.
+      void raiseNeedsAction(id, replyOutcome);
     }
     broadcastEvent('taskUpdated', { id });
   });

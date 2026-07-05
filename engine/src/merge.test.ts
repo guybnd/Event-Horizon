@@ -17,6 +17,13 @@ import { readCurationOps } from './curation-ops.js';
 import { createTask, tasksCache } from './task-store.js';
 import { proposeBoardRebase, resolveBoardRebase } from './board-rebase.js';
 
+/** Minimal `tasksCache` ticket shape as read by this test — only the fields it inspects. */
+interface CachedTask {
+  mergedInto?: string;
+  status?: string;
+  history?: Array<{ type?: string; pin?: boolean; comment?: string }>;
+}
+
 /**
  * FLUX-657 — the `merge` curation verb. Locks the invariants the epic rests on: merge is
  * additive (every source substrate is byte-for-byte untouched), the survivor's view is
@@ -42,7 +49,7 @@ describe('merge verb (FLUX-657)', () => {
 
   /** Create a bare ticket, returning its id. */
   async function makeTicket(title: string): Promise<string> {
-    const { id } = await createTask({ title, author: 'Tester', skipBroadcast: true } as any);
+    const { id } = await createTask({ title, author: 'Tester', skipBroadcast: true });
     return id;
   }
 
@@ -98,12 +105,12 @@ describe('merge verb (FLUX-657)', () => {
     await mergeTickets({ into: survivor, from: [a, b] });
 
     for (const src of [a, b]) {
-      const task = tasksCache[src];
+      const task = tasksCache[src] as CachedTask;
       expect(task).toBeTruthy(); // not deleted
       expect(task.mergedInto).toBe(survivor);
       expect(task.status).toBe('Archived');
       const pinnedTombstone = (task.history || []).find(
-        (h: any) => h.type === 'comment' && h.pin && /Merged into/.test(h.comment || ''),
+        (h) => h.type === 'comment' && h.pin && /Merged into/.test(h.comment || ''),
       );
       expect(pinnedTombstone).toBeTruthy();
     }

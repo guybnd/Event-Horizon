@@ -113,6 +113,8 @@ When you add a new framework, add a row here too.
 2. Builds the CLI command + args (provider-specific flags for permission mode, effort, model, resume). For Claude Code, `permissionArgs(session)` emits either `--permission-prompt-tool mcp__event-horizon__permission_prompt` (`permissionMode: 'gated'`) or `--dangerously-skip-permissions` (`permissionMode: 'skip'` / legacy `skipPermissions`) — see [`permission_prompt`](mcp-tools.md#permission_prompt) (FLUX-605).
 3. `spawn`s the child process with a sanitized env (`cleanChildEnv` strips `NODE_OPTIONS` to avoid loader injection). For a routed session it also sets `EH_CONVERSATION_ID` (the bound ticket id / `__board__` sentinel) and `EH_CONVERSATION_TOKEN` — an HMAC of that conversationId minted from a per-process secret (FLUX-841). The `permission_prompt` / `ask_user_question` MCP tools forward the token on every HITL POST so the route can assert the request targets the session's OWN ticket; a session can't forge a token for a sibling, which closes same-shape cross-ticket transcript injection (`isSafeStreamId` only blocks path traversal, not a valid sibling ticket id).
 4. Records the `pid`, `command`, `args`, `startedAt`, and writes an `agent_session` history entry to the ticket (`buildAgentSessionEntry` from [`history.ts`](../../../engine/src/history.ts)).
+
+   **Pre-spawn failures never reach step 4 (FLUX-1156).** A throw during isolation (`ensureTicketIsolation`) or execution-root resolution (`resolveTaskExecutionRoot` / `assertIsolatedSpawnRoot`) happens in the route layer — `spawnSession` / `prepareAndLaunchSession` in [`routes/cli-session.ts`](../../../engine/src/routes/cli-session.ts) — BEFORE any adapter `start()` call, so no adapter ever gets to write the entry above. Without a substitute, the ticket's chat timeline (built from `agent_session` entries) rendered nothing for a session that never spawned, and `get_session_log` could never resolve the id. The route's `catch` blocks now build a stand-in entry directly (`buildFailedPreSpawnSessionEntry`, reusing `buildAgentSessionEntry` + the already-allocated session id) with `status: 'failed'` and `endedAt` set from birth, so a pre-spawn failure renders exactly like a post-spawn one.
 5. Streams stdout and stderr:
    - Buffers output via `appendSessionOutput` / `flushSessionOutput`.
    - Parses stream-json frames (Claude/Copilot) into:
@@ -210,6 +212,8 @@ Via the helpers in [`history.ts`](../../../engine/src/history.ts):
 | `buildCommentEntry` | `comment` | not used by adapters today; reserved for explicit agent comments |
 
 Always write through `updateTaskWithHistory` (atomic) — never construct frontmatter and write the file directly.
+
+**FLUX-1156:** a pre-spawn failure (before any adapter's `start()` runs) is the one case where an `agent_session` entry is written from OUTSIDE an adapter — `routes/cli-session.ts`'s `buildFailedPreSpawnSessionEntry` builds it directly from `buildAgentSessionEntry`, pre-populated `status: 'failed'` + `outcome` + `endedAt`, since there's no adapter-driven start/exit pair to do it. The Furnace stoker (`furnace-stoker.ts`'s `findSessionOutcome`) reads that `outcome` back off ticket history to fold the real failure reason into its park comment instead of the generic "session ended failed".
 
 ## Adding a new framework
 

@@ -13,6 +13,7 @@ import { Bot, ChevronDown, ExternalLink, FileText, Layers, Loader2, Play, SendHo
 import type { Task } from '../../types';
 import type { TicketAction, TicketActionIcon, TicketActionSurface, LaunchTemplateOption } from '../../lib/ticketActions';
 import { useTicketActions, type UseTicketActions } from '../../hooks/useTicketActions';
+import { useEscapeKey } from '../../hooks/useEscapeKey';
 import { useConfig } from '../../store/useAppSelector';
 import { resolveEffectiveAgent } from '../../utils';
 import { OrchestrationLauncher } from '../OrchestrationLauncher';
@@ -419,14 +420,15 @@ function useOutsideClose(ref: React.RefObject<HTMLElement | null>, open: boolean
     const onDown = (e: MouseEvent) => {
       if (!ref.current?.contains(e.target as Node)) close();
     };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') close();
-    };
     document.addEventListener('mousedown', onDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDown);
-      document.removeEventListener('keydown', onKey);
-    };
+    return () => document.removeEventListener('mousedown', onDown);
   }, [open, ref, close]);
+
+  // FLUX-1022: routed through the shared stack — these pickers render inline in a dock
+  // ChatWindow's action bar and in TaskModal, both of which now have their own Escape handling;
+  // sharing the stack keeps one ESC press from closing just the picker instead of also
+  // collapsing/closing the host. ignoreWhenTyping: false — the autofocused reason/comment textarea
+  // has no competing local Escape behavior, so the default typing guard would just disable
+  // ESC-to-close on the picker.
+  useEscapeKey(close, { enabled: open, ignoreWhenTyping: false });
 }

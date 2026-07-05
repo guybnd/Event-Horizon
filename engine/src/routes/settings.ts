@@ -9,12 +9,16 @@ import {
 
 const router = express.Router();
 
+function errorMessage(err: unknown): string | undefined {
+  return err instanceof Error ? err.message : undefined;
+}
+
 router.get('/boot-status', async (_req, res) => {
   try {
     const status = await getBootStatus();
     res.json(status);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err) {
+    res.status(500).json({ error: errorMessage(err) });
   }
 });
 
@@ -23,8 +27,8 @@ router.post('/confirm-boot', async (req, res) => {
     const { migrate } = req.body ?? {};
     const settings = await confirmBoot({ migrate });
     res.json({ ok: true, settings });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err) {
+    res.status(500).json({ error: errorMessage(err) });
   }
 });
 
@@ -32,15 +36,15 @@ router.get('/global', async (_req, res) => {
   try {
     const settings = await loadGlobalSettings();
     res.json(settings);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err) {
+    res.status(500).json({ error: errorMessage(err) });
   }
 });
 
 router.put('/global', async (req, res) => {
   try {
     const current = await loadGlobalSettings();
-    const updates = req.body ?? {};
+    const updates: Partial<GlobalSettings> = req.body ?? {};
 
     if (updates.defaultUser !== undefined) current.defaultUser = updates.defaultUser;
     if (updates.preferredFramework !== undefined) current.preferredFramework = updates.preferredFramework;
@@ -51,8 +55,8 @@ router.put('/global', async (req, res) => {
 
     await saveGlobalSettings(current);
     res.json(current);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err) {
+    res.status(500).json({ error: errorMessage(err) });
   }
 });
 

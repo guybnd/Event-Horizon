@@ -6,6 +6,18 @@ import { getModulePromptFragments } from './modules.js';
 import { computeAgentPayloadMetrics, type AgentPayloadMetrics } from './agent-payload-metrics.js';
 import { getCliSessionSummaryForTask } from './session-store.js';
 
+/**
+ * Ticket/frontmatter-shaped input. There is no single canonical Task type in
+ * this codebase (tickets are runtime-validated, loosely-typed records) — this
+ * narrow interface covers only the fields these metrics functions read.
+ */
+interface MetricsTask {
+  id: string;
+  status?: string;
+  tags?: string[];
+  [key: string]: unknown;
+}
+
 function measure(value: string | undefined | null): { bytes: number; tokensEst: number } {
   if (!value) return { bytes: 0, tokensEst: 0 };
   return { bytes: Buffer.byteLength(value, 'utf8'), tokensEst: Math.ceil(value.length / 4) };
@@ -46,7 +58,7 @@ export interface LaunchPromptMetrics {
  * boilerplate (mission text, header, recent activity, mcp note). The persona
  * overlay (appendPrompt) is measured separately by the caller — here we pass ''.
  */
-export function computeLaunchPromptMetrics(task: any): LaunchPromptMetrics {
+export function computeLaunchPromptMetrics(task: MetricsTask): LaunchPromptMetrics {
   const phase = statusToPhase(task.status);
   const corePrompt = buildInitialPrompt(task, '', phase ? { phase } : undefined);
   const total = measure(corePrompt);
@@ -132,7 +144,7 @@ export interface ContextBudget {
  * Combined "where does an agent's context budget go" view for the parts EH owns
  * and can measure in-process. Deliberately honest about what it CANNOT see.
  */
-export async function computeContextBudget(task: any): Promise<ContextBudget> {
+export async function computeContextBudget(task: MetricsTask): Promise<ContextBudget> {
   const payload = computeAgentPayloadMetrics(task);
   const launchPrompt = computeLaunchPromptMetrics(task);
   const skillModules = await computeSkillModuleMetrics();
@@ -140,13 +152,17 @@ export async function computeContextBudget(task: any): Promise<ContextBudget> {
   const ehMeasurableTotalTokensEst =
     payload.totalTokensEst + launchPrompt.totalTokensEst + skillModules.totalTokensEst;
 
-  const s: any = getCliSessionSummaryForTask(task.id);
+  const s = getCliSessionSummaryForTask(task.id);
+  // Spread conditionally rather than assigning `undefined` fields directly —
+  // exactOptionalPropertyTypes treats a present-but-undefined key differently
+  // from an omitted one. JSON serialization of the response is unaffected
+  // either way (JSON.stringify already drops undefined-valued keys).
   const session: SessionTokenTotals | undefined = s
     ? {
-        inputTokens: s.inputTokens,
-        outputTokens: s.outputTokens,
-        cacheReadTokens: s.cacheReadTokens,
-        cacheCreationTokens: s.cacheCreationTokens,
+        ...(s.inputTokens !== undefined ? { inputTokens: s.inputTokens } : {}),
+        ...(s.outputTokens !== undefined ? { outputTokens: s.outputTokens } : {}),
+        ...(s.cacheReadTokens !== undefined ? { cacheReadTokens: s.cacheReadTokens } : {}),
+        ...(s.cacheCreationTokens !== undefined ? { cacheCreationTokens: s.cacheCreationTokens } : {}),
       }
     : undefined;
 

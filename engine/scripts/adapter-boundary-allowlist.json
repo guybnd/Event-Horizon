@@ -2,13 +2,9 @@
   "_comment": "Ratcheting allowlist for check-adapter-boundary.mjs (FLUX-938). Each key is `relPath :: pattern :: match`; the value is the count of KNOWN occurrences. This set must only SHRINK — re-seed only after REMOVING leaks (epic FLUX-851 cleanup), and review the diff. A new leak (absent key, or count above the allowed value) fails CI.",
   "allow": {
     "engine/src/board-rebase.ts :: framework-literal-assign :: framework: 'claude'": 1,
-    "engine/src/context-budget-metrics.ts :: adapter-deep-import :: from './agents/claude-code.js'": 1,
     "engine/src/mcp-phase-profiles.test.ts :: adapter-deep-import :: from './agents/claude-code.js'": 1,
-    "engine/src/routes/cli-session.ts :: framework-literal-assign :: framework: 'claude'": 1,
-    "engine/src/routes/cli-session.ts :: framework-literal-eq :: !== 'claude'": 4,
     "engine/src/routes/cli-session.ts :: framework-literal-eq :: === 'claude'": 1,
     "engine/src/routes/tasks.ts :: adapter-deep-import :: from '../agents/claude-code.js'": 1,
-    "engine/src/session-store.test.ts :: framework-literal-assign :: framework: 'claude'": 1,
     "portal/src/components/OnboardingWizard.tsx :: framework-literal-eq :: === 'claude'": 1,
     "portal/src/components/settings/AgentSection.tsx :: framework-literal-eq :: === 'claude'": 1
   }

@@ -7,7 +7,7 @@ vi.mock('./git-sync-env.js', () => ({
   buildGitSyncEnv: vi.fn(async () => ({ ...process.env, GIT_TERMINAL_PROMPT: '0' })),
 }));
 
-import { runHardened, setGitOperationSink, type GitOperationEvent } from './git-exec.js';
+import { runHardened, setGitOperationSink, redactArg, type GitOperationEvent } from './git-exec.js';
 
 // runHardened's contract is git|gh, but its timeout/kill machinery is command-agnostic — drive it
 // with the node binary (a deterministic, cross-platform stand-in for a hanging/returning process).
@@ -81,6 +81,22 @@ describe('git-exec runHardened', () => {
     expect(events[0]!.durationMs).toBeGreaterThanOrEqual(0);
   });
 
+  it('supports multiple concurrent sinks (multicast) — a second setGitOperationSink() call adds, never replaces (FLUX-1131)', async () => {
+    const a: GitOperationEvent[] = [];
+    const b: GitOperationEvent[] = [];
+    setGitOperationSink((e) => a.push(e));
+    setGitOperationSink((e) => b.push(e));
+    try {
+      await runHardened(NODE, ['-e', ''], { timeoutMs: 5_000 });
+    } finally {
+      setGitOperationSink(null);
+    }
+    expect(a).toHaveLength(1);
+    expect(b).toHaveLength(1);
+    expect(a[0]!.outcome).toBe('ok');
+    expect(b[0]!.outcome).toBe('ok');
+  });
+
   it('a throwing telemetry sink never breaks the git call', async () => {
     setGitOperationSink(() => { throw new Error('sink boom'); });
     try {
@@ -89,5 +105,51 @@ describe('git-exec runHardened', () => {
     } finally {
       setGitOperationSink(null);
     }
+  });
+
+  it('redacts a credential-embedded URL echoed in stderr from the thrown Error.message (FLUX-1002 review)', async () => {
+    // Callers like cli-session.ts's prepareAndLaunchSession now persist error.message into synced
+    // ticket history / SSE broadcasts — the credential-URL redaction has to happen HERE, at the one
+    // place every git/gh spawn funnels through, so every caller gets it for free.
+    const standin = [
+      '-e',
+      "process.stderr.write('fatal: could not read from https://x-access-token:ghs_SECRET123@github.com/org/repo.git'); process.exit(1);",
+    ];
+    await expect(runHardened(NODE, standin, { timeoutMs: 5_000 })).rejects.toThrow(
+      /https:\/\/\*\*\*@github\.com\/org\/repo\.git/,
+    );
+    try {
+      await runHardened(NODE, standin, { timeoutMs: 5_000 });
+      expect.unreachable('expected runHardened to reject');
+    } catch (err) {
+      expect((err as Error).message).not.toContain('ghs_SECRET123');
+    }
+  });
+
+  it('redacts a credential-embedded URL from the thrown Error .stdout/.stderr too, not just .message (FLUX-1091)', async () => {
+    // FLUX-1002 only redacted .message; the same Error also carries raw .stdout/.stderr, which
+    // would leak the credential if a future caller logs/persists those fields instead of .message.
+    const standin = [
+      '-e',
+      "process.stdout.write('https://x-access-token:ghs_SECRET123@github.com/org/repo.git'); " +
+        "process.stderr.write('fatal: could not read from https://x-access-token:ghs_SECRET123@github.com/org/repo.git'); process.exit(1);",
+    ];
+    try {
+      await runHardened(NODE, standin, { timeoutMs: 5_000 });
+      expect.unreachable('expected runHardened to reject');
+    } catch (err) {
+      const e = err as Error & { stdout?: string; stderr?: string };
+      expect(e.stdout).not.toContain('ghs_SECRET123');
+      expect(e.stderr).not.toContain('ghs_SECRET123');
+      expect(e.stdout).toMatch(/https:\/\/\*\*\*@github\.com\/org\/repo\.git/);
+      expect(e.stderr).toMatch(/https:\/\/\*\*\*@github\.com\/org\/repo\.git/);
+    }
+  });
+
+  it('redactArg strips embedded userinfo from any scheme://user:pass@host URL', () => {
+    expect(redactArg('https://x-access-token:ghs_SECRET@github.com/org/repo.git')).toBe(
+      'https://***@github.com/org/repo.git',
+    );
+    expect(redactArg('no url here')).toBe('no url here');
   });
 });

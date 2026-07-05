@@ -1,5 +1,5 @@
-import type { Task, Config, Doc, CliFramework, CliSessionSummary, ModuleDeclaration, TerminalSessionInfo } from './types';
-import type { FurnaceBatch, BatchKind, BatchTrigger, BatchStatus, SlotInfo, ExcludedTicket } from './furnaceTypes';
+import type { Task, Config, Doc, CliFramework, CliSessionSummary, ModuleDeclaration, TerminalSessionInfo, HistoryEntryDraft, OperationEvent, OperationKind, OperationOutcome } from './types';
+import type { FurnaceBatch, BatchKind, BatchTrigger, BatchStatus, SlotInfo, ExcludedTicket, BatchTicket, FurnaceSlotHolder } from './furnaceTypes';
 
 export const API_URL = '/api';
 
@@ -7,10 +7,25 @@ function encodeDocPath(docPath: string) {
   return docPath.split('/').map((segment) => encodeURIComponent(segment)).join('/');
 }
 
-export async function fetchTasks(opts?: { active?: boolean }): Promise<Task[]> {
+// FLUX-1144: last-seen ETag per query variant (full vs `?active=true` serialize different sets,
+// so each needs its own conditional-GET state). Module-level — the poll interval and every SSE-
+// triggered refetch share one `fetchTasks` call site, so this is naturally a singleton per tab.
+const taskListETags = new Map<string, string>();
+
+/** Returns the parsed task list, or `null` when the server answered 304 (nothing changed since
+ *  the last fetch of this same query variant) — callers should keep their current state as-is. */
+export async function fetchTasks(opts?: { active?: boolean }): Promise<Task[] | null> {
+  const variant = opts?.active ? 'active' : 'all';
   const query = opts?.active ? '?active=true' : '';
-  const res = await fetch(`${API_URL}/tasks${query}`);
+  const headers: HeadersInit = {};
+  const knownEtag = taskListETags.get(variant);
+  if (knownEtag) headers['If-None-Match'] = knownEtag;
+  const res = await fetch(`${API_URL}/tasks${query}`, { headers });
+  if (res.status === 304) return null;
   if (!res.ok) throw new Error('Failed to fetch tasks');
+  const etag = res.headers.get('ETag');
+  if (etag) taskListETags.set(variant, etag);
+  else taskListETags.delete(variant);
   return res.json();
 }
 
@@ -127,6 +142,30 @@ export async function fetchTaskDebugSizes(id: string): Promise<AgentPayloadMetri
   return res.json();
 }
 
+/** Mirrors `engine/src/perf/registry.ts`'s `HistogramSnapshot` (FLUX-1129). */
+export interface EnginePerfHistogram {
+  count: number;
+  sum: number;
+  max: number;
+  p50: number;
+  p95: number;
+}
+
+/** Mirrors `engine/src/perf/registry.ts`'s `RegistrySnapshot` (FLUX-1129) — the `GET /api/perf` body. */
+export interface EnginePerfSnapshot {
+  counters: Record<string, number>;
+  histograms: Record<string, EnginePerfHistogram>;
+  uptimeSeconds: number;
+  rss: number;
+}
+
+/** Not workspace-scoped — works even with no workspace configured (FLUX-1134 perf panel). */
+export async function fetchEnginePerf(): Promise<EnginePerfSnapshot> {
+  const res = await fetch(`${API_URL}/perf`);
+  if (!res.ok) throw new Error('Failed to fetch perf snapshot');
+  return res.json();
+}
+
 export interface BudgetSection {
   name: string;
   bytes: number;
@@ -233,7 +272,7 @@ export async function saveMcpPhases(mcpServerPhases: Record<string, string[]>): 
   return res.json();
 }
 
-export async function updateTask(id: string, updates: Partial<Task>): Promise<Task> {
+export async function updateTask(id: string, updates: Partial<Task> & { skipCommentRequirement?: boolean; appendHistory?: HistoryEntryDraft[] }): Promise<Task> {
   const res = await fetch(`${API_URL}/tasks/${id}`, {
     method: 'PUT',
     headers: {
@@ -243,14 +282,18 @@ export async function updateTask(id: string, updates: Partial<Task>): Promise<Ta
   });
   if (!res.ok) {
     let message = 'Failed to update task';
+    let code: string | undefined;
     try {
       const errorPayload = await res.json();
       if (errorPayload.message) message = errorPayload.message;
       else if (errorPayload.error) message = errorPayload.error;
+      if (typeof errorPayload?.error === 'string') code = errorPayload.error;
     } catch {
       // ignore
     }
-    throw new Error(message);
+    const err = new Error(message) as Error & { code?: string };
+    if (code) err.code = code;
+    throw err;
   }
   return res.json();
 }
@@ -2566,6 +2609,27 @@ export function getTerminalWsUrl(sessionId: string): string {
   return `${protocol}//${window.location.host}/api/terminal/ws/${encodeURIComponent(sessionId)}`;
 }
 
+/** Backfill for the dev-only Operations tab (S11, FLUX-1007) — newest-first, honors S9's filters. */
+export async function fetchRecentOperations(opts?: {
+  ticketId?: string;
+  sessionId?: string;
+  kind?: OperationKind;
+  outcome?: OperationOutcome;
+  limit?: number;
+}): Promise<OperationEvent[]> {
+  const params = new URLSearchParams();
+  if (opts?.ticketId) params.set('ticketId', opts.ticketId);
+  if (opts?.sessionId) params.set('sessionId', opts.sessionId);
+  if (opts?.kind) params.set('kind', opts.kind);
+  if (opts?.outcome) params.set('outcome', opts.outcome);
+  if (opts?.limit) params.set('limit', String(opts.limit));
+  const query = params.toString();
+  const res = await fetch(`${API_URL}/operations${query ? `?${query}` : ''}`);
+  if (!res.ok) throw new Error('Failed to fetch operations');
+  const data = await res.json();
+  return (data.operations ?? []) as OperationEvent[];
+}
+
 // ── The Furnace — batches (FLUX-1053) ───────────────────────────────────────────
 
 export async function fetchFurnaceBatches(status?: BatchStatus): Promise<FurnaceBatch[]> {
@@ -2602,9 +2666,13 @@ export async function createFurnaceBatch(opts: CreateBatchOptions): Promise<Furn
   return res.json();
 }
 
-/** Build a batch from the groomed backlog (MCP furnace_build's HTTP-less twin lives on the MCP tool). */
+/**
+ * Build a batch from the groomed backlog (MCP furnace_build's HTTP-less twin lives on the MCP tool).
+ * Requires `tag` or `tickets` (FLUX-1051) — a batch must always be an intentional selection.
+ */
 export interface BuildBatchOptions {
   tag?: string;
+  tickets?: string[];
   statuses?: string[];
   limit?: number;
   kind?: BatchKind;
@@ -2622,14 +2690,21 @@ export interface BuildBatchResult {
 export async function updateFurnaceBatch(
   id: string,
   // No `status` — transitions go through ignite/stop, never a raw PUT (the route rejects it).
-  patch: { title?: string; kind?: BatchKind; branch?: string; burnRate?: number; trigger?: BatchTrigger | null; ticketIds?: string[] },
+  // `tickets` (full curated objects, e.g. for a drag-reorder) is meant for re-sequencing tickets already
+  // in the batch: entries whose id is already in the batch pass through unvalidated, but the server
+  // (FLUX-1103) validates existence/status/one-active-batch for any id NOT already in the batch — so
+  // this can't be used to smuggle in a new ticket unchecked.
+  patch: { title?: string; kind?: BatchKind; branch?: string; burnRate?: number; trigger?: BatchTrigger | null; ticketIds?: string[]; tickets?: BatchTicket[] },
 ): Promise<FurnaceBatch> {
   const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
   });
-  if (!res.ok) throw new Error('Failed to update furnace batch');
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error || 'Failed to update furnace batch');
+  }
   return res.json();
 }
 
@@ -2664,6 +2739,8 @@ export interface IgniteResult {
   noSlots?: boolean;
   used?: number;
   max?: number;
+  /** Which tickets hold the slots, and why reclaim didn't free them (FLUX-1157). */
+  holders?: FurnaceSlotHolder[];
   error?: string;
 }
 
@@ -2671,7 +2748,7 @@ export async function igniteFurnaceBatch(id: string): Promise<IgniteResult> {
   const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}/ignite`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
   if (res.ok) return { ok: true, batch: await res.json() };
   const err = await res.json().catch(() => ({}));
-  if (res.status === 409 && err?.error === 'no_slots') return { ok: false, noSlots: true, used: err.used, max: err.max };
+  if (res.status === 409 && err?.error === 'no_slots') return { ok: false, noSlots: true, used: err.used, max: err.max, holders: err.holders };
   return { ok: false, error: err?.error || 'Failed to ignite batch' };
 }
 
@@ -2724,7 +2801,7 @@ export async function resumeFurnaceBatch(id: string): Promise<IgniteResult> {
   const res = await fetch(`${API_URL}/furnace/${encodeURIComponent(id)}/resume`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
   if (res.ok) return { ok: true, batch: await res.json() };
   const err = await res.json().catch(() => ({}));
-  if (res.status === 409 && err?.error === 'no_slots') return { ok: false, noSlots: true, used: err.used, max: err.max };
+  if (res.status === 409 && err?.error === 'no_slots') return { ok: false, noSlots: true, used: err.used, max: err.max, holders: err.holders };
   return { ok: false, error: err?.error || 'Failed to resume batch' };
 }
 

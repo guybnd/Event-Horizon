@@ -6,6 +6,7 @@ import {
   fetchWorktrees, joinWorktree, type WorktreeInfo,
 } from '../../api';
 import { BranchSection, type StartMode } from './BranchSection';
+import { useEscapeKey } from '../../hooks/useEscapeKey';
 
 interface StartTaskPromptProps {
   task: Task;
@@ -14,6 +15,10 @@ interface StartTaskPromptProps {
 }
 
 export function StartTaskPrompt({ task, onConfirm, onCancel }: StartTaskPromptProps) {
+  // FLUX-1022: this prompt is only ever mounted while shown, so the hook is unconditionally
+  // registered for its lifetime — ESC cancels, same as clicking the backdrop or "Cancel"/"Done".
+  useEscapeKey(onCancel);
+
   const isXs = task.effort === 'XS';
   const [mode, setMode] = useState<StartMode>(isXs ? 'current' : 'branch');
   const [worktrees, setWorktrees] = useState<WorktreeInfo[]>([]);

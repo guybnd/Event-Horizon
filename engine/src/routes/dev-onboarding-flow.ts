@@ -110,8 +110,8 @@ router.get('/onboarding-flow', async (_req, res) => {
   try {
     const text = await fs.readFile(FLOW_FILE, 'utf-8');
     return res.json(JSON.parse(text));
-  } catch (err: any) {
-    if (err?.code === 'ENOENT') {
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
       return res.status(404).json({ error: 'Onboarding flow config not found' });
     }
     console.error('[dev-onboarding-flow] read failed:', err);

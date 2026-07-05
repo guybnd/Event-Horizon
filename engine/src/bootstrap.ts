@@ -1,9 +1,15 @@
 import { existsSync } from 'fs';
 import path from 'path';
-import { getActiveFluxDir, getFluxDir, getFluxStoreDir, workspaceRoot, resolveSkillSourceRoot } from './workspace.js';
-import { configCache, saveConfig } from './config.js';
+import { getFluxDir, getFluxStoreDir, workspaceRoot, resolveSkillSourceRoot } from './workspace.js';
+import { configCache } from './config.js';
 import { loadGlobalSettings } from './global-settings.js';
 import { installWorkspaceWorkflow, detectWorkspaceFrameworks, type Framework } from './workflow-installer.js';
+
+// Minimal shape of a config.json user entry — config.ts's configCache is untyped `any`,
+// so this captures only the field this module actually reads/writes.
+interface ConfigUserEntry {
+  name?: string;
+}
 
 export async function bootstrapNewWorkspace(): Promise<void> {
   if (!workspaceRoot) return;
@@ -21,7 +27,7 @@ export async function bootstrapNewWorkspace(): Promise<void> {
 
   const global = await loadGlobalSettings();
   if (global.defaultUser) {
-    const hasUser = configCache.users.some((u: any) => u.name === global.defaultUser);
+    const hasUser = configCache.users.some((u: ConfigUserEntry) => u.name === global.defaultUser);
     if (!hasUser) {
       configCache.users = [{ name: global.defaultUser }, ...configCache.users];
     }
@@ -29,10 +35,10 @@ export async function bootstrapNewWorkspace(): Promise<void> {
   // FLUX-785: guarantee a human entry even when no global defaultUser is set, so a skip-name /
   // WorkspaceSelector first run never leaves config.users as [Agent]-only ("No users configured").
   // 'You' is a filterable placeholder — OnboardingWizard replaces it when a real name is entered.
-  if (!configCache.users.some((u: any) => u.name && u.name !== 'Agent')) {
+  if (!configCache.users.some((u: ConfigUserEntry) => u.name && u.name !== 'Agent')) {
     configCache.users = [{ name: 'You' }, ...configCache.users];
   }
-  if (!configCache.users.some((u: any) => u.name === 'Agent')) {
+  if (!configCache.users.some((u: ConfigUserEntry) => u.name === 'Agent')) {
     configCache.users.push({ name: 'Agent' });
   }
 }

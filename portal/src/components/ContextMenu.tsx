@@ -13,6 +13,7 @@ import type { FurnaceBatch } from '../furnaceTypes';
 import { getArchiveStatus, getReadyForMergeStatus } from '../workflow';
 import { searchTasks } from '../taskSearch';
 import { useTicketActions } from '../hooks/useTicketActions';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 
 interface Props {
   task: Task;
@@ -104,22 +105,24 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
     setPos({ x: Math.max(8, x), y: Math.max(8, y) });
   }, [position]);
 
-  // Close on outside click or Escape. Flyout panels are portaled to <body> (so
-  // they can't be clipped and can clamp to the viewport), so "inside" is anything
-  // tagged data-eh-ctxmenu — the root menu OR any open flyout panel — not just menuRef.
+  // Close on outside click. Flyout panels are portaled to <body> (so they can't be clipped and
+  // can clamp to the viewport), so "inside" is anything tagged data-eh-ctxmenu — the root menu OR
+  // any open flyout panel — not just menuRef.
   useEffect(() => {
     const handleDown = (e: MouseEvent) => {
       const t = e.target as Element | null;
       if (!t || !t.closest('[data-eh-ctxmenu]')) onClose();
     };
-    const handleKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     document.addEventListener('mousedown', handleDown);
-    document.addEventListener('keydown', handleKey);
-    return () => {
-      document.removeEventListener('mousedown', handleDown);
-      document.removeEventListener('keydown', handleKey);
-    };
+    return () => document.removeEventListener('mousedown', handleDown);
   }, [onClose]);
+
+  // FLUX-1022: route Escape through the shared stack instead of a standalone listener, so it
+  // coordinates with other overlays (e.g. a floating chat window open at the same time) instead of
+  // both eating the same keypress. ignoreWhenTyping: false — the autofocused SearchPicker inputs in
+  // the "Attach to branch"/"Attach to parent" flyouts have no competing local Escape behavior, so
+  // the default typing guard would just disable ESC-to-close on the whole menu.
+  useEscapeKey(onClose, { ignoreWhenTyping: false });
 
   const allStatuses = [
     ...(config?.columns?.map((c) => c.name) ?? []),
@@ -243,6 +246,15 @@ export function ContextMenu({ task, position, onClose, onLaunchAgent }: Props) {
         onContextMenu={(e) => e.preventDefault()}
       >
         <MenuItem icon={<ExternalLink className="h-3.5 w-3.5" />} onClick={handleOpen}>Open PR surface</MenuItem>
+
+        {/* FLUX-1107: a PR card can carry its own active session (e.g. a review/rebase agent
+            running directly on the PR ticket) — stop it the same way the generic menu does. */}
+        {hasActiveSession && <Divider />}
+        {hasActiveSession && (
+          <MenuItem icon={<Square className="h-3.5 w-3.5" />} onClick={() => void handleStopSession()}>
+            Stop agent session
+          </MenuItem>
+        )}
 
         {/* Move between the human-driven review states + merge — only while the PR is open. */}
         {!prResolved && <Divider />}

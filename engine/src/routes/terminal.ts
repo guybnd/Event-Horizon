@@ -1,6 +1,7 @@
 import express from 'express';
 import { IncomingMessage } from 'http';
 import { Duplex } from 'stream';
+import type { Socket } from 'net';
 import { WebSocketServer, WebSocket } from 'ws';
 import {
   createTerminalSession,
@@ -39,9 +40,9 @@ router.post('/sessions', async (req, res) => {
       cwd: session.cwd,
       createdAt: session.createdAt,
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('[terminal] failed to create session:', err);
-    res.status(500).json({ error: err?.message || 'Failed to create terminal session' });
+    res.status(500).json({ error: err instanceof Error && err.message ? err.message : 'Failed to create terminal session' });
   }
 });
 
@@ -121,8 +122,10 @@ router.put('/sessions/:id/title', (req, res) => {
  * Bound localhost-only — reject if the remote address is not loopback.
  */
 export function handleTerminalUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
-  // Verify loopback
-  const remoteAddr = (socket as any).remoteAddress || '';
+  // Verify loopback. The 'upgrade' event's socket is typed as the generic `Duplex` (Node's
+  // http.Server typings), but for a plain (non-TLS) HTTP server it is always a `net.Socket`
+  // at runtime, which is where `remoteAddress` actually lives.
+  const remoteAddr = (socket as Socket).remoteAddress || '';
   const bare = remoteAddr.replace(/^::ffff:/, '');
   if (!isLoopbackHostname(bare) && bare !== '::1' && bare !== '127.0.0.1') {
     socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');

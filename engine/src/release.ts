@@ -6,11 +6,36 @@ import { fileURLToPath } from 'url';
 import matter from 'gray-matter';
 
 const __dir = (() => {
-  // @ts-ignore
   if (typeof __dirname === 'string' && path.isAbsolute(__dirname)) return __dirname;
   try { return path.dirname(fileURLToPath(import.meta.url)); } catch {}
   return path.join(process.cwd(), 'src');
 })();
+
+/** Minimal shape of `.flux(-store)/config.json` — only the fields this script reads. */
+interface ReleaseConfig {
+  releaseSettings?: {
+    generateDistinctFiles?: boolean;
+    releaseNotesPath?: string;
+  };
+  docsRoot?: string;
+}
+
+/** A "Done" ticket queued for release, paired with its parsed frontmatter and source path. */
+interface ReleaseTask {
+  id: string;
+  parsed: matter.GrayMatterFile<string>;
+  filePath: string;
+}
+
+/** Resolve release settings with per-field defaults (a raw config may only set one field). */
+function resolveReleaseSettings(
+  raw: ReleaseConfig['releaseSettings'],
+): { generateDistinctFiles: boolean; releaseNotesPath: string } {
+  return {
+    generateDistinctFiles: raw?.generateDistinctFiles ?? true,
+    releaseNotesPath: raw?.releaseNotesPath ?? 'release-notes',
+  };
+}
 
 async function run() {
   const args = process.argv.slice(2);
@@ -27,25 +52,22 @@ async function run() {
   const FLUX_DIR = path.join(workspaceRoot, fluxSubdir);
   const CONFIG_FILE = path.join(FLUX_DIR, 'config.json');
 
-  let config: any = {};
+  let config: ReleaseConfig = {};
   try {
     const configData = await fs.readFile(CONFIG_FILE, 'utf-8');
     config = JSON.parse(configData);
-  } catch (error) {
+  } catch {
     console.warn('Could not read config.json, using defaults.');
   }
 
-  const releaseSettings = config.releaseSettings || {
-    generateDistinctFiles: true,
-    releaseNotesPath: 'release-notes'
-  };
+  const releaseSettings = resolveReleaseSettings(config.releaseSettings);
 
   const REPO_ROOT = workspaceRoot;
   const DOCS_DIR = path.join(REPO_ROOT, config.docsRoot || '.docs');
 
   // Load all tasks
   const files = await fs.readdir(FLUX_DIR);
-  const tasksToRelease: any[] = [];
+  const tasksToRelease: ReleaseTask[] = [];
   const taskPaths: string[] = [];
 
   for (const file of files) {
@@ -79,10 +101,10 @@ async function run() {
 
   // Determine doc path
   const basePath = releaseSettings.releaseNotesPath.replace(/^\//, '').replace(/\/$/, '');
-  let docRelativePath = '';
-  let docFilePath = '';
+  let docRelativePath: string;
+  let docFilePath: string;
   let finalDocContent = notes;
-  let finalFrontmatter = {};
+  let finalFrontmatter: Record<string, unknown>;
 
   if (releaseSettings.generateDistinctFiles) {
     docRelativePath = `${basePath}/${version}`;

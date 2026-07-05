@@ -3,6 +3,7 @@ import { Search, X } from 'lucide-react';
 import { searchTasks } from '../taskSearch';
 import { StatusBadge } from './StatusBadge';
 import { getStatusColorClass } from '../statusStyles';
+import { normalizeStatus } from '../workflow';
 import type { Config, Task } from '../types';
 
 interface TicketPickerProps {
@@ -75,7 +76,7 @@ export function TicketPicker({ tasks, config, excludeIds, placeholder = 'Search 
                 <span className="shrink-0 text-xs font-bold text-gray-400">{task.id}</span>
                 <span className="min-w-0 flex-1 truncate text-sm text-gray-800 dark:text-gray-200">{task.title || 'Untitled'}</span>
                 <StatusBadge
-                  status={task.status}
+                  status={normalizeStatus(task.status)}
                   colorClass={getStatusColorClass(config, task.status)}
                   className="text-[10px] font-bold uppercase tracking-[0.12em]"
                 />

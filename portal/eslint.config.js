@@ -39,6 +39,14 @@ export default defineConfig([
       //     documented false-dirty guard in useTaskForm) and forward-referenced values.
       //   - preserve-manual-memoization: hand-written useMemo/useCallback deps the compiler
       //     can't prove, which only matters when the compiler is actually running.
+      //   - static-components: flags ANY locally-bound value returned from a function call
+      //     and rendered as a JSX tag (e.g. `const Icon = resolveFeatureIcon(name); <Icon/>`),
+      //     regardless of whether that function is pure/stable. `resolveFeatureIcon`
+      //     (config/featureIcons.ts) always returns the SAME cached component reference for
+      //     a given name (a lookup into lucide-react's static `icons` record), so there is no
+      //     real "component created during render" here — restructuring around this false
+      //     positive (e.g. via React.createElement to dodge the JSX-tag AST shape) would just
+      //     obscure the same pattern, not fix a bug.
       // "Fixing" them would mean behavior-changing refactors, which is out of scope for a
       // lint burndown (FLUX-583). Re-enable if/when the React Compiler is adopted.
       // The classic, high-value hooks rules (rules-of-hooks, exhaustive-deps) stay on.
@@ -47,6 +55,7 @@ export default defineConfig([
       'react-hooks/immutability': 'off',
       'react-hooks/purity': 'off',
       'react-hooks/preserve-manual-memoization': 'off',
+      'react-hooks/static-components': 'off',
     },
   },
 ])

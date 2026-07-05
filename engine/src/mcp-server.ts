@@ -8,9 +8,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { z } from 'zod';
 import fs from 'fs/promises';
 import path from 'path';
-import matter from 'gray-matter';
 
-import { tasksCache, serializeTaskForAgent, updateTaskWithHistory, activateWorkspace, workspaceActivating, readTaskFromDisk, docsCache, createTask, atomicWriteFile, getTerminalStatuses, syncParentSubtaskLinks, validateParentLink, type CreateTaskOptions } from './task-store.js';
+import { tasksCache, serializeTaskForAgent, updateTaskWithHistory, activateWorkspace, workspaceActivating, readTaskFromDisk, docsCache, createTask, getTerminalStatuses, syncParentSubtaskLinks, validateParentLink, type CreateTaskOptions, type TaskRecord } from './task-store.js';
 import { configCache, autoRegisterUnknownTags } from './config.js';
 import { normalizeDocPathInput, type StoredDoc } from './file-utils.js';
 import { resolveDefaultFramework } from './agents/index.js';
@@ -18,9 +17,9 @@ import { broadcastEvent } from './events.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
 import { extractTicket } from './extract.js';
 import { mergeTickets } from './merge.js';
-import { normalizeHistoryEntries, buildActivityEntry } from './history.js';
+import { buildActivityEntry, type AgentSessionEntry, type AgentSessionProgress } from './history.js';
 import { getCliWorkspace, getActiveFluxDir, getWorkspacesList, workspaceRoot } from './workspace.js';
-import { getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, checkGhAuth, captureDiff, resolveCommit, planFinishPr, getDefaultBranch } from './branch-manager.js';
+import { getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, checkGhAuth, captureDiff, resolveCommit, planFinishPr, getDefaultBranch, type DiffFileSummary } from './branch-manager.js';
 import { detachTaskWorktree, taskWorktreeDir, findWorktreeForBranch, worktreeChangeCount, reclaimWorktrees } from './task-worktree.js';
 import { ensureTicketIsolation } from './ticket-isolation.js';
 import { cleanupMergedBranch, isWorktreeReclaimable } from './pr-cleanup.js';
@@ -31,10 +30,11 @@ import { generatePromptNotification, generateReviewNotification, dismissNotifica
 import { getGroupContext, getMemberBinding, groupDocsLabel, summarizeGroup, groupDocPathToStoreRelative, activeGroupDocsLabel } from './group.js';
 import { submitGroupEdit } from './group-edit.js';
 import { writeArtifactRevision, isSafeTicketId } from './artifacts.js';
-import { ensureFurnaceLoaded, getFurnaceBatch, getFurnaceBatchesCache, updateFurnaceBatch, createFurnaceBatch, globalSlotsInUse, freeSlots, FURNACE_SLOT_CAP } from './furnace-store.js';
-import { buildBatchTickets, toBuildCandidate } from './furnace-builder.js';
-import { igniteBatch, stopBatch, burnRateClampWarning, retryTicket, resumeBatch, dismissTicketFlag, takeoverTicket, reconcileBatch, refreshWorktreePool } from './furnace-stoker.js';
-import type { BatchKind, BatchTrigger } from './models/furnace.js';
+import { ensureFurnaceLoaded, getFurnaceBatch, getFurnaceBatchesCache, updateFurnaceBatch, createFurnaceBatch, deleteFurnaceBatch, mutateFurnaceBatch, globalSlotsInUse, freeSlots, FURNACE_SLOT_CAP } from './furnace-store.js';
+import { buildBatchTickets, toBuildCandidate, validateBatchTickets } from './furnace-builder.js';
+import { igniteBatch, stopBatch, burnRateClampWarning, retryTicket, resumeBatch, dismissTicketFlag, takeoverTicket, handBackTicket, reconcileBatchCached, reconcileAllBatchesCached, refreshWorktreePool, isDispatching, clearTakeoverTracking, evictReconcileReadCache } from './furnace-stoker.js';
+import { newBatchTicket, isBatchActive, isTerminalTicketState, validateBatchTrigger, type BatchKind, type BatchTrigger } from './models/furnace.js';
+import type { OrchestrationPersonaMeta } from './orchestration-personas.js';
 
 function textResult(text: string) {
   return { content: [{ type: 'text' as const, text }] };
@@ -68,14 +68,29 @@ type ErrorCode =
  * a stable machine-readable `code` is added in `structuredContent` so agents/wrappers can
  * branch programmatically (FLUX-880). `structuredContent` is safe on error results — the SDK
  * skips output-schema validation when `isError` is set (and these tools declare no
- * outputSchema anyway), so it passes through untouched to the client.
+ * outputSchema anyway), so it passes through untouched to the client. Pass `extra` to merge
+ * additional fields into `structuredContent` (e.g. a partial accounting the caller needs even
+ * though the overall call failed — FLUX-1051).
  */
-function errorResult(text: string, code: ErrorCode = 'operation_failed') {
+function errorResult(text: string, code: ErrorCode = 'operation_failed', extra?: Record<string, unknown>) {
   return {
     content: [{ type: 'text' as const, text }],
     isError: true as const,
-    structuredContent: { code, message: text },
+    structuredContent: { code, message: text, ...(extra ?? {}) },
   };
+}
+
+/** Extract a human-readable message from a caught value of unknown shape — a `throw` is not
+ * guaranteed to produce an `Error` instance, so every `catch` in this file types its binding
+ * `unknown` and routes through this instead of an unchecked `err.message`. */
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** FLUX-1157: render a `no_slots` refusal's slot holders as a human-readable suffix, or '' when none. */
+function formatSlotHolders(holders?: { ticketId: string; reason: string }[]): string {
+  if (!holders || holders.length === 0) return '';
+  return ` Holding the slots: ${holders.map((h) => `${h.ticketId} (${h.reason})`).join(', ')}.`;
 }
 
 function jsonResult(data: unknown) {
@@ -134,38 +149,82 @@ export function nextStepForStatus(
   }
 }
 
+/**
+ * FLUX-1089: what `change_status` should write to `reviewState` this call, factored out of the
+ * handler as a pure function (mirrors the `evaluateWorktreeReadyRefusal` idiom). An explicit
+ * `reviewState` on the call always wins — a reviewer recording a fresh verdict (e.g.
+ * 'changes-requested' while moving back to In Progress) must not be overridden. Otherwise, leaving
+ * Ready without a fresh verdict clears any prior reviewState: an 'approved' (or stale
+ * 'changes-requested') from the last review no longer describes a ticket that's active work again,
+ * and leaving it in place would read as still-current. Returns `{}` (no-op) in every other case —
+ * a ticket that was never Ready, or is moving between two non-Ready statuses, keeps whatever
+ * reviewState it already has.
+ */
+export function resolveReviewStateOnMove(
+  explicitReviewState: 'approved' | 'changes-requested' | null | undefined,
+  priorStatus: string,
+  newStatus: string,
+  readyStatus: string,
+): { reviewState?: 'approved' | 'changes-requested' | null } {
+  if (explicitReviewState !== undefined) return { reviewState: explicitReviewState };
+  if (priorStatus === readyStatus && newStatus !== readyStatus) return { reviewState: null };
+  return {};
+}
+
 // ─── Permission policy for gated sessions (--permission-prompt-tool) ──────────
 // Hoisted to module scope (pure, no closure state) so the action-aware gating can be exercised as a
 // unit — same idiom as nextStepForStatus. Used by the `permission_prompt` handler in buildMcpServer.
 
 const SAFE_PERMISSION_TOOLS = new Set([
   'get_ticket', 'list_tickets', 'get_board_config', 'get_project_group', 'get_board_state',
-  'list_available_agents', 'group_doc', 'get_session_log',
+  'list_available_agents', 'get_session_log',
   // The proposal path is always safe — it parks a batch for human approval, never mutates.
   'propose_board_rebase',
   'Read', 'Glob', 'Grep', 'LS', 'WebFetch', 'WebSearch', 'TodoWrite', 'NotebookRead',
 ]);
 // The restructuring verbs join the CONFIRM tier so a DIRECT orchestrator call to mutate the board
 // is gated even if it bypasses the board-rebase ritual — "never silently restructure" is enforced
-// by the gate, not just the prompt. `archive` (both directions) stays confirm-gated; `branch` is
-// action-aware (confirm only on delete — see permissionDecisionFor); the merged tools that absorbed
-// a confirm-tier op are handled there too.
+// by the gate, not just the prompt. `archive` (both directions) stays confirm-gated; `branch`,
+// `furnace_batch` and `group_doc` are action-aware (see ACTION_AWARE_PERMISSION_TOOLS below); the
+// merged tools that absorbed a confirm-tier op are handled there too.
 const CONFIRM_PERMISSION_TOOLS = new Set([
   'change_status', 'finish_ticket', 'Bash',
   'archive', 'extract_ticket', 'merge_tickets',
 ]);
 
+// Declarative per-(tool, action) permission tiers (FLUX-939) for tools that folded exactly one
+// destructive action into a broader action-taking surface. Each entry lists the actions that are
+// safe to auto-allow; any action NOT in the set — including an unrecognized value or a missing
+// `input` altogether — confirms. This is deliberately fail-safe: the old ad-hoc `bare === 'branch'`
+// special-case defaulted to 'allow' when `input` was absent (fail-open on a destructive op), which
+// is only harmless today because the handler requires `action` as a strict enum and
+// `permission_prompt` always passes `input` through — but a gate shouldn't depend on callers
+// upholding that. `group_doc` delete is cross-repo destructive (fans out to all member repos) and
+// now gets the same confirm-gating `branch` delete already had (previously auto-allowed —
+// pre-existing asymmetry, not a regression, called out in the FLUX-882 review).
+const ACTION_AWARE_PERMISSION_TOOLS: Record<string, Set<string>> = {
+  branch: new Set(['create', 'status']),
+  furnace_batch: new Set(['ignite', 'stop', 'resume']),
+  group_doc: new Set(['list', 'read', 'submit']),
+};
+
 /**
  * Action-aware permission decision for a gated tool call. Pure + exported for test (FLUX-882): the
  * 34→24 consolidation folded a destructive op into several merged tools, so gating can no longer key
- * on the bare tool name alone — `branch` is allow EXCEPT `action:"delete"` (the old delete_branch
- * gate). Everything else falls back to the static SAFE/CONFIRM tiers; the default is allow.
+ * on the bare tool name alone. A tool in ACTION_AWARE_PERMISSION_TOOLS is allow only for its listed
+ * safe actions (fail-safe: an unknown/missing action confirms); everything else falls back to the
+ * static SAFE/CONFIRM tiers, defaulting to allow.
  */
-export function permissionDecisionFor(toolName: string, input?: any): 'allow' | 'deny' | 'confirm' {
+export function permissionDecisionFor(toolName: string, input?: unknown): 'allow' | 'deny' | 'confirm' {
   const bare = toolName.replace(/^mcp__.+?__/, '');
-  // `branch` folded create/status/delete: only delete is destructive → confirm-gate just that
-  // action (the old delete_branch gate); create/status stay allow.
-  if (bare === 'branch') return input?.action === 'delete' ? 'confirm' : 'allow';
+  // Declarative action-aware tiers (FLUX-939) subsume the old ad-hoc `branch`/`furnace_batch`
+  // branches with identical semantics (delete/discard confirm; create/status/ignite/stop/resume
+  // allow) and add `group_doc` (delete confirms). `furnace_ticket` (retry/dismiss/takeover/
+  // handback/add/remove) has no destructive action, so it has no entry — it falls through to the
+  // allow default, same as the old furnace_add_ticket/furnace_remove_ticket tier.
+  const action = input && typeof input === 'object' ? (input as Record<string, unknown>).action : undefined;
+  const actionTiers = ACTION_AWARE_PERMISSION_TOOLS[bare];
+  if (actionTiers) return typeof action === 'string' && actionTiers.has(action) ? 'allow' : 'confirm';
   if (SAFE_PERMISSION_TOOLS.has(bare)) return 'allow';
   if (CONFIRM_PERMISSION_TOOLS.has(bare)) return 'confirm';
   return 'allow';
@@ -223,8 +282,23 @@ export type ListTicketRow = {
 
 const DEFAULT_LIST_LIMIT = 40;
 
+/**
+ * Minimal shape `selectTicketsForList` reads off a raw task record. Tickets are loosely-typed,
+ * runtime-validated frontmatter (schema.ts), not a canonical `Ticket` interface — this covers
+ * only the fields this projection actually touches, not the full record.
+ */
+interface TaskListInput {
+  id?: string;
+  title?: string;
+  status?: string;
+  priority?: string;
+  effort?: string;
+  assignee?: string;
+  tags?: unknown;
+}
+
 export function selectTicketsForList(
-  allTasks: any[],
+  allTasks: TaskListInput[],
   filters: {
     status?: string | undefined;
     assignee?: string | undefined;
@@ -242,14 +316,14 @@ export function selectTicketsForList(
   const activeOnly = includeAll ? false : (filters.active ?? true) && !status;
 
   let tasks = allTasks;
-  if (status) tasks = tasks.filter((t: any) => t.status === status);
-  if (assignee) tasks = tasks.filter((t: any) => t.assignee === assignee);
-  if (tag) tasks = tasks.filter((t: any) => t.tags?.includes(tag));
-  if (priority) tasks = tasks.filter((t: any) => t.priority === priority);
+  if (status) tasks = tasks.filter((t) => t.status === status);
+  if (assignee) tasks = tasks.filter((t) => t.assignee === assignee);
+  if (tag) tasks = tasks.filter((t) => Array.isArray(t.tags) && t.tags.includes(tag));
+  if (priority) tasks = tasks.filter((t) => t.priority === priority);
   if (search) {
     const needle = search.toLowerCase();
     tasks = tasks.filter(
-      (t: any) =>
+      (t) =>
         String(t.id ?? '').toLowerCase().includes(needle) ||
         String(t.title ?? '').toLowerCase().includes(needle),
     );
@@ -258,7 +332,7 @@ export function selectTicketsForList(
   // After the explicit filters, the active-by-default screen removes terminal statuses.
   const afterExplicit = tasks.length;
   if (activeOnly) {
-    tasks = tasks.filter((t: any) => !terminalStatuses.includes(t.status));
+    tasks = tasks.filter((t) => !terminalStatuses.includes(t.status ?? ''));
   }
   const matched = tasks.length; // rows that pass active screen (the universe for limit)
   const droppedByActive = afterExplicit - matched;
@@ -276,14 +350,14 @@ export function selectTicketsForList(
   // REJECTS null), so a single hand-edited/legacy ticket with an empty `priority:`/`assignee:`/
   // `tags:` line (YAML → null) would otherwise fail SDK output validation and make the ENTIRE
   // list_tickets call error out. Normalize here so one bad row can't poison the whole board.
-  const rows: ListTicketRow[] = capped.map((t: any) => ({
+  const rows: ListTicketRow[] = capped.map((t) => ({
     id: String(t.id ?? ''),
     title: String(t.title ?? ''),
     status: t.status ?? '',
     priority: t.priority ?? 'None',
     effort: t.effort ?? 'None',
     assignee: t.assignee ?? 'unassigned',
-    tags: Array.isArray(t.tags) ? t.tags.filter((x: any) => typeof x === 'string') : [],
+    tags: Array.isArray(t.tags) ? t.tags.filter((x): x is string => typeof x === 'string') : [],
   }));
 
   const notes: string[] = [];
@@ -323,8 +397,8 @@ export type ResourceResolution<T> =
  */
 export function resolveTicketResource(
   rawId: unknown,
-  tasks: Record<string, any>,
-): ResourceResolution<{ task: any }> {
+  tasks: Record<string, unknown>,
+): ResourceResolution<{ task: unknown }> {
   if (typeof rawId !== 'string' || !rawId.trim()) {
     return { ok: false, code: 'validation_failed', message: `Invalid ticket id: ${String(rawId)}` };
   }
@@ -371,10 +445,10 @@ export function resolveDocResource(
  * (which would re-bill discovery on every client refresh).
  */
 export function listActiveTicketResources(
-  tasks: Record<string, any>,
+  tasks: Record<string, unknown>,
   terminalStatuses: string[],
 ): { uri: string; name: string; title: string; mimeType: string }[] {
-  const { rows } = selectTicketsForList(Object.values(tasks), { active: true }, terminalStatuses);
+  const { rows } = selectTicketsForList(Object.values(tasks) as TaskListInput[], { active: true }, terminalStatuses);
   return rows.map((t) => ({
     uri: `ticket://${t.id}`,
     name: t.id,
@@ -403,6 +477,28 @@ export function listDocResources(
 }
 
 /**
+ * Minimal shape of a config-driven `{name, ...}` entry (columns/hiddenStatuses/tags — see
+ * config.ts). `configCache` itself stays `any` (config.ts, out of scope here); these narrow
+ * the loop variables so the projection logic below is actually type-checked.
+ */
+interface ConfigNamedEntry {
+  name?: unknown;
+}
+
+/** Minimal shape of a config priority entry (columns/priorities — see config.ts). */
+interface ConfigPriorityEntry {
+  name?: unknown;
+  icon?: unknown;
+}
+
+/** Minimal shape of a configured swimlane definition (see config.ts). */
+interface ConfigSwimlane {
+  id: string;
+  label: string;
+  commentRequired?: boolean;
+}
+
+/**
  * Agent-facing board-config projection (FLUX-928). Shared by the `get_board_config`
  * tool and the `board://config` resource so the two never diverge. CLONE — never
  * mutates configCache (the portal/REST GET /api/config path keeps the full config
@@ -414,14 +510,16 @@ export function buildBoardConfigProjection() {
   // would otherwise fail SDK output validation and make the whole config unreadable. Filter/coerce
   // so a degraded config still returns.
   const statuses = [
-    ...(configCache.columns || []).map((c: any) => c?.name),
-    ...(configCache.hiddenStatuses || []).map((s: any) => s?.name),
-  ].filter((n: any): n is string => typeof n === 'string');
+    ...(configCache.columns || []).map((c: ConfigNamedEntry) => c?.name),
+    ...(configCache.hiddenStatuses || []).map((s: ConfigNamedEntry) => s?.name),
+  ].filter((n: unknown): n is string => typeof n === 'string');
   const { projects, tags, priorities, users, requireInputStatus, readyForMergeStatus } = configCache;
-  const agentTags = (tags || []).map((t: any) => t?.name).filter((n: any): n is string => typeof n === 'string');
+  const agentTags = (tags || [])
+    .map((t: ConfigNamedEntry) => t?.name)
+    .filter((n: unknown): n is string => typeof n === 'string');
   const agentPriorities = (priorities || [])
-    .filter((p: any) => p && typeof p.name === 'string')
-    .map((p: any) => ({ name: String(p.name), icon: typeof p.icon === 'string' ? p.icon : undefined }));
+    .filter((p: ConfigPriorityEntry): p is ConfigPriorityEntry & { name: string } => !!p && typeof p.name === 'string')
+    .map((p: ConfigPriorityEntry & { name: string }) => ({ name: p.name, icon: typeof p.icon === 'string' ? p.icon : undefined }));
   return { statuses, projects, tags: agentTags, priorities: agentPriorities, users, requireInputStatus, readyForMergeStatus };
 }
 
@@ -524,8 +622,8 @@ export function evaluateWorktreeReadyRefusal(input: {
 
 export async function startMcpServer(): Promise<void> {
   // MCP uses stdout for protocol messages — redirect all logging to stderr
-  const originalLog = console.log;
-  console.log = (...args: any[]) => console.error(...args);
+  // eslint-disable-next-line no-console -- intentional MCP stdout shim: redirects stray console.log to stderr so it can't corrupt JSON-RPC framing
+  console.log = (...args: unknown[]) => console.error(...args);
 
   // Prefer the canonical workspace the engine pins via env (FLUX-516). An agent
   // running in a git worktree has cwd = the worktree, so `.mcp.json`'s
@@ -559,6 +657,32 @@ export async function startMcpServer(): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+}
+
+/** Extra fields `finish_ticket` writes onto the ticket record via `updateTaskWithHistory` —
+ * covers only the fields that handler actually sets. */
+interface FinishExtraFields {
+  implementationLink: string;
+  swimlane: null;
+  diffSummary?: DiffFileSummary[];
+  [key: string]: unknown;
+}
+
+/** Minimal shape of the `/api/tasks/:id/cli-session/delegate` response the `delegate` tool
+ * reads to report a child agent's outcome back to the caller. */
+interface DelegationResult {
+  status: string;
+  output: string;
+  succeeded: boolean;
+}
+
+/** Shape of the engine's `/api/board/permission-request` response (FLUX-1026 CLI contract) —
+ * mirrors the {behavior, updatedInput|message} decision the `permission_prompt` tool itself
+ * returns. */
+interface PermissionDecisionResponse {
+  behavior?: 'allow' | 'deny';
+  updatedInput?: unknown;
+  message?: unknown;
 }
 
 /**
@@ -658,19 +782,19 @@ export function buildMcpServer(): McpServer {
     async ({ ticketId, sessionId, tail }) => {
       const task = tasksCache[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
-      const history: any[] = Array.isArray(task.history) ? task.history : [];
-      const entry = history.find((e: any) => e?.type === 'agent_session' && e?.sessionId === sessionId);
+      const isAgentSessionEntry = (e: unknown): e is AgentSessionEntry =>
+        !!e && typeof e === 'object' && (e as Record<string, unknown>).type === 'agent_session';
+      const history: unknown[] = Array.isArray(task.history) ? task.history : [];
+      const entry = history.find((e): e is AgentSessionEntry => isAgentSessionEntry(e) && e.sessionId === sessionId);
       if (!entry) {
-        const known = history
-          .filter((e: any) => e?.type === 'agent_session' && e?.sessionId)
-          .map((e: any) => e.sessionId);
+        const known = history.filter(isAgentSessionEntry).map((e) => e.sessionId);
         return errorResult(
           `Session ${sessionId} not found on ${ticketId}.` +
           (known.length > 0 ? ` Known sessions: ${known.join(', ')}` : ' This ticket has no agent sessions.'),
           'not_found',
         );
       }
-      const progress: any[] = Array.isArray(entry.progress) ? entry.progress : [];
+      const progress: AgentSessionProgress[] = Array.isArray(entry.progress) ? entry.progress : [];
       if (tail != null && progress.length > tail) {
         return jsonResult({ ...entry, progress: progress.slice(-tail), omittedProgressEntries: progress.length - tail });
       }
@@ -831,21 +955,16 @@ export function buildMcpServer(): McpServer {
         const warning = bodySizeWarning(body);
 
         if (parentId && parent) {
-          // Link to parent — derive subtasks from disk to avoid a TOCTOU race.
-          const parentRaw = await fs.readFile(parent._path, 'utf-8');
-          const parentParsed = matter(parentRaw);
-          const parentSubtasks: string[] = Array.isArray(parentParsed.data.subtasks)
-            ? parentParsed.data.subtasks.map((s: any) => typeof s === 'string' ? s : s.id).filter(Boolean)
-            : [];
-          parentSubtasks.push(id);
-          parentParsed.data.subtasks = parentSubtasks;
-          parentParsed.data.updatedBy = 'Agent';
-          const parentContent = matter.stringify(parentParsed.content, parentParsed.data);
-          await atomicWriteFile(parent._path, parentContent);
-          tasksCache[parentId] = { ...tasksCache[parentId], subtasks: parentSubtasks, updatedBy: 'Agent' };
+          // Link to parent through the locked write path (FLUX-987): appendSubtask reads
+          // frontmatter.subtasks fresh from disk under the parent's per-ticket write lock, so a
+          // concurrent add_note/change_status/another create_ticket on the same parent can't
+          // interleave with this read-modify-write and drop history/subtasks.
+          const updatedParent = await updateTaskWithHistory(parentId, { entries: [], appendSubtask: id });
+          if (!updatedParent) return errorResult(`Failed to link ${id} under ${parentId} — parent may no longer exist`, 'not_found');
 
           // Now that both child + parent link are persisted, emit the deferred creation event.
           broadcastEvent('taskCreated', { id, parentId });
+          broadcastEvent('taskUpdated', { id: parentId });
           return jsonResult({
             id, parentId, title: task.title, status: task.status, ...(warning ? { warning } : {}),
             nextSteps: `Created subtask ${id} under ${parentId}. Next: start_session on ${id}, or create_ticket with parentId again for more children.`,
@@ -856,8 +975,8 @@ export function buildMcpServer(): McpServer {
           id, title: task.title, status: task.status, ...(warning ? { warning } : {}),
           nextSteps: `Created ${id} (${task.status}). Next: start_session to begin work, or update_ticket to refine the plan first.`,
         });
-      } catch (err: any) {
-        return errorResult(err.message || 'Failed to create ticket');
+      } catch (err: unknown) {
+        return errorResult(errMessage(err) || 'Failed to create ticket');
       }
     },
   );
@@ -893,8 +1012,8 @@ export function buildMcpServer(): McpServer {
           ...(body !== undefined ? { body } : {}),
         });
         return jsonResult(result);
-      } catch (err: any) {
-        return errorResult(err.message || 'Failed to extract ticket');
+      } catch (err: unknown) {
+        return errorResult(errMessage(err) || 'Failed to extract ticket');
       }
     },
   );
@@ -916,8 +1035,8 @@ export function buildMcpServer(): McpServer {
       try {
         const result = await mergeTickets({ into, from });
         return jsonResult(result);
-      } catch (err: any) {
-        return errorResult(err.message || 'Failed to merge tickets');
+      } catch (err: unknown) {
+        return errorResult(errMessage(err) || 'Failed to merge tickets');
       }
     },
   );
@@ -988,7 +1107,7 @@ export function buildMcpServer(): McpServer {
         fieldChanges.push(newParentId ? `Linked under ${newParentId}.` : 'Detached from parent.');
       }
 
-      const extraFields: Record<string, any> = {};
+      const extraFields: Record<string, unknown> = {};
       if (priority !== undefined) extraFields.priority = priority;
       if (effort !== undefined) extraFields.effort = effort;
       if (assignee !== undefined) extraFields.assignee = assignee;
@@ -1013,8 +1132,8 @@ export function buildMcpServer(): McpServer {
           ...(body !== undefined ? { newBody: body } : {}),
         });
         if (!result) return errorResult(`Failed to update ${ticketId}`);
-      } catch (err: any) {
-        return errorResult(`Failed to update ${ticketId}: ${err?.message || err}`);
+      } catch (err: unknown) {
+        return errorResult(`Failed to update ${ticketId}: ${errMessage(err)}`);
       }
 
       // FLUX-1068: reconcile the parent's subtasks (and any old parent) through the shared helper —
@@ -1074,7 +1193,7 @@ export function buildMcpServer(): McpServer {
           return errorResult('Transitioning to Require Input requires a comment (the question to ask).', 'validation_failed');
         }
 
-        const entries: any[] = [
+        const entries: Record<string, unknown>[] = [
           { type: 'comment', user: 'Agent', comment, date: new Date().toISOString() },
           { type: 'swimlane_change', swimlane: 'require-input', action: 'set', user: 'Agent', date: new Date().toISOString(), comment },
         ];
@@ -1101,20 +1220,18 @@ export function buildMcpServer(): McpServer {
         return errorResult('Transitioning to Ready requires a completion comment.', 'validation_failed');
       }
 
-      const entries: any[] = [];
+      const entries: Record<string, unknown>[] = [];
       if (comment) {
         entries.push({ type: 'comment', user: 'Agent', comment, date: new Date().toISOString() });
       }
 
-      const extraFields: Record<string, any> = {};
+      const extraFields: Record<string, unknown> = {};
 
       // FLUX-816: record the EH review verdict alongside the status move so the card reflects it.
       // Passed explicitly by the review orchestrator (approved→Ready, changes-requested→In Progress)
-      // or null to clear. No auto-clear on re-entry to In Progress — a 'changes-requested' verdict
-      // legitimately coincides with In Progress and must persist until the next review concludes.
-      if (reviewState !== undefined) {
-        extraFields.reviewState = reviewState;
-      }
+      // or null to clear. FLUX-1089: an explicit verdict always wins; otherwise leaving Ready
+      // clears a now-stale prior verdict — see resolveReviewStateOnMove.
+      Object.assign(extraFields, resolveReviewStateOnMove(reviewState, task.status, newStatus, readyStatus));
 
       // Clear swimlane when moving out of a blocked state (e.g. user answered the question)
       if (task.swimlane && newStatus !== requireInputStatus) {
@@ -1175,8 +1292,8 @@ export function buildMcpServer(): McpServer {
               extraFields.implementationLink = prUrl;
               extraFields.swimlane = 'open-pr';
               entries.push({ type: 'activity', user: 'Agent', comment: `PR created: ${prUrl}`, date: new Date().toISOString() });
-            } catch (err: any) {
-              const msg = `PR creation failed: ${err.message}. Push the branch / commit work manually.`;
+            } catch (err: unknown) {
+              const msg = `PR creation failed: ${errMessage(err)}. Push the branch / commit work manually.`;
               entries.push({ type: 'activity', user: 'Agent', comment: `⚠️ ${msg}`, date: new Date().toISOString() });
               addNotification({ type: 'error', title: 'PR creation failed', message: `${ticketId}: ${msg}`, ticketId, actions: [{ label: 'Open worktree', actionId: 'open-worktree' }] });
             }
@@ -1239,7 +1356,9 @@ export function buildMcpServer(): McpServer {
       // FLUX-889: resolve the In-Progress / Todo target labels the Todo / Grooming hints
       // advance toward from the configured column order (the next forward column after the
       // canonical Todo / Grooming), so a renamed board never names a non-existent status.
-      const columnNames: string[] = (configCache.columns || []).map((c: any) => c.name);
+      const columnNames: string[] = (configCache.columns || [])
+        .map((c: ConfigNamedEntry) => c?.name)
+        .filter((n: unknown): n is string => typeof n === 'string');
       const nextColumnAfter = (name: string): string | undefined => {
         const i = columnNames.findIndex((c) => c.toLowerCase() === name.toLowerCase());
         return i >= 0 && i + 1 < columnNames.length ? columnNames[i + 1] : undefined;
@@ -1272,12 +1391,12 @@ export function buildMcpServer(): McpServer {
           return textResult(`${ticketId} is already ${archiveStatus}`);
         }
 
-        const entries: any[] = [];
+        const entries: Record<string, unknown>[] = [];
         if (comment) {
           entries.push({ type: 'comment', user: 'Agent', comment, date: new Date().toISOString() });
         }
 
-        const extraFields: Record<string, any> = {};
+        const extraFields: Record<string, unknown> = {};
         // Clear any swimlane so the archived ticket doesn't keep a stale blocked flag.
         if (task.swimlane) {
           extraFields.swimlane = null;
@@ -1341,17 +1460,17 @@ export function buildMcpServer(): McpServer {
       if (action === 'set') {
         if (!swimlane) return errorResult('swimlane is required for action "set".', 'validation_failed');
 
-        const swimlanes: any[] = configCache.swimlanes || [];
-        const swimlaneDef = swimlanes.find((s: any) => s.id === swimlane);
+        const swimlanes: ConfigSwimlane[] = configCache.swimlanes || [];
+        const swimlaneDef = swimlanes.find((s) => s.id === swimlane);
         if (!swimlaneDef) {
-          return errorResult(`Unknown swimlane '${swimlane}'. Available: ${swimlanes.map((s: any) => s.id).join(', ')}`, 'validation_failed');
+          return errorResult(`Unknown swimlane '${swimlane}'. Available: ${swimlanes.map((s) => s.id).join(', ')}`, 'validation_failed');
         }
 
         if (swimlaneDef.commentRequired && !comment) {
           return errorResult(`Swimlane '${swimlane}' requires a comment (the question to ask).`, 'validation_failed');
         }
 
-        const entries: any[] = [];
+        const entries: Record<string, unknown>[] = [];
 
         // If ticket already has a swimlane, emit a 'cleared' entry before setting the new one
         if (task.swimlane && task.swimlane !== swimlane) {
@@ -1390,7 +1509,7 @@ export function buildMcpServer(): McpServer {
       if (!task.swimlane) return errorResult(`${ticketId} has no active swimlane to clear.`, 'invalid_state');
 
       const previousSwimlane = task.swimlane;
-      const entries: any[] = [];
+      const entries: Record<string, unknown>[] = [];
       if (comment) {
         entries.push({ type: 'comment', user: 'Agent', comment, date: new Date().toISOString() });
       }
@@ -1432,7 +1551,7 @@ export function buildMcpServer(): McpServer {
         ...(Array.isArray(supersedes) && supersedes.length ? { supersedes } : {}),
       };
 
-      let entries: any[];
+      let entries: Record<string, unknown>[];
       let actor: string;
       if (type === 'comment') {
         actor = user || 'Agent';
@@ -1453,10 +1572,10 @@ export function buildMcpServer(): McpServer {
 
   server.tool(
     'publish_artifact',
-    'Publish a self-contained HTML artifact so the user can reason against a concrete rendering instead of imagining it from prose. Spans both lifecycle ends: a plan-time grooming mockup/diagram/prototype AND a Ready-time visual recap of an implementation diff (touched-file tree + key diff hunks + plain-language summary; tag the recap title/note with "recap"). Each call is a NEW REVISION (never an overwrite). The HTML must be a COMPLETE, self-contained document (inline <style>/<script>; Tailwind via cdn.tailwindcss.com and Mermaid via cdn.jsdelivr.net are allowed) and renders in a sandboxed iframe with no network access. Judge per ticket: emit for UI/UX, architecture, or "shape of the thing" work; SKIP bug fixes, XS/S tickets, and backend plumbing; default OFF when unsure.',
+    'Publish a self-contained HTML artifact so the user can reason against a concrete rendering instead of imagining it from prose. Spans both lifecycle ends: a plan-time grooming mockup/diagram/prototype AND a Ready-time visual recap of an implementation diff (touched-file tree + key diff hunks + plain-language summary; tag the recap title/note with "recap"). Each call is a NEW REVISION (never an overwrite). The HTML must be a COMPLETE, self-contained document (inline <style>/<script>; default to hand-written inline CSS. Mermaid via cdn.jsdelivr.net is allowed for diagrams. The Tailwind Play CDN via cdn.tailwindcss.com is allowed but is a heavy last resort, not the default — it is a full in-browser compiler that can freeze the host UI for seconds per load) and renders in a sandboxed iframe with no network access. Judge per ticket: emit for UI/UX, architecture, or "shape of the thing" work; SKIP bug fixes, XS/S tickets, and backend plumbing; default OFF when unsure.',
     {
       ticketId: z.string().describe('Ticket ID, e.g. FLUX-42'),
-      html: z.string().describe('Complete, self-contained HTML document (inline styles/scripts; Tailwind/Mermaid via CDN script tags are allowed). Rendered in a sandboxed opaque-origin iframe — it cannot reach the portal, cookies, or storage, and cannot make network requests (connect-src is blocked), so everything it needs must be inlined or loaded from the allowed CDNs.'),
+      html: z.string().describe('Complete, self-contained HTML document (inline styles/scripts — default to hand-written inline CSS; Mermaid via CDN script tag is allowed for diagrams; the Tailwind Play CDN is allowed but a heavy last resort, not the default). Rendered in a sandboxed opaque-origin iframe — it cannot reach the portal, cookies, or storage, and cannot make network requests (connect-src is blocked), so everything it needs must be inlined or loaded from the allowed CDNs.'),
       title: z.string().optional().describe('Short label for this artifact/revision (shown above the viewer).'),
       note: z.string().optional().describe('Optional note about what changed in this revision or what to look at.'),
     },
@@ -1487,8 +1606,8 @@ export function buildMcpServer(): McpServer {
           `Published artifact revision ${rev} for ${ticketId}. It appears in the ticket's artifact panel (served at /api/tasks/${ticketId}/artifact?rev=${rev}). ` +
           `Prior revisions are kept — re-publishing always creates a new revision, never overwrites.`,
         );
-      } catch (err: any) {
-        return errorResult(`Failed to publish artifact for ${ticketId}: ${err.message}`);
+      } catch (err: unknown) {
+        return errorResult(`Failed to publish artifact for ${ticketId}: ${errMessage(err)}`);
       }
     },
   );
@@ -1524,7 +1643,7 @@ export function buildMcpServer(): McpServer {
       // non-Done sibling tickets, unless `force`. Exempt PR tickets (kind:'pr'): merging a PR
       // ticket to advance its members IS the sanctioned shared-merge surface.
       if (task.branch && task.kind !== 'pr' && !force) {
-        const nonDone = sharedNonDoneSiblings(Object.values(tasksCache) as any[], task.branch, ticketId);
+        const nonDone = sharedNonDoneSiblings(Object.values(tasksCache), task.branch, ticketId);
         if (nonDone.length > 0) {
           return errorResult(
             `Cannot finish ${ticketId} — its branch \`${task.branch}\` is shared by ${nonDone.length} sibling ticket(s) that are NOT Done: ` +
@@ -1537,7 +1656,6 @@ export function buildMcpServer(): McpServer {
       }
 
       let finalLink = implementationLink;
-      const noteForComment = '';
 
       // If ticket has a branch, merge the existing PR
       if (task.branch) {
@@ -1545,7 +1663,7 @@ export function buildMcpServer(): McpServer {
         if (!ghAvailable) {
           // Can't merge without gh — bounce back to In Progress
           const failEntries = [{ type: 'comment', user: 'Agent', comment: `⚠️ Finish aborted — gh not configured. Merge the PR manually, then finish again.`, date: new Date().toISOString() }];
-          await updateTaskWithHistory(ticketId, { entries: failEntries, updatedBy: 'Agent', nextStatus: 'In Progress' });
+          await updateTaskWithHistory(ticketId, { entries: failEntries, updatedBy: 'Agent', nextStatus: 'In Progress', extraFields: { reviewState: null } });
           broadcastEvent('taskUpdated', { id: ticketId });
           return errorResult(`Cannot finish ${ticketId} — gh not configured. Ticket moved back to In Progress.`, 'invalid_state');
         }
@@ -1556,12 +1674,15 @@ export function buildMcpServer(): McpServer {
         // already MERGED/CLOSED (a commit pushed after that PR merged — FLUX-656) must NOT fall
         // through to `gh pr merge` on the dead PR (which throws "already merged" and strands the
         // commit) — planFinishPr opens a FRESH PR for it instead. A branch with 0 commits ahead
-        // can't get a PR → route to Require Input (FLUX-570: don't leave a blocker only in chat).
+        // can't get a PR → route to Require Input (FLUX-570: don't leave a blocker only in chat) —
+        // UNLESS it's a deliberately-folded ticket (FLUX-944): implementationLink already points
+        // at a MERGED sibling PR, so there's genuinely nothing to open/merge on this branch.
+        let folded = false;
         try {
           const prBody = `${task.body ? task.body.slice(0, 800) : ''}\n\n---\nTicket: ${ticketId}`;
-          const plan = await planFinishPr(task.branch, task.title || ticketId, prBody);
+          const plan = await planFinishPr(task.branch, task.title || ticketId, prBody, {}, implementationLink);
           if (plan.action === 'blocked') {
-            const msg = `Cannot finish ${ticketId} — ${plan.reason} Commit your work, then finish again.`;
+            const msg = `Cannot finish ${ticketId} — ${plan.reason} Commit your work, or if this ticket's deliverable was folded into another ticket's PR, pass that (merged) PR's URL as implementationLink so finish can auto-detect the fold.`;
             await updateTaskWithHistory(ticketId, {
               entries: [{ type: 'comment', user: 'Agent', comment: `⚠️ ${msg}`, date: new Date().toISOString() }],
               updatedBy: 'Agent',
@@ -1572,30 +1693,41 @@ export function buildMcpServer(): McpServer {
             return errorResult(`${msg} Ticket moved to Require Input.`, 'invalid_state');
           }
           if (plan.action === 'created' && plan.url) finalLink = plan.url;
-        } catch (createErr: any) {
-          await updateTaskWithHistory(ticketId, { entries: [{ type: 'comment', user: 'Agent', comment: `⚠️ Finish aborted — could not open a PR: ${createErr.message}.`, date: new Date().toISOString() }], updatedBy: 'Agent', nextStatus: 'In Progress' });
+          if (plan.action === 'folded') {
+            folded = true;
+            if (plan.url) finalLink = plan.url;
+          }
+        } catch (createErr: unknown) {
+          await updateTaskWithHistory(ticketId, { entries: [{ type: 'comment', user: 'Agent', comment: `⚠️ Finish aborted — could not open a PR: ${errMessage(createErr)}.`, date: new Date().toISOString() }], updatedBy: 'Agent', nextStatus: 'In Progress', extraFields: { reviewState: null } });
           broadcastEvent('taskUpdated', { id: ticketId });
-          return errorResult(`Cannot finish ${ticketId} — PR creation failed: ${createErr.message}. Ticket moved back to In Progress.`);
+          return errorResult(`Cannot finish ${ticketId} — PR creation failed: ${errMessage(createErr)}. Ticket moved back to In Progress.`);
         }
 
-        try {
-          await mergePullRequest(task.branch);
-          if (!finalLink || !finalLink.startsWith('http')) {
-            finalLink = task.implementationLink || implementationLink;
+        // Folded ticket: its branch is empty on purpose (work already landed via the sibling PR
+        // in finalLink) — there's no PR of its own to merge. Skip straight to the Done write-up;
+        // the branch/worktree still get torn down by the post-merge cleanup below.
+        if (!folded) {
+          try {
+            await mergePullRequest(task.branch);
+            if (!finalLink || !finalLink.startsWith('http')) {
+              finalLink = task.implementationLink || implementationLink;
+            }
+          } catch (mergeErr: unknown) {
+            // Merge failed — bounce back to In Progress with explanation. FLUX-986's guided-rebase CTA
+            // lives on the kind:'pr' deck card (PrDeckCard.tsx) only — finish_ticket runs on a regular
+            // ticket the agent itself is driving, so there's no portal CTA for it to surface here.
+            const failEntries = [{ type: 'comment', user: 'Agent', comment: `⚠️ PR merge failed: ${errMessage(mergeErr)}. Fix the issue and try again.`, date: new Date().toISOString() }];
+            await updateTaskWithHistory(ticketId, { entries: failEntries, updatedBy: 'Agent', nextStatus: 'In Progress', extraFields: { reviewState: null } });
+            broadcastEvent('taskUpdated', { id: ticketId });
+            return errorResult(`Cannot finish ${ticketId} — PR merge failed: ${errMessage(mergeErr)}. Ticket moved back to In Progress.`);
           }
-        } catch (mergeErr: any) {
-          // Merge failed — bounce back to In Progress with explanation
-          const failEntries = [{ type: 'comment', user: 'Agent', comment: `⚠️ PR merge failed: ${mergeErr.message}. Fix the issue and try again.`, date: new Date().toISOString() }];
-          await updateTaskWithHistory(ticketId, { entries: failEntries, updatedBy: 'Agent', nextStatus: 'In Progress' });
-          broadcastEvent('taskUpdated', { id: ticketId });
-          return errorResult(`Cannot finish ${ticketId} — PR merge failed: ${mergeErr.message}. Ticket moved back to In Progress.`);
         }
       }
 
       const entries = [{ type: 'comment', user: 'Agent', comment: completionComment, date: new Date().toISOString() }];
       // Clear any swimlane (e.g. open-pr) as we move to Done — finish used to leave it set,
       // so merged tickets kept glowing as open PRs forever (FLUX-574).
-      const finishExtraFields: Record<string, any> = { implementationLink: finalLink, swimlane: null };
+      const finishExtraFields: FinishExtraFields = { implementationLink: finalLink, swimlane: null };
 
       // Capture diff summary + sidecar file. Best-effort — failure here must not block finish.
       try {
@@ -1621,8 +1753,8 @@ export function buildMcpServer(): McpServer {
           const diffPath = path.join(getActiveFluxDir(), `${ticketId}.diff`);
           await fs.writeFile(diffPath, diff.fullDiff, 'utf-8');
         }
-      } catch (err: any) {
-        console.error(`Diff capture failed for ${ticketId}:`, err.message);
+      } catch (err: unknown) {
+        console.error(`Diff capture failed for ${ticketId}:`, errMessage(err));
       }
 
       const result = await updateTaskWithHistory(ticketId, {
@@ -1654,8 +1786,8 @@ export function buildMcpServer(): McpServer {
       if (task.branch) {
         try {
           await cleanupMergedBranch(workspaceRoot!, task.branch);
-        } catch (cleanupErr: any) {
-          console.error(`Post-merge cleanup failed for ${ticketId}:`, cleanupErr.message);
+        } catch (cleanupErr: unknown) {
+          console.error(`Post-merge cleanup failed for ${ticketId}:`, errMessage(cleanupErr));
         }
       }
 
@@ -1698,8 +1830,8 @@ export function buildMcpServer(): McpServer {
             ...result,
             nextSteps: `Branch ready. Next: implement on it and commit, then change_status to Ready to open the PR (finish_ticket merges it).`,
           });
-        } catch (err: any) {
-          return errorResult(`Failed to create branch: ${err.message}`);
+        } catch (err: unknown) {
+          return errorResult(`Failed to create branch: ${errMessage(err)}`);
         }
       }
 
@@ -1709,8 +1841,8 @@ export function buildMcpServer(): McpServer {
         try {
           const status = await getTicketBranchStatus(name);
           return jsonResult({ name, ...status });
-        } catch (err: any) {
-          return errorResult(`Failed to get branch status: ${err.message}`);
+        } catch (err: unknown) {
+          return errorResult(`Failed to get branch status: ${errMessage(err)}`);
         }
       }
 
@@ -1730,8 +1862,8 @@ export function buildMcpServer(): McpServer {
         await updateTaskWithHistory(ticketId, { updatedBy: 'Agent', extraFields: { branch: null } });
         broadcastEvent('taskUpdated', { id: ticketId });
         return textResult(`Branch ${name} deleted`);
-      } catch (err: any) {
-        return errorResult(`Failed to delete branch: ${err.message}`);
+      } catch (err: unknown) {
+        return errorResult(`Failed to delete branch: ${errMessage(err)}`);
       }
     },
   );
@@ -1757,9 +1889,10 @@ export function buildMcpServer(): McpServer {
           : `${ENGINE_URL}/api/orchestration/personas`;
         const res = await fetch(url);
         if (!res.ok) return errorResult('Failed to fetch agent roster', 'channel_unavailable');
-        const data = await res.json();
-        const list = Array.isArray(data) ? data : data.personas ?? [];
-        const summary = list.map((p: any) => ({
+        const data: unknown = await res.json();
+        const personas = Array.isArray(data) ? data : (data as { personas?: unknown } | null)?.personas;
+        const list: OrchestrationPersonaMeta[] = Array.isArray(personas) ? (personas as OrchestrationPersonaMeta[]) : [];
+        const summary = list.map((p) => ({
           id: p.id,
           label: p.label,
           description: p.description,
@@ -1777,8 +1910,8 @@ export function buildMcpServer(): McpServer {
           });
         }
         return jsonResult(summary);
-      } catch (err: any) {
-        return errorResult(`Failed to list agents: ${err.message}`, 'channel_unavailable');
+      } catch (err: unknown) {
+        return errorResult(`Failed to list agents: ${errMessage(err)}`, 'channel_unavailable');
       }
     },
   );
@@ -1799,7 +1932,7 @@ export function buildMcpServer(): McpServer {
     async ({ ticketId, delegations, timeout }) => {
       const timeoutMs = timeout ? Math.min(timeout * 1000, 600_000) : 300_000;
       const results = await Promise.allSettled(
-        delegations.map(async (d) => {
+        delegations.map(async (d): Promise<DelegationResult> => {
           const framework = process.env.EVENT_HORIZON_FRAMEWORK || resolveDefaultFramework();
           const res = await fetch(`${ENGINE_URL}/api/tasks/${ticketId}/cli-session/delegate`, {
             method: 'POST',
@@ -1820,14 +1953,14 @@ export function buildMcpServer(): McpServer {
             const err = await res.json().catch(() => ({}));
             throw new Error(err.error || res.statusText);
           }
-          return res.json();
+          return res.json() as Promise<DelegationResult>;
         })
       );
 
-      const output: any[] = results.map((r, i) => {
+      const output = results.map((r, i) => {
         const persona = delegations[i]!.personaId;
         if (r.status === 'fulfilled') {
-          const v = r.value as any;
+          const v = r.value;
           return { persona, succeeded: v.succeeded, status: v.status, output: v.output || '(no output)' };
         }
         const reason = (r as PromiseRejectedResult).reason;
@@ -1872,8 +2005,8 @@ export function buildMcpServer(): McpServer {
         const result = await res.json();
         const sid = result.session?.id || 'unknown';
         return textResult(`Started a ${phase || 'phase'} session on ${ticketId} (session ${sid}). It is running in the ticket's own scope — open ${ticketId}'s chat to drive it.`);
-      } catch (err: any) {
-        return errorResult(`Failed to start session: ${err.message}`, 'channel_unavailable');
+      } catch (err: unknown) {
+        return errorResult(`Failed to start session: ${errMessage(err)}`, 'channel_unavailable');
       }
     },
   );
@@ -1895,20 +2028,22 @@ export function buildMcpServer(): McpServer {
         await ensureFurnaceLoaded();
         // FLUX-1066/1067: reconcile against ground truth on read so the orchestrator sees any ticket
         // completed / taken over outside the Furnace, and the slot count matches the real worktree pool.
+        // FLUX-1145: TTL-gated + single-flighted, same as the GET /api/furnace route — a full per-batch
+        // reconcile on every read measured 1.1s avg / 3.4s worst-case.
         await refreshWorktreePool();
         if (batchId) {
           if (!getFurnaceBatch(batchId)) return errorResult(`Furnace batch ${batchId} not found.`, 'not_found');
-          await reconcileBatch(batchId);
+          await reconcileBatchCached(batchId);
           const batch = getFurnaceBatch(batchId);
           if (!batch) return errorResult(`Furnace batch ${batchId} not found.`, 'not_found');
           return jsonResult(batch);
         }
-        for (const b of getFurnaceBatchesCache()) await reconcileBatch(b.id);
+        await reconcileAllBatchesCached();
         let batches = getFurnaceBatchesCache();
         if (status) batches = batches.filter((b) => b.status === status);
         return jsonResult({ batches, slots: { used: globalSlotsInUse(), free: freeSlots(), max: FURNACE_SLOT_CAP } });
-      } catch (err: any) {
-        return errorResult(`Failed to read furnace batch(es): ${err.message}`);
+      } catch (err: unknown) {
+        return errorResult(`Failed to read furnace batch(es): ${errMessage(err)}`);
       }
     },
   );
@@ -1935,6 +2070,10 @@ export function buildMcpServer(): McpServer {
         await ensureFurnaceLoaded();
         const existing = getFurnaceBatch(batchId);
         if (!existing) return errorResult(`Furnace batch ${batchId} not found.`, 'not_found');
+        if (trigger) {
+          const err = validateBatchTrigger(batchId, trigger as BatchTrigger, getFurnaceBatchesCache());
+          if (err) return errorResult(err, 'validation_failed');
+        }
         const updated = await updateFurnaceBatch(batchId, {
           ...(title !== undefined ? { title } : {}),
           ...(kind !== undefined ? { kind: kind as BatchKind } : {}),
@@ -1948,36 +2087,46 @@ export function buildMcpServer(): McpServer {
         if (!updated) return errorResult(`Furnace batch ${batchId} not found.`, 'not_found');
         const warning = burnRateClampWarning(burnRate);
         return jsonResult(warning ? { batch: updated, warning } : updated);
-      } catch (err: any) {
-        return errorResult(`Failed to update furnace batch: ${err.message}`);
+      } catch (err: unknown) {
+        return errorResult(`Failed to update furnace batch: ${errMessage(err)}`);
       }
     },
   );
 
   server.tool(
     'furnace_build',
-    'Build a Furnace batch from the groomed backlog and create it as a `draft` you can edit and then ignite. Deterministically scans Todo tickets, reasons about independence (excludes parent/child pairs; flags — never blocks — likely file overlaps and orders them apart), and returns the created batch plus what it excluded and why. Defaults to a `parallel` batch (each ticket its own worktree + PR); pass kind `sequential` for tickets that must stack onto one shared branch + PR in order. Edit with furnace_update / the Furnace drawer before igniting.',
+    'Build a Furnace batch from the groomed backlog and create it as a `draft` you can edit and then ignite. Requires an explicit selector — `tag` (tickets carrying it, convention `burn-furnace`) or `tickets` (explicit ids) — a build with neither is refused; there is no way to pool the whole backlog. Deterministically reasons about independence (excludes parent/child pairs; flags — never blocks — likely file overlaps and orders them apart) and enforces the one-active-batch invariant (a ticket already queued in another non-terminal batch is excluded, not double-loaded). Returns the created batch plus what it excluded and why. Defaults to a `parallel` batch (each ticket its own worktree + PR); pass kind `sequential` for tickets that must stack onto one shared branch + PR in order. Edit with furnace_update / the Furnace drawer before igniting.',
     {
-      tag: z.string().optional().describe('Only load tickets carrying this tag (a furnace opt-in hint).'),
+      tag: z.string().optional().describe('Only load tickets carrying this tag (a furnace opt-in hint). Required if `tickets` is omitted.'),
+      tickets: z.array(z.string()).optional().describe('Explicit ticket ids to include — the other selector, usable instead of or alongside `tag`. Required if `tag` is omitted.'),
       statuses: z.array(z.string()).optional().describe('Statuses that count as groomed & ready (default ["Todo"]).'),
       limit: z.number().int().positive().optional().describe('Cap the batch to at most this many tickets.'),
       kind: z.enum(['sequential', 'parallel']).optional().describe('Batch kind (default parallel).'),
       burnRate: z.number().int().positive().optional().describe('Parallel concurrency, 1–4 (default 1). Ignored for sequential.'),
       title: z.string().optional().describe('Human label for the batch.'),
     },
-    async ({ tag, statuses, limit, kind, burnRate, title }) => {
+    async ({ tag, tickets, statuses, limit, kind, burnRate, title }) => {
       try {
+        if (!tag && !(tickets && tickets.length)) {
+          return errorResult(
+            'furnace_build requires an explicit selector — tag the tickets you want burnable (convention `burn-furnace`) or pass explicit ticket ids. There is no way to pool the entire backlog.',
+            'validation_failed',
+          );
+        }
         await ensureFurnaceLoaded();
         const candidates = Object.values(tasksCache).map(toBuildCandidate);
         const proposal = buildBatchTickets(candidates, {
           ...(tag !== undefined ? { tag } : {}),
+          ...(tickets !== undefined ? { tickets } : {}),
           ...(statuses !== undefined ? { statuses } : {}),
           ...(limit !== undefined ? { limit } : {}),
+          activeBatches: getFurnaceBatchesCache(),
         });
         if (proposal.tickets.length === 0) {
           return errorResult(
             proposal.notes[0] ?? `No eligible tickets found in ${(statuses ?? ['Todo']).join('/')}${tag ? ` tagged #${tag}` : ''}. Groom some tickets to Todo first.`,
             'invalid_state',
+            { excluded: proposal.excluded, notes: proposal.notes },
           );
         }
         const batch = await createFurnaceBatch({
@@ -1991,123 +2140,197 @@ export function buildMcpServer(): McpServer {
         const warn = burnRateClampWarning(burnRate);
         if (warn) notes.push(warn);
         return jsonResult({ batchId: batch.id, batch, excluded: proposal.excluded, notes });
-      } catch (err: any) {
-        return errorResult(`Failed to build furnace batch: ${err.message}`);
+      } catch (err: unknown) {
+        return errorResult(`Failed to build furnace batch: ${errMessage(err)}`);
       }
     },
   );
 
+  // FLUX-1085: `furnace_ignite`/`furnace_stop`/`furnace_resume`/`furnace_discard` folded into one
+  // action-discriminated tool — same idiom as `branch` (create/status/delete). All four act on an
+  // EXISTING batchId with near-identical signatures (`stop` alone takes reason/hard, mirroring
+  // `branch`'s delete-only `force`), unlike `furnace_get`/`furnace_build`/`furnace_update` (read/create/
+  // configure), whose per-action param sets are too heterogeneous to merge without hurting usability —
+  // exactly the tradeoff the investigation ticket flagged, so those three stay separate tools.
   server.tool(
-    'furnace_ignite',
-    'Ignite a Furnace batch: move it draft→burning and start burning its tickets. Claims a worktree slot — fails when the worktree pool is full (max 4 concurrent). A parallel batch clamps its burn rate to the free slots. The Stoker then burns each ticket unattended — implement → review → re-implement (≤ retryCap) → leave the PR open at Ready — and NEVER merges.',
+    'furnace_batch',
+    'Transition an existing Furnace batch\'s lifecycle. action "ignite": draft→burning, claims a worktree slot (fails when the pool is full; a parallel batch clamps its burn rate to free slots), then the Stoker burns each ticket unattended (implement → review → re-implement ≤ retryCap → leave the PR open at Ready — NEVER merges). action "stop": halt it — graceful by default (stop feeding, let in-flight tickets finish, open PRs stay open), or pass `hard: true` for an immediate cutoff that kills in-flight sessions and parks them. action "resume": halted (`parked`) or finished (`done`) → `burning` — resets the circuit breaker, clears the stop request, re-queues tickets merely skipped by the halt, and claims a slot; parked/failed tickets are NOT auto-re-queued (retry those individually via furnace_ticket action:"retry"). action "discard": permanently delete a stale draft or old terminal batch — refuses a burning batch (stop it first). `reason`/`hard` apply only to "stop".',
     {
-      batchId: z.string().describe('The batch to ignite.'),
+      action: z.enum(['ignite', 'stop', 'resume', 'discard']).describe('Which batch-lifecycle transition to apply.'),
+      batchId: z.string().describe('The batch to transition.'),
+      reason: z.string().optional().describe('stop only — why it is being stopped (recorded on the batch).'),
+      hard: z.boolean().optional().describe('stop only — immediate cutoff: kill in-flight sessions instead of letting them drain.'),
     },
-    async ({ batchId }) => {
-      try {
-        const r = await igniteBatch(batchId);
-        if (!r.ok) {
-          if (r.error === 'no_slots') return errorResult(`Cannot ignite ${batchId}: all ${r.max} worktree slots are in use (${r.used} used). Stop or wait for a batch to free a slot.`, 'invalid_state');
-          return errorResult(`Cannot ignite ${batchId}: ${r.error}`, 'invalid_state');
+    async ({ action, batchId, reason, hard }) => {
+      if ((reason !== undefined || hard !== undefined) && action !== 'stop') {
+        return errorResult(`reason/hard are only valid for action "stop" (got action "${action}").`, 'validation_failed');
+      }
+      if (action === 'ignite') {
+        try {
+          const r = await igniteBatch(batchId);
+          if (!r.ok) {
+            if (r.error === 'no_slots') {
+              return errorResult(
+                `Cannot ignite ${batchId}: all ${r.max} worktree slots are in use (${r.used} used).${formatSlotHolders(r.holders)} Stop or wait for a batch to free a slot.`,
+                'invalid_state',
+                { holders: r.holders ?? [] },
+              );
+            }
+            return errorResult(`Cannot ignite ${batchId}: ${r.error}`, 'invalid_state');
+          }
+          return jsonResult({ ignited: true, batch: r.batch });
+        } catch (err: unknown) {
+          return errorResult(`Failed to ignite furnace batch: ${errMessage(err)}`);
         }
-        return jsonResult({ ignited: true, batch: r.batch });
-      } catch (err: any) {
-        return errorResult(`Failed to ignite furnace batch: ${err.message}`);
       }
-    },
-  );
-
-  server.tool(
-    'furnace_stop',
-    'Stop a Furnace batch. Default is a GRACEFUL stop: stop feeding new tickets, let the in-flight ones finish (open PRs stay open for review), then the batch finalizes. Pass `hard: true` for an immediate cutoff that kills in-flight sessions, parks them, and skips the rest.',
-    {
-      batchId: z.string().describe('The batch to stop.'),
-      reason: z.string().optional().describe('Why it is being stopped (recorded on the batch).'),
-      hard: z.boolean().optional().describe('Immediate cutoff: kill in-flight sessions instead of letting them drain.'),
-    },
-    async ({ batchId, reason, hard }) => {
-      try {
-        const r = await stopBatch(batchId, reason || 'manual stop', hard ? { hard: true } : {});
-        if (!r.ok) return errorResult(`Cannot stop ${batchId}: ${r.error}`, 'invalid_state');
-        return jsonResult({ stopped: true, batch: r.batch });
-      } catch (err: any) {
-        return errorResult(`Failed to stop furnace batch: ${err.message}`);
-      }
-    },
-  );
-
-  // FLUX-1066: manual recovery — the escape hatch when a ticket parks or a batch halts. These let the
-  // orchestrator unstick a batch the same way the drawer does (this class of bug had NO tool to fix it).
-  server.tool(
-    'furnace_retry',
-    'Retry a single parked/failed ticket in a Furnace batch: reset it to `queued` with a FRESH attempt budget (re-implementation / context-exhaustion / spawn-failure counters cleared) and hand ownership back to the Furnace. It re-burns on the next tick if the batch is burning; a halted/finished batch must be resumed (furnace_resume) to pick it up.',
-    {
-      batchId: z.string().describe('The batch containing the ticket.'),
-      ticketId: z.string().describe('The parked/failed ticket to retry.'),
-    },
-    async ({ batchId, ticketId }) => {
-      try {
-        const r = await retryTicket(batchId, ticketId);
-        if (!r.ok) return errorResult(`Cannot retry ${ticketId}: ${r.error}`, r.error === 'Furnace batch not found' || r.error === 'Ticket not in batch' ? 'not_found' : 'invalid_state');
-        return jsonResult({ retried: true, batch: r.batch });
-      } catch (err: any) {
-        return errorResult(`Failed to retry ticket: ${err.message}`);
-      }
-    },
-  );
-
-  server.tool(
-    'furnace_resume',
-    'Resume a halted (`parked`) or finished (`done`) Furnace batch → `burning`: resets the circuit breaker, clears the stop request, re-queues tickets that were merely skipped by the halt, and claims a worktree slot (fails when the pool is full). Parked/failed tickets are NOT auto-re-queued — retry those individually with furnace_retry; `pr-open` successes are preserved.',
-    {
-      batchId: z.string().describe('The halted/finished batch to resume.'),
-    },
-    async ({ batchId }) => {
-      try {
-        const r = await resumeBatch(batchId);
-        if (!r.ok) {
-          if (r.error === 'no_slots') return errorResult(`Cannot resume ${batchId}: all ${r.max} worktree slots are in use (${r.used} used).`, 'invalid_state');
-          return errorResult(`Cannot resume ${batchId}: ${r.error}`, r.error === 'Furnace batch not found' ? 'not_found' : 'invalid_state');
+      if (action === 'stop') {
+        try {
+          const r = await stopBatch(batchId, reason || 'manual stop', hard ? { hard: true } : {});
+          if (!r.ok) return errorResult(`Cannot stop ${batchId}: ${r.error}`, 'invalid_state');
+          return jsonResult({ stopped: true, batch: r.batch });
+        } catch (err: unknown) {
+          return errorResult(`Failed to stop furnace batch: ${errMessage(err)}`);
         }
-        return jsonResult({ resumed: true, batch: r.batch });
-      } catch (err: any) {
-        return errorResult(`Failed to resume furnace batch: ${err.message}`);
+      }
+      if (action === 'resume') {
+        try {
+          const r = await resumeBatch(batchId);
+          if (!r.ok) {
+            if (r.error === 'no_slots') {
+              return errorResult(
+                `Cannot resume ${batchId}: all ${r.max} worktree slots are in use (${r.used} used).${formatSlotHolders(r.holders)}`,
+                'invalid_state',
+                { holders: r.holders ?? [] },
+              );
+            }
+            return errorResult(`Cannot resume ${batchId}: ${r.error}`, r.error === 'Furnace batch not found' ? 'not_found' : 'invalid_state');
+          }
+          return jsonResult({ resumed: true, batch: r.batch });
+        } catch (err: unknown) {
+          return errorResult(`Failed to resume furnace batch: ${errMessage(err)}`);
+        }
+      }
+      // action === 'discard'
+      try {
+        await ensureFurnaceLoaded();
+        const batch = getFurnaceBatch(batchId);
+        if (!batch) return errorResult(`Furnace batch ${batchId} not found.`, 'not_found');
+        if (isBatchActive(batch.status)) {
+          return errorResult(`Cannot discard ${batchId}: batch is burning — stop it first (furnace_batch action:"stop").`, 'invalid_state');
+        }
+        const ok = await deleteFurnaceBatch(batchId);
+        if (!ok) return errorResult(`Furnace batch ${batchId} not found.`, 'not_found');
+        for (const t of batch.tickets) clearTakeoverTracking(t.ticketId); // FLUX-1094
+        evictReconcileReadCache(batchId); // FLUX-1166
+        return jsonResult({ discarded: true, batchId });
+      } catch (err: unknown) {
+        return errorResult(`Failed to discard furnace batch: ${errMessage(err)}`);
       }
     },
   );
 
+  // FLUX-1085: `furnace_retry`/`furnace_dismiss`/`furnace_takeover`/`furnace_handback`/
+  // `furnace_add_ticket`/`furnace_remove_ticket` folded into one action-discriminated tool. All six
+  // share the exact same (batchId, ticketId) signature — the cleanest possible merge candidate, unlike
+  // the batch-lifecycle group above (which still needed stop-only params).
   server.tool(
-    'furnace_dismiss',
-    'Dismiss the Furnace-raised flag on a parked/failed ticket ("I\'ve got this") — clears the board Require Input swimlane and marks it dismissed WITHOUT re-queuing. Works on a done/terminal batch too.',
+    'furnace_ticket',
+    'Act on a single ticket inside a Furnace batch. action "retry": reset a parked/failed ticket to `queued` with a FRESH attempt budget and hand ownership back to the Furnace — re-burns next tick if the batch is burning (a halted/finished batch needs furnace_batch action:"resume" first). action "dismiss": clear the board Require-Input flag on a parked/failed ticket ("I\'ve got this") WITHOUT re-queuing — works on a done/terminal batch too. action "takeover": owner → human — the Furnace yields (stops the session it was driving, never reclaims the worktree); hand it back later with action "handback" (or "retry", which also re-queues it under the Furnace). action "handback": owner → furnace — re-queue a human-owned ticket with a fresh attempt budget, bypassing the pr-open/active-state guards; errors clearly if the ticket is not currently human-owned. action "add": append a ticket to a batch (draft or burning) without a full furnace_build rebuild — rejects a done batch, a ticket already in the batch or not in an allowed status, or one already queued in a different non-terminal batch. action "remove": remove a ticket from a batch — disallowed while it is actively burning (stop the batch first); a still-queued or terminal-state ticket can always be removed.',
     {
+      action: z.enum(['retry', 'dismiss', 'takeover', 'handback', 'add', 'remove']).describe('Which per-ticket operation to run.'),
       batchId: z.string().describe('The batch containing the ticket.'),
-      ticketId: z.string().describe('The flagged ticket to dismiss.'),
+      ticketId: z.string().describe('The ticket to act on.'),
     },
-    async ({ batchId, ticketId }) => {
-      try {
-        const r = await dismissTicketFlag(batchId, ticketId);
-        if (!r.ok) return errorResult(`Cannot dismiss ${ticketId}: ${r.error}`, r.error === 'Furnace batch not found' || r.error === 'Ticket not in batch' ? 'not_found' : 'invalid_state');
-        return jsonResult({ dismissed: true, batch: r.batch });
-      } catch (err: any) {
-        return errorResult(`Failed to dismiss ticket flag: ${err.message}`);
+    async ({ action, batchId, ticketId }) => {
+      if (action === 'retry') {
+        try {
+          const r = await retryTicket(batchId, ticketId);
+          if (!r.ok) return errorResult(`Cannot retry ${ticketId}: ${r.error}`, r.error === 'Furnace batch not found' || r.error === 'Ticket not in batch' ? 'not_found' : 'invalid_state');
+          return jsonResult({ retried: true, batch: r.batch });
+        } catch (err: unknown) {
+          return errorResult(`Failed to retry ticket: ${errMessage(err)}`);
+        }
       }
-    },
-  );
-
-  server.tool(
-    'furnace_takeover',
-    'Take over a Furnace ticket (owner → human): the Furnace yields — it stops the session it was driving, never reclaims the worktree, and the drawer shows "you\'re driving this" instead of a park badge. Hand it back later with furnace_retry (which re-queues it under the Furnace).',
-    {
-      batchId: z.string().describe('The batch containing the ticket.'),
-      ticketId: z.string().describe('The ticket to take over.'),
-    },
-    async ({ batchId, ticketId }) => {
+      if (action === 'dismiss') {
+        try {
+          const r = await dismissTicketFlag(batchId, ticketId);
+          if (!r.ok) return errorResult(`Cannot dismiss ${ticketId}: ${r.error}`, r.error === 'Furnace batch not found' || r.error === 'Ticket not in batch' ? 'not_found' : 'invalid_state');
+          return jsonResult({ dismissed: true, batch: r.batch });
+        } catch (err: unknown) {
+          return errorResult(`Failed to dismiss ticket flag: ${errMessage(err)}`);
+        }
+      }
+      if (action === 'takeover') {
+        try {
+          const r = await takeoverTicket(batchId, ticketId);
+          if (!r.ok) return errorResult(`Cannot take over ${ticketId}: ${r.error}`, r.error === 'Furnace batch not found' || r.error === 'Ticket not in batch' ? 'not_found' : 'invalid_state');
+          return jsonResult({ takenOver: true, batch: r.batch });
+        } catch (err: unknown) {
+          return errorResult(`Failed to take over ticket: ${errMessage(err)}`);
+        }
+      }
+      if (action === 'handback') {
+        try {
+          const r = await handBackTicket(batchId, ticketId);
+          if (!r.ok) return errorResult(`Cannot hand back ${ticketId}: ${r.error}`, r.error === 'Furnace batch not found' || r.error === 'Ticket not in batch' ? 'not_found' : 'invalid_state');
+          return jsonResult({ handedBack: true, batch: r.batch });
+        } catch (err: unknown) {
+          return errorResult(`Failed to hand back ticket: ${errMessage(err)}`);
+        }
+      }
+      if (action === 'add') {
+        try {
+          await ensureFurnaceLoaded();
+          const batch = getFurnaceBatch(batchId);
+          if (!batch) return errorResult(`Furnace batch ${batchId} not found.`, 'not_found');
+          if (batch.status === 'done') {
+            return errorResult(`Cannot append to ${batchId}: it is a completed batch — create a new one.`, 'invalid_state');
+          }
+          if (batch.tickets.some((t) => t.ticketId === ticketId)) {
+            return errorResult(`${ticketId} is already in batch ${batchId}.`, 'invalid_state');
+          }
+          const { rejected } = validateBatchTickets([ticketId], tasksCache, {
+            activeBatches: getFurnaceBatchesCache(),
+            excludeBatchId: batchId,
+          });
+          if (rejected[0]) {
+            const r = rejected[0];
+            const why = r.reason === 'unknown' ? 'unknown ticket id' : r.reason === 'bad-status' ? 'not in an allowed status' : `already queued in batch ${r.batchId} — remove it there first`;
+            return errorResult(`Cannot add ${ticketId}: ${why}.`, 'validation_failed');
+          }
+          const maxOrder = batch.tickets.reduce((m, t) => Math.max(m, t.order), -1);
+          const entry = newBatchTicket(ticketId, maxOrder + 1, tasksCache[ticketId]?.title);
+          const updated = await mutateFurnaceBatch(batchId, (draft) => { draft.tickets.push(entry); });
+          if (!updated) return errorResult(`Furnace batch ${batchId} not found.`, 'not_found');
+          return jsonResult({ added: true, batch: updated });
+        } catch (err: unknown) {
+          return errorResult(`Failed to add ticket to furnace batch: ${errMessage(err)}`);
+        }
+      }
+      // action === 'remove'
       try {
-        const r = await takeoverTicket(batchId, ticketId);
-        if (!r.ok) return errorResult(`Cannot take over ${ticketId}: ${r.error}`, r.error === 'Furnace batch not found' || r.error === 'Ticket not in batch' ? 'not_found' : 'invalid_state');
-        return jsonResult({ takenOver: true, batch: r.batch });
-      } catch (err: any) {
-        return errorResult(`Failed to take over ticket: ${err.message}`);
+        await ensureFurnaceLoaded();
+        const batch = getFurnaceBatch(batchId);
+        if (!batch) return errorResult(`Furnace batch ${batchId} not found.`, 'not_found');
+        const t = batch.tickets.find((x) => x.ticketId === ticketId);
+        if (!t) return errorResult(`${ticketId} is not in batch ${batchId}.`, 'not_found');
+        if (isBatchActive(batch.status) && !isTerminalTicketState(t.state) && t.state !== 'queued') {
+          return errorResult(`Cannot remove ${ticketId}: it is burning — stop the batch first (furnace_batch action:"stop").`, 'invalid_state');
+        }
+        // FLUX-1095: `t.state` stays `queued` until the freshly-dispatched session is recorded, so the
+        // `queued` exemption above would otherwise let a removal race a spawn already in flight and orphan
+        // the session (no batch left to own it). Reject and let the caller retry — the window is brief.
+        if (isDispatching(ticketId)) {
+          return errorResult(`Cannot remove ${ticketId}: a session spawn is in flight for it — try again in a moment.`, 'invalid_state');
+        }
+        const updated = await mutateFurnaceBatch(batchId, (draft) => {
+          draft.tickets = draft.tickets.filter((x) => x.ticketId !== ticketId);
+        });
+        if (!updated) return errorResult(`Furnace batch ${batchId} not found.`, 'not_found');
+        clearTakeoverTracking(ticketId); // FLUX-1094: don't leak debounce state past batch membership
+        return jsonResult({ removed: true, batch: updated });
+      } catch (err: unknown) {
+        return errorResult(`Failed to remove ticket from furnace batch: ${errMessage(err)}`);
       }
     },
   );
@@ -2122,8 +2345,8 @@ export function buildMcpServer(): McpServer {
         const res = await fetch(`${ENGINE_URL}/api/board/state`);
         if (!res.ok) return errorResult(`Failed to get board state: ${res.statusText}`, 'channel_unavailable');
         return jsonResult(await res.json());
-      } catch (err: any) {
-        return errorResult(`Failed to get board state: ${err.message}`, 'channel_unavailable');
+      } catch (err: unknown) {
+        return errorResult(`Failed to get board state: ${errMessage(err)}`, 'channel_unavailable');
       }
     },
   );
@@ -2185,8 +2408,8 @@ export function buildMcpServer(): McpServer {
       let res: Response;
       try {
         res = await fetch(`${ENGINE_URL}/api/board/state`);
-      } catch (err: any) {
-        return failResource('channel_unavailable', `Failed to get board state: ${err.message}`);
+      } catch (err: unknown) {
+        return failResource('channel_unavailable', `Failed to get board state: ${errMessage(err)}`);
       }
       if (!res.ok) return failResource('channel_unavailable', `Failed to get board state: ${res.statusText}`);
       const text = await res.text();
@@ -2209,7 +2432,7 @@ export function buildMcpServer(): McpServer {
     async (uri, variables) => {
       const resolved = resolveTicketResource(decodeResourceVar(variables.id), tasksCache);
       if (!resolved.ok) return failResource(resolved.code, resolved.message);
-      const { _path, ...output } = serializeTaskForAgent(resolved.task, undefined, {});
+      const { _path, ...output } = serializeTaskForAgent(resolved.task as TaskRecord, undefined, {});
       return { contents: [{ uri: uri.toString(), mimeType: 'application/json', text: JSON.stringify(output) }] };
     },
   );
@@ -2267,15 +2490,15 @@ export function buildMcpServer(): McpServer {
         }
         const result = await res.json();
         return textResult(`Surfaced a board-rebase proposal with ${result.count} item(s) for the user to approve (batch ${result.id}). The proposal is PARKED — nothing has been applied. The user reviews each item and clicks "Apply approved" (or "Dismiss"). Do not call the restructuring verbs directly.`);
-      } catch (err: any) {
-        return errorResult(`Board-rebase channel unavailable: ${err.message}`, 'channel_unavailable');
+      } catch (err: unknown) {
+        return errorResult(`Board-rebase channel unavailable: ${errMessage(err)}`, 'channel_unavailable');
       }
     },
   );
 
   server.tool(
     'permission_prompt',
-    'Internal — a gated agent CLI calls this via its permission-prompt hook (e.g. Claude Code\'s --permission-prompt-tool) to decide if a tool call is permitted. Returns {behavior:"allow",updatedInput} or {behavior:"deny",message}. Reads auto-allow; destructive ops (change_status, finish_ticket, archive, branch with action:"delete", Bash) require human approval via the EH portal.',
+    'Internal — a gated agent CLI calls this via its permission-prompt hook (e.g. Claude Code\'s --permission-prompt-tool) to decide if a tool call is permitted. Returns {behavior:"allow",updatedInput} or {behavior:"deny",message}. Reads auto-allow; destructive ops (change_status, finish_ticket, archive, branch with action:"delete", furnace_batch with action:"discard", group_doc with action:"delete", Bash) require human approval via the EH portal.',
     { tool_name: z.string(), input: z.any().optional() },
     { title: 'Permission decision', readOnlyHint: true, openWorldHint: false },
     async ({ tool_name, input }) => {
@@ -2294,14 +2517,14 @@ export function buildMcpServer(): McpServer {
         // A human ALLOW is POSTed without updatedInput; forwarding it verbatim crashes the CLI with a
         // Zod invalid_union. This layer has the original `input`, so echo it — the human approved
         // running the tool as proposed — mirroring the auto-allow branch above.
-        const decided: any = await res.json().catch(() => null);
+        const decided = await res.json().catch(() => null) as PermissionDecisionResponse | null;
         if (decided?.behavior === 'allow')
           return jsonResult({ behavior: 'allow', updatedInput: decided.updatedInput ?? input ?? {} });
         if (decided?.behavior === 'deny')
           return jsonResult({ behavior: 'deny', message: typeof decided.message === 'string' ? decided.message : `${tool_name} was denied.` });
         return jsonResult({ behavior: 'deny', message: 'Malformed approval decision — denied.' });
-      } catch (err: any) {
-        return jsonResult({ behavior: 'deny', message: `Approval channel unavailable — denied (${err.message}).` });
+      } catch (err: unknown) {
+        return jsonResult({ behavior: 'deny', message: `Approval channel unavailable — denied (${errMessage(err)}).` });
       }
     },
   );
@@ -2339,8 +2562,8 @@ export function buildMcpServer(): McpServer {
           return textResult('The user did not answer in time. Proceed using your best judgment, or ask again if the answer is essential.');
         }
         return jsonResult({ answers: result.answers ?? {}, ...(result.notes ? { notes: result.notes } : {}) });
-      } catch (err: any) {
-        return errorResult(`Ask-question channel unavailable: ${err.message}. Proceed with your best judgment.`, 'channel_unavailable');
+      } catch (err: unknown) {
+        return errorResult(`Ask-question channel unavailable: ${errMessage(err)}. Proceed with your best judgment.`, 'channel_unavailable');
       }
     },
   );
@@ -2418,8 +2641,8 @@ export function buildMcpServer(): McpServer {
             failed: result.sync.failed,
             members: fanOut,
           });
-        } catch (err: any) {
-          return errorResult(`Failed to submit group doc: ${err.message}`);
+        } catch (err: unknown) {
+          return errorResult(`Failed to submit group doc: ${errMessage(err)}`);
         }
       }
 
@@ -2443,8 +2666,8 @@ export function buildMcpServer(): McpServer {
           failed: result.sync.failed,
           members: fanOut,
         });
-      } catch (err: any) {
-        return errorResult(`Failed to delete group doc: ${err.message}`);
+      } catch (err: unknown) {
+        return errorResult(`Failed to delete group doc: ${errMessage(err)}`);
       }
     },
   );

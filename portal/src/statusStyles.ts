@@ -30,11 +30,11 @@ export function getDefaultStatusColor(statusName: string | undefined) {
   }
 
   if (normalized === 'in progress') {
-    return 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300';
+    return 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300';
   }
 
   if (normalized === 'ready') {
-    return 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300';
+    return 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-300';
   }
 
   if (normalized === 'require input') {
@@ -42,7 +42,7 @@ export function getDefaultStatusColor(statusName: string | undefined) {
   }
 
   if (normalized === 'grooming') {
-    return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300';
+    return 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300';
   }
 
   if (normalized === 'todo') {
@@ -57,7 +57,8 @@ export function getDefaultStatusColor(statusName: string | undefined) {
     return 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300';
   }
 
-  return 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300';
+  // Unknown/custom statuses stay neutral — violet/purple is reserved for PR + Furnace surfaces (FLUX-1093).
+  return 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300';
 }
 
 export function getStatusColorClass(config: Config | null | undefined, statusName: string | undefined) {

@@ -19,6 +19,14 @@ interface Snapshot {
   activeTaskIds: Set<string>;
 }
 
+/** Minimal shape of a cached ticket as consumed by the digest — only the fields read here. */
+interface DigestTask {
+  id: string;
+  status?: string;
+  swimlane?: string;
+  needsAction?: boolean;
+}
+
 let lastSnapshot: Snapshot | null = null;
 
 // A session running longer than this is flagged as a long/stale stream worth a triage look.
@@ -42,7 +50,7 @@ export function buildBoardDigest(): string {
   const archiveStatus = configCache.archiveStatus || 'Archived';
   const statusCounts: Record<string, number> = {};
   const needsAttention: string[] = [];
-  for (const t of Object.values(tasksCache) as any[]) {
+  for (const t of Object.values(tasksCache) as DigestTask[]) {
     const st = t.status || 'Unknown';
     if (st === archiveStatus) continue;
     statusCounts[st] = (statusCounts[st] || 0) + 1;

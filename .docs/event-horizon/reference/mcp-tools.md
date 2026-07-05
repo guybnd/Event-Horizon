@@ -450,7 +450,7 @@ Move a ticket to a new status.
 | `newStatus` | string | yes |
 | `comment` | string | conditional — see enforcement |
 | `callerRole` | string | no — set to `"orchestrator"` or `"lead"` to bypass scatter-gather restriction |
-| `reviewState` | `'approved'` \| `'changes-requested'` \| null | no — **FLUX-816.** Records the EH review verdict on the card (persisted as the [`reviewState`](ticket-schema.md) frontmatter field). A review lead passes `"approved"` when moving to `Ready` and `"changes-requested"` when moving back to `In Progress`; `null` clears it. Surfaces a review badge; distinct from the GitHub-synced `reviewDecision`. |
+| `reviewState` | `'approved'` \| `'changes-requested'` \| null | no — **FLUX-816.** Records the EH review verdict on the card (persisted as the [`reviewState`](ticket-schema.md) frontmatter field). A review lead passes `"approved"` when moving to `Ready` and `"changes-requested"` when moving back to `In Progress`; `null` clears it. Surfaces a review badge; distinct from the GitHub-synced `reviewDecision`. An explicit value on this call always wins over the FLUX-1089 auto-clear below. |
 
 **Output:** a confirmation line (`<id> moved to <status>`). On moves to `In Progress` / `Todo` / `Grooming` / `Ready` it appends a terse AXI #9 contextual-disclosure next-step hint (FLUX-877) — e.g. a `Ready` move points at `finish_ticket`; terminal/unknown statuses get no hint. The `Require Input` route returns its own hint to wait for the user.
 
@@ -461,6 +461,7 @@ Move a ticket to a new status.
 - **Commit-before-Ready for worktree branches (FLUX-730).** Transitioning **to** `Ready` is **refused** (error result, status unchanged) when the ticket's branch has a dedicated worktree **and** the branch has **0 commits ahead** of the default branch — an uncommitted worktree can never open a PR, so the move would land a silent "Ready, no PR". The error distinguishes "work done but uncommitted" (worktree has changes) from "no changes yet" and tells the agent to commit then retry. **Scoped to worktree branches only:** plain-branch tickets keep the soft warning (notification + activity, move still proceeds), and branchless tickets are unaffected (they legitimately stay uncommitted until `finish`). On a successful `Ready` move for a branch with commits, the engine pushes and opens the PR (`implementationLink` + `open-pr` swimlane).
 - **Dirty-root backstop for engine-driven switches (FLUX-741).** Sibling to the commit-before-Ready discipline, but for the **main/root checkout** rather than worktrees. Whenever the engine *must* switch or fast-forward the root tree off a branch during post-merge cleanup (`cleanupMergedBranch`'s `git checkout <default>` and `syncDefaultBranch`'s in-place `merge --ff-only`), it first **stashes any uncommitted/untracked root work** (`stashDirtyTree`, reusing the detach stash pattern) so the switch can never silently discard it — the root-clobber that lost work in the FLUX-734/739 incidents. The stashed work stays recoverable (`git stash apply <ref>`) and the ref is surfaced in a notification. Worktree mutation points are already guarded (`removeTaskWorktree` refuses a dirty tree; `detachTaskWorktree` stashes); this closes the gap on the root tree only. The complementary fix is **worktree-by-default** (see `branch` `action:'create'`): isolating agent sessions in their own worktree means the shared root is rarely the place edits live in the first place.
 - The `Require Input` / `Ready` status names are read from `configCache.requireInputStatus` / `readyForMergeStatus` and may be renamed in board config.
+- **Stale-`reviewState` clear on leaving Ready (FLUX-1089).** Transitioning **out of** `Ready` (to anything else) clears a prior `reviewState` unless this same call passes an explicit one (`resolveReviewStateOnMove` in `mcp-server.ts`) — an `approved` (or stale `changes-requested`) verdict from the last review no longer describes a ticket that's active work again. The FLUX-569 changes-requested unwind (`bounceMembersToInProgress` in `pr-tickets.ts`, which bounces a PR's Ready members straight to `In Progress` without going through this tool) applies the same clear at its own `updateTaskWithHistory` call site.
 - **Scatter-gather guard:** If the ticket has 2+ active sessions where at least one has `patternPosition: 'step'`, status changes are rejected unless `callerRole` is `'orchestrator'` or `'lead'`. This prevents individual reviewers from moving the ticket while peers are still reviewing. Affected sessions should use `add_note` (`type: 'comment'`) instead.
 
 **Output:** `<id> moved to <status>`.
@@ -510,7 +511,7 @@ Each call is a **new revision** (history is kept — never an overwrite). The HT
 | Input | Type | Required |
 |-------|------|----------|
 | `ticketId` | string | yes |
-| `html` | string | yes — a **complete, self-contained** HTML document (inline `<style>`/`<script>`; Tailwind/Mermaid via CDN `<script>` tags). Rendered in a sandboxed opaque-origin iframe with `connect-src 'none'`, so it cannot reach the portal/cookies/storage and cannot make network requests — inline everything or load from the allowed CDNs. |
+| `html` | string | yes — a **complete, self-contained** HTML document (inline `<style>`/`<script>`; default to hand-written inline CSS). Mermaid is loadable via CDN `<script>` for diagrams; the Tailwind Play CDN is allowed but a heavy last resort, not the default — it's a full in-browser compiler that can freeze the host UI for seconds per load. Rendered in a sandboxed opaque-origin iframe with `connect-src 'none'`, so it cannot reach the portal/cookies/storage and cannot make network requests — inline everything or load from the allowed CDNs. |
 | `title` | string | no — short label shown above the viewer. |
 | `note` | string | no — what changed in this revision / what to look at. |
 
@@ -522,7 +523,7 @@ Each call is a **new revision** (history is kept — never an overwrite). The HT
 
 ### `finish_ticket`
 
-Atomic close-out: set `implementationLink`, append a completion comment, move status to `Done`. For a **branch ticket** (with `gh` authenticated) it **merges the branch's PR** (squash) and then runs the shared post-merge cleanup (advance + master fast-forward + worktree/branch teardown, FLUX-574). The PR is normally opened at the Ready transition; if none exists at finish, finish **opens it first** (FLUX-578). Critically, if the branch's prior PR is already **MERGED or CLOSED** (a dead PR — e.g. a commit pushed *after* that PR merged, FLUX-656), finish does **not** merge onto the dead PR (which would throw "already merged" and strand the commit) — it opens a **fresh** PR and merges that instead (FLUX-741, `planFinishPr`). Only when the branch has **no commits ahead** of its base (nothing to merge) does it route the ticket to **Require Input** rather than failing on a raw merge error.
+Atomic close-out: set `implementationLink`, append a completion comment, move status to `Done`. For a **branch ticket** (with `gh` authenticated) it **merges the branch's PR** (squash) and then runs the shared post-merge cleanup (advance + master fast-forward + worktree/branch teardown, FLUX-574). The PR is normally opened at the Ready transition; if none exists at finish, finish **opens it first** (FLUX-578). Critically, if the branch's prior PR is already **MERGED or CLOSED** (a dead PR — e.g. a commit pushed *after* that PR merged, FLUX-656), finish does **not** merge onto the dead PR (which would throw "already merged" and strand the commit) — it opens a **fresh** PR and merges that instead (FLUX-741, `planFinishPr`). Only when the branch has **no commits ahead** of its base (nothing to merge) does it route the ticket to **Require Input** rather than failing on a raw merge error — **unless** the ticket is a deliberately-**folded** one (FLUX-944): if `implementationLink` already points at a **MERGED** PR on a *different* branch (a sibling ticket's PR that this ticket's deliverable was folded into), finish auto-detects that, skips opening/merging a PR of its own (there's nothing to merge on this branch, by design), and finishes straight through using that link. Non-folded empty branches (no such merged sibling link) are still guarded to Require Input. No extra param is needed — pass the sibling PR's URL as `implementationLink` as usual.
 
 | Input | Type | Required |
 |-------|------|----------|
@@ -537,7 +538,7 @@ Atomic close-out: set `implementationLink`, append a completion comment, move st
 
 - For a branch ticket: ensures an **OPEN** PR exists (opens a fresh one if missing **or if the existing PR is MERGED/CLOSED** — FLUX-741), squash-merges it, then runs the unified post-merge cleanup (`cleanupMergedBranch` — advance branch tickets, fast-forward master, remove worktree + delete branch, clear the `open-pr` swimlane). The post-merge cleanup stashes any **uncommitted work on the main/root checkout** before switching/fast-forwarding it, so an engine-driven branch switch can never silently discard root edits (FLUX-741, incident FLUX-734) — the work is surfaced as a recoverable stash via a notification.
 - **Shared-PR guard (FLUX-569):** finishing one member of a branch shared by **non-terminal sibling tickets** is refused — merging would advance them all to Done as a one-way door (the FLUX-556/PR#6 incident). The error names the siblings; either finish/close them first, merge via the PR ticket, or re-run with `force: true` to land the whole shared PR. **PR tickets (`kind:'pr'`) are exempt** — merging a PR ticket to advance its members is the sanctioned shared-merge surface.
-- Merge failure / `gh` unavailable → bounces the ticket back to In Progress with an actionable comment (no partial Done). A branch with **no commits ahead** of its base routes to **Require Input** (FLUX-741) — there is genuinely nothing to merge, so it surfaces as a blocker rather than looping.
+- Merge failure / `gh` unavailable → bounces the ticket back to In Progress with an actionable comment (no partial Done). A branch with **no commits ahead** of its base routes to **Require Input** (FLUX-741) — there is genuinely nothing to merge, so it surfaces as a blocker rather than looping — unless it's detected as **folded** (FLUX-944, see above), in which case it finishes straight through instead.
 - Writes status + link + comment in one disk write — no partial state on failure.
 - Reaps stale parked **phase** sessions (`waiting-input`, non-`chat`) once the ticket is Done, so a finished ticket leaves no session zombies behind (FLUX-721).
 
@@ -581,7 +582,7 @@ Delegate one or more tasks to specialist agents and wait for them to finish (FLU
 | `delegations` | array (≥1) | yes | Each: `{ personaId, task, effort?, model? }`. Length 1 = serial; >1 = parallel. |
 | `timeout` | number | no | Seconds for ALL delegations (default 300, max 600). |
 
-**Output:** `[{ persona, succeeded, status, output }, …]` — one entry per delegation, in input order. A rejected delegation yields `{ persona, succeeded: false, status: 'error', output: <reason> }`. (`model` is an optional per-delegation override, kept forward-compatible with the delegate-model-override work on another branch.)
+**Output:** `[{ persona, succeeded, status, output }, …]` — one entry per delegation, in input order. A rejected delegation yields `{ persona, succeeded: false, status: 'error', output: <reason> }`. (`model` is an optional per-delegation override — **FLUX-482** — honored with precedence per-call `model` > `persona.model` > config `delegateModel` default > the status-derived default; Claude-framework only for now, see [`cli-session.ts`](../../../engine/src/routes/cli-session.ts).)
 
 ---
 
@@ -600,10 +601,10 @@ Delegate one or more tasks to specialist agents and wait for them to finish (FLU
 
 **Policy** (`permissionDecisionFor` in [`mcp-server.ts`](../../../engine/src/mcp-server.ts)):
 
-- **Auto-allow** — reads and safe tools (`get_ticket`, `list_tickets`, `get_board_config`, `group_doc`, `Read`, `Glob`, `Grep`, `WebFetch`, …) and anything not in the confirm set.
-- **Confirm** — destructive ops `change_status`, `finish_ticket`, `archive`, `Bash`, the restructuring verbs `extract_ticket` / `merge_tickets` (FLUX-659 teeth), and **`branch` with `action: 'delete'`** route through a human Allow/Deny round-trip: the tool POSTs to [`/api/board/permission-request`](rest-api.md), which parks the call until a human resolves it in the portal (or 120s elapses → auto-deny). The synchronous CLI contract is satisfied by holding the HTTP response open until resolution.
+- **Auto-allow** — reads and safe tools (`get_ticket`, `list_tickets`, `get_board_config`, `Read`, `Glob`, `Grep`, `WebFetch`, …) and anything not in the confirm set.
+- **Confirm** — destructive ops `change_status`, `finish_ticket`, `archive`, `Bash`, the restructuring verbs `extract_ticket` / `merge_tickets` (FLUX-659 teeth), and the action-aware tools' destructive actions (below) route through a human Allow/Deny round-trip: the tool POSTs to [`/api/board/permission-request`](rest-api.md), which parks the call until a human resolves it in the portal (or 120s elapses → auto-deny). The synchronous CLI contract is satisfied by holding the HTTP response open until resolution.
   - **Decision normalization (FLUX-1026):** whatever the resolve endpoint returns, `permission_prompt` re-shapes it at the CLI boundary before forwarding so the union is always valid — a bare `{ behavior: 'allow' }` (the portal Approve POST omits `updatedInput`) becomes `{ behavior: 'allow', updatedInput: <original input> }` (the human approved running the tool *as proposed*), a deny without a message gets a default one, and a malformed/empty body falls back to a deny. Without this, a human-approved confirm-tier call forwarded an allow with no `updatedInput`, failing Claude Code's Zod union and crashing the CLI on every approval.
-  - **Action-aware gating (FLUX-882):** the merged tools gate on their action/type param, not just the bare name. `branch` is confirm-gated **only** when `action: 'delete'` (the old `delete_branch` gate) — `create`/`status` auto-allow. `archive` stays confirm in **both** directions (archive + unarchive). `add_note`, `delegate`, `group_doc`, `swimlane`, and `create_ticket` (incl. the subtask path) are auto-allow.
+  - **Action-aware gating (FLUX-882, hardened FLUX-939):** the merged tools gate on their action/type param, not just the bare name, via a declarative per-tool safe-actions list (`ACTION_AWARE_PERMISSION_TOOLS`) — an action NOT in that list, including a missing `input` altogether, **confirms** (fail-safe; the original `bare === 'branch'` special-case fell through to allow when `input` was absent). `branch` auto-allows only `create`/`status` (confirm-gated on `delete` — the old `delete_branch` gate). `furnace_batch` auto-allows only `ignite`/`stop`/`resume` (confirm-gated on `discard`). `group_doc` auto-allows only `list`/`read`/`submit` (confirm-gated on `delete` — it fans out to every member repo, so it now gets the same treatment `branch` delete already had; previously auto-allowed for every action). `archive` stays confirm in **both** directions (archive + unarchive). `add_note`, `delegate`, `swimlane`, and `create_ticket` (incl. the subtask path) are auto-allow.
 
 The confirm round-trip emits the `permission-request` / `permission-resolved` realtime events ([realtime channels](realtime-channels.md)) so the portal can show the approval prompt. Gating is per-session: see [permission mode](#permission-mode) below.
 
@@ -617,6 +618,8 @@ Sessions are spawned in one of two modes (`permissionArgs` in [`agents/claude-co
 - **`skip`** → `--dangerously-skip-permissions` (no gate; the legacy behavior).
 
 Defaults come from the workspace **risk tolerance** setting (`config.permissions`: `boardDefault` default `gated`, `ticketDefault` default `skip` — see [configuration](../configuration.md)). The per-chat **Perms** picker (Default / Gated / Skip) overrides per turn; "Default" inherits the configured value. Delegated/headless sessions (combiner, relay) can't block on a human, so they run un-gated regardless.
+
+**FLUX-926 (chat file-edit gate).** Ticket **chat** (`phase: 'chat'`) defaults to **skip** mode, so `permission_prompt` never fires for it — a status check there would be dead code for the default path. Instead, chat may edit files **only while the ticket is `In Progress`**: `disallowedToolsArgs` (`agents/claude-code.ts`) additionally disallows `Write`/`Edit`/`MultiEdit`/`NotebookEdit` and the known Serena file-mutation MCP tools via `--disallowed-tools` whenever `session.phase === 'chat'` and the ticket's status is not `In Progress` — permission-mode-independent, so it holds under `gated` too. Chat turns re-spawn the CLI each turn with the live ticket status in scope, so moving the ticket to `In Progress` re-enables editing on the very next turn (no restart needed), and moving it back out disables it again. Dispatched `grooming`/`implementation`/`review`/`finalize` sessions and the board/orchestrator session are unaffected (they aren't phase `'chat'`, or have no ticket status). This is a denylist, not a sandbox: it doesn't cover `Bash` (read-only dev commands are useful in a grooming chat) or any future file-writing MCP tool by name.
 
 ---
 
@@ -640,64 +643,83 @@ Ask the user a **structured multiple-choice question** and block until they answ
 
 ## Furnace tools
 
-The Furnace (FLUX-1008) is the overnight autonomous ticket runner — see the [Furnace reference](furnace.md) for the full data model, REST surface, and realtime events.
+The Furnace (FLUX-1008) is the overnight autonomous ticket runner — see the [Furnace reference](furnace.md) for the full data model, REST surface, and realtime events. A **batch** is a named bucket of tickets the Furnace burns unattended (implement → review → re-implement ≤ `retryCap` → leave the PR open at `Ready`); it **never merges**.
 
 ### `furnace_get`
 
-Read Furnace run(s). Pass `runId` for one run (its full magazine + config + burn report); omit it to list every run.
+Read Furnace batch(es). Pass `batchId` for one batch (its tickets + config + PRs + burn report); omit it to list every batch (optionally filter by `status`).
 
 | Input | Type | Required | Notes |
 |-------|------|----------|-------|
-| `runId` | string | no | A specific run id; omit to list all runs. |
+| `batchId` | string | no | A specific batch id; omit to list all batches. |
+| `status` | enum | no | When listing, only batches in this status: `draft` \| `burning` \| `done` \| `parked`. |
 
-**Output:** the run object (or an array of runs) as JSON text.
+**Output:** the batch object (with `batchId`) or, without `batchId`, `{ batches, slots: { used, free, max } }`.
 
 ### `furnace_build`
 
-Build a Furnace magazine from the groomed backlog and create a `building` run you can edit and then ignite. Deterministically scans `Todo` tickets, reasons about independence (excludes parent/child pairs; flags — never blocks — likely file overlaps and orders them apart), and returns the created run plus what it excluded and why.
+Build a Furnace batch from the groomed backlog and create it as a `draft` you can edit and then ignite. **A batch must always be an intentional selection (FLUX-1051): `tag` or `tickets` is required — neither given is refused, and there is no `allTickets` escape hatch to pool the whole backlog.** Deterministically reasons about independence (excludes parent/child pairs; flags — never blocks — likely file overlaps and orders them apart), enforces the one-active-batch invariant (a ticket already queued in another non-terminal batch is excluded, not double-loaded), and returns the created batch plus what it excluded and why — every tagged/named ticket lands in the batch or in `excluded` with a concrete reason, never silently dropped. Defaults to a `parallel` batch (each ticket its own worktree + PR); pass `kind: 'sequential'` for tickets that must stack onto one shared branch + PR in order.
 
 | Input | Type | Required | Notes |
 |-------|------|----------|-------|
-| `tag` | string | no | Only load tickets carrying this tag (an overnight/furnace opt-in hint). |
-| `statuses` | string[] | no | Statuses that count as groomed & ready (default `["Todo"]`). |
-| `limit` | number | no | Cap the magazine to at most this many charges. |
-| `burnRate` | number | no | Initial concurrency for the run (default 1). |
-| `mode` | enum | no | Initial burn mode. |
-| `title` | string | no | Human label for the run. |
+| `tag` | string | one of `tag`/`tickets` | Load tickets carrying this tag (the opt-in convention is `burn-furnace`). |
+| `tickets` | string[] | one of `tag`/`tickets` | Explicit ticket ids to include — the other selector, usable instead of or alongside `tag`. Runs through the same curation as a tag scan (parent/child exclusion, overlap flag/order), not a raw pass-through. |
+| `statuses` | string[] | no | Statuses that count as groomed & ready (default `["Todo"]`); a non-default override is echoed in `notes`. |
+| `limit` | number | no | Cap the batch to at most this many tickets. |
+| `kind` | enum | no | `sequential` \| `parallel` (default `parallel`). |
+| `burnRate` | number | no | Parallel concurrency, 1–4 (default 1). Ignored for sequential. |
+| `title` | string | no | Human label for the batch. |
 
-**Output:** `{ runId, run, excluded, notes }` — the created `building` run plus the excluded tickets (with reasons) and human-facing build notes.
+**Output:** `{ batchId, batch, excluded, notes }` — the created `draft` batch plus the excluded tickets (with reasons: `tagged but status <X> (not allowed)`, `already queued in batch <id>`, `parent of loaded ticket <id> — ...`, `capped by limit`, `unknown ticket id`) and human-facing build notes (leading with a `⚠ N tagged ticket(s) NOT loaded` warning when a tag scan drops anything).
 
 ### `furnace_update`
 
-Live-adjust a run's config — `burnRate` (concurrency), `mode`, `reviewDepth`, `retryCap`, `hardStop` (`{ at?, maxTickets?, maxConsecutiveFailures? }`), and `title`. Changes are honored on the next stoke tick. Does **not** ignite, pause, or stop a run — dedicated tools (`furnace_build` / `furnace_ignite` / `furnace_stop`, added in S2/S3/S5) handle those.
+Live-adjust a batch — title, burn rate, kind, retry cap, circuit breaker, rate-limit cooldown config, and auto-trigger. Changes are picked up on the next stoke tick. `kind`/`branch` are only changeable while the batch is a `draft`. Does **not** ignite or stop a batch — dedicated tools handle those.
 
 | Input | Type | Required | Notes |
 |-------|------|----------|-------|
-| `runId` | string | yes | The run to update. |
-| `burnRate` | number | no | Charges that may burn at once (clamped to the worktree cap). |
-| `mode` | enum | no | `sequential` \| `parallel` \| `parallel-implement-serial-review`. |
-| `reviewDepth` | enum | no | `single` \| `scatter`. |
+| `batchId` | string | yes | The batch to update. |
+| `title` | string | no | Display name. Safe to change while burning (branch unchanged). |
+| `kind` | enum | no | `sequential` \| `parallel`. Only changeable while draft. |
+| `burnRate` | number | no | Parallel concurrency, 1–4 (clamped). Ignored for sequential. |
 | `retryCap` | number | no | Re-implementation attempts before parking (default 2). |
-| `hardStop` | object | no | `{ at?, maxTickets?, maxConsecutiveFailures? }` — merged over the current hard-stop config. |
-| `title` | string | no | Human label for the run. |
+| `maxConsecutiveFailures` | number | no | Circuit breaker: halt the batch after N consecutive parks/failures. |
+| `rateLimitRetryIntervalMs` | number | no | How often (ms) a rate-limited ticket auto-retries (FLUX-1063; default 20m). |
+| `rateLimitMaxWaitMs` | number | no | Max time (ms) a ticket may cool down before failing outright (FLUX-1063; default 5h). |
+| `trigger` | object \| null | no | `{ type: 'batch' \| 'pr', ref }` — auto-ignite once the referenced batch/PR merges. `null` clears it. |
 
-### `furnace_ignite`
+### `furnace_batch` (FLUX-1085 — batch lifecycle)
 
-Ignite a built run: move it `building`→`burning` and start the Stoker. Enforces at most one active run at a time. The Stoker then burns each charge unattended — implement → review → re-implement (≤ retryCap) → **leave the PR open at Ready** — and never merges.
-
-| Input | Type | Required | Notes |
-|-------|------|----------|-------|
-| `runId` | string | yes | The run to ignite. |
-
-### `furnace_stop`
-
-Stop a run. Default is a **graceful** stop: stop feeding new charges, let in-flight charges finish (open PRs stay open for review), then the run stops. `hard: true` is an immediate cutoff that kills in-flight sessions, parks them, and skips the rest.
+Transition an existing batch: `action` discriminates `ignite` / `stop` / `resume` / `discard`. These four share a near-identical `{ batchId, ... }` shape (only `stop` takes extra params), so FLUX-1085 folded them into one tool the same way `branch` folds `create`/`status`/`delete` — `furnace_get`/`furnace_build`/`furnace_update` stayed separate tools because their per-action param sets (read filters, build selectors, live-config knobs) are too heterogeneous to merge without hurting usability.
 
 | Input | Type | Required | Notes |
 |-------|------|----------|-------|
-| `runId` | string | yes | The run to stop. |
-| `reason` | string | no | Why it is being stopped (recorded on the run). |
-| `hard` | boolean | no | Immediate cutoff: kill in-flight sessions instead of letting them drain. |
+| `action` | enum | yes | `ignite` \| `stop` \| `resume` \| `discard`. |
+| `batchId` | string | yes | The batch to transition. |
+| `reason` | string | `stop` only | Why it is being stopped (recorded on the batch). Rejected with `validation_failed` on any other action. |
+| `hard` | boolean | `stop` only | Immediate cutoff: kill in-flight sessions instead of letting them drain. Rejected with `validation_failed` on any other action. |
+
+- **`ignite`** — move `draft`→`burning` and start burning its tickets. Claims a worktree slot — fails with `no_slots` when the pool is full (max 4 concurrent). A parallel batch clamps its burn rate to the free slots.
+- **`stop`** — default is a **graceful** stop: stop feeding new tickets, let in-flight ones finish (open PRs stay open for review), then the batch finalizes. `hard: true` is an immediate cutoff that kills in-flight sessions, parks them, and skips the rest.
+- **`resume`** (FLUX-1066) — a halted (`parked`) or finished (`done`) batch → `burning`: resets the circuit breaker, clears the stop request, re-queues tickets merely skipped by the halt, claims a worktree slot (`no_slots` if the pool is full). Parked/failed tickets are **not** auto-re-queued — retry those individually via `furnace_ticket action:"retry"`.
+- **`discard`** (FLUX-1081) — permanently delete a batch. Refuses a `burning` batch (`invalid_state`) — stop it first. The cleanup path for a stale/superseded draft that a full `furnace_build` rebuild used to leave orphaned forever.
+
+### `furnace_ticket` (FLUX-1085 — per-ticket ops)
+
+Act on one ticket inside a batch: `action` discriminates `retry` / `dismiss` / `takeover` / `handback` / `add` / `remove` — the manual escape hatches for a parked/failed ticket or halted batch (same actions the Furnace drawer exposes), plus draft/membership curation. All six actions share the exact same `{ batchId, ticketId }` shape — the cleanest possible merge candidate (no per-action extra params at all).
+
+| Input | Type | Required | Notes |
+|-------|------|----------|-------|
+| `action` | enum | yes | `retry` \| `dismiss` \| `takeover` \| `handback` \| `add` \| `remove`. |
+| `batchId` | string | yes | The batch containing the ticket. |
+| `ticketId` | string | yes | The ticket to act on. |
+
+- **`retry`** (FLUX-1066) — reset a parked/failed ticket to `queued` with a **fresh** attempt budget; hands ownership back to the Furnace. Re-burns next tick if the batch is burning; a halted/finished batch needs `furnace_batch action:"resume"` first. Rejects a `pr-open` ticket (already succeeded — use takeover/handback instead).
+- **`dismiss`** (FLUX-1066) — clear the board `require-input` flag on a parked/failed ticket **without** re-queuing ("I've got this"). Works on a `done`/terminal batch too.
+- **`takeover`** (FLUX-1066) — owner → human: the Furnace yields (stops the session it was driving, never reclaims the worktree). Hand it back later with `handback`.
+- **`handback`** (FLUX-1070) — owner → furnace: re-queue a human-owned ticket with a fresh attempt budget, bypassing the pr-open/active-state guards (a human is deliberately returning it). Errors clearly if the ticket is not currently human-owned — unlike `retry`, which has no such guard.
+- **`add`** (FLUX-1081) — append the ticket to a batch (draft or burning) — picked up by the Stoker on its next tick. Rejects a `done` batch, a ticket already in the batch, one that fails the same existence/status validation as `furnace_build` (default allowed status: `Todo`), or one already queued in a *different* non-terminal batch (FLUX-1051 one-active-batch invariant — the error names the owning batch).
+- **`remove`** (FLUX-1081) — remove the ticket from a batch. Disallowed while it is actively burning in a `burning` batch (`invalid_state`) — a `queued` ticket or one in any terminal state can always be removed.
 
 ---
 
@@ -725,9 +747,32 @@ The MCP surface was consolidated from **34 tools to 24** by folding single-op to
 
 **Kept separate (NOT merged):** `update_ticket` (metadata only — never moves status) and `change_status` (the state machine — the only tool that moves status). Their descriptions were retightened so the distinction is unmistakable.
 
-**Permission gating** stayed equivalent through the rename and is now **action-aware**: `branch` is confirm-gated only on `action: 'delete'`; `archive` is confirm in both directions; `change_status` / `extract_ticket` / `merge_tickets` / `finish_ticket` remain confirm; `add_note` / `delegate` / `group_doc` / `swimlane` / `create_ticket` are auto-allow. See [`permission_prompt`](#permission_prompt).
+**Permission gating** stayed equivalent through the rename and is now **action-aware**: `branch` is confirm-gated only on `action: 'delete'`; `archive` is confirm in both directions; `change_status` / `extract_ticket` / `merge_tickets` / `finish_ticket` remain confirm; `add_note` / `delegate` / `group_doc` / `swimlane` / `create_ticket` are auto-allow. `furnace_batch` (FLUX-1085) is likewise action-aware — confirm-gated only on `action: 'discard'` (a genuine hard delete: unlinks the batch's sidecar file, no undo, unlike `archive`'s reversible status move); `ignite`/`stop`/`resume` are auto-allow. `furnace_ticket` (FLUX-1085) is auto-allow across all six of its actions, since none of them are destructive. See [`permission_prompt`](#permission_prompt).
 
 > `swimlane` (set/clear) was not previously documented as its own section here; it lives in [`mcp-server.ts`](../../../engine/src/mcp-server.ts) `buildMcpServer()` like the rest. The `'require-input'` swimlane keeps its special-cased session-parking behavior under `swimlane({ action: 'set', swimlane: 'require-input', comment })`, mirroring `change_status` → Require Input.
+
+---
+
+## FLUX-1085 Furnace tool consolidation (migration)
+
+The Furnace MCP surface grew to 13 single-op tools as recovery (FLUX-1066/1070) and draft-curation (FLUX-1081) tools were added on top of the original five. FLUX-1085 investigated folding the whole family into one `furnace(action, ...)` tool (mirroring the FLUX-882 precedent above) and found that too aggressive: the read/build/config tools (`furnace_get`/`furnace_build`/`furnace_update`) have large, heterogeneous per-action param sets (read filters vs. build selectors vs. live-config knobs) that would produce one bloated schema harder for a model to use correctly than 3 tight ones — exactly the risk the investigation ticket called out. Instead it did a **partial, shape-driven consolidation**: only tools sharing a near-identical signature were merged, same-branch-precedent as `branch`'s `force`-only-on-delete guard.
+
+This was also a **hard cut — the old tool names were removed, with no aliases** (consistent with the FLUX-882 precedent).
+
+| Old tool(s) | New tool | How to call |
+|-------------|----------|-------------|
+| `furnace_ignite` | `furnace_batch` | `furnace_batch({ action: 'ignite', batchId })` |
+| `furnace_stop` | `furnace_batch` | `furnace_batch({ action: 'stop', batchId, reason?, hard? })` |
+| `furnace_resume` | `furnace_batch` | `furnace_batch({ action: 'resume', batchId })` |
+| `furnace_discard` | `furnace_batch` | `furnace_batch({ action: 'discard', batchId })` |
+| `furnace_retry` | `furnace_ticket` | `furnace_ticket({ action: 'retry', batchId, ticketId })` |
+| `furnace_dismiss` | `furnace_ticket` | `furnace_ticket({ action: 'dismiss', batchId, ticketId })` |
+| `furnace_takeover` | `furnace_ticket` | `furnace_ticket({ action: 'takeover', batchId, ticketId })` |
+| `furnace_handback` | `furnace_ticket` | `furnace_ticket({ action: 'handback', batchId, ticketId })` |
+| `furnace_add_ticket` | `furnace_ticket` | `furnace_ticket({ action: 'add', batchId, ticketId })` |
+| `furnace_remove_ticket` | `furnace_ticket` | `furnace_ticket({ action: 'remove', batchId, ticketId })` |
+
+**Kept separate (NOT merged):** `furnace_get` (read), `furnace_build` (create), `furnace_update` (live-config) — each keeps its own large, distinct param set. Net effect: 13 Furnace tools → 5 (a 62% cut, deeper than FLUX-882's 29% because every merged group here has a genuinely uniform signature).
 
 ---
 

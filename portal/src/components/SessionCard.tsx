@@ -1,4 +1,12 @@
-import { memo, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
+import {
+  memo,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { Bot, Square, Clock, CircleDot, Terminal } from 'lucide-react';
 import type { CliSessionSummary, Config } from '../types';
@@ -40,8 +48,9 @@ export interface SessionCardProps {
   session?: CliSessionSummary | null;
   /** An orchestration run group. Mutually exclusive with `session`. */
   group?: SessionGroup | null;
-  /** Open this session's chat. Receives the click so the caller can anchor the dock window. */
-  onOpen: (e: ReactMouseEvent) => void;
+  /** Open this session's chat. Receives the click/keydown so the caller can anchor the dock window
+   *  (`e.currentTarget` is the card root either way). Fires on click and on Enter/Space activation. */
+  onOpen: (e: ReactMouseEvent | ReactKeyboardEvent) => void;
   /** Stop the session (solo) or the whole run (group). Must `stopPropagation`. */
   onStop: (e: ReactMouseEvent) => void;
   /** Reused pending-interaction node (ChatApprovalPanel + ChatQuestionPicker) for a waiting-input
@@ -97,15 +106,7 @@ function InstantTooltip({ label, children }: { label: ReactNode; children: React
   };
   const hide = () => setPos(null);
   return (
-    <span
-      ref={ref}
-      onMouseEnter={show}
-      onMouseLeave={hide}
-      onFocus={show}
-      onBlur={hide}
-      tabIndex={0}
-      className="inline-flex outline-none"
-    >
+    <span ref={ref} onMouseEnter={show} onMouseLeave={hide} className="inline-flex outline-none">
       {children}
       {pos != null &&
         createPortal(
@@ -166,6 +167,7 @@ function StopButton({ onStop, title }: { onStop: (e: ReactMouseEvent) => void; t
     <button
       type="button"
       onClick={onStop}
+      onKeyDown={(e) => e.stopPropagation()}
       title={title}
       aria-label={title}
       className="shrink-0 rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/10"
@@ -481,8 +483,8 @@ export const SessionCard = memo(function SessionCard({
       )}
 
       {isWaiting && (
-        // stopPropagation so resolving the approval/question never also opens the chat.
-        <div onClick={(e) => e.stopPropagation()} className="flex flex-col gap-2">
+        // stopPropagation (click + keydown) so resolving the approval/question never also opens the chat.
+        <div onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()} className="flex flex-col gap-2">
           {hasPendingInteraction ? (
             pendingSlot
           ) : waitingSession?.blockedReason ? (
@@ -495,10 +497,20 @@ export const SessionCard = memo(function SessionCard({
     </>
   );
 
+  const handleKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();
+    onOpen(e);
+  };
+
   return (
     <div
       onClick={onOpen}
-      className={`group/card relative flex cursor-pointer flex-col gap-2 rounded-xl border p-3 transition-all ${toneClass}`}
+      onKeyDown={handleKeyDown}
+      role="button"
+      tabIndex={0}
+      aria-label={`Open chat — ${task.title || task.id}`}
+      className={`group/card relative flex cursor-pointer flex-col gap-2 rounded-xl border p-3 outline-none transition-all focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 dark:focus-visible:ring-offset-gray-900 ${toneClass}`}
     >
       {header}
       {glance}

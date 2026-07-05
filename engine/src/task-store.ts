@@ -1,7 +1,11 @@
 import { log } from './log.js';
+import { performance } from 'node:perf_hooks';
+import { recordDuration } from './perf/registry.js';
+import { recordFullRescan, recordWorkspaceActivation } from './perf/rescan-timing.js';
+import { recordWatchEvent } from './perf/watch-storm.js';
 import { finalMessageNeedsUser } from './final-message-heuristic.js';
 import fs from 'fs/promises';
-import { renameSync, realpathSync } from 'fs';
+import { renameSync, realpathSync, existsSync } from 'fs';
 import path from 'path';
 import matter from 'gray-matter';
 import chokidar from 'chokidar';
@@ -11,15 +15,15 @@ import chokidar from 'chokidar';
 import { runGit } from './git-exec.js';
 import { getActiveFluxDir, getTaskAssetsDir, getFluxStoreDir, isOrphanMode, setWorkspaceRoot, workspaceRoot, getWorkspacesList } from './workspace.js';
 import { attachWorktreeIfPresent, migrateStrandedFluxTickets } from './storage-sync.js';
-import { startSyncWatcher, allocateNewTicketId } from './sync-watcher.js';
+import { startSyncWatcher, allocateNewTicketId, triggerSync } from './sync-watcher.js';
 import { configCache, loadConfig, autoRegisterUnknownTags } from './config.js';
 import { loadCustomPersonas } from './orchestration-personas.js';
-import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate, getHistoryTimestamp, digestHistoryForAgent, buildHistoryDigest, compactSessionProgress, extractRecentUserComments, extractLaunchFocus } from './history.js';
+import { normalizeHistoryEntries, ensureCreationActivity, buildActivityEntry, findEarliestHistoryDate, getHistoryTimestamp, digestHistoryForAgent, buildHistoryDigest, compactSessionProgress, extractRecentUserComments, extractLaunchFocus, type HistoryEntryLike } from './history.js';
 import { generatePromptNotification, generateCompletionNotification, clearNotifications, checkSkillStaleness, addNotification } from './notifications.js';
 import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
 import { broadcastEvent } from './events.js';
 import { rehydrateOpenPrompts } from './hitl-prompts.js';
-import { getCliSessionSummaryForTask, getAllSessionSummariesForTask, getListSessionSummariesForTask, slimSessionSummaryForAgent, cliSessionsById, cliSessionIdByTaskId, rehydrateSessionStubs, armReclaimGrace } from './session-store.js';
+import { getCliSessionSummaryForTask, getListCliSessionSummaryForTask, getAllSessionSummariesForTask, getListSessionSummariesForTask, slimSessionSummaryForAgent, cliSessionsById, cliSessionIdByTaskId, rehydrateSessionStubs, armReclaimGrace } from './session-store.js';
 import { isTopLevelTaskFile, getDocsDir, isDocFile, getDocPathFromFile, titleFromDocPath, slugifyDocValue, parseDocOrder } from './file-utils.js';
 import type { StoredDoc } from './file-utils.js';
 import { resolveEmbeddedDocsRoot, copyDir, buildStarterProjectOverview } from './docs-seeder.js';
@@ -29,6 +33,51 @@ import { attachMemberWorktree } from './group-member-worktree.js';
 import { pruneTaskWorktrees } from './task-worktree.js';
 import { probeAllEnabled } from './module-probe.js';
 
+/**
+ * Minimal shape of a cached/validated ticket as accessed by this file's helpers. `tasksCache`
+ * itself intentionally stays `Record<string, any>` right below (see that export's comment) —
+ * narrowing ITS declared value type cascades into ~40 other files that read/assign
+ * `tasksCache[id]` directly (empirically verified while working this ticket: doing so broke
+ * agents/{claude-code,copilot,gemini}.ts, furnace-stoker.ts, mcp-server.ts, and several test
+ * fixtures that construct partial ticket literals — `noUncheckedIndexedAccess` adds `| undefined`
+ * to every `tasksCache[id]` read the instant the value type isn't literally `any`). A function
+ * that merely RECEIVES an `any`-typed task value can still declare a real parameter type, though:
+ * an `any` argument satisfies any parameter type without a cast. Only fields this file actually
+ * reads are named here; every other frontmatter field still round-trips through the index
+ * signature untouched.
+ */
+export interface TaskRecord {
+  id: string;
+  title: string;
+  status: string;
+  body: string;
+  _path: string;
+  priority?: string | null | undefined;
+  effort?: string | null | undefined;
+  assignee?: string | null | undefined;
+  swimlane?: string | null | undefined;
+  [key: string]: unknown;
+}
+
+/**
+ * Frontmatter bag as read fresh from disk (readTaskFromDisk) and mutated in place before being
+ * written back (updateAgentSessionLocked / updateTaskWithHistoryLocked). Narrower than TaskRecord
+ * because a freshly-read or partially-repaired file may legitimately be missing any field (hence
+ * the `!frontmatter.title`-style guards below) — only fields read with a concrete expected type
+ * are named; everything else (including fields only ever written, like `needsAction`/
+ * `tokenMetadata`) flows through the index signature, since writing a concrete value into an
+ * `unknown`-typed slot never needs narrowing.
+ */
+export interface TaskFrontmatter {
+  title?: string | undefined;
+  createdBy?: string | undefined;
+  swimlane?: string | null | undefined;
+  [key: string]: unknown;
+}
+
+// FLUX-1073: `tasksCache`'s value type intentionally stays `any` — see the TaskRecord doc comment
+// above for why narrowing it is out of scope for a single-file typing pass.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export let tasksCache: Record<string, any> = {};
 export let docsCache: Record<string, StoredDoc> = {};
 export let parseErrors: Record<string, { id: string; path: string; error: string }> = {};
@@ -65,7 +114,7 @@ export async function atomicWriteFile(filePath: string, content: string): Promis
   }
 }
 
-export function serializeTaskForApi(task: any) {
+export function serializeTaskForApi(task: TaskRecord) {
   const cliSessions = getAllSessionSummariesForTask(task.id);
   return {
     ...task,
@@ -118,8 +167,8 @@ export function truncateBodyForAgent(
  * the portal. Use `get_session_log` semantics (fetch by sessionId) for raw
  * progress when an agent genuinely needs it.
  */
-export function serializeTaskForAgent(task: any, historyLimit?: number, opts: { expand?: string[] | undefined; fullHistory?: boolean | undefined; fullBody?: boolean | undefined } = {}) {
-  const keepRecent = (configCache as any)?.commentDigest?.keepRecent ?? 3;
+export function serializeTaskForAgent(task: TaskRecord, historyLimit?: number, opts: { expand?: string[] | undefined; fullHistory?: boolean | undefined; fullBody?: boolean | undefined } = {}) {
+  const keepRecent = configCache?.commentDigest?.keepRecent ?? 3;
   const fullHistory = Array.isArray(task.history) ? task.history : [];
   const { history, olderHistoryEntries, collapsedCount } = digestHistoryForAgent(
     fullHistory,
@@ -131,7 +180,7 @@ export function serializeTaskForAgent(task: any, historyLimit?: number, opts: { 
   // fall outside the history window) and the persisted launch focus, plus cheap
   // boolean/timestamp flags so routing/preview consumers (FLUX-478/483) can read
   // them without pulling full history.
-  const keepUserComments = (configCache as any)?.commentDigest?.recentUserComments ?? 3;
+  const keepUserComments = configCache?.commentDigest?.recentUserComments ?? 3;
   const recentUserComments = extractRecentUserComments(fullHistory, keepUserComments);
   const launchFocus = extractLaunchFocus(fullHistory);
   const cliSession = getCliSessionSummaryForTask(task.id);
@@ -150,7 +199,7 @@ export function serializeTaskForAgent(task: any, historyLimit?: number, opts: { 
     priority: task.priority ?? 'None',
     effort: task.effort ?? 'None',
     assignee: task.assignee ?? 'unassigned',
-    tags: Array.isArray(task.tags) ? task.tags.filter((x: any) => typeof x === 'string') : [],
+    tags: Array.isArray(task.tags) ? task.tags.filter((x) => typeof x === 'string') : [],
     history,
     ...(olderHistoryEntries > 0 ? { olderHistoryEntries } : {}),
     ...(collapsedCount ? { collapsedCount } : {}),
@@ -173,7 +222,7 @@ export function serializeTaskForAgent(task: any, historyLimit?: number, opts: { 
  * definition so both surfaces agree on what "resting" means.
  */
 export function getTerminalStatuses(): string[] {
-  return ['Done', 'Released', (configCache as any)?.archiveStatus || 'Archived'];
+  return ['Done', 'Released', configCache?.archiveStatus || 'Archived'];
 }
 
 /**
@@ -182,7 +231,7 @@ export function getTerminalStatuses(): string[] {
  * truncated `liveOutput`) so `GET /api/tasks` payload doesn't grow with session
  * history. The detail endpoint keeps {@link serializeTaskForApi}.
  */
-export function serializeTaskForList(task: any) {
+export function serializeTaskForList(task: TaskRecord) {
   const cliSessions = getListSessionSummariesForTask(task.id);
   // FLUX-725: replace the raw `history[]` (fetched + parsed on every ~3s poll / `taskUpdated` SSE on
   // a large board) with a compact derived `historyDigest` the cards + attention surfaces read for
@@ -194,18 +243,41 @@ export function serializeTaskForList(task: any) {
   // (serializeTaskForApi) still carries full `history` for the modal/chat, which lazy-fetch on open.
   const fullHistory = Array.isArray(task.history) ? task.history : [];
   const { history: _history, ...rest } = task;
+  // FLUX-957: collect the inline-rendered entries in the same pass buildHistoryDigest already
+  // makes over fullHistory, instead of a second O(n) `.filter`. Comments and active sessions are
+  // collected into separate buckets (each tagged with its traversal index) so FLUX-1144 can cap
+  // comments to the most recent few below without disturbing the active-session entries or the
+  // original relative order once both buckets are merged back together.
+  const commentEntries: Array<{ i: number; e: HistoryEntryLike }> = [];
+  const sessionEntries: Array<{ i: number; e: HistoryEntryLike }> = [];
+  let entryIndex = 0;
+  const historyDigest = buildHistoryDigest(fullHistory, task.status, task.swimlane, undefined, (e) => {
+    const i = entryIndex++;
+    if (e?.type === 'comment') commentEntries.push({ i, e });
+    else if (e?.type === 'agent_session' && e?.status === 'active') sessionEntries.push({ i, e });
+  });
+  // FLUX-1144: comments were ~50% of a full-board list response (4,257 comments / 11MB measured
+  // 2026-07-05) — the hover popover only ever needs recent context at a glance ("Open in full
+  // view" reads the complete thread off the detail endpoint). Cap the full-text comments shipped
+  // here to the most recent `keepRecent`; board-wide unread badges + "mark all read" already read
+  // comment ids from `historyDigest.comments` (full, text-free) rather than this array, so capping
+  // it only changes which comments render inline on hover, not what counts as read/unread.
+  const keepRecentComments = configCache?.commentDigest?.keepRecent ?? 3;
+  const keptComments = keepRecentComments > 0 ? commentEntries.slice(-keepRecentComments) : [];
+  const inlineHistory = [...keptComments, ...sessionEntries]
+    .sort((a, b) => a.i - b.i)
+    .map(({ e }) => e);
   return {
     ...rest,
-    history: fullHistory.filter(
-      (e: any) => e?.type === 'comment' || (e?.type === 'agent_session' && e?.status === 'active'),
-    ),
-    historyDigest: buildHistoryDigest(fullHistory, task.status, task.swimlane),
-    cliSession: getCliSessionSummaryForTask(task.id),
+    history: inlineHistory,
+    historyDigest,
+    // FLUX-1144: truncates `liveOutput` to a short tail — see getListCliSessionSummaryForTask.
+    cliSession: getListCliSessionSummaryForTask(task.id),
     cliSessions: cliSessions.length > 0 ? cliSessions : undefined,
   };
 }
 
-export async function readTaskFromDisk(task: any): Promise<{ frontmatter: any; body: string }> {
+export async function readTaskFromDisk(task: TaskRecord): Promise<{ frontmatter: TaskFrontmatter; body: string }> {
   const fallbackFromCache = () => {
     const { body: cachedBody, _path: _p, id: _id, ...cachedFm } = task;
     return { frontmatter: { ...cachedFm }, body: cachedBody || '' };
@@ -229,7 +301,7 @@ export async function readTaskFromDisk(task: any): Promise<{ frontmatter: any; b
   }
 }
 
-function recoverSessionEntry(taskId: string, sessionId: string, task: any): any | null {
+function recoverSessionEntry(taskId: string, sessionId: string, task: TaskRecord) {
   const liveSessionId = cliSessionIdByTaskId.get(taskId);
   const liveSession = liveSessionId ? cliSessionsById.get(liveSessionId) : undefined;
   if (liveSession?.sessionHistoryEntry?.sessionId === sessionId) {
@@ -237,8 +309,8 @@ function recoverSessionEntry(taskId: string, sessionId: string, task: any): any 
     return { ...liveSession.sessionHistoryEntry };
   }
 
-  const cachedHistory: any[] = Array.isArray(task.history) ? task.history : [];
-  const cachedEntry = cachedHistory.find((e: any) => e?.type === 'agent_session' && e?.sessionId === sessionId);
+  const cachedHistory = Array.isArray(task.history) ? task.history : [];
+  const cachedEntry = cachedHistory.find((e) => e?.type === 'agent_session' && e?.sessionId === sessionId);
   if (cachedEntry) {
     log.info(`updateAgentSession: re-injected session ${sessionId} from cache`);
     return { ...cachedEntry };
@@ -247,13 +319,21 @@ function recoverSessionEntry(taskId: string, sessionId: string, task: any): any 
   return null;
 }
 
-export async function updateAgentSession(taskId: string, sessionId: string, updater: (session: any) => void) {
+// FLUX-992: routes through the same per-ticket write lock as updateTaskWithHistory. This function
+// does its own read-modify-write of the full frontmatter (not just the touched history entry), so
+// without the lock a concurrent write to any other field (e.g. swimlane set by change_status) could
+// read stale frontmatter here and get silently reverted when this write lands after.
+export function updateAgentSession(taskId: string, sessionId: string, updater: (session: Record<string, unknown>) => void) {
+  return serializeTicketWrite(taskId, () => updateAgentSessionLocked(taskId, sessionId, updater));
+}
+
+async function updateAgentSessionLocked(taskId: string, sessionId: string, updater: (session: Record<string, unknown>) => void) {
   const task = tasksCache[taskId];
   if (!task) return null;
 
   const { frontmatter, body } = await readTaskFromDisk(task);
-  const history = frontmatter.history || [];
-  let sessionIndex = history.findIndex((entry: any) => entry?.type === 'agent_session' && entry?.sessionId === sessionId);
+  const history = Array.isArray(frontmatter.history) ? frontmatter.history : [];
+  let sessionIndex = history.findIndex((entry) => entry?.type === 'agent_session' && entry?.sessionId === sessionId);
 
   if (sessionIndex === -1) {
     const recovered = recoverSessionEntry(taskId, sessionId, task);
@@ -333,10 +413,10 @@ function serializeTicketWrite<T>(taskId: string, run: () => Promise<T>): Promise
 }
 
 export function updateTaskWithHistory(taskId: string, options: {
-  entries?: any[];
+  entries?: unknown[];
   updatedBy?: string;
   nextStatus?: string;
-  extraFields?: Record<string, any>;
+  extraFields?: Record<string, unknown>;
   // FLUX-1068: frontmatter keys to REMOVE (not just null out) — e.g. detaching a parent should
   // delete `parentId` entirely, matching the REST PUT route rather than persisting `parentId: null`.
   deleteFields?: string[];
@@ -346,19 +426,25 @@ export function updateTaskWithHistory(taskId: string, options: {
   newTitle?: string;
   newBody?: string;
   tokenMetadata?: { inputTokens: number; outputTokens: number; costUSD: number; costIsEstimated: boolean; cacheReadTokens?: number; cacheCreationTokens?: number } | undefined;
+  // FLUX-987: append this child ticket id to frontmatter.subtasks. Computed from the FRESH
+  // on-disk array read under THIS lock acquisition (not a precomputed array passed via
+  // extraFields) — a concurrent write to the same parent (add_note/change_status/another
+  // create_ticket) can't clobber this addition, which is exactly the race this option closes.
+  appendSubtask?: string;
 }) {
   return serializeTicketWrite(taskId, () => updateTaskWithHistoryLocked(taskId, options));
 }
 
 async function updateTaskWithHistoryLocked(taskId: string, options: {
-  entries?: any[];
+  entries?: unknown[];
   updatedBy?: string;
   nextStatus?: string;
-  extraFields?: Record<string, any>;
+  extraFields?: Record<string, unknown>;
   deleteFields?: string[];
   newTitle?: string;
   newBody?: string;
   tokenMetadata?: { inputTokens: number; outputTokens: number; costUSD: number; costIsEstimated: boolean; cacheReadTokens?: number; cacheCreationTokens?: number } | undefined;
+  appendSubtask?: string;
 }) {
   const task = tasksCache[taskId];
   if (!task) return null;
@@ -370,7 +456,7 @@ async function updateTaskWithHistoryLocked(taskId: string, options: {
 
   const { frontmatter, body } = await readTaskFromDisk(task);
 
-  const normalizedExistingHistory = normalizeHistoryEntries(frontmatter.history || []);
+  const normalizedExistingHistory = normalizeHistoryEntries(Array.isArray(frontmatter.history) ? frontmatter.history : []);
   let nextHistory = ensureCreationActivity(
     normalizedExistingHistory.history,
     frontmatter.createdBy || actor,
@@ -425,6 +511,15 @@ async function updateTaskWithHistoryLocked(taskId: string, options: {
     frontmatter.tokenMetadata = options.tokenMetadata;
   }
 
+  // FLUX-987: read-modify-write frontmatter.subtasks off the frontmatter this lock acquisition
+  // just read fresh from disk above — not off a value the caller captured before entering the
+  // lock — so a concurrent write to the same parent can't drop this addition (or vice versa).
+  if (options.appendSubtask) {
+    const subtasks = subtaskIds(frontmatter.subtasks);
+    if (!subtasks.includes(options.appendSubtask)) subtasks.push(options.appendSubtask);
+    frontmatter.subtasks = subtasks;
+  }
+
   // Ensure id is present — some tickets derive it from filename rather than frontmatter
   if (!frontmatter.id) frontmatter.id = taskId;
 
@@ -455,9 +550,9 @@ async function updateTaskWithHistoryLocked(taskId: string, options: {
  * Normalize a ticket's `subtasks` frontmatter (string ids or legacy inline `{id}` objects)
  * to a plain string[] of child ids. Shared by the parent/subtask link sync (FLUX-1068).
  */
-export function subtaskIds(subtasks: any): string[] {
+export function subtaskIds(subtasks: unknown): string[] {
   return (Array.isArray(subtasks) ? subtasks : [])
-    .map((s: any) => (typeof s === 'string' ? s : s?.id))
+    .map((s) => (typeof s === 'string' ? s : s?.id))
     .filter(Boolean);
 }
 
@@ -591,7 +686,7 @@ export interface CreateTaskOptions {
 
 export interface CreateTaskResult {
   id: string;
-  task: any;
+  task: TaskRecord;
 }
 
 async function getMaxIdFromRemote(projectKey: string): Promise<number> {
@@ -613,8 +708,8 @@ async function getMaxIdFromRemote(projectKey: string): Promise<number> {
     });
 
     return maxId;
-  } catch (err: any) {
-    console.warn(`[tasks] Could not check remote for max ticket ID: ${err.message}`);
+  } catch (err) {
+    console.warn(`[tasks] Could not check remote for max ticket ID: ${err instanceof Error ? err.message : String(err)}`);
     return 0;
   }
 }
@@ -647,7 +742,7 @@ export async function createTask(options: CreateTaskOptions): Promise<CreateTask
     ? { history: [{ type: 'activity', user: actor, date: createdAt, comment: `Created as subtask of ${options.parentId}.` }], changed: true }
     : ensureCreationActivity(normalizedHistory.history, actor, createdAt);
 
-  const frontmatter: any = {
+  const frontmatter = {
     id: nextId,
     title: options.title || 'New Task',
     status: options.status || 'Todo',
@@ -713,9 +808,9 @@ export async function deleteTask(id: string): Promise<void> {
  */
 export async function upsertManagedTicket(
   id: string,
-  fields: Record<string, any>,
+  fields: Record<string, unknown>,
   body = '',
-): Promise<{ task: any; created: boolean; changed: boolean }> {
+): Promise<{ task: TaskRecord; created: boolean; changed: boolean }> {
   const existing = tasksCache[id];
   const fieldsChanged = !existing || Object.entries(fields).some(([k, v]) => JSON.stringify(existing[k]) !== JSON.stringify(v));
   // A non-empty `body` that differs forces a rewrite (e.g. a gh PR description changed but no
@@ -731,7 +826,7 @@ export async function upsertManagedTicket(
     ? existing.history
     : [{ type: 'activity', user: 'Agent', date: now, comment: 'Created (engine-managed).' }];
   const base = existing ? (() => { const { body: _b, _path: _p, ...fm } = existing; return fm; })() : {};
-  const frontmatter: any = { ...base, ...fields, id, history, updatedBy: 'Agent' };
+  const frontmatter = { ...base, ...fields, id, history, updatedBy: 'Agent' };
   const useBody = body || existing?.body || '';
 
   recentEngineWrites.add(filePath);
@@ -746,15 +841,15 @@ export async function upsertManagedTicket(
  * into separate ticket files. Returns the normalized string[] of IDs if changes
  * were made, or null if no normalization needed.
  */
-export async function normalizeInlineSubtasks(frontmatter: any, parentPath: string): Promise<string[] | null> {
+export async function normalizeInlineSubtasks(frontmatter: Record<string, unknown>, parentPath: string): Promise<string[] | null> {
   const subtasks = frontmatter.subtasks;
   if (!Array.isArray(subtasks) || subtasks.length === 0) return null;
 
-  const hasInlineObjects = subtasks.some((entry: any) => typeof entry === 'object' && entry !== null);
+  const hasInlineObjects = subtasks.some((entry) => typeof entry === 'object' && entry !== null);
   if (!hasInlineObjects) return null;
 
   const fluxDir = path.dirname(parentPath);
-  const parentId = frontmatter.id || path.basename(parentPath, '.md');
+  const parentId = typeof frontmatter.id === 'string' && frontmatter.id ? frontmatter.id : path.basename(parentPath, '.md');
   const normalizedIds: string[] = [];
   const createdAt = new Date().toISOString();
 
@@ -791,7 +886,7 @@ export async function normalizeInlineSubtasks(frontmatter: any, parentPath: stri
       // File doesn't exist — create it
     }
 
-    const childFrontmatter: any = {
+    const childFrontmatter = {
       id: childId,
       title: entry.title || childId,
       status: entry.status || 'Todo',
@@ -823,12 +918,36 @@ export async function normalizeInlineSubtasks(frontmatter: any, parentPath: stri
   return normalizedIds;
 }
 
+/** Shape of a raw (pre-repair) history entry — every field is unverified, hence all-optional. */
+interface RepairableHistoryEntry {
+  type?: string;
+  from?: string;
+  to?: string;
+  oldStatus?: string;
+  newStatus?: string;
+  comment?: string;
+  sessionId?: string;
+  date?: string;
+  user?: string;
+  [key: string]: unknown;
+}
+
 /**
  * Attempt to repair common schema violations in-place before validation.
  * Returns a list of repairs made, or empty array if nothing was fixed.
  */
-function repairTicket(frontmatter: any, filePath: string): string[] {
+export function repairTicket(frontmatter: Record<string, unknown>, filePath: string): string[] {
   const repairs: string[] = [];
+
+  // Missing/invalid status → default to a safe fallback so a repaired ticket never lands in
+  // the cache with status: undefined, which crashes the portal's column lookup (FLUX-1076: a
+  // conflicted flux-data merge left tickets with corrupt frontmatter that repaired a title but
+  // not a status). "Todo" mirrors the default createTask/normalizeInlineSubtasks already use
+  // for brand-new tickets, so a recovered ticket lands wherever new work normally starts.
+  if (typeof frontmatter.status !== 'string' || !frontmatter.status.trim()) {
+    frontmatter.status = 'Todo';
+    repairs.push('Recovered missing/invalid status → "Todo"');
+  }
 
   // Missing title → derive from filename
   if (!frontmatter.title || (typeof frontmatter.title === 'string' && !frontmatter.title.trim())) {
@@ -840,7 +959,7 @@ function repairTicket(frontmatter: any, filePath: string): string[] {
   // Repair history entries
   if (Array.isArray(frontmatter.history)) {
     for (let i = 0; i < frontmatter.history.length; i++) {
-      const entry = frontmatter.history[i];
+      const entry = frontmatter.history[i] as RepairableHistoryEntry | null | undefined;
       if (!entry || typeof entry !== 'object') continue;
 
       // oldStatus/newStatus → from/to
@@ -909,11 +1028,11 @@ function repairTicket(frontmatter: any, filePath: string): string[] {
   if (Array.isArray(frontmatter.subtasks)) {
     let subtasksRepaired = false;
     frontmatter.subtasks = frontmatter.subtasks
-      .map((entry: any) => {
+      .map((entry: unknown): string | null => {
         if (typeof entry === 'string') return entry;
-        if (entry && typeof entry === 'object' && typeof entry.id === 'string') {
+        if (entry && typeof entry === 'object' && typeof (entry as { id?: unknown }).id === 'string') {
           subtasksRepaired = true;
-          return entry.id;
+          return (entry as { id: string }).id;
         }
         if (entry && typeof entry === 'object') {
           // id-less inline object — normalizeInlineSubtasks should have handled
@@ -922,7 +1041,7 @@ function repairTicket(frontmatter: any, filePath: string): string[] {
         }
         return null;
       })
-      .filter((entry: any) => entry != null);
+      .filter((entry): entry is string => entry != null);
     if (subtasksRepaired) {
       repairs.push('Normalized inline subtask objects to string IDs');
     }
@@ -932,6 +1051,17 @@ function repairTicket(frontmatter: any, filePath: string): string[] {
 }
 
 export async function loadTask(filePath: string) {
+  // FLUX-1132: thin timing wrapper — every exit path (including the early-return guards below)
+  // feeds `store.loadTask`, so the histogram reflects the real call rate off the file watcher.
+  const __loadTaskStartedAt = performance.now();
+  try {
+    return await loadTaskInner(filePath);
+  } finally {
+    recordDuration('store.loadTask', performance.now() - __loadTaskStartedAt);
+  }
+}
+
+async function loadTaskInner(filePath: string) {
   if (!isTopLevelTaskFile(filePath)) return;
   if (repairingPaths.has(filePath)) return;
   // Skip the watcher event generated by our own write-back (see recentEngineWrites).
@@ -1026,12 +1156,12 @@ export async function loadTask(filePath: string) {
     const existingTask = tasksCache[id];
     if (existingTask && Array.isArray(existingTask.history)) {
       const fileSessionIds = new Set(
-        history.filter((e: any) => e?.type === 'agent_session').map((e: any) => e.sessionId)
+        history.filter((e) => e?.type === 'agent_session').map((e) => e.sessionId)
       );
       const fileCommentIds = new Set(
-        history.filter((e: any) => e?.type === 'comment' && e?.id).map((e: any) => e.id)
+        history.filter((e) => e?.type === 'comment' && e?.id).map((e) => e.id)
       );
-      const missingEntries: any[] = [];
+      const missingEntries: HistoryEntryLike[] = [];
       for (const entry of existingTask.history) {
         if (entry?.type === 'agent_session' && !fileSessionIds.has(entry.sessionId)) {
           missingEntries.push(entry);
@@ -1041,13 +1171,13 @@ export async function loadTask(filePath: string) {
       }
       if (missingEntries.length > 0) {
         history.push(...missingEntries);
-        history.sort((a: any, b: any) => getHistoryTimestamp(a) - getHistoryTimestamp(b));
+        history.sort((a, b) => getHistoryTimestamp(a) - getHistoryTimestamp(b));
         historyReinjected = true;
         log.info(`[${id}] Re-injected ${missingEntries.length} history entries dropped by agent`);
       }
     }
 
-    const normalizedFrontmatter: any = { ...parsed.data, history };
+    const normalizedFrontmatter: Record<string, unknown> = { ...parsed.data, history };
 
     // Normalize inline subtask objects → create separate ticket files and convert to string IDs
     const subtasksNormalized = await normalizeInlineSubtasks(normalizedFrontmatter, filePath);
@@ -1082,7 +1212,7 @@ export async function loadTask(filePath: string) {
     }
 
     if (normalizedFrontmatter.tags && Array.isArray(normalizedFrontmatter.tags)) {
-      await autoRegisterUnknownTags(normalizedFrontmatter.tags);
+      await autoRegisterUnknownTags(normalizedFrontmatter.tags as string[]);
     }
 
     log.info(`Loaded task: ${id}`);
@@ -1136,8 +1266,8 @@ export async function loadDocsDirectory(directoryPath: string) {
         await loadDoc(entryPath);
       }
     }
-  } catch (error: any) {
-    if (error.code !== 'ENOENT') {
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
       console.error(`Failed to read docs directory ${directoryPath}:`, error);
     }
   }
@@ -1204,8 +1334,8 @@ async function loadGroupDocsDirectory(storeDir: string, directoryPath: string) {
         await loadGroupDoc(storeDir, entryPath);
       }
     }
-  } catch (error: any) {
-    if (error.code !== 'ENOENT') {
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
       console.error(`Failed to read group docs directory ${directoryPath}:`, error);
     }
   }
@@ -1232,11 +1362,12 @@ export async function reconcileOrphanedSessions() {
   let recoveredCount = 0;
 
   for (const task of Object.values(tasksCache)) {
-    const history: any[] = Array.isArray(task.history) ? task.history : [];
+    const history: HistoryEntryLike[] = Array.isArray(task.history) ? task.history : [];
 
     // Find all active agent_session entries
     const activeSessions = history.filter(
-      (e) => e.type === 'agent_session' && e.status === 'active'
+      (e): e is HistoryEntryLike & { sessionId: string } =>
+        e.type === 'agent_session' && e.status === 'active' && typeof e.sessionId === 'string'
     );
 
     for (const session of activeSessions) {
@@ -1344,26 +1475,43 @@ async function seedStarterDocs(docsDir: string): Promise<void> {
 }
 
 export async function initDir() {
+  // FLUX-1132: thin timing wrapper around the whole disk rescan — see recordFullRescan.
+  const __initDirStartedAt = performance.now();
   try {
-    await fs.mkdir(getActiveFluxDir(), { recursive: true });
-    await fs.mkdir(getDocsDir(), { recursive: true });
-    await fs.mkdir(getTaskAssetsDir(), { recursive: true });
-    await seedStarterDocs(getDocsDir());
-    await loadDocsDirectory(getDocsDir());
-  } catch {
-    // ignore
-  }
-  await loadConfig();
-  await loadPricingDoc();
-  await loadCustomPersonas();
-  const activeDir = getActiveFluxDir();
-  const fluxFiles = await fs.readdir(activeDir).catch(() => [] as string[]);
-  for (const name of fluxFiles) {
-    if (isTopLevelTaskFile(path.join(activeDir, name))) {
-      await loadTask(path.join(activeDir, name));
+    try {
+      await fs.mkdir(getActiveFluxDir(), { recursive: true });
+      await fs.mkdir(getDocsDir(), { recursive: true });
+      await fs.mkdir(getTaskAssetsDir(), { recursive: true });
+      await seedStarterDocs(getDocsDir());
+      await loadDocsDirectory(getDocsDir());
+    } catch {
+      // ignore
     }
+    await loadConfig();
+    await loadPricingDoc();
+    await loadCustomPersonas();
+    const activeDir = getActiveFluxDir();
+    const fluxFiles = await fs.readdir(activeDir).catch(() => [] as string[]);
+    // FLUX-1188: loadTask does real synchronous work (YAML parse, validation, repair)
+    // between its awaits, so a large board can hold the event loop for whole seconds
+    // straight through. Yield every RESCAN_YIELD_EVERY files so concurrent requests
+    // (and the perf sampler) get a turn instead of queuing behind the entire rescan.
+    const RESCAN_YIELD_EVERY = 50;
+    let loadedSinceYield = 0;
+    for (const name of fluxFiles) {
+      if (isTopLevelTaskFile(path.join(activeDir, name))) {
+        await loadTask(path.join(activeDir, name));
+        loadedSinceYield += 1;
+        if (loadedSinceYield >= RESCAN_YIELD_EVERY) {
+          loadedSinceYield = 0;
+          await new Promise(setImmediate);
+        }
+      }
+    }
+    await migrateRequireInputToSwimlane();
+  } finally {
+    recordFullRescan(performance.now() - __initDirStartedAt);
   }
-  await migrateRequireInputToSwimlane();
 }
 
 /**
@@ -1377,13 +1525,13 @@ async function migrateRequireInputToSwimlane() {
 
   const requireInputStatus = configCache.requireInputStatus || 'Require Input';
   const tasksToMigrate = Object.values(tasksCache).filter(
-    (task: any) => task.status === requireInputStatus && !task.swimlane
+    (task) => task.status === requireInputStatus && !task.swimlane
   );
 
   for (const task of tasksToMigrate) {
-    const history: any[] = Array.isArray(task.history) ? task.history : [];
+    const history: HistoryEntryLike[] = Array.isArray(task.history) ? task.history : [];
     const lastStatusChange = [...history].reverse().find(
-      (e: any) => e.type === 'status_change' && e.to === requireInputStatus
+      (e) => e.type === 'status_change' && e.to === requireInputStatus
     );
     // Fall back to 'Grooming' when no status_change history records where the
     // ticket came from (e.g. tickets created directly in Require Input, or whose
@@ -1416,6 +1564,35 @@ let activeFluxWatcher: ReturnType<typeof chokidar.watch> | null = null;
 let activeDocsWatcher: ReturnType<typeof chokidar.watch> | null = null;
 let activeGroupDocsWatcher: ReturnType<typeof chokidar.watch> | null = null;
 
+// FLUX-1184: shared by the watcher's 'unlink' handler below and reconcileBackgroundPull — a
+// ticket's frontmatter `id` can differ from its filename, so prefer the cache entry whose
+// `_path` matches before falling back to the basename.
+function findTaskIdForPath(filePath: string): string {
+  const taskEntry = Object.entries(tasksCache).find(([, task]) => task._path === filePath);
+  return taskEntry?.[0] || path.basename(filePath, '.md');
+}
+
+// FLUX-1184: attachWorktreeIfPresent's backgrounded orphan-mode `git pull` used to converge via
+// startWatchers()'s chokidar watcher replaying an 'add' for every pre-existing file during its
+// initial scan — whichever side of the pull-vs-scan race a late-landing write fell on, that
+// replay picked it up. The watcher now sets `ignoreInitial: true` (see startWatchers, below) to
+// kill a boot-time reload-storm, so it no longer replays anything and can't serve as this catch-up
+// path any more. Reload exactly the files the pull touched instead — an incremental reload, not a
+// second full scan.
+export async function reconcileBackgroundPull(storeDir: string, changedRelativePaths: string[]): Promise<void> {
+  for (const rel of changedRelativePaths) {
+    const filePath = path.join(storeDir, rel);
+    if (!isTopLevelTaskFile(filePath)) continue;
+    if (existsSync(filePath)) {
+      await loadTask(filePath);
+    } else {
+      const id = findTaskIdForPath(filePath);
+      delete tasksCache[id];
+      log.info(`Removed task: ${id} (background sync pull)`);
+    }
+  }
+}
+
 export async function startWatchers() {
   if (activeFluxWatcher) { await activeFluxWatcher.close(); activeFluxWatcher = null; }
   if (activeDocsWatcher) { await activeDocsWatcher.close(); activeDocsWatcher = null; }
@@ -1434,16 +1611,28 @@ export async function startWatchers() {
       if (basename === 'open-prompts.json') return true;
       return basename.startsWith('.') && basename !== path.basename(getActiveFluxDir());
     },
+    // FLUX-1184: without this, chokidar's own initial directory scan replays an 'add' for every
+    // pre-existing top-level ticket file — each one calls loadTask() again — right after initDir()
+    // already loaded every one of them directly a moment earlier. On a large board that's a second
+    // full reload of the whole store disguised as "watcher activity": it floods the FLUX-1132
+    // watcher-storm counter at boot (not real post-boot file churn) and the burst of concurrent
+    // loadTask() promises competes with the rest of activateWorkspace()'s setup for the event loop,
+    // which is what inflated boot's "slow full rescan"/event-loop-stall telemetry. startWatchers()
+    // only ever runs after initDir() (see activateWorkspace()), so the baseline is always already
+    // loaded — mirrors startGroupDocsWatcher(), which sets this for the same reason.
+    ignoreInitial: true,
     persistent: true,
   });
 
   activeFluxWatcher
     .on('add', (filePath) => {
-      if (isTopLevelTaskFile(filePath)) void loadTask(filePath);
+      // FLUX-1132: count reload events the watcher actually triggers (not every fs event chokidar
+      // sees — e.g. our own write-back is filtered out inside loadTask, not here).
+      if (isTopLevelTaskFile(filePath)) { recordWatchEvent(); void loadTask(filePath); }
       if (filePath === configFile) void loadConfig();
     })
     .on('change', (filePath) => {
-      if (isTopLevelTaskFile(filePath)) void loadTask(filePath);
+      if (isTopLevelTaskFile(filePath)) { recordWatchEvent(); void loadTask(filePath); }
       if (filePath === configFile) void loadConfig();
     })
     .on('ready', () => {
@@ -1464,8 +1653,7 @@ export async function startWatchers() {
     })
     .on('unlink', (filePath) => {
       if (isTopLevelTaskFile(filePath)) {
-        const taskEntry = Object.entries(tasksCache).find(([, task]) => task._path === filePath);
-        const id = taskEntry?.[0] || path.basename(filePath, '.md');
+        const id = findTaskIdForPath(filePath);
         delete tasksCache[id];
         log.info(`Removed task: ${id}`);
       }
@@ -1480,6 +1668,9 @@ export async function startWatchers() {
       const basename = path.basename(filePath);
       return basename.startsWith('.') && basename !== '.docs';
     },
+    // FLUX-1184: same reload-storm reasoning as activeFluxWatcher above — initDir() already
+    // loaded every doc via loadDocsDirectory() before startWatchers() runs.
+    ignoreInitial: true,
     persistent: true,
   });
 
@@ -1526,6 +1717,11 @@ export async function startGroupDocsWatcher() {
 
 export async function activateWorkspace(newRoot: string): Promise<string> {
   workspaceActivating = true;
+  // FLUX-1132/FLUX-1184: thin timing wrapper covering the whole workspace switch (watchers, group
+  // docs, sync, ...), which nests initDir()'s own `store.fullRescan` sample. Recorded under the
+  // separate `store.workspaceActivation` metric (not `store.fullRescan`) so one boot doesn't log
+  // two "slow full rescan" warnings for what is really one disk scan plus setup work around it.
+  const __activateWorkspaceStartedAt = performance.now();
   try {
     // Normalize to the canonical long-path form before anything else uses it. On Windows an 8.3
     // short-name path — e.g. a user profile containing a space, "Guy Razer" → GUYRAZ~1 — handed to
@@ -1542,7 +1738,12 @@ export async function activateWorkspace(newRoot: string): Promise<string> {
     clearNotifications();
     log.info(`Workspace: ${newRoot}`);
     await bootstrapNewWorkspace();
-    await attachWorktreeIfPresent(newRoot);
+    // FLUX-1184: reload just the files a late-landing background pull touched — see
+    // reconcileBackgroundPull's comment for why this replaced relying on the watcher's old
+    // initial-scan replay.
+    await attachWorktreeIfPresent(newRoot, (storeDir, changedRelativePaths) => {
+      void reconcileBackgroundPull(storeDir, changedRelativePaths);
+    });
     // Crash recovery: prune git's records of any task worktrees whose dirs were
     // removed out of band before this workspace was last deactivated (FLUX-517).
     // Best-effort — no-op when the repo has no task worktrees.
@@ -1554,6 +1755,12 @@ export async function activateWorkspace(newRoot: string): Promise<string> {
     await installSkillsForWorkspace();
     await startWatchers();
     startSyncWatcher();
+    // FLUX-1076: a wedged/unmerged .flux-store from before an engine restart otherwise sits
+    // silent until some later local file change happens to debounce a sync tick — nothing
+    // drives that dry re-check on its own after boot. Kick one immediately (no-ops outside
+    // orphan mode) so a pre-existing conflict/error is (re)detected and surfaced right away
+    // instead of waiting on incidental activity.
+    triggerSync();
     await activateGroup(newRoot);
     const memberBinding = await activateMemberBinding(newRoot, (await getWorkspacesList()).map((w) => w.path));
     if (memberBinding) {
@@ -1566,11 +1773,12 @@ export async function activateWorkspace(newRoot: string): Promise<string> {
     await loadGroupDocs();
     await startGroupDocsWatcher();
     seedPromptNotifications();
-    const modulesToProbe = Array.isArray((configCache as any).modules) ? (configCache as any).modules : [];
+    const modulesToProbe = Array.isArray(configCache.modules) ? configCache.modules : [];
     probeAllEnabled(modulesToProbe).catch(() => {});
     return newRoot; // the canonical bound root — callers persist/respond with THIS (FLUX-711)
   } finally {
     workspaceActivating = false;
+    recordWorkspaceActivation(performance.now() - __activateWorkspaceStartedAt);
   }
 }
 

@@ -52,6 +52,18 @@ describe('tasksEqual', () => {
     expect(tasksEqual(makeTask(), makeTask(override))).toBe(false);
   });
 
+  it('detects a swimlane being set (null -> set)', () => {
+    expect(tasksEqual(makeTask(), makeTask({ swimlane: 'require-input' }))).toBe(false);
+  });
+
+  it('detects a swimlane being cleared (set -> null)', () => {
+    expect(tasksEqual(makeTask({ swimlane: 'require-input' }), makeTask({ swimlane: null }))).toBe(false);
+  });
+
+  it('treats undefined and null swimlane as equal (no false positive per poll)', () => {
+    expect(tasksEqual(makeTask({ swimlane: undefined }), makeTask({ swimlane: null }))).toBe(true);
+  });
+
   it('detects a body length change', () => {
     expect(tasksEqual(makeTask({ body: 'short' }), makeTask({ body: 'a much longer body' }))).toBe(false);
   });

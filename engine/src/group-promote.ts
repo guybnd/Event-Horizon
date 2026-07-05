@@ -193,8 +193,9 @@ const defaultGitRunner: GitRunner = (cwd, args) => runGit(args, { cwd });
  */
 async function removeSourceFromMain(runner: GitRunner, repoRoot: string, sourceRel: string): Promise<void> {
   const sourceAbs = path.join(repoRoot, sourceRel);
-  await runner(repoRoot, ['rm', '--quiet', '--', sourceRel]).catch(async (err: any) => {
-    if (/did not match any files|pathspec/i.test(String(err?.message ?? err))) {
+  await runner(repoRoot, ['rm', '--quiet', '--', sourceRel]).catch(async (err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/did not match any files|pathspec/i.test(message)) {
       await fs.rm(sourceAbs, { force: true });
       return;
     }
@@ -244,8 +245,9 @@ export async function applyDocsPromotion(
       await removeSourceFromMain(runner, parentRoot, sourceRel);
 
       promoted.push(item.target);
-    } catch (err: any) {
-      failed.push({ source: item.source, target: item.target, ok: false, error: String(err?.message ?? err) });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      failed.push({ source: item.source, target: item.target, ok: false, error: message });
     }
   }
 
@@ -306,8 +308,9 @@ export async function applyMemberDocsPromotion(
     try {
       await removeSourceFromMain(runner, memberRoot, item.source.split('/').join(path.sep));
       promoted.push(item.target);
-    } catch (err: any) {
-      failed.push({ source: item.source, target: item.target, ok: false, error: String(err?.message ?? err) });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      failed.push({ source: item.source, target: item.target, ok: false, error: message });
     }
   }
 

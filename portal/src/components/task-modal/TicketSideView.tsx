@@ -152,7 +152,13 @@ function ArtifactSection({ c, onSendToChat }: { c: SideViewController; onSendToC
         <LayoutTemplate className="h-3.5 w-3.5 flex-shrink-0" />
         <span>{label}</span>
       </button>
-      {open && <div className="px-3 pb-3">{<ArtifactPanel task={c.task} onSendToChat={onSendToChat} />}</div>}
+      {/* FLUX-1136: stay mounted while collapsed (display:none, not unmounted) — an instant unmount
+          would eat an in-progress annotation batch living inside the iframe. ArtifactPanel itself
+          stops paying any reload/compile cost while `visible` is false; a genuinely long collapse
+          drops the iframe on its own grace timer. */}
+      <div className="px-3 pb-3" style={open ? undefined : { display: 'none' }}>
+        <ArtifactPanel task={c.task} onSendToChat={onSendToChat} visible={open} />
+      </div>
     </section>
   );
 }

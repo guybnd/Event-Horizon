@@ -158,8 +158,15 @@ function createSubtask(parentId: string, workspace: string, options: {
   // Link child to parent's subtasks array
   const parentRaw = fs.readFileSync(parentPath, 'utf-8');
   const parentParsed = matter(parentRaw);
-  const subtasks: string[] = Array.isArray(parentParsed.data.subtasks)
-    ? parentParsed.data.subtasks.map((s: any) => typeof s === 'string' ? s : s.id).filter(Boolean)
+  const rawSubtasks: unknown = parentParsed.data.subtasks;
+  const subtasks: string[] = Array.isArray(rawSubtasks)
+    ? rawSubtasks
+        .map((s: unknown): unknown => {
+          if (typeof s === 'string') return s;
+          if (typeof s === 'object' && s !== null && 'id' in s) return s.id;
+          return undefined;
+        })
+        .filter((id): id is string => Boolean(id))
     : [];
   subtasks.push(childId);
   parentParsed.data.subtasks = subtasks;

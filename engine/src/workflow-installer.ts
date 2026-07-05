@@ -220,13 +220,18 @@ export async function cleanOrphanedSkillFiles(targetDir: string, framework: Reso
       const full = path.resolve(dir, name);
       if (expected.has(full)) continue; // a current, expected install file — keep
       try {
-        const st = await fs.stat(full);
-        if (!st.isFile()) continue; // never recurse into / remove a directory
+        // lstat (not stat) so a symlinked event-horizon* entry is judged by the link itself, not
+        // the type of whatever it points at — isFile() is false for a symlink either way, so it's
+        // skipped like a directory would be (defense-in-depth; unlink already can't reach a
+        // symlink's target regardless).
+        const st = await fs.lstat(full);
+        if (!st.isFile()) continue; // never recurse into / remove a directory (or follow a symlink)
         await fs.unlink(full);
         removed.push(full);
         log.info(`[installer] Removed orphaned skill file: ${full}`);
-      } catch (err: any) {
-        log.error(`[installer] Could not remove orphaned skill file ${full} (${err?.message || err}); skipping.`);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        log.error(`[installer] Could not remove orphaned skill file ${full} (${message}); skipping.`);
       }
     }
   }
@@ -420,8 +425,9 @@ export async function installWorkspaceWorkflow({ sourceRoot, targetDir, framewor
     if (removed.length > 0) {
       log.info(`[installer] Orphan sweep removed ${removed.length} stale skill file(s)${force ? ' (force)' : ''}.`);
     }
-  } catch (err: any) {
-    log.error(`[installer] Orphan sweep failed (non-fatal): ${err?.message || err}`);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.error(`[installer] Orphan sweep failed (non-fatal): ${message}`);
   }
 
   log.info(`[installer] Done.`);
@@ -473,6 +479,12 @@ export function buildMcpServerEntry() {
   };
 }
 
+/** Shape of a `.mcp.json`-style config file — only the fields this installer reads/writes. */
+interface McpConfigFile {
+  mcpServers?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
 async function installMcpConfig(targetDir: string, sourceRoot: string, framework: ResolvedFramework): Promise<void> {
   const configPath = mcpConfigPathFor(targetDir, framework);
   const serverEntry = buildMcpServerEntry();
@@ -482,18 +494,20 @@ async function installMcpConfig(targetDir: string, sourceRoot: string, framework
   // replaced the user's entire .mcp.json with just our entry — silently deleting
   // every other MCP server they configured (FLUX-782). Now: ENOENT → fresh {};
   // a malformed/unreadable EXISTING file → leave it untouched and skip our entry.
-  let existing: any = {};
+  let existing: McpConfigFile = {};
   try {
     const raw = await fs.readFile(configPath, 'utf-8');
     try {
-      existing = JSON.parse(raw);
-    } catch (parseErr: any) {
-      console.error(`[installer] ${configPath} is not valid JSON (${parseErr?.message || parseErr}); leaving it UNTOUCHED and skipping the event-horizon MCP entry. Fix the JSON and restart to register it.`);
+      existing = JSON.parse(raw) as McpConfigFile;
+    } catch (parseErr: unknown) {
+      const message = parseErr instanceof Error ? parseErr.message : String(parseErr);
+      console.error(`[installer] ${configPath} is not valid JSON (${message}); leaving it UNTOUCHED and skipping the event-horizon MCP entry. Fix the JSON and restart to register it.`);
       return;
     }
-  } catch (readErr: any) {
-    if (readErr?.code !== 'ENOENT') {
-      console.error(`[installer] Could not read ${configPath} (${readErr?.message || readErr}); leaving it untouched and skipping the event-horizon MCP entry.`);
+  } catch (readErr: unknown) {
+    if ((readErr as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      const message = readErr instanceof Error ? readErr.message : String(readErr);
+      console.error(`[installer] Could not read ${configPath} (${message}); leaving it untouched and skipping the event-horizon MCP entry.`);
       return;
     }
     // ENOENT: no file yet — start from an empty config (legitimate fresh install).

@@ -134,13 +134,24 @@ function SessionHistoryEntry({ session, taskId }: { session: AgentSessionEntry; 
   const statusLabel = session.status === 'completed' ? 'Completed' :
                       session.status === 'failed' ? 'Failed' :
                       session.status === 'cancelled' ? 'Cancelled' : 'Active';
+  // FLUX-1156: a failed/cancelled session (incl. one that never even spawned) must read as an
+  // error at a glance, not blend into the same emerald "all is well" styling as a healthy run.
+  const failed = session.status === 'failed' || session.status === 'cancelled';
 
   return (
     <div className="flex gap-3">
-      <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-100 dark:bg-emerald-500/15 border border-emerald-200 dark:border-emerald-500/20">
-        <Bot className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+      <div className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border ${
+        failed
+          ? 'bg-red-100 border-red-200 dark:bg-red-500/15 dark:border-red-500/20'
+          : 'bg-emerald-100 border-emerald-200 dark:bg-emerald-500/15 dark:border-emerald-500/20'
+      }`}>
+        <Bot className={`h-4 w-4 ${failed ? 'text-red-600 dark:text-red-400' : 'text-emerald-600 dark:text-emerald-400'}`} />
       </div>
-      <div className="flex-1 min-w-0 rounded-xl border border-emerald-200 bg-emerald-50/30 dark:border-emerald-500/10 dark:bg-emerald-500/5 p-4 shadow-sm">
+      <div className={`flex-1 min-w-0 rounded-xl border p-4 shadow-sm ${
+        failed
+          ? 'border-red-200 bg-red-50/30 dark:border-red-500/10 dark:bg-red-500/5'
+          : 'border-emerald-200 bg-emerald-50/30 dark:border-emerald-500/10 dark:bg-emerald-500/5'
+      }`}>
         <button
           onClick={() => setIsExpanded(!isExpanded)}
           className="w-full text-left"
@@ -169,13 +180,13 @@ function SessionHistoryEntry({ session, taskId }: { session: AgentSessionEntry; 
         </button>
 
         {session.outcome && (
-          <div className="mt-3 text-xs font-medium text-gray-700 dark:text-gray-300 bg-white/50 dark:bg-black/20 p-2.5 rounded-lg border border-emerald-100 dark:border-emerald-500/10">
+          <div className={`mt-3 text-xs font-medium text-gray-700 dark:text-gray-300 bg-white/50 dark:bg-black/20 p-2.5 rounded-lg border ${failed ? 'border-red-100 dark:border-red-500/10' : 'border-emerald-100 dark:border-emerald-500/10'}`}>
             {session.outcome}
           </div>
         )}
 
         {isExpanded && session.finalMessage && (
-          <div className="mt-3 text-xs text-gray-700 dark:text-gray-300 bg-white/50 dark:bg-black/20 p-2.5 rounded-lg border border-emerald-100 dark:border-emerald-500/10 whitespace-pre-wrap">
+          <div className={`mt-3 text-xs text-gray-700 dark:text-gray-300 bg-white/50 dark:bg-black/20 p-2.5 rounded-lg border whitespace-pre-wrap ${failed ? 'border-red-100 dark:border-red-500/10' : 'border-emerald-100 dark:border-emerald-500/10'}`}>
             {session.finalMessage}
           </div>
         )}

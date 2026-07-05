@@ -1,12 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
-import { execSync, execFileSync } from 'child_process';
+import { execSync, execFileSync, type ChildProcessWithoutNullStreams } from 'child_process';
 import { EventEmitter } from 'events';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { cleanChildEnv } from './agents/shared.js';
 import { verifyConversation } from './session-binding.js';
-import { CLI_CAPABILITIES, type CliFramework, type CliCapabilities } from './agents/types.js';
+import { CLI_CAPABILITIES, type CliFramework, type CliCapabilities, type CliSessionRecord } from './agents/types.js';
 import { BOARD_CONVERSATION_ID } from './agents/board.js';
 import { getBoardAdapter } from './agents/index.js';
 
@@ -56,14 +56,42 @@ vi.mock('./transcript.js', () => ({
 }));
 
 /** A bare EventEmitter stands in for the spawned CLI's ChildProcess — `attachStdoutProcessing`
- *  only ever calls `proc.stdout!.on('data', ...)`, so this is a faithful, dependency-free stand-in. */
-function fakeProc(): any {
-  return { stdout: new EventEmitter() };
+ *  only ever calls `proc.stdout!.on('data', ...)`, so this is a faithful, dependency-free stand-in.
+ *  Cast from this narrower shape to the real `ChildProcessWithoutNullStreams` because the runtime
+ *  contract these adapters rely on (an EventEmitter-shaped `.stdout`) is genuinely all that's used. */
+function fakeProc(): ChildProcessWithoutNullStreams {
+  return { stdout: new EventEmitter() } as ChildProcessWithoutNullStreams;
+}
+
+/** The subset of `CliSessionRecord` the three adapters' onEvent handlers actually touch — typed
+ *  independently (rather than `Partial<CliSessionRecord>`) so every field below is REQUIRED here,
+ *  catching a typo/omission instead of silently leaving it `undefined`. */
+interface FakeSession {
+  id: string;
+  taskId: string;
+  pendingAssistantText: string;
+  liveOutputBuffer: string;
+  outputBuffer: string;
+  cumulativeOutput: string;
+  currentActivity: string | undefined;
+  lastProgressLog: string | undefined;
+  resumeSessionId: string | undefined;
+  sessionHistoryEntry: { sessionId: string; progress: unknown[] };
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  costUSD: number;
+  costIsEstimated: boolean;
+  status: string;
+  label: string;
+  writeQueue: Promise<void>;
+  flushTimer: NodeJS.Timeout | undefined;
 }
 
 /** Minimal CliSessionRecord — only the fields the three adapters' onEvent handlers actually touch. */
-function fakeSession(): any {
-  return {
+function fakeSession(): CliSessionRecord {
+  const session: FakeSession = {
     id: 'test-session',
     taskId: 'FLUX-903',
     pendingAssistantText: '',
@@ -85,10 +113,11 @@ function fakeSession(): any {
     writeQueue: Promise.resolve(),
     flushTimer: undefined,
   };
+  return session as CliSessionRecord;
 }
 
 /** Feeds each fixture as a JSONL line through the fake process's stdout, one `data` event per line. */
-function feedLines(proc: any, ...events: any[]) {
+function feedLines(proc: ChildProcessWithoutNullStreams, ...events: unknown[]) {
   for (const evt of events) {
     proc.stdout.emit('data', Buffer.from(JSON.stringify(evt) + '\n'));
   }
@@ -354,15 +383,15 @@ describe('A.1 per-adapter stdout-parse contract — enabled by FLUX-932', () => 
     claudeSession.outputBuffer = 'Claude reply';
     flushSessionOutput(claudeSession, true); // force=true, no narrationType
     await claudeSession.writeQueue;
-    expect(claudeSession.sessionHistoryEntry.progress).toHaveLength(1);
-    expect(claudeSession.sessionHistoryEntry.progress[0]).not.toHaveProperty('type');
-    expect(claudeSession.sessionHistoryEntry.progress[0].message).toBe('Claude reply');
+    expect(claudeSession.sessionHistoryEntry!.progress).toHaveLength(1);
+    expect(claudeSession.sessionHistoryEntry!.progress[0]).not.toHaveProperty('type');
+    expect(claudeSession.sessionHistoryEntry!.progress[0]!.message).toBe('Claude reply');
 
     const copilotSession = fakeSession();
     copilotSession.outputBuffer = 'Copilot reply';
     flushSessionOutput(copilotSession, true, 'text');
     await copilotSession.writeQueue;
-    expect(copilotSession.sessionHistoryEntry.progress[0].type).toBe('text');
+    expect(copilotSession.sessionHistoryEntry!.progress[0]!.type).toBe('text');
   });
 });
 

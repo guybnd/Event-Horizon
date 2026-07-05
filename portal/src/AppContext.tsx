@@ -6,9 +6,11 @@ import { getArchiveStatus } from './workflow';
 import { collectPrMemberIds } from './lib/decks';
 import { tasksEqual } from './lib/tasksEqual';
 import { appStore, ENGINE_EVENTS_MAX } from './store/appStore';
-import type { AppStoreState, AppActions, AppView, AppTheme, TaskSortOption } from './store/appStore';
+import { appendEngineEvents } from './lib/coalesceEngineEvents';
+import type { AppStoreState, AppActions, AppView, AppTheme, TaskSortOption, OperationFailure, EngineEvent } from './store/appStore';
 import { AppActionsContext } from './store/useAppSelector';
 import { getElectronAPI, renderBadgeDataUrl } from './electronApi';
+import { incr, recordDuration, recordSseEvent } from './perfClient';
 
 export type { AppView, TaskSortOption, AppTheme };
 
@@ -55,6 +57,10 @@ const VIEW_PATHS: Record<AppView, string> = {
 
 const LIVE_TASK_POLL_INTERVAL_MS = 3000;
 const LIVE_EVENT_DURATION_MS = 2200;
+/** FLUX-1189: how long the board can sit untouched before the purely-ambient CSS loops
+ *  (`.eh-idle` in index.css) pause. Long enough that normal reading/thinking pauses don't
+ *  flicker the effect off and on. */
+const USER_IDLE_AFTER_MS = 20_000;
 
 function normalizeTaskList(tasks: Task[]) {
   return [...tasks].sort((left, right) => left.id.localeCompare(right.id));
@@ -335,7 +341,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     try {
       const previousTasks = tasksRef.current;
-      const fetchedActiveOrAll = normalizeTaskList(await fetchTasks(activeOnly ? { active: true } : undefined));
+      const fetchStartedAt = performance.now();
+      const rawFetch = await fetchTasks(activeOnly ? { active: true } : undefined);
+      recordDuration('refresh.fetchTasks', performance.now() - fetchStartedAt);
+      // FLUX-1144: `null` means the server answered 304 — this exact query variant hasn't
+      // changed since our last fetch (conditional GET via ETag/If-None-Match). Nothing to
+      // reconcile; keep the current state and skip straight to clearing the loading flag.
+      if (rawFetch === null) {
+        hasLoadedTasksRef.current = true;
+        startTransition(() => setTasksLoading(false));
+        return;
+      }
+      const fetchedActiveOrAll = normalizeTaskList(rawFetch);
       // FLUX-970: the routine 3s poll only fetches non-terminal tickets (the board already filters
       // Released/Archived/Done out client-side, so they're dead weight on the hot path). Preserve
       // previously-known terminal tickets — and anything the interval raced past mid-transition —
@@ -608,8 +625,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   };
 
+  // FLUX-1138: events buffered here between animation frames before a single batched
+  // `appStore.patch` applies them — see the `eh-event` listener below. Refs (not state) so
+  // pushing to the buffer never itself triggers a render. Flushing on `requestAnimationFrame`
+  // (rather than a trailing timer) ties the batch to the browser's own paint cadence: it can't
+  // flush faster than a frame can render anyway, and a backgrounded tab throttles rAF for free
+  // (no separate visibility check needed).
+  const pendingEngineEventsRef = useRef<EngineEvent[]>([]);
+  const engineEventsFlushHandleRef = useRef<number | null>(null);
+  const nextEngineEventIdRef = useRef(0);
+
+  const flushEngineEvents = useCallback(() => {
+    engineEventsFlushHandleRef.current = null;
+    const pending = pendingEngineEventsRef.current;
+    if (pending.length === 0) return;
+    pendingEngineEventsRef.current = [];
+    appStore.patch({ engineEvents: appendEngineEvents(appStore.getState().engineEvents, pending, ENGINE_EVENTS_MAX) });
+  }, []);
+
   // FLUX-1030: clear the shared Engine-events ring buffer (terminal "Clear log" / "Clear").
   const clearEngineEvents = useCallback(() => {
+    pendingEngineEventsRef.current = [];
+    if (engineEventsFlushHandleRef.current !== null) {
+      cancelAnimationFrame(engineEventsFlushHandleRef.current);
+      engineEventsFlushHandleRef.current = null;
+    }
     appStore.patch({ engineEvents: [] });
   }, []);
 
@@ -838,8 +878,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // fire unconditionally, including during a cold engine boot (e.g. a large ticket store on
     // first run after a fresh clone), hammering a server that isn't listening yet and flooding
     // the console with "Failed to fetch" until it comes up.
-    const refreshIfVisible = (activeOnly = false) => {
+    const refreshIfVisible = (activeOnly = false, source: 'poll' | 'visibility' = 'poll') => {
       if (!document.hidden && isConnected) {
+        incr(`refresh.trigger.${source}`);
         void loadTasks(activeOnly);
         void loadParseErrors();
       }
@@ -849,6 +890,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const visible = !document.hidden;
       setIsWindowVisible(visible);
       if (visible && isConnected) {
+        incr('refresh.trigger.visibility');
         void loadTasks();
         void loadParseErrors();
       }
@@ -856,12 +898,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     const handleFocus = () => {
       setIsWindowVisible(!document.hidden);
-      refreshIfVisible();
+      refreshIfVisible(false, 'visibility');
     };
 
     // FLUX-970: the routine 3s tick fetches active-only — it's the hot loop that was re-shipping
     // the whole board (incl. terminal tickets) every 3s. Focus/visibility resyncs stay full fetches.
-    const intervalId = window.setInterval(() => refreshIfVisible(true), LIVE_TASK_POLL_INTERVAL_MS);
+    const intervalId = window.setInterval(() => refreshIfVisible(true, 'poll'), LIVE_TASK_POLL_INTERVAL_MS);
     window.addEventListener('focus', handleFocus);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
@@ -871,6 +913,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [loadTasks, loadParseErrors, isConnected]);
+
+  // FLUX-1140: pause every CSS loop (glows, shimmers, flow pips, etc. — see index.css'
+  // `.eh-tab-hidden` rule) while the tab is backgrounded, so a board left open in an
+  // unfocused tab stops keeping the compositor/GPU busy for animations nobody can see.
+  useEffect(() => {
+    document.documentElement.classList.toggle('eh-tab-hidden', !isWindowVisible);
+  }, [isWindowVisible]);
+
+  // FLUX-1189: a board that's foregrounded but genuinely untouched (no mouse/keyboard/scroll/
+  // touch) still isn't caught by `isWindowVisible` above — that only fires for a backgrounded
+  // tab. Toggle `.eh-idle` on <html> after a stretch of no input so index.css can pause the
+  // purely-decorative loops (CRT flicker/beam, empty-column dust) that don't communicate any
+  // live state. Plain DOM listeners + a timer, not React state, so idle detection itself never
+  // triggers a render.
+  useEffect(() => {
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    const markActive = () => {
+      document.documentElement.classList.remove('eh-idle');
+      if (idleTimer !== null) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        document.documentElement.classList.add('eh-idle');
+      }, USER_IDLE_AFTER_MS);
+    };
+    markActive();
+    const activityEvents = ['mousemove', 'mousedown', 'keydown', 'wheel', 'touchstart', 'scroll'] as const;
+    activityEvents.forEach((type) => window.addEventListener(type, markActive, { passive: true }));
+    return () => {
+      if (idleTimer !== null) clearTimeout(idleTimer);
+      activityEvents.forEach((type) => window.removeEventListener(type, markActive));
+    };
+  }, []);
 
   // FLUX-611: one shared subscription bus over the single SSE connection below. Chat
   // surfaces (transcript, dock, approvals) register here and react to pushed events,
@@ -899,7 +972,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     // Fan the events chat surfaces care about out to bus subscribers. Added as separate
     // listeners (EventSource allows many per type) so the built-in handlers stay untouched.
+    // FLUX-921: also bumps the watchdog's liveness clock — previously only ping/eh-event/open did,
+    // so a busy stream that happens to drop pings (but is delivering these events fine) could hit
+    // STALE_MS and needlessly tear down + reconnect.
     const forward = (type: string, data: unknown) => {
+      lastEventAt = Date.now();
       const set = eventSubsRef.current.get(type);
       if (!set) return;
       for (const h of set) { try { h(data); } catch { /* isolate subscriber errors */ } }
@@ -909,23 +986,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (disposed) return;
       const src = new EventSource('/api/events');
       es = src;
+      // FLUX-1133: count every named SSE event by type (perfClient's `sse.event.<type>` counters),
+      // wrapping the underlying addEventListener once instead of a manual incr() at each call site.
+      const trackListener = (type: string, handler: (e: MessageEvent) => void) => {
+        src.addEventListener(type, (e: MessageEvent) => {
+          recordSseEvent(type);
+          handler(e);
+        });
+      };
       // FLUX-910: heartbeat keeps the watchdog's liveness clock fresh on an otherwise-idle stream.
-      src.addEventListener('ping', () => { lastEventAt = Date.now(); });
+      trackListener('ping', () => { lastEventAt = Date.now(); });
       // FLUX-1030: catch-all Engine-events log. The engine mirrors EVERY broadcastEvent onto the
       // generic `eh-event` channel as `{type,data}`, so listening here (once, on the shared
       // connection) captures every event type without a hardcoded allowlist. Buffered in the store
       // so it accumulates from boot and survives the terminal panel being closed/minimized.
-      src.addEventListener('eh-event', (e: MessageEvent) => {
+      trackListener('eh-event', (e: MessageEvent) => {
         lastEventAt = Date.now();
         try {
           const { type, data } = JSON.parse(e.data) as { type: string; data: unknown };
-          const prev = appStore.getState().engineEvents;
-          const next = [...prev, { type, data, timestamp: Date.now() }];
-          appStore.patch({ engineEvents: next.length > ENGINE_EVENTS_MAX ? next.slice(-ENGINE_EVENTS_MAX) : next });
+          // FLUX-1138: stamp id/timestamp at arrival, then buffer — the batch is flushed to the
+          // store at most once per animation frame (see flushEngineEvents) instead of patching
+          // (and re-rendering every subscriber) per event, which was the dominant cost during a
+          // streaming `assistantDelta` burst.
+          pendingEngineEventsRef.current.push({ id: nextEngineEventIdRef.current++, type, data, timestamp: Date.now() });
+          if (engineEventsFlushHandleRef.current === null) {
+            engineEventsFlushHandleRef.current = requestAnimationFrame(flushEngineEvents);
+          }
         } catch { /* non-JSON payload — skip */ }
       });
       for (const type of ['activity', 'progress', 'assistantDelta', 'taskUpdated', 'permission-request', 'permission-resolved', 'ask-question', 'ask-question-resolved', 'board-rebase-proposed', 'board-rebase-resolved', 'artifactReady', 'furnace-updated', 'furnace-deleted']) {
-        src.addEventListener(type, (e: MessageEvent) => {
+        trackListener(type, (e: MessageEvent) => {
           try { forward(type, JSON.parse(e.data)); } catch { /* non-JSON payload — skip */ }
         });
       }
@@ -933,11 +1023,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // incremental terminal `taskUpdated` for a session that ended during the gap can be missed —
       // leaving its card stuck on 'Working'. Re-fetching the authoritative task list on `open`
       // re-syncs each card to the engine's current session status (terminal/absent included).
-      src.addEventListener('open', () => {
+      trackListener('open', () => {
         lastEventAt = Date.now();
+        incr('refresh.trigger.sse');
         void loadTasks();
       });
-      src.addEventListener('taskUpdated', () => {
+      trackListener('taskUpdated', () => {
+        incr('refresh.trigger.sse');
         void loadTasks();
         // FLUX-796: resolving a Require Input / Needs Action ticket dismisses its notification
         // server-side WITHOUT a broadcast (only add/dedup/read-all broadcast). Re-sync the list so
@@ -947,10 +1039,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       });
       // FLUX-753: a deleted ticket re-fetches the list so the card disappears immediately
       // (the engine now broadcasts taskDeleted on delete + extract-compensation).
-      src.addEventListener('taskDeleted', () => {
+      trackListener('taskDeleted', () => {
+        incr('refresh.trigger.sse');
         void loadTasks();
       });
-      src.addEventListener('activity', (e: MessageEvent) => {
+      trackListener('activity', (e: MessageEvent) => {
         const { taskId, activity } = JSON.parse(e.data) as { taskId: string; activity: string | null };
         // FLUX-626: write to the isolated `liveSessions` slice instead of churning the whole
         // `tasks` array (which re-rendered the entire board on every activity tick). Cards read
@@ -961,7 +1054,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           liveSessions: { ...current, [taskId]: { ...prev, currentActivity: activity ?? undefined } },
         });
       });
-      src.addEventListener('progress', (e: MessageEvent) => {
+      trackListener('progress', (e: MessageEvent) => {
         const { taskId, sessionId, timestamp, message } = JSON.parse(e.data) as { taskId: string; sessionId: string; timestamp: string; message: string };
         // FLUX-626: append live progress into the isolated `liveSessions` slice, keyed by
         // sessionId, instead of rebuilding `task.history` inside the `tasks` array (which
@@ -981,7 +1074,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
           },
         });
       });
-      src.addEventListener('notification', (e: MessageEvent) => {
+      // S10 (epic FLUX-996): the S9 operation-telemetry stream — surface a failed/timed-out spawn
+      // directly on its ticket's card. Only 'spawn' events carry a ticketId today (git/gh/handshake
+      // telemetry isn't ticket-attributed yet, FLUX-1005's scope cut), and a deliberate 'aborted'
+      // (user-requested stop) isn't a failure worth a badge, so both are filtered out here.
+      trackListener('operation', (e: MessageEvent) => {
+        lastEventAt = Date.now();
+        try {
+          const op = JSON.parse(e.data) as {
+            kind: OperationFailure['kind'];
+            ticketId?: string;
+            sessionId?: string;
+            outcome: 'ok' | 'timeout' | 'error' | 'aborted';
+            endedAt: number;
+            reason?: string;
+          };
+          if (!op.ticketId || op.outcome === 'ok' || op.outcome === 'aborted') return;
+          const current = appStore.getState().liveSessions;
+          const prev = current[op.ticketId];
+          appStore.patch({
+            liveSessions: {
+              ...current,
+              [op.ticketId]: {
+                ...prev,
+                lastOperationFailure: { sessionId: op.sessionId, kind: op.kind, reason: op.reason, endedAt: op.endedAt },
+              },
+            },
+          });
+        } catch { /* non-JSON payload — skip */ }
+      });
+      trackListener('notification', (e: MessageEvent) => {
         const { notification, unreadCount } = JSON.parse(e.data) as { notification: Notification | null; unreadCount: number };
         // FLUX-796: pop a native OS toast only for genuinely NEW notifications (first time we see the
         // id), not on the per-ticket-dedup re-broadcasts. A ref (not the stale-in-closure `notifications`
@@ -1007,10 +1129,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
           setNotificationUnreadCount(unreadCount);
         });
       });
-      src.addEventListener('restart_pending', () => {
+      trackListener('restart_pending', () => {
         setRestartPending(true);
       });
-      src.addEventListener('auto_restarting', () => {
+      trackListener('auto_restarting', () => {
         setRestartPending(false);
       });
       src.onerror = () => {
@@ -1036,8 +1158,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }, 10_000);
 
     refreshNotifications();
-    return () => { disposed = true; clearInterval(watchdog); try { es?.close(); } catch { /* ignore */ } };
-  }, [isConnected, refreshNotifications]);
+    return () => {
+      disposed = true;
+      clearInterval(watchdog);
+      try { es?.close(); } catch { /* ignore */ }
+      if (engineEventsFlushHandleRef.current !== null) {
+        cancelAnimationFrame(engineEventsFlushHandleRef.current);
+        engineEventsFlushHandleRef.current = null;
+      }
+      // FLUX-1146: drain any batch still sitting in pendingEngineEventsRef instead of leaving it
+      // for a reconnect that may be slow or never happen — the cancelAnimationFrame above means
+      // no flush is otherwise coming.
+      flushEngineEvents();
+    };
+  }, [isConnected, refreshNotifications, flushEngineEvents]);
 
   useEffect(() => {
     updateViewUrl(getViewFromLocation(), 'replace');

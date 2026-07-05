@@ -75,6 +75,11 @@ interface NeedsItem {
   peekStyle: 'allow-deny' | 'open' | 'none';
   /** Approval id for the peek's inline Allow/Deny. */
   approvalId?: string;
+  /** FLUX-899: a live tool call is paused on this item right now (approvals + questions) — the
+   *  card gets a stronger, persistent (non-glow-dependent) visual treatment so it doesn't fade
+   *  into the passive items once acknowledged. Board-rebase proposals are async, not a paused
+   *  live call, so they stay non-blocking (FLUX-1101). */
+  blocking?: boolean;
 }
 
 const PEEK_AUTO_DISMISS_MS = 11_000;
@@ -103,14 +108,28 @@ function NeedsCard({
       className={`rounded-xl border p-2.5 transition-colors ${
         isNew
           ? 'eh-attention-glow border-amber-400/60 bg-amber-400/[0.06]'
-          : 'eh-border eh-surface'
+          : item.blocking
+            ? 'eh-border eh-surface ring-1 ring-rose-400/40'
+            : 'eh-border eh-surface'
       }`}
     >
       <div className="mb-1.5 flex items-center gap-2">
-        {isNew && <span className="eh-attention-dot h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" aria-hidden />}
+        {/* FLUX-899: "new" is an icon+label affordance, not color/motion alone — legible with
+            reduced-motion (the pulse turns off; the word stays) and for colorblind users. */}
+        {isNew && (
+          <span className="eh-attention-dot inline-flex shrink-0 items-center rounded-full bg-amber-400/20 px-1.5 py-px text-[9px] font-bold uppercase tracking-wide text-amber-700 ring-1 ring-amber-400/50 dark:text-amber-300">
+            New
+          </span>
+        )}
         <Icon className={`h-4 w-4 shrink-0 ${item.iconClass}`} />
         <span className="truncate text-sm font-semibold text-[var(--eh-text-primary)]">{item.title}</span>
-        <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[var(--eh-text-muted)] ring-1 ring-[var(--eh-border)]">
+        <span
+          className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${
+            item.blocking
+              ? 'font-bold text-rose-700 ring-1 ring-rose-400/60 bg-rose-500/15 dark:text-rose-300'
+              : 'text-[var(--eh-text-muted)] ring-1 ring-[var(--eh-border)]'
+          }`}
+        >
           {item.kindLabel}
         </span>
         <TicketRefChip ticketId={item.ticketId} time={item.createdAt} variant="muted" alignEnd />
@@ -227,6 +246,7 @@ export function AttentionDock() {
         key: `approval:${p.id}`, kind: 'approval', conversationId: p.conversationId, ticketId: p.conversationId,
         createdAt: p.createdAt, Icon: ShieldAlert, iconClass: 'text-amber-500', title: 'Permission request',
         kindLabel: 'blocking', summary: `Permission — ${p.toolName}`, peekStyle: 'allow-deny', approvalId: p.id,
+        blocking: true,
         body: <ApprovalCard pending={p} onResolved={() => removeApproval(p.id)} />,
       });
     }
@@ -236,6 +256,7 @@ export function AttentionDock() {
         key: `question:${p.id}`, kind: 'question', conversationId: p.conversationId, ticketId: p.conversationId,
         createdAt: p.createdAt, Icon: MessageCircleQuestion, iconClass: 'text-violet-500', title: 'Question from agent',
         kindLabel: 'decision', summary: q?.header || q?.question || 'Awaiting your answer', peekStyle: 'open',
+        blocking: true,
         body: <QuestionCard pending={p} onResolved={() => removeQuestion(p.id)} scrollable />,
       });
     }

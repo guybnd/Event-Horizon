@@ -284,7 +284,7 @@ export async function createDedicatedParent(
 
   // 6. Register the parent as a workspace (labeled with the group name) so the
   //    Case-1 member binding can reverse-look-up the parent.
-  let registered = false;
+  let registered: boolean;
   try {
     await registerWorkspace(parentRoot, input.groupName);
     registered = true;
@@ -312,8 +312,9 @@ export async function createDedicatedParent(
     try {
       await registerWorkspace(memberPath, m.name);
       memberRegistrations.push({ name: m.name, path: memberPath, registered: true });
-    } catch (err: any) {
-      memberRegistrations.push({ name: m.name, path: memberPath, registered: false, reason: err?.message ?? 'registration failed' });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : 'registration failed';
+      memberRegistrations.push({ name: m.name, path: memberPath, registered: false, reason });
     }
   }
 

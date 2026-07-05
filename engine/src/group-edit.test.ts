@@ -79,7 +79,7 @@ describe('applyEditsToStore — apply', () => {
 
   it('requires string content for a non-delete edit', async () => {
     await expect(
-      applyEditsToStore(storeDir, [{ path: 'index.md' } as any]),
+      applyEditsToStore(storeDir, [{ path: 'index.md' }]),
     ).rejects.toThrow(/string content/i);
   });
 

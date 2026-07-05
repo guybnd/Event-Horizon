@@ -2,8 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock the gh-auth probe so buildGitSyncEnv is deterministic without a real `gh`.
 vi.mock('./branch-manager.js', () => ({ checkGhAuth: vi.fn() }));
+// Mock remote-host resolution so buildGitSyncEnv is deterministic without a real git repo (FLUX-987).
+vi.mock('./git-remote-host.js', () => ({ resolveRemoteHost: vi.fn() }));
 
 import { checkGhAuth } from './branch-manager.js';
+import { resolveRemoteHost } from './git-remote-host.js';
 import {
   buildGitSyncEnv,
   classifyGitError,
@@ -12,6 +15,7 @@ import {
 } from './git-sync-env.js';
 
 const mockCheckGhAuth = vi.mocked(checkGhAuth);
+const mockResolveRemoteHost = vi.mocked(resolveRemoteHost);
 
 describe('classifyGitError (FLUX-895)', () => {
   it('classifies network failures', () => {
@@ -38,20 +42,25 @@ describe('buildGitSyncEnv (FLUX-895)', () => {
   beforeEach(() => {
     invalidateGhAuthCache();
     mockCheckGhAuth.mockReset();
+    mockResolveRemoteHost.mockReset();
   });
 
   it('always sets the non-interactive vars and no credential injection when gh is not authed', async () => {
     mockCheckGhAuth.mockResolvedValue(false);
-    const env = await buildGitSyncEnv();
+    const env = await buildGitSyncEnv('/repo');
     expect(env.GIT_TERMINAL_PROMPT).toBe('0');
     expect(env.GCM_INTERACTIVE).toBe('never');
     // gh off → leave the user's existing credential helper (GCM) in place.
     expect(env.GIT_CONFIG_COUNT).toBeUndefined();
+    // Not even queried when gh isn't authed — no point resolving the remote.
+    expect(mockResolveRemoteHost).not.toHaveBeenCalled();
   });
 
-  it('injects gh as the sole github.com credential helper when gh is authed', async () => {
+  it('injects gh as the sole github.com credential helper when gh is authed AND the remote is github.com', async () => {
     mockCheckGhAuth.mockResolvedValue(true);
-    const env = await buildGitSyncEnv();
+    mockResolveRemoteHost.mockResolvedValue('github.com');
+    const env = await buildGitSyncEnv('/repo');
+    expect(mockResolveRemoteHost).toHaveBeenCalledWith('/repo');
     expect(env.GIT_TERMINAL_PROMPT).toBe('0');
     expect(env.GIT_CONFIG_COUNT).toBe('3');
     // resets generic + github.com helper chains (empty), then sets gh:
@@ -63,13 +72,40 @@ describe('buildGitSyncEnv (FLUX-895)', () => {
     expect(env.GIT_CONFIG_VALUE_2).toBe('!gh auth git-credential');
   });
 
+  // FLUX-987: gh being authed says nothing about which remote `cwd` points at. A non-github
+  // remote (GitLab/Bitbucket/GH-Enterprise/self-hosted) must keep its inherited OS credential
+  // helper — resetting it with no replacement caused a silent, permanent sync failure.
+  it('does NOT reset the credential helper when gh is authed but the remote is not github.com', async () => {
+    mockCheckGhAuth.mockResolvedValue(true);
+    mockResolveRemoteHost.mockResolvedValue('gitlab.example.com');
+    const env = await buildGitSyncEnv('/repo');
+    expect(env.GIT_TERMINAL_PROMPT).toBe('0');
+    expect(env.GIT_CONFIG_COUNT).toBeUndefined();
+    expect(env.GIT_CONFIG_KEY_0).toBeUndefined();
+  });
+
+  it('does NOT reset the credential helper when the remote host cannot be resolved', async () => {
+    mockCheckGhAuth.mockResolvedValue(true);
+    mockResolveRemoteHost.mockResolvedValue(null);
+    const env = await buildGitSyncEnv('/repo');
+    expect(env.GIT_CONFIG_COUNT).toBeUndefined();
+  });
+
+  it('does NOT reset the credential helper when cwd is omitted', async () => {
+    mockCheckGhAuth.mockResolvedValue(true);
+    const env = await buildGitSyncEnv();
+    expect(env.GIT_CONFIG_COUNT).toBeUndefined();
+    expect(mockResolveRemoteHost).not.toHaveBeenCalled();
+  });
+
   it('caches the gh-auth probe until invalidated', async () => {
     mockCheckGhAuth.mockResolvedValue(true);
-    await buildGitSyncEnv();
-    await buildGitSyncEnv();
+    mockResolveRemoteHost.mockResolvedValue('github.com');
+    await buildGitSyncEnv('/repo');
+    await buildGitSyncEnv('/repo');
     expect(mockCheckGhAuth).toHaveBeenCalledTimes(1); // second call served from cache
     invalidateGhAuthCache();
-    await buildGitSyncEnv();
+    await buildGitSyncEnv('/repo');
     expect(mockCheckGhAuth).toHaveBeenCalledTimes(2);
   });
 });

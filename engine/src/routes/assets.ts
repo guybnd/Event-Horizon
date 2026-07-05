@@ -27,8 +27,8 @@ router.get(/^\/.+$/, async (req, res) => {
     const fileBuffer = await fs.readFile(filePath);
     res.type(path.extname(filePath));
     res.send(fileBuffer);
-  } catch (error: any) {
-    if (error.code === 'ENOENT') return res.status(404).json({ error: 'Asset not found' });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return res.status(404).json({ error: 'Asset not found' });
     console.error(`Failed to read asset ${assetPath}:`, error);
     res.status(500).json({ error: 'Failed to read asset' });
   }

@@ -33,7 +33,7 @@ export interface AgentSessionProgress {
   timestamp: string;
   message: string;
   type?: 'text' | 'topic' | 'tool' | 'info';
-  data?: any;
+  data?: unknown;
 }
 
 export interface AgentSessionEntry {
@@ -86,6 +86,51 @@ export function appendSessionProgress(
   session.progress.push({ timestamp, message });
 }
 
+// ── Loose history-entry shape (lint burndown, FLUX-1073) ────────────────────
+// Ticket history entries have no canonical compile-time type — they're validated at RUNTIME by
+// schema.ts (validateHistoryEntry) and persisted as loosely-shaped YAML/JSON records (comment,
+// activity, status_change, agent_session, swimlane_change, …), each with a different subset of
+// fields. routes/tasks.ts's own lint burndown pass named this same shape locally (its `HistoryEntry`
+// interface) for the same reason — no shared type existed to import. This names every field these
+// helpers read or write; anything else still flows through via the index signature.
+export interface HistoryEntryLike {
+  type?: string | undefined;
+  from?: string | undefined;
+  to?: string | undefined;
+  oldStatus?: string | undefined;
+  newStatus?: string | undefined;
+  comment?: string | undefined;
+  user?: unknown;
+  date?: string | undefined;
+  id?: string | undefined;
+  pin?: boolean | undefined;
+  summary?: string | undefined;
+  supersedes?: unknown;
+  supersededBy?: string | undefined;
+  supersededByAdvisory?: string | undefined;
+  replyTo?: unknown;
+  sessionId?: string | undefined;
+  status?: string | undefined;
+  outcome?: string | undefined;
+  progress?: AgentSessionProgress[] | undefined;
+  progressCount?: number | undefined;
+  originalProgressCount?: number | undefined;
+  finalMessage?: string | undefined;
+  collapsed?: boolean | undefined;
+  launchFocus?: string | undefined;
+  swimlane?: string | undefined;
+  action?: string | undefined;
+  [key: string]: unknown;
+}
+
+/** Narrow an arbitrary (persisted / caller-supplied) value to the loose entry shape used
+ *  throughout this file, or `undefined` for anything that isn't a non-null object — a primitive
+ *  like `null`/a stray string tolerated by a malformed history array. Centralizes the
+ *  `typeof x === 'object'` guard every helper below previously repeated ad hoc on an `any`. */
+function asEntry(value: unknown): HistoryEntryLike | undefined {
+  return value && typeof value === 'object' ? (value as HistoryEntryLike) : undefined;
+}
+
 // Trailing text chunks kept by compactSessionProgress — the tail of the
 // agent's final message, the only raw output a later reader tends to need.
 const COMPACT_TEXT_TAIL = 2;
@@ -100,31 +145,25 @@ const COMPACT_TEXT_TAIL = 2;
  * before the adapter's exit handler flushes the accumulated progress, so this
  * may run more than once per entry and must compact late-arriving chunks too.
  */
-export function compactSessionProgress(entry: any): void {
-  if (!entry || entry.type !== 'agent_session' || entry.status === 'active') return;
-  if (!Array.isArray(entry.progress)) return;
+export function compactSessionProgress(entry: unknown): void {
+  const session = asEntry(entry);
+  if (!session || session.type !== 'agent_session' || session.status === 'active') return;
+  if (!Array.isArray(session.progress)) return;
 
-  const progress: any[] = entry.progress;
-  const isText = (p: any) => p && (p.type === 'text' || p.type == null) && typeof p.message === 'string' && p.message.trim();
-  const looksLikeError = (p: any) => p?.data?.error != null || (typeof p?.message === 'string' && /^(error|fatal)\b/i.test(p.message.trim()));
+  const progress: AgentSessionProgress[] = session.progress;
+  const isText = (p: AgentSessionProgress) => p && (p.type === 'text' || p.type == null) && typeof p.message === 'string' && p.message.trim();
+  const looksLikeError = (p: AgentSessionProgress) => {
+    const data = p?.data;
+    const dataError = data && typeof data === 'object' ? (data as Record<string, unknown>).error : undefined;
+    return dataError != null || (typeof p?.message === 'string' && /^(error|fatal)\b/i.test(p.message.trim()));
+  };
   const textEntries = progress.filter(isText);
   const keptTail = new Set(textEntries.slice(-COMPACT_TEXT_TAIL));
 
-  entry.progress = progress.filter((p: any) => (p?.type && p.type !== 'text') || keptTail.has(p) || looksLikeError(p));
-  entry.originalProgressCount = Math.max(entry.originalProgressCount ?? 0, progress.length);
-  const finalMessage = textEntries.length > 0 ? textEntries[textEntries.length - 1].message : undefined;
-  if (finalMessage && entry.finalMessage == null) entry.finalMessage = finalMessage;
-}
-
-export function closeAgentSession(
-  session: AgentSessionEntry,
-  status: 'completed' | 'failed' | 'cancelled',
-  outcome: string,
-  endedAt: string,
-): void {
-  session.status = status;
-  session.outcome = outcome;
-  session.endedAt = endedAt;
+  session.progress = progress.filter((p) => (p?.type && p.type !== 'text') || keptTail.has(p) || looksLikeError(p));
+  session.originalProgressCount = Math.max(session.originalProgressCount ?? 0, progress.length);
+  const finalMessage = textEntries.length > 0 ? textEntries[textEntries.length - 1]!.message : undefined;
+  if (finalMessage && session.finalMessage == null) session.finalMessage = finalMessage;
 }
 
 /**
@@ -135,19 +174,24 @@ export function closeAgentSession(
  * number of omitted older entries in `olderHistoryEntries`.
  */
 export function digestHistoryForAgent(
-  history: any[] = [],
+  history: unknown[] = [],
   limit: number,
   keepRecent = 3,
   opts: { expand?: string[] | undefined; fullHistory?: boolean | undefined } = {},
-) {
+): { history: HistoryEntryLike[]; olderHistoryEntries: number; collapsedCount?: number } {
   // Drop status_change entries from the agent digest — the current status is
   // already in the frontmatter and the transition log is rarely actionable to a
   // reading agent. Comments (incl. reviewer handoffs) and activity (incl. agent
   // log_progress notes) are kept. (FLUX-499)
-  const material = history.filter((entry) => !entry || entry.type !== 'status_change');
-  const digested = material.map((entry) => {
-    if (!entry || entry.type !== 'agent_session') return entry;
-    const { progress, ...rest } = entry;
+  const material = history.filter((entry) => asEntry(entry)?.type !== 'status_change');
+  const digested = material.map((entry): HistoryEntryLike => {
+    const e = asEntry(entry);
+    // Malformed/non-object entries pass through unchanged (same tolerant contract the old
+    // `any[]` signature had) — the cast reflects that history entries are always objects in
+    // practice (schema.ts enforces this at write time); this branch also covers the common
+    // case of a well-formed non-agent_session entry, which already satisfies the shape.
+    if (!e || e.type !== 'agent_session') return entry as HistoryEntryLike;
+    const { progress, ...rest } = e;
     return { ...rest, progressCount: Array.isArray(progress) ? progress.length : 0 };
   });
   const cap = Math.max(1, limit);
@@ -169,17 +213,19 @@ export function digestHistoryForAgent(
   // authority guardrail). The latest superseder wins if several point at one id.
   const positionById = new Map<string, number>();
   material.forEach((entry, i) => {
-    if (entry && typeof entry === 'object' && typeof entry.id === 'string') positionById.set(entry.id, i);
+    const e = asEntry(entry);
+    if (e && typeof e.id === 'string') positionById.set(e.id, i);
   });
   const supersededBy = new Map<string, { by: string; byUser: unknown }>();
   material.forEach((entry, i) => {
-    if (!entry || typeof entry !== 'object' || !Array.isArray(entry.supersedes)) return;
-    const supersederId = typeof entry.id === 'string' ? entry.id : '(superseded)';
-    for (const targetId of entry.supersedes) {
+    const e = asEntry(entry);
+    if (!e || !Array.isArray(e.supersedes)) return;
+    const supersederId = typeof e.id === 'string' ? e.id : '(superseded)';
+    for (const targetId of e.supersedes) {
       if (typeof targetId !== 'string') continue;
       const targetPos = positionById.get(targetId);
       if (targetPos == null || targetPos >= i) continue; // superseder must be later
-      supersededBy.set(targetId, { by: supersederId, byUser: entry.user });
+      supersededBy.set(targetId, { by: supersederId, byUser: e.user });
     }
   });
 
@@ -191,8 +237,9 @@ export function digestHistoryForAgent(
   // comments are kept full implicitly — users don't write summaries.
   const recentStart = Math.max(0, windowed.length - Math.max(0, keepRecent));
   let collapsedCount = 0;
-  const collapsedHistory = windowed.map((entry, i) => {
-    if (!entry || typeof entry !== 'object') return entry;
+  const collapsedHistory = windowed.map((entry, i): HistoryEntryLike => {
+    const e = asEntry(entry);
+    if (!e) return entry as HistoryEntryLike;
 
     // Temporal supersession (FLUX-811) — checked BEFORE the recent-window: a dead
     // decision should collapse even if it's recent, so the next session reads the
@@ -201,53 +248,53 @@ export function digestHistoryForAgent(
     // user-authored target — keep it full with an advisory annotation instead.
     // Same exemptions as the summary-collapse path below. Still recoverable via
     // expand:[id] like any collapse.
-    const superseder = entry.id ? supersededBy.get(entry.id) : undefined;
-    if (superseder && !(entry.id && expandSet.has(entry.id))) {
-      const protectedTarget = !!entry.pin || !isAgentAuthor(entry.user);
+    const superseder = e.id ? supersededBy.get(e.id) : undefined;
+    if (superseder && !(e.id && expandSet.has(e.id))) {
+      const protectedTarget = !!e.pin || !isAgentAuthor(e.user);
       if (protectedTarget && isAgentAuthor(superseder.byUser)) {
-        return { ...entry, supersededByAdvisory: superseder.by };       // advisory only → full
+        return { ...e, supersededByAdvisory: superseder.by };       // advisory only → full
       }
       collapsedCount++;
       return {
-        type: entry.type,
-        ...(entry.user ? { user: entry.user } : {}),
-        date: entry.date,
+        type: e.type,
+        ...(e.user ? { user: e.user } : {}),
+        date: e.date,
         supersededBy: superseder.by,
-        ...(typeof entry.summary === 'string' && entry.summary.trim() ? { summary: entry.summary } : {}),
-        ...(entry.id ? { id: entry.id } : {}),
+        ...(typeof e.summary === 'string' && e.summary.trim() ? { summary: e.summary } : {}),
+        ...(e.id ? { id: e.id } : {}),
         collapsed: true,
       };
     }
 
-    if (i >= recentStart) return entry;                                  // recent → full
-    if (entry.pin) return entry;                                          // pinned → full
-    if (entry.id && expandSet.has(entry.id)) return entry;               // explicitly expanded → full
+    if (i >= recentStart) return entry as HistoryEntryLike;              // recent → full
+    if (e.pin) return entry as HistoryEntryLike;                         // pinned → full
+    if (e.id && expandSet.has(e.id)) return entry as HistoryEntryLike;   // explicitly expanded → full
 
     // agent_session: collapse old sessions to their `outcome` (keep sessionId so
     // get_session_log still works). FLUX-507.
-    if (entry.type === 'agent_session') {
-      if (typeof entry.outcome !== 'string' || !entry.outcome.trim()) return entry; // no outcome → keep digested
+    if (e.type === 'agent_session') {
+      if (typeof e.outcome !== 'string' || !e.outcome.trim()) return entry as HistoryEntryLike; // no outcome → keep digested
       collapsedCount++;
       return {
         type: 'agent_session',
-        ...(entry.sessionId ? { sessionId: entry.sessionId } : {}),
-        ...(entry.status ? { status: entry.status } : {}),
-        date: entry.date,
-        summary: entry.outcome,
-        ...(typeof entry.progressCount === 'number' ? { progressCount: entry.progressCount } : {}),
+        ...(e.sessionId ? { sessionId: e.sessionId } : {}),
+        ...(e.status ? { status: e.status } : {}),
+        date: e.date,
+        summary: e.outcome,
+        ...(typeof e.progressCount === 'number' ? { progressCount: e.progressCount } : {}),
         collapsed: true,
       };
     }
 
-    if (!entry.id) return entry;                                          // no expandable handle → keep full (FLUX-504 safety: never collapse what can't be recovered via expand:[id]; e.g. activity entries get no id)
-    if (typeof entry.summary !== 'string' || !entry.summary.trim()) return entry; // no summary → full
+    if (!e.id) return entry as HistoryEntryLike;                        // no expandable handle → keep full (FLUX-504 safety: never collapse what can't be recovered via expand:[id]; e.g. activity entries get no id)
+    if (typeof e.summary !== 'string' || !e.summary.trim()) return entry as HistoryEntryLike; // no summary → full
     collapsedCount++;
     return {
-      type: entry.type,
-      user: entry.user,
-      date: entry.date,
-      summary: entry.summary,
-      id: entry.id,
+      type: e.type,
+      user: e.user,
+      date: e.date,
+      summary: e.summary,
+      id: e.id,
       collapsed: true,
     };
   });
@@ -286,21 +333,27 @@ export interface RecentUserComment {
   id?: string;
 }
 
+/** A comment-type HistoryEntryLike narrowed to a definite `comment` string — the shape
+ *  extractRecentUserComments' filter guarantees before building a RecentUserComment. */
+interface UserCommentEntry extends HistoryEntryLike {
+  comment: string;
+}
+
 /**
  * Scan the FULL history (not just the windowed digest) for the last `limit`
  * user-authored `comment` entries. A user comment older than the agent's
  * ~20-entry history window would otherwise be silently invisible (FLUX-480);
  * this pins the most recent few so the agent always sees them.
  */
-export function extractRecentUserComments(history: any[] = [], limit = 3): RecentUserComment[] {
+export function extractRecentUserComments(history: unknown[] = [], limit = 3): RecentUserComment[] {
   const cap = Math.max(0, limit);
   if (cap === 0) return [];
-  const userComments = history.filter(
-    (e) => e && e.type === 'comment' && typeof e.comment === 'string' && !isAgentAuthor(e.user),
-  );
+  const userComments = history
+    .map(asEntry)
+    .filter((e): e is UserCommentEntry => !!e && e.type === 'comment' && typeof e.comment === 'string' && !isAgentAuthor(e.user));
   return userComments.slice(-cap).map((e) => ({
-    user: e.user,
-    date: e.date,
+    user: typeof e.user === 'string' ? e.user : '',
+    date: e.date ?? '',
     comment: e.comment,
     ...(e.id ? { id: e.id } : {}),
   }));
@@ -312,11 +365,11 @@ export function extractRecentUserComments(history: any[] = [], limit = 3): Recen
  * the clean focus text is ever stored — never the full launch-prompt blob,
  * which FLUX-473 deliberately stripped from the agent digest.
  */
-export function extractLaunchFocus(history: any[] = []): { launchFocus: string; date: string } | undefined {
+export function extractLaunchFocus(history: unknown[] = []): { launchFocus: string; date: string } | undefined {
   for (let i = history.length - 1; i >= 0; i--) {
-    const e = history[i];
+    const e = asEntry(history[i]);
     if (e && typeof e.launchFocus === 'string' && e.launchFocus.trim()) {
-      return { launchFocus: e.launchFocus.trim(), date: e.date };
+      return { launchFocus: e.launchFocus.trim(), date: e.date ?? '' };
     }
   }
   return undefined;
@@ -329,10 +382,11 @@ export function extractLaunchFocus(history: any[] = []): { launchFocus: string; 
  * re-fetches the full ticket from the detail endpoint. Active entries keep
  * their array because SSE progress events append into it live.
  */
-export function digestTerminalSessionProgress(history: any[] = []) {
-  return history.map((entry) => {
-    if (!entry || entry.type !== 'agent_session' || entry.status === 'active') return entry;
-    const { progress, ...rest } = entry;
+export function digestTerminalSessionProgress(history: unknown[] = []): HistoryEntryLike[] {
+  return history.map((entry): HistoryEntryLike => {
+    const e = asEntry(entry);
+    if (!e || e.type !== 'agent_session' || e.status === 'active') return entry as HistoryEntryLike;
+    const { progress, ...rest } = e;
     return { ...rest, progressCount: Array.isArray(progress) ? progress.length : 0 };
   });
 }
@@ -373,26 +427,33 @@ export interface HistoryDigest {
  *  is the comment on the latest `swimlane_change → set require-input` entry, falling back to the
  *  most recent comment, then a default. Replicated here so the attention dock reads it off the
  *  digest instead of pulling full history. */
-function computeRequireInputMeta(entries: any[]): { question: string; setDate: string } {
+function computeRequireInputMeta(entries: unknown[]): { question: string; setDate: string } {
   for (let i = entries.length - 1; i >= 0; i--) {
-    const e = entries[i];
+    const e = asEntry(entries[i]);
     if (e?.type === 'swimlane_change' && e.action === 'set' && e.swimlane === 'require-input') {
-      return { question: e.comment || 'This ticket is waiting for your input.', setDate: e.date ?? '' };
+      return {
+        question: typeof e.comment === 'string' && e.comment ? e.comment : 'This ticket is waiting for your input.',
+        setDate: e.date ?? '',
+      };
     }
   }
   let question = 'This ticket is waiting for your input.';
   for (let i = entries.length - 1; i >= 0; i--) {
-    const e = entries[i];
-    if (e?.type === 'comment' && e.comment) { question = e.comment; break; }
+    const e = asEntry(entries[i]);
+    if (e?.type === 'comment' && typeof e.comment === 'string' && e.comment) { question = e.comment; break; }
   }
   return { question, setDate: '' };
 }
 
 export function buildHistoryDigest(
-  history: any[] = [],
+  history: unknown[] = [],
   status: string,
   swimlane?: string | null,
   now: number = Date.now(),
+  // FLUX-957: optional per-entry hook so callers that also need a filtered view of the raw
+  // history (e.g. serializeTaskForList's inline comment/active-session entries) can collect it
+  // in this same pass instead of a separate O(n) `.filter`. Never touches the returned digest.
+  onEntry?: (entry: HistoryEntryLike) => void,
 ): HistoryDigest {
   const entries = Array.isArray(history) ? history : [];
   const cutoff = now - 86_400_000; // 24h, matching Board.tsx flow/streak cutoffs
@@ -403,8 +464,10 @@ export function buildHistoryDigest(
   const statusChanges24h: Array<{ from: string; to: string; date: string }> = [];
   const comments: Array<{ id: string; user: string; date: string }> = [];
 
-  for (const e of entries) {
-    if (!e || typeof e !== 'object') continue;
+  for (const raw of entries) {
+    const e = asEntry(raw);
+    if (!e) continue;
+    onEntry?.(e);
     const date: string = typeof e.date === 'string' ? e.date : '';
     // ISO-8601 strings compare lexicographically == chronologically (matches the readers).
     if (date && date > lastActivityAt) lastActivityAt = date;
@@ -422,7 +485,7 @@ export function buildHistoryDigest(
         if (/done/i.test(to ?? '')) lastDoneAt = t;
       }
     } else if (e.type === 'comment' && e.id) {
-      comments.push({ id: e.id, user: e.user ?? '', date });
+      comments.push({ id: e.id, user: typeof e.user === 'string' ? e.user : '', date });
     }
   }
 
@@ -431,7 +494,8 @@ export function buildHistoryDigest(
     lastDoneAt !== undefined &&
     lastDoneAt - firstInProgressAt < 2 * 60 * 60 * 1000;
 
-  const last = entries.length > 0 ? entries[entries.length - 1] : null;
+  const lastRaw = entries.length > 0 ? entries[entries.length - 1] : null;
+  const last = asEntry(lastRaw);
   const lastEntry = last
     ? { date: typeof last.date === 'string' ? last.date : '', type: typeof last.type === 'string' ? last.type : '' }
     : null;
@@ -462,13 +526,14 @@ function buildCommentId(seed: string, usedIds: Set<string>, prefix = 'c') {
   return candidate;
 }
 
-export function getHistoryTimestamp(entry: any) {
-  if (!entry?.date) return 0;
-  const timestamp = new Date(entry.date).getTime();
+export function getHistoryTimestamp(entry: unknown): number {
+  const date = asEntry(entry)?.date;
+  if (!date) return 0;
+  const timestamp = new Date(date).getTime();
   return Number.isNaN(timestamp) ? 0 : timestamp;
 }
 
-export function findEarliestHistoryDate(history: any[] = []) {
+export function findEarliestHistoryDate(history: unknown[] = []): string | undefined {
   const timestamps = history
     .map((entry) => getHistoryTimestamp(entry))
     .filter((timestamp) => timestamp > 0);
@@ -477,16 +542,22 @@ export function findEarliestHistoryDate(history: any[] = []) {
   return new Date(Math.min(...timestamps)).toISOString();
 }
 
-export function ensureCreationActivity(history: any[] = [], user: string, fallbackDate?: string) {
-  const hasCreationActivity = history.some((entry) => entry?.type === 'activity' && entry?.comment === 'Created ticket.');
+export function ensureCreationActivity(history: unknown[] = [], user: string, fallbackDate?: string): { history: HistoryEntryLike[]; changed: boolean } {
+  const hasCreationActivity = history.some((entry) => {
+    const e = asEntry(entry);
+    return e?.type === 'activity' && e?.comment === 'Created ticket.';
+  });
 
   if (hasCreationActivity) {
-    return { history, changed: false };
+    // The pass-through entries are only ever objects when this branch is reached (the `.some()`
+    // above already required an object shape to match), but malformed non-object entries earlier
+    // in the array are tolerated as-is — same loose contract the old `any[]` signature had.
+    return { history: history as HistoryEntryLike[], changed: false };
   }
 
   const createdAt = findEarliestHistoryDate(history) || fallbackDate || new Date().toISOString();
   return {
-    history: [buildActivityEntry('Created ticket.', user || 'Unknown', createdAt), ...history],
+    history: [buildActivityEntry('Created ticket.', user || 'Unknown', createdAt), ...history] as HistoryEntryLike[],
     changed: true,
   };
 }
@@ -513,7 +584,22 @@ function normalizeStringList(value: unknown) {
     .map((item) => String(item));
 }
 
-export function summarizeFieldChanges(previousTask: any, nextFrontmatter: any, nextBody: string | undefined) {
+/** Minimal shape of a ticket's frontmatter as read by summarizeFieldChanges — there is no
+ *  canonical compile-time type for ticket frontmatter either (see routes/tasks.ts's own local
+ *  `TaskRecord` for the same rationale); every other field flows through via the index signature. */
+interface FieldChangeSource {
+  title?: unknown;
+  body?: unknown;
+  assignee?: unknown;
+  tags?: unknown;
+  priority?: unknown;
+  effort?: unknown;
+  implementationLink?: unknown;
+  subtasks?: unknown;
+  [key: string]: unknown;
+}
+
+export function summarizeFieldChanges(previousTask: FieldChangeSource, nextFrontmatter: FieldChangeSource, nextBody: string | undefined): string[] {
   const messages: string[] = [];
   const previousBody = normalizeTextContent(previousTask.body);
   const normalizedNextBody = normalizeTextContent(nextBody);
@@ -542,19 +628,20 @@ export function summarizeFieldChanges(previousTask: any, nextFrontmatter: any, n
   return messages;
 }
 
-function historyPrefixMatches(existingHistory: any[] = [], nextHistory: any[] = []) {
+function historyPrefixMatches(existingHistory: unknown[] = [], nextHistory: unknown[] = []): boolean {
   if (nextHistory.length < existingHistory.length) return false;
   return existingHistory.every((entry, index) => JSON.stringify(entry) === JSON.stringify(nextHistory[index]));
 }
 
-export function hasAppendedStatusChange(existingHistory: any[] = [], nextHistory: any[] = [], from?: string, to?: string) {
+export function hasAppendedStatusChange(existingHistory: unknown[] = [], nextHistory: unknown[] = [], from?: string, to?: string): boolean {
   if (!from || !to || !historyPrefixMatches(existingHistory, nextHistory)) return false;
-  return nextHistory.slice(existingHistory.length).some(
-    (entry) => entry?.type === 'status_change' && entry?.from === from && entry?.to === to,
-  );
+  return nextHistory.slice(existingHistory.length).some((entry) => {
+    const e = asEntry(entry);
+    return e?.type === 'status_change' && e?.from === from && e?.to === to;
+  });
 }
 
-export function normalizeHistoryEntries(history: any[] = []) {
+export function normalizeHistoryEntries(history: unknown[] = []): { history: HistoryEntryLike[]; changed: boolean } {
   let changed = false;
   const usedIds = new Set<string>();
 
@@ -564,16 +651,22 @@ export function normalizeHistoryEntries(history: any[] = []) {
   // when the link was written), so this naturally drops dangling/forward-to-new
   // and self references without a positional scan.
   const existingIds = new Set<string>();
-  for (const entry of history) {
-    if (entry && typeof entry === 'object' && typeof entry.id === 'string' && entry.id.trim()) {
+  for (const raw of history) {
+    const entry = asEntry(raw);
+    if (entry && typeof entry.id === 'string' && entry.id.trim()) {
       existingIds.add(entry.id.trim());
     }
   }
 
-  const normalized = history.map((entry, index) => {
-    if (!entry || typeof entry !== 'object') return entry;
+  const normalized = history.map((raw, index) => {
+    const entry = asEntry(raw);
+    // Malformed/non-object entries pass through unchanged — same tolerant contract the old
+    // `any[]` signature had. Cast is safe: real history entries are always objects (schema.ts
+    // enforces this at write time); this branch only ever sees already-corrupt data we don't
+    // want to crash on.
+    if (!entry) return raw as HistoryEntryLike;
 
-    const nextEntry = { ...entry };
+    const nextEntry: HistoryEntryLike = { ...entry };
 
     if (typeof nextEntry.id === 'string' && nextEntry.id.trim()) {
       const trimmedId = nextEntry.id.trim();
@@ -604,14 +697,14 @@ export function normalizeHistoryEntries(history: any[] = []) {
       // of EXISTING entry ids — drop non-strings, self-references, and danglers
       // so the digest never points at a missing target. Empty ⇒ field removed.
       if ('supersedes' in nextEntry) {
-        const raw = Array.isArray(nextEntry.supersedes)
+        const rawSupersedes: unknown[] = Array.isArray(nextEntry.supersedes)
           ? nextEntry.supersedes
           : typeof nextEntry.supersedes === 'string'
             ? [nextEntry.supersedes]
             : [];
         const cleaned = Array.from(
           new Set(
-            raw
+            rawSupersedes
               .filter((id: unknown): id is string => typeof id === 'string' && id.trim() !== '')
               .map((id: string) => id.trim())
               .filter((id: string) => id !== nextEntry.id && existingIds.has(id)),

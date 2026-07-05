@@ -2,8 +2,20 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { getModuleMcpServers, getWorkspaceMcpServers } from './modules.js';
 import { workspaceRoot } from './workspace.js';
+
+// Server config as sourced from either the module system (`{command,args,env}`) or a workspace
+// `.mcp.json` entry (arbitrary JSON — may also carry `type`/`url` for http/sse transports). This
+// covers only the fields this module reads.
+interface McpServerConfig {
+  type?: string;
+  url?: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
 
 function measure(value: unknown): { bytes: number; tokensEst: number } {
   const json = typeof value === 'string' ? value : JSON.stringify(value ?? null);
@@ -38,19 +50,19 @@ export interface McpSchemaReport {
   note: string;
 }
 
-function makeTransport(config: any) {
+function makeTransport(config: McpServerConfig) {
   const type = config.type || (config.url ? 'http' : 'stdio');
   if (type === 'http' || type === 'streamable-http') {
-    return new StreamableHTTPClientTransport(new URL(config.url));
+    return new StreamableHTTPClientTransport(new URL(config.url!));
   }
   if (type === 'sse') {
-    return new SSEClientTransport(new URL(config.url));
+    return new SSEClientTransport(new URL(config.url!));
   }
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined) env[k] = v;
   Object.assign(env, config.env ?? {});
   return new StdioClientTransport({
-    command: config.command,
+    command: config.command!,
     args: config.args ?? [],
     env,
     cwd: workspaceRoot || process.cwd(),
@@ -67,7 +79,7 @@ function makeTransport(config: any) {
  */
 export async function probeMcpServer(
   id: string,
-  config: any,
+  config: McpServerConfig,
   timeoutMs = 20000,
   source = 'unknown',
 ): Promise<McpServerSchemaMetrics> {
@@ -77,19 +89,23 @@ export async function probeMcpServer(
     totalBytes: 0, totalTokensEst: 0, tools: [],
   };
 
-  let transport: any;
+  let transport: ReturnType<typeof makeTransport>;
   try {
     transport = makeTransport(config);
-  } catch (err: any) {
-    return { ...empty, error: err?.message || 'bad server config' };
+  } catch (err) {
+    return { ...empty, error: err instanceof Error ? err.message : 'bad server config' };
   }
   const client = new Client({ name: 'eh-schema-probe', version: '1.0.0' }, { capabilities: {} });
 
   try {
-    await withTimeout(client.connect(transport), timeoutMs, `connect(${id})`);
+    // Cast: the concrete client transports genuinely implement Transport, but their
+    // `onclose`/`onerror`/`onmessage` getters are typed `(...) | undefined` which trips
+    // exactOptionalPropertyTypes against Transport's optional (no-explicit-undefined) members
+    // (same pattern as mcp-server.ts's StreamableHTTPServerTransport cast).
+    await withTimeout(client.connect(transport as Transport), timeoutMs, `connect(${id})`);
     const res = await withTimeout(client.listTools(), timeoutMs, `listTools(${id})`);
     const tools = (res.tools ?? [])
-      .map((t: any) => {
+      .map((t) => {
         const m = measure({ name: t.name, description: t.description, inputSchema: t.inputSchema });
         return { name: t.name, bytes: m.bytes, tokensEst: m.tokensEst };
       })
@@ -107,8 +123,8 @@ export async function probeMcpServer(
       totalTokensEst: toolsTokensEst + instr.tokensEst,
       tools,
     };
-  } catch (err: any) {
-    return { ...empty, error: err?.message || String(err) };
+  } catch (err) {
+    return { ...empty, error: err instanceof Error ? err.message : String(err) };
   } finally {
     try { await client.close(); } catch { /* ignore */ }
     try { await transport.close(); } catch { /* ignore */ }
@@ -122,11 +138,12 @@ export async function probeMcpServer(
  * static MCP context an agent pays for. On-demand and slow (spawns servers).
  */
 export async function probeAllMcpSchemas(phase?: string, tags?: string[], timeoutMs = 20000): Promise<McpSchemaReport> {
-  const merged = new Map<string, { config: any; source: string }>();
+  const merged = new Map<string, { config: McpServerConfig; source: string }>();
   for (const [id, cfg] of Object.entries(getModuleMcpServers(phase, tags))) merged.set(id, { config: cfg, source: 'module' });
   for (const [id, cfg] of Object.entries(getWorkspaceMcpServers())) {
     if (merged.has(id)) merged.get(id)!.source = 'module+host';
-    else merged.set(id, { config: cfg, source: 'host' });
+    // `.mcp.json` is arbitrary host-authored JSON — narrow it to the shape this module reads.
+    else merged.set(id, { config: cfg as McpServerConfig, source: 'host' });
   }
 
   const results = await Promise.all(

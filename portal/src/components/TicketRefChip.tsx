@@ -7,6 +7,7 @@ import { BOARD_CONVERSATION_ID } from '../api';
 import { relativeTime } from '../workflow';
 import { getStatusColorClass, getStatusTint } from '../statusStyles';
 import { StatusBadge } from './StatusBadge';
+import { normalizeStatus } from '../workflow';
 
 /**
  * FLUX-922: the shared, interactive ticket-reference chip + hover-card.
@@ -209,7 +210,7 @@ export function TicketRefChip({ ticketId, time, variant = 'chip', alignEnd = fal
           >
             <div className="flex items-center justify-between gap-2">
               <span className="font-mono text-xs text-primary">{task.id}</span>
-              <StatusBadge status={task.status} colorClass={statusColor} className="text-[10px]" />
+              <StatusBadge status={normalizeStatus(task.status)} colorClass={statusColor} className="text-[10px]" />
             </div>
             {task.title && (
               <div className="mt-1 text-sm font-semibold leading-snug text-[var(--eh-text-primary)]">{task.title}</div>

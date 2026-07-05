@@ -36,6 +36,10 @@ export interface Turn {
   seq: number;
   ts: string;
   role: TurnRole;
+  // Untyped stream-json/synthetic event payload, duck-typed via loose property access
+  // throughout this file and transcript.ts; narrowing to `unknown` would require threading
+  // discriminated-union types through both.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   raw: any;
 }
 
@@ -54,6 +58,23 @@ export interface ChatAttachment {
   fileName: string;
 }
 
+/** FLUX-849/FLUX-862: a dispatched session's lifecycle-marker stages, teed to the board as a
+ *  `dispatch-activity` raw event (`teeDispatchActivityToBoard` in agents/claude-code.ts) and read
+ *  back here at the projection boundary. Canonical here — this module owns the turn/message TYPES —
+ *  and imported by claude-code.ts so the two sides can't drift apart into two hand-duplicated unions. */
+export type DispatchLifecycle = 'started' | 'working' | 'completed' | 'failed' | 'cancelled' | 'waiting-input';
+
+const DISPATCH_LIFECYCLES = new Set<string>([
+  'started', 'working', 'completed', 'failed', 'cancelled', 'waiting-input',
+] satisfies DispatchLifecycle[]);
+
+/** Runtime guard for a raw (`unknown`/`any`) event's `lifecycle` field — the JSON round-trip through
+ *  the transcript substrate erases its compile-time type, so `typeof === 'string'` alone would let
+ *  any string widen into `TranscriptMessage['lifecycle']` unchecked. */
+function isDispatchLifecycle(value: unknown): value is DispatchLifecycle {
+  return typeof value === 'string' && DISPATCH_LIFECYCLES.has(value);
+}
+
 export interface TranscriptMessage {
   /** FLUX-745: `note` is a non-bubble system/automated row (rendered as a quiet chip, not a
    *  user/assistant bubble) — used for the resume-preamble "context update". */
@@ -69,9 +90,8 @@ export interface TranscriptMessage {
   /** FLUX-849: on a `dispatch` note, the source ticket the dispatched session is working
    *  (e.g. `FLUX-849`) — the board chip labels/links the row to that ticket. */
   sourceTask?: string;
-  /** FLUX-849: on a `dispatch` note, the session-lifecycle stage this row narrates. Mirrors the
-   *  engine's `DispatchLifecycle` union (claude-code.ts) so a drift surfaces as a compile error. */
-  lifecycle?: 'started' | 'working' | 'completed' | 'failed' | 'cancelled' | 'waiting-input';
+  /** FLUX-849: on a `dispatch` note, the session-lifecycle stage this row narrates. */
+  lifecycle?: DispatchLifecycle;
   /** FLUX-865: on a `dispatch` note, the work phase the dispatched session is running. Mirrors the
    *  engine's `AgentSession.phase` union (models/agent.ts) so a drift surfaces as a compile error.
    *  Lets the board chip say *what kind* of session a row narrates (groom / impl / review / final),
@@ -141,8 +161,16 @@ function sanitizeActionFocus(focus: string): string {
     .trim();
 }
 
+/** Minimal shape of a Claude Code SDK `tool_use` content block, as read by the projector.
+ *  `raw` payloads are untyped JSON off the wire, so every field is optional/unknown until
+ *  narrowed at the point of use. */
+interface ToolUseBlock {
+  name?: unknown;
+  input?: Record<string, unknown>;
+}
+
 /** Normalize a tool_use block's name, unwrapping the `mcp__server__tool` prefix. */
-function normalizeToolName(block: any): string {
+function normalizeToolName(block: ToolUseBlock | undefined): string {
   let name = String(block?.name || 'tool');
   const m = name.match(/^mcp__.+?__(.+)$/); // mcp__event-horizon__list_tickets -> list_tickets
   if (m && m[1]) name = m[1];
@@ -222,7 +250,7 @@ function diffStat(oldStr: unknown, newStr: unknown): { added: number; removed: n
  * content available in the tool input). Note: `Edit` with `replace_all` matching multiple sites
  * is counted once (single old→new block) → under-counts; acceptable for v1.
  */
-function editLineStat(block: any): { added: number; removed: number } {
+function editLineStat(block: ToolUseBlock | undefined): { added: number; removed: number } {
   const name = normalizeToolName(block);
   const input = block?.input || {};
   if (name === 'Edit') return diffStat(input.old_string, input.new_string);
@@ -231,7 +259,9 @@ function editLineStat(block: any): { added: number; removed: number } {
     let removed = 0;
     if (Array.isArray(input.edits)) {
       for (const e of input.edits) {
-        const s = diffStat(e?.old_string, e?.new_string);
+        // Each edit entry is itself an untyped JSON object — narrow before reading its fields.
+        const edit = e && typeof e === 'object' ? (e as Record<string, unknown>) : undefined;
+        const s = diffStat(edit?.old_string, edit?.new_string);
         added += s.added;
         removed += s.removed;
       }
@@ -254,9 +284,11 @@ export interface CurationOp {
   [key: string]: unknown;
 }
 
-/** Classify a raw event into a coarse turn role (envelope metadata; ordering is by seq). */
-export function classifyRole(raw: any): TurnRole {
-  const t = raw?.type;
+/** Classify a raw event into a coarse turn role (envelope metadata; ordering is by seq).
+ *  `raw` is the untyped substrate payload (JSON off the wire, or a synthetic event) — narrow
+ *  it defensively before reading `.type` rather than assuming it's an object. */
+export function classifyRole(raw: unknown): TurnRole {
+  const t = raw && typeof raw === 'object' ? (raw as Record<string, unknown>).type : undefined;
   if (t === 'user' || t === 'ask-answer' || t === 'permission-resolved') return 'user';
   if (t === 'assistant' || t === 'ask-question' || t === 'permission-request') return 'assistant';
   if (t === 'system') return 'system';
@@ -266,12 +298,32 @@ export function classifyRole(raw: any): TurnRole {
 }
 
 /** Friendly one-line label for a tool_use block ("watch it work"). */
-function toolLabel(block: any): string {
+function toolLabel(block: ToolUseBlock | undefined): string {
   const name = normalizeToolName(block);
   const input = block?.input || {};
   const hint = input.ticketId ?? input.id ?? input.newStatus ?? input.file_path ?? input.command ?? input.query;
   const hintStr = hint != null ? String(hint).replace(/\s+/g, ' ').slice(0, 48) : '';
   return hintStr ? `${name} · ${hintStr}` : name;
+}
+
+/** FLUX-674: runtime guard for a raw attachment entry off a user turn's `attachments[]` —
+ *  narrows to the fields `ChatAttachment` actually needs before they're read. */
+function isRawImageAttachment(a: unknown): a is { url: string; path: string; fileName?: unknown } {
+  if (!a || typeof a !== 'object') return false;
+  const rec = a as Record<string, unknown>;
+  return typeof rec.url === 'string' && typeof rec.path === 'string';
+}
+
+/** Minimal shape of one entry in an `ask-question` event's `questions[]` (structured HITL prompt). */
+interface RawQuestion {
+  header?: unknown;
+  question?: unknown;
+  options?: unknown;
+}
+
+/** Minimal shape of one `options[]` entry within a `RawQuestion`. */
+interface RawQuestionOption {
+  label?: unknown;
 }
 
 /**
@@ -310,9 +362,9 @@ export function projectTranscript(
       // FLUX-674: carry pasted-image refs onto the user turn so the bubble renders them
       // inline on reload / cold resume. Defensively filter to well-formed entries.
       if (Array.isArray(evt.attachments)) {
-        const atts = evt.attachments
-          .filter((a: any) => a && typeof a.url === 'string' && typeof a.path === 'string')
-          .map((a: any) => ({ url: a.url, path: a.path, fileName: typeof a.fileName === 'string' ? a.fileName : 'image' }));
+        const atts: ChatAttachment[] = (evt.attachments as unknown[])
+          .filter(isRawImageAttachment)
+          .map((a) => ({ url: a.url, path: a.path, fileName: typeof a.fileName === 'string' ? a.fileName : 'image' }));
         if (atts.length) msg.attachments = atts;
       }
       out.push(tag(msg, turn));
@@ -339,9 +391,9 @@ export function projectTranscript(
       // turn so a cold resume shows the question that was posed.
       const ts = typeof evt.timestamp === 'string' ? evt.timestamp : '';
       const md = evt.questions
-        .map((q: any) => {
+        .map((q: RawQuestion) => {
           const opts = Array.isArray(q.options)
-            ? q.options.map((o: any) => `- ${o?.label ?? ''}`).join('\n')
+            ? q.options.map((o: RawQuestionOption) => `- ${o?.label ?? ''}`).join('\n')
             : '';
           return `**${q?.header || 'Question'}** — ${q?.question ?? ''}\n${opts}`;
         })
@@ -355,7 +407,7 @@ export function projectTranscript(
         out.push(tag({ role: 'user', text: '_(no answer — the question timed out)_', ts }, turn));
       } else {
         const picks = Object.values(evt.answers || {})
-          .map((a: any) => (Array.isArray(a) ? a.join(', ') : String(a)))
+          .map((a: unknown) => (Array.isArray(a) ? a.join(', ') : String(a)))
           .filter((s) => s.trim());
         const note = typeof evt.notes === 'string' && evt.notes.trim() ? ` — ${evt.notes.trim()}` : '';
         out.push(tag({ role: 'user', text: `✔ ${picks.join(' · ')}${note}`.trim(), ts }, turn));
@@ -388,7 +440,9 @@ export function projectTranscript(
       const ts = typeof evt.timestamp === 'string' ? evt.timestamp : turn.ts;
       const msg: TranscriptMessage = { role: 'note', kind: 'dispatch', text: evt.text, ts };
       if (typeof evt.sourceTask === 'string') msg.sourceTask = evt.sourceTask;
-      if (typeof evt.lifecycle === 'string') msg.lifecycle = evt.lifecycle;
+      // FLUX-862: validate against the actual DispatchLifecycle members, not just "is a string" —
+      // a malformed/unexpected value now degrades to "no lifecycle" instead of silently widening in.
+      if (isDispatchLifecycle(evt.lifecycle)) msg.lifecycle = evt.lifecycle;
       // FLUX-865: the tee already emits `phase` (claude-code.ts teeDispatchActivityToBoard); copy it
       // through so the chip can label the row's phase. Degrades to no phase label when absent.
       if (typeof evt.phase === 'string') msg.phase = evt.phase;

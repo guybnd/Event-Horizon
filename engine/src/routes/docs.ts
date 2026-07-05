@@ -89,9 +89,10 @@ router.post('/', async (req, res) => {
         await loadGroupDoc(storeDir, parentStorePath(storeDir, storeRel));
         const created = docsCache[docPath];
         return res.status(201).json(created ? serializeDoc(created) : { success: true });
-      } catch (error: any) {
+      } catch (error) {
         console.error(`Failed to write new group doc ${docPath}:`, error);
-        return res.status(500).json({ error: `Failed to write the new group doc: ${error.message}` });
+        const message = error instanceof Error ? error.message : String(error);
+        return res.status(500).json({ error: `Failed to write the new group doc: ${message}` });
       }
     }
     return res.status(403).json({ error: groupReadOnlyMessage() });
@@ -154,9 +155,10 @@ router.put(/^\/.+$/, async (req, res) => {
         await loadGroupDoc(storeDir, parentStorePath(storeDir, storeRel));
         const updated = docsCache[docPath];
         return res.json(updated ? serializeDoc(updated) : { success: true });
-      } catch (error: any) {
+      } catch (error) {
         console.error(`Failed to write group edit for ${docPath}:`, error);
-        return res.status(500).json({ error: `Failed to write the group doc edit: ${error.message}` });
+        const message = error instanceof Error ? error.message : String(error);
+        return res.status(500).json({ error: `Failed to write the group doc edit: ${message}` });
       }
     }
     return res.status(403).json({ error: groupReadOnlyMessage() });
@@ -199,9 +201,10 @@ router.delete(/^\/.+$/, async (req, res) => {
         await submitGroupEdit(writer, [{ path: storeRel, delete: true }]);
         delete docsCache[docPath];
         return res.json({ success: true });
-      } catch (error: any) {
+      } catch (error) {
         console.error(`Failed to write group delete for ${docPath}:`, error);
-        return res.status(500).json({ error: `Failed to delete the group doc: ${error.message}` });
+        const message = error instanceof Error ? error.message : String(error);
+        return res.status(500).json({ error: `Failed to delete the group doc: ${message}` });
       }
     }
     return res.status(403).json({ error: groupReadOnlyMessage() });
@@ -276,9 +279,10 @@ router.post('/rename-folder', async (req, res) => {
       moved.push({ from: doc.path, to: targetPath });
     }
     res.json({ success: true, moved });
-  } catch (error: any) {
+  } catch (error) {
     console.error(`Failed to rename folder ${from} → ${to}:`, error);
-    res.status(500).json({ error: `Failed to rename folder: ${error.message}` });
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: `Failed to rename folder: ${message}` });
   }
 });
 

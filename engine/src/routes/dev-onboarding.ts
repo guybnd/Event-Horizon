@@ -87,8 +87,8 @@ router.get('/onboarding-features', async (_req, res) => {
   try {
     const text = await fs.readFile(PANELS_FILE, 'utf-8');
     return res.json(JSON.parse(text));
-  } catch (err: any) {
-    if (err?.code === 'ENOENT') {
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
       return res.status(404).json({ error: 'Onboarding features config not found' });
     }
     console.error('[dev-onboarding] read failed:', err);

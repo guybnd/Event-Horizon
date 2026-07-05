@@ -3,10 +3,10 @@ import { spawn, execSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import { configCache } from '../config.js';
-import { buildActivityEntry, buildCommentEntry, buildAgentMessageEntry, buildAgentSessionEntry, appendSessionProgress, closeAgentSession, type AgentSessionEntry } from '../history.js';
+import { buildActivityEntry, buildCommentEntry, buildAgentSessionEntry } from '../history.js';
 import { updateTaskWithHistory, updateAgentSession, tasksCache, estimateCostUSD } from '../task-store.js';
-import { resolveTaskExecutionRoot } from '../task-worktree.js';
-import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart } from '../session-store.js';
+import { resolveTaskExecutionRoot, resolveResumeExecutionRoot, assertIsolatedSpawnRoot } from '../task-worktree.js';
+import { notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
 import { killProcessTree } from '../kill-process-tree.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
@@ -17,7 +17,7 @@ import { appendTranscriptLine } from '../transcript.js';
 import { buildMcpServerEntry } from '../workflow-installer.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt } from './shared.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, appendSessionOutput, appendErrorToSession, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, type CliTask } from './shared.js';
 
 const TOOL_ACTIVITY_MAP: Record<string, string> = {
   powershell: 'Running command',
@@ -33,6 +33,38 @@ const TOOL_ACTIVITY_MAP: Record<string, string> = {
   sql: 'Working',
 };
 
+/** One line of Copilot CLI's JSONL stdout — the shape this adapter parses. Fields are a union of
+ *  every event `type` Copilot emits; only the ones this parser reads. */
+interface CopilotCliEvent {
+  type?: string;
+  data?: {
+    deltaContent?: string;
+    toolName?: string;
+    name?: string;
+    parameters?: Record<string, unknown>;
+    input?: Record<string, unknown>;
+    is_error?: boolean;
+    error?: string;
+    content?: unknown;
+    usage?: CopilotUsage;
+    sessionId?: string;
+    id?: string;
+  };
+  is_error?: boolean;
+  error?: string;
+  subtype?: string;
+  sessionId?: string;
+  usage?: CopilotUsage;
+}
+
+interface CopilotUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  total_cost_usd?: number;
+}
+
 export function attachStdoutProcessing(
   proc: ReturnType<typeof spawn>,
   session: CliSessionRecord,
@@ -41,7 +73,7 @@ export function attachStdoutProcessing(
   // FLUX-932: shared line-buffer / JSON.parse / commitPendingAssistantText skeleton lives in shared.ts.
   // This supplies Copilot's per-CLI parser (assistant.message_delta / tool_call / turn_end usage).
   // narrationType 'text' (4th arg below) → Copilot flushes the styled 'text' Narration block.
-  return sharedAttachStdoutProcessing(proc, session, {
+  return sharedAttachStdoutProcessing<CopilotCliEvent>(proc, session, {
     onEvent: (evt, trimmed, commitPendingAssistantText) => {
 
         // FLUX-969: tee raw event lines to the durable per-ticket transcript, mirroring
@@ -108,9 +140,9 @@ export function attachStdoutProcessing(
           if (session.sessionHistoryEntry) {
             const params = evt.data?.parameters || evt.data?.input || {};
             let progressMsg = newActivity;
-            if ((toolName === 'edit' || toolName === 'create') && params.path) {
+            if ((toolName === 'edit' || toolName === 'create') && typeof params.path === 'string') {
               progressMsg = `Editing ${path.basename(params.path)}`;
-            } else if (toolName === 'view' && params.path) {
+            } else if (toolName === 'view' && typeof params.path === 'string') {
               progressMsg = `Reading ${path.basename(params.path)}`;
             } else if (toolName === 'powershell' && params.command) {
               const cmd = String(params.command).slice(0, 50);
@@ -181,8 +213,9 @@ export function attachStdoutProcessing(
           }
         } else if (evt.type === 'session.updated' || evt.type === 'session.created') {
           // Capture the session ID for resume support
-          if (evt.data?.sessionId || evt.data?.id) {
-            session.resumeSessionId = evt.data.sessionId || evt.data.id;
+          const sessionOrId = evt.data?.sessionId || evt.data?.id;
+          if (sessionOrId) {
+            session.resumeSessionId = sessionOrId;
           }
         }
         // Skip ephemeral session setup events (session.mcp_*, session.tools_updated, etc.)
@@ -368,36 +401,30 @@ export function buildAdditionalMcpConfigArgs(): string[] {
   return ['--additional-mcp-config', JSON.stringify({ mcpServers: { 'event-horizon': buildMcpServerEntry() } })];
 }
 
-export async function startCliSession(session: CliSessionRecord, task: any, appendPrompt: string, effortOverrideRaw: string, workspaceRoot: string) {
+export async function startCliSession(session: CliSessionRecord, task: CliTask, appendPrompt: string, effortOverrideRaw: string, workspaceRoot: string) {
   const label = session.label;
   const id = session.taskId;
   // FLUX-519: run the agent in this task's worktree when one exists (else engine root).
   const executionRoot = await resolveTaskExecutionRoot(task, workspaceRoot);
   session.executionRoot = executionRoot;
 
-  // FLUX-1018: fail closed on the fresh-spawn path. A task WITH a branch must run
-  // in that branch's worktree — never the main checkout (master). Copilot's `-p`
-  // mode never checks the branch out itself, so spawning with cwd = workspaceRoot
-  // would commit straight to master (the FLUX-972 incident). resolveTaskExecutionRoot
-  // already self-heals/throws, but assert here too as a belt-and-suspenders guard.
-  if (task?.branch && executionRoot === workspaceRoot) {
-    throw new Error(
-      `Refusing to start Copilot for ${id} on branch '${task.branch}': its worktree is missing and ` +
-        `execution resolved to the main checkout (master). Recreate the worktree and retry.`,
-    );
-  }
+  // FLUX-1018 / FLUX-1028: fail closed on the fresh-spawn path (shared helper —
+  // see assertIsolatedSpawnRoot in task-worktree.ts). Copilot's `-p` mode never
+  // checks the branch out itself, so spawning with cwd = workspaceRoot would
+  // commit straight to master (the FLUX-972 incident).
+  assertIsolatedSpawnRoot('Copilot', id, task, executionRoot, workspaceRoot);
 
   log.info(`[${id}] Starting Copilot CLI session in ${workspaceRoot}`);
 
-  const copilotIntegration = (configCache as any).integrations?.copilotCli;
-  const groomingStatuses = [(configCache as any).requireInputStatus || 'Require Input', 'Grooming'];
+  const copilotIntegration = configCache.integrations?.copilotCli;
+  const groomingStatuses = [configCache.requireInputStatus || 'Require Input', 'Grooming'];
   const selectedModel = copilotIntegration
     ? (groomingStatuses.includes(task.status) ? copilotIntegration.groomingModel : copilotIntegration.implementationModel)
     : null;
 
   const taskPhase = groomingStatuses.includes(task.status) ? 'grooming'
     : (task.status === 'In Progress' || task.status === 'Todo') ? 'implementation'
-    : task.status === ((configCache as any)?.readyForMergeStatus || 'Ready') ? 'review'
+    : task.status === (configCache?.readyForMergeStatus || 'Ready') ? 'review'
     : undefined;
 
   const initialPrompt = buildInitialPrompt(task, appendPrompt, { phase: taskPhase, framework: 'copilot' });
@@ -416,8 +443,8 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   ];
 
   const effortCap = CLI_CAPABILITIES.copilot.effort;
-  const globalEffort = (configCache as any).effortLevel as string | undefined;
-  const taskEffort = (task as any).effortLevel as string | undefined;
+  const globalEffort = configCache.effortLevel as string | undefined;
+  const taskEffort = task.effortLevel;
   const effectiveEffort = (effortOverrideRaw || taskEffort || globalEffort || '') as string;
   // FLUX-977: Copilot CLI rejects --effort outright when no explicit --model is set (its default
   // "auto" model "does not support reasoning effort configuration" — confirmed against the live
@@ -576,11 +603,12 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
       if (tokenUpdate) {
         await updateTaskWithHistory(id, { updatedBy: 'Agent', entries: [], tokenMetadata: tokenUpdate });
       }
-      if (session.sessionHistoryEntry?.sessionId) {
-        await updateAgentSession(id, session.sessionHistoryEntry.sessionId, (sessionEntry) => {
+      const pausedHistoryEntry = session.sessionHistoryEntry;
+      if (pausedHistoryEntry?.sessionId) {
+        await updateAgentSession(id, pausedHistoryEntry.sessionId, (sessionEntry) => {
           sessionEntry.status = 'waiting-input';
           sessionEntry.outcome = `${label} paused — waiting for user input.`;
-          sessionEntry.progress = session.sessionHistoryEntry.progress || [];
+          sessionEntry.progress = pausedHistoryEntry.progress || [];
         });
       }
       broadcastEvent('taskUpdated', { id });
@@ -608,8 +636,8 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
         sessionEntry.progress = accumulatedProgress;
       });
 
-      const textEntries = accumulatedProgress.filter((p: any) => p.type === 'text' && p.message?.trim());
-      const lastText = textEntries.length > 0 ? textEntries[textEntries.length - 1].message : '';
+      const textEntries = accumulatedProgress.filter((p) => p.type === 'text' && p.message?.trim());
+      const lastText = textEntries.length > 0 ? textEntries[textEntries.length - 1]?.message : '';
       if (lastText && finalStatus === 'completed') {
         const maxCommentLen = 3000;
         const commentBody = lastText.length > maxCommentLen ? lastText.slice(0, maxCommentLen) + '...' : lastText;
@@ -673,7 +701,11 @@ export class CopilotAdapter implements AgentAdapter {
   }
 
   async start(session: CliSessionRecord, task: unknown, appendPrompt: string, effortOverride: string, workspaceRoot: string): Promise<void> {
-    return startCliSession(session, task, appendPrompt, effortOverride, workspaceRoot);
+    // The AgentAdapter interface types the incoming task as `unknown` (it's a bare ticket
+    // frontmatter record with no canonical compile-time type — see task-store.ts's
+    // `tasksCache: Record<string, any>`), but every caller (routes/cli-session.ts) always
+    // passes the actual ticket record, whose shape is exactly what CliTask names.
+    return startCliSession(session, task as CliTask, appendPrompt, effortOverride, workspaceRoot);
   }
 
   async sendInput(session: CliSessionRecord, message: string, user: string, workspaceRoot: string): Promise<void> {
@@ -691,18 +723,15 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   const id = session.taskId;
   // FLUX-519 review: resume in the SAME root the session started in; refuse to fall
   // back onto master if the worktree was removed (e.g. the ticket was finished).
-  // FLUX-1018: on the resume fallback resolve READ-ONLY (create:false) — never spin up
-  // a fresh worktree mid-resume for a legacy session that lost its recorded
-  // executionRoot; the spawn path owns creation. Then fail closed two ways: a
-  // branch-bearing ticket that resolved to the main checkout (no live worktree) must
-  // not resume on master, and a recorded worktree path that has since vanished (ticket
-  // finished) is refused as before.
-  const executionRoot = session.executionRoot ?? await resolveTaskExecutionRoot(tasksCache[id], workspaceRoot, { create: false });
-  if (tasksCache[id]?.branch && executionRoot === workspaceRoot) {
-    throw new Error(`Worktree for ${id} is missing — refusing to resume the agent on master. Restart the session to recreate an isolated worktree.`);
-  }
-  if (executionRoot !== workspaceRoot && !fs.existsSync(executionRoot)) {
-    throw new Error(`Worktree for ${id} no longer exists (ticket likely finished) — refusing to resume the agent on master.`);
+  // FLUX-1018 / FLUX-1028: shared fail-closed guard — see resolveResumeExecutionRoot
+  // in task-worktree.ts. FLUX-1120: this throws BEFORE any child process spawns, so
+  // surface it the same way a spawn failure is surfaced instead of letting it vanish
+  // into an HTTP-500-only response — see surfaceResumeFailure in shared.ts.
+  let executionRoot: string;
+  try {
+    executionRoot = await resolveResumeExecutionRoot(session, tasksCache[id], workspaceRoot);
+  } catch (error) {
+    return surfaceResumeFailure(session, id, error);
   }
 
   const inputAt = new Date().toISOString();
@@ -738,13 +767,8 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   });
 
   replyProc.on('error', async (error) => {
-    // FLUX-915: a stop racing a spawn error stays 'cancelled' rather than reverting to resumable.
-    if (session.requestedStop) {
-      session.status = 'cancelled';
-      session.endedAt = new Date().toISOString();
-    } else {
-      session.status = 'waiting-input';
-    }
+    // FLUX-915/921: a stop racing a spawn error stays 'cancelled' rather than reverting to resumable.
+    terminalizeResumedExit(session);
     commitReplyPending();
     // FLUX-981: surface the reply spawn failure inline in the chat, not only as an activity entry.
     // Skip when the user cancelled — a stop that races the spawn error isn't a fault.
@@ -771,15 +795,10 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       const stderrHint = session.stderrCapture?.trim();
       appendErrorToSession(session, stderrHint ? `${replyOutcome}\n${stderrHint}` : replyOutcome);
     }
-    // FLUX-915: a user-requested stop stays 'cancelled' instead of reverting to 'waiting-input'
+    // FLUX-915/921: a user-requested stop stays 'cancelled' instead of reverting to 'waiting-input'
     // (which counted the killed session as active forever). Otherwise the resumable conversation
     // stays waiting-input.
-    if (session.requestedStop) {
-      session.status = 'cancelled';
-      session.endedAt = new Date().toISOString();
-    } else {
-      session.status = 'waiting-input';
-    }
+    terminalizeResumedExit(session);
     // FLUX-651: resumed turn ended — flag if the agent parked without acting. Skip a stopped turn.
     if (!session.pausedForInput && !session.requestedStop) await flagIfParked(session, id);
     broadcastEvent('taskUpdated', { id });

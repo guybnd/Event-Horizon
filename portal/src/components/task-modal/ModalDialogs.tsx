@@ -1,3 +1,4 @@
+import { useEscapeKey } from '../../hooks/useEscapeKey';
 import type { TaskModalController } from '../../hooks/useTaskModalController';
 
 type ModalDialogsProps = Pick<TaskModalController,
@@ -23,6 +24,12 @@ export function ModalDialogs({
   handleSave,
   isFullView,
 }: ModalDialogsProps) {
+  // FLUX-1022: these confirm dialogs render on top of TaskModal, so they must register with the
+  // shared Escape stack AFTER (i.e. above) TaskModal's own registration — closing just the dialog
+  // on the first ESC, leaving a second ESC to close the modal itself.
+  useEscapeKey(() => setConfirmDelete(false), { enabled: confirmDelete });
+  useEscapeKey(() => setConfirmDiscard(false), { enabled: confirmDiscard });
+
   return (
     <>
       {confirmDelete && (

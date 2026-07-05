@@ -1,13 +1,13 @@
 import { log } from '../log.js';
 import express from 'express';
 import { resolveSkillSourceRoot, workspaceRoot } from '../workspace.js';
-import { getWorkflowInstallStatus, installWorkspaceWorkflow } from '../workflow-installer.js';
+import { getWorkflowInstallStatus, installWorkspaceWorkflow, type Framework } from '../workflow-installer.js';
 
 const router = express.Router();
 
 router.get('/status', async (req, res) => {
   try {
-    const framework = (req.query.framework as any) || 'auto';
+    const framework = (req.query.framework as Framework) || 'auto';
     const status = await getWorkflowInstallStatus({ sourceRoot: resolveSkillSourceRoot(), targetDir: workspaceRoot!, framework });
     res.json(status);
   } catch (error) {

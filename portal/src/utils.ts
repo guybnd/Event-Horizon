@@ -24,10 +24,19 @@ export function resolveEffectiveAgent(target: string | undefined, defaultAgent: 
 export function frameworkSupports(
   config: Config | null | undefined,
   framework: CliFramework,
-  capability: keyof CliCapabilities,
+  capability: Exclude<keyof CliCapabilities, 'effort'>,
 ): boolean {
   const cap = config?.cliCapabilities?.[framework];
   return !!cap && cap[capability] === true;
+}
+
+/** `effort` is the one `CliCapabilities` flag shaped as `{ supported, flag? }` rather than a plain
+ *  boolean, so it can't go through `frameworkSupports()` — use this instead. */
+export function frameworkEffort(
+  config: Config | null | undefined,
+  framework: CliFramework,
+): CliCapabilities['effort'] {
+  return config?.cliCapabilities?.[framework]?.effort ?? { supported: false };
 }
 
 /**

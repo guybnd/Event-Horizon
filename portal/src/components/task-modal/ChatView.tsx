@@ -13,9 +13,11 @@ import { searchTasks, getTaskActivityTimestamp } from '../../taskSearch';
 import { useTranscriptFind } from './useTranscriptFind';
 import { FindBar } from './FindBar';
 import type { Task } from '../../types';
+import { useDockActions } from '../DockProvider';
 import type { ComposerSelections } from '../DockProvider';
 import { formatRelative } from '../../lib/relativeTime';
 import { DISPATCH_STAGE_LABEL, DISPATCH_PHASE_LABEL } from '../../lib/dispatch';
+import { useEscapeKey } from '../../hooks/useEscapeKey';
 
 /** FLUX-643: a one-tap reply chip rendered above the composer. Selecting it sends
  *  `value` as the chat reply. `tone: 'danger'` paints it red (e.g. a "Skip" option);
@@ -1246,6 +1248,13 @@ function useElapsed(startedAt: string | undefined, live: boolean): number | null
   return Math.max(0, now - start);
 }
 
+/** FLUX-862: collapse a working chip's narration to one line for its collapsed-header preview —
+ *  mirrors ToolGroup's "· last: <action>" summary so a collapsed WORKING row isn't indistinguishable
+ *  from every other one. Whitespace-collapsed and capped; CSS truncation handles the rest. */
+function previewLine(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().slice(0, 160);
+}
+
 /**
  * FLUX-849: a dispatched (unattended, work-phase) session's live activity teed to the board
  * orchestrator thread, rendered as a quiet non-bubble `dispatch` note so a user watching the board
@@ -1278,7 +1287,11 @@ function DispatchChip({
 }) {
   const [open, setOpen] = useState(false);
   const reduceMotion = useReducedMotion();
+  const { openTicket } = useDockActions();
   const isWorking = lifecycle === 'working';
+  // FLUX-862: one-line preview of the in-flight narration, shown only on a collapsed working
+  // header (open state hides it — the full text is right there instead).
+  const preview = isWorking && !open ? previewLine(text) : undefined;
   const stageLabel = (lifecycle && DISPATCH_STAGE_LABEL[lifecycle]) ?? lifecycle ?? 'activity';
   // FLUX-869: lifecycle accent (status dot/glyph + left rail + colored word). Neutral fallback when
   // lifecycle is absent/unknown so a malformed row still renders.
@@ -1316,17 +1329,46 @@ function DispatchChip({
     <span className={`h-2 w-2 flex-shrink-0 rounded-full ${style.dot}`} aria-label={stageLabel} />
   );
 
+  // FLUX-862: the ticket id is the chip's most natural click target — open it the same way an
+  // inline `FLUX-123` chat reference does. A <span role="link"> (not a real <button>) because the
+  // working variant nests this header inside its own collapse-toggle <button>; stopPropagation
+  // keeps the id click from also firing that toggle (mirrors FileLink above).
+  const openSourceTicket = (e: { stopPropagation: () => void; preventDefault?: () => void }) => {
+    e.stopPropagation();
+    e.preventDefault?.();
+    if (sourceTask) openTicket(sourceTask);
+  };
+
   // FLUX-869 hierarchy ladder: title is the brightest lead, id secondary mono, phase a tooltip'd
   // icon, the lifecycle word carries the color (the one surviving uppercase token).
   const header = (
     <>
       {statusGlyph}
       {sourceTask && (
-        <span className="flex-shrink-0 font-mono text-[var(--eh-text-muted)]">{sourceTask}</span>
+        linkifyTickets ? (
+          <span
+            role="link"
+            tabIndex={0}
+            title={`Open ${sourceTask}`}
+            onClick={openSourceTicket}
+            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') openSourceTicket(e); }}
+            className="flex-shrink-0 cursor-pointer font-mono text-[var(--eh-text-muted)] underline-offset-2 hover:text-primary hover:underline"
+          >
+            {sourceTask}
+          </span>
+        ) : (
+          <span className="flex-shrink-0 font-mono text-[var(--eh-text-muted)]">{sourceTask}</span>
+        )
       )}
-      {title && (
+      {(title || preview) && (
         <span className="min-w-0 flex-1 truncate font-medium text-[var(--eh-text-primary)]" title={title}>
           {title}
+          {preview && (
+            <span className="font-mono font-normal text-[var(--eh-text-muted)]">
+              {title ? ' · ' : ''}
+              {preview}
+            </span>
+          )}
         </span>
       )}
       {PhaseIcon && (
@@ -2170,22 +2212,21 @@ function ChipSelect({
   const active = value !== '';
   const danger = current.tone === 'danger';
 
-  // Close on outside pointer / Escape while open.
+  // Close on outside pointer while open.
   useEffect(() => {
     if (!open) return;
     const onDown = (e: PointerEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
-    };
     window.addEventListener('pointerdown', onDown);
-    window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('pointerdown', onDown);
-      window.removeEventListener('keydown', onKey);
-    };
+    return () => window.removeEventListener('pointerdown', onDown);
   }, [open]);
+
+  // FLUX-1022: routed through the shared stack — this chip select lives inside the composer of a
+  // dock window (or TaskModal's chat pane), both of which now have their own Escape handling;
+  // sharing the stack keeps one ESC press from closing just the dropdown instead of also
+  // collapsing/closing the host.
+  useEscapeKey(() => setOpen(false), { enabled: open });
 
   const triggerTone = !active
     ? 'text-[var(--eh-text-muted)] hover:bg-black/5 hover:text-[var(--eh-text-secondary)] dark:hover:bg-white/5'

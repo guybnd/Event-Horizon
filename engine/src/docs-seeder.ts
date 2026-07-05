@@ -4,7 +4,6 @@ import { fileURLToPath } from 'url';
 import { isPkg, isSea, getSeaExtractDir } from './packaged-mode.js';
 
 const __dir = (() => {
-  // @ts-ignore
   if (typeof __dirname === 'string' && path.isAbsolute(__dirname)) return __dirname;
   try { return path.dirname(fileURLToPath(import.meta.url)); } catch {}
   return path.join(process.cwd(), 'src');

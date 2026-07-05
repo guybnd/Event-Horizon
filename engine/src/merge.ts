@@ -150,7 +150,7 @@ export async function mergeTickets(opts: MergeTicketsOptions): Promise<MergeTick
       `🔗 Merged into ${into}. This ticket's chat was folded into the survivor effort; its turns are ` +
       `preserved in the immutable substrate and now re-derive in ${into}'s view. Reversible — the merge ` +
       `is one op in the curation op-log, so removing it restores this card.`;
-    const extraFields: Record<string, any> = { mergedInto: into };
+    const extraFields: Record<string, unknown> = { mergedInto: into };
     if (task?.swimlane) extraFields.swimlane = null; // drop any stale blocked flag on the tombstone
     const result = await updateTaskWithHistory(f, {
       entries: [{ type: 'comment', user: by, comment: tombstone, pin: true, date: new Date().toISOString() }],

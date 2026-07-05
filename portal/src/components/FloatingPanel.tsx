@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { GripHorizontal, Maximize2, Minus, X } from 'lucide-react';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 /**
  * FLUX-722: a lightweight draggable + resizable floating window. Drag by the header; resize from
@@ -114,6 +115,18 @@ export function FloatingPanel({
   const [minimized, setMinimized] = useState(false);
   const minimizedRef = useRef(minimized);
   minimizedRef.current = minimized;
+
+  const titleId = useId();
+  // FLUX-899/FLUX-1100: a11y — move focus into the panel on mount, trap Tab/Shift+Tab inside it
+  // while open, Esc calls onClose, and focus is restored to the trigger on unmount.
+  // FLUX-1022: when the panel is minimizable, Esc minimizes it instead of closing it (minimize
+  // never destroys content, unlike close); otherwise it falls back to the original close-on-Esc.
+  useFocusTrap(panelRef, {
+    onClose: () => {
+      if (minimizable) setMinimized(true);
+      else onClose?.();
+    },
+  });
 
   const persist = useCallback(() => {
     saveGeometry(storageKey, { ...posRef.current, ...sizeRef.current });
@@ -252,6 +265,10 @@ export function FloatingPanel({
   return (
     <div
       ref={panelRef}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={titleId}
+      tabIndex={-1}
       className={panelClass}
       style={{
         left: pos.x,
@@ -274,7 +291,7 @@ export function FloatingPanel({
       >
         <div className="flex min-w-0 items-center gap-1.5 text-[11px] font-semibold">
           <GripHorizontal className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate">{title}</span>
+          <span id={titleId} className="truncate">{title}</span>
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
           {minimizable && (
@@ -293,6 +310,7 @@ export function FloatingPanel({
               type="button"
               onClick={onClose}
               title="Hide"
+              aria-label="Hide"
               className="shrink-0 rounded p-0.5 transition-colors hover:bg-black/10 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/10"
             >
               <X className="h-3.5 w-3.5" />

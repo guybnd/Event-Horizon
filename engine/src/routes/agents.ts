@@ -14,7 +14,7 @@ router.get('/', async (_req, res) => {
   try {
     const agents = await loadAgents();
     res.json(agents);
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: 'Failed to load agents' });
   }
 });
@@ -25,7 +25,7 @@ router.get('/:id', async (req, res) => {
     const agent = agents.find(a => a.id === req.params.id);
     if (!agent) return res.status(404).json({ error: 'Agent not found' });
     res.json(agent);
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: 'Failed to load agent' });
   }
 });
@@ -50,7 +50,7 @@ router.post('/', async (req, res) => {
 
     await saveAgent(agent);
     res.status(201).json(agent);
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: 'Failed to create agent' });
   }
 });
@@ -74,7 +74,7 @@ router.put('/:id', async (req, res) => {
 
     await saveAgent(updated);
     res.json(updated);
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: 'Failed to update agent' });
   }
 });
@@ -84,7 +84,7 @@ router.delete('/:id', async (req, res) => {
     const deleted = await deleteAgent(req.params.id);
     if (!deleted) return res.status(404).json({ error: 'Agent not found' });
     res.json({ ok: true });
-  } catch (err) {
+  } catch {
     res.status(500).json({ error: 'Failed to delete agent' });
   }
 });

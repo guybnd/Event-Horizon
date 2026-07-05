@@ -3,6 +3,37 @@ import fs from 'fs/promises';
 import { renameSync } from 'fs';
 import { getConfigFile } from './workspace.js';
 
+/**
+ * Minimal shape of the raw config.json payload this loader touches directly before merging
+ * it into `configCache` (which intentionally stays `any` — see the export below — out of
+ * scope for this typing pass). Only the migrated array fields are narrowed; every other key
+ * round-trips untyped through the index signature.
+ */
+interface LoadedConfig {
+  columns?: unknown[];
+  hiddenStatuses?: unknown[];
+  users?: unknown[];
+  tags?: unknown[];
+  priorities?: unknown[];
+  [key: string]: unknown;
+}
+
+/** Extract a human-readable message from a caught value of unknown shape. */
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** Narrow a caught value to a Node-style errno exception (has a `.code`). */
+function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
+  return err instanceof Error && 'code' in err;
+}
+
+/** Minimal shape of a config tag entry (see the `tags` default above). */
+interface ConfigTagEntry {
+  name?: unknown;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- see doc comment above: narrowing cascades widely (FLUX-1073)
 export let configCache: any = {
   columns: [
     { name: 'Grooming', color: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' },
@@ -42,6 +73,11 @@ export let configCache: any = {
     { id: 'require-input', label: 'Require Input', color: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300', commentRequired: true },
     { id: 'open-pr', label: 'Open PRs', color: 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300', commentRequired: false },
     { id: 'changes-requested', label: 'Changes Requested', color: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300', commentRequired: false },
+    // FLUX-986: set by the engine (not the agent) when a PR merge fails on a real git conflict —
+    // never on auth/network failures (see isMergeConflict, branch-manager.ts). Drives the "Launch
+    // Rebase Session" CTA in the portal; commentRequired is false because there's nothing for the
+    // agent to say, only a state to flag.
+    { id: 'merge-conflict', label: 'Merge Conflict', color: 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300', commentRequired: false },
   ],
   // Portal-side UX gate only (DocsScreen `canEditDocs`); NOT enforced
   // server-side by routes/docs.ts — see the trust-model note there (FLUX-418).
@@ -128,10 +164,10 @@ export async function loadConfig() {
       return;
     }
 
-    let loaded: any;
+    let loaded: LoadedConfig;
     try {
       loaded = JSON.parse(data);
-    } catch (parseErr: any) {
+    } catch (parseErr: unknown) {
       // Most plausible corruption is a synced-in unresolved git conflict marker
       // (FLUX-703) or a partial write. Surface it explicitly and — critically —
       // return WITHOUT saving, so the migration block can't clobber a recoverable
@@ -139,17 +175,17 @@ export async function loadConfig() {
       const hasConflictMarkers = /^<{7} /m.test(data) && /^>{7} /m.test(data);
       const detail = hasConflictMarkers
         ? 'contains unresolved git conflict markers (<<<<<<< / ======= / >>>>>>>) — a sync merge committed an unresolved conflict. Resolve the markers and save again.'
-        : `is not valid JSON: ${parseErr?.message || parseErr}`;
+        : `is not valid JSON: ${errMessage(parseErr)}`;
       console.error(`\n[FLUX CONFIG ERROR] ${getConfigFile()}\n  config.json ${detail}\n  The engine is running on in-memory DEFAULTS and will NOT overwrite your file. Fix it and restart.\n`);
       return;
     }
 
-    if (loaded.columns?.length && typeof loaded.columns[0] === 'string') loaded.columns = loaded.columns.map((s: string) => ({ name: s }));
-    if (loaded.hiddenStatuses?.length && typeof loaded.hiddenStatuses[0] === 'string') loaded.hiddenStatuses = loaded.hiddenStatuses.map((s: string) => ({ name: s }));
-    if (loaded.users?.length && typeof loaded.users[0] === 'string') loaded.users = loaded.users.map((s: string) => ({ name: s }));
+    if (loaded.columns?.length && typeof loaded.columns[0] === 'string') loaded.columns = loaded.columns.map((s) => ({ name: s as string }));
+    if (loaded.hiddenStatuses?.length && typeof loaded.hiddenStatuses[0] === 'string') loaded.hiddenStatuses = loaded.hiddenStatuses.map((s) => ({ name: s as string }));
+    if (loaded.users?.length && typeof loaded.users[0] === 'string') loaded.users = loaded.users.map((s) => ({ name: s as string }));
     if (loaded.tags?.length && typeof loaded.tags[0] === 'string') {
-      loaded.tags = loaded.tags.map((s: string) => ({
-        name: s,
+      loaded.tags = loaded.tags.map((s) => ({
+        name: s as string,
         color: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300'
       }));
     }
@@ -157,8 +193,8 @@ export async function loadConfig() {
       loaded.priorities = configCache.priorities;
     }
     if (loaded.priorities?.length && typeof loaded.priorities[0] === 'string') {
-      loaded.priorities = loaded.priorities.map((name: string) => ({
-        name,
+      loaded.priorities = loaded.priorities.map((name) => ({
+        name: name as string,
         icon: 'Equal',
         color: 'text-gray-400'
       }));
@@ -166,15 +202,15 @@ export async function loadConfig() {
 
     configCache = { ...configCache, ...loaded };
     log.info('Loaded config');
-  } catch (error: any) {
-    if (error.code === 'ENOENT') {
+  } catch (error: unknown) {
+    if (isErrnoException(error) && error.code === 'ENOENT') {
       // No file yet (fresh install) — write the defaults out. This is the ONLY
       // path that legitimately creates config.json from defaults.
       await saveConfig(configCache);
     } else {
       // Read failed for another reason (permissions, I/O). Preserve whatever is on
       // disk and run on defaults; do NOT save over a file we couldn't read (FLUX-781).
-      console.error('[FLUX CONFIG ERROR] Failed to read config.json; running on in-memory defaults WITHOUT overwriting it:', error?.message || error);
+      console.error('[FLUX CONFIG ERROR] Failed to read config.json; running on in-memory defaults WITHOUT overwriting it:', errMessage(error));
       return;
     }
   }
@@ -204,7 +240,7 @@ export async function loadConfig() {
  * read mid-write can no longer leave a truncated file that later fails to parse.
  * Inlined rather than importing atomicWriteFile to avoid a config<->task-store cycle.
  */
-export async function saveConfig(newConfig: any) {
+export async function saveConfig(newConfig: Record<string, unknown>) {
   configCache = newConfig;
   const target = getConfigFile();
   const content = JSON.stringify(configCache, null, 2);
@@ -226,7 +262,7 @@ export async function autoRegisterUnknownTags(tags: string[]) {
     configCache.tags = [];
   }
 
-  const existingTagsLower = new Set(configCache.tags.map((t: any) => t.name?.toLowerCase() || ''));
+  const existingTagsLower = new Set(configCache.tags.map((t: ConfigTagEntry) => (t.name as string | undefined)?.toLowerCase() || ''));
   let configChanged = false;
 
   for (const tag of tags) {

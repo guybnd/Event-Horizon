@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertTriangle, ChevronLeft, ChevronRight, Eye, Loader2, Maximize2, Minimize2, Send } from 'lucide-react';
-import { useAppActions } from '../../store/useAppSelector';
+import { useAppActions, useAppSelector } from '../../store/useAppSelector';
+import { useDebouncedArtifactReload } from '../../hooks/useDebouncedArtifactReload';
+import { useEscapeKey } from '../../hooks/useEscapeKey';
 import type { Task } from '../../types';
 
 /**
@@ -104,8 +106,31 @@ function sanitizeWarnings(warnings: LayoutWarning[]): LayoutWarning[] {
   }));
 }
 
-export function ArtifactPanel({ task, onSendToChat }: { task: Task; onSendToChat?: (text: string) => void }) {
+/** FLUX-1136: how long a hidden panel keeps its iframe alive before it's actually torn down.
+ *  Short hides (collapse-then-reopen, a quick alt-tab) are free — nothing reloads while hidden
+ *  (see `useDebouncedArtifactReload`) and the DOM is left untouched, so the in-iframe annotation
+ *  tray survives. Only a hide that outlasts this grace period drops the iframe to reclaim the
+ *  compiled Tailwind/JS it's holding onto. */
+const HIDDEN_UNMOUNT_GRACE_MS = 60_000;
+
+export function ArtifactPanel({
+  task,
+  onSendToChat,
+  visible,
+}: {
+  task: Task;
+  onSendToChat?: (text: string) => void;
+  /** FLUX-1136: whether this panel is actually on-screen (its section isn't collapsed etc.) —
+   *  threaded down by the caller. Combined here with the app's own window-visibility signal, so
+   *  an agent iterating while the browser tab is backgrounded doesn't pay the compile cost either. */
+  visible: boolean;
+}) {
   const { subscribeToEvent } = useAppActions();
+  const isWindowVisible = useAppSelector((s) => s.isWindowVisible);
+  // The one true "can the user actually see this iframe right now" signal — gates both the
+  // debounced-reload deferral and the grace-period unmount below.
+  const effectiveVisible = visible && isWindowVisible;
+
   const revisions = task.artifacts?.revisions ?? [];
   const latest = task.artifacts?.latest ?? (revisions.length > 0 ? revisions[revisions.length - 1]!.rev : 0);
 
@@ -113,6 +138,11 @@ export function ArtifactPanel({ task, onSendToChat }: { task: Task; onSendToChat
   const [rev, setRev] = useState<number>(latest);
   // Cache-buster so a re-publish (or a forced reload) reliably reloads the iframe.
   const [reloadNonce, setReloadNonce] = useState(0);
+
+  // FLUX-1136: whether the iframe itself is currently in the DOM. Stays true across a short hide
+  // (display:none upstream is enough to stop paint) and only flips false after the grace period —
+  // see the effect below, next to the `artifactReady` subscription it works alongside.
+  const [iframeMounted, setIframeMounted] = useState(true);
 
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
@@ -139,19 +169,51 @@ export function ArtifactPanel({ task, onSendToChat }: { task: Task; onSendToChat
   const revealedRef = useRef(revealed);
   useEffect(() => { revealedRef.current = revealed; }, [revealed]);
 
-  useEffect(() => { setRev(latest); }, [latest]);
+  // FLUX-1136: a fresh publish jumps the viewer to the new revision and reloads it — but debounced
+  // (a burst of publishes costs one reload of the final revision, not one Tailwind-CDN compile per
+  // publish) and deferred entirely while hidden (a publish that arrives invisibly just updates the
+  // pending target; it reloads once, the moment the panel is shown again).
+  const applyReload = useCallback((pendingRev: number | undefined) => {
+    if (typeof pendingRev === 'number') setRev(pendingRev);
+    setReloadNonce((n) => n + 1);
+  }, []);
+  const notifyArtifactReady = useDebouncedArtifactReload(effectiveVisible, applyReload);
 
-  // A fresh publish (the agent's response to annotations, or any new revision) jumps the viewer to
-  // the new revision and reloads it.
+  // FLUX-1136: `task.artifacts.latest` also updates via the engine's `taskUpdated` broadcast (a
+  // portal refetch fired alongside — but independent of — the `artifactReady` SSE event below on
+  // every `publish_artifact` call). Route that path through the same debounced/visibility-gated
+  // reload instead of `setRev` directly, or a publish while the panel is hidden (or a fast burst)
+  // bypasses the gating entirely via this second path. `prevLatestRef` starts equal to `latest` so
+  // the effect's mount-time run is a no-op — opening the panel shouldn't schedule a reload of the
+  // revision it already initialized to.
+  const prevLatestRef = useRef(latest);
+  useEffect(() => {
+    if (prevLatestRef.current === latest) return;
+    prevLatestRef.current = latest;
+    notifyArtifactReady(latest);
+  }, [latest, notifyArtifactReady]);
+
   useEffect(() => {
     const off = subscribeToEvent('artifactReady', (data) => {
       const payload = data as { ticketId?: string; rev?: number };
       if (payload?.ticketId !== task.id) return;
-      if (typeof payload.rev === 'number') setRev(payload.rev);
-      setReloadNonce((n) => n + 1);
+      notifyArtifactReady(payload.rev);
     });
     return off;
-  }, [subscribeToEvent, task.id]);
+  }, [subscribeToEvent, task.id, notifyArtifactReady]);
+
+  // FLUX-1136: grace-period teardown. A short hide costs nothing (the reload above is simply
+  // deferred, and the DOM goes untouched) so the in-iframe annotation tray survives a quick
+  // collapse/reopen. Only once hidden outlasts the grace period do we actually drop the iframe —
+  // reclaiming the compiled Tailwind/JS a long-abandoned panel would otherwise hold onto forever.
+  useEffect(() => {
+    if (effectiveVisible) {
+      setIframeMounted(true);
+      return;
+    }
+    const t = window.setTimeout(() => setIframeMounted(false), HIDDEN_UNMOUNT_GRACE_MS);
+    return () => window.clearTimeout(t);
+  }, [effectiveVisible]);
 
   const postToIframe = useCallback((msg: OutboundMessage) => {
     iframeRef.current?.contentWindow?.postMessage(msg, '*');
@@ -218,9 +280,12 @@ export function ArtifactPanel({ task, onSendToChat }: { task: Task; onSendToChat
   }, [sendAnnotationBatch]);
 
   // The displayed src. Changing it remounts the iframe (key={src}); re-arm the layout-audit gate
-  // (each revision is audited fresh) and clear any stale "sent" confirmation.
+  // (each revision is audited fresh) and clear any stale "sent" confirmation. FLUX-1136: also re-arm
+  // on `iframeMounted` flipping back true — a grace-period teardown recreates the iframe from
+  // scratch even when `src` itself didn't change while hidden.
   const src = `/api/tasks/${encodeURIComponent(task.id)}/artifact?rev=${rev}&_n=${reloadNonce}`;
   useEffect(() => {
+    if (!iframeMounted) return;
     setAudit({ status: 'pending' });
     setRevealed(false);
     setAuditSent(false);
@@ -231,7 +296,7 @@ export function ArtifactPanel({ task, onSendToChat }: { task: Task; onSendToChat
       setAudit((a) => (a.status === 'pending' ? { status: 'skipped' } : a));
     }, 4000);
     return () => window.clearTimeout(t);
-  }, [src]);
+  }, [src, iframeMounted]);
 
   // Clear the "sent N annotations" confirmation after a few seconds.
   useEffect(() => {
@@ -248,13 +313,11 @@ export function ArtifactPanel({ task, onSendToChat }: { task: Task; onSendToChat
     return () => window.clearTimeout(t);
   }, [fullscreen, postToIframe]);
 
-  // Esc exits full screen.
-  useEffect(() => {
-    if (!fullscreen) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setFullscreen(false); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [fullscreen]);
+  // FLUX-1022: Esc exits full screen — routed through the shared Escape stack (rather than this
+  // component's own listener) because this panel nests inside TaskModal and inside a dock
+  // ChatWindow's sideview, both of which now have their own Escape handling; sharing the stack
+  // keeps a single ESC press from exiting fullscreen AND closing/collapsing the host at once.
+  useEscapeKey(() => setFullscreen(false), { enabled: fullscreen });
 
   if (revisions.length === 0 || !latest) {
     return <p className="px-1 py-2 text-[12px] text-[var(--eh-text-muted)]">No artifact published yet.</p>;
@@ -352,19 +415,25 @@ export function ArtifactPanel({ task, onSendToChat }: { task: Task; onSendToChat
       </div>
 
       {/* The iframe (with its in-document annotation UI) + the open-time layout-audit mask. The mask
-          covers the artifact while the audit is pending or has surfaced warnings, until reveal. */}
+          covers the artifact while the audit is pending or has surfaced warnings, until reveal.
+          FLUX-1136: `iframeMounted` drops the iframe (and its compiled Tailwind/JS) once hidden has
+          outlasted the grace period — a short hide leaves it alone so annotations survive. */}
       <div className={fullscreen ? 'relative min-h-0 flex-1' : 'relative'}>
-        <iframe
-          key={src}
-          ref={iframeRef}
-          title={`Artifact for ${task.id}`}
-          src={src}
-          sandbox="allow-scripts"
-          referrerPolicy="no-referrer"
-          className={`eh-border w-full rounded-lg border bg-white ${fullscreen ? 'h-full' : 'h-[58vh]'}`}
-        />
+        {iframeMounted ? (
+          <iframe
+            key={src}
+            ref={iframeRef}
+            title={`Artifact for ${task.id}`}
+            src={src}
+            sandbox="allow-scripts"
+            referrerPolicy="no-referrer"
+            className={`eh-border w-full rounded-lg border bg-white ${fullscreen ? 'h-full' : 'h-[58vh]'}`}
+          />
+        ) : (
+          <div className={`eh-border w-full rounded-lg border bg-white ${fullscreen ? 'h-full' : 'h-[58vh]'}`} />
+        )}
 
-        {!revealed && audit.status === 'pending' && (
+        {iframeMounted && !revealed && audit.status === 'pending' && (
           <div
             role="status"
             aria-live="polite"
@@ -376,7 +445,7 @@ export function ArtifactPanel({ task, onSendToChat }: { task: Task; onSendToChat
           </div>
         )}
 
-        {!revealed && audit.status === 'warnings' && (
+        {iframeMounted && !revealed && audit.status === 'warnings' && (
           <div
             role="status"
             aria-live="polite"

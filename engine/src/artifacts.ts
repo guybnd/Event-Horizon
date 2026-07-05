@@ -42,7 +42,8 @@ export interface ArtifactPointer {
  * Content-Security-Policy applied to the served artifact HTML. The iframe sandbox already isolates
  * the document to an opaque origin (no `allow-same-origin`); this CSP is the second layer — it lets
  * the artifact use inline `<style>`/`<script>` and load from the named CDNs the grooming skill
- * recommends (Tailwind, Mermaid via jsDelivr/unpkg, Google Fonts) while blocking exfiltration:
+ * allows (Mermaid via jsDelivr/unpkg, Google Fonts, and Tailwind as a heavy last resort — see the
+ * skill's "Rich Artifacts" section) while blocking exfiltration:
  * `connect-src 'none'` (no fetch/XHR/WebSocket beaconing), `form-action 'none'`, `base-uri 'none'`,
  * and `frame-ancestors 'self'` so only the portal can embed it. `'unsafe-eval'` is tolerated here
  * because the document is sandboxed to an opaque origin with nothing of value to reach.

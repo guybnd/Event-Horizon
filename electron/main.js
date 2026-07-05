@@ -271,10 +271,37 @@ function boundsFile() {
 }
 function loadBounds() {
   try {
-    return { width: 1440, height: 900, ...JSON.parse(fs.readFileSync(boundsFile(), 'utf-8')) };
+    return ensureVisible({ width: 1440, height: 900, ...JSON.parse(fs.readFileSync(boundsFile(), 'utf-8')) });
   } catch {
     return { width: 1440, height: 900 };
   }
+}
+
+/**
+ * FLUX-1097: a remembered position can reference a display that no longer exists (unplugged
+ * monitor, changed layout/scaling, RDP session), and restoring it blindly opens the window
+ * outside every screen. Unless enough of the window intersects some display's work area to
+ * grab the title bar, drop x/y (Electron then centers on the primary display) and clamp the
+ * size to the primary work area.
+ */
+function ensureVisible(b) {
+  if (typeof b.x !== 'number' || typeof b.y !== 'number') { delete b.x; delete b.y; return b; }
+  // `screen` must not be touched before app.ready — loadBounds() only runs from createWindow(),
+  // which the ready handler gates, so a lazy require keeps that invariant visible here.
+  const { screen } = require('electron');
+  const visible = screen.getAllDisplays().some(({ workArea: wa }) => {
+    const w = Math.min(b.x + b.width, wa.x + wa.width) - Math.max(b.x, wa.x);
+    const h = Math.min(b.y + b.height, wa.y + wa.height) - Math.max(b.y, wa.y);
+    return w >= 100 && h >= 40;
+  });
+  if (!visible) {
+    delete b.x;
+    delete b.y;
+    const wa = screen.getPrimaryDisplay().workArea;
+    b.width = Math.min(b.width, wa.width);
+    b.height = Math.min(b.height, wa.height);
+  }
+  return b;
 }
 function saveBounds(b) {
   try { fs.writeFileSync(boundsFile(), JSON.stringify(b)); } catch { /* best-effort */ }

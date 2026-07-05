@@ -80,7 +80,11 @@ export async function ensureTicketIsolation(
       );
     try {
       worktree = await createWorktree();
-    } catch (wtErr: any) {
+    } catch (wtErr: unknown) {
+      // Latest failure to report — starts as the original attempt's error and is
+      // replaced by the retry's error below (never reassigns the caught `wtErr`
+      // binding itself: no-ex-assign).
+      let lastErr: unknown = wtErr;
       // FLUX-1018 / FLUX-1031: a full worktree cap is almost always slots held by
       // tickets that no longer need their tree — stale Done/Released/Archived worktrees
       // post-merge cleanup left behind (their node_modules junctions made them read as
@@ -90,16 +94,19 @@ export async function ensureTicketIsolation(
       // such clean, idle worktree (isWorktreeReclaimable skips live-session tickets) and
       // retry ONCE before giving up — so a legit new task gets an isolated worktree
       // instead of silently failing to start.
-      if (/limit reached/i.test(wtErr?.message ?? '')) {
+      if (/limit reached/i.test(wtErr instanceof Error ? wtErr.message : String(wtErr))) {
+        // FLUX-1112: bypass the always-on Ready-worktree grace here — this is the LAST-RESORT
+        // backstop when a spawn is genuinely blocked on the concurrency cap, so a legit new task
+        // must never fail to start over a buffer meant to protect an ad hoc reviewer elsewhere.
         const reclaimed = await reclaimWorktrees(
           workspaceRoot!,
-          isWorktreeReclaimable,
+          (id) => isWorktreeReclaimable(id, { honorReadyGrace: false }),
         ).catch(() => [] as string[]);
         if (reclaimed.length > 0) {
           try {
             worktree = await createWorktree();
-          } catch (retryErr: any) {
-            wtErr = retryErr;
+          } catch (retryErr: unknown) {
+            lastErr = retryErr;
           }
         }
       }
@@ -112,7 +119,7 @@ export async function ensureTicketIsolation(
         // on to spawn an agent, that spawn will FAIL TO START rather than silently
         // degrade. Surface that accurately so the next debugger isn't misled in the
         // exact cap-exhaustion mode this ticket exists to make visible.
-        worktreeError = wtErr?.message ?? String(wtErr);
+        worktreeError = lastErr instanceof Error ? lastErr.message : String(lastErr);
         await updateTaskWithHistory(ticketId, {
           updatedBy,
           entries: [

@@ -238,13 +238,11 @@ export function useTaskModalController() {
     window.localStorage.setItem(ACTIVITY_FILTER_STORAGE_KEY, activityFilter);
   }, [activityFilter]);
 
+  // FLUX-1022: Escape-to-close moved to a `useEscapeKey` registration in <TaskModal> itself (so it
+  // coordinates with the shared stack — nested confirm dialogs / launchers close first); this
+  // effect now only owns the sidebar-drag listeners.
   useEffect(() => {
     if (!isModalOpen) return undefined;
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      handleCloseAttempt();
-    };
 
     const handleMouseMove = (e: MouseEvent) => {
       if (!isDraggingSidebar) return;
@@ -260,9 +258,7 @@ export function useTaskModalController() {
       document.body.style.cursor = '';
     }
 
-    window.addEventListener('keydown', onKeyDown);
     return () => {
-      window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
       document.body.style.cursor = '';
@@ -288,10 +284,14 @@ export function useTaskModalController() {
   // list payload is history-digested. Re-fetch the detail when the live list task's history digest
   // changes (a new comment / status move) — not only on an explicit refreshTrigger — so the activity
   // log stays live and complete without copying history off the (now history-less) list object.
-  const liveModalTask = allTasks.find((t) => t.id === modalTask?.id);
-  const liveHistSig = liveModalTask?.historyDigest
-    ? `${liveModalTask.historyDigest.length}:${liveModalTask.historyDigest.lastEntry?.date ?? ''}:${liveModalTask.historyDigest.lastEntry?.type ?? ''}`
-    : '';
+  // FLUX-957: memoized so an unrelated re-render (e.g. typing in the modal) doesn't re-scan
+  // allTasks — only a change to the task list or the open ticket recomputes the signature.
+  const liveHistSig = useMemo(() => {
+    const liveModalTask = allTasks.find((t) => t.id === modalTask?.id);
+    return liveModalTask?.historyDigest
+      ? `${liveModalTask.historyDigest.length}:${liveModalTask.historyDigest.lastEntry?.date ?? ''}:${liveModalTask.historyDigest.lastEntry?.type ?? ''}`
+      : '';
+  }, [allTasks, modalTask?.id]);
   useEffect(() => {
     if (!isModalOpen || !modalTask?.id) return;
     setIsTaskLoading(true);

@@ -124,6 +124,12 @@ export function useChatSession(conversationId: string, enabled = true, working =
   const queueIdRef = useRef(nextQueueId(getChatQueue(conversationId)));
   const [pendingUser, setPendingUser] = useState<string | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
+  // FLUX-921: transcript length at the moment the current pendingUser bubble was set. The landing
+  // check below only looks at messages appended AFTER this point — otherwise re-sending the exact
+  // same text as an earlier turn matches that OLDER message and hides the new optimistic bubble
+  // immediately (the message still sends, but the bubble vanishes and reappears once the real
+  // turn lands, instead of staying visible the whole time).
+  const pendingBaselineRef = useRef(0);
   // FLUX-916: "submitted, awaiting running" latch. Bridges the dead window between our POST
   // returning (busy → false) and the SSE `running` flip (working → true), so the live indicator
   // never blanks mid-send. Folded into the returned `busy` so no new prop threading is needed.
@@ -224,6 +230,7 @@ export function useChatSession(conversationId: string, enabled = true, working =
     setBusy(true);
     setError(null);
     setLiveText(''); // FLUX-691: fresh turn — drop any live node left over from a prior turn.
+    pendingBaselineRef.current = messagesRef.current.length;
     setPendingUser(trimmed);
     setPendingAttachments(attachments);
     setAwaitingTurn(true); // FLUX-916: keep the live indicator on until the engine reports running.
@@ -384,7 +391,9 @@ export function useChatSession(conversationId: string, enabled = true, working =
   // fetch raced or failed, so the user's message is never silently dropped.
   useEffect(() => {
     if (pendingUser === null) return;
-    if (messages.some((m) => m.role === 'user' && m.text === pendingUser)) {
+    // FLUX-921: only match messages appended since this bubble was set (see pendingBaselineRef) —
+    // matching the whole transcript hid the bubble instantly on an identical re-send.
+    if (messages.slice(pendingBaselineRef.current).some((m) => m.role === 'user' && m.text === pendingUser)) {
       setPendingUser(null);
       setPendingAttachments([]);
     }
@@ -406,11 +415,14 @@ export function useChatSession(conversationId: string, enabled = true, working =
   }
 
   // Optimistic pending bubble, unless the committed user turn already appears in the transcript.
-  // FLUX-916: check the whole transcript (not just the last message) so the bubble is suppressed the
-  // moment the real turn lands — even if an assistant reply arrived in the same fetch — avoiding a
-  // one-frame duplicate before the landing effect clears pendingUser.
+  // FLUX-916: check every message appended since the bubble was set (not just the last one) so the
+  // bubble is suppressed the moment the real turn lands — even if an assistant reply arrived in the
+  // same fetch — avoiding a one-frame duplicate before the landing effect clears pendingUser.
+  // FLUX-921: scoped to pendingBaselineRef onward (not the whole transcript) so an identical re-send
+  // matches only the NEW turn, not an earlier message with the same text.
   const pendingLanded =
-    pendingUser !== null && messages.some((m) => m.role === 'user' && m.text === pendingUser);
+    pendingUser !== null &&
+    messages.slice(pendingBaselineRef.current).some((m) => m.role === 'user' && m.text === pendingUser);
   const merged: TranscriptMessage[] =
     pendingUser !== null && !pendingLanded
       ? [...messages, { role: 'user', text: pendingUser, ts: '', attachments: pendingAttachments.length ? pendingAttachments : undefined }]
@@ -422,6 +434,13 @@ export function useChatSession(conversationId: string, enabled = true, working =
     // otherwise leave a phantom partial assistant turn on screen until the next send.
     setLiveText('');
     setAwaitingTurn(false);
+    // FLUX-921: defensive clear. The landing effect (above) is what normally dismisses the optimistic
+    // bubble once the committed user turn appears in the transcript — by the time a Stop is actionable
+    // that has almost always already happened, so this is a no-op in the common case. It only matters
+    // if that invariant is ever broken (the turn genuinely never lands), where it prevents the bubble
+    // from being stuck on screen forever with no other way to dismiss it.
+    setPendingUser(null);
+    setPendingAttachments([]);
     try {
       await stopTaskCliSession(conversationId);
     } catch {

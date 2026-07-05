@@ -53,7 +53,7 @@ describe('buildResumePreamble', () => {
     for (const k of Object.keys(tasksCache)) delete tasksCache[k];
   });
 
-  function seed(id: string, task: any) {
+  function seed(id: string, task: { history: ReturnType<typeof statusChange>[] }) {
     tasksCache[id] = { id, ...task };
     seeded.push(id);
   }

@@ -11,6 +11,7 @@ import {
   rehydrateOpenPrompts,
   flushOpenPrompts,
   type OpenPromptRecord,
+  type PromptResult,
 } from './hitl-prompts.js';
 
 /**
@@ -71,7 +72,7 @@ describe('hitl-prompts durable store (FLUX-833 Phase 2)', () => {
   });
 
   it('resolving settles the held promise, removes the record from disk, and is idempotent', async () => {
-    let settled: any;
+    let settled: PromptResult | undefined;
     const parked = parkPrompt({
       kind: 'permission',
       payload: { toolName: 'Bash', input: { command: 'ls' } },

@@ -41,8 +41,8 @@ router.put('/', async (req, res) => {
       return existing;
     });
     res.json(result);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 

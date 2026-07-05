@@ -18,11 +18,42 @@ function git(workspaceRoot: string, args: string[]) {
   return runGit(args, { cwd: workspaceRoot });
 }
 
+/**
+ * History-entry shape as read by this module — covers only the `status_change`/`comment`/
+ * `agent_session` fields it actually inspects (frontmatter history is a loosely-typed,
+ * runtime-validated record — see `schema.ts#validateTicketFrontmatter` — not a single
+ * canonical TS type).
+ */
+interface TicketHistoryEntry {
+  type?: string;
+  to?: string;
+  comment?: string;
+  date?: string;
+  endedAt?: string;
+  startedAt?: string;
+}
+
+/** Minimal `tasksCache` ticket shape as read/written by this module. */
+interface CachedTicket {
+  id: string;
+  branch?: string;
+  status: string;
+  kind?: string;
+  implementationLink?: string;
+  swimlane?: string | null;
+  history?: TicketHistoryEntry[];
+}
+
 // ─── Worktree reclamation at Ready (FLUX-1031) ───────────────────────────────
 
+/** Why {@link worktreeUnreclaimableReason} refused — surfaced by the Furnace's slot-holder naming (FLUX-1157). */
+export type UnreclaimableReason = 'unknown-ticket' | 'live-session' | 'recent-activity' | 'status';
+
 /**
- * Whether a ticket's task worktree can be reclaimed (its slot returned to the
- * board-wide pool) right now — FLUX-1031.
+ * Why a ticket's task worktree can NOT be reclaimed (its slot returned to the board-wide pool) right
+ * now, or `null` when it IS reclaimable — FLUX-1031. {@link isWorktreeReclaimable} is a thin boolean
+ * wrapper over this; the reason itself exists so callers that need to explain a still-held slot (the
+ * Furnace's `no_slots` refusal, FLUX-1157) don't have to re-derive the same checks.
  *
  * The task-worktree pool is capped board-wide (DEFAULT_MAX_TASK_WORKTREES = 4).
  * Before this, a slot was freed ONLY when a PR merged, so every ticket resting at
@@ -52,35 +83,68 @@ function git(workspaceRoot: string, args: string[]) {
  * this physical worktree even though the directory is named for `ticketId`, so keying the
  * guard on `ticketId` alone would leave it invisible and let the sweep delete the worktree
  * out from under it. Mirror `sharedNonDoneSiblings`' branch-scoped resolution instead.
+ *
+ * `opts.honorReadyGrace` (default true) applies the {@link READY_WORKTREE_GRACE_MS} buffer
+ * below — pass `false` for the under-pressure cap backstop (ticket-isolation.ts), which must
+ * still reclaim instantly when a spawn is genuinely blocked on the concurrency cap.
  */
-export function isWorktreeReclaimable(ticketId: string): boolean {
-  const t = (tasksCache as Record<string, any>)[ticketId];
-  if (!t) return false;
-  if (hasLiveSessionOnBranch(t.branch, ticketId)) return false; // never yank live work
+export function worktreeUnreclaimableReason(ticketId: string, opts: { honorReadyGrace?: boolean } = {}): UnreclaimableReason | null {
+  const t = (tasksCache as Record<string, CachedTicket>)[ticketId];
+  if (!t) return 'unknown-ticket';
+  if (hasLiveSessionOnBranch(t.branch, ticketId)) return 'live-session'; // never yank live work
   // FLUX-1060: within the post-restart grace window, also protect a worktree whose ticket shows
   // very recent session activity. After an engine restart the in-memory session map is empty and
   // rehydrated from persisted stubs (session-store) — but a session that entered `waiting-input`
   // just before the restart may have had no stub written yet, so the branch check above can't see
   // it. Outside the grace window this is inert, so steady-state reclaim (FLUX-1031) is unchanged.
-  if (isWithinReclaimGrace() && hasRecentSessionActivity(t)) return false;
+  if (isWithinReclaimGrace() && hasRecentSessionActivity(t)) return 'recent-activity';
+  // FLUX-1112: a short, ALWAYS-ON buffer after a ticket's last session activity, distinct from the
+  // post-restart-only grace above. Incidents FLUX-1094/1103/1095 saw a Ready ticket's worktree
+  // vanish out from under an active reviewer within moments of the review starting — the reviewer
+  // had `cd`'d into the worktree directly (or was otherwise not a session the live-session guard
+  // above can see: e.g. an orchestrator/board session, or a session scoped to a different ticket)
+  // rather than dispatching a registered EH session on THIS ticket, so hasLiveSessionOnBranch saw
+  // nothing to protect. A ticket most commonly gets its first review moments after its
+  // implementation session ends and it lands at Ready, so a brief buffer covers exactly that
+  // window without meaningfully reintroducing the board-wide pool exhaustion FLUX-1031 fixed
+  // (tickets reach Ready at staggered times in practice, and the cap backstop below bypasses this
+  // buffer entirely when a slot is genuinely needed right now).
+  if (opts.honorReadyGrace !== false && hasRecentSessionActivity(t, Date.now(), READY_WORKTREE_GRACE_MS)) return 'recent-activity';
   const readyStatus = configCache.readyForMergeStatus || 'Ready';
-  return t.status === readyStatus || TERMINAL_TICKET_STATUSES.has(t.status);
+  if (t.status === readyStatus || TERMINAL_TICKET_STATUSES.has(t.status)) return null;
+  return 'status';
+}
+
+/** Whether a ticket's task worktree can be reclaimed right now — see {@link worktreeUnreclaimableReason}. */
+export function isWorktreeReclaimable(ticketId: string, opts: { honorReadyGrace?: boolean } = {}): boolean {
+  return worktreeUnreclaimableReason(ticketId, opts) === null;
 }
 
 /**
- * Did this ticket have an agent session that was active around the (recent) engine restart? Scans
- * its own history for an `agent_session` entry whose last-known timestamp is within
- * `RECLAIM_GRACE_MS` of now. `reconcileOrphanedSessions` stamps `endedAt`≈boot-time on every
- * session that was still active at restart, so those read as "recent" for the grace window. Only
- * consulted inside {@link isWithinReclaimGrace} (see caller). Owner-scoped: a joined branch sibling
- * that was live at restart is already covered by the rehydrated-stub branch check.
+ * FLUX-1112: always-on buffer (not gated to the post-restart window) between a ticket's last
+ * recorded session activity and the moment its worktree becomes reclaimable by the PROACTIVE
+ * paths (the periodic sweep + the eager reclaim-at-Ready trigger). Deliberately short — long
+ * enough to survive the first minute or two after a ticket reaches Ready (when a reviewer most
+ * commonly starts looking), not long enough to meaningfully stall board-wide pool recovery.
  */
-function hasRecentSessionActivity(t: any, now: number = Date.now()): boolean {
+export const READY_WORKTREE_GRACE_MS = 3 * 60_000;
+
+/**
+ * Did this ticket have an agent session whose last-known activity is within `graceMs` of `now`?
+ * Scans its own history for an `agent_session` entry's most recent timestamp. Two callers:
+ *  - the post-restart grace (default `graceMs=RECLAIM_GRACE_MS`, only consulted inside
+ *    {@link isWithinReclaimGrace}) — `reconcileOrphanedSessions` stamps `endedAt`≈boot-time on
+ *    every session still active at restart, so those read as "recent" for that window.
+ *  - the always-on {@link READY_WORKTREE_GRACE_MS} buffer (FLUX-1112) above.
+ * Owner-scoped: a joined branch sibling's activity is already covered by the branch-scoped
+ * live-session check, not this history scan.
+ */
+function hasRecentSessionActivity(t: CachedTicket, now: number = Date.now(), graceMs: number = RECLAIM_GRACE_MS): boolean {
   const history = Array.isArray(t?.history) ? t.history : [];
   for (const h of history) {
     if (h?.type !== 'agent_session') continue;
     const ts = Date.parse(h.endedAt ?? h.date ?? h.startedAt ?? '');
-    if (!Number.isNaN(ts) && now - ts < RECLAIM_GRACE_MS) return true;
+    if (!Number.isNaN(ts) && now - ts < graceMs) return true;
   }
   return false;
 }
@@ -94,7 +158,7 @@ function hasRecentSessionActivity(t: any, now: number = Date.now()): boolean {
 function hasLiveSessionOnBranch(branch: string | undefined, ownerId: string): boolean {
   if (getActiveSessionsForTask(ownerId).length > 0) return true;
   if (!branch) return false;
-  for (const t of Object.values(tasksCache) as any[]) {
+  for (const t of Object.values(tasksCache) as CachedTicket[]) {
     if (t.id === ownerId || t.branch !== branch) continue;
     if (getActiveSessionsForTask(t.id).length > 0) return true;
   }
@@ -150,10 +214,10 @@ async function backstopDirtyRoot(workspaceRoot: string, branch: string, reason: 
  * Explicit callers (finish_ticket, the "Clean up worktree" notification) pass auto=false and bypass
  * this — an explicit finish must always land.
  */
-function hasReachedDoneBefore(t: any): boolean {
+function hasReachedDoneBefore(t: CachedTicket): boolean {
   const history = Array.isArray(t?.history) ? t.history : [];
   return history.some(
-    (h: any) =>
+    (h: TicketHistoryEntry) =>
       // A prior transition into Done — the reliable signal: any advance to Done (merge cleanup,
       // finish, or a manual move) emits a status_change (task-store updateTaskWithHistory).
       (h?.type === 'status_change' && h?.to === DONE_STATUS) ||
@@ -225,7 +289,7 @@ export async function syncDefaultBranch(workspaceRoot: string): Promise<boolean>
  * re-advanced, an already-removed worktree / deleted branch are no-ops.
  */
 export async function cleanupMergedBranch(workspaceRoot: string, branch: string, opts: { auto?: boolean } = {}): Promise<CleanupResult> {
-  const branchTickets = (Object.values(tasksCache) as any[]).filter((t) => t.branch === branch);
+  const branchTickets = (Object.values(tasksCache) as CachedTicket[]).filter((t) => t.branch === branch);
 
   // 1. Advance non-Done tickets → Done. Each is isolated: the squash-merge already landed
   // (irreversible), so one ticket's write failure must NOT abort the rest of the cleanup
@@ -251,8 +315,8 @@ export async function cleanupMergedBranch(workspaceRoot: string, branch: string,
       });
       broadcastEvent('taskUpdated', { id: t.id });
       advanced.push(t.id);
-    } catch (err: any) {
-      console.error(`[pr-cleanup] Failed to advance ${t.id} after merge of ${branch}:`, err?.message);
+    } catch (err) {
+      console.error(`[pr-cleanup] Failed to advance ${t.id} after merge of ${branch}:`, (err as Error)?.message);
     }
   }
 
@@ -350,7 +414,7 @@ export async function cleanupMergedBranch(workspaceRoot: string, branch: string,
  * retired — FLUX-569). This mops up any legacy swimlanes left on tickets from before migration;
  * it only ever clears `open-pr`, leaving any other (e.g. `require-input`) swimlane alone.
  */
-async function clearOpenPrSwimlane(tickets: any[]): Promise<void> {
+async function clearOpenPrSwimlane(tickets: CachedTicket[]): Promise<void> {
   for (const t of tickets) {
     if (t.swimlane === 'open-pr') {
       await updateTaskWithHistory(t.id, { updatedBy: 'Agent', extraFields: { swimlane: null } });
@@ -377,8 +441,8 @@ export async function reconcilePullRequests(workspaceRoot: string): Promise<void
   // (kind:'pr') are EXCLUDED: their lifecycle (status/prState/swimlane) is owned solely by
   // syncPrTickets. Treating them as normal branch tickets here let the open-pr swimlane + the
   // CLOSED→In Progress bounce mangle them (a closed PR ticket stuck In Progress — FLUX-598).
-  const byBranch = new Map<string, any[]>();
-  for (const t of Object.values(tasksCache) as any[]) {
+  const byBranch = new Map<string, CachedTicket[]>();
+  for (const t of Object.values(tasksCache) as CachedTicket[]) {
     if (!t.branch || t.kind === 'pr' || TERMINAL_TICKET_STATUSES.has(t.status)) continue;
     const arr = byBranch.get(t.branch) ?? [];
     arr.push(t);
@@ -408,7 +472,7 @@ export async function reconcilePullRequests(workspaceRoot: string): Promise<void
             updatedBy: 'Agent',
             entries: [{ type: 'comment', user: 'Agent', comment: `PR for \`${branch}\` was closed on GitHub without merging — returned to In Progress.`, date: new Date().toISOString() }],
             nextStatus: 'In Progress',
-            extraFields: { swimlane: null },
+            extraFields: { swimlane: null, reviewState: null },
           });
           broadcastEvent('taskUpdated', { id: t.id });
         }
@@ -418,8 +482,8 @@ export async function reconcilePullRequests(workspaceRoot: string): Promise<void
           // mirrors cleanupMergedBranch (reviewer Major, FLUX-557).
           const wt = await findWorktreeForBranch(workspaceRoot, branch).catch(() => null);
           if (wt) {
-            stopAllSessionsForTask(bounce[0].id, 'PR closed — detaching worktree');
-            await detachTaskWorktree(workspaceRoot, wt, { ticketId: bounce[0].id, applyToMain: false }).catch(() => {});
+            stopAllSessionsForTask(bounce[0]!.id, 'PR closed — detaching worktree');
+            await detachTaskWorktree(workspaceRoot, wt, { ticketId: bounce[0]!.id, applyToMain: false }).catch(() => {});
           }
         }
       } else {
@@ -457,7 +521,9 @@ export async function pruneMergedBranches(workspaceRoot: string): Promise<void> 
   let mergedSet: Set<string>;
   try {
     const { stdout } = await runGh(['pr', 'list', '--state', 'merged', '--limit', '50', '--json', 'headRefName'], { cwd: workspaceRoot });
-    const refs = (JSON.parse(stdout) as any[]).map((p) => p?.headRefName).filter((b): b is string => typeof b === 'string' && b.startsWith('flux/'));
+    const refs = (JSON.parse(stdout) as Array<{ headRefName?: unknown }>)
+      .map((p) => p?.headRefName)
+      .filter((b): b is string => typeof b === 'string' && b.startsWith('flux/'));
     mergedSet = new Set(refs);
   } catch {
     return; // gh unavailable / non-GitHub remote
@@ -484,7 +550,7 @@ export async function pruneMergedBranches(workspaceRoot: string): Promise<void> 
   // again; force-deleting the branch would pull live work out from under them. Once the ticket
   // terminalises (Done/Archived/Released) the branch is eligible for the normal post-merge prune.
   const activeBranches = new Set<string>();
-  for (const t of Object.values(tasksCache) as any[]) {
+  for (const t of Object.values(tasksCache) as CachedTicket[]) {
     if (t.branch && !TERMINAL_TICKET_STATUSES.has(t.status)) activeBranches.add(t.branch);
   }
 

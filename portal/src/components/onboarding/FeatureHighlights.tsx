@@ -5,7 +5,8 @@ import { motion, AnimatePresence, useMotionValue, useMotionTemplate } from 'fram
 import { Maximize2, Play, X } from 'lucide-react';
 import type { FeaturePanel } from '../../config/onboardingFeatures';
 import { resolveFeatureIcon } from '../../config/featureIcons';
-import { OnboardingMedia, prefersReducedMotion, VIDEO_EXTS } from './OnboardingMedia';
+import { OnboardingMedia } from './OnboardingMedia';
+import { prefersReducedMotion, VIDEO_EXTS } from './onboardingMediaUtils';
 import { useFocusTrap } from '../../hooks/useFocusTrap';
 
 /**

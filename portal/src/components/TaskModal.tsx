@@ -10,10 +10,16 @@ import { ActivityFilterTabs } from './task-modal/ActivityFilterTabs';
 import { TaskModalFullView } from './task-modal/TaskModalFullView';
 import { TaskModalPopupView } from './task-modal/TaskModalPopupView';
 import { useTaskModalController } from '../hooks/useTaskModalController';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 import type { Task } from '../types';
 
 export function TaskModal() {
   const c = useTaskModalController();
+
+  // FLUX-1022: ESC closes the modal via the same guarded path as a backdrop click (unsaved-changes
+  // confirmation still runs). Registered whenever the modal is open (popup or full view) so it
+  // participates in the shared Escape stack alongside its own confirm dialogs and StartTaskPrompt.
+  useEscapeKey(c.handleCloseAttempt, { enabled: c.isModalOpen });
 
   const {
     isModalOpen,

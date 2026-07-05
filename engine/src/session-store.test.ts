@@ -30,6 +30,7 @@ import {
   registerSession,
   unregisterSession,
   getCliSessionSummaryForTask,
+  getListCliSessionSummaryForTask,
   getAllSessionSummariesForTask,
   getListSessionSummariesForTask,
   getActiveSessionsForTask,
@@ -41,12 +42,26 @@ import {
   reconcileDeadSessions,
 } from './session-store.js';
 import type { CliSessionRecord } from './agents/types.js';
+import type { ChildProcessWithoutNullStreams } from 'child_process';
+
+/** Test-only view of `slimSessionSummaryForAgent`'s result — it strips args/command/pid from
+ *  CliSessionSummary, so these assertions check they're really gone (typed `unknown`, not real fields). */
+interface SlimSessionSummaryTestView {
+  id: string;
+  framework: string;
+  status: string;
+  argsChars?: number;
+  liveOutput?: string;
+  args?: unknown;
+  command?: unknown;
+  pid?: unknown;
+}
 
 function createMockSession(overrides: Partial<CliSessionRecord> = {}): CliSessionRecord {
   return {
     id: 'sess-' + Math.random().toString(36).slice(2, 8),
     taskId: 'FLUX-TEST',
-    framework: 'claude',
+    framework: 'test-cli',
     status: 'running',
     command: 'claude',
     args: [],
@@ -172,7 +187,7 @@ describe('session-store', () => {
     const STALE = '2026-06-27T15:00:00.000Z';
     const NOW = Date.parse('2026-06-27T15:30:00.000Z'); // 30m after STALE — well past the grace
     const deadProc = (exitCode: number | null, signalCode: string | null = null) =>
-      ({ exitCode, signalCode } as any);
+      ({ exitCode, signalCode } as unknown as ChildProcessWithoutNullStreams);
 
     it('terminalizes a running session whose process exited cleanly (missed exit event)', () => {
       const s = createMockSession({ id: 'sess-dead', taskId: 'FLUX-1', status: 'running', startedAt: STALE, lastOutputAt: STALE, proc: deadProc(0) });
@@ -258,6 +273,34 @@ describe('session-store', () => {
       const [summary] = getListSessionSummariesForTask('FLUX-2');
       expect(summary!.liveOutput!.length).toBe(2048);
       expect(summary!.liveOutput).toBe(big.slice(-2048));
+    });
+  });
+
+  describe('getListCliSessionSummaryForTask (FLUX-1144)', () => {
+    const reg = (s: CliSessionRecord) => {
+      cliSessionsById.set(s.id, s);
+      registerSession(s.taskId, s.id);
+    };
+
+    it('returns undefined when there are no sessions', () => {
+      expect(getListCliSessionSummaryForTask('FLUX-NONE')).toBeUndefined();
+    });
+
+    it('truncates liveOutput to the same short tail as the plural list summaries', () => {
+      const big = 'x'.repeat(5000);
+      reg(createMockSession({ id: 'solo-1', taskId: 'FLUX-3', status: 'running', liveOutputBuffer: big }));
+
+      const summary = getListCliSessionSummaryForTask('FLUX-3');
+      expect(summary!.liveOutput!.length).toBe(2048);
+      expect(summary!.liveOutput).toBe(big.slice(-2048));
+    });
+
+    it('does not truncate the untruncated getCliSessionSummaryForTask result (detail endpoint stays full-fat)', () => {
+      const big = 'x'.repeat(5000);
+      reg(createMockSession({ id: 'solo-2', taskId: 'FLUX-4', status: 'running', liveOutputBuffer: big }));
+
+      expect(getListCliSessionSummaryForTask('FLUX-4')!.liveOutput!.length).toBe(2048);
+      expect(getCliSessionSummaryForTask('FLUX-4')!.liveOutput!.length).toBe(5000);
     });
   });
 
@@ -537,7 +580,7 @@ describe('session-store', () => {
       registerSession('FLUX-1', session.id);
 
       const summary = getCliSessionSummaryForTask('FLUX-1')!;
-      const slim = slimSessionSummaryForAgent(summary) as any;
+      const slim = slimSessionSummaryForAgent(summary) as unknown as SlimSessionSummaryTestView;
 
       expect(slim.args).toBeUndefined();
       expect(slim.command).toBeUndefined();
@@ -545,7 +588,7 @@ describe('session-store', () => {
       expect(slim.argsChars).toBe(2 + launchPrompt.length);
       expect(JSON.stringify(slim)).not.toContain('You are working on ticket');
       expect(slim.id).toBe('sess-slim');
-      expect(slim.framework).toBe('claude');
+      expect(slim.framework).toBe('test-cli');
       expect(slim.status).toBe('running');
     });
 
@@ -554,10 +597,10 @@ describe('session-store', () => {
       cliSessionsById.set(session.id, session);
       registerSession('FLUX-2', session.id);
 
-      const slim = slimSessionSummaryForAgent(getCliSessionSummaryForTask('FLUX-2')!) as any;
+      const slim = slimSessionSummaryForAgent(getCliSessionSummaryForTask('FLUX-2')!) as unknown as SlimSessionSummaryTestView;
 
       expect(slim.argsChars).toBeUndefined();
-      expect(slim.liveOutput.length).toBe(2048);
+      expect(slim.liveOutput!.length).toBe(2048);
     });
   });
 });

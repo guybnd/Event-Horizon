@@ -17,6 +17,9 @@ import { isPathInsideRoot } from '../file-utils.js';
 import { signConversation } from '../session-binding.js';
 import { configCache } from '../config.js';
 import { getModulePromptFragments } from '../modules.js';
+import { updateAgentSession, updateTaskWithHistory } from '../task-store.js';
+import { buildActivityEntry } from '../history.js';
+import { raiseNeedsAction } from '../parked-ticket.js';
 import type { CliSessionRecord, CliFramework } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
 import type { ChatAttachment } from '../projection.js';
@@ -84,6 +87,15 @@ const execAsync = promisify(exec);
 const BINARY_CHECK_NEGATIVE_TTL_MS = 30_000;
 const binaryInstalledCache = new Map<string, { ok: boolean; at: number }>();
 
+// Minimal shape of a `which`/`where` checker failure inspected below — mirrors Node's
+// ExecFileException fields (killed/signal/code) without requiring a full Error object, since
+// shared.test.ts exercises isDefinitiveNotInstalled with plain object literals.
+export interface ExecCheckerFailure {
+  killed?: boolean;
+  signal?: NodeJS.Signals | string | null;
+  code?: number | string | null;
+}
+
 // Distinguish a DEFINITIVE "not installed" from a TRANSIENT checker failure, mirroring
 // resolveClaudeExePath's transient-not-cached rule (FLUX-985). Only a clean non-zero exit of
 // `which`/`where` — the genuine "binary not found on PATH" signal — is worth negative-caching:
@@ -93,7 +105,7 @@ const binaryInstalledCache = new Map<string, { ok: boolean; at: number }>();
 // system-load conditions FLUX-996 targets, a normally sub-ms `which` can hit the 10s cap — so we
 // throw WITHOUT caching, letting the next turn retry rather than serving a false "not installed"
 // for the whole 30s TTL.
-export function isDefinitiveNotInstalled(err: any): boolean {
+export function isDefinitiveNotInstalled(err: ExecCheckerFailure): boolean {
   return err?.killed !== true && err?.signal == null && typeof err?.code === 'number';
 }
 
@@ -108,14 +120,14 @@ export async function checkBinaryInstalled(binaryName: string): Promise<void> {
   try {
     await execFileAsync(checker, [binaryName], { env: cleanChildEnv(), timeout: 10_000, windowsHide: true });
     binaryInstalledCache.set(binaryName, { ok: true, at: now });
-  } catch (err: any) {
+  } catch (err: unknown) {
     // Only negative-cache a definitive "not installed" (clean non-zero exit of the checker); a
     // timeout or spawn-error of the checker itself is transient and must NOT poison the cache —
     // see isDefinitiveNotInstalled above.
-    if (isDefinitiveNotInstalled(err)) {
+    if (isDefinitiveNotInstalled(err as ExecCheckerFailure)) {
       binaryInstalledCache.set(binaryName, { ok: false, at: now });
     }
-    throw new Error(`"${binaryName}" is not installed or not on PATH. Please install it before starting an agent session.`);
+    throw new Error(`"${binaryName}" is not installed or not on PATH. Please install it before starting an agent session.`, { cause: err });
   }
 }
 
@@ -229,6 +241,58 @@ export function appendErrorToSession(session: CliSessionRecord, message: string)
   flushSessionOutput(session, true);
 }
 
+// ---- FLUX-1120: surface a RESUME-time pre-spawn failure as clearly as a fresh-spawn one ----
+// `resolveResumeExecutionRoot` (task-worktree.ts) throws BEFORE a child process is spawned — e.g.
+// the assigned worktree has been reclaimed — so unlike a spawn-time `proc.on('error')`, there is no
+// process event to hang the existing FLUX-981 surfacing off of. Left uncaught, the throw propagated
+// no further than the HTTP route's try/catch, which only turns it into a 500 JSON body — a portal
+// toast at best, invisible to the chat and the ticket's durable history. This mirrors the spawn-time
+// failure bookkeeping (terminal status, inline chat error, needsAction, updating the session's OWN
+// `agent_session` entry in place rather than minting a duplicate) so a reused/resumed session that
+// can no longer run gets the same clear, durable signal — then rethrows so the route's existing
+// error response is unchanged. Deliberately terminal (`status: 'failed'`, not `'waiting-input'`):
+// unlike a transient reply-spawn error (`terminalizeResumedExit`, which stays resumable because a
+// retry might succeed), `resolveResumeExecutionRoot` never self-heals a reclaimed worktree — only a
+// FRESH spawn does — so leaving this session resumable would just let the user retry into the same
+// wall. The thrown message's own guidance ("restart the session") means start a NEW one.
+export async function surfaceResumeFailure(session: CliSessionRecord, taskId: string, error: unknown): Promise<never> {
+  const message = error instanceof Error ? error.message : String(error);
+  // FLUX-1120 review: a Stop already in flight (or just processed) owns this session's terminal
+  // state — the stop route already set status:'cancelled'+requestedStop and killed the proc.
+  // Mirror the `if (session.requestedStop) return;` guard used elsewhere (cli-session.ts's
+  // prepareAndLaunchSession) so a resume failure racing that Stop can't clobber 'cancelled' back
+  // to 'failed', or append a confusing inline error after the user already stopped the session.
+  if (!session.requestedStop) {
+    session.status = 'failed';
+    session.endedAt = new Date().toISOString();
+    appendErrorToSession(session, message);
+    flushSessionOutput(session, true);
+    await session.writeQueue;
+    void raiseNeedsAction(taskId, message);
+    // Best-effort durable surfacing (mirrors cli-session.ts's pre-spawn-failure catch, FLUX-981)
+    // — a persistence failure here must never mask the ORIGINAL error with a store-layer one.
+    try {
+      if (session.sessionHistoryEntry?.sessionId) {
+        const accumulatedProgress = session.sessionHistoryEntry.progress || [];
+        await updateAgentSession(taskId, session.sessionHistoryEntry.sessionId, (entry) => {
+          entry.status = 'failed';
+          entry.outcome = message;
+          entry.endedAt = session.endedAt;
+          entry.progress = accumulatedProgress;
+        });
+      } else {
+        await updateTaskWithHistory(taskId, {
+          updatedBy: 'Agent',
+          entries: [buildActivityEntry(message, 'Agent', session.endedAt)],
+        });
+      }
+    } catch (persistError) {
+      log.error(`surfaceResumeFailure: failed to record resume failure for ${taskId}:`, persistError);
+    }
+  }
+  throw error instanceof Error ? error : new Error(message);
+}
+
 // ---- C.1 (FLUX-904): image-attachment resolution ----
 // Shared by claude-code.ts (per-ticket), claude-board.ts (orchestrator), and the route layer
 // (routes/cli-session.ts resolves before dispatch) — moved here so the route no longer
@@ -300,13 +364,38 @@ export interface BuildInitialPromptOptions {
   diffBlock?: string | undefined;
   /** Defaults to 'claude' for backward compatibility with existing callers/tests that predate this option. */
   framework?: CliFramework | undefined;
+  /** FLUX-926: true when this is a chat session and file-mutation tools are disallowed for this turn (ticket not In Progress) — appends a note so the agent doesn't burn a turn discovering the block. */
+  editsGated?: boolean | undefined;
 }
 
-export function buildInitialPrompt(task: any, appendPrompt: string, opts?: BuildInitialPromptOptions): string {
+// FLUX-1073: tickets are gray-matter-parsed YAML frontmatter validated at RUNTIME by schema.ts —
+// there is no single canonical Task type in this codebase. This covers only the fields the
+// CLI-adapter prompt/spawn helpers (buildInitialPrompt here, startCliSession in each adapter)
+// actually read.
+export interface CliTaskHistoryEntry {
+  type?: string;
+  date?: string;
+  user?: string;
+  comment?: string;
+  from?: string;
+  to?: string;
+}
+
+export interface CliTask {
+  id?: string;
+  title?: string;
+  status?: string;
+  tags?: string[];
+  branch?: string;
+  effortLevel?: string;
+  history?: CliTaskHistoryEntry[];
+}
+
+export function buildInitialPrompt(task: CliTask, appendPrompt: string, opts?: BuildInitialPromptOptions): string {
   const framework = opts?.framework ?? 'claude';
   const caps = CLI_CAPABILITIES[framework];
-  const readyStatus = (configCache as any)?.readyForMergeStatus || 'Ready';
-  const taskStatus = (task as any).status || 'Unknown';
+  const readyStatus = configCache?.readyForMergeStatus || 'Ready';
+  const taskStatus = task.status || 'Unknown';
   const mcpNote = 'CRITICAL: Use the "event-horizon" MCP tools (change_status, update_ticket, add_note) for ALL ticket updates. Do NOT edit .flux/ files directly — direct edits corrupt session tracking.';
 
   const requireInputStopInstruction = caps.selfPause
@@ -339,6 +428,7 @@ export function buildInitialPrompt(task: any, appendPrompt: string, opts?: Build
             `Leaving the ticket parked in a working status with only a chat summary is a defect: the board flags it "Needs Action" and the user is notified. If you genuinely cannot decide, that itself is a "Require Input" — raise it, don't sit on it.\n\n` +
             `To ask the user a structured question mid-turn, call the ask_user_question tool — it shows an interactive picker in this chat and returns their choice so you continue immediately. Never assume when a quick question would resolve ambiguity; ask.\n` +
             `This holds REGARDLESS of the ticket's status (FLUX-826): even on a Done/Ready/closed ticket, any decision ("file a ticket / commit / leave it?") goes through ask_user_question — never as chat prose. A decision typed only into chat on a resting ticket has no picker, no notification, and no board flag, so it is lost if the user isn't watching live. (If ask_user_question times out unanswered on a ticket, the engine now leaves a persistent "Needs Action" flag as a backstop — but route it structurally, don't rely on the backstop.)` +
+            (opts?.editsGated ? `\n\nFLUX-926: this ticket is not In Progress, so file-mutation tools (Write/Edit/etc.) are disabled for this turn — the CLI will refuse them. Move the ticket to "In Progress" (or ask the user to) before making changes; discussion, planning, and read-only tools work as normal.` : '') +
             orchestrationProposalsParagraph + `\n\n` +
             mcpNote;
         case 'grooming':
@@ -402,7 +492,7 @@ export function buildInitialPrompt(task: any, appendPrompt: string, opts?: Build
     `Read the full description and plan with get_ticket("${task.id}") — that is the source of truth; it is not echoed here to save context.`,
     '',
     'Latest activity:',
-    ...(Array.isArray(task.history) ? task.history.filter((e: any) => e?.type !== 'agent_message').slice(-3).map((entry: any) => {
+    ...(Array.isArray(task.history) ? task.history.filter((e) => e?.type !== 'agent_message').slice(-3).map((entry) => {
       if (entry?.type === 'status_change') {
         return `- [${entry.date || ''}] ${entry.user || 'Unknown'} moved ${entry.from || '?'} -> ${entry.to || '?'}`;
       }
@@ -427,6 +517,24 @@ export function activityFor(map: Record<string, string>, toolName: string): stri
   return map[toolName] ?? 'Working';
 }
 
+// ---- FLUX-921: shared stop-terminalization for a resumed/reply turn ----
+// The `if (session.requestedStop) { status='cancelled'; endedAt=… } else { status='waiting-input' }`
+// block was duplicated across the reply error/exit handlers of claude-code.ts / copilot.ts /
+// gemini.ts (PR #193 review, senior-dev + qa-correctness). A stop racing a spawn error or process
+// exit stays 'cancelled' (matches the synchronous stop route so Stop never un-sticks back to
+// active); otherwise the resumable conversation reverts to 'waiting-input'. `blockedReason` lets
+// the claude-code.ts error handler keep flagging a crashed (non-stopped) reply as "Needs your
+// input" (FLUX-918) without re-duplicating the branch.
+export function terminalizeResumedExit(session: CliSessionRecord, opts?: { blockedReason?: string }): void {
+  if (session.requestedStop) {
+    session.status = 'cancelled';
+    session.endedAt = new Date().toISOString();
+  } else {
+    if (opts?.blockedReason) session.blockedReason = opts.blockedReason;
+    session.status = 'waiting-input';
+  }
+}
+
 // ---- A.1 (FLUX-932): shared stdout transport skeleton ----
 // The three adapters each parse a DIFFERENT JSONL schema, but the TRANSPORT around the parse was
 // byte-identical and duplicated: buffer stdout into lines, JSON.parse each non-empty line, dispatch
@@ -437,15 +545,19 @@ export function activityFor(map: Record<string, string>, toolName: string): stri
 // bodies move verbatim) and returned to the caller. `narrationType` preserves the one real divergence
 // the audit flagged: Claude flushes progress with no `type` (compact one-liner) while Copilot/Gemini
 // pass 'text' (a styled "Narration" block — HistoryList.tsx). Claude omits the arg; the others pass 'text'.
-export interface StdoutHandlers {
-  onEvent: (evt: any, trimmed: string, commitPendingAssistantText: () => void) => void;
+// Generic over the per-CLI JSONL event shape (`TEvent`, default `unknown`) — Claude, Copilot, and
+// Gemini each emit a different schema on this line, so this shared skeleton can't know it; each
+// adapter instantiates `attachStdoutProcessing<ItsEventType>(...)` to get its own shape typed
+// through `onEvent`, narrowing from `unknown` only where an adapter doesn't specialize it.
+export interface StdoutHandlers<TEvent = unknown> {
+  onEvent: (evt: TEvent, trimmed: string, commitPendingAssistantText: () => void) => void;
   onParseError: (trimmed: string) => void;
 }
 
-export function attachStdoutProcessing(
+export function attachStdoutProcessing<TEvent = unknown>(
   proc: ChildProcess,
   session: CliSessionRecord,
-  handlers: StdoutHandlers,
+  handlers: StdoutHandlers<TEvent>,
   narrationType?: 'text',
 ): () => void {
   const commitPendingAssistantText = () => {
@@ -469,7 +581,7 @@ export function attachStdoutProcessing(
       const trimmed = line.trim();
       if (!trimmed) continue;
       try {
-        const evt = JSON.parse(trimmed);
+        const evt = JSON.parse(trimmed) as TEvent;
         handlers.onEvent(evt, trimmed, commitPendingAssistantText);
       } catch {
         handlers.onParseError(trimmed);

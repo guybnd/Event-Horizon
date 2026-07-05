@@ -41,7 +41,7 @@ import { resetBoardDigest } from '../board-digest.js';
 import { dismissNotificationsForTicket } from '../notifications.js';
 import { resolvePersonaPrompt, getPersonaById } from '../orchestration-personas.js';
 import { ensureTicketIsolation } from '../ticket-isolation.js';
-import { buildActivityEntry } from '../history.js';
+import { buildActivityEntry, buildAgentSessionEntry } from '../history.js';
 import {
   captureDiffForPrompt,
   getMergeBase,
@@ -50,6 +50,23 @@ import {
   type PromptDiffCapture,
 } from '../branch-manager.js';
 import type { CliSessionRecord, CliFramework, ExecutionPattern, PatternPosition, GroupVariant, LaunchPhase } from '../agents/types.js';
+
+// ─── Local types (lint burndown, FLUX-1073) ──────────────────────────────────
+// Ticket frontmatter has no canonical compile-time type in this codebase — it's validated at
+// RUNTIME by schema.ts, and `tasksCache` itself is declared `Record<string, any>` in
+// task-store.ts. This interface names only the fields THIS route file actually reads/writes off
+// a task record; every other field still flows through via the index signature. Mirrors the
+// TaskRecord pattern already established in routes/tasks.ts for the same ticket.
+interface TaskRecord {
+  id: string;
+  branch?: string | null;
+  baselineCommit?: string | null;
+  [key: string]: unknown;
+}
+
+function errorMessage(err: unknown, fallback: string): string {
+  return err instanceof Error && err.message ? err.message : fallback;
+}
 
 const router = express.Router();
 
@@ -104,7 +121,7 @@ function formatDiffBlock(capture: PromptDiffCapture): string {
   return lines.join('\n');
 }
 
-async function computeDiffBlockForTask(task: any): Promise<string | undefined> {
+async function computeDiffBlockForTask(task: TaskRecord): Promise<string | undefined> {
   const branch = task.branch || null;
   const baseline = task.baselineCommit || null;
   const capture = await captureDiffForPrompt(branch, baseline);
@@ -132,21 +149,12 @@ interface SpawnOptions {
   diffBlock?: string | undefined;
 }
 
-/**
- * Build, register and launch one CLI session for a task. Shared by the start
- * route and the deferred-combiner launcher so both paths stay identical.
- */
-async function spawnSession(task: any, opts: SpawnOptions): Promise<CliSessionRecord> {
-  const adapter = getAdapter(opts.framework);
-  const sessionId = randomUUID();
-  const label = adapter.labelForFramework();
-  const startedAt = new Date().toISOString();
-
-  // Stamp baselineCommit at first session launch if missing. This is the review-diff anchor.
-  // For a branch/PR ticket the anchor must be the branch's fork point from the default branch
-  // (merge-base), NOT the engine's HEAD at launch — HEAD can sit on an unrelated sibling commit,
-  // which made baseline..HEAD diffs surface phantom reversions (FLUX-585). resolveBaselineCommit
-  // returns the merge-base for branch tickets and current HEAD for branch-less ones.
+// Stamp baselineCommit at first session launch if missing. This is the review-diff anchor.
+// For a branch/PR ticket the anchor must be the branch's fork point from the default branch
+// (merge-base), NOT the engine's HEAD at launch — HEAD can sit on an unrelated sibling commit,
+// which made baseline..HEAD diffs surface phantom reversions (FLUX-585). resolveBaselineCommit
+// returns the merge-base for branch tickets and current HEAD for branch-less ones.
+async function stampBaselineCommit(task: TaskRecord): Promise<void> {
   if (!task.baselineCommit) {
     const baseline = await resolveBaselineCommit(task.branch ?? null);
     if (baseline) {
@@ -161,12 +169,16 @@ async function spawnSession(task: any, opts: SpawnOptions): Promise<CliSessionRe
     // sibling-branch HEAD. If the stored baseline isn't an ancestor of the branch tip it can only
     // ever produce phantom-revert diffs — re-anchor it to the merge-base. Targeted: a baseline
     // already on the branch is left untouched.
+    // Captured into locals (rather than repeated `task.` property reads) so TS's narrowing —
+    // both baselineCommit's truthiness above and branch's below — survives the `await`s.
+    const currentBaseline = task.baselineCommit;
+    const branch = task.branch;
     const onBranch =
-      (await isAncestor(task.baselineCommit, task.branch)) ||
-      (await isAncestor(task.baselineCommit, `origin/${task.branch}`));
+      (await isAncestor(currentBaseline, branch)) ||
+      (await isAncestor(currentBaseline, `origin/${branch}`));
     if (!onBranch) {
-      const mb = await getMergeBase(task.branch);
-      if (mb && mb !== task.baselineCommit) {
+      const mb = await getMergeBase(branch);
+      if (mb && mb !== currentBaseline) {
         await updateTaskWithHistory(task.id, {
           updatedBy: 'Agent',
           extraFields: { baselineCommit: mb },
@@ -175,6 +187,16 @@ async function spawnSession(task: any, opts: SpawnOptions): Promise<CliSessionRe
       }
     }
   }
+}
+
+// FLUX-1002: the fast, synchronous half of launching a session — build the record and register
+// it so callers (and the client, for the route below) have a session id to track immediately.
+// No network/git ops here; those live in the caller (spawnSession) or prepareAndLaunchSession.
+function createPendingSession(task: TaskRecord, opts: SpawnOptions): CliSessionRecord {
+  const adapter = getAdapter(opts.framework);
+  const sessionId = randomUUID();
+  const label = adapter.labelForFramework();
+  const startedAt = new Date().toISOString();
 
   const session: CliSessionRecord = {
     id: sessionId,
@@ -213,9 +235,40 @@ async function spawnSession(task: any, opts: SpawnOptions): Promise<CliSessionRe
 
   cliSessionsById.set(sessionId, session);
   registerSession(task.id, sessionId);
+  return session;
+}
+
+// FLUX-1156: a pre-spawn failure (worktree pool full, isolation error, binary missing, etc.) throws
+// BEFORE the adapter ever creates its `agent_session` history entry (that happens post-spawn — see
+// claude-code.ts/gemini.ts/copilot.ts's `buildAgentSessionEntry` call right before `proc.on(...)` is
+// wired up). Without a durable entry, the chat timeline (built from `agent_session` entries — FLUX-507)
+// shows nothing, and `get_session_log` can never resolve the id the caller (e.g. the Furnace) already
+// has. Build one here using the session id/startedAt already allocated by createPendingSession, marked
+// terminal from birth, so every pre-spawn failure path renders exactly like a post-spawn one.
+function buildFailedPreSpawnSessionEntry(session: CliSessionRecord, message: string, endedAt: string = new Date().toISOString()) {
+  const entry = buildAgentSessionEntry(session.id, session.startedAt, session.label, {
+    groupId: session.groupId,
+    role: session.role,
+    pattern: session.groupType,
+  });
+  entry.status = 'failed';
+  entry.endedAt = endedAt;
+  entry.outcome = `${session.label} session failed to start: ${message}`;
+  return entry;
+}
+
+/**
+ * Build, register and launch one CLI session, awaiting the full launch before returning —
+ * used by callers that don't need the response-time treatment below (the deferred-combiner
+ * and relay-step launchers run off session-store callbacks, not an HTTP handler; /delegate
+ * already holds its response open for the whole child lifecycle).
+ */
+async function spawnSession(task: TaskRecord, opts: SpawnOptions): Promise<CliSessionRecord> {
+  const session = createPendingSession(task, opts);
+  await stampBaselineCommit(task);
 
   try {
-    await adapter.start(session, task, opts.appendPrompt, opts.effortOverride, workspaceRoot!);
+    await getAdapter(opts.framework).start(session, task, opts.appendPrompt, opts.effortOverride, workspaceRoot!);
   } catch (error) {
     // FLUX-981: a pre-spawn failure (binary missing, worktree/isolation resolution error, etc.) throws
     // BEFORE any child process spawns, so the adapter's own proc.on('error') handler never runs — the
@@ -225,18 +278,97 @@ async function spawnSession(task: any, opts: SpawnOptions): Promise<CliSessionRe
     const message = error instanceof Error ? error.message : String(error);
     try {
       appendErrorToSession(session, `Failed to start agent: ${message}`);
+      // FLUX-1156: a durable agent_session entry (not just an activity line) so the chat timeline
+      // and get_session_log both resolve this session id even though it never actually spawned.
       await updateTaskWithHistory(task.id, {
         updatedBy: 'Agent',
-        entries: [buildActivityEntry(`${label} session failed to start: ${message}`, 'Agent', new Date().toISOString())],
+        entries: [buildFailedPreSpawnSessionEntry(session, message)],
       });
     } catch {
       /* surfacing is best-effort */
     }
-    unregisterSession(task.id, sessionId);
-    cliSessionsById.delete(sessionId);
+    unregisterSession(task.id, session.id);
+    cliSessionsById.delete(session.id);
     throw error;
   }
   return session;
+}
+
+/**
+ * FLUX-1002: background counterpart to spawnSession for the per-ticket start route. Runs
+ * ensureTicketIsolation (branch push + worktree add) and the adapter spawn (itself gated on the
+ * MCP/Serena handshake, FLUX-1004) OFF the HTTP response path — the route below already returned
+ * 201 with the pending session created via createPendingSession. Failures here surface as the
+ * session going 'failed' with an inline chat error + ticket history entry (mirroring the
+ * proc.on('error') pattern in the adapters), never as a hung or dropped request.
+ */
+async function prepareAndLaunchSession(
+  session: CliSessionRecord,
+  task: TaskRecord,
+  opts: SpawnOptions,
+  isolation: 'worktree' | 'branch' | undefined,
+): Promise<void> {
+  const id = task.id;
+  try {
+    // FLUX-845: isolate BEFORE spawning so resolveTaskExecutionRoot lands the session in the
+    // dedicated worktree (the canonical mechanism, shared with create_branch + the /branch route).
+    // Idempotent: a ticket that already has a branch is reused, never re-created.
+    if (isolation) {
+      session.currentActivity = 'Preparing workspace…';
+      broadcastEvent('activity', { taskId: id, activity: session.currentActivity });
+      await ensureTicketIsolation(id, { worktree: isolation === 'worktree' });
+    }
+
+    // FLUX-1002: the pending window this backgrounding creates is now long enough (a real
+    // `git push` + worktree add) for the client to see the session and hit stop before prep
+    // finishes. The stop route sets status:'cancelled'+requestedStop on a 'pending' session but
+    // has no live proc to kill yet — without this check we'd spawn the child anyway right after,
+    // silently reviving a session the user already cancelled.
+    if (session.requestedStop) return;
+
+    await stampBaselineCommit(task);
+
+    // Inject pre-computed diff for scatter-gather review workers.
+    if (opts.groupType === 'scatter-gather' && opts.patternPosition !== 'lead') {
+      const diffBlock = await computeDiffBlockForTask(task);
+      if (diffBlock) session.diffBlock = diffBlock;
+    }
+
+    if (session.requestedStop) return;
+
+    session.currentActivity = undefined;
+    await getAdapter(opts.framework).start(session, task, opts.appendPrompt, opts.effortOverride, workspaceRoot!);
+  } catch (error: unknown) {
+    // FLUX-1002 review: a stop requested while isolation/spawn prep was in flight already set
+    // status:'cancelled' (see the requestedStop checks above) — this backgrounded rejection lands
+    // AFTER that, so without this guard it would clobber the user's cancellation back to 'failed'
+    // and append a spurious "failed to start" ticket-history entry for a session they already
+    // stopped. Leave the cancelled session exactly as the stop route left it.
+    if (session.requestedStop) return;
+    // Unlike spawnSession's catch, the client already has this session id (the route responded
+    // 201 before this ran) — mark it failed and surface it instead of deleting/rethrowing.
+    const message = error instanceof Error ? error.message : String(error);
+    session.status = 'failed';
+    session.endedAt = new Date().toISOString();
+    session.currentActivity = undefined;
+    try {
+      appendErrorToSession(session, `Failed to start agent: ${message}`);
+      // FLUX-1156: durable agent_session entry (status:'failed' + outcome), not just an activity
+      // line — the chat timeline is built from agent_session entries, and the Furnace/get_session_log
+      // both need this session id to resolve to something once the in-memory record is evicted.
+      // Set on the in-memory record too so an immediate reconcile pass (furnace-stoker) can read the
+      // failure reason straight off the live session, no re-read needed.
+      const entry = buildFailedPreSpawnSessionEntry(session, message, session.endedAt);
+      session.sessionHistoryEntry = entry;
+      await updateTaskWithHistory(id, {
+        updatedBy: 'Agent',
+        entries: [entry],
+      });
+    } catch {
+      /* surfacing is best-effort */
+    }
+    broadcastEvent('taskUpdated', { id });
+  }
 }
 
 // Wire the deferred-combiner launcher: when a scatter-gather group's workers
@@ -326,8 +458,8 @@ router.get('/:id/transcript', async (req, res) => {
   try {
     const messages = await readTranscriptMessages(id);
     res.json({ messages });
-  } catch (err: any) {
-    res.status(500).json({ error: err?.message || 'Failed to read transcript' });
+  } catch (err: unknown) {
+    res.status(500).json({ error: errorMessage(err, 'Failed to read transcript') });
   }
 });
 
@@ -359,8 +491,8 @@ router.get('/:id/activity', async (req, res) => {
 
     // readTranscriptMessages returns chronological (oldest-first); reverse for newest-first, then cap.
     res.json({ messages: rows.reverse().slice(0, limit) });
-  } catch (err: any) {
-    res.status(500).json({ error: err?.message || 'Failed to read activity' });
+  } catch (err: unknown) {
+    res.status(500).json({ error: errorMessage(err, 'Failed to read activity') });
   }
 });
 
@@ -377,8 +509,8 @@ router.delete('/:id/transcript', async (req, res) => {
     if (id === BOARD_CONVERSATION_ID) resetBoardDigest();
     broadcastEvent('taskUpdated', { id });
     res.json({ ok: true });
-  } catch (err: any) {
-    res.status(500).json({ error: err?.message || 'Failed to clear transcript' });
+  } catch (err: unknown) {
+    res.status(500).json({ error: errorMessage(err, 'Failed to clear transcript') });
   }
 });
 
@@ -450,10 +582,10 @@ router.post('/:id/cli-session/start', async (req, res) => {
     try {
       await getBoardAdapter(fw).startBoardSession(boardSession, firstMessage, workspaceRoot!, { attachments: chatAttachments });
       return res.status(201).json({ session: getCliSessionSummaryForTask(BOARD_CONVERSATION_ID) });
-    } catch (error: any) {
+    } catch (error: unknown) {
       unregisterSession(BOARD_CONVERSATION_ID, boardSession.id);
       cliSessionsById.delete(boardSession.id);
-      return res.status(500).json({ error: error.message || 'Failed to start orchestrator session' });
+      return res.status(500).json({ error: errorMessage(error, 'Failed to start orchestrator session') });
     }
   }
 
@@ -576,20 +708,13 @@ router.post('/:id/cli-session/start', async (req, res) => {
     : appendPrompt;
 
   try {
-    // FLUX-845: isolate BEFORE spawning so resolveTaskExecutionRoot lands the session in the
-    // dedicated worktree (the canonical mechanism, shared with create_branch + the /branch route).
-    // Idempotent: a ticket that already has a branch is reused, never re-created.
-    if (isolation) {
-      await ensureTicketIsolation(id, { worktree: isolation === 'worktree' });
-    }
-
-    // Inject pre-computed diff for scatter-gather review workers
-    let diffBlock: string | undefined;
-    if (groupType === 'scatter-gather' && patternPosition !== 'lead') {
-      diffBlock = await computeDiffBlockForTask(task);
-    }
-
-    await spawnSession(task, {
+    // FLUX-1002: build + register the pending session synchronously (no network/git ops) so the
+    // response below can return immediately. ensureTicketIsolation (branch push + worktree add)
+    // and the adapter spawn (which itself waits on the MCP/Serena handshake, FLUX-1004) run in
+    // the background via prepareAndLaunchSession — the session's status/currentActivity and the
+    // taskUpdated/activity broadcasts it already emits carry the outcome to the client instead of
+    // the request hanging on either op.
+    const spawnOpts: SpawnOptions = {
       framework,
       appendPrompt: spawnAppendPrompt,
       effortOverride: effortOverrideRaw,
@@ -608,8 +733,9 @@ router.post('/:id/cli-session/start', async (req, res) => {
       groupType,
       groupVariant,
       lockedPaths,
-      diffBlock,
-    });
+    };
+    const session = createPendingSession(task, spawnOpts);
+
     // FLUX-602: record the user's opening turn for chat sessions in the transcript.
     // FLUX-674: include attachments; allow an image-only opening turn (empty text).
     if (phase === 'chat' && (appendPrompt || chatAttachments.length)) {
@@ -637,13 +763,16 @@ router.post('/:id/cli-session/start', async (req, res) => {
           updatedBy: 'Agent',
           entries: [buildActivityEntry(`🎯 Launch focus: ${focusComment}`, launchedBy, new Date().toISOString(), { launchFocus: focusComment })],
         });
-      } catch (focusErr: any) {
-        console.warn(`[cli-session] Failed to persist launch focus for ${id}: ${focusErr?.message || focusErr}`);
+      } catch (focusErr: unknown) {
+        console.warn(`[cli-session] Failed to persist launch focus for ${id}: ${focusErr instanceof Error ? focusErr.message : focusErr}`);
       }
     }
+
+    void prepareAndLaunchSession(session, task, spawnOpts, isolation);
+
     res.status(201).json({ session: getCliSessionSummaryForTask(id) });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message || `Failed to launch ${framework}` });
+  } catch (error: unknown) {
+    res.status(500).json({ error: errorMessage(error, `Failed to launch ${framework}`) });
   }
 });
 
@@ -832,8 +961,8 @@ router.post('/:id/cli-session/delegate', async (req, res) => {
         succeeded: result.succeeded,
         deduped: true,
       });
-    } catch (error: any) {
-      return res.status(500).json({ error: error.message || 'Delegation failed' });
+    } catch (error: unknown) {
+      return res.status(500).json({ error: errorMessage(error, 'Delegation failed') });
     }
   }
 
@@ -859,8 +988,8 @@ router.post('/:id/cli-session/delegate', async (req, res) => {
   // 'claude' — on Gemini/Copilot it stays undefined (no behavior change, and no risk
   // of pushing a Claude alias onto a --model arg). Generalizing the adapters to honor
   // session.model with a cheap/strong tier abstraction is tracked in FLUX-931.
-  const configDelegateModel = typeof (configCache as any)?.integrations?.claudeCode?.delegateModel === 'string'
-    ? (configCache as any).integrations.claudeCode.delegateModel.trim()
+  const configDelegateModel = typeof configCache?.integrations?.claudeCode?.delegateModel === 'string'
+    ? configCache.integrations.claudeCode.delegateModel.trim()
     : '';
   const resolvedModel = framework === 'claude'
     ? (modelOverride || persona?.model || configDelegateModel || undefined)
@@ -888,9 +1017,9 @@ router.post('/:id/cli-session/delegate', async (req, res) => {
       groupType: 'supervisor',
       groupVariant: 'combiner',
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     reservation.fail(error);
-    return res.status(500).json({ error: error.message || 'Failed to spawn delegate' });
+    return res.status(500).json({ error: errorMessage(error, 'Failed to spawn delegate') });
   }
 
   // Set up a race between delegation completion and timeout.
@@ -923,9 +1052,9 @@ router.post('/:id/cli-session/delegate', async (req, res) => {
       output: result.output,
       succeeded: result.succeeded,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     clearTimeout(timeoutId);
-    res.status(500).json({ error: error.message || 'Delegation failed' });
+    res.status(500).json({ error: errorMessage(error, 'Delegation failed') });
   }
 });
 
@@ -958,8 +1087,8 @@ router.post('/:id/cli-session/input', async (req, res) => {
       // record, not the request (resumeSessionId is CLI-specific; switching = a new session).
       await getBoardAdapter(boardSession.framework).sendBoardInput(boardSession, boardMessage, workspaceRoot!, { attachments: boardAttachments });
       return res.json({ session: getCliSessionSummaryForTask(BOARD_CONVERSATION_ID) });
-    } catch (error: any) {
-      return res.status(500).json({ error: error.message || 'Failed to send message to orchestrator' });
+    } catch (error: unknown) {
+      return res.status(500).json({ error: errorMessage(error, 'Failed to send message to orchestrator') });
     }
   }
 
@@ -1014,8 +1143,8 @@ router.post('/:id/cli-session/input', async (req, res) => {
     }
 
     res.json({ session: getCliSessionSummaryForTask(id) });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message || 'Failed to send message to CLI session' });
+  } catch (error: unknown) {
+    res.status(500).json({ error: errorMessage(error, 'Failed to send message to CLI session') });
   }
 });
 
@@ -1082,8 +1211,8 @@ router.post('/:id/cli-session/stop', async (req, res) => {
       stoppedLabels.push(session.label);
       try {
         getAdapter(session.framework).stop(session);
-      } catch (error: any) {
-        console.warn(`Failed to stop session ${session.id} for task ${id}:`, error?.message || error);
+      } catch (error: unknown) {
+        console.warn(`Failed to stop session ${session.id} for task ${id}:`, error instanceof Error ? error.message : error);
       }
     }
     await updateTaskWithHistory(id, {
@@ -1127,8 +1256,8 @@ router.post('/:id/cli-session/stop', async (req, res) => {
   try {
     adapter.stop(session);
     res.json({ session: getCliSessionSummaryForTask(id) });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message || 'Failed to stop CLI session' });
+  } catch (error: unknown) {
+    res.status(500).json({ error: errorMessage(error, 'Failed to stop CLI session') });
   }
 });
 

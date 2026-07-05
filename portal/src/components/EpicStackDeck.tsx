@@ -7,6 +7,7 @@ import { ContextMenu } from './ContextMenu';
 import { CardChatButton } from './task-card/CardChatButton';
 import { useAppSelector } from '../store/useAppSelector';
 import { getStatusColorClass } from '../statusStyles';
+import { normalizeStatus } from '../workflow';
 
 /**
  * Epic subtask deck (FLUX-699). The epic is the TOP card of a real deck: its full card is rendered
@@ -71,7 +72,7 @@ export function EpicStackDeck({
         </span>
         <div className="flex items-center gap-[3px]">
           {items.slice(0, 14).map((t) => (
-            <span key={t.id} className={`h-1.5 w-1.5 rounded-full ${statusDot(getStatusColorClass(config, t.status))}`} title={`${t.id} · ${t.status}`} />
+            <span key={t.id} className={`h-1.5 w-1.5 rounded-full ${statusDot(getStatusColorClass(config, t.status))}`} title={`${t.id} · ${normalizeStatus(t.status)}`} />
           ))}
         </div>
         <button
@@ -117,14 +118,14 @@ export function EpicStackDeck({
                 type="button"
                 onClick={() => toggleOne(t.id)}
                 onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setCtxPos({ task: t, x: e.clientX, y: e.clientY }); }}
-                title={`${t.id} · ${t.status} — click to expand (right-click for actions)`}
+                title={`${t.id} · ${normalizeStatus(t.status)} — click to expand (right-click for actions)`}
                 className="flex w-full items-center gap-1.5 rounded-lg rounded-b-md border border-indigo-200/70 bg-white px-2 py-[5px] text-left shadow-sm transition-all duration-150 group-hover/peek:-translate-y-[2px] group-hover/peek:border-indigo-300 group-hover/peek:py-1.5 group-hover/peek:shadow-md dark:border-indigo-500/25 dark:bg-[#1c1d26] dark:group-hover/peek:border-indigo-500/50"
               >
                 <span className={`h-2 w-2 shrink-0 rounded-full ${statusDot(getStatusColorClass(config, t.status))}`} aria-hidden />
                 <span className="min-w-0 flex-1 line-clamp-1 group-hover/peek:line-clamp-3 text-[11px] text-gray-700 dark:text-gray-200">{t.title || t.id}</span>
                 {/* Revealed on hover: status chip + maximize hint. */}
                 <span className={`hidden shrink-0 rounded px-1 py-px text-[9px] font-semibold uppercase tracking-wide group-hover/peek:inline-block ${getStatusColorClass(config, t.status)}`}>
-                  {t.status}
+                  {normalizeStatus(t.status)}
                 </span>
                 <Maximize2 className="h-3 w-3 shrink-0 text-indigo-400 opacity-0 transition-opacity group-hover/peek:opacity-100" />
               </button>
@@ -184,7 +185,7 @@ function EpicGhostCard({
           <div className="flex items-center gap-1.5">
             <span className="font-mono text-[10px] text-indigo-400 dark:text-indigo-400/80">{epic.id}</span>
             <span className={`rounded px-1 py-px text-[9px] font-semibold uppercase tracking-wide ${getStatusColorClass(config, epic.status)}`}>
-              {epic.status}
+              {normalizeStatus(epic.status)}
             </span>
             <ArrowUpRight className="ml-auto h-3.5 w-3.5 shrink-0 text-indigo-400 opacity-60 transition-opacity group-hover/ghost:opacity-100" />
           </div>

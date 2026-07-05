@@ -16,7 +16,8 @@ export function CardCommentPopover({ task, isOverlay, c }: { task: Task; isOverl
     isMouseOverCard,
     startDescriptionTimer,
     comments,
-    unreadComments,
+    totalCommentCount,
+    unreadCommentIds,
     ctxMarkAllCommentsRead,
     openTaskFullView,
     topLevelComments,
@@ -69,14 +70,17 @@ export function CardCommentPopover({ task, isOverlay, c }: { task: Task; isOverl
         >
           <div className="sticky top-0 bg-white/95 dark:bg-[#1a1b23]/95 px-3 py-2 border-b border-gray-100 dark:border-white/5 backdrop-blur-xl flex items-center justify-between">
             <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider">
-              Comments ({comments.length}){unreadComments.length > 0 ? ` · ${unreadComments.length} unread` : ''}
+              Comments ({totalCommentCount}){unreadCommentIds.length > 0 ? ` · ${unreadCommentIds.length} unread` : ''}
+              {/* FLUX-1144: the list payload only ships the most recent few comments inline — flag
+                  it here so a heavily-commented ticket doesn't look like comments went missing. */}
+              {comments.length < totalCommentCount ? ` · showing ${comments.length} most recent` : ''}
             </span>
             <div className="flex items-center gap-2">
-              {unreadComments.length > 0 && (
+              {unreadCommentIds.length > 0 && (
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    ctxMarkAllCommentsRead(task.id, comments.filter(c => c.id).map(c => c.id!));
+                    ctxMarkAllCommentsRead(task.id, unreadCommentIds);
                   }}
                   className="text-[10px] font-semibold text-amber-600 hover:text-amber-700 dark:text-amber-400 dark:hover:text-amber-300 transition-colors"
                 >

@@ -39,8 +39,8 @@ router.post('/personas', async (req, res) => {
   try {
     const persona = await saveCustomPersona(req.body);
     res.status(201).json({ persona: toPersonaMeta(persona) });
-  } catch (err: any) {
-    res.status(400).json({ error: err?.message || 'Failed to create persona' });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Failed to create persona' });
   }
 });
 
@@ -49,8 +49,8 @@ router.put('/personas/:id', async (req, res) => {
   try {
     const persona = await saveCustomPersona({ ...req.body, id: req.params.id });
     res.json({ persona: toPersonaMeta(persona) });
-  } catch (err: any) {
-    res.status(400).json({ error: err?.message || 'Failed to update persona' });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Failed to update persona' });
   }
 });
 
@@ -63,8 +63,8 @@ router.delete('/personas/:id', async (req, res) => {
       return;
     }
     res.json({ ok: true });
-  } catch (err: any) {
-    res.status(400).json({ error: err?.message || 'Failed to delete persona' });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Failed to delete persona' });
   }
 });
 

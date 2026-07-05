@@ -2,6 +2,42 @@
 
 Notable changes are summarized here; detailed per-version notes for the dev line live in [`.docs/release-notes/`](.docs/release-notes/).
 
+## [1.3.0] — the performance overhaul, Furnace hardening, and a sturdier sync core
+
+The headline is **performance**: a full instrumentation epic (FLUX-1128) that made the engine and portal measurable, then the fix wave it uncovered. Alongside it, a deep hardening pass over the Furnace's slot/worktree machinery and the sync layer. Full notes: [`.docs/release-notes/v1.3.0.md`](.docs/release-notes/v1.3.0.md).
+
+### Performance — instrument first, then fix
+
+- **Engine perf core** — metrics registry, request-timing middleware, and `GET /api/perf` (#330), an event-loop delay monitor that catches synchronous stalls (FLUX-1130), git/gh subprocess timing via the operation sink (FLUX-1131), and task-store rescan timing + watcher-storm detection + SSE broadcast counters (FLUX-1132). `[perf]` warnings broadcast as SSE events into the Engine Events tab (#346).
+- **Portal instrumentation** — client-side refresh timings, SSE rates, `window.__ehPerf` (#340), and a perf debug panel showing engine + client snapshots in one surface (FLUX-1134).
+- **The fix wave** — `/api/tasks` list payload slimmed from ~16MB per poll + conditional GET (#327); `/api/furnace` ground-truth reconciliation behind a short TTL (#331) and hot-poll endpoints serving stale-while-revalidate (#347); boot's duplicate full rescans deduped and watcher reloads made incremental (#348) with explicit yield/chunking in the rescan loop (#349); SSE → engineEvents buffering coalesced so the store isn't patched per token delta (FLUX-1138); memoized cheap rows for the Engine Events / Operations tabs (FLUX-1139); the idle board's continuous ~80fps rAF/CSS animation pipeline stopped (#355, FLUX-1140); artifact viewer no longer pays Tailwind JIT cost while hidden (FLUX-1136), and authoring guidance steers agents away from the Tailwind Play CDN (#326).
+
+### Furnace — slot/worktree hardening + batch UX
+
+- **Slot machinery** — the slot gauge no longer desyncs from the physical worktree cap (igniting into guaranteed spawn failures, #332); slot-holder undercounts + forced-refresh races under concurrent ignites fixed (#358); the auto-takeover race that flagged the Furnace's own spawns as human takeovers — wedging the queue, leaking slots, and killing the hand-back button — resolved (#287) with follow-ups for TOCTOU settling and mid-spawn ticket removal (#312, #313).
+- **Failure visibility** — pre-spawn session failures leave a durable trace in ticket chat instead of burning silently (FLUX-1156); a clear signal when a session's assigned worktree has been reclaimed or vanished (#345); review verdicts no longer strand tickets when `reviewState` isn't set (#273), with member-ticket verdicts aggregated onto PR cards (#286) and stale review-nudge markers ignored (FLUX-1080).
+- **Batch curation & control** — an intentional-selection contract for `furnace_build` (tag or explicit ids, drift accounting, one-active-batch guard, #292); MCP tools to discard/edit draft batches (#274), later consolidated into action-based `furnace_batch` / `furnace_ticket` tools plus hand-back (FLUX-1085, FLUX-1070); the burn report rendered in a per-batch modal (#335); drag-and-drop reorder of queued tickets (FLUX-1082); a trigger editor + informative trigger badge in the drawer (#344); raw-CRUD and PUT full-payload validation hardened (#268, #309, #321).
+- **Test hardening** — slot-guard 409s, concurrent burns, merges, auto-ignite integration tests plus verdict-gating/rename/a11y units (#270), and a broad set of route-level and MCP-tool tests (#311, #333, #354, FLUX-1074/1083/1084/1104).
+
+### Sync & reliability
+
+- **Sync wedge hardening** — conflicted flux-data merges were silent and sticky; auto-repair emitted status-less stubs; the PR-scanner re-created conflicting stubs — all fixed (#272), with sync-conflict (#283) and auth (#298) notifications re-surfacing if dismissed while still unresolved.
+- **Operation telemetry epic** — slow network ops moved off the spawn/HTTP response path (#285), an operation-telemetry layer (opId / kind / duration / outcome) over SSE (#306), failures surfaced on ticket/session cards (FLUX-1006), a dev ops console panel (FLUX-1007), and duplicate spawn events + mislabeled `pausedForInput` outcomes fixed (FLUX-1109).
+- **Session/store correctness** — `updateAgentSession` no longer races the per-ticket write lock and silently drops swimlane/frontmatter changes (#295); failed merges prompt the user to launch a rebase/resolve agent session from the card (#300), with the merge-conflict CTA moved onto PR cards without bouncing status early (#301); the board no longer crashes on tickets with a missing/invalid status (#271) and off-board StatusBadges render a fallback (#282, #297); the deferred stability-audit findings (sync creds, subtask write-lock, gemini board notify) landed (#343).
+
+### Guardrails & dev safety
+
+- **Live-engine protection** — agent-run dev stacks can no longer tree-kill the real engine's ports mid-burn (FLUX-1117), and engine/portal children are shielded from an inherited `PORT` env var (#324).
+- **Agent boundaries** — ticket chat can't edit files unless the ticket is In Progress (#322); permission-gate hardening + dead-reference cleanup (#323); `runHardened` errors redact raw stdout/stderr (#303).
+- **Distribution** — the packaged Windows exe no longer serves 404 (SEA asset extraction fix, FLUX-1096); the Electron shell validates saved window bounds against displays so it can't restore off-screen (#302).
+- **Worktree hygiene** — `*.tsbuildinfo` gitignored so clean worktrees stay reclaimable (#328); the Serena worktree override no longer leaves user-repo worktrees born-dirty (FLUX-1155); node_modules junctions excluded from live-worktree dirty checks (#334).
+- **Code health** — the engine lint burndown (~711 errors, ~631 `no-explicit-any`) landed and engine lint joined the check gate (FLUX-1073, #317).
+
+### UX & accessibility
+
+- **Keyboard & focus** — Esc closes windows consistently (#341); FloatingPanel folded into the shared `useFocusTrap` hook (#305) with Escape/Tab scoped to the currently-relevant container in stacked dialogs (#315); keyboard-accessible session cards (#278, #299); the AttentionDock's persistent-ring treatment extended to questions (#307).
+- **Board & panels** — a new default status color scheme with a distinct hue per status (FLUX-1093); terminal improvements (#325); "Stop agent session" on PR-card right-click (#314); the BacklogScreen status dropdown no longer silently fails on Ready/Require Input (#308); Engine Events badge overcount (#338) and auto-scroll deps (#353) fixed; swimlane clears take effect without a reload (#280).
+
 ## [1.2.0] — the Furnace, multi-CLI adapters, and a hardened core
 
 The headline is **the Furnace** — an overnight autonomous ticket runner — landing alongside a CLI-agnostic adapter layer (Claude, Copilot, Gemini) and a from-the-ground-up hardening of the git/session core. Full notes: [`.docs/release-notes/v1.2.0.md`](.docs/release-notes/v1.2.0.md).

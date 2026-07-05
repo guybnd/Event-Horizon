@@ -176,8 +176,8 @@ async function readDraftSeedingFromCommitted(draftPath: string, committedPath: s
   try {
     const text = await fs.readFile(draftPath, 'utf-8');
     return JSON.parse(text);
-  } catch (err: any) {
-    if (err?.code !== 'ENOENT') throw err;
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err;
     // Seed: copy committed → draft, then return the committed value.
     const committedText = await fs.readFile(committedPath, 'utf-8');
     const parsed = JSON.parse(committedText);
@@ -197,8 +197,8 @@ router.get('/onboarding-flow-draft', async (_req, res) => {
   try {
     const value = await readDraftSeedingFromCommitted(FLOW_DRAFT, FLOW_COMMITTED);
     return res.json(value);
-  } catch (err: any) {
-    if (err?.code === 'ENOENT') {
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
       return res.status(404).json({ error: 'Onboarding flow config not found' });
     }
     console.error('[dev-onboarding-draft] flow draft read failed:', err);
@@ -239,8 +239,8 @@ router.get('/onboarding-features-draft', async (_req, res) => {
   try {
     const value = await readDraftSeedingFromCommitted(FEATURES_DRAFT, FEATURES_COMMITTED);
     return res.json(value);
-  } catch (err: any) {
-    if (err?.code === 'ENOENT') {
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
       return res.status(404).json({ error: 'Onboarding features config not found' });
     }
     console.error('[dev-onboarding-draft] features draft read failed:', err);
@@ -353,7 +353,7 @@ router.post('/onboarding-publish', async (_req, res) => {
   try {
     flowDraft = await readDraftSeedingFromCommitted(FLOW_DRAFT, FLOW_COMMITTED);
     featuresDraft = await readDraftSeedingFromCommitted(FEATURES_DRAFT, FEATURES_COMMITTED);
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('[dev-onboarding-draft] publish read failed:', err);
     return res.status(500).json({ error: 'Failed to read onboarding drafts for publish' });
   }

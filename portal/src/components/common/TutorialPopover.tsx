@@ -9,7 +9,8 @@ import {
 import type { CSSProperties, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { OnboardingMedia, prefersReducedMotion } from '../onboarding/OnboardingMedia';
+import { OnboardingMedia } from '../onboarding/OnboardingMedia';
+import { prefersReducedMotion } from '../onboarding/onboardingMediaUtils';
 
 /**
  * FLUX-762 — Generic, SHIPPING (no dev gate) in-board tutorial popover.

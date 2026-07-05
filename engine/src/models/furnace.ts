@@ -147,6 +147,13 @@ export interface BatchTicket {
   failureClass?: FailureClass;
   /** FLUX-1066: the human dismissed the Furnace-raised flag ("I've got this") — drop the badge without re-queuing. */
   flagDismissed?: boolean;
+  /**
+   * FLUX-1078: a one-shot corrective "review-nudge" already fired for the CURRENT review pass (the
+   * review completed with `reviewState` unset but a verdict-shaped comment). Reset to `false` whenever a
+   * fresh review session is dispatched, so it caps the nudge at one retry per pass instead of looping
+   * forever if the follow-up session also forgets to call `change_status`.
+   */
+  reviewNudgeSent?: boolean;
 }
 
 /** A PR belonging to a batch — one for `sequential`, one-per-ticket for `parallel`. */
@@ -270,12 +277,6 @@ export const DEFAULT_REVIEW_PERSONA = 'senior-dev';
 /** Hard cap on burn rate (also the worktree-slot cap; kept in sync with DEFAULT_MAX_TASK_WORKTREES). */
 export const MAX_BURN_RATE = 4;
 
-/**
- * Reserved tag marking a ticket "good to burn" — the opt-in the portal / `furnace_build` filter on so
- * building yields a curated set instead of the whole Todo column. Mirrored in the portal
- * (portal/src/furnaceTypes.ts) — keep the two in sync by hand.
- */
-export const FURNACE_SAFE_TAG = 'furnace-safe';
 
 /** Small palette of icon keys assigned round-robin to new batches (mirrored in the portal). */
 export const BATCH_ICON_PALETTE = ['bolt', 'beaker', 'layers', 'flame', 'zap', 'filter'] as const;
@@ -408,6 +409,26 @@ export function isSettledTicket(t: BatchTicket): boolean {
 /** A batch that is ignited and not yet finished. */
 export function isBatchActive(status: BatchStatus): boolean {
   return status === 'burning';
+}
+
+/**
+ * FLUX-1142: reject a `batch`-type trigger that would point a batch at itself, or form a direct
+ * A→B→A cycle (the candidate `ref` already triggers off this batch) — either would deadlock, since
+ * neither batch's trigger could ever be satisfied. A `pr`-type trigger can't cycle (its `ref` is a
+ * PR url/number, not a batch id), so it always passes. Returns an error message, or `null` if valid.
+ */
+export function validateBatchTrigger(
+  batchId: string,
+  trigger: BatchTrigger | null | undefined,
+  allBatches: readonly FurnaceBatch[],
+): string | null {
+  if (!trigger || trigger.type !== 'batch') return null;
+  if (trigger.ref === batchId) return 'A batch cannot trigger off itself.';
+  const referenced = allBatches.find((b) => b.id === trigger.ref);
+  if (referenced?.trigger?.type === 'batch' && referenced.trigger.ref === batchId) {
+    return `"${referenced.title}" already triggers after this batch — that would create a cycle.`;
+  }
+  return null;
 }
 
 /** A batch that has finished (a report exists / will exist). */

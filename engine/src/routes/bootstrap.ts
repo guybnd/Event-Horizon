@@ -5,6 +5,10 @@ import { workspaceActivating } from '../task-store.js';
 
 const router = express.Router();
 
+function errorMessage(err: unknown, fallback: string): string {
+  return err instanceof Error && err.message ? err.message : fallback;
+}
+
 router.get('/scan', async (_req, res) => {
   try {
     if (!workspaceRoot) {
@@ -12,9 +16,9 @@ router.get('/scan', async (_req, res) => {
     }
     const result = await scanWorkspaceForBootstrap(workspaceRoot);
     res.json(result);
-  } catch (err: any) {
+  } catch (err) {
     console.error('[bootstrap] Scan failed:', err);
-    res.status(500).json({ error: err.message || 'Scan failed' });
+    res.status(500).json({ error: errorMessage(err, 'Scan failed') });
   }
 });
 
@@ -38,9 +42,9 @@ router.post('/import', async (req, res) => {
 
     const result = await importBootstrapSelections(workspaceRoot, { selectedDocs, selectedTasks });
     res.json(result);
-  } catch (err: any) {
+  } catch (err) {
     console.error('[bootstrap] Import failed:', err);
-    res.status(500).json({ error: err.message || 'Import failed' });
+    res.status(500).json({ error: errorMessage(err, 'Import failed') });
   }
 });
 

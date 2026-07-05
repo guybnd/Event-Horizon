@@ -3,14 +3,22 @@ import os from 'os';
 import path from 'path';
 import fs from 'fs/promises';
 import { existsSync, statSync } from 'fs';
+import { createRequire } from 'module';
 
-export const isPkg: boolean = (process as any).pkg !== undefined;
+// The `pkg` packaging tool injects a `pkg` property onto `process` when the app is
+// bundled with it; this is not part of Node's own NodeJS.Process typings.
+interface ProcessWithPkg extends NodeJS.Process {
+  pkg?: unknown;
+}
+export const isPkg: boolean = (process as ProcessWithPkg).pkg !== undefined;
 
 // isSea: true only when running as a Node.js Single Executable Application.
 // The try/catch is required — node:sea throws when not in SEA mode.
-// @ts-ignore
 export const isSea: boolean = (() => {
-  try { return (require('node:sea') as { isSea(): boolean }).isSea(); } catch { return false; }
+  try {
+    const require = createRequire(import.meta.url);
+    return (require('node:sea') as { isSea(): boolean }).isSea();
+  } catch { return false; }
 })();
 
 export const isPackaged: boolean = isPkg || isSea;
@@ -32,6 +40,13 @@ export function getEnginePort(): number { return _enginePort; }
 // runs.  The .extracted marker file gates re-extraction so startup stays fast.
 
 let _seaExtractDir: string | null = null;
+// Extraction-verified flag (FLUX-1096). _seaExtractDir only means "the path is known" —
+// getSeaExtractDir() below sets it WITHOUT extracting. ensureSeaAssetsExtracted() must key its
+// early-return on THIS flag, never on _seaExtractDir: module-scope callers (e.g. the
+// dev-onboarding routes' resolveSkillSourceRoot()) run at import time, before startServer(),
+// and would otherwise poison the singleton and silently skip extraction — shipping an exe
+// whose portal, docs, and skills 404 on a fresh machine.
+let _seaAssetsExtracted = false;
 
 /**
  * Returns the extracted-asset directory.
@@ -41,6 +56,9 @@ let _seaExtractDir: string | null = null;
  * from the embedded manifest rather than throwing. (Pre-FLUX-705 this also guarded a second
  * module instance from the standalone mcp-server.js bundle; that bundle is now inlined into
  * index.js, so there is only one instance — the re-derivation is kept purely as a safety net.)
+ *
+ * NOTE: this does NOT extract — it only derives the path. Callers needing the assets on disk
+ * must go through ensureSeaAssetsExtracted() (see _seaAssetsExtracted above, FLUX-1096).
  */
 export function getSeaExtractDir(): string {
   if (_seaExtractDir) return _seaExtractDir;
@@ -54,9 +72,11 @@ export function getSeaExtractDir(): string {
 
 /** Extracts all SEA-embedded assets to a versioned tmpdir.  Idempotent. */
 export async function ensureSeaAssetsExtracted(): Promise<string> {
-  if (_seaExtractDir) return _seaExtractDir;
+  // Key on the extraction flag, NOT on _seaExtractDir — a prior getSeaExtractDir() call sets
+  // the dir without extracting, and keying on it skipped extraction entirely (FLUX-1096).
+  if (_seaAssetsExtracted && _seaExtractDir) return _seaExtractDir;
 
-  // @ts-ignore
+  const require = createRequire(import.meta.url);
   const { getRawAsset } = require('node:sea') as { getRawAsset(key: string): ArrayBuffer };
 
   const manifest: { version: string; keys: string[] } = JSON.parse(
@@ -97,12 +117,13 @@ export async function ensureSeaAssetsExtracted(): Promise<string> {
   }
 
   _seaExtractDir = extractDir;
+  _seaAssetsExtracted = true;
   return extractDir;
 }
 
 /** Read a single SEA asset by key.  Only valid in SEA mode. */
 export function getSeaAsset(key: string): Buffer {
-  // @ts-ignore
+  const require = createRequire(import.meta.url);
   const { getRawAsset } = require('node:sea') as { getRawAsset(key: string): ArrayBuffer };
   return Buffer.from(getRawAsset(key));
 }

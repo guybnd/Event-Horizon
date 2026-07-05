@@ -6,6 +6,19 @@ export type TaskSortOption = 'default' | 'priority' | 'updated' | 'assignee';
 export type AppTheme = 'light' | 'dark' | 'matrix' | 'cyber' | 'midnight';
 
 /**
+ * S10 (epic FLUX-996): the detail behind a `'failed'`/timed-out spawn — mirrors the engine's
+ * `OperationEvent` (operation-telemetry.ts) but only the fields the card needs to explain WHY.
+ * Scoped by `sessionId` so a stale failure from a PRIOR session never outlives a fresh retry:
+ * consumers should only trust this when it matches the task's CURRENT `cliSession.id`.
+ */
+export interface OperationFailure {
+  sessionId?: string;
+  kind: 'git' | 'gh' | 'spawn' | 'handshake';
+  reason?: string;
+  endedAt: number;
+}
+
+/**
  * Per-task fast-moving session state, isolated from the `tasks` array so that
  * activity/progress SSE ticks during a live agent session don't churn `tasks`
  * identity and re-render the whole board (FLUX-626). Populated by SSE handlers.
@@ -16,6 +29,9 @@ export interface LiveSession {
   status?: string;
   /** Streamed progress entries for the active agent_session, keyed by sessionId. */
   progressBySession?: Record<string, Array<{ timestamp: string; message: string }>>;
+  /** S10: the most recent non-'ok' spawn operation for this task, fed by the SSE `operation`
+   *  event — the richest available detail on WHY the session failed (kind/reason). */
+  lastOperationFailure?: OperationFailure;
 }
 
 /**
@@ -25,6 +41,9 @@ export interface LiveSession {
  * the generic `eh-event` channel, so every engine event type is captured (no client allowlist).
  */
 export interface EngineEvent {
+  /** Monotonic counter assigned at arrival (FLUX-1138) — stable across the capped ring buffer
+   *  shifting, so consumers can key rows on it instead of array index. */
+  id: number;
   type: string;
   data: unknown;
   timestamp: number;

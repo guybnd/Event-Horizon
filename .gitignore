@@ -36,6 +36,9 @@ engine/.gemini/
 engine/sea-config.json
 
 # TypeScript build output (emitted in-place by tsc)
+# *.tsbuildinfo: incremental-build state (engine/tsconfig.tsbuildinfo) — left untracked it
+# dirties `git status` in every worktree that ran a typecheck, blocking worktree reclaim (FLUX-1154).
+*.tsbuildinfo
 engine/src/**/*.js
 engine/src/**/*.js.map
 engine/src/**/*.d.ts

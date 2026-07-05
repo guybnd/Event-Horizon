@@ -92,8 +92,8 @@ async function main() {
   let members: GroupMember[];
   try {
     members = opts.members.map(parseMember);
-  } catch (err: any) {
-    console.error(`Error: ${err.message}`);
+  } catch (err: unknown) {
+    console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
     return;
   }
@@ -124,8 +124,8 @@ async function main() {
       log.info(`    ${m.ok ? '✓' : '✗'} ${m.name} (${m.action})${m.error ? ` — ${m.error}` : ''}`);
     }
     log.info('');
-  } catch (err: any) {
-    console.error(`\nError: ${err.message}\n`);
+  } catch (err: unknown) {
+    console.error(`\nError: ${err instanceof Error ? err.message : String(err)}\n`);
     process.exit(1);
   }
 }

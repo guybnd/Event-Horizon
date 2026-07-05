@@ -2,8 +2,9 @@ name: CI
 
 # FLUX-941: PR/push gate for the EH repo itself (repo dev-hygiene, NOT a user-facing
 # feature — never installed into user projects). Reuses the step set release.yml proves
-# works. Lint is intentionally excluded: its baseline is still being burned down (CLAUDE.md),
-# so running it would paint every PR red. typecheck + check:boundary + engine tests are the gate.
+# works. Lint (portal FLUX-583, engine FLUX-1073) is in the gate now that both
+# workspace baselines are burned down to 0. typecheck + lint + check:boundary + engine
+# tests are the gate.
 on:
   pull_request:
     branches:
@@ -41,6 +42,10 @@ jobs:
       # surfaces nowhere else.
       - name: Type-check (portal + engine)
         run: npm run typecheck
+
+      # FLUX-583 (portal) / FLUX-1073 (engine): both lint baselines are burned down to 0.
+      - name: Lint (portal + engine)
+        run: npm run lint
 
       # FLUX-938: adapter-boundary guard — forbids per-CLI code outside engine/src/agents/.
       - name: Adapter-boundary guard

@@ -206,8 +206,8 @@ router.delete('/onboarding-asset', async (req, res) => {
       try {
         await fs.rm(target);
         removed = true;
-      } catch (err: any) {
-        if (err?.code !== 'ENOENT') throw err;
+      } catch (err: unknown) {
+        if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err;
       }
     }
     return res.status(200).json({ removed });

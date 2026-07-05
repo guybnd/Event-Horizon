@@ -1,5 +1,6 @@
 import type { ChildProcessWithoutNullStreams } from 'child_process';
 import type { ChatAttachment } from '../projection.js';
+import type { AgentSessionEntry } from '../history.js';
 
 /** FLUX-674: optional per-turn extras for a chat reply (pasted image attachments). */
 export interface SendInputOptions {
@@ -148,7 +149,7 @@ export interface CliSessionRecord extends CliSessionSummary {
   requestedStop: boolean;
   writeQueue: Promise<void>;
   skipPermissions: boolean;
-  sessionHistoryEntry?: any;
+  sessionHistoryEntry?: AgentSessionEntry;
   progressHeartbeat?: NodeJS.Timeout | undefined;
   lastProgressLog?: string | undefined;
   role?: string;
@@ -175,7 +176,7 @@ export interface CliSessionRecord extends CliSessionSummary {
   /** FLUX-651: ticket status + subtask count captured at the START of the current turn,
    *  so the turn-end backstop can tell whether the agent actually took a board action
    *  (status moved / Require Input raised / subtask created) or just parked. */
-  statusAtTurnStart?: string;
+  statusAtTurnStart?: string | undefined;
   subtaskCountAtTurnStart?: number;
   /** FLUX-826: agent-comment count at turn start + whether the agent raised a structured
    *  `ask_user_question` this turn — feed the SOFT resting-status backstop (a fresh comment

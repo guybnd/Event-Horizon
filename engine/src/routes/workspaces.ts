@@ -27,10 +27,6 @@ export interface WorkspaceInfo {
   group?: WorkspaceGroupInfo;
 }
 
-function isValidWorkspaceRoot(dir: string): boolean {
-  return existsSync(path.join(dir, '.flux')) || existsSync(path.join(dir, '.flux-store'));
-}
-
 function pathsEqual(a: string, b: string): boolean {
   const na = path.resolve(a);
   const nb = path.resolve(b);
@@ -124,8 +120,8 @@ router.post('/switch', async (req, res) => {
     await saveAppSettings(settings);
     await autoRegisterWorkspace(bound);
     res.json({ ok: true, path: bound });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : undefined });
   }
 });
 

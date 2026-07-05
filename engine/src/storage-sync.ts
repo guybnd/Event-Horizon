@@ -2,7 +2,7 @@ import { log } from './log.js';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
-import { execFile } from 'child_process';
+import { execFile, type ExecFileException } from 'child_process';
 import { promisify } from 'util';
 import { BUILTIN_MODULES } from './modules.js';
 import { buildGitSyncEnv, GIT_SYNC_TIMEOUT_MS } from './git-sync-env.js';
@@ -32,10 +32,22 @@ export async function scaffoldModuleDirs(storeDir: string, dirs: string[]): Prom
 // FLUX-895: startup pull / orphan-migrate git calls share the sync's non-interactive +
 // gh-authenticated env, so they can't pop a credential window during boot either.
 async function git(cwd: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
-  const env = await buildGitSyncEnv();
+  // cwd scopes buildGitSyncEnv's gh-credential injection to an actual github.com remote (FLUX-987).
+  const env = await buildGitSyncEnv(cwd);
   // FLUX-989: bound every startup/migrate git call — a hung pull/fetch/push (large
   // divergence, stalled credential prompt, dead network) must not wedge boot forever.
-  return execFileAsync('git', args, { cwd, windowsHide: true, env, timeout: GIT_SYNC_TIMEOUT_MS });
+  try {
+    return await execFileAsync('git', args, { cwd, windowsHide: true, env, timeout: GIT_SYNC_TIMEOUT_MS });
+  } catch (err: unknown) {
+    // FLUX-993: same rewrite as sync-watcher.ts's execFileAsync — without it a timed-out
+    // migrate/startup pull surfaces as an opaque "Command failed" instead of something
+    // callers can act on (or that classifyGitError would recognize as `network`).
+    const execErr = err as ExecFileException;
+    if (execErr && execErr.killed && execErr.signal === 'SIGTERM') {
+      throw new Error(`git operation timed out after ${GIT_SYNC_TIMEOUT_MS / 1000}s: git ${args.join(' ')}`, { cause: err });
+    }
+    throw err;
+  }
 }
 
 /**
@@ -83,8 +95,56 @@ export async function excludeLocalConfigFromSync(storeDir: string): Promise<void
         await git(storeDir, ['commit', '-m', 'flux: stop syncing local config (config.json, read-state.json)']).catch(() => {});
       }
     }
-  } catch (err: any) {
-    log.info(`[storage-sync] excludeLocalConfigFromSync skipped: ${err.message}`);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.info(`[storage-sync] excludeLocalConfigFromSync skipped: ${message}`);
+  }
+}
+
+/**
+ * FLUX-1076: transcript files (`transcripts/<id>.jsonl`) are pure append-only event logs —
+ * every line is an independent, already-timestamped, immutable event, so two sides that both
+ * appended new lines since a common ancestor never actually disagree; they just each grew the
+ * file. Git's built-in `union` merge driver resolves exactly that case (it takes lines from
+ * BOTH sides instead of conflict-marking them) — no custom driver script needed, just this
+ * gitattributes entry. Without it, an otherwise-harmless "both sides logged progress" transcript
+ * divergence surfaced as a real unresolved merge conflict, which is how the flux-data sync wedge
+ * this ticket hardens against got stuck in the first place.
+ */
+const GITATTRIBUTES_ENTRIES = ['transcripts/*.jsonl merge=union'];
+
+/** Ensure the store-root `.gitattributes` lists the union-mergeable paths. Returns true if it changed. */
+async function ensureStoreGitattributes(storeDir: string): Promise<boolean> {
+  const ga = path.join(storeDir, '.gitattributes');
+  const existing = await fs.readFile(ga, 'utf-8').catch(() => '');
+  const present = new Set(existing.split('\n').map((l) => l.trim()).filter(Boolean));
+  const missing = GITATTRIBUTES_ENTRIES.filter((e) => !present.has(e));
+  if (missing.length === 0) return false;
+  const prefix = existing.length === 0
+    ? '# Union-mergeable append-only logs (FLUX-1076) — never a manual conflict\n'
+    : existing.endsWith('\n') ? '' : '\n';
+  await fs.writeFile(ga, existing + prefix + missing.join('\n') + '\n', 'utf-8');
+  return true;
+}
+
+/**
+ * Seed/repair `.gitattributes` in the store worktree and commit it when it changes. Idempotent
+ * — safe on every startup, mirroring {@link excludeLocalConfigFromSync}'s self-healing pattern
+ * so a store created before FLUX-1076 picks this up automatically.
+ */
+export async function ensureUnionMergeAttributes(storeDir: string): Promise<void> {
+  if (!existsSync(storeDir)) return;
+  try {
+    const seeded = await ensureStoreGitattributes(storeDir);
+    if (!seeded) return;
+    await git(storeDir, ['add', '.gitattributes']).catch(() => {});
+    const { stdout: status } = await git(storeDir, ['status', '--porcelain']).catch(() => ({ stdout: '' }));
+    if (status.trim()) {
+      await git(storeDir, ['commit', '-m', 'flux: union-merge transcripts/*.jsonl (FLUX-1076)']).catch(() => {});
+    }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.info(`[storage-sync] ensureUnionMergeAttributes skipped: ${message}`);
   }
 }
 
@@ -93,8 +153,8 @@ async function gitWithRetry(cwd: string, args: string[], maxRetries = 3): Promis
   while (attempts < maxRetries) {
     try {
       return await git(cwd, args);
-    } catch (err: any) {
-      const msg = err.message || String(err);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes('index.lock') && attempts < maxRetries - 1) {
         log.info(`[storage-sync] Git lock detected, retrying in 1s (attempt ${attempts + 1}/${maxRetries})...`);
         await new Promise(r => setTimeout(r, 1000));
@@ -107,22 +167,48 @@ async function gitWithRetry(cwd: string, args: string[], maxRetries = 3): Promis
   throw new Error('Unreachable');
 }
 
-export async function attachWorktreeIfPresent(workspaceRoot: string): Promise<void> {
+export async function attachWorktreeIfPresent(
+  workspaceRoot: string,
+  onPulledFiles?: (storeDir: string, changedRelativePaths: string[]) => void,
+): Promise<void> {
   const storeDir = path.join(workspaceRoot, '.flux-store');
   const isNewAttach = !existsSync(storeDir);
 
   if (!isNewAttach) {
-    // Worktree already attached - pull latest changes on startup
-    try {
-      await git(storeDir, ['pull', '--ff-only', 'origin', 'flux-data']);
-      log.info('[storage-sync] Pulled latest flux-data on startup');
-    } catch (err: any) {
-      log.info(`[storage-sync] Could not pull on startup: ${err.message}`);
-    }
+    // FLUX-1002: don't block workspace activation (and the /workspaces/switch response) on this
+    // network round-trip — pull in the background instead of awaiting it here.
+    // FLUX-1184: this used to rely on `startWatchers()`'s chokidar watcher performing a full
+    // initial 'add' scan (ignoreInitial defaulted false) moments later to catch whichever side of
+    // the race a late-landing pull's writes fell on. That watcher now sets `ignoreInitial: true`
+    // (killing a boot-time reload-storm — see task-store.ts), so it no longer replays 'add' for
+    // pre-existing files and can't double as this catch-up path any more. Diff HEAD before/after
+    // the pull instead and hand the caller exactly the files it touched, so it can reload just
+    // those (mirrors the watcher's own incremental-reload path rather than a second full rescan).
+    void (async () => {
+      const beforeHead = onPulledFiles
+        ? await git(storeDir, ['rev-parse', 'HEAD']).then((r) => r.stdout.trim()).catch(() => null)
+        : null;
+      try {
+        await git(storeDir, ['pull', '--ff-only', 'origin', 'flux-data']);
+        log.info('[storage-sync] Pulled latest flux-data in background');
+        if (onPulledFiles && beforeHead) {
+          const afterHead = await git(storeDir, ['rev-parse', 'HEAD']).then((r) => r.stdout.trim()).catch(() => null);
+          if (afterHead && afterHead !== beforeHead) {
+            const { stdout } = await git(storeDir, ['diff', '--name-only', beforeHead, afterHead]);
+            const changedRelativePaths = stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+            if (changedRelativePaths.length > 0) onPulledFiles(storeDir, changedRelativePaths);
+          }
+        }
+      } catch (err: unknown) {
+        log.info(`[storage-sync] Could not pull in background: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    })();
     // Scaffold dirs for all modules that declare one — idempotent, safe every startup.
     await scaffoldModuleDirs(storeDir, MEMORY_GITIGNORE_DIRS);
     // Keep local config/read-state out of flux-data (and migrate older tracked copies).
     await excludeLocalConfigFromSync(storeDir);
+    // Self-heal a store created before FLUX-1076 onto the union-merge transcript attribute.
+    await ensureUnionMergeAttributes(storeDir);
     return;
   }
 
@@ -134,9 +220,11 @@ export async function attachWorktreeIfPresent(workspaceRoot: string): Promise<vo
     await git(workspaceRoot, ['worktree', 'add', '-b', 'flux-data', storeDir, 'origin/flux-data']);
     await scaffoldModuleDirs(storeDir, MEMORY_GITIGNORE_DIRS);
     await excludeLocalConfigFromSync(storeDir);
+    await ensureUnionMergeAttributes(storeDir);
     log.info('[storage-sync] Re-attached .flux-store worktree from origin/flux-data');
-  } catch (err: any) {
-    log.info(`[storage-sync] attachWorktreeIfPresent skipped: ${err.message}`);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    log.info(`[storage-sync] attachWorktreeIfPresent skipped: ${message}`);
   }
 }
 
@@ -168,6 +256,7 @@ export async function migrateToOrphan(workspaceRoot: string): Promise<void> {
 
     await scaffoldModuleDirs(storeDir, MEMORY_GITIGNORE_DIRS);
     await excludeLocalConfigFromSync(storeDir);
+    await ensureUnionMergeAttributes(storeDir);
     return;
   }
 
@@ -208,6 +297,8 @@ export async function migrateToOrphan(workspaceRoot: string): Promise<void> {
   // Seed the store .gitignore FIRST so the initial commit never includes the
   // local-only config.json / read-state.json just moved in above (FLUX-532).
   await ensureStoreLocalGitignore(storeDir);
+  // Seed the union-merge attribute for transcripts (FLUX-1076) into the same initial commit.
+  await ensureStoreGitattributes(storeDir);
 
   // Initial commit in the worktree
   await gitWithRetry(storeDir, ['add', '-A']);
@@ -253,8 +344,9 @@ export async function migrateStrandedFluxTickets(workspaceRoot: string): Promise
         await fs.unlink(src);
         log.info(`[startup-migrate] Migrated ticket: ${name}`);
       }
-    } catch (err: any) {
-      console.warn(`[startup-migrate] Failed to migrate ${name}, skipping: ${err.message}`);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[startup-migrate] Failed to migrate ${name}, skipping: ${message}`);
     }
   }
 
@@ -269,8 +361,9 @@ export async function migrateStrandedFluxTickets(workspaceRoot: string): Promise
         log.info(`[startup-migrate] Removed stale config.json from .flux/`);
       }
       await fs.unlink(configSrc);
-    } catch (err: any) {
-      console.warn(`[startup-migrate] Failed to migrate config.json, skipping: ${err.message}`);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[startup-migrate] Failed to migrate config.json, skipping: ${message}`);
     }
   }
 
@@ -297,8 +390,9 @@ export async function migrateStrandedFluxTickets(workspaceRoot: string): Promise
           await fs.rm(src, { recursive: true, force: true });
           log.info(`[startup-migrate] Migrated asset: ${name}`);
         }
-      } catch (err: any) {
-        console.warn(`[startup-migrate] Failed to migrate asset ${name}, skipping: ${err.message}`);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[startup-migrate] Failed to migrate asset ${name}, skipping: ${message}`);
       }
     }
   }

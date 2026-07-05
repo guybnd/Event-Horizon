@@ -3,15 +3,18 @@ import { workspaceRoot, isOrphanMode } from '../workspace.js';
 import { migrateToOrphan, restoreToInRepo } from '../storage-sync.js';
 import { activateWorkspace } from '../task-store.js';
 import { startSyncWatcher, stopSyncWatcher, resolveConflicts, getSyncStatus, revalidateConflictState } from '../sync-watcher.js';
+import { GIT_SYNC_TIMEOUT_MS } from '../git-sync-env.js';
 
 const router = express.Router();
 
-// FLUX-989: bound the resolve-conflicts round trip so the response never hangs. The
-// underlying git calls are each individually timed out (GIT_SYNC_TIMEOUT_MS), so this is
-// a backstop above their sum for the realistic slow path (a single push under heavy
-// divergence); on expiry we return a clear 504 instead of leaving the client's "Resolving…"
-// spinner up forever.
-const RESOLVE_CONFLICTS_TIMEOUT_MS = 90_000;
+// FLUX-994: bound the resolve-conflicts round trip so the response never hangs. Applying a
+// resolution runs up to three sequential git subprocesses under the lock (add -A, commit,
+// push — see applyConflictResolutions), each individually timed out at GIT_SYNC_TIMEOUT_MS.
+// The prior 90s backstop only budgeted for one of those calls (a single slow push), so a
+// legitimately slow-but-succeeding sequence could exceed it and return a false 504 while
+// resolveConflicts() kept running and later succeeded server-side. Budget for all three
+// running back-to-back near their own timeout, plus slack for the index.lock retry sleeps.
+const RESOLVE_CONFLICTS_TIMEOUT_MS = GIT_SYNC_TIMEOUT_MS * 3 + 15_000;
 
 router.get('/mode', (_req, res) => {
   res.json({ mode: isOrphanMode() ? 'orphan' : 'in-repo' });
@@ -26,8 +29,8 @@ router.post('/migrate', async (_req, res) => {
     await activateWorkspace(workspaceRoot);
     startSyncWatcher();
     res.json({ ok: true, mode: 'orphan' });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 
@@ -40,8 +43,8 @@ router.post('/restore', async (_req, res) => {
     await restoreToInRepo(workspaceRoot);
     await activateWorkspace(workspaceRoot);
     res.json({ ok: true, mode: 'in-repo' });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 
@@ -105,13 +108,14 @@ router.post('/resolve-conflicts', async (req, res) => {
       clearTimeout(timer!);
     }
     res.json({ ok: true });
-  } catch (err: any) {
+  } catch (err) {
     // On any failure/timeout, re-derive the real conflict state from the worktree so the
     // banner reflects reality rather than the stale in-memory conflict (FLUX-989). No-ops
     // while a resolution still holds the lock; the next status poll re-validates then.
     await revalidateConflictState().catch(() => {});
-    const timedOut = /timed out/i.test(err?.message || '');
-    res.status(timedOut ? 504 : 500).json({ error: err.message });
+    const message = err instanceof Error ? err.message : String(err);
+    const timedOut = /timed out/i.test(message);
+    res.status(timedOut ? 504 : 500).json({ error: message });
   }
 });
 

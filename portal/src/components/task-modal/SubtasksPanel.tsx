@@ -1,6 +1,7 @@
 import { X } from 'lucide-react';
 import { StatusBadge } from '../StatusBadge';
 import { getStatusColorClass } from '../../statusStyles';
+import { normalizeStatus } from '../../workflow';
 import { TicketPicker } from '../TicketPicker';
 import type { Config, Task } from '../../types';
 import type { TaskModalController } from '../../hooks/useTaskModalController';
@@ -118,7 +119,7 @@ export function SubtasksPanel({
                 <p className="truncate text-sm font-medium text-gray-800 dark:text-gray-200">{task.title || 'Untitled Task'}</p>
                 <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500">
                   <StatusBadge
-                    status={task.status}
+                    status={normalizeStatus(task.status)}
                     colorClass={getStatusColorClass(config, task.status)}
                     className="text-[10px] font-bold uppercase tracking-[0.16em]"
                   />
@@ -149,7 +150,7 @@ export function SubtasksPanel({
                       <p className="truncate text-sm font-medium text-gray-800 dark:text-gray-200">{inline.title || subtaskId}</p>
                       {inline.status && (
                         <StatusBadge
-                          status={inline.status}
+                          status={normalizeStatus(inline.status)}
                           colorClass={getStatusColorClass(config, inline.status)}
                           className="mt-1 text-[10px] font-bold uppercase tracking-[0.16em]"
                         />

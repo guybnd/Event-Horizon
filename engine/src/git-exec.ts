@@ -66,15 +66,26 @@ export interface GitOperationEvent {
   reason?: string | undefined;
 }
 
-// Telemetry sink — a no-op until S9 installs the real one. Kept defensive: a throwing sink
-// must NEVER break a git call, so emit() swallows sink errors.
-let operationSink: ((e: GitOperationEvent) => void) | null = null;
+// Telemetry sinks — a multicast set, empty until bootstrap installs consumers. S9's
+// operation-telemetry (ring buffer + SSE) and FLUX-1131's git-timing (perf registry) both need
+// every event, so this is `add`, not `replace` — a second setGitOperationSink() call must not
+// silently drop the first consumer. Kept defensive: a throwing sink must NEVER break a git call,
+// so emit() swallows each sink's errors independently.
+const operationSinks = new Set<(e: GitOperationEvent) => void>();
+/**
+ * Register a sink; call again to add another (both receive every event). Pass `null` to clear
+ * ALL registered sinks — a blunt reset used by tests to tear down between runs, not meant for
+ * removing a single consumer in production (there's no unsubscribe handle today; no caller has
+ * needed one — every current sink lives for the process lifetime).
+ */
 export function setGitOperationSink(sink: ((e: GitOperationEvent) => void) | null): void {
-  operationSink = sink;
+  if (sink === null) { operationSinks.clear(); return; }
+  operationSinks.add(sink);
 }
 function emit(event: GitOperationEvent): void {
-  if (!operationSink) return;
-  try { operationSink(event); } catch { /* a broken telemetry sink must never break a git call */ }
+  for (const sink of operationSinks) {
+    try { sink(event); } catch { /* a broken telemetry sink must never break a git call */ }
+  }
 }
 
 const DEFAULT_MAX_BUFFER = 10 * 1024 * 1024;
@@ -85,9 +96,13 @@ const SIGKILL_GRACE_MS = 2_000;
 const DETACHED = process.platform !== 'win32';
 
 // Credentials shouldn't ride in an argv (auth is via env), but a future caller could pass a remote
-// URL with embedded userinfo (https://x-access-token:TOKEN@github.com/…). Redact it before telemetry.
+// URL with embedded userinfo (https://x-access-token:TOKEN@github.com/…), or stderr could echo a
+// credential-embedded remote resolved from .git/config. Redact before telemetry AND before it can
+// reach a thrown Error.message — callers (e.g. cli-session.ts's prepareAndLaunchSession) persist
+// that message into synced ticket history / SSE broadcasts, so redaction has to happen HERE, at the
+// one place every git/gh spawn funnels through, not at each downstream call site (FLUX-1002 review).
 const CREDENTIAL_URL_RE = /([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi;
-function redactArg(arg: string): string {
+export function redactArg(arg: string): string {
   return arg.replace(CREDENTIAL_URL_RE, '$1***@');
 }
 
@@ -105,7 +120,9 @@ export async function runHardened(
   const timeoutMs = opts.timeoutMs ?? GIT_SYNC_TIMEOUT_MS;
   const maxBuffer = opts.maxBuffer ?? DEFAULT_MAX_BUFFER;
   // opts.env bypasses buildGitSyncEnv() entirely (not just its result) — see GitExecOptions.env.
-  const env = opts.env ?? await buildGitSyncEnv();
+  // opts.cwd (when set) lets buildGitSyncEnv scope its gh-credential injection to an actual
+  // github.com remote (FLUX-987) rather than any repo a gh-authed user happens to be touching.
+  const env = opts.env ?? await buildGitSyncEnv(opts.cwd);
   const startedAt = Date.now();
 
   return await new Promise<GitExecResult>((resolve, reject) => {
@@ -141,8 +158,8 @@ export async function runHardened(
 
     // 'error' = the spawn itself failed (e.g. ENOENT: git not on PATH) — no exit code.
     child.on('error', (err: Error & { stdout?: string; stderr?: string }) => {
-      err.stdout = stdout;
-      err.stderr = stderr;
+      err.stdout = redactArg(stdout);
+      err.stderr = redactArg(stderr);
       finish('error', err, null, null, err.message);
     });
 
@@ -152,28 +169,32 @@ export async function runHardened(
     child.on('close', (code) => {
       if (timedOut) {
         // "timed out" in the message maps to classifyGitError() === 'network'.
-        finish('timeout', new Error(`${file} ${args.join(' ')} timed out after ${timeoutMs}ms`), null, null, 'timeout');
+        finish('timeout', new Error(redactArg(`${file} ${args.join(' ')} timed out after ${timeoutMs}ms`)), null, null, 'timeout');
         return;
       }
       if (aborted) {
-        finish('aborted', new Error(`${file} ${args.join(' ')} aborted`), null, null, 'aborted');
+        finish('aborted', new Error(redactArg(`${file} ${args.join(' ')} aborted`)), null, null, 'aborted');
         return;
       }
       if (maxBufferExceeded) {
-        const err = new Error(`${file} ${args.join(' ')} exceeded maxBuffer of ${maxBuffer} bytes`) as Error & { stdout?: string; stderr?: string };
-        err.stdout = stdout;
-        err.stderr = stderr;
+        const err = new Error(redactArg(`${file} ${args.join(' ')} exceeded maxBuffer of ${maxBuffer} bytes`)) as Error & { stdout?: string; stderr?: string };
+        err.stdout = redactArg(stdout);
+        err.stderr = redactArg(stderr);
         finish('error', err, null, null, 'maxBuffer exceeded');
         return;
       }
       if (code !== 0) {
         // Mirror execFile's error shape: message carries stderr, .code/.stdout/.stderr attached so
-        // callers and classifyGitError() keep working.
-        const err = new Error(`Command failed: ${file} ${args.join(' ')}\n${stderr}`) as Error & { code?: number | null; stdout?: string; stderr?: string };
+        // callers and classifyGitError() keep working. Redact the argv echo, stderr, AND the raw
+        // .stdout/.stderr properties — any of them can carry a credential-embedded remote URL, and
+        // this message is now persisted into synced ticket history by callers like cli-session.ts
+        // (FLUX-1002 review finding). .stdout/.stderr are redacted defense-in-depth even though no
+        // current caller reads them directly (FLUX-1091).
+        const err = new Error(redactArg(`Command failed: ${file} ${args.join(' ')}\n${stderr}`)) as Error & { code?: number | null; stdout?: string; stderr?: string };
         err.code = code;
-        err.stdout = stdout;
-        err.stderr = stderr;
-        finish('error', err, null, typeof code === 'number' ? code : null, stderr.trim().slice(0, 200) || err.message);
+        err.stdout = redactArg(stdout);
+        err.stderr = redactArg(stderr);
+        finish('error', err, null, typeof code === 'number' ? code : null, redactArg(stderr.trim().slice(0, 200)) || err.message);
         return;
       }
       finish('ok', null, { stdout, stderr }, 0);

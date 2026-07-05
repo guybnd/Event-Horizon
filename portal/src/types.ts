@@ -50,6 +50,15 @@ export interface BasicHistoryEntry {
 export type HistoryEntry = BasicHistoryEntry | AgentSessionEntry;
 
 /**
+ * A history entry as sent through `appendHistory` (FLUX-725/FLUX-957): `date` is optional
+ * because the engine always stamps it server-side when appending the delta (see
+ * `routes/tasks.ts`'s `appendHistoryEntries` handling) — callers commonly omit it.
+ */
+export type HistoryEntryDraft =
+  | (Omit<BasicHistoryEntry, 'date'> & { date?: string })
+  | (Omit<AgentSessionEntry, 'date'> & { date?: string });
+
+/**
  * Compact, board-card-facing digest of a ticket's history (FLUX-725). The `/api/tasks` LIST
  * payload ships this on `Task.historyDigest` INSTEAD of the raw `history[]` array; the cards +
  * attention surfaces read every history-derived signal from here, and the modal/chat lazy-fetch
@@ -126,7 +135,9 @@ export interface Task {
    *  concludes (approve→Ready, changes-requested→In Progress) or set/cleared manually by a human.
    *  Surfaces a review badge on the card. Distinct from `reviewDecision` (GitHub-synced, PR-only,
    *  uppercase enum); on PR cards the badge falls back to this when `reviewDecision` is absent.
-   *  null = never reviewed (no badge — never a false "approved"). No stale-review auto-invalidation. */
+   *  null = never reviewed (no badge — never a false "approved"). FLUX-1089: the engine clears this
+   *  when a ticket leaves Ready without a fresh verdict, so a bounced-back ticket never keeps
+   *  showing a stale 'approved'. */
   reviewState?: 'approved' | 'changes-requested' | null;
   isDraft?: boolean;
   members?: string[];
@@ -458,5 +469,22 @@ export interface TerminalCommand {
   label: string;
   command: string;
   runMode: 'current' | 'new';
+}
+
+export type OperationKind = 'git' | 'gh' | 'spawn' | 'handshake';
+export type OperationOutcome = 'ok' | 'timeout' | 'error' | 'aborted';
+
+/** Client-side mirror of engine/src/operation-telemetry.ts's `OperationEvent` (S9, FLUX-1005). */
+export interface OperationEvent {
+  opId: string;
+  kind: OperationKind;
+  ticketId?: string;
+  sessionId?: string;
+  cmd: string;
+  startedAt: number;
+  endedAt: number;
+  durationMs: number;
+  outcome: OperationOutcome;
+  reason?: string;
 }
 

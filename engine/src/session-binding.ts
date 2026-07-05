@@ -68,11 +68,12 @@ function getSecret(): Buffer {
       return buf;
     }
     // Wrong length / garbage on disk (truncated/tampered) — fall through and re-mint a fresh one.
-  } catch (err: any) {
+  } catch (err) {
     // ENOENT (or unbound workspace, no file path) → genuinely absent, safe to mint + persist below.
     // Any OTHER errno (EBUSY/EACCES/EPERM) → an existing file we just can't read right now: do NOT
     // overwrite it.
-    if (err?.code && err.code !== 'ENOENT') existedButUnreadable = true;
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code && code !== 'ENOENT') existedButUnreadable = true;
   }
   const buf = randomBytes(32);
   if (file && !existedButUnreadable) {

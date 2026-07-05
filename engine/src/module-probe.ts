@@ -69,8 +69,9 @@ export async function probeModule(m: ModuleDeclaration): Promise<ProbeResult> {
         env: { ...process.env, ...m.mcpServer!.env },
         windowsHide: true,
       });
-    } catch (err: any) {
-      const result: ProbeResult = { status: 'error', message: `Failed to spawn: ${err.message}`, checkedAt: new Date().toISOString() };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      const result: ProbeResult = { status: 'error', message: `Failed to spawn: ${message}`, checkedAt: new Date().toISOString() };
       broadcast(m.id, result);
       return resolve(result);
     }

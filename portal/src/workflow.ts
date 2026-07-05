@@ -4,6 +4,18 @@ export const DEFAULT_REQUIRE_INPUT_STATUS = 'Require Input';
 export const DEFAULT_READY_FOR_MERGE_STATUS = 'Ready';
 export const DEFAULT_ARCHIVE_STATUS = 'Archived';
 
+/** Bucket for tickets with a missing/corrupted status (FLUX-1075) — mirrors the engine's
+ *  board-digest convention (`t.status || 'Unknown'`) so counts agree across engine and portal. */
+export const UNKNOWN_STATUS = 'Unknown';
+
+/** A ticket's status should always be a non-empty string, but a corrupted/partially-repaired
+ *  ticket file can leave it undefined or otherwise non-string. Normalize to `UNKNOWN_STATUS` so
+ *  callers can safely use the result as a column id / map key instead of `undefined` slipping
+ *  through into `.length`/string operations (FLUX-1075). */
+export function normalizeStatus(status: unknown): string {
+  return typeof status === 'string' && status.trim() ? status : UNKNOWN_STATUS;
+}
+
 /**
  * The system-owned status set. The workflow engine and agent instructions are written around
  * these names (phase derivation, the Needs-Action backstop, the skill routing table, PR flows),
@@ -60,8 +72,9 @@ export function needsAction(task: Task): boolean {
   return !!task.needsAction;
 }
 
-/** FLUX-909: the card presentation state of a single CLI session. */
-export type CardSessionState = 'running' | 'starting' | 'needs-input' | 'idle' | 'none';
+/** FLUX-909: the card presentation state of a single CLI session. S10 (FLUX-996) adds 'failed'
+ *  for a spawn/resume that crashed rather than ending cleanly. */
+export type CardSessionState = 'running' | 'starting' | 'needs-input' | 'idle' | 'failed' | 'none';
 
 /**
  * FLUX-909: classify a single CLI session into its card presentation state. The engine's
@@ -83,6 +96,9 @@ export function classifyCardSessionState(
   const status = liveStatus ?? task.cliSession?.status;
   if (status === 'pending') return 'starting';
   if (status === 'running') return 'running';
+  // S10: a spawn/resume that crashed (never reached a clean exit) — distinct from 'idle' so it
+  // reads as an alarm, not a calm "done for now".
+  if (status === 'failed') return 'failed';
   if (status !== 'waiting-input') return 'none';
   const pendingUser =
     !!task.cliSession?.blockedReason ||

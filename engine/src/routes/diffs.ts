@@ -16,12 +16,12 @@ router.get('/overview', async (req, res) => {
     const overview = await buildDiffOverview(workspaceRoot!, uncommittedOnly ? { uncommittedOnly: true } : {});
     const groups = overview.groups.map((g) => {
       if (g.kind !== 'worktree' || !g.branch) return g;
-      const ticket = Object.values(tasksCache).find((t: any) => t.branch === g.branch) as any;
+      const ticket = Object.values(tasksCache).find((t) => t.branch === g.branch);
       return { ...g, ticketId: ticket?.id ?? null, ticketTitle: ticket?.title ?? null };
     });
     res.json({ groups, collisions: overview.collisions });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 
@@ -40,8 +40,8 @@ router.get('/file', async (req, res) => {
     const diff = await diffFileContent(workspaceRoot!, ref, file);
     if (!diff) return res.status(404).json({ error: 'No diff for that file' });
     res.type('text/plain').send(diff);
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 

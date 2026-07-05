@@ -76,6 +76,17 @@ describe('buildInitialPrompt — parity by default (FLUX-960)', () => {
     }
   });
 
+  it('appends the FLUX-926 file-edit-gated note in chat phase only when editsGated is true, for every framework', () => {
+    for (const framework of FRAMEWORKS) {
+      const gated = buildInitialPrompt(mockTask, '', { phase: 'chat', framework, editsGated: true });
+      const ungated = buildInitialPrompt(mockTask, '', { phase: 'chat', framework, editsGated: false });
+      const omitted = buildInitialPrompt(mockTask, '', { phase: 'chat', framework });
+      expect(gated).toContain('FLUX-926');
+      expect(ungated).not.toContain('FLUX-926');
+      expect(omitted).not.toContain('FLUX-926');
+    }
+  });
+
   it('defaults to claude when framework is omitted (backward compatibility for pre-FLUX-960 callers)', () => {
     const withDefault = buildInitialPrompt(mockTask, '', { phase: 'implementation' });
     const explicitClaude = buildInitialPrompt(mockTask, '', { phase: 'implementation', framework: DEFAULT_FRAMEWORK });

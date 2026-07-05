@@ -13,9 +13,12 @@
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Flame, Bolt, Zap, Layers, FlaskConical, Filter, Play, Square, Plus, Pencil, ExternalLink,
-  Check, GitMerge, AlertTriangle, Clock, X, Trash2, Search, RotateCcw, Hand, Undo2,
+  Check, GitMerge, AlertTriangle, Clock, X, Trash2, Search, RotateCcw, Hand, Undo2, GripVertical,
+  FileText,
 } from 'lucide-react';
-import { useDroppable } from '@dnd-kit/core';
+import { useDroppable, DndContext, closestCenter, type DragEndEvent } from '@dnd-kit/core';
+import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { useAppSelector, useConfig, useTaskById } from '../store/useAppSelector';
 import {
   fetchFurnaceBatches, fetchFurnaceSlots, createFurnaceBatch, updateFurnaceBatch,
@@ -24,7 +27,7 @@ import {
   takeoverFurnaceTicket, handBackFurnaceTicket,
 } from '../api';
 import type {
-  FurnaceBatch, BatchTicket, BatchTicketState, BatchStatus, BatchKind, SlotInfo, BatchPr,
+  FurnaceBatch, BatchTicket, BatchTicketState, BatchStatus, BatchKind, SlotInfo, BatchPr, FurnaceSlotHolder, BatchTrigger,
 } from '../furnaceTypes';
 import { MAX_BURN_RATE, FURNACE_REFRESH_EVENT, FURNACE_NEW_DROP_ID, furnaceBatchDropId } from '../furnaceTypes';
 import { searchTasks } from '../taskSearch';
@@ -32,13 +35,17 @@ import type { LucideIcon } from 'lucide-react';
 import { getStatusTint } from '../statusStyles';
 import { useDockActions } from './DockProvider';
 import { TicketRefChip } from './TicketRefChip';
+import { FurnaceReportModal } from './FurnaceReportModal';
+import { fmtDuration } from '../lib/furnaceFormat';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 
 const POLL_MS = 3000;
 
 // FLUX-1061: the Furnace's own purple/violet accent, a CONSTANT across themes (see index.css). Used
 // wherever the drawer previously leaked `var(--eh-accent, #7c3aed)` (green under matrix / purple fallback).
-const FURNACE_ACCENT = 'var(--eh-furnace-accent)';
-const FURNACE_ACCENT_GLOW = 'var(--eh-furnace-accent-glow)';
+// Exported (FLUX-1039) so FurnaceReportModal reuses the same tokens instead of duplicating the CSS var strings.
+export const FURNACE_ACCENT = 'var(--eh-furnace-accent)';
+export const FURNACE_ACCENT_GLOW = 'var(--eh-furnace-accent-glow)';
 
 const ICON_BY_KEY: Record<string, LucideIcon> = {
   bolt: Bolt, beaker: FlaskConical, layers: Layers, flame: Flame, zap: Zap, filter: Filter,
@@ -65,16 +72,6 @@ const STATUS_CHIP: Record<BatchStatus, { label: string; bg: string; fg: string }
   done:    { label: 'done',    bg: 'rgba(139,92,246,.14)', fg: '#8b5cf6' },
   parked:  { label: 'parked',  bg: 'rgba(245,158,11,.14)', fg: '#f59e0b' },
 };
-
-function fmtDuration(from?: string, to?: string): string | null {
-  if (!from) return null;
-  const start = Date.parse(from);
-  const end = to ? Date.parse(to) : Date.now();
-  if (Number.isNaN(start) || Number.isNaN(end) || end < start) return null;
-  const mins = Math.round((end - start) / 60000);
-  if (mins < 60) return `${mins}m`;
-  return `${Math.floor(mins / 60)}h ${mins % 60}m`;
-}
 
 interface DrawerProps { embedded?: boolean; onClose?: () => void }
 
@@ -156,13 +153,13 @@ export function FurnaceDrawer({ onClose }: DrawerProps) {
         )}
 
         {burning.length > 0 && <SectionLabel>Burning</SectionLabel>}
-        {burning.map((b) => <BatchCard key={b.id} batch={b} slots={slots} onChanged={refresh} />)}
+        {burning.map((b) => <BatchCard key={b.id} batch={b} allBatches={batches} slots={slots} onChanged={refresh} />)}
 
         {drafts.length > 0 && <SectionLabel>Draft</SectionLabel>}
-        {drafts.map((b) => <BatchCard key={b.id} batch={b} slots={slots} onChanged={refresh} />)}
+        {drafts.map((b) => <BatchCard key={b.id} batch={b} allBatches={batches} slots={slots} onChanged={refresh} />)}
 
         {completed.length > 0 && <SectionLabel>Completed</SectionLabel>}
-        {completed.map((b) => <BatchCard key={b.id} batch={b} slots={slots} onChanged={refresh} />)}
+        {completed.map((b) => <BatchCard key={b.id} batch={b} allBatches={batches} slots={slots} onChanged={refresh} />)}
 
         {/* New batch creator / drop zone */}
         {creating ? (
@@ -221,6 +218,175 @@ function KindToggle({ kind, onChange, disabled }: { kind: BatchKind; onChange: (
   );
 }
 
+/** Format a `pr`-type trigger ref for display: a GitHub PR URL collapses to `#123`; a bare number gets a `#`. */
+function formatPrRef(ref: string): string {
+  const m = ref.match(/\/pull\/(\d+)\/?$/);
+  if (m) return `#${m[1]}`;
+  if (/^\d+$/.test(ref)) return `#${ref}`;
+  return ref;
+}
+
+/** FLUX-1142: resolve a batch's trigger into a display label + explanatory tooltip. Names the referenced
+ *  batch/PR instead of the bare `after {type}` chip that shipped editor-less in PR #262. */
+function resolveTriggerLabel(trigger: BatchTrigger | undefined, allBatches: FurnaceBatch[]): { label: string; tooltip: string } | null {
+  if (!trigger) return null;
+  if (trigger.type === 'batch') {
+    const ref = allBatches.find((b) => b.id === trigger.ref);
+    if (!ref) return { label: '(deleted batch)', tooltip: 'The referenced batch no longer exists — this trigger will never fire.' };
+    return { label: ref.title, tooltip: `Ignites automatically once "${ref.title}" finishes and all its PRs are merged.` };
+  }
+  return { label: formatPrRef(trigger.ref), tooltip: `Ignites automatically once PR ${trigger.ref} is merged.` };
+}
+
+/** The informative trigger badge + (when not burning) its editor popover (FLUX-1142). */
+function TriggerControl({ batch, allBatches, disabled, onChanged }: { batch: FurnaceBatch; allBatches: FurnaceBatch[]; disabled: boolean; onChanged: () => Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const resolved = resolveTriggerLabel(batch.trigger, allBatches);
+
+  return (
+    <div className="relative">
+      {resolved ? (
+        <button
+          data-trigger-toggle
+          onClick={() => !disabled && setOpen((o) => !o)}
+          disabled={disabled}
+          title={disabled ? resolved.tooltip : `${resolved.tooltip} Click to change.`}
+          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px]"
+          style={{ background: 'rgba(167,139,250,.12)', color: '#a78bfa', cursor: disabled ? 'default' : 'pointer' }}
+        >
+          <Clock className="h-2.5 w-2.5" /> after: {resolved.label}
+        </button>
+      ) : !disabled ? (
+        <button
+          data-trigger-toggle
+          onClick={() => setOpen((o) => !o)}
+          title="Auto-ignite this batch once another batch or PR merges"
+          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px]"
+          style={{ border: '1px dashed var(--eh-border)', color: 'var(--eh-text-secondary)' }}
+        >
+          <Clock className="h-2.5 w-2.5" /> + trigger
+        </button>
+      ) : null}
+      {open && !disabled && (
+        <TriggerPopover batch={batch} allBatches={allBatches} onChanged={onChanged} onClose={() => setOpen(false)} />
+      )}
+    </div>
+  );
+}
+
+/** Popover editor for a batch's auto-ignite trigger — "after batch" or "after PR", plus a clear action. */
+function TriggerPopover({ batch, allBatches, onChanged, onClose }: { batch: FurnaceBatch; allBatches: FurnaceBatch[]; onChanged: () => Promise<void>; onClose: () => void }) {
+  const [mode, setMode] = useState<'batch' | 'pr'>(batch.trigger?.type ?? 'batch');
+  const [batchRef, setBatchRef] = useState(batch.trigger?.type === 'batch' ? batch.trigger.ref : '');
+  const [prRef, setPrRef] = useState(batch.trigger?.type === 'pr' ? batch.trigger.ref : '');
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    // FLUX-1142: ignore clicks on the toggle button ([data-trigger-toggle]) so it can close the
+    // popover itself — otherwise the outside-mousedown closes it and the toggle's onClick
+    // immediately re-opens it (stuck open). Same fix as ActivityPanel (FLUX-885) / NotificationPanel.
+    const onDocDown = (e: MouseEvent) => {
+      const target = e.target as Element;
+      if (target?.closest?.('[data-trigger-toggle]')) return;
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('mousedown', onDocDown);
+    window.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDocDown); window.removeEventListener('keydown', onKey); };
+  }, [onClose]);
+
+  // FLUX-1142: only OTHER non-terminal batches are offered, and a candidate whose own trigger already
+  // points back at this batch is excluded — that would be a direct A→B→A cycle. Self-reference can't
+  // happen since `batch.id` itself is never in the list. The engine re-validates both on save (this is
+  // just avoiding a round-trip 400 for the common cases the picker can prevent outright).
+  const candidates = useMemo(
+    () => allBatches.filter((b) =>
+      b.id !== batch.id &&
+      (b.status === 'draft' || b.status === 'burning') &&
+      !(b.trigger?.type === 'batch' && b.trigger.ref === batch.id),
+    ),
+    [allBatches, batch.id],
+  );
+
+  const canSave = mode === 'batch' ? batchRef.length > 0 : prRef.trim().length > 0;
+
+  const save = useCallback(async (trigger: BatchTrigger | null) => {
+    setSaving(true);
+    setErr(null);
+    try {
+      await updateFurnaceBatch(batch.id, { trigger });
+      await onChanged();
+      onClose();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Failed to update trigger');
+    } finally {
+      setSaving(false);
+    }
+  }, [batch.id, onChanged, onClose]);
+
+  return (
+    <div ref={boxRef} className="absolute left-0 top-full z-30 mt-1 w-56 rounded-lg p-2" style={{ background: 'var(--eh-surface)', border: `1px solid ${FURNACE_ACCENT}`, boxShadow: '0 4px 16px rgba(0,0,0,.3)' }}>
+      <div className="mb-1.5 text-[10px] font-semibold" style={{ color: 'var(--eh-text-secondary)' }}>Auto-ignite this batch after…</div>
+      <div className="mb-1.5 inline-flex rounded overflow-hidden" style={{ border: '1px solid var(--eh-border)' }}>
+        {(['batch', 'pr'] as const).map((m) => (
+          <button
+            key={m}
+            onClick={() => setMode(m)}
+            className="px-2 py-0.5 text-[10px] font-medium"
+            style={{ background: mode === m ? FURNACE_ACCENT : 'transparent', color: mode === m ? '#fff' : 'var(--eh-text-secondary)' }}
+          >
+            {m === 'batch' ? 'a batch' : 'a PR'}
+          </button>
+        ))}
+      </div>
+      {mode === 'batch' ? (
+        candidates.length > 0 ? (
+          <select
+            autoFocus
+            value={batchRef}
+            onChange={(e) => setBatchRef(e.target.value)}
+            className="mb-1.5 w-full rounded px-1.5 py-1 text-[11px] outline-none"
+            style={{ background: 'var(--eh-input-bg)', border: '1px solid var(--eh-border)', color: 'var(--eh-text-primary)' }}
+          >
+            <option value="">Select a batch…</option>
+            {candidates.map((b) => <option key={b.id} value={b.id}>{b.title}</option>)}
+          </select>
+        ) : (
+          <div className="mb-1.5 text-[10px]" style={{ color: 'var(--eh-text-secondary)' }}>No other eligible batches.</div>
+        )
+      ) : (
+        <input
+          autoFocus
+          value={prRef}
+          onChange={(e) => setPrRef(e.target.value)}
+          placeholder="PR url or #123"
+          className="mb-1.5 w-full rounded px-1.5 py-1 text-[11px] outline-none"
+          style={{ background: 'var(--eh-input-bg)', border: '1px solid var(--eh-border)', color: 'var(--eh-text-primary)' }}
+        />
+      )}
+      {err && <div className="mb-1.5 text-[10px]" style={{ color: '#ef4444' }}>{err}</div>}
+      <div className="flex items-center gap-1.5">
+        {batch.trigger && (
+          <button disabled={saving} onClick={() => void save(null)} className="rounded px-1.5 py-1 text-[10px]" style={{ border: '1px solid var(--eh-border)', color: 'var(--eh-text-secondary)' }}>Clear</button>
+        )}
+        <span className="flex-1" />
+        <button onClick={onClose} className="rounded px-1.5 py-1 text-[10px]" style={{ color: 'var(--eh-text-secondary)' }}>Cancel</button>
+        <button
+          disabled={saving || !canSave}
+          onClick={() => void save(mode === 'batch' ? { type: 'batch', ref: batchRef } : { type: 'pr', ref: prRef.trim() })}
+          className="rounded px-2 py-1 text-[10px] font-semibold"
+          style={{ background: canSave ? FURNACE_ACCENT : 'var(--eh-surface-raised)', color: canSave ? '#fff' : 'var(--eh-text-muted)', cursor: canSave ? 'pointer' : 'not-allowed' }}
+        >
+          Save
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function SlotBar({ slots }: { slots: SlotInfo }) {
   const pips = Array.from({ length: slots.max }, (_, i) => i < slots.used);
   return (
@@ -236,7 +402,7 @@ function SlotBar({ slots }: { slots: SlotInfo }) {
   );
 }
 
-function BatchCard({ batch, slots, onChanged }: { batch: FurnaceBatch; slots: SlotInfo; onChanged: () => Promise<void> }) {
+function BatchCard({ batch, allBatches, slots, onChanged }: { batch: FurnaceBatch; allBatches: FurnaceBatch[]; slots: SlotInfo; onChanged: () => Promise<void> }) {
   const tasks = useAppSelector((s) => s.tasks);
   // FLUX-1061: open a furnace ticket in the shared dock chat (same surface the rest of the portal uses)
   // instead of a bespoke inline ChatView. Used by the Completed-summary re-impl action.
@@ -246,7 +412,9 @@ function BatchCard({ batch, slots, onChanged }: { batch: FurnaceBatch; slots: Sl
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false);
   const [addQuery, setAddQuery] = useState('');
-  const [noSlot, setNoSlot] = useState(false);
+  // null = popup closed; an array (possibly empty) = popup open, naming the current slot holders (FLUX-1157).
+  const [noSlot, setNoSlot] = useState<FurnaceSlotHolder[] | null>(null);
+  const [viewingReport, setViewingReport] = useState(false);
   // Escape cancels a rename; this flag lets the resulting onBlur bail out instead of
   // committing the edited-but-cancelled title (the Escape/blur race).
   const renameCancelled = useRef(false);
@@ -303,7 +471,7 @@ function BatchCard({ batch, slots, onChanged }: { batch: FurnaceBatch; slots: Sl
     setBusy(true);
     try {
       const r = await igniteFurnaceBatch(batch.id);
-      if (!r.ok && r.noSlots) { setNoSlot(true); return; }
+      if (!r.ok && r.noSlots) { setNoSlot(r.holders ?? []); return; }
       await onChanged();
     } finally { setBusy(false); }
   }, [batch.id, onChanged]);
@@ -313,7 +481,7 @@ function BatchCard({ batch, slots, onChanged }: { batch: FurnaceBatch; slots: Sl
     setBusy(true);
     try {
       const r = await resumeFurnaceBatch(batch.id);
-      if (!r.ok && r.noSlots) { setNoSlot(true); return; }
+      if (!r.ok && r.noSlots) { setNoSlot(r.holders ?? []); return; }
       await onChanged();
     } finally { setBusy(false); }
   }, [batch.id, onChanged]);
@@ -327,6 +495,26 @@ function BatchCard({ batch, slots, onChanged }: { batch: FurnaceBatch; slots: Sl
 
   const addResults = useMemo(() => (addQuery.trim() ? searchTasks(tasks, addQuery, 6) : []), [tasks, addQuery]);
   const igniteDisabled = busy || slots.free < 1 || batch.tickets.length === 0;
+
+  // FLUX-1082: drag-and-drop reorder. Only `queued` tickets may be dragged or targeted — a ticket that
+  // has already started (or finished) burning stays fixed in place, in a draft or a burning batch alike.
+  const onReorderTickets = useCallback((event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const tickets = batch.tickets;
+    const activeTicket = tickets.find((t) => t.ticketId === active.id);
+    const overTicket = tickets.find((t) => t.ticketId === over.id);
+    if (!activeTicket || !overTicket || activeTicket.state !== 'queued' || overTicket.state !== 'queued') return;
+    const queued = tickets.filter((t) => t.state === 'queued');
+    const oldIndex = queued.findIndex((t) => t.ticketId === active.id);
+    const newIndex = queued.findIndex((t) => t.ticketId === over.id);
+    const reorderedQueued = arrayMove(queued, oldIndex, newIndex);
+    // Splice the reordered queued subset back into their original slots — non-queued tickets never move.
+    let qi = 0;
+    const next = tickets.map((t) => (t.state === 'queued' ? reorderedQueued[qi++] : t));
+    const renumbered = next.map((t, i) => ({ ...t, order: i }));
+    void run(() => updateFurnaceBatch(batch.id, { tickets: renumbered }));
+  }, [batch.tickets, batch.id, run]);
 
   return (
     <div ref={setNodeRef} className="rounded-lg border transition-colors" style={{ borderColor: isOver ? FURNACE_ACCENT : 'var(--eh-border)', background: isOver ? FURNACE_ACCENT_GLOW : isBurning ? 'rgba(34,197,94,.05)' : 'var(--eh-surface)' }}>
@@ -349,8 +537,18 @@ function BatchCard({ batch, slots, onChanged }: { batch: FurnaceBatch; slots: Sl
               />
             ) : (
               // FLUX-1062 (#2): the title itself is click-to-rename (spec rev 5); the pencil stays as a
-              // secondary affordance for discoverability.
-              <span onClick={startRename} className="truncate text-xs font-semibold cursor-text hover:underline" title="Click to rename">{batch.title}</span>
+              // secondary affordance for discoverability. FLUX-1057: keyboard-activatable (role/tabIndex/
+              // Enter+Space) so keyboard users aren't limited to the adjacent Pencil button.
+              <span
+                onClick={startRename}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); startRename(); } }}
+                role="button"
+                tabIndex={0}
+                className="truncate text-xs font-semibold cursor-text hover:underline"
+                title="Click to rename"
+              >
+                {batch.title}
+              </span>
             )}
             {!renaming && (
               <button onClick={startRename} title="Rename" aria-label="Rename batch" className="flex-shrink-0">
@@ -373,11 +571,10 @@ function BatchCard({ batch, slots, onChanged }: { batch: FurnaceBatch; slots: Sl
       {/* Kind + trigger row */}
       <div className="flex items-center gap-2 px-2 pb-1">
         <KindToggle kind={batch.kind} disabled={!isDraft || busy} onChange={(k) => void run(() => updateFurnaceBatch(batch.id, { kind: k }))} />
-        {batch.trigger && (
-          <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px]" style={{ background: 'rgba(167,139,250,.12)', color: '#a78bfa' }}>
-            <Clock className="h-2.5 w-2.5" /> after {batch.trigger.type}
-          </span>
-        )}
+        {/* FLUX-1142: editable while not burning (draft/parked/done — mirrors the engine's own lack of a
+            status guard on `trigger`); always shows the resolved badge so an armed trigger is legible
+            at a glance even mid-burn. */}
+        <TriggerControl batch={batch} allBatches={allBatches} disabled={isBurning} onChanged={onChanged} />
       </div>
 
       {/* Stats (burning) */}
@@ -390,11 +587,15 @@ function BatchCard({ batch, slots, onChanged }: { batch: FurnaceBatch; slots: Sl
         </div>
       )}
 
-      {/* Ticket rows */}
+      {/* Ticket rows — nested DndContext scoped to this batch's own list, independent of the board's. */}
       <div className="border-t" style={{ borderColor: 'var(--eh-border)' }}>
-        {batch.tickets.map((t) => (
-          <TicketRow key={t.ticketId} ticket={t} batch={batch} onChanged={onChanged} onRemove={() => void run(() => removeFurnaceTicket(batch.id, t.ticketId))} />
-        ))}
+        <DndContext collisionDetection={closestCenter} onDragEnd={onReorderTickets}>
+          <SortableContext items={batch.tickets.map((t) => t.ticketId)} strategy={verticalListSortingStrategy}>
+            {batch.tickets.map((t) => (
+              <TicketRow key={t.ticketId} ticket={t} batch={batch} onChanged={onChanged} onRemove={() => void run(() => removeFurnaceTicket(batch.id, t.ticketId))} />
+            ))}
+          </SortableContext>
+        </DndContext>
         {batch.tickets.length === 0 && (
           <div className="px-2 py-2 text-[11px]" style={{ color: 'var(--eh-text-secondary)' }}>No tickets — add some (or drag a board card here) before igniting.</div>
         )}
@@ -454,6 +655,13 @@ function BatchCard({ batch, slots, onChanged }: { batch: FurnaceBatch; slots: Sl
             <button disabled={busy} onClick={onDelete} title="Delete batch" aria-label="Delete batch" className="rounded px-1.5 py-1" style={{ border: '1px solid var(--eh-border)', color: 'var(--eh-text-secondary)' }}>
               <Trash2 className="h-3 w-3" />
             </button>
+            {/* FLUX-1039: the assembled burn report, independent of CompletedSummary's prs.length gate
+                so a zero-PR terminal batch (all parked/failed/skipped) still gets a completion surface. */}
+            {isTerminal && batch.report && (
+              <button onClick={() => setViewingReport(true)} title="View report" aria-label="View burn report" className="rounded px-1.5 py-1" style={{ border: '1px solid var(--eh-border)', color: 'var(--eh-text-secondary)' }}>
+                <FileText className="h-3 w-3" />
+              </button>
+            )}
             {isDraft && (
               <button disabled={igniteDisabled} onClick={() => void onIgnite()} title={slots.free < 1 ? 'No worktree slots available' : 'Ignite'}
                 className="inline-flex items-center gap-1 rounded px-2 py-1 text-[10px] font-semibold" style={{ background: igniteDisabled ? 'var(--eh-surface-raised)' : FURNACE_ACCENT, color: igniteDisabled ? 'var(--eh-text-muted)' : '#fff', cursor: igniteDisabled ? 'not-allowed' : 'pointer' }}>
@@ -471,7 +679,8 @@ function BatchCard({ batch, slots, onChanged }: { batch: FurnaceBatch; slots: Sl
         )}
       </div>
 
-      {noSlot && <NoSlotPopup slots={slots} onClose={() => setNoSlot(false)} />}
+      {noSlot && <NoSlotPopup slots={slots} holders={noSlot} onClose={() => setNoSlot(null)} />}
+      {viewingReport && batch.report && <FurnaceReportModal batch={batch} onClose={() => setViewingReport(false)} />}
     </div>
   );
 }
@@ -479,6 +688,11 @@ function BatchCard({ batch, slots, onChanged }: { batch: FurnaceBatch; slots: Sl
 function TicketRow({ ticket, batch, onChanged, onRemove }: { ticket: BatchTicket; batch: FurnaceBatch; onChanged: () => Promise<void>; onRemove: () => void }) {
   const meta = STATE_META[ticket.state];
   const canRemove = !(batch.status === 'burning' && ticket.state !== 'queued');
+  // FLUX-1082: only a still-queued ticket may be dragged to reorder — one that's started/finished
+  // burning is fixed in place (draft batches have every ticket `queued`, so all rows are draggable there).
+  const draggable = ticket.state === 'queued';
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: ticket.ticketId, disabled: !draggable });
+  const dragStyle = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 };
   // FLUX-1061 (#2/#3): the id is the shared enriched chip (status dot + hover mini-card + Open chat /
   // Open ticket), and the title is colored by BOARD status via the same statusStyles helpers the chip
   // uses — resolved from the live task, so a status change recolors the row. Falls back to the burn-state
@@ -487,6 +701,9 @@ function TicketRow({ ticket, batch, onChanged, onRemove }: { ticket: BatchTicket
   const task = useTaskById(ticket.ticketId);
   const titleColor = task ? `rgb(${getStatusTint(config, task.status).rgb})` : meta.text;
   const [busy, setBusy] = useState(false);
+  // FLUX-1090: a failed recovery action (e.g. hand-back rejected as "still burning") used to be swallowed
+  // silently — the button just looked like it did nothing. Surface it inline instead.
+  const [err, setErr] = useState<string | null>(null);
 
   // FLUX-1066: the ROW badge — a taken-over ticket reads "you're driving this" (owner beats state), and a
   // park splits by failure class so the cause is legible (needs-input vs a hard failure), never a bare "parked".
@@ -497,44 +714,56 @@ function TicketRow({ ticket, batch, onChanged, onRemove }: { ticket: BatchTicket
   const isParkedOrFailed = ticket.state === 'parked' || ticket.state === 'failed';
 
   const act = useCallback(async (fn: () => Promise<unknown>) => {
-    setBusy(true);
-    try { await fn(); await onChanged(); } finally { setBusy(false); }
+    setBusy(true); setErr(null);
+    try { await fn(); await onChanged(); }
+    catch (e) { setErr(e instanceof Error ? e.message : 'Action failed'); }
+    finally { setBusy(false); }
   }, [onChanged]);
 
   return (
-    <div className="group flex items-center gap-1.5 px-2 py-1 text-[11px]">
-      <TicketRefChip ticketId={ticket.ticketId} />
-      <span className="truncate flex-1" style={{ color: titleColor }} title={ticket.note || ticket.title}>{ticket.title}</span>
-      {ticket.prUrl && <a href={ticket.prUrl} target="_blank" rel="noreferrer" title="Open pull request" aria-label={`Open pull request for ${ticket.ticketId}`} onClick={(e) => e.stopPropagation()}><ExternalLink className="h-3 w-3" style={{ color: '#818cf8' }} /></a>}
-      <span className="rounded px-1 py-0.5 text-[10px] flex-shrink-0" style={{ color: badge.color }} title={ticket.note || badge.label}>{badge.label}</span>
+    <div ref={setNodeRef} style={dragStyle} className="group flex flex-col gap-0.5 px-2 py-1 text-[11px]">
+      <div className="flex items-center gap-1.5">
+        {draggable ? (
+          <button {...attributes} {...listeners} title="Drag to reorder" aria-label={`Reorder ${ticket.ticketId}`} className="flex-shrink-0 cursor-grab touch-none active:cursor-grabbing">
+            <GripVertical className="h-3 w-3" style={{ color: 'var(--eh-text-muted)' }} />
+          </button>
+        ) : (
+          <span className="h-3 w-3 flex-shrink-0" />
+        )}
+        <TicketRefChip ticketId={ticket.ticketId} />
+        <span className="truncate flex-1" style={{ color: titleColor }} title={ticket.note || ticket.title}>{ticket.title}</span>
+        {ticket.prUrl && <a href={ticket.prUrl} target="_blank" rel="noreferrer" title="Open pull request" aria-label={`Open pull request for ${ticket.ticketId}`} onClick={(e) => e.stopPropagation()}><ExternalLink className="h-3 w-3" style={{ color: '#818cf8' }} /></a>}
+        <span className="rounded px-1 py-0.5 text-[10px] flex-shrink-0" style={{ color: badge.color }} title={ticket.note || badge.label}>{badge.label}</span>
 
-      {/* Recovery actions (FLUX-1066) */}
-      {isHuman && (
-        <button disabled={busy} onClick={() => void act(() => handBackFurnaceTicket(batch.id, ticket.ticketId))} title="Hand back to the Furnace" aria-label={`Hand ${ticket.ticketId} back to the Furnace`} className="flex-shrink-0">
-          <Undo2 className="h-3 w-3" style={{ color: '#a78bfa' }} />
-        </button>
-      )}
-      {!isHuman && isParkedOrFailed && (
-        <>
-          <button disabled={busy} onClick={() => void act(() => retryFurnaceTicket(batch.id, ticket.ticketId))} title="Retry — fresh attempt" aria-label={`Retry ${ticket.ticketId}`} className="flex-shrink-0">
-            <RotateCcw className="h-3 w-3" style={{ color: '#38bdf8' }} />
+        {/* Recovery actions (FLUX-1066) */}
+        {isHuman && (
+          <button disabled={busy} onClick={() => void act(() => handBackFurnaceTicket(batch.id, ticket.ticketId))} title="Hand back to the Furnace" aria-label={`Hand ${ticket.ticketId} back to the Furnace`} className="flex-shrink-0">
+            <Undo2 className="h-3 w-3" style={{ color: '#a78bfa' }} />
           </button>
-          <button disabled={busy} onClick={() => void act(() => takeoverFurnaceTicket(batch.id, ticket.ticketId))} title="Take over — you drive it" aria-label={`Take over ${ticket.ticketId}`} className="flex-shrink-0">
-            <Hand className="h-3 w-3" style={{ color: '#a78bfa' }} />
-          </button>
-          {!ticket.flagDismissed && (
-            <button disabled={busy} onClick={() => void act(() => dismissFurnaceTicket(batch.id, ticket.ticketId))} title="Dismiss flag — I've got this" aria-label={`Dismiss the flag on ${ticket.ticketId}`} className="flex-shrink-0">
-              <Check className="h-3 w-3" style={{ color: 'var(--eh-text-muted)' }} />
+        )}
+        {!isHuman && isParkedOrFailed && (
+          <>
+            <button disabled={busy} onClick={() => void act(() => retryFurnaceTicket(batch.id, ticket.ticketId))} title="Retry — fresh attempt" aria-label={`Retry ${ticket.ticketId}`} className="flex-shrink-0">
+              <RotateCcw className="h-3 w-3" style={{ color: '#38bdf8' }} />
             </button>
-          )}
-        </>
-      )}
+            <button disabled={busy} onClick={() => void act(() => takeoverFurnaceTicket(batch.id, ticket.ticketId))} title="Take over — you drive it" aria-label={`Take over ${ticket.ticketId}`} className="flex-shrink-0">
+              <Hand className="h-3 w-3" style={{ color: '#a78bfa' }} />
+            </button>
+            {!ticket.flagDismissed && (
+              <button disabled={busy} onClick={() => void act(() => dismissFurnaceTicket(batch.id, ticket.ticketId))} title="Dismiss flag — I've got this" aria-label={`Dismiss the flag on ${ticket.ticketId}`} className="flex-shrink-0">
+                <Check className="h-3 w-3" style={{ color: 'var(--eh-text-muted)' }} />
+              </button>
+            )}
+          </>
+        )}
 
-      {canRemove && (
-        <button onClick={onRemove} title="Remove from batch" aria-label={`Remove ${ticket.ticketId} from batch`} className="opacity-0 group-hover:opacity-100 flex-shrink-0">
-          <X className="h-3 w-3" style={{ color: 'var(--eh-text-muted)' }} />
-        </button>
-      )}
+        {canRemove && (
+          <button onClick={onRemove} title="Remove from batch" aria-label={`Remove ${ticket.ticketId} from batch`} className="opacity-0 group-hover:opacity-100 flex-shrink-0">
+            <X className="h-3 w-3" style={{ color: 'var(--eh-text-muted)' }} />
+          </button>
+        )}
+      </div>
+      {err && <div className="pl-4 text-[10px]" style={{ color: '#f87171' }}>{err}</div>}
     </div>
   );
 }
@@ -611,14 +840,15 @@ function CompletedSummary({ batch, onOpenTicket, onChanged }: { batch: FurnaceBa
   );
 }
 
-function NoSlotPopup({ slots, onClose }: { slots: SlotInfo; onClose: () => void }) {
+function NoSlotPopup({ slots, holders, onClose }: { slots: SlotInfo; holders: FurnaceSlotHolder[]; onClose: () => void }) {
   const okRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     okRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, []);
+  // FLUX-1022: route Escape through the shared stack instead of a standalone listener, so it
+  // coordinates with other overlays (e.g. a floating chat window open at the same time) instead of
+  // both eating the same keypress.
+  useEscapeKey(onClose);
   return (
     <div className="fixed inset-0 z-[2000] flex items-center justify-center" style={{ background: 'rgba(0,0,0,.4)' }} onClick={onClose}>
       <div role="dialog" aria-modal="true" aria-labelledby="furnace-noslot-title" className="max-w-[280px] rounded-xl p-4" style={{ background: 'var(--eh-surface)', border: `1px solid ${FURNACE_ACCENT}` }} onClick={(e) => e.stopPropagation()}>
@@ -631,6 +861,20 @@ function NoSlotPopup({ slots, onClose }: { slots: SlotInfo; onClose: () => void 
             <div key={i} className="h-1.5 w-5 rounded-sm" style={{ background: i < slots.used ? FURNACE_ACCENT : 'var(--eh-border)' }} />
           ))}
         </div>
+        {/* FLUX-1157: name the holders so the user can act (finish/abandon/take over) instead of guessing. */}
+        {holders.length > 0 && (
+          <div className="mb-2.5 rounded-md p-2" style={{ background: 'var(--eh-surface-raised)' }}>
+            <div className="mb-1 text-[10px] font-semibold" style={{ color: 'var(--eh-text-secondary)' }}>Holding the slots:</div>
+            <ul className="space-y-0.5">
+              {holders.map((h) => (
+                <li key={h.ticketId} className="text-[10px]" style={{ color: 'var(--eh-text-primary)' }}>
+                  <span className="font-semibold">{h.ticketId}</span>{' '}
+                  <span style={{ color: 'var(--eh-text-secondary)' }}>— {h.reason}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         <button ref={okRef} onClick={onClose} className="rounded px-3 py-1 text-[11px] font-semibold" style={{ background: FURNACE_ACCENT, color: '#fff' }}>Got it</button>
       </div>
     </div>

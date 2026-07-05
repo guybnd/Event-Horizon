@@ -16,6 +16,7 @@ import net from 'net';
 import path from 'path';
 import type { ModuleDeclaration } from './modules.js';
 import { serenaContextFor } from './modules.js';
+import { emitOperationEvent, type OperationOutcome } from './operation-telemetry.js';
 
 // Platforms where the shared HTTP server is proven and on by default.
 const PROVEN_PLATFORMS = new Set<NodeJS.Platform>(['win32']);
@@ -56,6 +57,15 @@ interface SharedServer {
 // server; eviction touches only its own key, never a sibling worktree's server.
 const servers = new Map<string, SharedServer>();
 const inflight = new Map<string, Promise<SharedServer | null>>();
+
+// FLUX-929: keys whose path was evicted WHILE their server was still mid-handshake
+// (present in `inflight`, not yet in `servers`). `evictSharedServersForPath` cannot
+// kill these directly — there's no child process handle until the startPromise
+// finishes spawning — so it tombstones the key here instead. The startPromise
+// checks this set right before it would call `servers.set(...)` and, if tombstoned,
+// kills the freshly-started child and returns null rather than registering an
+// orphan pinned to a worktree that no longer exists.
+const inflightEvicted = new Set<string>();
 
 /**
  * Canonicalize a project path so the SAME tree always produces the SAME key
@@ -162,9 +172,26 @@ export async function ensureSharedServer(m: ModuleDeclaration, projectPath: stri
   if (pending) return pending;
 
   const startPromise = (async (): Promise<SharedServer | null> => {
+    // S9 (epic FLUX-996): one telemetry event per overall poll-until-ready-or-timeout, not per
+    // individual mcpHandshakeOk attempt — a slow-but-eventually-ok handshake is one 'ok' op, not N.
+    const startedAt = Date.now();
+    const emitHandshake = (outcome: OperationOutcome, reason?: string): void => {
+      const endedAt = Date.now();
+      emitOperationEvent({
+        kind: 'handshake',
+        cmd: `${m.id} handshake`,
+        startedAt,
+        endedAt,
+        durationMs: endedAt - startedAt,
+        outcome,
+        reason,
+      });
+    };
+
     const port = await findFreePort();
     if (port == null) {
       console.warn(`[shared-mcp] no free port for "${m.id}" in ${PORT_SCAN_START}-${PORT_SCAN_END}`);
+      emitHandshake('error', 'no free port');
       return null;
     }
     const isWin = process.platform === 'win32';
@@ -179,8 +206,10 @@ export async function ensureSharedServer(m: ModuleDeclaration, projectPath: stri
         windowsHide: true,
         env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
       });
-    } catch (err: any) {
-      console.warn(`[shared-mcp] failed to spawn "${m.id}": ${err?.message ?? err}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[shared-mcp] failed to spawn "${m.id}": ${message}`);
+      emitHandshake('error', message);
       return null;
     }
     child.on('exit', () => {
@@ -191,21 +220,34 @@ export async function ensureSharedServer(m: ModuleDeclaration, projectPath: stri
     const deadline = Date.now() + HANDSHAKE_TIMEOUT_MS;
     while (Date.now() < deadline) {
       if (await mcpHandshakeOk(port)) {
+        // FLUX-929: the worktree this server was starting for may have been torn
+        // down (and its shared servers evicted) while this handshake was still in
+        // flight — `evictSharedServersForPath` found nothing in `servers` to kill
+        // and tombstoned `key` instead. Consult it here, atomically before
+        // registering, so a now-orphaned server never gets pinned to a dead path.
+        if (inflightEvicted.delete(key)) {
+          log.info(`[shared-mcp] "${m.id}" finished starting after its path was evicted — killing (project: ${projectPath})`);
+          killTree(child);
+          emitHandshake('aborted', 'worktree evicted mid-handshake');
+          return null;
+        }
         const url = `http://127.0.0.1:${port}/mcp`;
         const record: SharedServer = { moduleId: m.id, port, url, child, projectPath };
         servers.set(key, record);
         log.info(`[shared-mcp] "${m.id}" ready at ${url} (project: ${projectPath})`);
+        emitHandshake('ok');
         return record;
       }
       await new Promise(r => setTimeout(r, HANDSHAKE_POLL_MS));
     }
     console.warn(`[shared-mcp] "${m.id}" did not answer an MCP handshake within ${HANDSHAKE_TIMEOUT_MS}ms — killing`);
     killTree(child);
+    emitHandshake('timeout', `no handshake within ${HANDSHAKE_TIMEOUT_MS}ms`);
     return null;
   })();
 
   inflight.set(key, startPromise);
-  try { return await startPromise; } finally { inflight.delete(key); }
+  try { return await startPromise; } finally { inflight.delete(key); inflightEvicted.delete(key); }
 }
 
 /** Kill every managed shared server. Call on engine shutdown. */
@@ -221,6 +263,14 @@ export function shutdownSharedServers(): void {
  * that no longer exists (FLUX-579). Matched by the same canonicalization the key
  * uses, so a differently-cased / 8.3 path still resolves. Best-effort and safe
  * to call for the workspace root or an unknown path (no-op when nothing matches).
+ *
+ * FLUX-929: also tombstones any key still mid-handshake in `inflight` for this
+ * path. Such a server has no `servers` entry yet (it's only added on a successful
+ * handshake), so the loop below can't find or kill it — without the tombstone its
+ * startPromise would go on to register a server pinned to a path that's already
+ * gone. The pending startPromise itself is left untouched (not deleted from
+ * `inflight`): it owns its own cleanup, and deleting it here would let a
+ * concurrent `ensureSharedServer` call for the same key spawn a duplicate.
  */
 export function evictSharedServersForPath(projectPath: string): number {
   if (!projectPath) return 0;
@@ -233,6 +283,9 @@ export function evictSharedServersForPath(projectPath: string): number {
       inflight.delete(key);
       evicted++;
     }
+  }
+  for (const key of inflight.keys()) {
+    if (key.endsWith(`::${canon}`)) inflightEvicted.add(key);
   }
   return evicted;
 }

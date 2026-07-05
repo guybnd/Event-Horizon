@@ -8,7 +8,7 @@ import type { InlineSubtask, Task } from '../types';
  *
  * Compares exactly the fields the old signature hashed (status, title, body
  * length + first 200 chars, assignee, priority, effort, implementationLink,
- * order, tags, subtasks, history length + last-entry key, cliSession
+ * order, swimlane, tags, subtasks, history length + last-entry key, cliSession
  * status/activity/label, tokenMetadata, artifacts (latest + revision count)) so
  * change-detection semantics are unchanged — a pure hot-path swap.
  */
@@ -22,7 +22,8 @@ export function tasksEqual(a: Task, b: Task): boolean {
     (a.priority || 'None') !== (b.priority || 'None') ||
     (a.effort || 'None') !== (b.effort || 'None') ||
     (a.implementationLink || '') !== (b.implementationLink || '') ||
-    (a.order ?? null) !== (b.order ?? null)
+    (a.order ?? null) !== (b.order ?? null) ||
+    (a.swimlane || null) !== (b.swimlane || null)
   ) {
     return false;
   }

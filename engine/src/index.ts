@@ -10,7 +10,8 @@ for (const key of Object.keys(process.env)) {
 // no downstream execution (workspace activation, doc loading, etc.) reaches stdout in MCP mode.
 const MCP_MODE = process.argv.includes('--mcp');
 if (MCP_MODE) {
-  console.log = (...args: any[]) => console.error(...args);
+  // eslint-disable-next-line no-console -- intentional MCP stdout shim: redirects stray console.log to stderr so it can't corrupt JSON-RPC framing
+  console.log = (...args: unknown[]) => console.error(...args);
 }
 
 import { log } from './log.js';
@@ -24,9 +25,12 @@ import os from 'os';
 
 import { fileURLToPath } from 'url';
 import { requireWorkspace, loopbackOnly, originGuard, isLoopbackHostname } from './middleware.js';
+import { requestTiming } from './perf/request-timing.js';
+import { startEventLoopMonitor, stopEventLoopMonitor } from './perf/event-loop-monitor.js';
+import { startGitTiming } from './perf/git-timing.js';
 import { workspaceRoot, loadAppSettings, getCliWorkspace, resolvePortalDist, autoRegisterWorkspace } from './workspace.js';
 import { isPkg, isSea, isPackaged, ensureSeaAssetsExtracted, getSeaAsset, setEnginePort } from './packaged-mode.js';
-import { migrateFromLegacy, getBootStatus } from './global-settings.js';
+import { migrateFromLegacy } from './global-settings.js';
 import { activateWorkspace, tasksCache } from './task-store.js';
 // FLUX-705: statically imported so the in-process HTTP MCP mount runs on THIS engine's
 // task-store (shared workspaceRoot/tasksCache/watchers). Bundling them together is what
@@ -43,6 +47,7 @@ import { proposeBoardRebase, resolveBoardRebase, listPendingBoardRebases } from 
 import { shutdownSharedServers } from './shared-mcp-server.js';
 import { flushOpenPrompts } from './hitl-prompts.js';
 import { broadcastEvent } from './events.js';
+import { installOperationTelemetry } from './operation-telemetry.js';
 
 import tasksRouter, { bulkRenameHandler } from './routes/tasks.js';
 import diffsRouter from './routes/diffs.js';
@@ -54,6 +59,8 @@ import workspacesRouter from './routes/workspaces.js';
 import assetsRouter from './routes/assets.js';
 import skillRouter from './routes/skill.js';
 import statsRouter from './routes/stats.js';
+import perfRouter from './routes/perf.js';
+import operationsRouter from './routes/operations.js';
 import readStateRouter from './routes/read-state.js';
 import eventsRouter from './routes/events.js';
 import storageRouter from './routes/storage.js';
@@ -79,7 +86,10 @@ import { reconcilePullRequests, pruneMergedBranches, reclaimReadyWorktrees } fro
 import { syncPrTickets } from './pr-tickets.js';
 
 const __dir = (() => {
-  // @ts-ignore
+  // Note: __dirname is a CJS-only global; this module runs as ESM, but Node's ambient
+  // types are pulled in program-wide (via other files' core-module imports), so
+  // referencing it here type-checks even though it's only actually defined at runtime
+  // when this module is loaded as CJS (e.g. bundled/packaged output).
   if (typeof __dirname === 'string' && path.isAbsolute(__dirname)) return __dirname;
   try { return path.dirname(fileURLToPath(import.meta.url)); } catch {}
   return path.join(process.cwd(), 'src');
@@ -130,6 +140,15 @@ if (ALLOW_REMOTE) {
   app.use(originGuard);
 }
 
+// FLUX-1129: times every request into the perf registry (GET /api/perf) — mounted early,
+// alongside the other cross-cutting guards above, so it wraps the whole API surface.
+app.use(requestTiming);
+
+// FLUX-1130: samples event-loop delay in the background so a synchronous stall anywhere in
+// the process (blocking git spawn, giant JSON serialize, sync fs rescan, ...) surfaces in
+// GET /api/perf and the log, regardless of which code path caused it.
+startEventLoopMonitor();
+
 // ─── MCP over HTTP (FLUX-645) ───────────────────────────────────────────────────
 // Serve the Event Horizon MCP server in-process over loopback so every Claude Code session
 // — main checkout or an `.eh-worktrees/*` worktree — connects to ONE URL and shares this
@@ -174,6 +193,9 @@ app.use('/api/workspaces', workspacesRouter);
 app.use('/api/assets', assetsRouter);
 app.use('/api/skill', requireWorkspace, skillRouter);
 app.use('/api/stats', requireWorkspace, statsRouter);
+// No requireWorkspace: perf metrics are process-level (request timings), not workspace data.
+app.use('/api/perf', perfRouter);
+app.use('/api/operations', requireWorkspace, operationsRouter);
 app.use('/api/read-state', requireWorkspace, readStateRouter);
 app.use('/api/events', eventsRouter);
 app.use('/api/storage', requireWorkspace, storageRouter);
@@ -187,6 +209,16 @@ app.use('/api/agents', requireWorkspace, agentsRouter);
 app.use('/api/bootstrap', requireWorkspace, bootstrapRouter);
 app.use('/api/group', requireWorkspace, groupRouter);
 app.use('/api/terminal', requireWorkspace, terminalRouter);
+
+// S9 (epic FLUX-996): install the real git-exec telemetry sink once at bootstrap — before this,
+// setGitOperationSink() had zero call sites and every hardened git/gh call's timing/outcome was
+// dropped on the floor. Workspace-agnostic (git-exec runs before a workspace is bound too).
+installOperationTelemetry();
+
+// FLUX-1131: feed every git/gh subprocess duration into the perf registry (GET /api/perf) and
+// warn on slow calls. setGitOperationSink() is a multicast (git-exec.ts), so this coexists with
+// installOperationTelemetry()'s sink above rather than replacing it.
+startGitTiming();
 
 // FLUX-755: dev-only onboarding-features editor endpoints. Mounted WITHOUT
 // requireWorkspace (the config file is repo-relative, not workspace-relative) and
@@ -224,7 +256,7 @@ app.get('/api/board/state', requireWorkspace, (_req, res) => {
   }));
   const statusCounts: Record<string, number> = {};
   for (const t of Object.values(tasksCache)) {
-    const st = (t as any).status || 'Unknown';
+    const st = (t as { status?: string }).status || 'Unknown';
     statusCounts[st] = (statusCounts[st] || 0) + 1;
   }
   res.json({ activeSessions, statusCounts });
@@ -315,7 +347,7 @@ app.post('/api/board/ask-question', requireWorkspace, async (req, res) => {
     console.warn(`[hitl] ask-question from claimed "${claimedId}" routed UNROUTED (token unverified) — inline picker will rely on the portal resilience net (FLUX-923)`);
   } else if (DEV) {
     // The happy path runs on every routed ask-question (a hot HITL path) — keep it out of production logs.
-    console.log(`[hitl] ask-question routed to conversationId=${conversationId ?? '(unrouted/null)'}`);
+    log.debug(`[hitl] ask-question routed to conversationId=${conversationId ?? '(unrouted/null)'}`);
   }
   // FLUX-826 (lever B): mark that this turn routed a decision through the structured picker, so
   // the turn-end soft backstop won't ALSO nudge on a benign comment from the same turn — the
@@ -562,11 +594,12 @@ async function startServer() {
   // Maps body-parser JSON failures to 400 and anything else to status||500, always as the uniform
   // {error} JSON the portal expects — never an HTML stack trace (Express's default finalhandler
   // would leak internals in dev). Stack is logged server-side for 5xx, never sent to the client.
-  app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (res.headersSent) return next(err);
-    const status = err?.status || err?.statusCode || (err?.type === 'entity.parse.failed' ? 400 : 500);
+    const e = err as { status?: number; statusCode?: number; type?: string; message?: string } | null | undefined;
+    const status = e?.status || e?.statusCode || (e?.type === 'entity.parse.failed' ? 400 : 500);
     if (status >= 500) console.error('[express] unhandled error:', err);
-    res.status(status).json({ error: status === 400 ? 'Invalid request body' : (err?.message || 'Internal error') });
+    res.status(status).json({ error: status === 400 ? 'Invalid request body' : (e?.message || 'Internal error') });
   });
 
   const PORT = await readPortConfig();
@@ -713,6 +746,7 @@ async function startServer() {
 async function gracefulShutdown(signal: string) {
   destroyAllTerminalSessions();
   stopAllCliSessions(signal);
+  stopEventLoopMonitor();
   shutdownSharedServers();
   // FLUX-863: persist() in hitl-prompts is async + coalesced (FLUX-854), so on
   // SIGTERM/SIGINT the final open-prompt write may still be in flight. Await it

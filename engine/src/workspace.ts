@@ -11,10 +11,11 @@ import { isPkg, isSea, getSeaExtractDir } from './packaged-mode.js';
 // In CJS bundles (esbuild output / pkg executable), __dirname is provided by Node.
 // In ESM dev mode (tsx / Node 20+), use import.meta for the source directory.
 const __dirname_resolved: string = (() => {
-  // @ts-ignore — __dirname exists at runtime in CJS but TS ESM doesn't declare it
+  // __dirname exists at runtime in CJS (esbuild/pkg output); @types/node declares
+  // it as an ambient global regardless of module kind, so no TS suppression is needed here.
   if (typeof __dirname === 'string' && __dirname && path.isAbsolute(__dirname)) return __dirname;
   try {
-    const metaUrl = (import.meta as any).url;
+    const metaUrl = import.meta.url;
     if (metaUrl && metaUrl.startsWith('file:')) {
       return path.dirname(fileURLToPath(metaUrl));
     }

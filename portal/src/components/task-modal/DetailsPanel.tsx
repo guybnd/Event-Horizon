@@ -163,7 +163,7 @@ export function DetailsPanel({
           config={config}
           tokenMetadata={modalTask.tokenMetadata}
           onLaunch={handleLaunchWithBranchCheck}
-          onStop={stopSession}
+          onStop={() => void stopSession()}
           onToggleDisplayMode={config ? () => void saveConfig({ ...config, tokenDisplayMode: config.tokenDisplayMode === 'tokens' ? 'cost' : 'tokens' }) : undefined}
         />
         )

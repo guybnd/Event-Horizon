@@ -30,10 +30,13 @@ jobs:
         run: npm ci
 
       # FLUX-774: gate the publish on the green checks that exist locally, so a tagged release
-      # can't ship a type regression or a broken engine. Lint is intentionally excluded (its
-      # baseline is still being burned down); typecheck + engine tests are the load-bearing gate.
+      # can't ship a type regression or a broken engine. typecheck + lint (FLUX-583/FLUX-1073)
+      # + engine tests are the load-bearing gate.
       - name: Type-check (portal + engine)
         run: npm run typecheck
+
+      - name: Lint (portal + engine)
+        run: npm run lint
 
       - name: Engine tests
         run: npm run test -w engine

@@ -4,7 +4,7 @@
 // with that architecture; this covers the pure, high-value surfaces: the per-ticket decision core, the
 // two batch kinds, worktree-slot math, and the burn report.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   newFurnaceBatch,
   newBatchTicket,
@@ -23,6 +23,7 @@ import {
   batchBranchName,
   furnaceReservedTicketIds,
   computeSlotsInUse,
+  validateBatchTrigger,
   MAX_BURN_RATE,
   type FurnaceBatch,
   type BatchTicket,
@@ -36,7 +37,18 @@ import {
   decideReconcile,
   retryRejectionReason,
   countsTowardBreaker,
+  pickPrReview,
+  mirrorReviewVerdictToPr,
+  lastCommentMatchesVerdictMarker,
+  findSessionOutcome,
 } from './furnace-stoker.js';
+
+// FLUX-1057/FLUX-1049: mock the real GitHub call so verdict-gating tests never shell out to `gh`.
+const postPrReview = vi.fn(async () => 'approved' as const);
+vi.mock('./branch-manager.js', () => ({
+  postPrReview: (...args: unknown[]) => postPrReview(...(args as [])),
+  mergePullRequest: vi.fn(),
+}));
 
 function mkBatch(over: Partial<FurnaceBatch> = {}): FurnaceBatch {
   const b = newFurnaceBatch({ id: 'batch-1234abcd', now: '2026-07-02T00:00:00.000Z', title: 'Test batch' });
@@ -160,6 +172,29 @@ describe('decideTicketAction (pure decision core)', () => {
     const a = decideTicketAction({ ticket: mkTicket({ state: 'reviewing' }), sessionStatus: 'completed', reviewState: null, retryCap: 2 });
     expect(a.type).toBe('park');
   });
+
+  // FLUX-1078: a review that ends with reviewState unset but a verdict-shaped last comment gets one
+  // corrective nudge instead of an immediate park — capped so it can't loop forever.
+  it('review with no verdict but a verdict-marker comment gets ONE nudge, not a park', () => {
+    const a = decideTicketAction({
+      ticket: mkTicket({ state: 'reviewing' }),
+      sessionStatus: 'completed',
+      reviewState: null,
+      reviewVerdictMarkerSeen: true,
+      retryCap: 2,
+    });
+    expect(a).toEqual({ type: 'review-nudge' });
+  });
+  it('does not nudge twice — a ticket that already used its nudge falls back to park', () => {
+    const a = decideTicketAction({
+      ticket: mkTicket({ state: 'reviewing', reviewNudgeSent: true }),
+      sessionStatus: 'completed',
+      reviewState: null,
+      reviewVerdictMarkerSeen: true,
+      retryCap: 2,
+    });
+    expect(a.type).toBe('park');
+  });
   it('waiting-input parks (unattended run cannot answer)', () => {
     const a = decideTicketAction({ ticket: mkTicket({ state: 'implementing' }), sessionStatus: 'waiting-input', retryCap: 2 });
     expect(a.type).toBe('park');
@@ -193,6 +228,115 @@ describe('decideTicketAction (pure decision core)', () => {
     const ticket = mkTicket({ state: 'cooling-down', rateLimitFirstSeenAt: new Date(now).toISOString(), nextRetryAt: new Date(now).toISOString(), preCooldownState: 'implementing' });
     const a = decideTicketAction({ ticket, retryCap: 2, nowMs: now + 5 * 3_600_000 + 1, rateLimitRetryIntervalMs: 20 * 60_000, rateLimitMaxWaitMs: 5 * 3_600_000 });
     expect(a.type).toBe('park');
+  });
+
+  // FLUX-1156: a failed/cancelled park reason folds in the session's own recorded outcome (e.g. a
+  // pre-spawn failure's "session failed to start: <reason>") instead of staying opaque.
+  it('a failed session with no recorded outcome parks with the generic reason', () => {
+    const a = decideTicketAction({ ticket: mkTicket({ state: 'implementing' }), sessionStatus: 'failed', retryCap: 2 });
+    expect(a).toEqual({ type: 'park', reason: 'the implementation session ended failed', failureClass: 'hard-fail' });
+  });
+  it('a failed session with a recorded outcome folds it into the park reason', () => {
+    const a = decideTicketAction({
+      ticket: mkTicket({ state: 'implementing' }),
+      sessionStatus: 'failed',
+      sessionOutcome: 'Claude Code session failed to start: refusing to run the agent on master',
+      retryCap: 2,
+    });
+    expect(a).toEqual({
+      type: 'park',
+      reason: 'the implementation session ended failed — Claude Code session failed to start: refusing to run the agent on master',
+      failureClass: 'hard-fail',
+    });
+  });
+  it('a cancelled session with a recorded outcome folds it in too', () => {
+    const a = decideTicketAction({
+      ticket: mkTicket({ state: 'reviewing' }),
+      sessionStatus: 'cancelled',
+      sessionOutcome: 'Claude Code session stopped by user.',
+      retryCap: 2,
+    });
+    expect(a.type).toBe('park');
+    expect((a as { reason: string }).reason).toBe('the review session ended cancelled — Claude Code session stopped by user.');
+  });
+});
+
+describe('findSessionOutcome (FLUX-1156)', () => {
+  it('returns undefined when the task or session id is missing', () => {
+    expect(findSessionOutcome(undefined, 's1')).toBeUndefined();
+    expect(findSessionOutcome({ history: [] }, undefined)).toBeUndefined();
+  });
+  it('returns undefined when no agent_session entry matches the session id', () => {
+    const task = { history: [{ type: 'agent_session', sessionId: 'other', outcome: 'nope' }] };
+    expect(findSessionOutcome(task, 's1')).toBeUndefined();
+  });
+  it('returns the matching entry outcome, trimmed', () => {
+    const task = { history: [{ type: 'agent_session', sessionId: 's1', outcome: '  session failed to start: worktree pool full  ' }] };
+    expect(findSessionOutcome(task, 's1')).toBe('session failed to start: worktree pool full');
+  });
+  it('prefers the LATEST matching entry when a session id repeats', () => {
+    const task = {
+      history: [
+        { type: 'agent_session', sessionId: 's1', outcome: 'first' },
+        { type: 'agent_session', sessionId: 's1', outcome: 'second' },
+      ],
+    };
+    expect(findSessionOutcome(task, 's1')).toBe('second');
+  });
+});
+
+// FLUX-1078: narrow pattern-match on the known review-verdict convention (every built-in reviewer
+// persona starts its comment with **APPROVED** or **CHANGES NEEDED**) — not a general classifier.
+describe('lastCommentMatchesVerdictMarker', () => {
+  it('matches the last comment when it starts with a known verdict marker', () => {
+    expect(lastCommentMatchesVerdictMarker([{ type: 'comment', comment: '**APPROVED**\n\nLooks good.' }])).toBe(true);
+    expect(lastCommentMatchesVerdictMarker([{ type: 'comment', comment: '**CHANGES NEEDED**\n\nSee below.' }])).toBe(true);
+    expect(lastCommentMatchesVerdictMarker([{ type: 'comment', comment: '  **approved**' }])).toBe(true);
+  });
+  it('ignores non-comment entries and only looks at the LAST comment', () => {
+    expect(lastCommentMatchesVerdictMarker([
+      { type: 'comment', comment: '**APPROVED**' },
+      { type: 'activity', comment: 'unrelated' },
+      { type: 'comment', comment: 'just a status update, no verdict' },
+    ])).toBe(false);
+  });
+  it('does not match prose that merely mentions a verdict word', () => {
+    expect(lastCommentMatchesVerdictMarker([{ type: 'comment', comment: 'This looks approved to me.' }])).toBe(false);
+  });
+  it('handles missing/malformed history', () => {
+    expect(lastCommentMatchesVerdictMarker(undefined)).toBe(false);
+    expect(lastCommentMatchesVerdictMarker([])).toBe(false);
+    expect(lastCommentMatchesVerdictMarker([{ type: 'comment', comment: 123 }])).toBe(false);
+  });
+
+  // FLUX-1080: a `sinceIso` cutoff scopes the scan to the CURRENT review pass so a verdict-shaped comment
+  // left over from a prior round (before a changes-requested re-implementation) can't be mistaken for this
+  // round's verdict.
+  describe('sinceIso scoping (FLUX-1080)', () => {
+    it('ignores a stale pre-cutoff verdict comment even though it is the only comment in history', () => {
+      const history = [
+        { type: 'comment', comment: '**CHANGES NEEDED**\n\nFix the thing.', date: '2026-07-01T00:00:00.000Z' },
+      ];
+      expect(lastCommentMatchesVerdictMarker(history, '2026-07-02T00:00:00.000Z')).toBe(false);
+    });
+    it('still matches a fresh verdict comment posted after the cutoff', () => {
+      const history = [
+        { type: 'comment', comment: '**CHANGES NEEDED**', date: '2026-07-01T00:00:00.000Z' },
+        { type: 'comment', comment: '**APPROVED**', date: '2026-07-03T00:00:00.000Z' },
+      ];
+      expect(lastCommentMatchesVerdictMarker(history, '2026-07-02T00:00:00.000Z')).toBe(true);
+    });
+    it('does not fall through to an older comment when the newest post-cutoff comment has no verdict marker', () => {
+      const history = [
+        { type: 'comment', comment: '**APPROVED**', date: '2026-07-01T00:00:00.000Z' },
+        { type: 'comment', comment: 'looks fine, no marker here', date: '2026-07-03T00:00:00.000Z' },
+      ];
+      expect(lastCommentMatchesVerdictMarker(history, '2026-07-02T00:00:00.000Z')).toBe(false);
+    });
+    it('is unscoped (matches the last comment regardless of date) when sinceIso is omitted', () => {
+      const history = [{ type: 'comment', comment: '**APPROVED**', date: '2020-01-01T00:00:00.000Z' }];
+      expect(lastCommentMatchesVerdictMarker(history)).toBe(true);
+    });
   });
 });
 
@@ -283,6 +427,12 @@ describe('FLUX-1066 — isHumanTakeover (M1: identity, not phase; ignores stalle
   it('no live sessions → no takeover', () => {
     expect(isHumanTakeover([], ticket)).toBe(false);
   });
+  it('FLUX-1090: a dispatching ticket is never a takeover, even with a live untracked session (the Furnace\'s own in-flight spawn)', () => {
+    expect(isHumanTakeover([{ id: 'not-yet-recorded', status: 'running', phase: 'implementation' }], ticket, true)).toBe(false);
+  });
+  it('FLUX-1090: isDispatching defaults to false (existing callers unaffected)', () => {
+    expect(isHumanTakeover([{ id: 'human-impl', status: 'running', phase: 'implementation' }], ticket)).toBe(true);
+  });
 });
 
 describe('FLUX-1066 — decideReconcile (B1: takeover + board-success both drop the flag)', () => {
@@ -324,6 +474,10 @@ describe('FLUX-1066 — retryRejectionReason (M2: pr-open guard)', () => {
   it('allows a parked/failed retry', () => {
     expect(retryRejectionReason(mkTicket({ state: 'parked' }), false)).toBeNull();
     expect(retryRejectionReason(mkTicket({ state: 'failed' }), false)).toBeNull();
+  });
+  it('FLUX-1090: a FORCED retry also bypasses the still-burning guard (handBackTicket stops the session first)', () => {
+    expect(retryRejectionReason(mkTicket({ state: 'implementing' }), true)).toBeNull();
+    expect(retryRejectionReason(mkTicket({ state: 'reviewing' }), true)).toBeNull();
   });
 });
 
@@ -378,5 +532,98 @@ describe('isTriggerSatisfied', () => {
     // Pure structural check: with no matching PR in the (empty) cache, it is not satisfied.
     const b = mkBatch({ trigger: { type: 'pr', ref: 'http://pr/999' } });
     expect(isTriggerSatisfied(b)).toBe(false);
+  });
+});
+
+describe('validateBatchTrigger (FLUX-1142)', () => {
+  it('allows no trigger, and a pr-type trigger unconditionally (no batch id to cycle on)', () => {
+    expect(validateBatchTrigger('A', null, [])).toBeNull();
+    expect(validateBatchTrigger('A', undefined, [])).toBeNull();
+    expect(validateBatchTrigger('A', { type: 'pr', ref: '#123' }, [mkBatch({ id: 'A' })])).toBeNull();
+  });
+  it('rejects a batch triggering off itself', () => {
+    expect(validateBatchTrigger('A', { type: 'batch', ref: 'A' }, [mkBatch({ id: 'A' })])).toMatch(/itself/);
+  });
+  it('rejects a direct A→B→A cycle (B already triggers after A)', () => {
+    const a = mkBatch({ id: 'A', title: 'Batch A' });
+    const b = mkBatch({ id: 'B', title: 'Batch B', trigger: { type: 'batch', ref: 'A' } });
+    expect(validateBatchTrigger('A', { type: 'batch', ref: 'B' }, [a, b])).toMatch(/cycle/);
+  });
+  it('allows A to trigger after B when B does not trigger after A', () => {
+    const a = mkBatch({ id: 'A' });
+    const b = mkBatch({ id: 'B' }); // no trigger
+    expect(validateBatchTrigger('A', { type: 'batch', ref: 'B' }, [a, b])).toBeNull();
+  });
+  it('allows referencing a batch id that does not (yet) exist — resolved-as-deleted is a display concern, not a validation one', () => {
+    expect(validateBatchTrigger('A', { type: 'batch', ref: 'ghost' }, [mkBatch({ id: 'A' })])).toBeNull();
+  });
+});
+
+// FLUX-1057 (folded in from the archived FLUX-1049): verdict-gating for mirroring a reviewer's verdict
+// onto the real GitHub PR. `pickPrReview` is already the pure decision core the ticket asked to extract
+// (as `pickMirrorVerdict`) — these cases lock its gating; `mirrorReviewVerdictToPr` wraps it with the
+// no-prUrl short-circuit and the actual (mocked) post.
+describe('pickPrReview / mirrorReviewVerdictToPr (verdict-gating)', () => {
+  it('pr-open on a parallel batch mirrors a formal approve (not comment-only)', () => {
+    const b = mkBatch({ kind: 'parallel' });
+    const t = mkTicket({ state: 'reviewing' });
+    expect(pickPrReview(b, t, { type: 'pr-open', prUrl: 'http://pr/1' }, 'approved'))
+      .toEqual({ verdict: 'approved', commentOnly: false });
+  });
+
+  it('pr-open on a sequential batch comments-only until the FINAL ticket approves', () => {
+    const notFinal = mkBatch({
+      kind: 'sequential',
+      tickets: [mkTicket({ ticketId: 'A', order: 0 }), mkTicket({ ticketId: 'B', order: 1 })],
+    });
+    // B is highest-order, but sibling A hasn't recorded an approved verdict yet — not the final approval.
+    expect(pickPrReview(notFinal, notFinal.tickets[1]!, { type: 'pr-open', prUrl: 'http://pr/1' }, 'approved'))
+      .toEqual({ verdict: 'approved', commentOnly: true });
+
+    const final = mkBatch({
+      kind: 'sequential',
+      tickets: [mkTicket({ ticketId: 'A', order: 0, lastReviewState: 'approved' }), mkTicket({ ticketId: 'B', order: 1 })],
+    });
+    expect(pickPrReview(final, final.tickets[1]!, { type: 'pr-open', prUrl: 'http://pr/1' }, 'approved'))
+      .toEqual({ verdict: 'approved', commentOnly: false });
+  });
+
+  it('reviewing + changes-requested + reimplement mirrors changes-requested', () => {
+    const t = mkTicket({ state: 'reviewing', attempts: 1 });
+    expect(pickPrReview(mkBatch(), t, { type: 'reimplement', attempt: 2 }, 'changes-requested'))
+      .toEqual({ verdict: 'changes-requested', commentOnly: false });
+  });
+
+  it('a retryCap park with changes-requested still mirrors changes-requested', () => {
+    const t = mkTicket({ state: 'reviewing', attempts: 2 });
+    const action = { type: 'park' as const, reason: 'review still requesting changes after 2 re-implementation attempt(s)', failureClass: 'needs-input' as const };
+    expect(pickPrReview(mkBatch(), t, action, 'changes-requested')).toEqual({ verdict: 'changes-requested', commentOnly: false });
+  });
+
+  it('a park from a failed/waiting-input session with reviewState cleared (null) mirrors nothing', () => {
+    const t = mkTicket({ state: 'implementing' });
+    const action = { type: 'park' as const, reason: 'the implementation session ended failed', failureClass: 'hard-fail' as const };
+    expect(pickPrReview(mkBatch(), t, action, null)).toBeNull();
+  });
+
+  it('a park while still implementing mirrors nothing, even with a stale changes-requested reviewState', () => {
+    const t = mkTicket({ state: 'implementing' });
+    const action = { type: 'park' as const, reason: 'x', failureClass: 'hard-fail' as const };
+    expect(pickPrReview(mkBatch(), t, action, 'changes-requested')).toBeNull();
+  });
+
+  it('mirrorReviewVerdictToPr posts nothing — and never calls postPrReview — when there is no PR url', async () => {
+    postPrReview.mockClear();
+    const t = mkTicket({ state: 'reviewing' });
+    await mirrorReviewVerdictToPr(mkBatch(), { type: 'pr-open', prUrl: 'http://pr/1' }, t.ticketId, t, 'approved', undefined);
+    expect(postPrReview).not.toHaveBeenCalled();
+  });
+
+  it('mirrorReviewVerdictToPr posts a single approve when a PR url is present', async () => {
+    postPrReview.mockClear();
+    const t = mkTicket({ state: 'reviewing' });
+    await mirrorReviewVerdictToPr(mkBatch({ kind: 'parallel' }), { type: 'pr-open', prUrl: 'http://pr/1' }, t.ticketId, t, 'approved', 'http://pr/1');
+    expect(postPrReview).toHaveBeenCalledTimes(1);
+    expect(postPrReview).toHaveBeenCalledWith('http://pr/1', 'approved', expect.any(String), { commentOnly: false });
   });
 });

@@ -5,7 +5,7 @@ import { updateTask } from '../api';
 import { Loader2, Plus } from 'lucide-react';
 import { TaskViewControls } from './TaskViewControls';
 import { filterAndSortTasks } from '../taskSearch';
-import { getRequireInputStatus } from '../workflow';
+import { getRequireInputStatus, isPromptableStatus } from '../workflow';
 import { TaskDescriptionSurface } from './TaskDescriptionSurface';
 import { normalizeTaskMarkdownBody } from '../taskMarkdownUtils';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -182,7 +182,15 @@ export function BacklogScreen() {
 
   const handleStatusChange = async (newStatus: string) => {
     if (!selectedTask) return;
-    
+
+    // FLUX-1102: Ready/Require Input reject a bare status update (the engine's MISSING_COMMENT
+    // guard) — route to the modal so the comment is captured, mirroring ops.moveToStatus
+    // (useTicketActions.tsx) instead of silently failing.
+    if (isPromptableStatus(newStatus, config)) {
+      openTaskModal(selectedTask);
+      return;
+    }
+
     try {
       // FLUX-725: send only the status; the engine records the status_change itself (the backlog
       // task carries only a history digest now, so we can't rebuild the full history client-side).

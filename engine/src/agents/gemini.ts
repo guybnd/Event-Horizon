@@ -4,10 +4,10 @@ import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs';
 import { configCache } from '../config.js';
-import { buildActivityEntry, buildCommentEntry, buildAgentMessageEntry, buildAgentSessionEntry, appendSessionProgress, closeAgentSession, type AgentSessionEntry } from '../history.js';
+import { buildActivityEntry, buildCommentEntry, buildAgentSessionEntry, type AgentSessionProgress } from '../history.js';
 import { updateTaskWithHistory, updateAgentSession, tasksCache, estimateCostUSD } from '../task-store.js';
-import { resolveTaskExecutionRoot } from '../task-worktree.js';
-import { cliSessionsById, cliSessionIdByTaskId, notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart } from '../session-store.js';
+import { resolveTaskExecutionRoot, resolveResumeExecutionRoot, assertIsolatedSpawnRoot } from '../task-worktree.js';
+import { notifyGroupSessionTerminal, notifyDelegationComplete, checkAutoRestart } from '../session-store.js';
 import { broadcastEvent } from '../events.js';
 import { killProcessTree } from '../kill-process-tree.js';
 import { checkFrameworkHealth, checkSkillStaleness } from '../notifications.js';
@@ -17,7 +17,7 @@ import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
 import { appendTranscriptLine } from '../transcript.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt } from './shared.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure } from './shared.js';
 
 const TOOL_ACTIVITY_MAP: Record<string, string> = {
   Bash: 'Running command',
@@ -49,6 +49,22 @@ interface GeminiWindowsLaunch {
   nodeCmd: string;
   entryPoint: string | null;
   exePath: string | null;
+}
+
+/** Narrow shape of the loosely-typed ticket record this adapter actually reads from. */
+interface GeminiTask {
+  id?: string;
+  branch?: string;
+  status?: string;
+  effortLevel?: string;
+}
+
+/** Claude-schema `assistant.content[]` block — the fallback shape this adapter also parses. */
+interface AssistantContentBlock {
+  type: string;
+  name?: string;
+  text?: string;
+  input?: { file_path?: string; command?: string; [key: string]: unknown };
 }
 
 // FLUX-1003 (epic FLUX-996): was three SYNCHRONOUS `execSync` calls (`where node`, `npm prefix -g`,
@@ -183,6 +199,30 @@ export async function spawnGemini(geminiArgs: string[], executionRoot: string, c
   });
 }
 
+/** One line of Gemini CLI's JSONL stdout — handles BOTH the native Gemini `message`/`tool_use`
+ *  schema and the Claude-schema `assistant.content[]` fallback this adapter also parses. Fields
+ *  are a union of every event `type` either schema emits; only the ones this parser reads. */
+interface GeminiCliEvent {
+  type?: string;
+  session_id?: string;
+  message?: { content?: AssistantContentBlock[] };
+  role?: string;
+  content?: string;
+  tool_name?: string;
+  parameters?: { title?: string; summary?: string; strategic_intent?: string; file_path?: string; command?: string; [key: string]: unknown };
+  is_error?: boolean;
+  error?: string;
+  subtype?: string;
+  stats?: { input_tokens?: number; output_tokens?: number; cached?: number; total_cost_usd?: number };
+  usage?: {
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+    input_tokens?: number;
+    output_tokens?: number;
+  };
+  total_cost_usd?: number;
+}
+
 export function attachStdoutProcessing(
   proc: ReturnType<typeof spawn>,
   session: CliSessionRecord,
@@ -192,7 +232,7 @@ export function attachStdoutProcessing(
   // This supplies Gemini's per-CLI parser (handles BOTH the Gemini `message`/`tool_use` schema AND the
   // Claude-schema `assistant.content[]` fallback). narrationType 'text' → styled Narration block.
   // (The Gemini blank-output fix now lives in shared `appendSessionOutput` — every adapter accumulates.)
-  return sharedAttachStdoutProcessing(proc, session, {
+  return sharedAttachStdoutProcessing<GeminiCliEvent>(proc, session, {
     onEvent: (evt, trimmed, commitPendingAssistantText) => {
         // FLUX-969: tee every raw event line to the durable per-ticket transcript, mirroring
         // claude-code.ts's attachStdoutProcessing (which has done this since FLUX-602). This
@@ -212,10 +252,10 @@ export function attachStdoutProcessing(
 
         if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
           // Claude Code schema
-          const toolBlock = evt.message.content.find((b: any) => b.type === 'tool_use');
+          const toolBlock = evt.message.content.find((b: AssistantContentBlock) => b.type === 'tool_use');
           if (toolBlock) {
             session.pendingAssistantText = '';
-            const newActivity = activityFor(TOOL_ACTIVITY_MAP, toolBlock.name);
+            const newActivity = activityFor(TOOL_ACTIVITY_MAP, toolBlock.name ?? '');
             const activityChanged = session.currentActivity !== newActivity;
             session.currentActivity = newActivity;
 
@@ -291,7 +331,7 @@ export function attachStdoutProcessing(
         } else if (evt.type === 'tool_use') {
           // Gemini CLI tool use schema
           session.pendingAssistantText = '';
-          const newActivity = activityFor(TOOL_ACTIVITY_MAP, evt.tool_name);
+          const newActivity = activityFor(TOOL_ACTIVITY_MAP, evt.tool_name ?? '');
           const activityChanged = session.currentActivity !== newActivity;
           session.currentActivity = newActivity;
 
@@ -304,7 +344,7 @@ export function attachStdoutProcessing(
             const params = evt.parameters || {};
             let progressMsg = newActivity;
             let type: 'tool' | 'topic' = 'tool';
-            let data: any = { toolName, parameters: params };
+            let data: Record<string, unknown> = { toolName, parameters: params };
 
             if (toolName === 'update_topic') {
               type = 'topic';
@@ -433,7 +473,7 @@ export function attachStdoutProcessing(
   }, 'text');
 }
 
-export async function startCliSession(session: CliSessionRecord, task: any, appendPrompt: string, effortOverrideRaw: string, workspaceRoot: string) {
+export async function startCliSession(session: CliSessionRecord, task: GeminiTask, appendPrompt: string, effortOverrideRaw: string, workspaceRoot: string) {
   const framework = session.framework;
   const binaryName = 'gemini';
   const label = session.label;
@@ -442,22 +482,16 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   const executionRoot = await resolveTaskExecutionRoot(task, workspaceRoot);
   session.executionRoot = executionRoot;
 
-  // FLUX-1018: fail closed on the fresh-spawn path. A task WITH a branch must run
-  // in that branch's worktree, never the main checkout (master). resolveTaskExecutionRoot
-  // already self-heals/throws, but assert here too as a belt-and-suspenders guard.
-  if (task?.branch && executionRoot === workspaceRoot) {
-    throw new Error(
-      `Refusing to start ${framework} for ${id} on branch '${task.branch}': its worktree is missing and ` +
-        `execution resolved to the main checkout (master). Recreate the worktree and retry.`,
-    );
-  }
+  // FLUX-1018 / FLUX-1028: fail closed on the fresh-spawn path (shared helper —
+  // see assertIsolatedSpawnRoot in task-worktree.ts).
+  assertIsolatedSpawnRoot(framework, id, task, executionRoot, workspaceRoot);
 
   log.info(`[${id}] Starting ${framework} session in ${workspaceRoot}`);
 
   await checkBinaryInstalled(binaryName);
 
-  const geminiIntegration = (configCache as any).integrations?.geminiCli;
-  const groomingStatuses = [(configCache as any).requireInputStatus || 'Require Input', 'Grooming'];
+  const geminiIntegration = configCache.integrations?.geminiCli;
+  const groomingStatuses = [configCache.requireInputStatus || 'Require Input', 'Grooming'];
   const selectedModelRaw = geminiIntegration && framework === 'gemini'
     ? (groomingStatuses.includes(task.status) ? geminiIntegration.groomingModel : geminiIntegration.implementationModel)
     : null;
@@ -491,7 +525,7 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
 
   const taskPhase = groomingStatuses.includes(task.status) ? 'grooming'
     : (task.status === 'In Progress' || task.status === 'Todo') ? 'implementation'
-    : task.status === ((configCache as any)?.readyForMergeStatus || 'Ready') ? 'review'
+    : task.status === (configCache?.readyForMergeStatus || 'Ready') ? 'review'
     : undefined;
 
   const initialPrompt = buildInitialPrompt(task, appendPrompt, { phase: taskPhase, framework: 'gemini' });
@@ -512,8 +546,8 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
   log.info(`[${id}] Args:`, geminiArgs);
 
   const effortCap = CLI_CAPABILITIES[framework].effort;
-  const globalEffort = (configCache as any).effortLevel as string | undefined;
-  const taskEffort = (task as any).effortLevel as string | undefined;
+  const globalEffort = configCache.effortLevel as string | undefined;
+  const taskEffort = task.effortLevel;
   const effectiveEffort = (effortOverrideRaw || taskEffort || globalEffort || '') as string;
   if (effortCap.supported && effortCap.flag && EFFORT_LEVELS.includes(effectiveEffort as EffortLevel)) {
     geminiArgs.push(effortCap.flag, effectiveEffort);
@@ -660,11 +694,12 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
       if (tokenUpdate) {
         await updateTaskWithHistory(id, { updatedBy: 'Agent', entries: [], tokenMetadata: tokenUpdate });
       }
-      if (session.sessionHistoryEntry?.sessionId) {
-        await updateAgentSession(id, session.sessionHistoryEntry.sessionId, (sessionEntry) => {
+      const pausedHistoryEntry = session.sessionHistoryEntry;
+      if (pausedHistoryEntry?.sessionId) {
+        await updateAgentSession(id, pausedHistoryEntry.sessionId, (sessionEntry) => {
           sessionEntry.status = 'waiting-input';
           sessionEntry.outcome = `${label} paused — waiting for user input.`;
-          sessionEntry.progress = session.sessionHistoryEntry.progress || [];
+          sessionEntry.progress = pausedHistoryEntry.progress || [];
         });
       }
       broadcastEvent('taskUpdated', { id });
@@ -694,8 +729,8 @@ export async function startCliSession(session: CliSessionRecord, task: any, appe
       });
 
       // Save the agent's final message as a comment on the ticket
-      const textEntries = accumulatedProgress.filter((p: any) => p.type === 'text' && p.message?.trim());
-      const lastText = textEntries.length > 0 ? textEntries[textEntries.length - 1].message : '';
+      const textEntries = accumulatedProgress.filter((p: AgentSessionProgress) => p.type === 'text' && p.message?.trim());
+      const lastText = textEntries.length > 0 ? textEntries[textEntries.length - 1]?.message : '';
       if (lastText && finalStatus === 'completed') {
         const maxCommentLen = 3000;
         const commentBody = lastText.length > maxCommentLen ? lastText.slice(0, maxCommentLen) + '...' : lastText;
@@ -756,7 +791,7 @@ export class GeminiAdapter implements AgentAdapter {
   }
 
   async start(session: CliSessionRecord, task: unknown, appendPrompt: string, effortOverride: string, workspaceRoot: string): Promise<void> {
-    return startCliSession(session, task, appendPrompt, effortOverride, workspaceRoot);
+    return startCliSession(session, task as GeminiTask, appendPrompt, effortOverride, workspaceRoot);
   }
 
   async sendInput(session: CliSessionRecord, message: string, user: string, workspaceRoot: string): Promise<void> {
@@ -775,18 +810,15 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   const binaryName = session.command;
   // FLUX-519 review: resume in the SAME root the session started in; refuse to fall
   // back onto master if the worktree was removed (e.g. the ticket was finished).
-  // FLUX-1018: on the resume fallback resolve READ-ONLY (create:false) — never spin up
-  // a fresh worktree mid-resume for a legacy session that lost its recorded
-  // executionRoot; the spawn path owns creation. Then fail closed two ways: a
-  // branch-bearing ticket that resolved to the main checkout (no live worktree) must
-  // not resume on master, and a recorded worktree path that has since vanished (ticket
-  // finished) is refused as before.
-  const executionRoot = session.executionRoot ?? await resolveTaskExecutionRoot(tasksCache[id], workspaceRoot, { create: false });
-  if (tasksCache[id]?.branch && executionRoot === workspaceRoot) {
-    throw new Error(`Worktree for ${id} is missing — refusing to resume the agent on master. Restart the session to recreate an isolated worktree.`);
-  }
-  if (executionRoot !== workspaceRoot && !fs.existsSync(executionRoot)) {
-    throw new Error(`Worktree for ${id} no longer exists (ticket likely finished) — refusing to resume the agent on master.`);
+  // FLUX-1018 / FLUX-1028: shared fail-closed guard — see resolveResumeExecutionRoot
+  // in task-worktree.ts. FLUX-1120: this throws BEFORE any child process spawns, so
+  // surface it the same way a spawn failure is surfaced instead of letting it vanish
+  // into an HTTP-500-only response — see surfaceResumeFailure in shared.ts.
+  let executionRoot: string;
+  try {
+    executionRoot = await resolveResumeExecutionRoot(session, tasksCache[id], workspaceRoot);
+  } catch (error) {
+    return surfaceResumeFailure(session, id, error);
   }
 
   await checkBinaryInstalled(binaryName);
@@ -825,13 +857,8 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   });
 
   replyProc.on('error', async (error) => {
-    // FLUX-915: a stop racing a spawn error stays 'cancelled' rather than reverting to resumable.
-    if (session.requestedStop) {
-      session.status = 'cancelled';
-      session.endedAt = new Date().toISOString();
-    } else {
-      session.status = 'waiting-input';
-    }
+    // FLUX-915/921: a stop racing a spawn error stays 'cancelled' rather than reverting to resumable.
+    terminalizeResumedExit(session);
     commitReplyPending();
     // FLUX-981: surface the reply spawn failure inline in the chat, not only as an activity entry.
     // Skip when the user cancelled — a stop that races the spawn error isn't a fault.
@@ -858,15 +885,10 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
       const stderrHint = session.stderrCapture?.trim();
       appendErrorToSession(session, stderrHint ? `${replyOutcome}\n${stderrHint}` : replyOutcome);
     }
-    // FLUX-915: a user-requested stop stays 'cancelled' instead of reverting to 'waiting-input'
+    // FLUX-915/921: a user-requested stop stays 'cancelled' instead of reverting to 'waiting-input'
     // (which counted the killed session as active forever). Otherwise the resumable conversation
     // stays waiting-input.
-    if (session.requestedStop) {
-      session.status = 'cancelled';
-      session.endedAt = new Date().toISOString();
-    } else {
-      session.status = 'waiting-input';
-    }
+    terminalizeResumedExit(session);
     // FLUX-651: resumed turn ended — flag if the agent parked without acting. Skip a stopped turn.
     if (!session.pausedForInput && !session.requestedStop) await flagIfParked(session, id);
     broadcastEvent('taskUpdated', { id });

@@ -1,4 +1,4 @@
-import { serializeTaskForAgent } from './task-store.js';
+import { serializeTaskForAgent, type TaskRecord } from './task-store.js';
 
 function measure(value: unknown): { bytes: number; tokensEst: number } {
   if (value === undefined) return { bytes: 0, tokensEst: 0 };
@@ -25,17 +25,34 @@ export interface AgentPayloadMetrics {
 }
 
 /**
+ * Ticket/frontmatter-shaped input. There is no single canonical Task type in
+ * this codebase (tickets are runtime-validated, loosely-typed records) — this
+ * narrow interface covers only the field this module reads directly (the rest
+ * passes through {@link serializeTaskForAgent} untouched).
+ */
+interface AgentPayloadTask {
+  id: string;
+  [key: string]: unknown;
+}
+
+/** A digested history entry as returned by {@link serializeTaskForAgent} — only the `type` discriminant is read here. */
+interface AgentHistoryEntry {
+  type?: string;
+  [key: string]: unknown;
+}
+
+/**
  * Debug-only: measures the agent-facing `get_ticket` payload by section so we can
  * see where an agent's persistent context budget actually goes. Computed off
  * {@link serializeTaskForAgent} (the exact bytes `get_ticket` / `?view=agent`
  * return) but NEVER attached to that payload — only surfaced through the debug
  * endpoint, so measurement never inflates what an agent reads.
  */
-export function computeAgentPayloadMetrics(task: any, historyLimit?: number): AgentPayloadMetrics {
-  const { _path, ...payload } = serializeTaskForAgent(task, historyLimit) as Record<string, any>;
+export function computeAgentPayloadMetrics(task: AgentPayloadTask, historyLimit?: number): AgentPayloadMetrics {
+  const { _path, ...payload } = serializeTaskForAgent(task as TaskRecord, historyLimit) as Record<string, unknown>;
   const total = measure(payload);
 
-  const history: any[] = Array.isArray(payload.history) ? payload.history : [];
+  const history: AgentHistoryEntry[] = Array.isArray(payload.history) ? payload.history : [];
   const sessions = history.filter((e) => e?.type === 'agent_session');
   const comments = history.filter((e) => e?.type === 'comment');
   const otherHistory = history.filter((e) => e?.type !== 'agent_session' && e?.type !== 'comment');

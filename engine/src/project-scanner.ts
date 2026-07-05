@@ -279,7 +279,7 @@ export async function importBootstrapSelections(
   // Import tasks sequentially to avoid ID races
   for (const taskItem of selections.selectedTasks) {
     const duplicate = Object.values(tasksCache).find(
-      (t: any) => t.title && t.title.toLowerCase() === taskItem.title.toLowerCase(),
+      (t: { title?: string }) => t.title && t.title.toLowerCase() === taskItem.title.toLowerCase(),
     );
     if (duplicate) {
       ticketsSkipped++;

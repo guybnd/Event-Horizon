@@ -4,7 +4,7 @@ import type { Config, Task } from '../types';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { CardChatButton } from './task-card/CardChatButton';
 import { isEpic, getDoneStatuses, computeEpicRollup, type EpicRollup } from '../lib/epics';
-import { getArchiveStatus } from '../workflow';
+import { getArchiveStatus, normalizeStatus } from '../workflow';
 import { getStatusColorClass } from '../statusStyles';
 import { EpicProgressBar } from './EpicProgressBar';
 
@@ -240,9 +240,10 @@ function EpicCard({
     const remaining = resolvedSubtasks.filter((t) => !doneStatuses.has(t.status));
     const byStatus = new Map<string, Task[]>();
     for (const t of remaining) {
-      const bucket = byStatus.get(t.status) ?? [];
+      const status = normalizeStatus(t.status);
+      const bucket = byStatus.get(status) ?? [];
       bucket.push(t);
-      byStatus.set(t.status, bucket);
+      byStatus.set(status, bucket);
     }
     return [...byStatus.entries()].sort(
       ([a], [b]) => (statusOrder.get(a) ?? 999) - (statusOrder.get(b) ?? 999) || a.localeCompare(b),
@@ -293,7 +294,7 @@ function EpicCard({
           <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
             <span className="font-mono text-[10px] text-gray-500 dark:text-gray-500">{epic.id}</span>
             <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${getStatusColorClass(config, epic.status)}`}>
-              {epic.status}
+              {normalizeStatus(epic.status)}
             </span>
             {epic.priority && epic.priority !== 'None' && (
               <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${priorityColor || 'text-gray-500'}`}>

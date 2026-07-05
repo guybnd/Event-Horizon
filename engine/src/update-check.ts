@@ -5,7 +5,6 @@ import { fileURLToPath } from 'url';
 import { addNotification } from './notifications.js';
 
 const __dir = (() => {
-  // @ts-ignore
   if (typeof __dirname === 'string' && resolve(__dirname) === __dirname) return __dirname;
   try { return dirname(fileURLToPath(import.meta.url)); } catch {}
   return resolve(process.cwd(), 'src');

@@ -115,8 +115,9 @@ export async function resolveBoardRebase(
     try {
       const r = await exec(item);
       results.push({ id: item.id, kind: item.kind, ok: r.ok, message: r.message });
-    } catch (err: any) {
-      results.push({ id: item.id, kind: item.kind, ok: false, message: err?.message || 'executor threw' });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      results.push({ id: item.id, kind: item.kind, ok: false, message: message || 'executor threw' });
     }
   }
 
@@ -192,7 +193,7 @@ function registerDefaults(): void {
       const task = tasksCache[ticketId];
       if (!task) { failed.push(`${ticketId} (not found)`); continue; }
       if (task.status === archiveStatus) { done.push(`${ticketId} (already)`); continue; }
-      const extraFields: Record<string, any> = {};
+      const extraFields: Record<string, unknown> = {};
       if (task.swimlane) extraFields.swimlane = null;
       const result = await updateTaskWithHistory(ticketId, {
         entries: commentEntry(item.rationale),
@@ -228,13 +229,14 @@ function registerDefaults(): void {
         body: JSON.stringify(body),
       });
       if (!res.ok) {
-        const e: any = await res.json().catch(() => ({}));
+        const e = (await res.json().catch(() => ({}))) as { error?: string };
         return { ok: false, message: `dispatch: ${e.error || res.statusText}` };
       }
-      const r: any = await res.json();
+      const r = (await res.json()) as { session?: { id?: string } };
       return { ok: true, message: `dispatched ${item.phase || 'phase'} session on ${ticketId} (${r.session?.id || 'session'})` };
-    } catch (err: any) {
-      return { ok: false, message: `dispatch: ${err?.message || 'failed'}` };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false, message: `dispatch: ${message || 'failed'}` };
     }
   });
 
@@ -257,8 +259,9 @@ function registerDefaults(): void {
         ...(item.rationale ? { body: item.rationale } : {}),
       });
       return { ok: true, message: `extracted ${r.id} (${r.turnsExtracted} turns from ${from})` };
-    } catch (err: any) {
-      return { ok: false, message: `promote: ${err?.message || 'extract failed'}` };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false, message: `promote: ${message || 'extract failed'}` };
     }
   });
 
@@ -276,8 +279,9 @@ function registerDefaults(): void {
         ok: r.archiveFailures.length === 0,
         message: `folded ${r.merged.join(', ')} into ${r.into} (${r.turnsFolded} turns)${failed}`,
       };
-    } catch (err: any) {
-      return { ok: false, message: `fold: ${err?.message || 'merge failed'}` };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false, message: `fold: ${message || 'merge failed'}` };
     }
   });
 }

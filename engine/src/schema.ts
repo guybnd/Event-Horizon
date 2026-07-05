@@ -52,7 +52,7 @@ function isIsoDate(value: unknown): boolean {
   return ISO_DATE_RE.test(value) && !Number.isNaN(new Date(value).getTime());
 }
 
-export function validateHistoryEntry(entry: any, index: number): TicketValidationError[] {
+export function validateHistoryEntry(entry: unknown, index: number): TicketValidationError[] {
   const errors: TicketValidationError[] = [];
   const at = `history[${index}]`;
 
@@ -61,56 +61,58 @@ export function validateHistoryEntry(entry: any, index: number): TicketValidatio
     return errors;
   }
 
-  if (!isNonEmptyString(entry.type)) {
+  const e = entry as Record<string, unknown>;
+
+  if (!isNonEmptyString(e.type)) {
     errors.push({ path: `${at}.type`, message: 'missing or empty type' });
     return errors;
   }
 
-  if (!isNonEmptyString(entry.user)) {
+  if (!isNonEmptyString(e.user)) {
     errors.push({ path: `${at}.user`, message: 'missing or empty user' });
   }
 
-  if (!isIsoDate(entry.date)) {
+  if (!isIsoDate(e.date)) {
     errors.push({ path: `${at}.date`, message: 'missing or invalid ISO date' });
   }
 
-  switch (entry.type) {
+  switch (e.type) {
     case 'activity':
     case 'comment':
     case 'agent_message':
-      if (!isNonEmptyString(entry.comment)) {
-        errors.push({ path: `${at}.comment`, message: `${entry.type} entry requires a non-empty comment` });
+      if (!isNonEmptyString(e.comment)) {
+        errors.push({ path: `${at}.comment`, message: `${e.type} entry requires a non-empty comment` });
       }
       break;
     case 'status_change':
-      if (!isNonEmptyString(entry.from)) {
+      if (!isNonEmptyString(e.from)) {
         errors.push({ path: `${at}.from`, message: "status_change requires 'from' (not 'oldStatus')" });
       }
-      if (!isNonEmptyString(entry.to)) {
+      if (!isNonEmptyString(e.to)) {
         errors.push({ path: `${at}.to`, message: "status_change requires 'to' (not 'newStatus')" });
       }
       break;
     case 'agent_session':
-      if (!isNonEmptyString(entry.sessionId)) {
+      if (!isNonEmptyString(e.sessionId)) {
         errors.push({ path: `${at}.sessionId`, message: 'agent_session requires sessionId' });
       }
-      if (!isIsoDate(entry.startedAt)) {
+      if (!isIsoDate(e.startedAt)) {
         errors.push({ path: `${at}.startedAt`, message: 'agent_session requires ISO startedAt' });
       }
-      if (!isNonEmptyString(entry.status)) {
+      if (!isNonEmptyString(e.status)) {
         errors.push({ path: `${at}.status`, message: 'agent_session requires status' });
       }
       break;
     case 'swimlane_change':
-      if (!isNonEmptyString(entry.swimlane)) {
+      if (!isNonEmptyString(e.swimlane)) {
         errors.push({ path: `${at}.swimlane`, message: 'swimlane_change requires swimlane id' });
       }
-      if (entry.action !== 'set' && entry.action !== 'cleared') {
+      if (e.action !== 'set' && e.action !== 'cleared') {
         errors.push({ path: `${at}.action`, message: "swimlane_change requires action 'set' or 'cleared'" });
       }
       break;
     default:
-      errors.push({ path: `${at}.type`, message: `unknown history entry type '${entry.type}'` });
+      errors.push({ path: `${at}.type`, message: `unknown history entry type '${e.type}'` });
   }
 
   return errors;
@@ -123,14 +125,14 @@ export function validateSubtasks(subtasks: unknown): TicketValidationError[] {
   }
   const errors: TicketValidationError[] = [];
   for (let i = 0; i < subtasks.length; i++) {
-    const entry = subtasks[i];
+    const entry: unknown = subtasks[i];
     const at = `subtasks[${i}]`;
     if (typeof entry === 'string') {
       if (!entry.trim()) errors.push({ path: at, message: 'empty subtask id' });
       continue;
     }
     if (entry && typeof entry === 'object') {
-      if (!isNonEmptyString((entry as any).id)) {
+      if (!isNonEmptyString((entry as Record<string, unknown>).id)) {
         errors.push({ path: at, message: 'inline subtask object missing id field — will be silently dropped on load' });
       }
       continue;
@@ -147,14 +149,14 @@ export function validateLinks(links: unknown): TicketValidationError[] {
   }
   const errors: TicketValidationError[] = [];
   for (let i = 0; i < links.length; i++) {
-    const entry = links[i];
+    const entry: unknown = links[i];
     const at = `links[${i}]`;
     if (!entry || typeof entry !== 'object') {
       errors.push({ path: at, message: `link must be an object, got ${typeof entry}` });
       continue;
     }
-    const e = entry as any;
-    if (!isNonEmptyString(e.type) || !RELATION_TYPES.has(e.type)) {
+    const e = entry as Record<string, unknown>;
+    if (!isNonEmptyString(e.type) || !RELATION_TYPES.has(e.type as RelationType)) {
       errors.push({ path: `${at}.type`, message: `link type must be one of: ${[...RELATION_TYPES].join(', ')}` });
     }
     if (!isNonEmptyString(e.target)) {
@@ -167,48 +169,50 @@ export function validateLinks(links: unknown): TicketValidationError[] {
   return errors;
 }
 
-export function validateTicketFrontmatter(fm: any): TicketValidationError[] {
+export function validateTicketFrontmatter(fm: unknown): TicketValidationError[] {
   const errors: TicketValidationError[] = [];
 
   if (!fm || typeof fm !== 'object') {
     return [{ path: '', message: 'frontmatter must be an object' }];
   }
 
-  if (!isNonEmptyString(fm.title)) {
+  const f = fm as Record<string, unknown>;
+
+  if (!isNonEmptyString(f.title)) {
     errors.push({ path: 'title', message: 'missing or empty title' });
   }
-  if (fm.status != null && !isNonEmptyString(fm.status)) {
-    errors.push({ path: 'status', message: 'status must be a non-empty string when present' });
+  if (!isNonEmptyString(f.status)) {
+    errors.push({ path: 'status', message: 'missing or empty status' });
   }
 
   // FLUX-657: a tombstone pointer on a merged-away source ticket (set by the `merge` verb) —
   // the survivor ticket id this card was folded into. Optional; a non-empty string when present.
-  if (fm.mergedInto != null && !isNonEmptyString(fm.mergedInto)) {
+  if (f.mergedInto != null && !isNonEmptyString(f.mergedInto)) {
     errors.push({ path: 'mergedInto', message: 'mergedInto must be a non-empty string when present' });
   }
 
-  if (fm.tags != null) {
-    if (!Array.isArray(fm.tags)) {
+  if (f.tags != null) {
+    if (!Array.isArray(f.tags)) {
       errors.push({ path: 'tags', message: 'tags must be an array' });
     } else {
-      fm.tags.forEach((t: any, i: number) => {
+      f.tags.forEach((t: unknown, i: number) => {
         if (typeof t !== 'string') errors.push({ path: `tags[${i}]`, message: 'tag must be a string' });
       });
     }
   }
 
-  if (fm.history != null) {
-    if (!Array.isArray(fm.history)) {
+  if (f.history != null) {
+    if (!Array.isArray(f.history)) {
       errors.push({ path: 'history', message: 'history must be an array' });
     } else {
-      fm.history.forEach((entry: any, i: number) => {
+      f.history.forEach((entry: unknown, i: number) => {
         errors.push(...validateHistoryEntry(entry, i));
       });
     }
   }
 
-  errors.push(...validateSubtasks(fm.subtasks));
-  errors.push(...validateLinks(fm.links));
+  errors.push(...validateSubtasks(f.subtasks));
+  errors.push(...validateLinks(f.links));
 
   return errors;
 }

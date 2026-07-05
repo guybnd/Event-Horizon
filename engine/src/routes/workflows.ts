@@ -16,7 +16,7 @@ router.get('/', async (_req, res) => {
   try {
     const workflows = await loadWorkflows();
     res.json(workflows);
-  } catch (err) {
+  } catch (_err) {
     res.status(500).json({ error: 'Failed to load workflows' });
   }
 });
@@ -31,7 +31,7 @@ router.get('/:id', async (req, res) => {
     const workflow = workflows.find(w => w.id === req.params.id);
     if (!workflow) return res.status(404).json({ error: 'Workflow not found' });
     res.json(workflow);
-  } catch (err) {
+  } catch (_err) {
     res.status(500).json({ error: 'Failed to load workflow' });
   }
 });
@@ -53,7 +53,7 @@ router.post('/', async (req, res) => {
 
     await saveWorkflow(workflow);
     res.status(201).json(workflow);
-  } catch (err) {
+  } catch (_err) {
     res.status(500).json({ error: 'Failed to create workflow' });
   }
 });
@@ -80,7 +80,7 @@ router.put('/:id', async (req, res) => {
 
     await saveWorkflow(updated);
     res.json(updated);
-  } catch (err) {
+  } catch (_err) {
     res.status(500).json({ error: 'Failed to update workflow' });
   }
 });
@@ -93,7 +93,7 @@ router.delete('/:id', async (req, res) => {
     const deleted = await deleteWorkflow(req.params.id);
     if (!deleted) return res.status(404).json({ error: 'Workflow not found' });
     res.json({ ok: true });
-  } catch (err) {
+  } catch (_err) {
     res.status(500).json({ error: 'Failed to delete workflow' });
   }
 });

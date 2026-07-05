@@ -74,7 +74,7 @@ export function validateGitRemote(raw: unknown, opts: { allowLocal?: boolean | u
   }
 
   // Control characters are never legitimate in a remote.
-  if (/[\x00-\x1f]/.test(url)) {
+  if (Array.from(url).some((ch) => (ch.codePointAt(0) ?? 0) <= 0x1f)) {
     return { ok: false, reason: 'remote contains illegal characters' };
   }
 
@@ -102,7 +102,7 @@ export function validateGitRemote(raw: unknown, opts: { allowLocal?: boolean | u
 
   // Shell metacharacters in a remote URL. We never use a shell (execFile), but
   // reject them anyway as a defense-in-depth signal of a malformed/hostile URL.
-  if (/[\s;&|`$(){}<>\\^!*?\[\]"']/.test(url)) {
+  if (/[\s;&|`$(){}<>\\^!*?[\]"']/.test(url)) {
     return { ok: false, reason: 'remote contains illegal characters' };
   }
 
@@ -348,8 +348,9 @@ async function registerOne(
     // shows something meaningful instead of the bare folder basename.
     await registerWorkspace(target, name);
     return { path: target, name, kind, ok: true, alreadyRegistered: false };
-  } catch (err: any) {
-    return { path: target, name, kind, ok: false, alreadyRegistered: false, error: err?.message ? String(err.message) : String(err) };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { path: target, name, kind, ok: false, alreadyRegistered: false, error: message };
   }
 }
 
@@ -418,12 +419,13 @@ export async function applyGroupSetup(
           error: 'checkout missing; auto-clone not performed in this slice',
         });
       }
-    } catch (err: any) {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       members.push({
         name: planned.name,
         action: planned.action,
         ok: false,
-        error: err?.message ? String(err.message) : String(err),
+        error: message,
       });
     }
   }

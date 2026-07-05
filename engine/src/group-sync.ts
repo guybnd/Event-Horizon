@@ -33,8 +33,8 @@ async function gitWithRetry(runner: GitRunner, cwd: string, args: string[], maxR
   while (attempts < maxRetries) {
     try {
       return await runner(cwd, args);
-    } catch (err: any) {
-      const msg = err?.message || String(err);
+    } catch (err) {
+      const msg = err instanceof Error ? (err.message || String(err)) : String(err);
       if (msg.includes('index.lock') && attempts < maxRetries - 1) {
         await new Promise((r) => setTimeout(r, 1000));
         attempts++;
@@ -188,8 +188,8 @@ export async function fanOutGroupDocs(
       // Non-force push by URL → fast-forward only; git rejects a diverged member.
       await runner(group.parentRoot, ['push', member.remote, refspec]);
       results.push({ name: member.name, remote: member.remote, ok: true });
-    } catch (err: any) {
-      const message = err?.message ? String(err.message) : String(err);
+    } catch (err) {
+      const message = err instanceof Error ? String(err.message) : String(err);
       results.push({
         name: member.name,
         remote: member.remote,

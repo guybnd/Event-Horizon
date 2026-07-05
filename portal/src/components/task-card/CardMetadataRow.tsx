@@ -4,6 +4,7 @@ import type { Task } from '../../types';
 import { StatusBadge } from '../StatusBadge';
 import { reviewChip } from '../ReviewChip';
 import { getStatusColorClass } from '../../statusStyles';
+import { normalizeStatus } from '../../workflow';
 import type { TaskCardController } from '../../hooks/useTaskCardController';
 
 
@@ -100,7 +101,7 @@ export function CardMetadataRow({ task, isOverlay, c }: { task: Task; isOverlay?
         </span>
         {timeInColumn && !isOverlay && (
           <span
-            title={`In "${task.status}" for ${timeInColumn}`}
+            title={`In "${normalizeStatus(task.status)}" for ${timeInColumn}`}
             className="rounded-full bg-gray-100 px-1.5 py-0.5 text-[9px] font-semibold tabular-nums text-gray-400 dark:bg-white/5 dark:text-gray-500"
           >
             {timeInColumn}
@@ -111,7 +112,7 @@ export function CardMetadataRow({ task, isOverlay, c }: { task: Task; isOverlay?
             overlay, releases screen, swimlane reuse. */}
         {!hideStatusBadge && (
           <StatusBadge
-            status={task.status}
+            status={normalizeStatus(task.status)}
             colorClass={getStatusColorClass(config, task.status)}
             className="text-[9px] font-bold uppercase tracking-[0.12em]"
           />

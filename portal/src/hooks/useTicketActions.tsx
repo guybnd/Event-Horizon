@@ -36,6 +36,7 @@ import { type OrchestrationLaunchPlan } from '../components/OrchestrationLaunche
 import {
   actionsForStatus,
   changeTaskStatus,
+  isMissingCommentError,
   type LaunchTemplateOption,
   type TicketAction,
   type TicketActionContext,
@@ -188,12 +189,12 @@ export function useTicketActions(task: Task): UseTicketActions {
       await changeTaskStatus(task, newStatus, currentUser, { comment });
     } catch (err) {
       // Reactive: the engine rejects Ready/Require Input without a comment. Prompt + retry once.
-      const msg = err instanceof Error ? err.message : String(err);
-      if (/MISSING_COMMENT|comment is required/i.test(msg) && !comment) {
+      if (isMissingCommentError(err) && !comment) {
         const entered = window.prompt(`A comment is required to move ${task.id} to "${newStatus}":`);
         if (entered === null || !entered.trim()) return;
         await changeTaskStatus(task, newStatus, currentUser, { comment: entered.trim() });
       } else {
+        const msg = err instanceof Error ? err.message : String(err);
         alert(`Failed to move ${task.id}: ${msg}`);
         return;
       }
@@ -255,7 +256,7 @@ export function useTicketActions(task: Task): UseTicketActions {
   // `git add -A`. A clean tree (nothing to commit) falls back to the agent finish, which can sort out
   // an already-committed or empty case. ──
   const finishViaEngine = async () => {
-    let files: string[] = [];
+    let files: string[];
     try {
       const overview = await fetchDiffOverview(true);
       const mainGroup = overview.groups.find((g) => g.kind === 'main');
@@ -348,7 +349,7 @@ export function useTicketActions(task: Task): UseTicketActions {
       status: 'In Progress',
       appendHistory: [{ type: 'comment', user: currentUser, comment }],
       updatedBy: currentUser,
-    } as Partial<Task>);
+    });
     triggerRefresh();
   };
 

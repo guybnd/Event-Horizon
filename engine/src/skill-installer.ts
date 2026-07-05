@@ -6,7 +6,6 @@ import { getWorkflowInstallStatus, installWorkspaceWorkflow } from './workflow-i
 type Framework = 'auto' | 'copilot' | 'antigravity' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'generic';
 
 const __dir = (() => {
-  // @ts-ignore — __dirname exists in CJS bundles
   if (typeof __dirname === 'string' && path.isAbsolute(__dirname)) return __dirname;
   try { return path.dirname(fileURLToPath(import.meta.url)); } catch {}
   return path.join(process.cwd(), 'src');

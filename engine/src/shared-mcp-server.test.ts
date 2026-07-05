@@ -1,5 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import net from 'net';
+import os from 'os';
+import path from 'path';
 import { substituteArgs, isSharedHttpPlatformProven, ensureSharedServer, getSharedServerUrl, serverKey, evictSharedServersForPath, mcpHandshakeOk } from './shared-mcp-server.js';
 import type { ModuleDeclaration } from './modules.js';
 
@@ -83,6 +85,42 @@ describe('evictSharedServersForPath (FLUX-579)', () => {
   it('returns 0 for an empty path', () => {
     expect(evictSharedServersForPath('')).toBe(0);
   });
+
+  it('kills and refuses to register a server whose path is evicted mid-handshake (FLUX-929)', async () => {
+    if (process.platform !== 'win32') return; // ensureSharedServer only spawns on proven platforms (win32 by default)
+
+    const projectPath = path.join(os.tmpdir(), `flux-929-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    // Fixture "shared server": only starts answering the MCP handshake after a delay,
+    // so there's a real window where ensureSharedServer is inflight (registered in
+    // `inflight`, not yet in `servers`) for the test to evict its path during —
+    // reproducing the FLUX-579 race this ticket hardens against. Single line and
+    // quoted as one shell token: ensureSharedServer always spawns with `shell: true`
+    // on win32, which (Node >= 20) concatenates args WITHOUT escaping them, so an
+    // unquoted multi-line/spaced script gets split apart by cmd.exe and fails to
+    // parse as JS. Uses the bare `node` command (relying on PATH), not
+    // `process.execPath` — cmd.exe's unescaped concatenation also breaks on an
+    // unquoted `command` containing spaces (e.g. "C:\Program Files\nodejs\node.exe").
+    const script = "const http=require('http');setTimeout(()=>{const srv=http.createServer((req,res)=>{res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify({jsonrpc:'2.0',id:1,result:{}}));});srv.listen(${PORT},'127.0.0.1');},2000);";
+    const m: ModuleDeclaration = {
+      id: 'flux-929-race',
+      name: 'FLUX-929 race fixture',
+      description: '',
+      enabled: true,
+      sharedHttp: { command: 'node', args: ['-e', `"${script}"`] },
+    };
+
+    const startPromise = ensureSharedServer(m, projectPath);
+
+    // Let ensureSharedServer spawn and register in `inflight` — well before the
+    // fixture's own 2s handshake delay — then evict while it's still starting.
+    await new Promise(r => setTimeout(r, 300));
+    evictSharedServersForPath(projectPath);
+
+    const result = await startPromise;
+
+    expect(result).toBeNull();
+    expect(getSharedServerUrl('flux-929-race', projectPath)).toBeNull();
+  }, 15_000);
 });
 
 describe('mcpHandshakeOk (FLUX-1004: bounded single attempt)', () => {

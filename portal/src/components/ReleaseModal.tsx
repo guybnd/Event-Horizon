@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { X, Loader2 } from 'lucide-react';
 import { updateTask, fetchDoc, updateDoc, createDoc } from '../api';
 import type { Task } from '../types';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 
 interface ReleaseModalProps {
   tasks: Task[];
@@ -17,13 +18,11 @@ export function ReleaseModal({ tasks: initialTasks, onClose }: ReleaseModalProps
   const [version, setVersion] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose]);
+  // FLUX-1022: route Escape through the shared stack instead of a standalone listener, so it
+  // coordinates with other overlays (e.g. a floating chat window open at the same time) instead of
+  // both eating the same keypress. ignoreWhenTyping: false — the autofocused Version input has no
+  // competing local Escape behavior, so the default typing guard would just disable ESC-to-close.
+  useEscapeKey(onClose, { ignoreWhenTyping: false });
 
   const handleRelease = async () => {
     if (!version.trim() || selectedTasks.size === 0) return;

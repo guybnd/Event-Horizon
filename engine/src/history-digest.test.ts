@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { digestHistoryForAgent, digestTerminalSessionProgress, compactSessionProgress, normalizeHistoryEntries, buildHistoryDigest } from './history.js';
+import {
+  digestHistoryForAgent, digestTerminalSessionProgress, compactSessionProgress, normalizeHistoryEntries, buildHistoryDigest,
+  type HistoryEntryLike, type AgentSessionProgress,
+} from './history.js';
 
 function sessionEntry(sessionId: string, progressEntries: number) {
   return {
@@ -27,10 +30,10 @@ describe('digestHistoryForAgent', () => {
   it('drops progress arrays from agent_session entries and adds progressCount', () => {
     const { history } = digestHistoryForAgent([sessionEntry('s1', 500)], 20);
     expect(history).toHaveLength(1);
-    expect(history[0].progress).toBeUndefined();
-    expect(history[0].progressCount).toBe(500);
-    expect(history[0].sessionId).toBe('s1');
-    expect(history[0].outcome).toBe('Implemented the thing');
+    expect(history[0]!.progress).toBeUndefined();
+    expect(history[0]!.progressCount).toBe(500);
+    expect(history[0]!.sessionId).toBe('s1');
+    expect(history[0]!.outcome).toBe('Implemented the thing');
   });
 
   it('drops status_change entries but keeps comments and activity (FLUX-499)', () => {
@@ -48,8 +51,8 @@ describe('digestHistoryForAgent', () => {
     const entries = Array.from({ length: 30 }, (_, i) => comment(`c${i}`, `2026-06-${String(i + 1).padStart(2, '0')}T00:00:00.000Z`));
     const { history, olderHistoryEntries } = digestHistoryForAgent(entries, 20);
     expect(history).toHaveLength(20);
-    expect(history[0].comment).toBe('c10');
-    expect(history[19].comment).toBe('c29');
+    expect(history[0]!.comment).toBe('c10');
+    expect(history[19]!.comment).toBe('c29');
     expect(olderHistoryEntries).toBe(10);
   });
 
@@ -69,23 +72,23 @@ describe('digestHistoryForAgent', () => {
 
   it('tolerates malformed entries and missing progress', () => {
     const entries = [null, 'garbage', { type: 'agent_session', sessionId: 's1', user: 'X', date: 'd' }];
-    const { history } = digestHistoryForAgent(entries as any[], 20);
+    const { history } = digestHistoryForAgent(entries, 20);
     expect(history[0]).toBeNull();
     expect(history[1]).toBe('garbage');
-    expect(history[2].progressCount).toBe(0);
+    expect(history[2]!.progressCount).toBe(0);
   });
 
   it('enforces a minimum window of 1', () => {
     const entries = [comment('a', '2026-06-01T00:00:00.000Z'), comment('b', '2026-06-02T00:00:00.000Z')];
     const { history, olderHistoryEntries } = digestHistoryForAgent(entries, 0);
     expect(history).toHaveLength(1);
-    expect(history[0].comment).toBe('b');
+    expect(history[0]!.comment).toBe('b');
     expect(olderHistoryEntries).toBe(1);
   });
 });
 
 describe('digestHistoryForAgent — summary-gated collapse (FLUX-503)', () => {
-  const c = (text: string, date: string, extra: Record<string, any> = {}) =>
+  const c = (text: string, date: string, extra: Record<string, unknown> = {}) =>
     ({ type: 'comment', user: 'Agent', comment: text, date, id: `c-${date}`, ...extra });
 
   it('collapses older agent comments that have a summary, keeps last keepRecent full', () => {
@@ -99,9 +102,9 @@ describe('digestHistoryForAgent — summary-gated collapse (FLUX-503)', () => {
     const { history, collapsedCount } = digestHistoryForAgent(entries, 20, 3);
     expect(collapsedCount).toBe(2);
     expect(history[0]).toMatchObject({ collapsed: true, summary: 'old: did X', id: 'c-2026-06-01T00:00:00.000Z' });
-    expect(history[0].comment).toBeUndefined(); // full body dropped
-    expect(history[2].comment).toBe('r1'); // last 3 kept full
-    expect(history[4].comment).toBe('r3');
+    expect(history[0]!.comment).toBeUndefined(); // full body dropped
+    expect(history[2]!.comment).toBe('r1'); // last 3 kept full
+    expect(history[4]!.comment).toBe('r3');
   });
 
   it('never collapses an entry without a summary (no forced truncation)', () => {
@@ -111,7 +114,7 @@ describe('digestHistoryForAgent — summary-gated collapse (FLUX-503)', () => {
     ];
     const { history, collapsedCount } = digestHistoryForAgent(entries, 20, 3);
     expect(collapsedCount).toBeUndefined();
-    expect(history[0].comment).toBe('old, no summary');
+    expect(history[0]!.comment).toBe('old, no summary');
   });
 
   it('never collapses a pinned entry even when old', () => {
@@ -121,8 +124,8 @@ describe('digestHistoryForAgent — summary-gated collapse (FLUX-503)', () => {
     ];
     const { history, collapsedCount } = digestHistoryForAgent(entries, 20, 3);
     expect(collapsedCount).toBeUndefined();
-    expect(history[0].comment).toBe('pinned old');
-    expect(history[0].pin).toBe(true);
+    expect(history[0]!.comment).toBe('pinned old');
+    expect(history[0]!.pin).toBe(true);
   });
 
   it('keepRecent=0 collapses every summarized entry', () => {
@@ -132,7 +135,7 @@ describe('digestHistoryForAgent — summary-gated collapse (FLUX-503)', () => {
     ];
     const { history, collapsedCount } = digestHistoryForAgent(entries, 20, 0);
     expect(collapsedCount).toBe(2);
-    expect(history.every((e: any) => e.collapsed)).toBe(true);
+    expect(history.every((e: HistoryEntryLike) => e.collapsed)).toBe(true);
   });
 
   it('expand un-collapses only the named ids (FLUX-504)', () => {
@@ -142,9 +145,9 @@ describe('digestHistoryForAgent — summary-gated collapse (FLUX-503)', () => {
       c('r1', '2026-06-03T00:00:00.000Z'), c('r2', '2026-06-04T00:00:00.000Z'), c('r3', '2026-06-05T00:00:00.000Z'),
     ];
     const { history } = digestHistoryForAgent(entries, 20, 3, { expand: ['c-2026-06-01T00:00:00.000Z'] });
-    expect(history[0].comment).toContain('old A body'); // expanded → full
-    expect(history[0].collapsed).toBeUndefined();
-    expect(history[1].collapsed).toBe(true); // still collapsed
+    expect(history[0]!.comment).toContain('old A body'); // expanded → full
+    expect(history[0]!.collapsed).toBeUndefined();
+    expect(history[1]!.collapsed).toBe(true); // still collapsed
   });
 
   it('fullHistory returns everything uncollapsed (FLUX-504)', () => {
@@ -155,8 +158,8 @@ describe('digestHistoryForAgent — summary-gated collapse (FLUX-503)', () => {
     ];
     const { history, collapsedCount } = digestHistoryForAgent(entries, 20, 3, { fullHistory: true });
     expect(collapsedCount).toBeUndefined();
-    expect(history.every((e: any) => !e.collapsed)).toBe(true);
-    expect(history[0].comment).toContain('old A body');
+    expect(history.every((e: HistoryEntryLike) => !e.collapsed)).toBe(true);
+    expect(history[0]!.comment).toContain('old A body');
   });
 
   it('does not collapse a summarized entry that has no id (FLUX-504 safety)', () => {
@@ -164,8 +167,8 @@ describe('digestHistoryForAgent — summary-gated collapse (FLUX-503)', () => {
     const entries = [noId, c('a', '2026-06-02T00:00:00.000Z'), c('b', '2026-06-03T00:00:00.000Z'), c('d', '2026-06-04T00:00:00.000Z')];
     const { history, collapsedCount } = digestHistoryForAgent(entries, 20, 3);
     expect(collapsedCount).toBeUndefined(); // id-less entry never collapses
-    expect(history[0].comment).toContain('long body'); // kept full
-    expect(history[0].collapsed).toBeUndefined();
+    expect(history[0]!.comment).toContain('long body'); // kept full
+    expect(history[0]!.collapsed).toBeUndefined();
   });
 
   it('collapses old agent_session entries to their outcome, keeping sessionId (FLUX-507)', () => {
@@ -176,7 +179,7 @@ describe('digestHistoryForAgent — summary-gated collapse (FLUX-503)', () => {
     const { history, collapsedCount } = digestHistoryForAgent(entries, 20, 3);
     expect(collapsedCount).toBe(1);
     expect(history[0]).toMatchObject({ type: 'agent_session', sessionId: 's-old', summary: 'Implemented the thing', collapsed: true });
-    expect(history[0].progress).toBeUndefined();
+    expect(history[0]!.progress).toBeUndefined();
   });
 });
 
@@ -185,8 +188,8 @@ describe('activity entry ids + collapse (FLUX-526)', () => {
     const { history } = normalizeHistoryEntries([
       { type: 'activity', user: 'Agent', date: '2026-06-01T10:00:00.000Z', comment: 'note' },
     ]);
-    expect(typeof history[0].id).toBe('string');
-    expect(history[0].id).toMatch(/^a-/);
+    expect(typeof history[0]!.id).toBe('string');
+    expect(history[0]!.id).toMatch(/^a-/);
   });
 
   it('collapses an old summarized activity entry and round-trips via expand', () => {
@@ -199,12 +202,12 @@ describe('activity entry ids + collapse (FLUX-526)', () => {
     // keepRecent=1 → indices 0 and 1 are "old"; the summarized activity at 0 collapses.
     const { history: digested } = digestHistoryForAgent(history, 20, 1);
     expect(digested[0]).toMatchObject({ type: 'activity', summary: 'did the thing', id, collapsed: true });
-    expect(digested[0].comment).toBeUndefined();
+    expect(digested[0]!.comment).toBeUndefined();
 
     // expand:[id] recovers the full text.
     const { history: expanded } = digestHistoryForAgent(history, 20, 1, { expand: [id] });
-    expect(expanded[0].comment).toContain('full long progress note');
-    expect(expanded[0].collapsed).toBeUndefined();
+    expect(expanded[0]!.comment).toContain('full long progress note');
+    expect(expanded[0]!.collapsed).toBeUndefined();
   });
 
   it('keeps a summary-less activity entry full even though it now has an id', () => {
@@ -215,15 +218,15 @@ describe('activity entry ids + collapse (FLUX-526)', () => {
       { type: 'comment', user: 'guybnd', date: '2026-06-01T11:30:00.000Z', comment: 'r2', id: 'c-2' },
     ];
     const { history: digested } = digestHistoryForAgent(history, 20, 1);
-    expect(digested[0].collapsed).toBeUndefined();
-    expect(digested[0].comment).toBe('Created ticket.');
+    expect(digested[0]!.collapsed).toBeUndefined();
+    expect(digested[0]!.comment).toBe('Created ticket.');
   });
 });
 
 describe('temporal supersession (FLUX-811)', () => {
-  const agentC = (text: string, date: string, extra: Record<string, any> = {}) =>
+  const agentC = (text: string, date: string, extra: Record<string, unknown> = {}) =>
     ({ type: 'comment', user: 'Agent', comment: text, date, id: `c-${date}`, ...extra });
-  const userC = (text: string, date: string, extra: Record<string, any> = {}) =>
+  const userC = (text: string, date: string, extra: Record<string, unknown> = {}) =>
     ({ type: 'comment', user: 'guybnd', comment: text, date, id: `c-${date}`, ...extra });
 
   it('collapses a superseded agent entry to a marker even when recent (window-independent)', () => {
@@ -235,8 +238,8 @@ describe('temporal supersession (FLUX-811)', () => {
     const { history, collapsedCount } = digestHistoryForAgent(entries, 20, 3);
     expect(collapsedCount).toBe(1);
     expect(history[0]).toMatchObject({ supersededBy: 'c-2026-06-02T00:00:00.000Z', collapsed: true, id: 'c-2026-06-01T00:00:00.000Z' });
-    expect(history[0].comment).toBeUndefined(); // dead body dropped
-    expect(history[1].comment).toBe('abandoned A, going with B'); // live entry full
+    expect(history[0]!.comment).toBeUndefined(); // dead body dropped
+    expect(history[1]!.comment).toBe('abandoned A, going with B'); // live entry full
   });
 
   it('keeps the marker carrying the superseded entry summary when present', () => {
@@ -246,7 +249,7 @@ describe('temporal supersession (FLUX-811)', () => {
     ];
     const { history } = digestHistoryForAgent(entries, 20, 3);
     expect(history[0]).toMatchObject({ collapsed: true, summary: 'plan A' });
-    expect(history[0].comment).toBeUndefined();
+    expect(history[0]!.comment).toBeUndefined();
   });
 
   it('keeps a superseded USER comment full with an advisory (authority before recency)', () => {
@@ -256,9 +259,9 @@ describe('temporal supersession (FLUX-811)', () => {
     ];
     const { history, collapsedCount } = digestHistoryForAgent(entries, 20, 3);
     expect(collapsedCount).toBeUndefined(); // user target not collapsed
-    expect(history[0].comment).toBe('do it this way');
-    expect(history[0].collapsed).toBeUndefined();
-    expect(history[0].supersededByAdvisory).toBe('c-2026-06-02T00:00:00.000Z');
+    expect(history[0]!.comment).toBe('do it this way');
+    expect(history[0]!.collapsed).toBeUndefined();
+    expect(history[0]!.supersededByAdvisory).toBe('c-2026-06-02T00:00:00.000Z');
   });
 
   it('keeps a superseded PINNED agent entry full with an advisory', () => {
@@ -268,9 +271,9 @@ describe('temporal supersession (FLUX-811)', () => {
     ];
     const { history, collapsedCount } = digestHistoryForAgent(entries, 20, 3);
     expect(collapsedCount).toBeUndefined();
-    expect(history[0].comment).toBe('pinned key decision');
-    expect(history[0].collapsed).toBeUndefined();
-    expect(history[0].supersededByAdvisory).toBe('c-2026-06-02T00:00:00.000Z');
+    expect(history[0]!.comment).toBe('pinned key decision');
+    expect(history[0]!.collapsed).toBeUndefined();
+    expect(history[0]!.supersededByAdvisory).toBe('c-2026-06-02T00:00:00.000Z');
   });
 
   it('expand:[id] recovers a superseded entry full text', () => {
@@ -279,8 +282,8 @@ describe('temporal supersession (FLUX-811)', () => {
       agentC('replaced', '2026-06-02T00:00:00.000Z', { supersedes: ['c-2026-06-01T00:00:00.000Z'] }),
     ];
     const { history } = digestHistoryForAgent(entries, 20, 3, { expand: ['c-2026-06-01T00:00:00.000Z'] });
-    expect(history[0].comment).toBe('the original detailed plan');
-    expect(history[0].collapsed).toBeUndefined();
+    expect(history[0]!.comment).toBe('the original detailed plan');
+    expect(history[0]!.collapsed).toBeUndefined();
   });
 
   it('ignores a supersedes link that points forward (not yet superseded)', () => {
@@ -291,25 +294,25 @@ describe('temporal supersession (FLUX-811)', () => {
     ];
     const { history, collapsedCount } = digestHistoryForAgent(entries, 20, 3);
     expect(collapsedCount).toBeUndefined();
-    expect(history[1].comment).toBe('second');
+    expect(history[1]!.comment).toBe('second');
   });
 
   it('normalizeHistoryEntries coerces a string supersedes and drops dangling ids', () => {
     const { history, changed } = normalizeHistoryEntries([
       { type: 'comment', user: 'Agent', comment: 'x', date: '2026-06-01T00:00:00.000Z', id: 'c-a' },
-      { type: 'comment', user: 'Agent', comment: 'y', date: '2026-06-02T00:00:00.000Z', id: 'c-b', supersedes: 'c-a' as any },
+      { type: 'comment', user: 'Agent', comment: 'y', date: '2026-06-02T00:00:00.000Z', id: 'c-b', supersedes: 'c-a' },
       { type: 'comment', user: 'Agent', comment: 'z', date: '2026-06-03T00:00:00.000Z', id: 'c-c', supersedes: ['c-a', 'ghost', 'c-c'] },
     ]);
     expect(changed).toBe(true);
-    expect(history[1].supersedes).toEqual(['c-a']);      // string coerced to array
-    expect(history[2].supersedes).toEqual(['c-a']);      // 'ghost' (dangling) + self-ref dropped
+    expect(history[1]!.supersedes).toEqual(['c-a']);      // string coerced to array
+    expect(history[2]!.supersedes).toEqual(['c-a']);      // 'ghost' (dangling) + self-ref dropped
   });
 
   it('normalizeHistoryEntries removes supersedes entirely when no id matches', () => {
     const { history } = normalizeHistoryEntries([
       { type: 'comment', user: 'Agent', comment: 'y', date: '2026-06-02T00:00:00.000Z', id: 'c-b', supersedes: ['ghost'] },
     ]);
-    expect(history[0].supersedes).toBeUndefined();
+    expect(history[0]!.supersedes).toBeUndefined();
   });
 });
 
@@ -321,13 +324,13 @@ describe('digestTerminalSessionProgress', () => {
 
     const result = digestTerminalSessionProgress([active, done, failed]);
 
-    expect(result[0].progress).toHaveLength(40); // untouched — SSE appends into it
-    expect(result[0].progressCount).toBeUndefined();
-    expect(result[1].progress).toBeUndefined();
-    expect(result[1].progressCount).toBe(700);
-    expect(result[1].outcome).toBe('Implemented the thing');
-    expect(result[2].progress).toBeUndefined();
-    expect(result[2].progressCount).toBe(300);
+    expect(result[0]!.progress).toHaveLength(40); // untouched — SSE appends into it
+    expect(result[0]!.progressCount).toBeUndefined();
+    expect(result[1]!.progress).toBeUndefined();
+    expect(result[1]!.progressCount).toBe(700);
+    expect(result[1]!.outcome).toBe('Implemented the thing');
+    expect(result[2]!.progress).toBeUndefined();
+    expect(result[2]!.progressCount).toBe(300);
   });
 
   it('passes comments, status changes, and malformed entries through untouched', () => {
@@ -336,13 +339,13 @@ describe('digestTerminalSessionProgress', () => {
       { type: 'status_change', from: 'Todo', to: 'Done', user: 'X', date: 'd' },
       null,
     ];
-    expect(digestTerminalSessionProgress(entries as any[])).toEqual(entries);
+    expect(digestTerminalSessionProgress(entries)).toEqual(entries);
   });
 });
 
 describe('buildHistoryDigest (FLUX-725)', () => {
   const NOW = Date.parse('2026-06-10T12:00:00.000Z');
-  const sc = (from: string, to: string, date: string, extra: Record<string, any> = {}) =>
+  const sc = (from: string, to: string, date: string, extra: Record<string, unknown> = {}) =>
     ({ type: 'status_change', from, to, user: 'Agent', date, ...extra });
 
   it('derives length, lastEntry, and lastActivityAt (max date, even when unsorted)', () => {
@@ -423,17 +426,18 @@ describe('buildHistoryDigest (FLUX-725)', () => {
   it('tolerates malformed entries and empty history', () => {
     const empty = buildHistoryDigest([], 'Todo', null, NOW);
     expect(empty).toMatchObject({ length: 0, lastEntry: null, lastActivityAt: '', enteredCurrentStatusAt: null, isSpeedDemon: false, statusChanges24h: [], comments: [], requireInput: null });
-    const d = buildHistoryDigest([null, 'garbage', { type: 'status_change' }] as any[], 'Todo', null, NOW);
+    const d = buildHistoryDigest([null, 'garbage', { type: 'status_change' }], 'Todo', null, NOW);
     expect(d.length).toBe(3);
     expect(d.statusChanges24h).toEqual([]); // status_change with no from/to/date dropped
   });
 });
 
 describe('compactSessionProgress', () => {
-  const prog = (message: string, type?: string, data?: any) => ({ timestamp: '2026-06-01T10:00:00.000Z', message, ...(type ? { type } : {}), ...(data ? { data } : {}) });
+  const prog = (message: string, type?: AgentSessionProgress['type'], data?: unknown): AgentSessionProgress =>
+    ({ timestamp: '2026-06-01T10:00:00.000Z', message, ...(type ? { type } : {}), ...(data ? { data } : {}) });
 
   it('keeps milestones and the text tail, promotes the last text chunk to finalMessage', () => {
-    const entry: any = {
+    const entry: HistoryEntryLike = {
       type: 'agent_session',
       sessionId: 's1',
       status: 'completed',
@@ -448,7 +452,7 @@ describe('compactSessionProgress', () => {
     };
     compactSessionProgress(entry);
 
-    expect(entry.progress.map((p: any) => p.message)).toEqual([
+    expect(entry.progress!.map((p) => p.message)).toEqual([
       'Running tests',
       'New topic: validation',
       'chunk 3',
@@ -459,7 +463,7 @@ describe('compactSessionProgress', () => {
   });
 
   it('keeps error-looking entries and untyped chunks count as text', () => {
-    const entry: any = {
+    const entry: HistoryEntryLike = {
       type: 'agent_session',
       sessionId: 's1',
       status: 'failed',
@@ -472,7 +476,7 @@ describe('compactSessionProgress', () => {
       ],
     };
     compactSessionProgress(entry);
-    const messages = entry.progress.map((p: any) => p.message);
+    const messages = entry.progress!.map((p) => p.message);
     expect(messages).toContain('Error: build failed');
     expect(messages).toContain('tail-1');
     expect(messages).toContain('tail-2');
@@ -481,12 +485,12 @@ describe('compactSessionProgress', () => {
   });
 
   it('is a no-op on active sessions and stable when re-run on compacted entries', () => {
-    const active: any = { type: 'agent_session', sessionId: 's1', status: 'active', progress: [prog('a', 'text')] };
+    const active: HistoryEntryLike = { type: 'agent_session', sessionId: 's1', status: 'active', progress: [prog('a', 'text')] };
     compactSessionProgress(active);
     expect(active.progress).toHaveLength(1);
     expect(active.originalProgressCount).toBeUndefined();
 
-    const compacted: any = { type: 'agent_session', sessionId: 's2', status: 'completed', progress: [prog('kept', 'tool')], originalProgressCount: 50, finalMessage: 'done' };
+    const compacted: HistoryEntryLike = { type: 'agent_session', sessionId: 's2', status: 'completed', progress: [prog('kept', 'tool')], originalProgressCount: 50, finalMessage: 'done' };
     compactSessionProgress(compacted);
     expect(compacted.originalProgressCount).toBe(50); // max(50, 1)
     expect(compacted.progress).toHaveLength(1);
@@ -495,7 +499,7 @@ describe('compactSessionProgress', () => {
 
   it('compacts progress that arrives after an early terminal write (stop path)', () => {
     // Stop flow: terminal status persisted with empty progress first…
-    const entry: any = { type: 'agent_session', sessionId: 's1', status: 'cancelled', progress: [] };
+    const entry: HistoryEntryLike = { type: 'agent_session', sessionId: 's1', status: 'cancelled', progress: [] };
     compactSessionProgress(entry);
     expect(entry.originalProgressCount).toBe(0);
 
@@ -508,19 +512,19 @@ describe('compactSessionProgress', () => {
       prog('the last words', 'text'),
     ];
     compactSessionProgress(entry);
-    expect(entry.progress.map((p: any) => p.message)).toEqual(['chunk 3', 'Running tests', 'the last words']);
+    expect(entry.progress.map((p) => p.message)).toEqual(['chunk 3', 'Running tests', 'the last words']);
     expect(entry.originalProgressCount).toBe(5);
     expect(entry.finalMessage).toBe('the last words');
   });
 
   it('handles empty or missing progress gracefully', () => {
-    const entry: any = { type: 'agent_session', sessionId: 's1', status: 'completed', progress: [] };
+    const entry: HistoryEntryLike = { type: 'agent_session', sessionId: 's1', status: 'completed', progress: [] };
     compactSessionProgress(entry);
     expect(entry.progress).toEqual([]);
     expect(entry.originalProgressCount).toBe(0);
     expect(entry.finalMessage).toBeUndefined();
 
-    const noProgress: any = { type: 'agent_session', sessionId: 's2', status: 'completed' };
+    const noProgress: HistoryEntryLike = { type: 'agent_session', sessionId: 's2', status: 'completed' };
     compactSessionProgress(noProgress);
     expect(noProgress.originalProgressCount).toBeUndefined();
   });

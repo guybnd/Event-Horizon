@@ -4,7 +4,7 @@ import { configCache } from './config.js';
 import { getActiveFluxDir, workspaceRoot } from './workspace.js';
 
 /** Read the workspace `.mcp.json` server map (host-launched servers, incl. event-horizon). */
-export function getWorkspaceMcpServers(): Record<string, any> {
+export function getWorkspaceMcpServers(): Record<string, Record<string, unknown>> {
   try {
     const file = path.join(workspaceRoot || process.cwd(), '.mcp.json');
     const json = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -61,38 +61,39 @@ const MAX_PROMPT_FRAGMENT_LENGTH = 2000;
  * (missing/empty `command`, non-string `args`) must never reach `.mcp.json`
  * (FLUX-447).
  */
-function isValidMcpServerShape(s: any): boolean {
+function isValidMcpServerShape(s: Record<string, unknown>): boolean {
   return (
     !!s &&
     typeof s.command === 'string' && s.command.trim() !== '' &&
-    Array.isArray(s.args) && s.args.every((a: any) => typeof a === 'string') &&
+    Array.isArray(s.args) && s.args.every((a: unknown) => typeof a === 'string') &&
     (s.env === undefined || (typeof s.env === 'object' && s.env !== null && !Array.isArray(s.env)))
   );
 }
 
-function isValidModule(m: any): m is ModuleDeclaration {
+function isValidModule(m: unknown): m is ModuleDeclaration {
+  if (!m || typeof m !== 'object') return false;
+  const obj = m as Record<string, unknown>;
   const baseValid =
-    m &&
-    typeof m.id === 'string' && m.id.trim() !== '' &&
-    typeof m.name === 'string' &&
-    typeof m.description === 'string' &&
-    typeof m.enabled === 'boolean';
+    typeof obj.id === 'string' && obj.id.trim() !== '' &&
+    typeof obj.name === 'string' &&
+    typeof obj.description === 'string' &&
+    typeof obj.enabled === 'boolean';
   if (!baseValid) return false;
   // A declared mcpServer / sharedHttp must be well-formed — otherwise the module
   // is skipped so a malformed server can't be written into `.mcp.json` (FLUX-447).
-  if (m.mcpServer !== undefined && !isValidMcpServerShape(m.mcpServer)) {
-    console.warn(`[modules] Skipping module "${m.id}" — malformed mcpServer (needs command: string, args: string[])`);
+  if (obj.mcpServer !== undefined && !isValidMcpServerShape(obj.mcpServer as Record<string, unknown>)) {
+    console.warn(`[modules] Skipping module "${obj.id}" — malformed mcpServer (needs command: string, args: string[])`);
     return false;
   }
-  if (m.sharedHttp !== undefined && !isValidMcpServerShape(m.sharedHttp)) {
-    console.warn(`[modules] Skipping module "${m.id}" — malformed sharedHttp (needs command: string, args: string[])`);
+  if (obj.sharedHttp !== undefined && !isValidMcpServerShape(obj.sharedHttp as Record<string, unknown>)) {
+    console.warn(`[modules] Skipping module "${obj.id}" — malformed sharedHttp (needs command: string, args: string[])`);
     return false;
   }
   return true;
 }
 
 export function loadModules(): ModuleDeclaration[] {
-  const raw = (configCache as any).modules;
+  const raw = configCache.modules;
   if (!Array.isArray(raw)) return [];
   return raw.filter(isValidModule);
 }

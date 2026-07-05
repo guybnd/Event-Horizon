@@ -18,6 +18,7 @@ import { WorkspaceSelector } from './components/WorkspaceSelector';
 import { OnboardingWizard } from './components/OnboardingWizard';
 import { FirstBootDialog } from './components/FirstBootDialog';
 import { TerminalPanel } from './components/TerminalPanel';
+import { PerfPanel } from './components/PerfPanel';
 import { fetchFurnaceBatches } from './api';
 import { FURNACE_REFRESH_EVENT } from './furnaceTypes';
 
@@ -131,13 +132,18 @@ function AppContent() {
 
 function App() {
   return (
-    <AppProvider>
-      <DockProvider>
-        <PendingInteractionsProvider>
-          <AppContent />
-        </PendingInteractionsProvider>
-      </DockProvider>
-    </AppProvider>
+    <>
+      <AppProvider>
+        <DockProvider>
+          <PendingInteractionsProvider>
+            <AppContent />
+          </PendingInteractionsProvider>
+        </DockProvider>
+      </AppProvider>
+      {/* FLUX-1134: mounted outside every provider on purpose — a perf debug tool must never
+          subscribe to the app state it's measuring, and it works even pre-onboarding/workspace. */}
+      <PerfPanel />
+    </>
   );
 }
 

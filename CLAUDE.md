@@ -2,9 +2,13 @@
 
 EventHorizon ("Event Horizon" / FLUX) is a local-first, markdown-backed ticket board. The engine is an Express + TypeScript API (`engine/src/`); the portal is a React UI (`portal/src/`). Ticket workflow rules for agents live in [.claude/rules/event-horizon.md](.claude/rules/event-horizon.md) — that file governs how you interact with tickets (always via the `event-horizon` MCP tools, never by editing `.flux/` or `.flux-store/` directly).
 
+## NEVER run the dev stack from an agent session or worktree (FLUX-1117)
+
+Do not run `npm run dev`, `npm run dev:stable`, or `scripts/dev.mjs` when working a ticket — in this repo those commands force-kill whatever holds ports 3067/5167, which is the user's **live engine**: killing it destroys every running agent session (including yours) and can re-bind the board to your checkout's workspace. `dev.mjs` refuses to start inside agent sessions and worktree checkouts — do not work around the guard. Validate with `npm run check` / `npm run typecheck` and targeted tests instead; a portal or engine change never needs its own dev server to be verified. (This is EventHorizon-repo dev hygiene only — it is deliberately NOT part of the installable agent skills, which must stay project-agnostic.)
+
 ## Validating changes — run `npm run check`
 
-After editing code, run **`npm run check`** from the repo root before moving a ticket to `Ready`/`Done`. It is the type-check gate (portal + engine `tsc --noEmit`) and must exit 0 — neither runs as part of `dev` (the engine executes via `tsx`/esbuild, which strip types), so a type error surfaces nowhere else. The VS Code **Problems** panel is wired to the same checks via `.vscode/tasks.json` (run the default build task, "check"). Lint (`npm run lint -w portal`) and the engine test suite are **not** in the gate yet — their baselines are still being burned down (see the lint/test burndown tickets); run them directly when relevant.
+After editing code, run **`npm run check`** from the repo root before moving a ticket to `Ready`/`Done`. It runs the type-check (portal + engine `tsc --noEmit`) and lint (`npm run lint -w portal && npm run lint -w engine`, FLUX-1073) gates and must exit 0 — neither typecheck nor lint runs as part of `dev` (the engine executes via `tsx`/esbuild, which strip types and skip lint), so a regression surfaces nowhere else. The VS Code **Problems** panel is wired to the same checks via `.vscode/tasks.json` (run the default build task, "check"). The engine test suite (`npm run test -w engine`) is also part of `check` — its baseline is still being burned down; run it directly when relevant and don't block on pre-existing failures unrelated to your change.
 
 ## Code Navigation — Use Serena's Symbol Tools
 

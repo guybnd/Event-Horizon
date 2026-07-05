@@ -5,7 +5,7 @@ import os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { setWorkspaceRoot } from './workspace.js';
-import { deleteTicketBranch, planFinishPr, checkGhAuth, type PrStatus } from './branch-manager.js';
+import { deleteTicketBranch, planFinishPr, checkGhAuth, isMergeConflict, type PrStatus } from './branch-manager.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -113,7 +113,7 @@ describe('deleteTicketBranch', () => {
 // Pure: deps are injected, so no gh/git is exercised here.
 // ─────────────────────────────────────────────────────────────────────────────
 
-function prStatus(state: string): PrStatus {
+function prStatus(state: string, headRefName = 'flux/x'): PrStatus {
   return {
     number: 7,
     state,
@@ -122,6 +122,7 @@ function prStatus(state: string): PrStatus {
     reviewDecision: null,
     mergeable: 'MERGEABLE',
     checks: { total: 0, passed: 0, failed: 0, pending: 0 },
+    headRefName,
   };
 }
 
@@ -193,6 +194,98 @@ describe('planFinishPr (FLUX-741 / FLUX-656)', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// FLUX-944 — the empty-branch guard is a false positive for a ticket whose deliverable was
+// deliberately folded onto a SIBLING ticket's branch/PR instead of its own (the fold-together
+// pattern). planFinishPr auto-detects this from the caller-supplied implementationLink: if it
+// already points at a MERGED PR on a *different* branch, finish should proceed (`folded`), not
+// block. A non-folded empty branch (no such link, or the link isn't actually merged/is this same
+// branch) must still be blocked exactly as before.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('planFinishPr — folded-sibling auto-detect (FLUX-944)', () => {
+  const noneAhead = async () => ({ exists: true, aheadCount: 0, behindCount: 0 });
+
+  it('folds when implementationLink points at a MERGED PR on a different branch', async () => {
+    const seen: string[] = [];
+    const plan = await planFinishPr(
+      'flux/x',
+      'T',
+      'B',
+      {
+        getStatus: async (selector) => {
+          seen.push(selector);
+          if (selector === 'flux/x') return null; // no PR of its own
+          return prStatus('MERGED', 'flux/sibling');
+        },
+        getBranchStatus: noneAhead,
+        createPr: async () => { throw new Error('must not open a PR for a folded ticket'); },
+      },
+      'https://example.test/pr/99',
+    );
+    expect(plan.action).toBe('folded');
+    expect(plan.url).toBe('https://example.test/pr/99');
+    expect(seen).toContain('https://example.test/pr/99');
+  });
+
+  it('does NOT fold when the linked PR is still OPEN', async () => {
+    const plan = await planFinishPr(
+      'flux/x',
+      'T',
+      'B',
+      {
+        getStatus: async (selector) => (selector === 'flux/x' ? null : prStatus('OPEN', 'flux/sibling')),
+        getBranchStatus: noneAhead,
+        createPr: async () => 'new',
+      },
+      'https://example.test/pr/99',
+    );
+    expect(plan.action).toBe('blocked');
+  });
+
+  it('does NOT fold when the linked PR is on this ticket\'s OWN branch (not a sibling)', async () => {
+    const plan = await planFinishPr(
+      'flux/x',
+      'T',
+      'B',
+      {
+        getStatus: async () => prStatus('MERGED', 'flux/x'),
+        getBranchStatus: noneAhead,
+        createPr: async () => 'new',
+      },
+      'https://example.test/pr/7',
+    );
+    expect(plan.action).toBe('blocked');
+  });
+
+  it('does NOT fold when no implementationLink is supplied', async () => {
+    const plan = await planFinishPr('flux/x', 'T', 'B', {
+      getStatus: async () => null,
+      getBranchStatus: noneAhead,
+      createPr: async () => 'new',
+    });
+    expect(plan.action).toBe('blocked');
+  });
+
+  it('is irrelevant when the branch has commits ahead (folding never overrides real work)', async () => {
+    const ahead = async () => ({ exists: true, aheadCount: 1, behindCount: 0 });
+    let created = false;
+    const plan = await planFinishPr(
+      'flux/x',
+      'T',
+      'B',
+      {
+        getStatus: async (selector) => (selector === 'flux/x' ? null : prStatus('MERGED', 'flux/sibling')),
+        getBranchStatus: ahead,
+        createPr: async () => { created = true; return 'https://example.test/pr/new'; },
+      },
+      'https://example.test/pr/99',
+    );
+    expect(plan.action).toBe('created');
+    expect(created).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // FLUX-998 regression — checkGhAuth() MUST NOT go through the runner's default
 // (buildGitSyncEnv()) env-building path. buildGitSyncEnv() itself calls checkGhAuth() to decide
 // whether to inject gh's credential helper, so routing checkGhAuth's own probe through that same
@@ -212,4 +305,94 @@ describe('checkGhAuth (FLUX-998: must not recurse through buildGitSyncEnv)', () 
     // slow/congested CI network can exceed vitest's default 5s and flake this test. 65s comfortably
     // clears runGh's 60s worst case so a false timeout can't masquerade as a recursion regression.
   }, 65_000);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FLUX-1104 — isMergeConflict(): follow-up from FLUX-986's review, which shipped this heuristic
+// with zero test coverage and flagged (but didn't resolve) that "not mergeable" text is not
+// conflict-specific. Confirmed via real `gh pr merge` behavior (cli/cli#7518, cli/cli#12773):
+// checks-failed/branch-protection merges say "is not mergeable: the base branch policy prohibits
+// the merge" — the exact same "not mergeable" wording a real conflict uses — so the heuristic was
+// tightened to drop the bare "not mergeable"/"mergeable state" match in favor of phrases that are
+// actually specific to a conflicting merge state.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function execErr(message: string, stderr = ''): Error & { stderr?: string } {
+  const err = new Error(message) as Error & { stderr?: string };
+  if (stderr) err.stderr = stderr;
+  return err;
+}
+
+describe('isMergeConflict (FLUX-1104)', () => {
+  it('detects a literal CONFLICT marker', () => {
+    expect(isMergeConflict(execErr('git merge failed', 'CONFLICT (content): Merge conflict in foo.ts'))).toBe(true);
+  });
+
+  it('detects gh\'s "has conflicts and isn\'t mergeable" phrasing', () => {
+    expect(isMergeConflict(execErr("Pull request #124 has conflicts and isn't mergeable."))).toBe(true);
+  });
+
+  it('detects gh\'s "cannot be cleanly created" conflict phrasing (no literal "conflict" word)', () => {
+    expect(isMergeConflict(execErr('is not mergeable: the merge commit cannot be cleanly created.'))).toBe(true);
+  });
+
+  it('detects the "could not be cleanly created" past-tense variant', () => {
+    expect(isMergeConflict(execErr('is not mergeable: the merge commit could not be cleanly created.'))).toBe(true);
+  });
+
+  it('is case-insensitive', () => {
+    expect(isMergeConflict(execErr('MERGE CONFLICT in file.ts'))).toBe(true);
+  });
+
+  it.each([
+    ['gh auth', execErr('gh auth login required before this action')],
+    ['authentication', execErr('authentication failed for remote')],
+    ['permission denied', execErr('permission denied (publickey)')],
+    ['could not read username', execErr('fatal: could not read Username for https://github.com')],
+    ['could not read password', execErr('fatal: could not read Password for https://github.com')],
+  ])('returns false for an auth/permission signature: %s', (_label, err) => {
+    expect(isMergeConflict(err)).toBe(false);
+  });
+
+  it('auth signature always wins even when conflict-like text is also present', () => {
+    const err = execErr('gh auth: authentication failed', 'CONFLICT (content): Merge conflict in foo.ts');
+    expect(isMergeConflict(err)).toBe(false);
+  });
+
+  // The false-positive risk flagged (but left unresolved) in FLUX-986's grooming — real gh output
+  // for branch-protection/required-checks failures shares the generic "not mergeable" wording with
+  // real conflicts, but never the conflict-specific phrases isMergeConflict now requires.
+  it('does not flag a branch-protection "not mergeable" failure as a conflict', () => {
+    const err = execErr('Pull request #1227 is not mergeable: the base branch policy prohibits the merge.');
+    expect(isMergeConflict(err)).toBe(false);
+  });
+
+  it('does not flag a failing-required-check error as a conflict', () => {
+    const err = execErr('GraphQL: Required status check "ci/test" is failing. (mergePullRequest)');
+    expect(isMergeConflict(err)).toBe(false);
+  });
+
+  it('does not flag a bare generic "not mergeable" message with no conflict-specific wording', () => {
+    const err = execErr('Pull request #42 is not mergeable at this time.');
+    expect(isMergeConflict(err)).toBe(false);
+  });
+
+  it('does not flag an unrelated network error', () => {
+    expect(isMergeConflict(execErr('connect ETIMEDOUT 140.82.112.3:443'))).toBe(false);
+  });
+
+  it('checks stderr in addition to message', () => {
+    const err = execErr('gh: process exited with code 1', 'CONFLICT (content): Merge conflict in bar.ts');
+    expect(isMergeConflict(err)).toBe(true);
+  });
+
+  it('handles a non-Error thrown value', () => {
+    expect(isMergeConflict('CONFLICT (content): Merge conflict in foo.ts')).toBe(true);
+    expect(isMergeConflict('authentication failed')).toBe(false);
+  });
+
+  it('handles null/undefined without throwing', () => {
+    expect(isMergeConflict(null)).toBe(false);
+    expect(isMergeConflict(undefined)).toBe(false);
+  });
 });

@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { StatusBadge } from '../StatusBadge';
 import { getStatusColorClass } from '../../statusStyles';
+import { normalizeStatus } from '../../workflow';
 import { TaskDescriptionSurface } from '../TaskDescriptionSurface';
 import { TokenBadge } from '../TokenBadge';
 import { MetadataPanel } from './MetadataPanel';
@@ -120,7 +121,7 @@ export function TaskModalFullView({
             <div className="flex items-center gap-2">
               <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400">{modalTask?.id || 'New Task'}</p>
               <StatusBadge
-                status={status}
+                status={normalizeStatus(status)}
                 colorClass={getStatusColorClass(config, status)}
                 className="text-[10px] font-bold uppercase tracking-[0.16em]"
               />
@@ -285,30 +286,28 @@ export function TaskModalFullView({
               </div>
             )}
 
-            <div ref={commentSectionRef} className="px-6 py-4 flex flex-col relative pb-8">
+            <div ref={commentSectionRef} className="px-6 py-4 flex flex-col pb-8">
               <div className="flex items-center justify-between gap-4 mb-4">
                 <p className="text-xs font-bold uppercase tracking-wider text-gray-400">Activity & Comments</p>
                 {activityFilterTabs}
               </div>
-              <div className="flex-1 mb-8"><HistoryList {...historyListProps} /></div>
+              <div className="flex-1 mb-4"><HistoryList {...historyListProps} /></div>
               {(!isRequireInput) && (
-                <div className="sticky bottom-0 mt-8 pt-4 pb-2 z-10 w-full bg-gradient-to-t from-gray-50/95 via-gray-50/95 to-transparent dark:from-[#1a1b23]/95 dark:via-[#1a1b23]/95 dark:to-transparent pointer-events-none">
-                  <div className="pointer-events-auto">
-                    {!isCommentBoxVisible ? (
-                      <div className="flex justify-end">
-                        <button
-                          onClick={() => setIsCommentBoxVisible(true)}
-                          className="bg-primary text-white px-4 py-2 rounded-full font-bold shadow-md hover:bg-primary-hover text-sm"
-                        >
-                          Reply
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="rounded-xl shadow-lg border border-gray-200 bg-white dark:bg-[#1f2028] dark:border-white/10 backdrop-blur-md w-full">
-                        <CommentBox ref={commentBoxRef} {...commentBoxProps} />
-                      </div>
-                    )}
-                  </div>
+                <div className="mt-2 w-full">
+                  {!isCommentBoxVisible ? (
+                    <div className="flex justify-end">
+                      <button
+                        onClick={() => setIsCommentBoxVisible(true)}
+                        className="bg-primary text-white px-4 py-2 rounded-full font-bold shadow-md hover:bg-primary-hover text-sm"
+                      >
+                        Reply
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="rounded-xl shadow-lg border border-gray-200 bg-white dark:bg-[#1f2028] dark:border-white/10 w-full">
+                      <CommentBox ref={commentBoxRef} {...commentBoxProps} />
+                    </div>
+                  )}
                 </div>
               )}
             </div>

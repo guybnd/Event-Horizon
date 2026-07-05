@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { buildMcpServer } from './mcp-server.js';
 import { tasksCache } from './task-store.js';
 import { configCache } from './config.js';
@@ -29,6 +30,23 @@ function measure(value: unknown): { bytes: number; tokensEst: number } {
   return { bytes: Buffer.byteLength(json, 'utf8'), tokensEst: Math.ceil(json.length / 4) };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+/** `Client.callTool()`'s declared return type is a wider union than the SDK's own exported
+ *  `CallToolResult` (it also allows a legacy `{ toolResult }`-only shape) — narrow it here with a
+ *  runtime shape check instead of trusting every call site to remember a cast. */
+function isCallToolResult(value: unknown): value is CallToolResult {
+  return isRecord(value) && Array.isArray(value['content']);
+}
+
+/** Narrow the content-block union down to the 'text' variant these tools always return. */
+function textOf(result: CallToolResult): string | undefined {
+  const first = result.content[0];
+  return first && 'text' in first ? first.text : undefined;
+}
+
 const TICKET = 'STRUCT-1';
 
 describe('FLUX-950 structured output (outputSchema + structuredContent)', () => {
@@ -39,7 +57,7 @@ describe('FLUX-950 structured output (outputSchema + structuredContent)', () => 
   beforeAll(async () => {
     // Seed a representative ticket with some history so the payload is non-trivial
     // (the token-delta assertion is only meaningful on a real-sized payload).
-    (tasksCache as any)[TICKET] = {
+    tasksCache[TICKET] = {
       id: TICKET,
       title: 'Structured output round-trip',
       status: 'In Progress',
@@ -58,16 +76,16 @@ describe('FLUX-950 structured output (outputSchema + structuredContent)', () => 
 
     // Seed the board config fields get_board_config projects.
     for (const k of ['columns', 'hiddenStatuses', 'tags', 'priorities', 'projects', 'users', 'requireInputStatus', 'readyForMergeStatus']) {
-      savedConfig[k] = (configCache as any)[k];
+      savedConfig[k] = configCache[k];
     }
-    (configCache as any).columns = [{ name: 'Todo' }, { name: 'In Progress' }, { name: 'Done' }];
-    (configCache as any).hiddenStatuses = [{ name: 'Archived' }];
-    (configCache as any).tags = [{ name: 'mcp' }, { name: 'engine' }];
-    (configCache as any).priorities = [{ name: 'Low', icon: 'arrow-down' }, { name: 'High', icon: 'arrow-up' }];
-    (configCache as any).projects = ['FLUX'];
-    (configCache as any).users = ['guy'];
-    (configCache as any).requireInputStatus = 'Require Input';
-    (configCache as any).readyForMergeStatus = 'Ready';
+    configCache.columns = [{ name: 'Todo' }, { name: 'In Progress' }, { name: 'Done' }];
+    configCache.hiddenStatuses = [{ name: 'Archived' }];
+    configCache.tags = [{ name: 'mcp' }, { name: 'engine' }];
+    configCache.priorities = [{ name: 'Low', icon: 'arrow-down' }, { name: 'High', icon: 'arrow-up' }];
+    configCache.projects = ['FLUX'];
+    configCache.users = ['guy'];
+    configCache.requireInputStatus = 'Require Input';
+    configCache.readyForMergeStatus = 'Ready';
 
     server = buildMcpServer();
     client = new Client({ name: 'eh-structured-output-test', version: '1.0.0' }, { capabilities: {} });
@@ -76,11 +94,18 @@ describe('FLUX-950 structured output (outputSchema + structuredContent)', () => 
   });
 
   afterAll(async () => {
-    delete (tasksCache as any)[TICKET];
-    for (const [k, v] of Object.entries(savedConfig)) (configCache as any)[k] = v;
+    delete tasksCache[TICKET];
+    for (const [k, v] of Object.entries(savedConfig)) configCache[k] = v;
     await client.close().catch(() => {});
     await server.close().catch(() => {});
   });
+
+  /** Thin wrapper narrowing `client.callTool`'s wide SDK return type down to `CallToolResult`. */
+  async function callTool(args: Parameters<Client['callTool']>[0]): Promise<CallToolResult> {
+    const res: unknown = await client.callTool(args);
+    if (!isCallToolResult(res)) throw new Error('expected a content-bearing tool result');
+    return res;
+  }
 
   it('tools/list advertises an outputSchema for each migrated read tool', async () => {
     const { tools } = await client.listTools();
@@ -93,15 +118,15 @@ describe('FLUX-950 structured output (outputSchema + structuredContent)', () => 
   });
 
   it('get_ticket returns the payload as structuredContent with NO duplicated text block', async () => {
-    const res: any = await client.callTool({ name: 'get_ticket', arguments: { ticketId: TICKET } });
+    const res = await callTool({ name: 'get_ticket', arguments: { ticketId: TICKET } });
     // SDK validated structuredContent against the outputSchema before we got here
     // (a mismatch would have surfaced as isError) — so reaching valid data proves the
     // guardrail passed.
     expect(res.isError).toBeFalsy();
     expect(res.structuredContent).toBeTruthy();
-    expect(res.structuredContent.id).toBe(TICKET);
-    expect(res.structuredContent.status).toBe('In Progress');
-    expect(Array.isArray(res.structuredContent.history)).toBe(true);
+    expect(res.structuredContent?.id).toBe(TICKET);
+    expect(res.structuredContent?.status).toBe('In Progress');
+    expect(Array.isArray(res.structuredContent?.history)).toBe(true);
     // AXI #1: structuredContent REPLACES the text JSON — it is not emitted alongside a
     // second full copy. The text content block must be empty.
     expect(res.content).toEqual([]);
@@ -124,20 +149,21 @@ describe('FLUX-950 structured output (outputSchema + structuredContent)', () => 
   });
 
   it('list_tickets always returns a { tickets } object envelope (never a bare array) as structuredContent', async () => {
-    const res: any = await client.callTool({ name: 'list_tickets', arguments: {} });
+    const res = await callTool({ name: 'list_tickets', arguments: {} });
     expect(res.isError).toBeFalsy();
     expect(res.structuredContent).toBeTruthy();
-    expect(Array.isArray(res.structuredContent.tickets)).toBe(true);
-    expect(res.structuredContent.tickets.some((t: any) => t.id === TICKET)).toBe(true);
+    const tickets = res.structuredContent?.['tickets'];
+    expect(Array.isArray(tickets)).toBe(true);
+    expect(Array.isArray(tickets) && tickets.some((t) => isRecord(t) && t['id'] === TICKET)).toBe(true);
     expect(res.content).toEqual([]);
   });
 
   it('get_board_config returns its projection as structuredContent with no text duplicate', async () => {
-    const res: any = await client.callTool({ name: 'get_board_config', arguments: {} });
+    const res = await callTool({ name: 'get_board_config', arguments: {} });
     expect(res.isError).toBeFalsy();
     expect(res.structuredContent).toBeTruthy();
-    expect(res.structuredContent.statuses).toEqual(['Todo', 'In Progress', 'Done', 'Archived']);
-    expect(res.structuredContent.tags).toEqual(['mcp', 'engine']);
+    expect(res.structuredContent?.statuses).toEqual(['Todo', 'In Progress', 'Done', 'Archived']);
+    expect(res.structuredContent?.tags).toEqual(['mcp', 'engine']);
     expect(res.content).toEqual([]);
   });
 
@@ -145,9 +171,9 @@ describe('FLUX-950 structured output (outputSchema + structuredContent)', () => 
     // The error path is unchanged: errorResult still emits a text block + structuredContent,
     // and the SDK skips outputSchema validation for isError results — so a client that
     // ignores structuredContent still reads the human-readable failure.
-    const res: any = await client.callTool({ name: 'get_ticket', arguments: { ticketId: 'NOPE-404' } });
+    const res = await callTool({ name: 'get_ticket', arguments: { ticketId: 'NOPE-404' } });
     expect(res.isError).toBe(true);
-    expect(res.content?.[0]?.text).toMatch(/not found/i);
+    expect(textOf(res)).toMatch(/not found/i);
     expect(res.structuredContent?.code).toBe('not_found');
   });
 });

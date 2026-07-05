@@ -22,11 +22,19 @@ import { ensureTicketIsolation } from './ticket-isolation.js';
 import { createTicketBranch } from './branch-manager.js';
 import { createTaskWorktree } from './task-worktree.js';
 import { reclaimWorktrees } from './task-worktree.js';
+import { isWorktreeReclaimable } from './pr-cleanup.js';
 import { tasksCache, updateTaskWithHistory } from './task-store.js';
 import { broadcastEvent } from './events.js';
 import { buildActivityEntry } from './history.js';
 
-const cache = tasksCache as Record<string, any>;
+/** Minimal shape of the fields this suite reads/writes on a cached task. */
+interface FakeTask {
+  id: string;
+  title: string;
+  branch?: string;
+}
+
+const cache = tasksCache as Record<string, FakeTask>;
 
 describe('ensureTicketIsolation (FLUX-845 chokepoint, FLUX-852 hardening)', () => {
   beforeEach(() => {
@@ -51,7 +59,7 @@ describe('ensureTicketIsolation (FLUX-845 chokepoint, FLUX-852 hardening)', () =
   });
 
   it('creates a branch and patches it onto the LIVE cache object (in-tick visibility guard)', async () => {
-    const task: any = { id: 'FLUX-2', title: 'Add the thing' };
+    const task: FakeTask = { id: 'FLUX-2', title: 'Add the thing' };
     cache['FLUX-2'] = task;
     vi.mocked(createTicketBranch).mockResolvedValue('flux/FLUX-2-add-the-thing');
 
@@ -109,6 +117,13 @@ describe('ensureTicketIsolation (FLUX-845 chokepoint, FLUX-852 hardening)', () =
     expect(createTaskWorktree).toHaveBeenCalledTimes(2); // original + retry
     expect(res.worktree).toBe('/fake/.eh-worktrees/FLUX-6');
     expect(res.worktreeError).toBeUndefined();
+
+    // FLUX-1119: prove the cap-backstop actually bypasses the Ready-worktree grace — invoke the
+    // predicate ticket-isolation.ts handed to reclaimWorktrees and assert it forwards
+    // { honorReadyGrace: false } to isWorktreeReclaimable, not just that SOME predicate was passed.
+    const predicate = vi.mocked(reclaimWorktrees).mock.calls[0]![1];
+    predicate('FLUX-998');
+    expect(isWorktreeReclaimable).toHaveBeenCalledWith('FLUX-998', { honorReadyGrace: false });
   });
 
   it('attributes the worktree-error history entry to the resolved updatedBy, not a hardcoded "Agent" (FLUX-852)', async () => {

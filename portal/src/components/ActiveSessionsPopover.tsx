@@ -1,4 +1,13 @@
-import { memo, useRef, useEffect, useMemo, useCallback, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import {
+  memo,
+  useRef,
+  useEffect,
+  useMemo,
+  useCallback,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+} from 'react';
 import { Bot, X, Settings2 } from 'lucide-react';
 import type { Task, CliFramework } from '../types';
 import { stopTaskCliSession } from '../api';
@@ -52,9 +61,9 @@ export const ActiveSessionsPopover = memo(function ActiveSessionsPopover({ tasks
     }
   }, [triggerRefresh]);
 
-  // Clicking a card opens that session's CHAT in the dock (anchored to the clicked card), not the
-  // ticket modal (FLUX-962). Capture the element before onClose unmounts the popover.
-  const handleOpen = useCallback((e: ReactMouseEvent, taskId: string) => {
+  // Clicking (or keyboard-activating) a card opens that session's CHAT in the dock (anchored to the
+  // card), not the ticket modal (FLUX-962). Capture the element before onClose unmounts the popover.
+  const handleOpen = useCallback((e: ReactMouseEvent | ReactKeyboardEvent, taskId: string) => {
     const el = e.currentTarget as HTMLElement;
     openChat(taskId, el);
     onClose();

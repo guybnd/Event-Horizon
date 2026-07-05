@@ -241,8 +241,10 @@ export const TaskCardInner = memo(function TaskCardInner({
 
                 {/* Live single-agent session gets its own bounded full-width lane (FLUX-652) so its
                     variable-length progress/activity text can never push the card wider. Multi-session
-                    runs render through CardClusterPanel above, so this is gated on !clusterGroup. */}
-                {(c.hasActiveCliSession || c.shouldShowProgress) && !c.clusterGroup && !isOverlay && !compact && (
+                    runs render through CardClusterPanel above, so this is gated on !clusterGroup.
+                    S10 (epic FLUX-996): also render for a crashed session (`sessionState === 'failed'`)
+                    — otherwise a dead spawn is invisible on the card, the exact gap this ticket fixes. */}
+                {(c.hasActiveCliSession || c.shouldShowProgress || c.sessionState === 'failed') && !c.clusterGroup && !isOverlay && !compact && (
                   <CardSessionRow task={task} c={c} />
                 )}
 

@@ -4,6 +4,7 @@ import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import { searchTasks } from '../taskSearch';
 import { StatusBadge } from './StatusBadge';
 import { getStatusColorClass } from '../statusStyles';
+import { normalizeStatus } from '../workflow';
 import type { Task } from '../types';
 
 export function GlobalSearch() {
@@ -114,7 +115,7 @@ export function GlobalSearch() {
                 <div className="flex items-center gap-2.5">
                   <span className="text-sm font-semibold text-gray-900 transition-colors group-hover:text-gray-950 dark:text-white">{task.title || 'Untitled ticket'}</span>
                   <StatusBadge
-                    status={task.status}
+                    status={normalizeStatus(task.status)}
                     colorClass={getStatusColorClass(config, task.status)}
                     className="text-[10px] font-bold uppercase tracking-[0.16em]"
                   />

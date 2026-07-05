@@ -45,7 +45,7 @@ export function isKnownFramework(value: string): value is CliFramework {
 // source of truth — adding a CLI shifts the default automatically), with 'claude' as the floor if
 // the registry were ever empty. This is the engine-side 'auto' resolution the portal defers to.
 export function resolveDefaultFramework(): CliFramework {
-  const configured = String((configCache as any).defaultAgent || '').trim().toLowerCase();
+  const configured = String(configCache.defaultAgent || '').trim().toLowerCase();
   if (configured && configured !== 'auto' && registry.has(configured)) return configured as CliFramework;
   return ([...registry.keys()][0] as CliFramework) ?? 'claude';
 }

@@ -34,7 +34,7 @@ describe('normalizeInlineSubtasks handles id-less inline objects (FLUX-286)', ()
     // Seed an existing ticket so allocation starts above it.
     await fs.writeFile(path.join(fluxDir, 'FLUX-100.md'), matter.stringify('parent', { id: 'FLUX-100' }));
 
-    const frontmatter: any = {
+    const frontmatter: Record<string, unknown> = {
       id: 'FLUX-100',
       subtasks: [
         { title: 'first child', status: 'Todo' },
@@ -53,7 +53,7 @@ describe('normalizeInlineSubtasks handles id-less inline objects (FLUX-286)', ()
   });
 
   it('preserves id-bearing objects and string entries unchanged', async () => {
-    const frontmatter: any = {
+    const frontmatter: Record<string, unknown> = {
       id: 'FLUX-100',
       subtasks: [
         'FLUX-7',
@@ -73,7 +73,7 @@ describe('normalizeInlineSubtasks handles id-less inline objects (FLUX-286)', ()
   });
 
   it('returns null when there are no inline objects to normalize', async () => {
-    const frontmatter: any = { id: 'FLUX-100', subtasks: ['FLUX-1', 'FLUX-2'] };
+    const frontmatter: Record<string, unknown> = { id: 'FLUX-100', subtasks: ['FLUX-1', 'FLUX-2'] };
     expect(await normalizeInlineSubtasks(frontmatter, parentPath())).toBeNull();
   });
 });

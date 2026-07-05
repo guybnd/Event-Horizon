@@ -2,12 +2,12 @@ import { useState } from 'react';
 import type { JSX } from 'react';
 import { GitMerge, AlertTriangle, ShieldCheck, Loader2, Bot, Wrench, RotateCcw, Undo2, Plus, Link2 } from 'lucide-react';
 import type { Task } from '../types';
-import { reviewChip } from './ReviewChip';
+import { reviewChip, internalApprovedChip, reviewProgressChip, aggregateMemberReviews, selectPrReviewChip } from './ReviewChip';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
 import type { TaskCardController } from '../hooks/useTaskCardController';
 import { TaskDeck } from './TaskDeck';
 import { mergePr, retryPr, updateTask, adoptPr, MergeParkedError } from '../api';
-import { launchPhaseDefault } from '../agentActions';
+import { launchPhaseDefault, runAgentAction } from '../agentActions';
 import { resolveEffectiveAgent, frameworkSupports } from '../utils';
 
 // Shared PR action-button classes — equal-width (flex-1) + centered so the bar is symmetrical
@@ -61,6 +61,11 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
   const [continueTicketId, setContinueTicketId] = useState('');
   const [continueBusy, setContinueBusy] = useState(false);
   const [continueErr, setContinueErr] = useState('');
+  // Merge-conflict rebase CTA (FLUX-986). The engine flags `swimlane: 'merge-conflict'` on a real
+  // git conflict WITHOUT touching status (see routes/tasks.ts), so the ticket stays put until the
+  // user actually clicks through here — only then does the branch move to In Progress.
+  const [launchingRebase, setLaunchingRebase] = useState(false);
+  const [rebaseErr, setRebaseErr] = useState('');
 
   const members = (task.members ?? []).map((id) => taskById.get(id)).filter((t): t is Task => !!t);
   const memberCount = members.length;
@@ -71,7 +76,15 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
   // (never kind:'pr'), so the engine's kind!=='pr' guard doesn't apply here.
   const TERMINAL_MEMBER_STATUSES = new Set(['Done', 'Released', 'Archived']);
   const nonDoneMembers = members.filter((m) => !TERMINAL_MEMBER_STATUSES.has(m.status));
+  // Members with an internal changes-requested verdict — surfaced as a merge-confirm warning
+  // (FLUX-1089). Warn only; does not block the merge (force:true already covers the confirmation).
+  const changesRequestedMembers = members.filter((m) => m.reviewState === 'changes-requested');
   const changesRequested = task.swimlane === 'changes-requested';
+  // FLUX-986: engine-set (never agent-set) when `gh pr merge` hit a real git conflict.
+  const hasMergeConflict = task.swimlane === 'merge-conflict';
+  // FLUX-1089: derive the PR-card review signal from its members at render time — see
+  // aggregateMemberReviews for why this is never propagated onto the PR ticket itself.
+  const memberReview = aggregateMemberReviews(members);
   // Hide the open action bar (Review/Merge) once the PR is merged/closed OR the card is Done.
   const isResolved = task.prState === 'MERGED' || task.prState === 'CLOSED' || task.status === 'Done';
   // Retry on a SETTLED (Done) PR — merged (work landed but didn't hold) OR closed (abandoned
@@ -143,7 +156,7 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
         status: 'In Progress',
         updatedBy: currentUser,
         appendHistory: [{ type: 'comment', user: currentUser, comment: `Sent back to dev — issue found before merge:\n\n${reason}` }],
-      } as Partial<Task>);
+      });
       if (reworkStart) {
         const fw = resolveEffectiveAgent(undefined, config?.defaultFramework);
         await launchPhaseDefault({
@@ -195,6 +208,39 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
     }
   };
 
+  // Launch a pre-briefed rebase/resolve session for a `merge-conflict`-swimlaned PR (FLUX-986).
+  // Moves the ticket to In Progress via `preStatus` — i.e. only NOW, on the user's click, not the
+  // instant the merge failed — and the engine's generic-update auto-clear (routes/tasks.ts) drops
+  // the `merge-conflict` swimlane as soon as that status write lands, so this banner disappears.
+  const doLaunchRebase = async () => {
+    if (c.hasActiveCliSession) {
+      setRebaseErr(`${task.id} already has an active session running. Wait for it to finish, or stop it first.`);
+      return;
+    }
+    setRebaseErr('');
+    setLaunchingRebase(true);
+    const mission =
+      `Branch \`${task.branch}\` failed to merge due to a git conflict. Check out the branch ` +
+      `(or use the existing worktree), rebase onto \`origin/master\` (or merge master in), ` +
+      `resolve all conflicts with code judgment, push, and retry the merge.`;
+    try {
+      const fw = resolveEffectiveAgent(undefined, config?.defaultFramework);
+      await runAgentAction({
+        taskId: task.id,
+        framework: fw,
+        action: { kind: 'prompt', appendPrompt: mission, focusComment: mission },
+        currentUser,
+        phase: 'implementation',
+        preStatus: 'In Progress',
+      });
+      triggerRefresh();
+    } catch (e) {
+      setRebaseErr(e instanceof Error ? e.message : 'Failed to launch rebase session');
+    } finally {
+      setLaunchingRebase(false);
+    }
+  };
+
   return (
     <div onClick={(e) => e.stopPropagation()}>
       {/* Status chips. pr-8 reserves the top-right corner for the comment badge (TaskCard renders
@@ -206,17 +252,19 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
             <AlertTriangle className="h-3 w-3" /> Changes requested
           </span>
         )}
-        {/* Review badge from EITHER source (FLUX-816): GitHub `reviewDecision` wins when present,
-            internal `reviewState` fills the gap so an internally-approved PR isn't shown as
-            unreviewed just because GitHub was never told. Drop the redundant changes-requested
-            chip when the dedicated "Changes requested" pill above already conveys it (FLUX-594). */}
+        {/* Review badge — precedence decision lives in `selectPrReviewChip` (FLUX-1092 extracted
+            this from an inline IIFE so the branch order, FLUX-1089's "red wins", is pin-testable
+            without a full component render). */}
         {(() => {
-          // reviewDecision is stored as "" (not null) when GitHub has no review, so `??`
-          // would treat it as "present" and never fall through. Use `||` so an empty GitHub
-          // decision yields to the internal EH reviewState (FLUX-816 intent).
-          const signal = task.reviewDecision || task.reviewState || null;
-          if (changesRequested && (signal === 'CHANGES_REQUESTED' || signal === 'changes-requested')) return null;
-          return reviewChip(signal);
+          const selection = selectPrReviewChip(task, memberReview);
+          switch (selection.kind) {
+            case 'changes-requested': return reviewChip('changes-requested');
+            case 'approved': return reviewChip('APPROVED');
+            case 'internal-approved': return internalApprovedChip();
+            case 'progress': return reviewProgressChip(selection.approvedCount, selection.total);
+            case 'fallback': return reviewChip(selection.signal);
+            case 'none': return null;
+          }
         })()}
         {/* Single-session running badge — when an agent (e.g. a review) runs ON the PR but
             isn't a live orchestration (no CardClusterPanel). Multi/orchestration sessions show
@@ -227,6 +275,27 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
           </span>
         )}
       </div>
+
+      {/* Merge-conflict rebase CTA (FLUX-986). Persistent (not hover-gated like the action bar
+          below) so it can't be missed — this is the entire point of the ticket: give the user a
+          guided next step instead of a dead-end error. */}
+      {hasMergeConflict && !isResolved && (
+        <div className="mb-2 rounded-md border border-rose-300 bg-rose-50 p-2 dark:border-rose-500/30 dark:bg-rose-500/10">
+          <p className="mb-1.5 flex items-center gap-1 text-[11px] font-semibold text-rose-700 dark:text-rose-300">
+            <AlertTriangle className="h-3.5 w-3.5" /> Merge failed — git conflict
+          </p>
+          <button
+            disabled={launchingRebase}
+            onClick={doLaunchRebase}
+            title="Start an agent session to rebase, resolve the conflict, and retry the merge"
+            className="flex items-center gap-1 rounded-md bg-rose-600 px-2.5 py-1 text-[11px] font-semibold text-white transition-colors hover:bg-rose-700 disabled:opacity-50"
+          >
+            {launchingRebase ? <Loader2 className="h-3 w-3 animate-spin" /> : <Bot className="h-3 w-3" />}
+            {launchingRebase ? 'Launching…' : 'Launch Rebase Session'}
+          </button>
+          {rebaseErr && <p role="alert" className="mt-1 text-[11px] text-red-600 dark:text-red-400">{rebaseErr}</p>}
+        </div>
+      )}
 
       {/* Deck — folded members (FLUX-567 / FLUX-580 shared primitive) */}
       {memberCount > 0 ? (
@@ -333,11 +402,20 @@ export function PrDeckSection({ task, c }: { task: Task; c: TaskCardController }
               </>
             ) : (
               <>
-                <span className="mr-auto text-[11px] font-medium text-gray-600 dark:text-gray-300">
-                  {nonDoneMembers.length > 0
-                    ? `Merge & advance ${nonDoneMembers.length} unfinished ticket(s) (${nonDoneMembers.map((m) => m.id).join(', ')}) to Done?`
-                    : 'Merge & advance?'}
-                </span>
+                <div className="mr-auto flex flex-col gap-0.5">
+                  <span className="text-[11px] font-medium text-gray-600 dark:text-gray-300">
+                    {nonDoneMembers.length > 0
+                      ? `Merge & advance ${nonDoneMembers.length} unfinished ticket(s) (${nonDoneMembers.map((m) => m.id).join(', ')}) to Done?`
+                      : 'Merge & advance?'}
+                  </span>
+                  {/* Warn only — never block the merge (FLUX-1089); force:true above already
+                      covers the confirmation this warning reinforces. */}
+                  {changesRequestedMembers.length > 0 && (
+                    <span className="text-[11px] font-medium text-red-600 dark:text-red-400">
+                      {changesRequestedMembers.length} member{changesRequestedMembers.length === 1 ? '' : 's'} {changesRequestedMembers.length === 1 ? 'has' : 'have'} changes requested
+                    </span>
+                  )}
+                </div>
                 <button
                   disabled={merging}
                   onClick={doMerge}

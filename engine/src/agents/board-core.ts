@@ -60,17 +60,26 @@ function wireBoardProc(spec: BoardSpec, proc: ReturnType<typeof spawn>, session:
     commitPending();
     flushSessionOutput(session, true);
     // Only a CLEAN turn becomes the resumable parked state (waiting-input). A turn that the
-    // user stopped, that exited non-zero, or that died before the CLI emitted its init message
-    // (so we never captured a resumeSessionId) must end TERMINAL — otherwise it sits at
-    // waiting-input forever: unresumable (no session id) yet "active" enough to 409 every new
-    // start, permanently wedging the orchestrator (FLUX-667).
+    // user stopped or that exited non-zero (crashed before ever replying) must end TERMINAL —
+    // otherwise it sits at waiting-input forever, "active" enough to 409 every new start,
+    // permanently wedging the orchestrator (FLUX-667).
     if (session.requestedStop) {
       session.status = 'cancelled';
       session.endedAt = new Date().toISOString();
-    } else if (code !== 0 || !session.resumeSessionId) {
+    } else if (code !== 0) {
       session.status = 'failed';
       session.endedAt = new Date().toISOString();
     } else {
+      // FLUX-987 (B4): code===0 means the CLI replied even if it never emitted a resumeSessionId
+      // this turn (gemini-only — copilot has a dual capture site; the transcript write earlier in
+      // the turn is unconditional, so chat already shows the reply regardless). Don't classify
+      // this 'failed' — that both suppressed the notification below AND left the session
+      // unresumable-yet-"active", 409-ing every later /input. Parking it 'waiting-input' exactly
+      // like the fully-successful path reuses the /start route's existing FLUX-667 self-heal: the
+      // next turn sees no resumeSessionId, so buildArgs cold-starts instead of resuming.
+      if (!session.resumeSessionId) {
+        console.error(`[board] clean exit (code 0) but no resumeSessionId captured this turn — next turn will cold-start instead of resuming`);
+      }
       onExitStatus();
       // FLUX-810: a clean board turn === the orchestrator answered the user. This is the only
       // self-noise-free hook (stopped/non-zero/crashed turns are handled above), so emit the

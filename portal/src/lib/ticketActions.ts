@@ -50,6 +50,20 @@ export function buildStatusChangeHistory(
 }
 
 /**
+ * Detect the engine's "comment required for this status transition" rejection (FLUX-847),
+ * regardless of whether the caller has the structured `err.code` (api.ts attaches it from
+ * `errorPayload.error`) or only the prose `message` (older call sites / generic Error).
+ * Shared so Board's reactive re-prompt and the action bar's `changeStatus` agree on what
+ * counts as "ask for a comment and retry" versus a genuine failure to `alert()`.
+ */
+export function isMissingCommentError(err: unknown): boolean {
+  const code = (err as { code?: string } | null)?.code;
+  if (typeof code === 'string' && /_MISSING_COMMENT$/.test(code)) return true;
+  const msg = err instanceof Error ? err.message : String(err ?? '');
+  return /MISSING_COMMENT|comment is required|requires a[^.]*comment/i.test(msg);
+}
+
+/**
  * Optimistically fold a status move into a list task's `historyDigest` (FLUX-725) so a dragged
  * card's history-derived signals (time-in-column, flow arrows) stay correct during the brief
  * window before the server confirms — the list payload carries only the digest, not full history,
@@ -94,7 +108,7 @@ export async function changeTaskStatus(
     order: opts?.order ?? task.order ?? 0,
     appendHistory,
     updatedBy: currentUser,
-  } as Partial<Task>);
+  });
 }
 
 // ── The unified ticket-action registry (FLUX-715) ───────────────────────────
