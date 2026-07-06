@@ -30,7 +30,7 @@ import {
   type PendingRelaySpec,
 } from '../session-store.js';
 import { getAdapter, getBoardAdapter, resolveDefaultFramework, isKnownFramework, getRuntimeFrameworks } from '../agents/index.js';
-import { BOARD_CONVERSATION_ID } from '../agents/board.js';
+import { BOARD_CONVERSATION_ID, FURNACE_CONVERSATION_ID, isVirtualConversationId } from '../agents/board.js';
 import { resolveAttachmentAbsPaths, attachmentReadInstruction, appendErrorToSession } from '../agents/shared.js';
 import type { ChatAttachment } from '../projection.js';
 import { updateTaskWithHistory } from '../task-store.js';
@@ -443,7 +443,7 @@ setRelayStepLauncher(async (spec: PendingRelaySpec, previousOutput: string, prev
 // GET single session (backwards compat — returns most recent active)
 router.get('/:id/cli-session', (req, res) => {
   const { id } = req.params;
-  if (id !== BOARD_CONVERSATION_ID && !tasksCache[id]) return res.status(404).json({ error: 'Task not found' });
+  if (!isVirtualConversationId(id) && !tasksCache[id]) return res.status(404).json({ error: 'Task not found' });
   res.json({ session: getCliSessionSummaryForTask(id) || null });
 });
 
@@ -460,7 +460,7 @@ router.get('/:id/cli-sessions', (req, res) => {
 // in-memory live progress stream.
 router.get('/:id/transcript', async (req, res) => {
   const { id } = req.params;
-  if (id !== BOARD_CONVERSATION_ID && !tasksCache[id]) return res.status(404).json({ error: 'Task not found' });
+  if (!isVirtualConversationId(id) && !tasksCache[id]) return res.status(404).json({ error: 'Task not found' });
   try {
     const messages = await readTranscriptMessages(id);
     res.json({ messages });
@@ -478,7 +478,7 @@ router.get('/:id/transcript', async (req, res) => {
 // portal Activity screen. (No new store — same source of truth as `/transcript`.)
 router.get('/:id/activity', async (req, res) => {
   const { id } = req.params;
-  if (id !== BOARD_CONVERSATION_ID && !tasksCache[id]) return res.status(404).json({ error: 'Task not found' });
+  if (!isVirtualConversationId(id) && !tasksCache[id]) return res.status(404).json({ error: 'Task not found' });
   try {
     const ticket = typeof req.query.ticket === 'string' ? req.query.ticket : '';
     const phase = typeof req.query.phase === 'string' ? req.query.phase : '';
@@ -507,7 +507,7 @@ router.get('/:id/activity', async (req, res) => {
 // open chat window refetch (and come back empty) without a reload.
 router.delete('/:id/transcript', async (req, res) => {
   const { id } = req.params;
-  if (id !== BOARD_CONVERSATION_ID && !tasksCache[id]) return res.status(404).json({ error: 'Task not found' });
+  if (!isVirtualConversationId(id) && !tasksCache[id]) return res.status(404).json({ error: 'Task not found' });
   try {
     await clearTranscript(id);
     // FLUX-659: resetting the orchestrator conversation drops the digest delta baseline too, so the
@@ -523,18 +523,29 @@ router.delete('/:id/transcript', async (req, res) => {
 router.post('/:id/cli-session/start', async (req, res) => {
   const { id } = req.params;
 
-  // FLUX-604: board-level orchestrator session — not bound to any ticket.
-  if (id === BOARD_CONVERSATION_ID) {
+  // FLUX-604 / FLUX-1209: a virtual, non-ticket-scoped conversation session — the board
+  // orchestrator (`__board__`) or the Furnace Operator ("Smelter") chat (`__furnace__`).
+  if (isVirtualConversationId(id)) {
+    const isBoard = id === BOARD_CONVERSATION_ID;
+    const conversationLabel = isBoard ? 'Orchestrator' : 'Furnace';
     const firstMessage = typeof req.body?.appendPrompt === 'string' ? req.body.appendPrompt.trim() : '';
     // FLUX-676: the opening turn may carry pasted images; allow an image-only turn (empty text).
     const chatAttachments = parseChatAttachments(req.body?.attachments);
-    if (!firstMessage && chatAttachments.length === 0) return res.status(400).json({ error: 'appendPrompt (first message) is required for the orchestrator chat' });
-    // FLUX-1175: an optional personaId (e.g. the Smelter, launched from the Furnace drawer)
-    // swaps the board turn's identity block for that persona's resolved prompt — this is the
-    // ONLY non-ticket-scoped conversation, so a persona chat not bound to a real ticket rides
-    // on it rather than a whole new sentinel/adapter. Only meaningful on the opening turn: a
-    // persona's identity is established once, same as a per-ticket chat launch.
-    const boardPersonaId = typeof req.body?.personaId === 'string' ? req.body.personaId.trim() : '';
+    // FLUX-1175 / FLUX-1209: an optional personaId (e.g. the Smelter, launched from the Furnace
+    // drawer) swaps this turn's identity block for that persona's resolved prompt — these are the
+    // only non-ticket-scoped conversations, so a persona chat not bound to a real ticket rides on
+    // one of them rather than a whole new sentinel/adapter per persona. Only meaningful on the
+    // opening turn: a persona's identity is established once, same as a per-ticket chat launch.
+    // FLUX-1209: the Furnace conversation IS the Smelter's chat, structurally — default to the
+    // 'smelter' persona whenever the caller doesn't explicitly pass one (e.g. the generic composer
+    // starting a fresh turn after a prior Smelter turn went terminal), so it's never possible to
+    // accidentally cold-start a generic, unpersona'd turn on this conversation id.
+    const explicitPersonaId = typeof req.body?.personaId === 'string' ? req.body.personaId.trim() : '';
+    const boardPersonaId = explicitPersonaId || (id === FURNACE_CONVERSATION_ID ? 'smelter' : '');
+    // FLUX-1211: a personaId-only launch (no user-typed appendPrompt) is a valid silent boot —
+    // the persona resolves identity server-side and no fake `user` transcript turn gets recorded
+    // (see startBoardSession). Only error when there's neither text, an attachment, nor a persona.
+    if (!firstMessage && chatAttachments.length === 0 && !boardPersonaId) return res.status(400).json({ error: `appendPrompt (first message) is required for the ${conversationLabel.toLowerCase()} chat` });
     let boardPersonaPrompt: string | undefined;
     let boardPersonaLabel: string | undefined;
     if (boardPersonaId) {
@@ -544,15 +555,15 @@ router.post('/:id/cli-session/start', async (req, res) => {
       boardPersonaPrompt = resolvePersonaPrompt(boardPersonaId, boardFocusComment, 'chat');
       boardPersonaLabel = persona.label;
     }
-    const existingId = cliSessionIdByTaskId.get(BOARD_CONVERSATION_ID);
+    const existingId = cliSessionIdByTaskId.get(id);
     const existing = existingId ? cliSessionsById.get(existingId) : undefined;
     // Block only while a turn is genuinely IN FLIGHT (a live proc is running). A session parked
     // at 'waiting-input' is idle — claude -p already exited — so a fresh start should supersede
     // it rather than 409. The frontend prefers resume for a resumable parked session; when it
     // falls back to start (e.g. the parked turn never captured a resumeSessionId and so isn't
-    // resumable), this lets a fresh orchestrator turn through instead of wedging forever (FLUX-667).
+    // resumable), this lets a fresh turn through instead of wedging forever (FLUX-667).
     if (existing && (existing.status === 'running' || existing.status === 'pending')) {
-      return res.status(409).json({ error: 'Orchestrator session already active', session: getCliSessionSummaryForTask(BOARD_CONVERSATION_ID) });
+      return res.status(409).json({ error: `${conversationLabel} session already active`, session: getCliSessionSummaryForTask(id) });
     }
     if (existing && existing.status === 'waiting-input') {
       existing.status = 'cancelled';
@@ -569,13 +580,13 @@ router.post('/:id/cli-session/start', async (req, res) => {
     const fw = boardFrameworkRaw as CliFramework;
     const boardSession: CliSessionRecord = {
       id: randomUUID(),
-      taskId: BOARD_CONVERSATION_ID,
+      taskId: id,
       framework: fw,
       status: 'pending',
       command: fw,
       args: [],
       startedAt: new Date().toISOString(),
-      label: boardPersonaLabel ?? 'Orchestrator',
+      label: boardPersonaLabel ?? conversationLabel,
       outputBuffer: '',
       liveOutputBuffer: '',
       pendingAssistantText: '',
@@ -591,10 +602,10 @@ router.post('/:id/cli-session/start', async (req, res) => {
       costUSD: 0,
     };
     cliSessionsById.set(boardSession.id, boardSession);
-    registerSession(BOARD_CONVERSATION_ID, boardSession.id);
+    registerSession(id, boardSession.id);
     if (typeof req.body?.model === 'string' && req.body.model.trim()) boardSession.model = req.body.model.trim();
     if (typeof req.body?.effortOverride === 'string' && req.body.effortOverride.trim()) boardSession.effortOverride = req.body.effortOverride.trim();
-    // Orchestrator default comes from the workspace risk-tolerance setting (board default
+    // Orchestrator/Furnace default comes from the workspace risk-tolerance setting (board default
     // gated); an explicit per-chat Perms choice overrides it. (FLUX-605)
     boardSession.permissionMode = resolvePermissionMode(
       req.body?.permissionMode === 'gated' || req.body?.permissionMode === 'skip' ? req.body.permissionMode : undefined,
@@ -605,11 +616,11 @@ router.post('/:id/cli-session/start', async (req, res) => {
         attachments: chatAttachments,
         ...(boardPersonaPrompt ? { personaPrompt: boardPersonaPrompt } : {}),
       });
-      return res.status(201).json({ session: getCliSessionSummaryForTask(BOARD_CONVERSATION_ID) });
+      return res.status(201).json({ session: getCliSessionSummaryForTask(id) });
     } catch (error: unknown) {
-      unregisterSession(BOARD_CONVERSATION_ID, boardSession.id);
+      unregisterSession(id, boardSession.id);
       cliSessionsById.delete(boardSession.id);
-      return res.status(500).json({ error: errorMessage(error, 'Failed to start orchestrator session') });
+      return res.status(500).json({ error: errorMessage(error, `Failed to start ${conversationLabel.toLowerCase()} session`) });
     }
   }
 
@@ -655,9 +666,16 @@ router.post('/:id/cli-session/start', async (req, res) => {
   // checkout (the FLUX-840/841/844 tangle). 'worktree' → dedicated worktree (the default for
   // agent callers); 'branch' → branch only; omitted → no server-side isolation (the portal
   // pre-creates its own branch client-side and omits this).
+  // FLUX-1214: grooming never writes code or opens a PR — it only reads/writes ticket metadata
+  // via MCP tools — so it has no use for a branch or worktree. Force isolation off here,
+  // regardless of what the caller requested, so a ticket that grooms straight back to Todo
+  // (never reaching Ready/a terminal status) never leaves an orphaned worktree that
+  // `worktreeUnreclaimableReason` (status-gated) can't ever reclaim.
   const isolationRaw = typeof req.body?.isolation === 'string' ? req.body.isolation.trim() : '';
   const isolation: 'worktree' | 'branch' | undefined =
-    isolationRaw === 'worktree' || isolationRaw === 'branch' ? isolationRaw : undefined;
+    phase === 'grooming'
+      ? undefined
+      : isolationRaw === 'worktree' || isolationRaw === 'branch' ? isolationRaw : undefined;
 
   // Multi-session fields
   const role = typeof req.body?.role === 'string' ? req.body.role.trim() : undefined;
@@ -1094,20 +1112,22 @@ router.post('/:id/cli-session/delegate', async (req, res) => {
 router.post('/:id/cli-session/input', async (req, res) => {
   const { id } = req.params;
 
-  // FLUX-604: orchestrator follow-up turn.
-  if (id === BOARD_CONVERSATION_ID) {
+  // FLUX-604 / FLUX-1209: follow-up turn on a virtual (non-ticket) conversation — the board
+  // orchestrator or the Furnace-chat.
+  if (isVirtualConversationId(id)) {
+    const conversationLabel = id === BOARD_CONVERSATION_ID ? 'Orchestrator' : 'Furnace';
     const boardMessage = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
     // FLUX-676: a turn may carry pasted images; allow an image-only turn (empty text).
     const boardAttachments = parseChatAttachments(req.body?.attachments);
     if (!boardMessage && boardAttachments.length === 0) return res.status(400).json({ error: 'message is required' });
-    const sid = cliSessionIdByTaskId.get(BOARD_CONVERSATION_ID);
+    const sid = cliSessionIdByTaskId.get(id);
     const boardSession = sid ? cliSessionsById.get(sid) : undefined;
-    if (!boardSession) return res.status(409).json({ error: 'No orchestrator session — start one first' });
+    if (!boardSession) return res.status(409).json({ error: `No ${conversationLabel.toLowerCase()} session — start one first` });
     // FLUX-714: a turn already in flight must not be double-sent. A second resume against the same
     // resumeSessionId spawns a concurrent `claude --resume` that races the first on the session
     // JSONL and loses turns. Mirror the start-path guard (line ~347): 409 while genuinely running.
     if (boardSession.status === 'running' || boardSession.status === 'pending') {
-      return res.status(409).json({ error: 'Orchestrator is mid-turn — wait for the current turn to finish.', session: getCliSessionSummaryForTask(BOARD_CONVERSATION_ID) });
+      return res.status(409).json({ error: `${conversationLabel} is mid-turn — wait for the current turn to finish.`, session: getCliSessionSummaryForTask(id) });
     }
     if (!boardSession.resumeSessionId) {
       return res.status(409).json({ error: 'Session ID not yet available — wait for the initial response to complete' });
@@ -1119,9 +1139,9 @@ router.post('/:id/cli-session/input', async (req, res) => {
       // FLUX-959: framework is fixed for a board session's life — resolve via the session
       // record, not the request (resumeSessionId is CLI-specific; switching = a new session).
       await getBoardAdapter(boardSession.framework).sendBoardInput(boardSession, boardMessage, workspaceRoot!, { attachments: boardAttachments });
-      return res.json({ session: getCliSessionSummaryForTask(BOARD_CONVERSATION_ID) });
+      return res.json({ session: getCliSessionSummaryForTask(id) });
     } catch (error: unknown) {
-      return res.status(500).json({ error: errorMessage(error, 'Failed to send message to orchestrator') });
+      return res.status(500).json({ error: errorMessage(error, `Failed to send message to ${conversationLabel.toLowerCase()}`) });
     }
   }
 
@@ -1184,9 +1204,10 @@ router.post('/:id/cli-session/input', async (req, res) => {
 router.post('/:id/cli-session/stop', async (req, res) => {
   const { id } = req.params;
 
-  // FLUX-604: stop the orchestrator session.
-  if (id === BOARD_CONVERSATION_ID) {
-    const sid = cliSessionIdByTaskId.get(BOARD_CONVERSATION_ID);
+  // FLUX-604 / FLUX-1209: stop a virtual (non-ticket) conversation's session — the board
+  // orchestrator or the Furnace-chat.
+  if (isVirtualConversationId(id)) {
+    const sid = cliSessionIdByTaskId.get(id);
     const boardSession = sid ? cliSessionsById.get(sid) : undefined;
     if (boardSession) {
       boardSession.requestedStop = true;
@@ -1208,7 +1229,7 @@ router.post('/:id/cli-session/stop', async (req, res) => {
           if (stalled.requestedStop && stalled.status === 'running') {
             stalled.status = 'cancelled';
             stalled.endedAt = new Date().toISOString();
-            broadcastEvent('taskUpdated', { id: BOARD_CONVERSATION_ID });
+            broadcastEvent('taskUpdated', { id });
           }
         }, 5000);
         t.unref?.();
@@ -1217,8 +1238,8 @@ router.post('/:id/cli-session/stop', async (req, res) => {
     // FLUX-910: broadcast synchronously so the UI reflects the stop immediately. The board path
     // previously broadcast nothing — the only signal was the proc exit handler, invisible if the
     // SSE stream stalled or the proc lingered.
-    broadcastEvent('taskUpdated', { id: BOARD_CONVERSATION_ID });
-    return res.json({ session: getCliSessionSummaryForTask(BOARD_CONVERSATION_ID) || null });
+    broadcastEvent('taskUpdated', { id });
+    return res.json({ session: getCliSessionSummaryForTask(id) || null });
   }
 
   const task = tasksCache[id];

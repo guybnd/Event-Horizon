@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useDeferredValue } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { OrchestrationLauncher } from './OrchestrationLauncher';
 import { ReadyForMergePrompt } from './task-modal/ReadyForMergePrompt';
@@ -86,6 +86,17 @@ export const TaskModal = memo(function TaskModal() {
     reviewModalOpen, setReviewModalOpen, launcherPhase,
   } = c;
 
+  // FLUX-1200: the shell (header/title/status/save button — all built straight from `modalTask`
+  // above) commits synchronously so opening/switching tickets feels instant, while the heavy
+  // content grid (MetadataPanel, the TipTap description editor, SubtasksPanel, DetailsPanel) reads
+  // this deferred value instead — React renders it as a low-priority, interruptible update, so the
+  // shell paints a frame before the content commits. Unlike the FullView's existing
+  // `isTaskLoading && !modalTask?.body` gate (which only covers the truly-new/fetching-task case),
+  // this also helps the common case of reopening an already-loaded task, where `isTaskLoading` is
+  // false from the first render and nothing previously deferred the content mount.
+  const deferredModalTask = useDeferredValue(modalTask);
+  const isContentPending = modalTask !== deferredModalTask;
+
   const activityFilterTabs = (
     <ActivityFilterTabs
       activityFilter={activityFilter}
@@ -165,7 +176,8 @@ export const TaskModal = memo(function TaskModal() {
     allStatuses, allUsers, allTags,
     configTags: config?.tags ?? [],
     availablePriorities,
-    task: modalTask ?? undefined,
+    // FLUX-1200: deferred — see `deferredModalTask` above.
+    task: deferredModalTask ?? undefined,
     onDiffFileClick: (file: string) => setDiffViewFile(file),
   };
 
@@ -174,7 +186,7 @@ export const TaskModal = memo(function TaskModal() {
   const subtasksPanel = (
     <SubtasksPanel
       config={config}
-      modalTask={modalTask}
+      modalTask={deferredModalTask}
       parentId={parentId}
       setParentId={setParentId}
       subtasks={subtasks}
@@ -190,7 +202,7 @@ export const TaskModal = memo(function TaskModal() {
 
   const detailsPanel = (
     <DetailsPanel
-      modalTask={modalTask}
+      modalTask={deferredModalTask}
       currentUser={currentUser}
       createdAt={createdAt}
       updatedAt={updatedAt}
@@ -285,6 +297,8 @@ export const TaskModal = memo(function TaskModal() {
           subtasksPanel={subtasksPanel}
           detailsPanel={detailsPanel}
           activityFilterTabs={activityFilterTabs}
+          deferredModalTask={deferredModalTask}
+          isContentPending={isContentPending}
         />
       )}
 
@@ -298,6 +312,8 @@ export const TaskModal = memo(function TaskModal() {
           metadataPanelProps={metadataPanelProps}
           historyListProps={historyListProps}
           commentBoxProps={commentBoxProps}
+          deferredModalTask={deferredModalTask}
+          isContentPending={isContentPending}
           requireInputPrompt={requireInputPrompt}
           readyForMergePrompt={readyForMergePrompt}
           subtasksPanel={subtasksPanel}

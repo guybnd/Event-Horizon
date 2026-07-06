@@ -68,6 +68,7 @@ export function FurnaceReportModal({ batch, onClose }: Props) {
           )}
 
           <ReportSection title="PRs opened" lines={report.prsOpened} />
+          <ReportSection title="Merged" lines={report.merged} />
           <ReportSection title="Parked" lines={report.parked} />
           <ReportSection title="Failed" lines={report.failed} />
 
@@ -89,13 +90,16 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
   return <div className="text-[10px] font-bold uppercase tracking-wider" style={{ color: 'var(--eh-text-muted)' }}>{children}</div>;
 }
 
-function ReportSection({ title, lines }: { title: string; lines: FurnaceReportLine[] }) {
-  if (lines.length === 0) return null;
+function ReportSection({ title, lines }: { title: string; lines: FurnaceReportLine[] | undefined }) {
+  // Defensive: `lines` can be undefined for a report bucket added after some batches' reports
+  // were persisted (e.g. `merged`, FLUX-1210) — pre-existing sidecars on disk predate the field.
+  const safeLines = lines ?? [];
+  if (safeLines.length === 0) return null;
   return (
     <div className="mt-3">
-      <SectionHeader>{title} ({lines.length})</SectionHeader>
+      <SectionHeader>{title} ({safeLines.length})</SectionHeader>
       <div className="mt-1 flex flex-col gap-1">
-        {lines.map((line) => (
+        {safeLines.map((line) => (
           <div key={line.ticketId} className="flex flex-col gap-0.5">
             <div className="flex items-center gap-1.5">
               <TicketRefChip ticketId={line.ticketId} />

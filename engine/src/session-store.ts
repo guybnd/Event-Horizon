@@ -7,7 +7,7 @@ import { CLI_CAPABILITIES as capabilities } from './agents/types.js';
 import { killProcessTree } from './kill-process-tree.js';
 import { settleOpenPromptsForConversation } from './hitl-prompts.js';
 import { getActiveFluxDir } from './workspace.js';
-import { BOARD_CONVERSATION_ID } from './agents/board.js';
+import { isVirtualConversationId } from './agents/board.js';
 import { broadcastEvent } from './events.js';
 
 export const cliSessionsById = new Map<string, CliSessionRecord>();
@@ -696,11 +696,12 @@ function sessionStubPath(id: string): string {
   return path.join(sessionStubsDir(), sessionStubFileName(id));
 }
 
-/** The stub payload for a session, or null when it must not be persisted (terminal/pending, or the
- *  board orchestrator conversation — it owns no task worktree, so the reclaim guard never asks about it). */
+/** The stub payload for a session, or null when it must not be persisted (terminal/pending, or a
+ *  virtual conversation — the board orchestrator or Furnace chat — neither owns a task worktree,
+ *  so the reclaim guard never asks about either). */
 function stubFor(session: CliSessionRecord): SessionStub | null {
   if (!STUB_PERSIST_STATUSES.has(session.status)) return null;
-  if (!session.taskId || session.taskId === BOARD_CONVERSATION_ID) return null;
+  if (!session.taskId || isVirtualConversationId(session.taskId)) return null;
   const stub: SessionStub = {
     id: session.id,
     taskId: session.taskId,
@@ -803,7 +804,7 @@ export async function rehydrateSessionStubs(): Promise<number> {
           const raw = await fs.readFile(path.join(dir, file), 'utf-8');
           const stub = JSON.parse(raw) as SessionStub;
           if (!stub || typeof stub.id !== 'string' || typeof stub.taskId !== 'string') continue;
-          if (stub.taskId === BOARD_CONVERSATION_ID) continue;
+          if (isVirtualConversationId(stub.taskId)) continue;
           if (cliSessionsById.has(stub.id)) continue; // a live session already owns this id
           cliSessionsById.set(stub.id, rehydratedRecord(stub));
           registerSession(stub.taskId, stub.id);

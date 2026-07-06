@@ -15,6 +15,19 @@ import type { CliFramework, CliSessionRecord, SendInputOptions } from './types.j
 /** Reserved sentinel stream id for the board orchestrator (not a real ticket). */
 export const BOARD_CONVERSATION_ID = '__board__';
 
+// FLUX-1209: reserved sentinel stream id for the Furnace Operator ("Smelter") chat — a
+// persona-primed conversation launched from the Furnace drawer, not bound to any ticket. It
+// shares the board-orchestrator's non-ticket-scoped machinery (board-core.ts, this file's
+// BoardSpec plumbing) but is its own distinct conversation/transcript, never `__board__`'s.
+export const FURNACE_CONVERSATION_ID = '__furnace__';
+
+/** True for either reserved non-ticket-scoped conversation id (the board orchestrator or the
+ *  Furnace Operator chat) — the shared guard every non-ticket-conversation route/helper widens
+ *  on instead of a `=== BOARD_CONVERSATION_ID` literal. */
+export function isVirtualConversationId(id: string): boolean {
+  return id === BOARD_CONVERSATION_ID || id === FURNACE_CONVERSATION_ID;
+}
+
 export interface BoardAdapter {
   startBoardSession(session: CliSessionRecord, firstMessage: string, workspaceRoot: string, opts?: SendInputOptions): Promise<void>;
   sendBoardInput(session: CliSessionRecord, message: string, workspaceRoot: string, opts?: SendInputOptions): Promise<void>;
@@ -41,7 +54,10 @@ export interface BoardSpec {
   buildArgs(ctx: BoardSpawnContext): string[] | Promise<string[]>;
   // FLUX-1003: Claude/Gemini resolve a cached binary path before spawning (async); Copilot spawns
   // directly (sync). board-core.ts awaits either — `await` on a non-Promise resolves immediately.
-  spawn(args: string[], executionRoot: string): ReturnType<typeof spawn> | Promise<ReturnType<typeof spawn>>;
+  // FLUX-1209: the conversation id (BOARD_CONVERSATION_ID or FURNACE_CONVERSATION_ID) this turn
+  // belongs to — spawn implementations pass it to cleanChildEnv()/spawnGemini()/spawnCopilot()
+  // instead of a hardcoded board literal, so a Furnace-chat turn tags its own child env/session.
+  spawn(args: string[], executionRoot: string, conversationId: string): ReturnType<typeof spawn> | Promise<ReturnType<typeof spawn>>;
   /** Wire stdout parsing for this CLI's schema; returns the same commitPending flush fn the core expects. */
   attachStdout(proc: ReturnType<typeof spawn>, session: CliSessionRecord, taskId: string): () => void;
   /** Claude-only today: ensure the workspace-root shared MCP server(s) exist before spawning. */

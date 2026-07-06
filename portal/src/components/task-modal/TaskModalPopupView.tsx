@@ -36,6 +36,13 @@ interface TaskModalPopupViewProps {
   readyForMergePrompt: ReactNode;
   subtasksPanel: ReactNode;
   activityFilterTabs: ReactNode;
+  /** FLUX-1200: `c.modalTask` run through `useDeferredValue` — used for the heavy content-only
+   *  bits (the TipTap description editor's key/taskId) so switching tickets doesn't force them to
+   *  remount in the same commit as the click; see `isContentPending` for the transition gate. */
+  deferredModalTask: TaskModalController['modalTask'];
+  /** True for the one (or few) renders where `deferredModalTask` hasn't yet caught up to the live
+   *  `modalTask` — i.e. React is still painting the shell before committing the deferred content. */
+  isContentPending: boolean;
 }
 
 export function TaskModalPopupView({
@@ -50,6 +57,8 @@ export function TaskModalPopupView({
   readyForMergePrompt,
   subtasksPanel,
   activityFilterTabs,
+  deferredModalTask,
+  isContentPending,
 }: TaskModalPopupViewProps) {
   const {
     config,
@@ -79,7 +88,15 @@ export function TaskModalPopupView({
     isReadyForMerge,
     commentBoxRef,
     openLauncher,
+    isTaskLoading,
   } = c;
+
+  // FLUX-1200: same skeleton/defer gate as TaskModalFullView — covers both the truly-new/
+  // fetching-task case (`isTaskLoading`) and the common case this view previously had NO gate
+  // for at all: reopening an already-loaded task (`isContentPending`, from the parent's
+  // `useDeferredValue(modalTask)`), so the heavy content column no longer mounts synchronously
+  // in the same commit as the click.
+  const showContentSkeleton = isContentPending || (isTaskLoading && !modalTask?.body);
 
   return (
     <Rnd
@@ -171,7 +188,22 @@ export function TaskModalPopupView({
           </div>
         </div>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 text-sm text-gray-800 dark:text-gray-200">
+        {/* FLUX-1200: skeleton for the same two cases TaskModalFullView gates on (see
+            `showContentSkeleton` above) — the content column below is `display:none`d rather
+            than unmounted, matching the FullView pattern. */}
+        {showContentSkeleton && (
+          <div className="flex min-h-0 flex-1 flex-col gap-4 p-4 animate-pulse">
+            <div className="h-4 w-1/3 rounded bg-gray-200 dark:bg-white/10" />
+            <div className="h-4 w-2/3 rounded bg-gray-200 dark:bg-white/10" />
+            <div className="h-4 w-1/2 rounded bg-gray-200 dark:bg-white/10" />
+            <div className="h-4 w-3/4 rounded bg-gray-200 dark:bg-white/10" />
+          </div>
+        )}
+
+        <div
+          className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 text-sm text-gray-800 dark:text-gray-200"
+          style={{ display: showContentSkeleton ? 'none' : undefined }}
+        >
           {isRequireInput ? requireInputPrompt : (
             <>
               {requireInputBanner}
@@ -191,10 +223,10 @@ export function TaskModalPopupView({
               <>
             <label className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400">Description</label>
             <TaskDescriptionSurface
-              key={`${modalTask?.id || 'new-task'}-popup`}
+              key={`${deferredModalTask?.id || 'new-task'}-popup`}
               value={body}
               onChange={setBody}
-              taskId={modalTask?.id}
+              taskId={deferredModalTask?.id}
               mode="popup"
               emptyMessage="No description yet."
             />

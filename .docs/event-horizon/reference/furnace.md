@@ -50,6 +50,7 @@ It is a *conductor* over the existing headless-session machinery (`start_session
 | `currentSessionId?` / `currentPhase?` | | the in-flight session + which phase (`implementation`/`review`) |
 | `lastReviewState?` | `approved \| changes-requested \| null` | last verdict read off the ticket |
 | `prUrl?` | `string` | the open PR once `pr-open` |
+| `mergedAt?` | ISO string | FLUX-1210: set once a `pr-open` charge is detected as already merged (board status flipped to `Done`/`Released` outside the Furnace) — annotation only, `state` stays `pr-open` |
 | `note?` | `string` | human-facing status note (park/fail reason) |
 | `title?` / `overlapWarning?` | `string` | denormalized title; S2 soft file-overlap flag |
 | `groupId?` | `string` | grouped-serial (FLUX-1041): members sharing a `groupId` stack onto one shared branch/PR |
@@ -313,6 +314,7 @@ Early Furnace batches kept a per-ticket `state` the Stoker **wrote but never re-
 `reconcileBatch(batchId)` runs at the **top of every stoke tick** (before the watchdog / feed) and for **terminal batches** each drive cycle (the Stoker doesn't tick those) — always unthrottled, so ground truth still closes within one drive cycle. It is idempotent and cheap — it reads in-memory caches and writes only when something actually changed. For each ticket the Stoker is **not** actively driving (live impl/review is left to `reconcileTicket`'s normal flow), it closes the gap to intent from two sources of truth:
 
 - **Board ticket status** (`tasksCache[id].status`) — a ticket a human took to **Ready / Done / Released / Archived** outside the Furnace flips to `pr-open`, its board flag drops, and (for a terminal batch) the burn report regenerates. It is never left stuck `parked`.
+- **Merge detection for an already-`pr-open` charge (FLUX-1210)** — `pr-open` is terminal, so the Stoker's own job stops there and it never merges a PR. Nothing else used to notice when a human later merged it anyway (`finish_ticket`, a manual `gh pr merge`, or the portal Merge button) — the charge, `furnace_get`'s response, and the burn report all kept describing it as still awaiting review. `reconcileBatch` now also checks a `pr-open` charge's board status specifically for **`Done`/`Released`** (narrower than the `boardSuccess` set above — `Ready` is exactly what `pr-open` already represents, not a merge) and stamps `mergedAt` — `state` stays `pr-open`, this is annotation only. `assembleBurnReport` splits `prsOpened` accordingly into still-open vs `merged`, and the Smelter persona is instructed to check `mergedAt`/the report's `merged` bucket before describing a charge as needing review or suggesting a retry/re-ignite.
 - **Live session registry** (`getActiveSessionsForTask`) — an **active non-Furnace session** (an ad-hoc chat/drive session — no Furnace `phase`, id not in the ticket's `sessionIds`) marks the ticket **owner: `human`** (move #2).
 - **Worktree pool** (FLUX-1067, below) — slots are derived from the *actual* pool, never the Furnace's own burn count.
 
@@ -406,10 +408,12 @@ When a run reaches a terminal state — magazine drained (`completed`), soft-sto
 (`stopped`) — every path funnels through one `finalizeRun(runId, status)` that stamps the run's `status`
 + `endedAt` + a `report` (`assembleBurnReport`, pure) and fires a first-class **`completion`
 notification** (`addNotification`) so the morning digest surfaces on the board without opening the Furnace
-view. The `FurnaceReport` carries: counts by final state; `prsOpened` (with PR links); `parked`/`failed`
-(with reasons from each charge's note); `processed`; `durationMs` (ignite → end); `breakerTripped`;
-`stopReason`; and `nextActions` (review N PRs / unblock N parked / investigate N failed / check the
-environment if the breaker tripped). The S6 view renders the report as the run's resting state.
+view. The `FurnaceReport` carries: counts by final state; `prsOpened` (with PR links, still awaiting
+merge); `merged` (FLUX-1210: `pr-open` charges already merged outside the Furnace — split out of
+`prsOpened`, same shape); `parked`/`failed` (with reasons from each charge's note); `processed`;
+`durationMs` (ignite → end); `breakerTripped`; `stopReason`; and `nextActions` (review N PRs / unblock N
+parked / investigate N failed / check the environment if the breaker tripped — the PR count only
+reflects `prsOpened`, not `merged`). The S6 view renders the report as the run's resting state.
 
 ## Realtime events (SSE `/api/events`)
 

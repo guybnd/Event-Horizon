@@ -7,7 +7,10 @@ import { attachStdoutProcessing, buildSpawnMcpConfigArgs, modelEffortArgs, permi
 import { BOARD_CONVERSATION_ID, type BoardSpec } from './board.js';
 import { makeBoardAdapter } from './board-core.js';
 
-async function spawnClaudeForBoard(claudeArgs: string[], executionRoot: string): Promise<ReturnType<typeof spawn>> {
+// FLUX-1209: `conversationId` is BOARD_CONVERSATION_ID or FURNACE_CONVERSATION_ID (whichever
+// virtual conversation this turn belongs to) — passed through from board-core.ts instead of a
+// hardcoded board literal, so cleanChildEnv() tags the child env for the right conversation.
+async function spawnClaudeForBoard(claudeArgs: string[], executionRoot: string, conversationId: string): Promise<ReturnType<typeof spawn>> {
   if (process.platform === 'win32') {
     // FLUX-975: resolveClaudeExePath caches the result across every spawn (this board path
     // included) instead of re-running `npm prefix -g` on each one. FLUX-1003: now async (no
@@ -16,16 +19,18 @@ async function spawnClaudeForBoard(claudeArgs: string[], executionRoot: string):
     if (!exePath) {
       throw new Error('claude.exe not found. Please install @anthropic-ai/claude-code globally: npm install -g @anthropic-ai/claude-code');
     }
-    return spawn(exePath, claudeArgs, { cwd: executionRoot, env: cleanChildEnv('claude', BOARD_CONVERSATION_ID), stdio: 'pipe', windowsHide: true });
+    return spawn(exePath, claudeArgs, { cwd: executionRoot, env: cleanChildEnv('claude', conversationId), stdio: 'pipe', windowsHide: true });
   }
-  return spawn('claude', claudeArgs, { cwd: executionRoot, env: cleanChildEnv('claude', BOARD_CONVERSATION_ID), stdio: 'pipe', windowsHide: true });
+  return spawn('claude', claudeArgs, { cwd: executionRoot, env: cleanChildEnv('claude', conversationId), stdio: 'pipe', windowsHide: true });
 }
 
 function boardMcpArgs(projectPath?: string): string[] {
   // FLUX-579: the board runs at the workspace root, so its shared server is keyed
   // there. Pass the root explicitly (falls back to canonicalWorkspaceRoot in
-  // buildModuleServerMap when omitted).
-  return buildSpawnMcpConfigArgs(undefined, undefined, projectPath);
+  // buildModuleServerMap when omitted). FLUX-1213: bind the board's own event-horizon
+  // HTTP headers to BOARD_CONVERSATION_ID so it routes to __board__ by binding, not by
+  // coincidentally matching the unrouted fallback.
+  return buildSpawnMcpConfigArgs(undefined, undefined, projectPath, BOARD_CONVERSATION_ID);
 }
 
 export const claudeBoardSpec: BoardSpec = {

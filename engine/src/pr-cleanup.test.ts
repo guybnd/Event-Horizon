@@ -265,6 +265,47 @@ describe('worktree reclamation at Ready (FLUX-1031)', () => {
       expect(existsSync(wt)).toBe(true);
     });
   });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // FLUX-1214 — an orphaned worktree whose branch never picked up a single commit (e.g. a
+  // grooming session that never advances past Todo/Backlog, or a stray manual `branch` call) is
+  // safe to reclaim regardless of ticket status — the ordinary 'status' gate exists to protect
+  // real in-flight work, which by definition a zero-commit branch never had.
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('reclaimReadyWorktrees also reclaims a never-committed branch regardless of status (FLUX-1214)', () => {
+    it('reclaims a Todo-status worktree whose branch has zero commits ahead of base', async () => {
+      const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
+      // No commitInWorktree call — the branch sits exactly where it forked from base.
+      tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Todo', branch: 'flux/FLUX-1' };
+
+      const reclaimed = await reclaimReadyWorktrees(repo);
+
+      expect(reclaimed).toEqual(['FLUX-1']);
+      expect(existsSync(wt)).toBe(false);
+    });
+
+    it('still leaves a Todo-status worktree alone once it has a real commit ahead of base', async () => {
+      const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
+      await commitInWorktree(wt, 'a.txt');
+      tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Todo', branch: 'flux/FLUX-1' };
+
+      const reclaimed = await reclaimReadyWorktrees(repo);
+
+      expect(reclaimed).toEqual([]);
+      expect(existsSync(wt)).toBe(true);
+    });
+
+    it('does not widen past a live session even with zero commits ahead', async () => {
+      const wt = await createTaskWorktree(repo, 'FLUX-1', 'flux/FLUX-1');
+      tasksCache['FLUX-1'] = { id: 'FLUX-1', status: 'Todo', branch: 'flux/FLUX-1' };
+      addLiveSession('FLUX-1', 'sess-1');
+
+      const reclaimed = await reclaimReadyWorktrees(repo);
+
+      expect(reclaimed).toEqual([]);
+      expect(existsSync(wt)).toBe(true);
+    });
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

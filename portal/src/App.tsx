@@ -49,13 +49,16 @@ function AppContent() {
   // drawer (which unmounts when closed) so a user who closes the Furnace still sees that unattended
   // work is in flight. Refreshes on the shared furnace-refresh event for immediacy after mutations.
   const [furnaceBurning, setFurnaceBurning] = useState(false);
+  // FLUX-1212: batch count backing the flyout's "· N burning" hint (the boolean above only
+  // drives the ambient pulse, which doesn't need the count).
+  const [furnaceBurningCount, setFurnaceBurningCount] = useState(0);
   useEffect(() => {
-    if (!isConnected) { setFurnaceBurning(false); return; }
+    if (!isConnected) { setFurnaceBurning(false); setFurnaceBurningCount(0); return; }
     let cancelled = false;
     const check = async () => {
       try {
         const burning = await fetchFurnaceBatches('burning');
-        if (!cancelled) setFurnaceBurning(burning.length > 0);
+        if (!cancelled) { setFurnaceBurning(burning.length > 0); setFurnaceBurningCount(burning.length); }
       } catch { /* transient — keep last known state */ }
     };
     void check();
@@ -123,7 +126,7 @@ function AppContent() {
           )}
         </main>
         <TaskModal />
-        <ChatDock onToggleFurnace={handleToggleFurnace} furnaceOpen={furnaceOpen} furnaceBurning={furnaceBurning} />
+        <ChatDock onToggleFurnace={handleToggleFurnace} furnaceOpen={furnaceOpen} furnaceBurning={furnaceBurning} furnaceBurningCount={furnaceBurningCount} />
       </div>
       <TerminalPanel isOpen={terminalOpen} onClose={() => setTerminalOpen(false)} />
     </div>

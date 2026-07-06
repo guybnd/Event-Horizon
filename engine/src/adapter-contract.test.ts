@@ -198,7 +198,11 @@ describe('A.6 cleanChildEnv — HITL routing env is set for every framework (FLU
     });
   }
 
-  it('without a conversationId, leaves the HITL env unset (a delegated subagent is unrouted)', () => {
+  // FLUX-1213: verified live — the /delegate route spawns via spawnSession(task, ...), so a
+  // delegated persona's `id` IS the real ticket id and cleanChildEnv gets called WITH it (not bare
+  // `cleanChildEnv('claude')` as this test does). This case covers cleanChildEnv's own no-id
+  // contract in isolation (a caller that truly has none, e.g. a binary probe) — not delegate.
+  it('without a conversationId, leaves the HITL env unset (the no-id contract; NOT what /delegate passes)', () => {
     const env = cleanChildEnv('claude');
     expect(env.EH_CONVERSATION_ID).toBeUndefined();
     expect(env.EH_CONVERSATION_TOKEN).toBeUndefined();

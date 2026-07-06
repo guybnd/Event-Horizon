@@ -2,6 +2,16 @@
 
 Notable changes are summarized here; detailed per-version notes for the dev line live in [`.docs/release-notes/`](.docs/release-notes/).
 
+## [1.4.1] — Smelter follow-ups, HITL routing fix, and Furnace patch wave
+
+A small patch on the heels of 1.4.0. Full notes: [`.docs/release-notes/v1.4.1.md`](.docs/release-notes/v1.4.1.md).
+
+- **Smelter follow-ups** — its chat lives on its own dedicated surface instead of overriding the orchestrator chat (#392, placement decided in FLUX-1212); opening the chat presents a blank composer instead of auto-sending a pre-recorded message (FLUX-1211); the Smelter recognizes when its own furnace tickets are already merged (FLUX-1210).
+- **HITL routing** — `ask_user_question` / `permission_prompt` from dedicated ticket sessions over shared HTTP MCP no longer misroute to the board orchestrator (#394).
+- **Worktree hygiene** — grooming-phase sessions no longer create a never-used branch+worktree, and orphans are reclaimable (#390); a health signal surfaces when Furnace slots are exhausted with no batch burning (#393).
+- **Sequential batches** — the shared PR title/body and `batch.prs` reflect every ticket, not just the first (#395).
+- **Perf follow-ups** — ChatDock wide context, TaskModalPopupView skeleton gap, Board filter deferral (#391).
+
 ## [1.4.0] — the persona overhaul: server-composed prompts, new specialist agents, and structured handoffs
 
 The headline is **the persona system**: prompts composed server-side from a shared phase contract, four new specialist personas, and a consolidated roster — plus machine-readable completion handoffs and first-class acceptance criteria. Full notes: [`.docs/release-notes/v1.4.0.md`](.docs/release-notes/v1.4.0.md).

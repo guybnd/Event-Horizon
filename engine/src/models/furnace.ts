@@ -107,6 +107,14 @@ export interface BatchTicket {
   lastReviewState?: 'approved' | 'changes-requested' | null;
   /** The open PR URL once the ticket reaches `pr-open`. */
   prUrl?: string;
+  /**
+   * FLUX-1210: ISO time a `pr-open` ticket was detected as already merged (board `status` flipped to
+   * `Done`/`Released` however that happened — `finish_ticket`, a manual `gh pr merge`, or the portal
+   * Merge button). Set once by read-time reconcile, never cleared. Purely an annotation — `state` stays
+   * `pr-open` (still the terminal success state); this only distinguishes "still awaiting merge" from
+   * "already merged" for reporting/display.
+   */
+  mergedAt?: string;
   /** Human-facing status note — park reason, failure reason, etc. */
   note?: string;
   /** Denormalized ticket title for display (kept fresh on load; may be stale). */
@@ -161,8 +169,15 @@ export interface BatchPr {
   number?: number;
   url: string;
   branch: string;
-  /** The ticket this PR was opened for (parallel); the anchor ticket for sequential. */
+  /** The ticket this PR was opened for (parallel); the most-recent ticket to land for sequential. */
   ticketId?: string;
+  /**
+   * FLUX-1223: every ticket whose commits actually landed on this PR. A `sequential` batch dedups
+   * PR entries by branch (all its tickets share one PR) — this accumulates across that dedup so
+   * `batch.prs` reflects every ticket, not just whichever one happened to be processed last (what
+   * `ticketId` alone captures). For `parallel` batches (one PR per ticket) this is just `[ticketId]`.
+   */
+  ticketIds?: string[];
   reviewState: BatchPrReviewState;
 }
 
@@ -187,8 +202,10 @@ export interface FurnaceReport {
   durationMs?: number;
   /** Count of tickets by their final state. */
   counts: Partial<Record<BatchTicketState, number>>;
-  /** Tickets that reached `pr-open`, with PR links. */
+  /** Tickets that reached `pr-open` and are still awaiting merge, with PR links. */
   prsOpened: FurnaceReportLine[];
+  /** FLUX-1210: `pr-open` tickets already merged (`mergedAt` set) — split out of `prsOpened`. */
+  merged: FurnaceReportLine[];
   /** Tickets parked for a human, with reasons. */
   parked: FurnaceReportLine[];
   /** Tickets that failed unrecoverably, with reasons. */
@@ -597,7 +614,9 @@ export function assembleBurnReport(batch: FurnaceBatch, now: string): FurnaceRep
     return l;
   };
 
-  const prsOpened = batch.tickets.filter((t) => t.state === 'pr-open').map((t) => line(t, false));
+  const prOpenTickets = batch.tickets.filter((t) => t.state === 'pr-open');
+  const prsOpened = prOpenTickets.filter((t) => !t.mergedAt).map((t) => line(t, false));
+  const merged = prOpenTickets.filter((t) => t.mergedAt).map((t) => line(t, false));
   const parked = batch.tickets.filter((t) => t.state === 'parked').map((t) => line(t, true));
   const failed = batch.tickets.filter((t) => t.state === 'failed').map((t) => line(t, true));
   const processed = batch.tickets.filter((t) => isTerminalTicketState(t.state)).length;
@@ -615,6 +634,7 @@ export function assembleBurnReport(batch: FurnaceBatch, now: string): FurnaceRep
     endedAt: now,
     counts,
     prsOpened,
+    merged,
     parked,
     failed,
     processed,

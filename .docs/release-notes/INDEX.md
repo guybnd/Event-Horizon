@@ -70,3 +70,21 @@
 - **PR-388**: PR #388: Triage action: dynamic board-health prompt feeding propose_board_rebase
 - **PR-389**: PR #389: New persona: Furnace Operator ("Smelter") — furnace-owning chat persona
 
+## Release 1.4.1 — 2026-07-06T05:56:42.737Z
+
+- **FLUX-1200**: Perf follow-ups from FLUX-1141: ChatDock wide context, TaskModalPopupView skeleton gap, Board filter deferral — PR squash-merged for branch `flux/FLUX-1200-perf-follow-ups-from-flux-1141-chatdock-wide-context-taskmod` — advanced to…
+- **FLUX-1209**: Smelter chat overrides the orchestrator chat instead of using its own surface — PR squash-merged for branch `flux/furnace-7144f238-smelter-chat-surface-cluster` — advanced to Done.
+- **FLUX-1210**: Smelter doesn't recognize when its own furnace tickets are already merged — PR squash-merged for branch `flux/furnace-7144f238-smelter-chat-surface-cluster` — advanced to Done.
+- **FLUX-1211**: Opening Smelter chat auto-sends a pre-recorded message instead of a blank composer — PR squash-merged for branch `flux/furnace-7144f238-smelter-chat-surface-cluster` — advanced to Done.
+- **FLUX-1212**: Decide where Smelter's dedicated chat surface lives in the portal — PR squash-merged for branch `flux/furnace-7144f238-smelter-chat-surface-cluster` — advanced to Done.
+- **FLUX-1213**: HITL prompts (ask_user_question / permission_prompt) from dedicated tickets misroute to the board orchestrator over shared HTTP MCP — PR squash-merged for branch `flux/FLUX-1213-hitl-prompts-ask-user-question-permission-prompt-from-dedica` — advanced to…
+- **FLUX-1214**: Grooming-phase sessions unnecessarily create a branch+worktree, and it's never reclaimed — PR squash-merged for branch `flux/FLUX-1214-grooming-phase-sessions-unnecessarily-create-a-branch-worktr` — advanced to…
+- **FLUX-1217**: Surface a health signal when Furnace worktree slots are exhausted with no batch burning — PR squash-merged for branch `flux/FLUX-1217-surface-a-health-signal-when-furnace-worktree-slots-are-exha` — advanced to…
+- **FLUX-1223**: Sequential Furnace batches: PR title/body and batch.prs only ever reflect the first ticket — PR squash-merged for branch `flux/FLUX-1223-sequential-furnace-batches-pr-title-body-and-batch-prs-only-` — advanced to…
+- **PR-390**: PR #390: Grooming-phase sessions unnecessarily create a branch+worktree, and it's never reclaimed
+- **PR-391**: PR #391: Perf follow-ups from FLUX-1141: ChatDock wide context, TaskModalPopupView skeleton gap, Board filter deferral
+- **PR-392**: PR #392: Smelter chat overrides the orchestrator chat instead of using its own surface
+- **PR-393**: PR #393: Surface a health signal when Furnace worktree slots are exhausted with no batch burning
+- **PR-394**: PR #394: HITL prompts (ask_user_question / permission_prompt) from dedicated tickets misroute to the board orchestrator over shared HTTP MCP
+- **PR-395**: PR #395: Sequential Furnace batches: PR title/body and batch.prs only ever reflect the first ticket
+

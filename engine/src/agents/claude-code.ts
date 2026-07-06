@@ -18,6 +18,8 @@ import { buildMemberScopeArgs } from '../group.js';
 import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
 import { getModuleMcpServers, getActiveModules, getWorkspaceMcpServers } from '../modules.js';
 import { getProbeStatus } from '../module-probe.js';
+import { signConversation } from '../session-binding.js';
+import { buildMcpServerEntry } from '../workflow-installer.js';
 import { ensureSharedServer, getSharedServerUrl, isSharedHttpPlatformProven } from '../shared-mcp-server.js';
 import { buildResumePreamble } from '../resume-preamble.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest, SendInputOptions } from './types.js';
@@ -112,8 +114,30 @@ export async function ensureSharedServersForRoot(projectPath: string, phase?: st
   await Promise.all(shared.map(m => raceWithCap(ensureSharedServer(m, projectPath).catch(() => null), PRE_SPAWN_WAIT_CAP_MS)));
 }
 
-function buildModuleMcpConfigArgs(phase?: string, tags?: string[], projectPath?: string): string[] {
-  const filtered = buildModuleServerMap(phase, tags, projectPath);
+/**
+ * FLUX-1213: the event-horizon server is a single shared HTTP mount (FLUX-645) — every session's
+ * `event-horizon` MCP client points at the same URL, so the engine can no longer tell sessions
+ * apart via `process.env.EH_CONVERSATION_ID` (that's the engine's own process-global env, not any
+ * particular caller's). Instead, carry this spawn's bound conversationId + its HMAC token
+ * (verified engine-side by `verifyConversation`, same as the existing env-based binding) as
+ * custom HTTP headers on THIS session's own `event-horizon` server entry, so `ask_user_question`/
+ * `permission_prompt`/`propose_board_rebase` route to the right ticket instead of falling back to
+ * the `__board__` catch-all. Only applies when the workspace's own event-horizon entry is (or
+ * defaults to) the `http` transport — a legacy stdio entry already gets correct per-session env
+ * via ordinary child-process inheritance and needs no override here.
+ */
+function eventHorizonSpawnOverride(conversationId?: string): Record<string, McpServerConfig> {
+  if (!conversationId) return {};
+  const base = getWorkspaceMcpServers()['event-horizon'];
+  if (base && base.type !== 'http') return {}; // stdio (or another transport) — already routed via env inheritance
+  // buildMcpServerEntry is the canonical {type, url, alwaysLoad} builder (also used by the
+  // installer to write the static workspace .mcp.json this `base` comes from) — reuse it so the
+  // URL/port stay correct even if `base` is stale or absent, and layer the header override on top.
+  return { 'event-horizon': { ...(base ?? {}), ...buildMcpServerEntry(conversationId) } };
+}
+
+function buildModuleMcpConfigArgs(phase?: string, tags?: string[], projectPath?: string, conversationId?: string): string[] {
+  const filtered = { ...buildModuleServerMap(phase, tags, projectPath), ...eventHorizonSpawnOverride(conversationId) };
   if (Object.keys(filtered).length === 0) return [];
   return ['--mcp-config', JSON.stringify({ mcpServers: filtered })];
 }
@@ -144,10 +168,10 @@ export function filterMcpServersByPhase(
   return out;
 }
 
-export function buildSpawnMcpConfigArgs(phase?: string, tags?: string[], projectPath?: string): string[] {
+export function buildSpawnMcpConfigArgs(phase?: string, tags?: string[], projectPath?: string, conversationId?: string): string[] {
   const serverPhases = configCache.mcpServerPhases as Record<string, string[]> | undefined;
   const hasProfiles = !!serverPhases && typeof serverPhases === 'object' && Object.keys(serverPhases).length > 0;
-  if (!hasProfiles) return buildModuleMcpConfigArgs(phase, tags, projectPath);
+  if (!hasProfiles) return buildModuleMcpConfigArgs(phase, tags, projectPath, conversationId);
 
   const merged: Record<string, McpServerConfig> = { ...getWorkspaceMcpServers() };
   for (const [id, cfg] of Object.entries(buildModuleServerMap(phase, tags, projectPath))) {
@@ -161,13 +185,22 @@ export function buildSpawnMcpConfigArgs(phase?: string, tags?: string[], project
     // Fail open to merge mode rather than spawn an agent that can't manage the
     // ticket. (Review finding alongside FLUX-490.)
     console.warn('[mcp] strict profile would omit event-horizon — falling back to merge mode');
-    return buildModuleMcpConfigArgs(phase, tags, projectPath);
+    return buildModuleMcpConfigArgs(phase, tags, projectPath, conversationId);
   }
   if (Object.keys(filtered).length === 0) return [];
   // FLUX-604: keep the agent's OWN ticket tools loaded directly — no tool-search
   // deferral loop (the orchestrator was re-searching get_ticket ~10x before calling
-  // it). Requires Claude Code >= 2.1.121.
-  if (filtered['event-horizon']) filtered['event-horizon'] = { ...filtered['event-horizon'], alwaysLoad: true };
+  // it). Requires Claude Code >= 2.1.121. FLUX-1213: also carry this session's bound
+  // conversationId as HTTP headers so its HITL prompts route to its own ticket.
+  if (filtered['event-horizon']) {
+    filtered['event-horizon'] = {
+      ...filtered['event-horizon'],
+      alwaysLoad: true,
+      ...(conversationId && filtered['event-horizon'].type === 'http'
+        ? { headers: { 'x-eh-conversation-id': conversationId, 'x-eh-conversation-token': signConversation(conversationId) } }
+        : {}),
+    };
+  }
   return ['--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: filtered })];
 }
 
@@ -720,7 +753,7 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
     // Member worktree: add local .flux-group/ so the agent reads shared group docs (FLUX-422).
     ...buildGroupDocsScopeArg(workspaceRoot),
     // Inject enabled module MCP servers dynamically (phase+tag gated, skips errored probes).
-    ...(framework === 'claude' ? buildSpawnMcpConfigArgs(session.phase, sessionTags, executionRoot) : []),
+    ...(framework === 'claude' ? buildSpawnMcpConfigArgs(session.phase, sessionTags, executionRoot, id) : []),
   ];
 
   const effortCap = CLI_CAPABILITIES[framework].effort;
@@ -1206,7 +1239,7 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   // this is the first turn in a freshly-created worktree).
   const resumeTags = Array.isArray(task?.tags) ? task.tags : undefined;
   await ensureSharedServersForRoot(executionRoot, session.phase, resumeTags);
-  const moduleMcpArgs = buildSpawnMcpConfigArgs(session.phase, resumeTags, executionRoot);
+  const moduleMcpArgs = buildSpawnMcpConfigArgs(session.phase, resumeTags, executionRoot, id);
   const meArgs = modelEffortArgs(session);
   // FLUX-691: `--include-partial-messages` → token-by-token live streaming on the resume/send path.
   const resumeArgs = session.resumeSessionId

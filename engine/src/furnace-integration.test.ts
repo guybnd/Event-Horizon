@@ -820,4 +820,55 @@ describe('Furnace integration (FLUX-1057)', () => {
       expect(body.focusComment).toBe(SOLE_REVIEWER_FOCUS);
     });
   });
+
+  describe('FLUX-1210 — reconcileBatch detects a pr-open ticket merged outside the Furnace', () => {
+    it('stamps mergedAt (state stays pr-open) once the board status flips to Done', async () => {
+      const batch = await createFurnaceBatch({ title: 'merge-detect', kind: 'parallel', tickets: [newBatchTicket('MRG-1', 0)] });
+      await mutateFurnaceBatch(batch.id, (b) => {
+        b.status = 'burning';
+        const t = b.tickets[0]!;
+        t.state = 'pr-open';
+        t.prUrl = 'http://pr/mrg-1';
+      });
+      tasksCache['MRG-1'] = { id: 'MRG-1', status: 'Done' };
+
+      await reconcileBatch(batch.id);
+
+      const ticket = getFurnaceBatch(batch.id)!.tickets[0]!;
+      expect(ticket.state).toBe('pr-open');
+      expect(ticket.mergedAt).toBeTruthy();
+    });
+
+    it('does not stamp mergedAt while the board status is still Ready (still open, not merged)', async () => {
+      const batch = await createFurnaceBatch({ title: 'still-open', kind: 'parallel', tickets: [newBatchTicket('MRG-2', 0)] });
+      await mutateFurnaceBatch(batch.id, (b) => { b.status = 'burning'; b.tickets[0]!.state = 'pr-open'; });
+      tasksCache['MRG-2'] = { id: 'MRG-2', status: 'Ready' };
+
+      await reconcileBatch(batch.id);
+
+      expect(getFurnaceBatch(batch.id)!.tickets[0]!.mergedAt).toBeUndefined();
+    });
+
+    it("a terminal batch's regenerated report splits a merged ticket out of prsOpened and into merged", async () => {
+      const batch = await createFurnaceBatch({
+        title: 'terminal-merge', kind: 'parallel',
+        tickets: [newBatchTicket('MRG-3', 0), newBatchTicket('MRG-4', 1)],
+      });
+      await mutateFurnaceBatch(batch.id, (b) => {
+        b.status = 'done';
+        b.tickets[0]!.state = 'pr-open';
+        b.tickets[0]!.prUrl = 'http://pr/mrg-3';
+        b.tickets[1]!.state = 'pr-open';
+        b.tickets[1]!.prUrl = 'http://pr/mrg-4';
+      });
+      tasksCache['MRG-3'] = { id: 'MRG-3', status: 'Done' }; // merged
+      tasksCache['MRG-4'] = { id: 'MRG-4', status: 'Ready' }; // still open
+
+      await reconcileBatch(batch.id);
+
+      const report = getFurnaceBatch(batch.id)!.report!;
+      expect(report.prsOpened.map((l) => l.ticketId)).toEqual(['MRG-4']);
+      expect(report.merged.map((l) => l.ticketId)).toEqual(['MRG-3']);
+    });
+  });
 });

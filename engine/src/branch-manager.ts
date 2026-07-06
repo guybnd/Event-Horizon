@@ -137,7 +137,12 @@ export async function checkGhAuth(): Promise<boolean> {
   }
 }
 
-export async function createPullRequest(branch: string, title: string, body: string): Promise<string> {
+/** Marker embedded in a PR body per ticket so a re-raised/retried call doesn't double-append. */
+function ticketSectionMarker(ticketId: string): string {
+  return `<!-- flux:${ticketId} -->`;
+}
+
+export async function createPullRequest(branch: string, title: string, body: string, ticketId?: string): Promise<string> {
   // Push latest commits on the branch before creating/updating the PR.
   await runGit(['push', '-u', 'origin', branch], { cwd: workspaceRoot! });
 
@@ -146,15 +151,52 @@ export async function createPullRequest(branch: string, title: string, body: str
   // CLOSED/MERGED PR on this branch would otherwise be "reused" and block opening a fresh one
   // (a re-pushed branch whose old PR was closed never got a new PR — FLUX-597).
   try {
-    const { stdout: existing } = await runGh(['pr', 'view', branch, '--json', 'url,state']);
-    const pr = JSON.parse(existing) as { url?: string; state?: string };
-    if (pr?.url && pr.state === 'OPEN') return pr.url;
+    const { stdout: existing } = await runGh(['pr', 'view', branch, '--json', 'url,state,title,body']);
+    const pr = JSON.parse(existing) as { url?: string; state?: string; title?: string; body?: string };
+    if (pr?.url && pr.state === 'OPEN') {
+      // FLUX-1223: a shared (sequential-batch) branch can already carry an open PR opened for an
+      // EARLIER ticket. The old behavior returned that URL as-is, silently discarding this
+      // ticket's own title/body every time — a sequential batch's PR only ever reflected ticket
+      // #1. Append this ticket's section instead of dropping it. Idempotent via a marker comment
+      // so a retried raise-PR call for the same ticket doesn't duplicate its section. Without a
+      // ticketId we can't dedup safely, so fall back to the old behavior (return the URL as-is).
+      if (ticketId) {
+        const marker = ticketSectionMarker(ticketId);
+        const currentBody = pr.body ?? '';
+        if (!currentBody.includes(marker)) {
+          const section = `${marker}\n### ${title}\n\n${body}`;
+          const newBody = currentBody.trim() ? `${currentBody}\n\n---\n${section}` : section;
+          // gh pr edit --body REPLACES the whole body — must read-modify-write, not just set the
+          // new section (would erase every earlier ticket's section already recorded there).
+          const editArgs = ['pr', 'edit', pr.url, '--body', newBody];
+          if (pr.title) editArgs.push('--title', evolvedTitle(pr.title, ticketId));
+          try {
+            await runGh(editArgs);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.warn(`[branch] failed to append ${ticketId} to existing PR ${pr.url}: ${message}`);
+          }
+        }
+      }
+      return pr.url;
+    }
   } catch {
     // No existing PR (or unreadable) — fall through to create one.
   }
 
   const { stdout } = await runGh(['pr', 'create', '--title', title, '--body', body, '--head', branch]);
   return stdout.trim();
+}
+
+const TITLE_SUFFIX_RE = / \(\+([^)]+)\)$/;
+
+/** Grow "Base title" -> "Base title (+FLUX-2, FLUX-3)" as more tickets land on a shared PR. */
+function evolvedTitle(currentTitle: string, ticketId: string): string {
+  const match = currentTitle.match(TITLE_SUFFIX_RE);
+  const base = match ? currentTitle.slice(0, match.index) : currentTitle;
+  const extra = match ? match[1]!.split(', ').filter(Boolean) : [];
+  if (extra.includes(ticketId)) return currentTitle;
+  return `${base} (+${[...extra, ticketId].join(', ')})`;
 }
 
 /** What {@link postPrReview} managed to record on the PR. */

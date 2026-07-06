@@ -22,7 +22,7 @@ import { computeAgentPayloadMetrics } from '../agent-payload-metrics.js';
 import { computeContextBudget } from '../context-budget-metrics.js';
 import { probeAllMcpSchemas } from '../mcp-schema-probe.js';
 import { getEffectiveSpawnServers } from '../agents/claude-code.js';
-import { BOARD_CONVERSATION_ID } from '../agents/board.js';
+import { isVirtualConversationId } from '../agents/board.js';
 import { diffFilesForBranch } from '../diff-aggregator.js';
 import { ARTIFACT_CSP, injectArtifactScripts, isSafeTicketId, parseRevParam, readArtifactRevision } from '../artifacts.js';
 import { selectMembers, sharedNonDoneSiblings, resolveMergedPrTickets } from '../pr-tickets.js';
@@ -795,10 +795,11 @@ export async function bulkRenameHandler(req: express.Request, res: express.Respo
 
 router.post('/:id/assets', async (req, res) => {
   const { id } = req.params;
-  // FLUX-676: the board orchestrator chat (__board__) is not a ticket, but pasted images
-  // still need a home. Allow its reserved id here; the bytes land under assets/__board__/
-  // alongside the per-ticket sidecars. Any other id must be a real task.
-  if (id !== BOARD_CONVERSATION_ID && !tasksCache[id]) return res.status(404).json({ error: 'Task not found' });
+  // FLUX-676 / FLUX-1209: the board orchestrator chat (__board__) and the Furnace-chat conversation
+  // (__furnace__) are not tickets, but pasted images still need a home. Allow either reserved id
+  // here; the bytes land under assets/<id>/ alongside the per-ticket sidecars. Any other id must
+  // be a real task.
+  if (!isVirtualConversationId(id) && !tasksCache[id]) return res.status(404).json({ error: 'Task not found' });
 
   const fileName = typeof req.body?.fileName === 'string' ? req.body.fileName.trim() : '';
   const mimeType = typeof req.body?.mimeType === 'string' ? req.body.mimeType.trim() : '';
@@ -1045,7 +1046,7 @@ router.post('/:id/pr', async (req, res) => {
 
   try {
     const prBody = `${task.body ? task.body.slice(0, 800) : ''}\n\n---\nTicket: ${id}`;
-    const url = await createPullRequest(task.branch, task.title || id, prBody);
+    const url = await createPullRequest(task.branch, task.title || id, prBody, id);
     // Stamp the PR link on every ticket sharing the branch (branch-scoped PR). The PR's surface
     // is now its own `PR-<n>` deck card (created by syncPrTickets on the next poll) — the FLUX-558
     // `open-pr` swimlane/glow on member tickets is retired (FLUX-569), so we no longer set it.

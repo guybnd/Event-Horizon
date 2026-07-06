@@ -3,6 +3,7 @@ import { getWorkflowInstallStatus, checkSkillVersionStaleness, detectWorkspaceFr
 import { workspaceRoot, resolveSkillSourceRoot } from './workspace.js';
 import { broadcastEvent } from './events.js';
 import { configCache } from './config.js';
+import { BOARD_CONVERSATION_ID } from './agents/board.js';
 
 export type NotificationType = 'error' | 'prompt' | 'completion' | 'review' | 'info';
 
@@ -155,20 +156,25 @@ export function generateNeedsActionNotification(ticketId: string, ticketTitle: s
 }
 
 /**
- * FLUX-810 — the board orchestrator finished a clean assistant turn on the `__board__` chat
- * (i.e. answered the user). Unlike ticket sessions, the persistent orchestrator thread has no
- * cross-cutting signal pulling the user back. Emit a low-pertinence 'info' entry (a reply is an
- * update, not a blocking action — FLUX-777) deduped to ONE refreshing entry so repeated replies
- * don't stack. `'__board__'` is inlined (not imported from claude-code.ts) to avoid an import
- * cycle — that module already imports from here.
+ * FLUX-810 — the board orchestrator (or FLUX-1209: the Furnace Operator "Smelter" chat) finished
+ * a clean assistant turn on its virtual conversation (i.e. answered the user). Unlike ticket
+ * sessions, a persistent non-ticket-scoped thread has no cross-cutting signal pulling the user
+ * back. Emit a low-pertinence 'info' entry (a reply is an update, not a blocking action —
+ * FLUX-777) deduped PER conversation id to ONE refreshing entry so repeated replies don't stack.
+ * `conversationId` is whichever virtual conversation replied (BOARD_CONVERSATION_ID or
+ * FURNACE_CONVERSATION_ID); `label` is the session's resolved identity (`'Orchestrator'`, or a
+ * persona label like `'Furnace Operator (Smelter)'`) so the message never misattributes a
+ * Smelter reply to "the board orchestrator".
  */
-export function generateOrchestratorReplyNotification(): void {
-  const ticketId = '__board__';
-  const message = 'The board orchestrator answered in the chat.';
+export function generateOrchestratorReplyNotification(conversationId: string, label: string): void {
+  const isBoard = conversationId === BOARD_CONVERSATION_ID;
+  const title = isBoard ? 'Orchestrator replied' : `${label} replied`;
+  const message = isBoard ? 'The board orchestrator answered in the chat.' : `${label} answered in the chat.`;
   const existing = notifications.find(
-    n => n.type === 'info' && n.ticketId === ticketId && !n.dismissed
+    n => n.type === 'info' && n.ticketId === conversationId && !n.dismissed
   );
   if (existing) {
+    existing.title = title;
     existing.message = message;
     existing.read = false;
     existing.createdAt = new Date().toISOString();
@@ -177,9 +183,9 @@ export function generateOrchestratorReplyNotification(): void {
   }
   addNotification({
     type: 'info',
-    title: 'Orchestrator replied',
+    title,
     message,
-    ticketId,
+    ticketId: conversationId,
     actions: [{ label: 'Open chat', actionId: 'view' }],
   });
 }

@@ -5,6 +5,7 @@ import { McpError, ErrorCode as McpErrorCode } from '@modelcontextprotocol/sdk/t
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { z } from 'zod';
 import fs from 'fs/promises';
 import path from 'path';
@@ -1297,7 +1298,7 @@ export function buildMcpServer(): McpServer {
           } else {
             try {
               const prBody = `${task.body ? task.body.slice(0, 800) : ''}\n\n---\nTicket: ${ticketId}`;
-              const prUrl = await createPullRequest(task.branch, task.title || ticketId, prBody);
+              const prUrl = await createPullRequest(task.branch, task.title || ticketId, prBody, ticketId);
               extraFields.implementationLink = prUrl;
               extraFields.swimlane = 'open-pr';
               entries.push({ type: 'activity', user: 'Agent', comment: `PR created: ${prUrl}`, date: new Date().toISOString() });
@@ -1993,7 +1994,7 @@ export function buildMcpServer(): McpServer {
       phase: z.enum(['grooming', 'implementation', 'review', 'finalize']).optional().describe('Work phase — drives the session mission. If omitted, the engine derives it from the ticket status.'),
       personaId: z.string().optional().describe('Optional persona to lead the session (from list_available_agents). Default: the phase\'s solo lead.'),
       effort: z.string().optional().describe('Effort level: low, medium, high, xhigh.'),
-      worktree: z.boolean().optional().describe('Isolate the session in a dedicated git worktree. Defaults to TRUE: agent dispatch is unattended and often concurrent, so it must never share a checkout with another session. NOTE (FLUX-1018): a branch-bearing agent session is ALWAYS worktree-isolated at spawn — `worktree:false` only skips creating the worktree up front; the spawn still creates one (a branch on the shared main checkout let a single-shot agent commit to master). To run in the shared main tree, start the session branchless instead of passing worktree:false.'),
+      worktree: z.boolean().optional().describe('Isolate the session in a dedicated git worktree. Defaults to TRUE: agent dispatch is unattended and often concurrent, so it must never share a checkout with another session. NOTE (FLUX-1018): a branch-bearing agent session is ALWAYS worktree-isolated at spawn — `worktree:false` only skips creating the worktree up front; the spawn still creates one (a branch on the shared main checkout let a single-shot agent commit to master). To run in the shared main tree, start the session branchless instead of passing worktree:false. NOTE (FLUX-1214): ignored entirely for phase:"grooming" — grooming never writes code or opens a PR, so it always runs branchless in the shared checkout regardless of this flag.'),
     },
     async ({ ticketId, phase, personaId, effort, worktree }) => {
       try {
@@ -2497,7 +2498,7 @@ export function buildMcpServer(): McpServer {
         const res = await fetch(`${ENGINE_URL}/api/board/board-rebase`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ items, conversationId: process.env.EH_CONVERSATION_ID || null }),
+          body: JSON.stringify({ items, conversationId: getBoundConversation().id }),
         });
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
@@ -2524,7 +2525,7 @@ export function buildMcpServer(): McpServer {
         const res = await fetch(`${ENGINE_URL}/api/board/permission-request`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tool_name, input, conversationId: process.env.EH_CONVERSATION_ID || null, conversationToken: process.env.EH_CONVERSATION_TOKEN || null }),
+          body: JSON.stringify({ tool_name, input, conversationId: getBoundConversation().id, conversationToken: getBoundConversation().token }),
         });
         if (!res.ok) return jsonResult({ behavior: 'deny', message: 'Approval channel error — denied.' });
         // Normalize at the CLI-contract boundary (FLUX-1026): Claude Code's permission-prompt-tool
@@ -2569,7 +2570,7 @@ export function buildMcpServer(): McpServer {
         const res = await fetch(`${ENGINE_URL}/api/board/ask-question`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ questions, conversationId: process.env.EH_CONVERSATION_ID || null, conversationToken: process.env.EH_CONVERSATION_TOKEN || null }),
+          body: JSON.stringify({ questions, conversationId: getBoundConversation().id, conversationToken: getBoundConversation().token }),
         });
         if (!res.ok) return errorResult('Ask-question channel error — no answer received. Proceed with your best judgment or ask again.', 'channel_unavailable');
         const result = await res.json();
@@ -2701,6 +2702,54 @@ export function buildMcpServer(): McpServer {
 // stream reaches the transport unparsed.
 const httpTransports = new Map<string, StreamableHTTPServerTransport>();
 
+interface BoundConversationContext {
+  id: string | null;
+  token: string | null;
+}
+
+/**
+ * FLUX-1213: the shared HTTP mount means `process.env` is the ENGINE's own process-global env,
+ * not any particular calling session's — so `propose_board_rebase`/`permission_prompt`/
+ * `ask_user_question` can no longer read `EH_CONVERSATION_ID`/`EH_CONVERSATION_TOKEN` from
+ * `process.env` and expect to see the calling session's binding (that only ever worked for the
+ * old one-process-per-session stdio model). `handleMcpHttpRequest` extracts the caller's claimed
+ * identity from that request's own headers/query (set per-session at spawn time, see
+ * buildSpawnMcpConfigArgs) and runs the request inside this AsyncLocalStorage context so the tool
+ * handlers below can read it back at call time. The stdio `--mcp` path never enters that context
+ * (it's genuinely one process per session), so `getBoundConversation` falls back to `process.env`
+ * there — unchanged behavior.
+ */
+const boundConversationALS = new AsyncLocalStorage<BoundConversationContext>();
+
+function getBoundConversation(): BoundConversationContext {
+  return boundConversationALS.getStore() ?? {
+    id: process.env.EH_CONVERSATION_ID || null,
+    token: process.env.EH_CONVERSATION_TOKEN || null,
+  };
+}
+
+/** Reads `x-eh-conversation-id`/`x-eh-conversation-token` off the request — header first (the
+ *  primary channel, set via the per-session `--mcp-config` `headers` override), falling back to
+ *  `?conversationId=&conversationToken=` query params in case a client's HTTP MCP transport
+ *  doesn't forward custom headers. Absent both, the caller is unbound (not an error — e.g. a
+ *  manual/unrouted MCP client — and drops to the same "unrouted" handling as today). */
+function extractBoundConversationFromRequest(req: IncomingMessage): BoundConversationContext {
+  const headerId = req.headers['x-eh-conversation-id'];
+  const headerToken = req.headers['x-eh-conversation-token'];
+  let id = Array.isArray(headerId) ? headerId[0] : headerId;
+  let token = Array.isArray(headerToken) ? headerToken[0] : headerToken;
+  if (!id) {
+    try {
+      const url = new URL(req.url ?? '', 'http://localhost');
+      id = url.searchParams.get('conversationId') ?? undefined;
+      token = url.searchParams.get('conversationToken') ?? undefined;
+    } catch {
+      // Malformed request URL — leave unbound rather than throwing out of the HTTP handler.
+    }
+  }
+  return { id: id || null, token: token || null };
+}
+
 export async function handleMcpHttpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const headerId = req.headers['mcp-session-id'];
   const sessionId = Array.isArray(headerId) ? headerId[0] : headerId;
@@ -2733,7 +2782,11 @@ export async function handleMcpHttpRequest(req: IncomingMessage, res: ServerResp
     transport = newTransport;
   }
 
-  await transport.handleRequest(req, res);
+  // FLUX-1213: this session's own claimed identity travels on EVERY request (not just
+  // `initialize`) — the actual tool call that reads it happens on a later POST reusing this same
+  // transport, keyed by Mcp-Session-Id.
+  const bound = extractBoundConversationFromRequest(req);
+  await boundConversationALS.run(bound, () => transport!.handleRequest(req, res));
 }
 
 // NOTE (FLUX-705): no self-start-on-direct-invocation block here. This module is now

@@ -42,6 +42,8 @@ export interface BatchTicket {
   currentPhase?: FurnacePhase;
   lastReviewState?: 'approved' | 'changes-requested' | null;
   prUrl?: string;
+  // FLUX-1210: set once a `pr-open` ticket is detected as already merged (board status -> Done/Released).
+  mergedAt?: string;
   note?: string;
   title?: string;
   startedAt?: string;
@@ -65,6 +67,8 @@ export interface BatchPr {
   url: string;
   branch: string;
   ticketId?: string;
+  /** FLUX-1223: every ticket whose commits landed on this PR (a sequential batch's shared PR has >1). */
+  ticketIds?: string[];
   reviewState: BatchPrReviewState;
 }
 
@@ -87,6 +91,8 @@ export interface FurnaceReport {
   durationMs?: number;
   counts: Partial<Record<BatchTicketState, number>>;
   prsOpened: FurnaceReportLine[];
+  // FLUX-1210: `pr-open` tickets already merged — split out of `prsOpened`.
+  merged: FurnaceReportLine[];
   parked: FurnaceReportLine[];
   failed: FurnaceReportLine[];
   processed: number;

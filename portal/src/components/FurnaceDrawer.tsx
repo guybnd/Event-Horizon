@@ -24,7 +24,7 @@ import {
   fetchFurnaceBatches, fetchFurnaceSlots, createFurnaceBatch, updateFurnaceBatch,
   appendFurnaceTicket, removeFurnaceTicket, igniteFurnaceBatch, stopFurnaceBatch, deleteFurnaceBatch,
   mergeFurnaceBatch, retryFurnaceTicket, resumeFurnaceBatch, dismissFurnaceTicket,
-  takeoverFurnaceTicket, handBackFurnaceTicket, startTaskCliSessionEx, BOARD_CONVERSATION_ID,
+  takeoverFurnaceTicket, handBackFurnaceTicket, startTaskCliSessionEx, FURNACE_CONVERSATION_ID,
 } from '../api';
 import type {
   FurnaceBatch, BatchTicket, BatchTicketState, BatchStatus, BatchKind, SlotInfo, BatchPr, FurnaceSlotHolder, BatchTrigger,
@@ -95,7 +95,7 @@ export function FurnaceDrawer({ onClose }: DrawerProps) {
   // default 'drafting') — the engine composes the matching authority contract into the
   // Smelter's resolved prompt at launch (see resolvePersonaPrompt in orchestration-personas.ts).
   const config = useConfig();
-  const { openBoard } = useDockActions();
+  const { openChat } = useDockActions();
   const { saveConfig } = useAppActions();
   const [startingSmelter, setStartingSmelter] = useState(false);
   const smelterMode = config?.furnaceSettings?.smelterMode === 'operator' ? 'operator' : 'drafting';
@@ -112,22 +112,23 @@ export function FurnaceDrawer({ onClose }: DrawerProps) {
     });
   }, [config, smelterMode, saveConfig]);
 
+  // FLUX-1209: Smelter's chat now launches on its own FURNACE_CONVERSATION_ID — a distinct,
+  // resumable conversation — instead of riding on (and relabeling) the board orchestrator's.
   const chatWithSmelter = useCallback(async () => {
     setStartingSmelter(true);
     setError(null);
     try {
-      await startTaskCliSessionEx(BOARD_CONVERSATION_ID, {
+      await startTaskCliSessionEx(FURNACE_CONVERSATION_ID, {
         personaId: 'smelter',
         phase: 'chat',
-        appendPrompt: "Hi — I'd like your help with the Furnace: what's the state of the backlog and what should we burn next?",
       });
-      openBoard();
+      openChat(FURNACE_CONVERSATION_ID);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to start a Smelter chat');
     } finally {
       setStartingSmelter(false);
     }
-  }, [openBoard]);
+  }, [openChat]);
 
   const refresh = useCallback(async () => {
     try {
@@ -883,6 +884,9 @@ const TicketRow = memo(function TicketRow({ ticket, batch, onChanged, onRemove }
  */
 function ticketBadge(ticket: BatchTicket, meta: { label: string; text: string }): { label: string; color: string } {
   if (ticket.owner === 'human') return { label: 'you’re driving', color: '#a78bfa' };
+  // FLUX-1210: a `pr-open` ticket already merged (board status flipped to Done/Released outside the
+  // Furnace) — stop showing the stale "PR open" badge, match `prcStyle`'s merged color.
+  if (ticket.state === 'pr-open' && ticket.mergedAt) return { label: 'merged', color: '#60a5fa' };
   if (ticket.state === 'parked' && ticket.failureClass === 'needs-input') return { label: 'needs input', color: '#f59e0b' };
   if (ticket.state === 'failed' || ticket.failureClass === 'hard-fail') return { label: 'failed', color: '#ef4444' };
   return { label: meta.label, color: meta.text };
@@ -926,6 +930,9 @@ function CompletedSummary({ batch, onOpenTicket, onChanged }: { batch: FurnaceBa
             <span className="text-[10px]" style={{ color: 'var(--eh-text-muted)' }}>PR</span>
             <a href={pr.url} target="_blank" rel="noreferrer" className="min-w-0 flex-1 truncate font-mono text-[11px]" style={{ color: pr.reviewState === 'merged' ? 'var(--eh-text-muted)' : '#818cf8', textDecoration: pr.reviewState === 'merged' ? 'line-through' : 'none' }}>
               {pr.number ? `#${pr.number} ` : ''}{pr.branch}
+              {pr.ticketIds && pr.ticketIds.length > 1 && (
+                <span style={{ color: 'var(--eh-text-muted)' }}> ({pr.ticketIds.join(', ')})</span>
+              )}
             </a>
             <span className="inline-flex items-center gap-1 rounded px-1 py-0.5 text-[10px] flex-shrink-0" style={{ background: c.bg, color: c.fg }}>
               {createElement(c.icon, { className: 'h-2.5 w-2.5' })} {c.label}

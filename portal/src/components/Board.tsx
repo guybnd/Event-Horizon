@@ -87,6 +87,16 @@ export const Board = memo(function Board({ furnaceOpen, onCloseFurnace }: { furn
   const filterTag = useAppSelector((s) => s.filterTag);
   const filterUnreadOnly = useAppSelector((s) => s.filterUnreadOnly);
   const filterWorktree = useAppSelector((s) => s.filterWorktree);
+  // FLUX-1200: the other filter/sort selectors got the same synchronous re-render + full
+  // filterAndSortTasks pass as `searchQuery` did before FLUX-791, but only that one was deferred.
+  // Defer the rest the same way — the toolbar control itself (a select/checkbox, not a text input)
+  // still updates instantly; only the resulting board re-render + filter pass becomes non-urgent.
+  const deferredSortOption = useDeferredValue(sortOption);
+  const deferredFilterAssignee = useDeferredValue(filterAssignee);
+  const deferredFilterPriority = useDeferredValue(filterPriority);
+  const deferredFilterTag = useDeferredValue(filterTag);
+  const deferredFilterUnreadOnly = useDeferredValue(filterUnreadOnly);
+  const deferredFilterWorktree = useDeferredValue(filterWorktree);
   const worktreeBranches = useAppSelector((s) => s.worktreeBranches);
   const readComments = useAppSelector((s) => s.readComments);
   const parseErrors = useAppSelector((s) => s.parseErrors);
@@ -272,16 +282,16 @@ export const Board = memo(function Board({ furnaceOpen, onCloseFurnace }: { furn
   // activity/progress tick during agent sessions, the main board-sluggishness cause). (FLUX-611)
   const visibleTasks = useMemo(() => config ? filterAndSortTasks(boardTasks, config, {
     searchQuery: deferredSearchQuery,
-    sortOption,
-    filterAssignee,
-    filterPriority,
-    filterTag,
-    filterUnreadOnly,
-    filterWorktree,
+    sortOption: deferredSortOption,
+    filterAssignee: deferredFilterAssignee,
+    filterPriority: deferredFilterPriority,
+    filterTag: deferredFilterTag,
+    filterUnreadOnly: deferredFilterUnreadOnly,
+    filterWorktree: deferredFilterWorktree,
     worktreeBranches,
     readComments,
     requireInputStatus: getRequireInputStatus(config),
-  }) : [], [boardTasks, config, deferredSearchQuery, sortOption, filterAssignee, filterPriority, filterTag, filterUnreadOnly, filterWorktree, worktreeBranches, readComments]);
+  }) : [], [boardTasks, config, deferredSearchQuery, deferredSortOption, deferredFilterAssignee, deferredFilterPriority, deferredFilterTag, deferredFilterUnreadOnly, deferredFilterWorktree, worktreeBranches, readComments]);
 
   // Cross-column subtask clusters (FLUX-677): ≥2 subtasks of one epic that piled up in a column
   // the epic isn't in collapse under a proxy deck there. Computed over visibleTasks so search/

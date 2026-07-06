@@ -1,12 +1,13 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { Sparkles, MessageSquare, Minus, X, History, Square, RotateCcw, GitBranch, FolderGit2, GitPullRequest, ListChecks, Loader2, MessageCircleQuestion, PanelRight, PanelRightClose, Maximize2, Tag, Link2, Gauge, Save, ChevronDown, Check, CircleHelp, TriangleAlert, Circle, Play, Flame, Activity } from 'lucide-react';
+import { Sparkles, MessageSquare, Minus, X, History, Square, RotateCcw, GitBranch, FolderGit2, GitPullRequest, ListChecks, Loader2, MessageCircleQuestion, PanelRight, PanelRightClose, Maximize2, Tag, Link2, Gauge, Save, ChevronDown, Check, CircleHelp, TriangleAlert, Circle, Play, Flame, Activity, Bot } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, horizontalListSortingStrategy, sortableKeyboardCoordinates, useSortable, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { useAppSelector, useAppActions } from '../store/useAppSelector';
+import { FURNACE_ACCENT } from './FurnaceDrawer';
 import { useChatSession } from '../hooks/useChatSession';
 import { ChatView } from './task-modal/ChatView';
 import { ChatPresenceRail, ChatOrchestrationBlock } from './task-modal/ChatOrchestration';
@@ -29,7 +30,7 @@ import { useEscapeKey } from '../hooks/useEscapeKey';
 import { fireDesktopNotification } from '../hooks/useDesktopNotifications';
 import { getStatusTint, getStatusColorClass } from '../statusStyles';
 import { getRequireInputStatus } from '../workflow';
-import { BOARD_CONVERSATION_ID, fetchTaskCliSession, fetchTaskTranscript, stopTaskCliSession, clearTaskTranscript, fetchBranchStatus, fetchTriageSignals, type BranchStatus } from '../api';
+import { BOARD_CONVERSATION_ID, FURNACE_CONVERSATION_ID, fetchTaskCliSession, fetchTaskTranscript, stopTaskCliSession, clearTaskTranscript, fetchBranchStatus, fetchTriageSignals, type BranchStatus } from '../api';
 import { setTranscript } from '../transcriptCache';
 import type { CliSessionStatus, CliSessionSummary, Config, Task } from '../types';
 
@@ -132,6 +133,55 @@ function splitId(id: string): { prefix: string; short: string } {
   return { prefix: id.slice(0, idx), short: id.slice(idx + 1) };
 }
 
+/** FLUX-1209: track a virtual (non-ticket) conversation's live CLI session — the board
+ *  orchestrator (`BOARD_CONVERSATION_ID`) or the Furnace Operator ("Smelter") chat
+ *  (`FURNACE_CONVERSATION_ID`). Neither has an entry in the board task list, so this is the only
+ *  way their pinned/flyout surfaces see live state even while their window is closed. Generalizes
+ *  what used to be board-only inline effects (FLUX-611: event-driven fetch, refetch only on this
+ *  conversation's own `activity`/`taskUpdated` event; FLUX-910: a bounded 3s poll backstops only
+ *  while a turn is actively running/pending, in case the SSE stream stalls). */
+function useVirtualConversationSession(conversationId: string): CliSessionSummary | null {
+  const { subscribeToEvent } = useAppActions();
+  const [session, setSession] = useState<CliSessionSummary | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const s = await fetchTaskCliSession(conversationId);
+        if (!cancelled) setSession(s);
+      } catch {
+        /* ignore */
+      }
+    };
+    void refresh();
+    const matches = (d: unknown): boolean => {
+      const o = d as { taskId?: string; id?: string } | null;
+      return !!o && (o.taskId === conversationId || o.id === conversationId);
+    };
+    const on = (d: unknown) => { if (matches(d)) void refresh(); };
+    const unsubs = [subscribeToEvent('activity', on), subscribeToEvent('taskUpdated', on)];
+    return () => { cancelled = true; unsubs.forEach((u) => u()); };
+  }, [conversationId, subscribeToEvent]);
+
+  const live = session?.status === 'running' || session?.status === 'pending';
+  useEffect(() => {
+    if (!live) return;
+    let cancelled = false;
+    const iv = setInterval(() => {
+      void (async () => {
+        try {
+          const s = await fetchTaskCliSession(conversationId);
+          if (!cancelled) setSession(s);
+        } catch { /* transient — keep last good */ }
+      })();
+    }, 3000);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, [conversationId, live]);
+
+  return session;
+}
+
 // FLUX-1035: the Furnace toggle rides in the dock strip as a small square icon pinned next to the
 // Orchestrator ("Board") tab — the Furnace is a board-level concern, so it lives beside the board chat
 // rather than as a nav pill up top. Open state is owned by App and passed through.
@@ -139,7 +189,7 @@ function splitId(id: string): { prefix: string; short: string } {
 // AppContent child with only stable/primitive props, so it was re-rendering in full on every
 // unrelated AppContent toggle (terminal, furnace, the 5s furnace-status poll) despite its own
 // dock state being read through context/hooks rather than props.
-export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, furnaceBurning }: { onToggleFurnace?: () => void; furnaceOpen?: boolean; furnaceBurning?: boolean } = {}) {
+export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, furnaceBurning, furnaceBurningCount }: { onToggleFurnace?: () => void; furnaceOpen?: boolean; furnaceBurning?: boolean; furnaceBurningCount?: number } = {}) {
   const { subscribeToEvent } = useAppActions();
   const tasks = useAppSelector((s) => s.tasks);
   const config = useAppSelector((s) => s.config);
@@ -151,7 +201,7 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
   const { pendingPromptConversationIds, requireInputConversationIds } = usePendingInteractions();
   // Window/open state lives in the app-root DockProvider (FLUX-603) so a card can drive it
   // and it survives view switches. `anchors` records where each window should spawn from.
-  const { open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, windowGeometry, toggle, closeCard, reopenFromHistory, setDraft, setSelections, reorder, promoteToFront, toggleSideView, openSideView, setSideviewWidth, seedSideviewWidth, setSectionOpen, setWindowGeometry, openTicket, raise } = useDock();
+  const { open, acked, dismissed, manuallyOpened, anchors, anchorRects, drafts, selections, order, sideviewOpen, sideviewWidth, windowGeometry, toggle, closeCard, reopenFromHistory, setDraft, setSelections, reorder, promoteToFront, toggleSideView, openSideView, setSideviewWidth, seedSideviewWidth, setSectionOpen, setWindowGeometry, openTicket, openChat, raise } = useDock();
 
   // FLUX-744: open-ticket bridge. `openTask` (AppContext, which lives ABOVE the DockProvider) can't
   // call dock actions directly, so for the default 'chat' open mode it dispatches a `flux:open-ticket`
@@ -167,7 +217,23 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
     return () => window.removeEventListener('flux:open-ticket', onOpenTicket);
   }, [openTicket]);
   const [showHistory, setShowHistory] = useState(false);
-  const [boardSession, setBoardSession] = useState<CliSessionSummary | null>(null);
+  // FLUX-1209: the board orchestrator and the Furnace-chat both track their live session the same
+  // way — see useVirtualConversationSession above.
+  const boardSession = useVirtualConversationSession(BOARD_CONVERSATION_ID);
+  const furnaceSession = useVirtualConversationSession(FURNACE_CONVERSATION_ID);
+  // FLUX-1209 / FLUX-1212: the Furnace icon's hover flyout ("Open Furnace" / "Open Furnace chat").
+  // Opens on hover (desktop) or via the kebab click (touch/no-hover fallback) — either sets the
+  // same piece of state, so there's one source of truth for whether the popover is showing.
+  const [furnaceFlyoutOpen, setFurnaceFlyoutOpen] = useState(false);
+  const furnaceFlyoutRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!furnaceFlyoutOpen) return;
+    const onDown = (e: PointerEvent) => {
+      if (furnaceFlyoutRef.current && !furnaceFlyoutRef.current.contains(e.target as Node)) setFurnaceFlyoutOpen(false);
+    };
+    window.addEventListener('pointerdown', onDown);
+    return () => window.removeEventListener('pointerdown', onDown);
+  }, [furnaceFlyoutOpen]);
   // Right-click context menu (anchored at the cursor) for a single tab at a time.
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   // Per-chat "unread": the latest agent-output timestamp we've shown the user. A closed chat
@@ -200,83 +266,41 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
     return () => el.removeEventListener('wheel', onWheel);
   }, []);
 
-  // Orchestrator has no task in the board list, so track its session here (the pinned card
-  // needs live state even when its window is closed). Event-driven (FLUX-611): fetch once,
-  // then refetch only on a board event — the engine streams `activity` (taskId '__board__')
-  // mid-turn and `taskUpdated` (id '__board__') at turn end. No idle polling.
-  useEffect(() => {
-    let cancelled = false;
-    const refresh = async () => {
-      try {
-        const s = await fetchTaskCliSession(BOARD_CONVERSATION_ID);
-        if (!cancelled) setBoardSession(s);
-      } catch {
-        /* ignore */
-      }
-    };
-    void refresh();
-    const matches = (d: unknown): boolean => {
-      const o = d as { taskId?: string; id?: string } | null;
-      return !!o && (o.taskId === BOARD_CONVERSATION_ID || o.id === BOARD_CONVERSATION_ID);
-    };
-    const on = (d: unknown) => { if (matches(d)) void refresh(); };
-    const unsubs = [subscribeToEvent('activity', on), subscribeToEvent('taskUpdated', on)];
-    return () => { cancelled = true; unsubs.forEach((u) => u()); };
-  }, [subscribeToEvent]);
-
-  // FLUX-910: bounded polling fallback for the orchestrator session. The board has no entry in the
-  // 3s /api/tasks poll, so its live state rides ONLY on the SSE stream above. If that stream stalls,
-  // the AppContext watchdog reconnects within ~40s — but while a board turn is actively running we
-  // poll every 3s as a faster backstop, so the "working" indicator and turn-completion never hang on
-  // a flaky stream. Bounded to an active turn (running/pending): an idle board still costs nothing,
-  // preserving the FLUX-611 no-idle-polling intent.
-  const boardLive = boardSession?.status === 'running' || boardSession?.status === 'pending';
-  useEffect(() => {
-    if (!boardLive) return;
-    let cancelled = false;
-    const iv = setInterval(() => {
-      void (async () => {
-        try {
-          const s = await fetchTaskCliSession(BOARD_CONVERSATION_ID);
-          if (!cancelled) setBoardSession(s);
-        } catch { /* transient — keep last good */ }
-      })();
-    }, 3000);
-    return () => { cancelled = true; clearInterval(iv); };
-  }, [boardLive]);
-
   const allTasks = tasks as Task[];
 
   const statusOf = useMemo(() => {
     const map = new Map<string, CliSessionStatus | undefined>();
     map.set(BOARD_CONVERSATION_ID, boardSession?.status);
+    map.set(FURNACE_CONVERSATION_ID, furnaceSession?.status);
     for (const t of allTasks) map.set(t.id, t.cliSession?.status);
     return map;
-  }, [allTasks, boardSession]);
+  }, [allTasks, boardSession, furnaceSession]);
 
   const activityOf = (id: string): string | null =>
     id === BOARD_CONVERSATION_ID
       ? boardSession?.currentActivity ?? null
-      : allTasks.find((t) => t.id === id)?.cliSession?.currentActivity ?? null;
+      : id === FURNACE_CONVERSATION_ID
+        ? furnaceSession?.currentActivity ?? null
+        : allTasks.find((t) => t.id === id)?.cliSession?.currentActivity ?? null;
 
-  // FLUX-1175: when the board conversation was launched in-persona (e.g. "Chat with
-  // Smelter" sets session.label to "Furnace Operator (Smelter)"), that label overrides
-  // the default "Orchestrator" identity everywhere the board chat is displayed — the
-  // docked window title, the pinned tab text, and its tooltip — so the user can tell
-  // the turn was answered in-persona instead of by the default orchestrator.
-  const boardIdentityLabel =
-    boardSession?.label && boardSession.label !== 'Orchestrator' ? boardSession.label : undefined;
-
-  // Human label for a chat: the orchestrator (or override persona), or the ticket's title
-  // (fallback to its id).
+  // FLUX-1209: Smelter now launches on its own FURNACE_CONVERSATION_ID (never the board's), so the
+  // board conversation's label/title is always the plain 'Orchestrator' identity — no more
+  // in-persona override here. The Furnace-chat branch below reuses the same in-persona-label idea,
+  // just scoped to its own conversation id instead of overriding the board's.
   const titleOf = (id: string): string =>
-    id === BOARD_CONVERSATION_ID ? boardIdentityLabel ?? 'Orchestrator' : allTasks.find((t) => t.id === id)?.title ?? id;
+    id === BOARD_CONVERSATION_ID
+      ? 'Orchestrator'
+      : id === FURNACE_CONVERSATION_ID
+        ? furnaceSession?.label ?? 'Furnace chat'
+        : allTasks.find((t) => t.id === id)?.title ?? id;
 
   // Most-recent agent-output timestamp for a chat — the unread signal (no transcript load).
   const lastOutputAtOf = (id: string): string | undefined =>
     id === BOARD_CONVERSATION_ID
       ? boardSession?.lastOutputAt
-      : allTasks.find((t) => t.id === id)?.cliSession?.lastOutputAt;
+      : id === FURNACE_CONVERSATION_ID
+        ? furnaceSession?.lastOutputAt
+        : allTasks.find((t) => t.id === id)?.cliSession?.lastOutputAt;
 
   // FLUX-695: desktop notification on the busy→idle edge for an *unattended* chat. We diff each
   // chat's session status against the previous render; a `running` → `completed`/`waiting-input`
@@ -472,6 +496,7 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
     for (const id of open) seen[id] = lastOutputAtOf(id) ?? '';
     for (const t of activeTickets) if (seen[t.id] === undefined) seen[t.id] = t.cliSession?.lastOutputAt ?? '';
     if (boardSession && seen[BOARD_CONVERSATION_ID] === undefined) seen[BOARD_CONVERSATION_ID] = boardSession.lastOutputAt ?? '';
+    if (furnaceSession && seen[FURNACE_CONVERSATION_ID] === undefined) seen[FURNACE_CONVERSATION_ID] = furnaceSession.lastOutputAt ?? '';
   });
 
   const unreadOf = (id: string): boolean => {
@@ -509,6 +534,22 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
     setShowHistory(false);
   }
 
+  // FLUX-1209 / FLUX-1212: Furnace-chat state backing the flyout's second row.
+  const furnaceChatOpen = open.includes(FURNACE_CONVERSATION_ID);
+  const furnaceChatWorking = statusOf.get(FURNACE_CONVERSATION_ID) === 'running';
+  const furnaceChatUnread = unreadOf(FURNACE_CONVERSATION_ID);
+
+  // FLUX-1200: a single stable callback shared by every window (openSideView/setSectionOpen are
+  // themselves stable DockActions), so it never breaks the ChatWindow memo comparator below —
+  // unlike a fresh `() => {...}` closure created per-id inside the render loop.
+  const handleOpenArtifact = useCallback(
+    (id: string) => {
+      openSideView(id);
+      setSectionOpen('artifact', true);
+    },
+    [openSideView, setSectionOpen],
+  );
+
   return (
     <>
       {/* FLUX-801: AnimatePresence gives each window an exit animation (shrink back toward its
@@ -524,28 +565,34 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
           task={allTasks.find((t) => t.id === id)}
           // FLUX-801: the clicked card's rect (pop-open origin) + bring-to-front on focus.
           originRect={anchorRects[id]}
-          onRaise={() => raise(id)}
-          // FLUX-686: session totals back the quiet token meter — orchestrator from boardSession,
-          // tickets from their own cliSession.
-          session={id === BOARD_CONVERSATION_ID ? boardSession : allTasks.find((t) => t.id === id)?.cliSession ?? null}
+          // FLUX-1200: pass the stable DockActions directly (not a per-id `() => action(id)` wrapper)
+          // so ChatWindow's memo comparator (below) actually bails out for windows an unrelated dock
+          // state change doesn't touch — a fresh closure here would defeat memo on every render.
+          onRaise={raise}
+          // FLUX-686 / FLUX-1209: session totals back the quiet token meter — orchestrator from
+          // boardSession, Furnace-chat from furnaceSession, tickets from their own cliSession.
+          session={
+            id === BOARD_CONVERSATION_ID
+              ? boardSession
+              : id === FURNACE_CONVERSATION_ID
+                ? furnaceSession
+                : allTasks.find((t) => t.id === id)?.cliSession ?? null
+          }
           anchorX={anchors[id]}
           working={statusOf.get(id) === 'running'}
           activity={activityOf(id)}
           draft={drafts[id] ?? ''}
-          onDraftChange={(t) => setDraft(id, t)}
+          onDraftChange={setDraft}
           // FLUX-666: persist the composer's model/effort/permission chip selections across
           // minimize/reopen, the same per-id way the text draft is persisted.
           selections={selections[id]}
-          onSelectionsChange={(s) => setSelections(id, s)}
+          onSelectionsChange={setSelections}
           // FLUX-734: ticket sideview toggle (ticket windows only — the orchestrator has no task).
           sideViewOpen={sideviewOpen.includes(id)}
-          onToggleSideView={() => toggleSideView(id)}
+          onToggleSideView={toggleSideView}
           // FLUX-887: "Open in panel" on the inline artifact card — idempotently reveal the sideview
           // (only toggles when closed) and force the Grooming Artifact section open so the viewer shows.
-          onOpenArtifact={() => {
-            openSideView(id);
-            setSectionOpen('artifact', true);
-          }}
+          onOpenArtifact={handleOpenArtifact}
           // FLUX-740: live, persisted sideview width + setter for the chat↔panel resize divider.
           sideviewWidth={sideviewWidth}
           setSideviewWidth={setSideviewWidth}
@@ -554,15 +601,12 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
           // FLUX-920: persisted per-conversation window footprint — seeds size/position on (re)mount so
           // a resize/drag survives minimize/reopen + reload; committed back on the resize/drag gesture.
           windowGeometry={windowGeometry[id]}
-          onGeometryChange={(geom) => setWindowGeometry(id, geom)}
-          onMinimize={() => toggle(id)}
+          onGeometryChange={setWindowGeometry}
+          onMinimize={toggle}
           // FLUX-720: the window's close (X) is hidden while a prompt is pending, mirroring the
           // tab gate — the chat can't be retired until you resolve it. Minimize stays available.
-          onClose={
-            id === BOARD_CONVERSATION_ID || pendingPromptConversationIds.has(id)
-              ? undefined
-              : () => closeCard(id)
-          }
+          canClose={id !== BOARD_CONVERSATION_ID && !pendingPromptConversationIds.has(id)}
+          onClose={closeCard}
         />
       ))}
       </AnimatePresence>
@@ -572,13 +616,12 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
           (titleWidth / compactId). The inner row uses py/-my so the absolute `!`/`x` aren't
           clipped under overflow-x-auto. */}
       <div className="eh-border eh-surface-overlay fixed bottom-3 left-1/2 z-40 flex max-w-[94vw] -translate-x-1/2 items-center gap-1.5 rounded-xl border px-2.5 py-1.5 shadow-xl">
-        {/* Orchestrator — pinned "home". Not retirable. Label/identityLabel swap to the
-            active persona (e.g. "Furnace Operator (Smelter)") when the board session was
-            launched in-persona (FLUX-1175). */}
+        {/* Orchestrator — pinned "home". Not retirable. FLUX-1209: Smelter now launches on its own
+            FURNACE_CONVERSATION_ID, so this tab's label/identity is always the plain 'Orchestrator'
+            (no more in-persona relabel — that was the override bug this ticket fixes). */}
         <ChatTab
           id={BOARD_CONVERSATION_ID}
-          label={boardIdentityLabel ?? 'Board'}
-          identityLabel={boardIdentityLabel}
+          label="Board"
           orchestrator
           open={open.includes(BOARD_CONVERSATION_ID)}
           state={cardState(boardSession?.status, acked.includes(BOARD_CONVERSATION_ID))}
@@ -590,33 +633,106 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
           onContextMenu={(e) => setMenu({ id: BOARD_CONVERSATION_ID, x: e.clientX, y: e.clientY })}
         />
 
-        {/* FLUX-1035: the Furnace open toggle — a small square icon pinned right of the Orchestrator tab.
-            Furnace orange when the panel is open. FLUX-1053: when closed but a batch is burning it keeps
-            an ambient orange treatment + a pulsing badge, so unattended work stays glanceable. */}
+        {/* FLUX-1035 / FLUX-1209 / FLUX-1212: the Furnace icon — a small square button pinned right of
+            the Orchestrator tab, plus a hover flyout offering "Open Furnace" (today's drawer) and
+            "Open/Focus Furnace chat" (Smelter's own dedicated conversation window). Furnace orange when
+            the drawer is open. FLUX-1053: when closed but a batch is burning it keeps an ambient orange
+            treatment + a pulsing badge (bottom-right), so unattended work stays glanceable. FLUX-1212: a
+            distinct blue message badge (top-left — opposite corner, never collides with the burn-pulse)
+            lights when Smelter has an unread reply; the icon also takes a solid furnace-accent tint
+            (mirroring the Board tab's "open" treatment) whenever the Furnace chat window itself is
+            already open/docked, and the flyout's "Open Furnace" row surfaces a live batch count
+            ("· N burning") instead of a bare label. */}
         {onToggleFurnace && (
-          <button
-            type="button"
-            onClick={onToggleFurnace}
-            aria-label={furnaceBurning ? 'The Furnace — batches burning' : 'The Furnace'}
-            aria-pressed={!!furnaceOpen}
-            title={furnaceBurning ? 'The Furnace — batches burning' : 'The Furnace'}
-            className={`relative flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg border transition-colors ${
-              furnaceOpen
-                ? 'border-transparent text-white'
-                : furnaceBurning
-                  ? 'border-[var(--eh-furnace-orange)]/60 bg-[var(--eh-furnace-orange)]/10 text-[var(--eh-furnace-orange)]'
-                  : 'eh-border bg-[var(--eh-input-bg)] text-[var(--eh-text-muted)] hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5'
-            }`}
-            style={furnaceOpen ? { background: 'var(--eh-furnace-orange)' } : undefined}
+          <div
+            ref={furnaceFlyoutRef}
+            className="relative flex-shrink-0"
+            onMouseEnter={() => setFurnaceFlyoutOpen(true)}
+            onMouseLeave={() => setFurnaceFlyoutOpen(false)}
           >
-            <Flame className={`h-4 w-4 ${!furnaceOpen && furnaceBurning ? 'animate-pulse' : ''}`} />
-            {!furnaceOpen && furnaceBurning && (
-              <span
-                aria-hidden="true"
-                className="absolute -right-0.5 -top-0.5 h-2 w-2 animate-pulse rounded-full bg-[var(--eh-furnace-orange)] ring-2 ring-[var(--eh-base)]"
-              />
+            <div className="flex items-center gap-0.5">
+              <button
+                type="button"
+                onClick={onToggleFurnace}
+                aria-label={furnaceBurning ? 'The Furnace — batches burning' : 'The Furnace'}
+                aria-pressed={!!furnaceOpen}
+                title={furnaceBurning ? 'The Furnace — batches burning' : 'The Furnace'}
+                className={`relative flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg border transition-colors ${
+                  furnaceOpen
+                    ? 'border-transparent text-white'
+                    : furnaceChatOpen
+                      ? 'border-[var(--eh-furnace-accent)]/60 bg-[var(--eh-furnace-accent)]/10 text-[var(--eh-furnace-accent)]'
+                      : furnaceBurning
+                        ? 'border-[var(--eh-furnace-orange)]/60 bg-[var(--eh-furnace-orange)]/10 text-[var(--eh-furnace-orange)]'
+                        : 'eh-border bg-[var(--eh-input-bg)] text-[var(--eh-text-muted)] hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5'
+                }`}
+                style={furnaceOpen ? { background: 'var(--eh-furnace-orange)' } : undefined}
+              >
+                <Flame className={`h-4 w-4 ${!furnaceOpen && furnaceBurning ? 'animate-pulse' : ''}`} />
+                {!furnaceOpen && furnaceBurning && (
+                  <span
+                    aria-hidden="true"
+                    className="absolute -right-0.5 -top-0.5 h-2 w-2 animate-pulse rounded-full bg-[var(--eh-furnace-orange)] ring-2 ring-[var(--eh-base)]"
+                  />
+                )}
+                {furnaceChatUnread && (
+                  <span
+                    aria-hidden="true"
+                    className="absolute -left-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-primary ring-2 ring-[var(--eh-base)]"
+                  />
+                )}
+              </button>
+              {/* Touch/no-hover fallback (FLUX-1212): a tiny kebab reaches "Furnace chat" without
+                  relying on hover — the primary icon's one-tap behavior (open the drawer) is unchanged. */}
+              <button
+                type="button"
+                onClick={() => setFurnaceFlyoutOpen((v) => !v)}
+                aria-label="Furnace options"
+                aria-expanded={furnaceFlyoutOpen}
+                aria-haspopup="menu"
+                title="Furnace options"
+                className="flex h-9 w-3.5 flex-shrink-0 items-center justify-center rounded-md text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5"
+              >
+                <ChevronDown className="h-3 w-3" />
+              </button>
+            </div>
+
+            {furnaceFlyoutOpen && (
+              <div
+                role="menu"
+                className="eh-border eh-surface absolute bottom-full left-0 mb-2 w-56 overflow-hidden rounded-xl border p-1 shadow-2xl"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => { onToggleFurnace(); setFurnaceFlyoutOpen(false); }}
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-[var(--eh-text-primary)] hover:bg-black/5 dark:hover:bg-white/5"
+                >
+                  <Flame className="h-3.5 w-3.5 flex-shrink-0" style={{ color: FURNACE_ACCENT }} />
+                  <span className="flex-1">Open Furnace</span>
+                  {furnaceBurning && (
+                    <span className="text-[10px] font-medium" style={{ color: 'var(--eh-furnace-orange)' }}>
+                      {furnaceBurningCount ? `· ${furnaceBurningCount} burning` : 'burning'}
+                    </span>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={(e) => { openChat(FURNACE_CONVERSATION_ID, e.currentTarget); setFurnaceFlyoutOpen(false); }}
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-[var(--eh-text-primary)] hover:bg-black/5 dark:hover:bg-white/5"
+                >
+                  <Bot className="h-3.5 w-3.5 flex-shrink-0" style={{ color: FURNACE_ACCENT }} />
+                  <span className="flex-1">{furnaceChatOpen ? 'Focus Furnace chat' : 'Open Furnace chat'}</span>
+                  {furnaceChatWorking ? (
+                    <ThinkingDots />
+                  ) : furnaceChatUnread ? (
+                    <span aria-hidden="true" className="h-2 w-2 flex-shrink-0 rounded-full bg-primary" />
+                  ) : null}
+                </button>
+              </div>
             )}
-          </button>
+          </div>
         )}
 
         {/* FLUX-898: the unified attention surface — pinned immediately right of the Orchestrator.
@@ -704,7 +820,7 @@ export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, f
                       <span className="truncate text-xs font-medium text-gray-700 dark:text-gray-200">
                         {titleOf(id)}
                       </span>
-                      {id !== BOARD_CONVERSATION_ID && (
+                      {id !== BOARD_CONVERSATION_ID && id !== FURNACE_CONVERSATION_ID && (
                         <span className="text-[10px] font-medium uppercase tracking-wide text-gray-400">
                           {id}
                         </span>
@@ -788,7 +904,6 @@ function SortableChatTab(props: React.ComponentProps<typeof ChatTab>) {
 function ChatTab({
   id,
   label,
-  identityLabel,
   title,
   orchestrator,
   open,
@@ -809,9 +924,6 @@ function ChatTab({
   id: string;
   /** Orchestrator label ("Board"). */
   label?: string;
-  /** FLUX-1175: overrides the tooltip/aria-label's default "Orchestrator" identity when the
-   *  board session was launched in-persona (e.g. "Furnace Operator (Smelter)"). */
-  identityLabel?: string;
   /** Ticket title — shown after the id when there's room. */
   title?: string;
   orchestrator: boolean;
@@ -846,7 +958,7 @@ function ChatTab({
   const working = state === 'working';
   // FLUX-819: per-state glyph carries the state shape on the leading indicator (below).
   const StateGlyph = STATE_GLYPH[state];
-  const fullLabel = orchestrator ? identityLabel ?? 'Orchestrator' : title ? `${id} — ${title}` : id;
+  const fullLabel = orchestrator ? 'Orchestrator' : title ? `${id} — ${title}` : id;
 
   // Horizontal "chrome tab" — short, flat, label-bearing (vs the old square card).
   const base =
@@ -1650,7 +1762,13 @@ function BoardHealthAction({ busy, onFire }: { busy: boolean; onFire: (prompt: s
   );
 }
 
-function ChatWindow({
+// FLUX-1200: memoized so an unrelated DockState change (typing a draft in another chat, dragging
+// the sideview divider, reordering tabs) doesn't re-render every OTHER open window — ChatDock itself
+// reads the wide DockStateContext via `useDock()` and re-renders in full on any such change, but each
+// ChatWindow instance now bails out unless its OWN props changed. This only works because the
+// callback props below are the raw, referentially-stable DockActions (see the call site in ChatDock),
+// not a fresh per-id closure — a new closure every render would defeat this memo entirely.
+const ChatWindow = memo(function ChatWindow({
   id,
   orchestrator,
   isTopmost,
@@ -1674,6 +1792,7 @@ function ChatWindow({
   windowGeometry,
   onGeometryChange,
   onMinimize,
+  canClose = true,
   onClose,
 }: {
   id: string;
@@ -1690,23 +1809,23 @@ function ChatWindow({
    *  grows the window out of it (and shrinks back to it on close). Absent → a plain scale/fade. */
   originRect?: AnchorRect;
   /** FLUX-801: bring this window to the front of the dock paint order (called on mousedown). */
-  onRaise?: () => void;
+  onRaise?: (id: string) => void;
   working: boolean;
   activity: string | null;
   /** FLUX-623: persisted unsent composer text for this conversation (survives minimize). */
   draft: string;
-  onDraftChange: (text: string) => void;
+  onDraftChange: (id: string, text: string) => void;
   /** FLUX-666: persisted composer chip selections (model/effort/permission) for this
    *  conversation (survives minimize, alongside the text draft). */
   selections?: ComposerSelections;
-  onSelectionsChange: (selections: ComposerSelections) => void;
+  onSelectionsChange: (id: string, selections: ComposerSelections) => void;
   /** FLUX-734: whether the ticket sideview panel is expanded beside the chat (ticket windows only). */
   sideViewOpen?: boolean;
   /** FLUX-734: toggle the ticket sideview panel. Absent for the orchestrator (no bound task). */
-  onToggleSideView?: () => void;
+  onToggleSideView?: (id: string) => void;
   /** FLUX-887: idempotently open the sideview + its Grooming Artifact section (the inline artifact
    *  card's "Open in panel" action). Absent for the orchestrator (no bound task). */
-  onOpenArtifact?: () => void;
+  onOpenArtifact?: (id: string) => void;
   /** FLUX-740: live, persisted width of the sideview panel (set by the chat↔panel divider). */
   sideviewWidth?: number;
   /** FLUX-740: commit a new sideview width (clamped + persisted in DockProvider). */
@@ -1719,15 +1838,22 @@ function ChatWindow({
   windowGeometry?: WindowGeometry;
   /** FLUX-920: commit a window-footprint change (merge-patched + persisted in DockProvider). Called on
    *  the resize-grip commit (`{w,h}`) and the title-bar drag commit (`{left,bottom}`). */
-  onGeometryChange?: (geom: Partial<WindowGeometry>) => void;
-  onMinimize: () => void;
+  onGeometryChange?: (id: string, geom: Partial<WindowGeometry>) => void;
+  onMinimize: (id: string) => void;
+  /** FLUX-1200: whether the close (X) affordance is enabled — replaces the old pattern of the
+   *  parent passing `onClose={undefined}` to disable it, which required a fresh closure per-id. */
+  canClose?: boolean;
   /** Retire the card into History and close the window. Absent for the pinned orchestrator. */
-  onClose?: () => void;
+  onClose?: (id: string) => void;
 }) {
+  // FLUX-1209: the Furnace-chat window — reuses the plain (non-orchestrator, taskless) window
+  // chrome below, with a few Smelter-specific fallbacks (title, empty-state hint) computed off
+  // `id` directly rather than threading a new prop through every caller.
+  const isFurnaceChat = id === FURNACE_CONVERSATION_ID;
   // FLUX-1022: ESC collapses this floating chat window back to its dock card (session preserved,
   // never destroyed) — but only while it's the frontmost window, so a press doesn't reach into
   // background windows.
-  useEscapeKey(onMinimize, { enabled: isTopmost });
+  useEscapeKey(() => onMinimize(id), { enabled: isTopmost });
 
   // FLUX-748: pass `working` (live running session) so the hook's message queue auto-dispatches
   // on the turn-completion edge.
@@ -1921,7 +2047,7 @@ function ChatWindow({
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       // FLUX-920: persist the dragged position so it survives minimize/reopen + reload.
-      if (moved) onGeometryChange?.({ left: lastLeft, bottom: lastBottom });
+      if (moved) onGeometryChange?.(id, { left: lastLeft, bottom: lastBottom });
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
@@ -1955,7 +2081,7 @@ function ChatWindow({
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       // FLUX-920: persist the resized footprint so it survives minimize/reopen + reload.
-      if (moved) onGeometryChange?.({ w: lastW, h: lastH });
+      if (moved) onGeometryChange?.(id, { w: lastW, h: lastH });
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
@@ -2028,7 +2154,7 @@ function ChatWindow({
             const text = (draft ?? '').trim();
             if (text) {
               void chat.send(draft);
-              onDraftChange('');
+              onDraftChange(id, '');
             }
             setColdDismissed(true);
           }}
@@ -2074,14 +2200,20 @@ function ChatWindow({
       error={chat.error}
       working={working}
       activity={activity}
-      emptyHint={orchestrator ? 'Talk to the board. I can see and dispatch work to tickets.' : `Chat about ${id}.`}
+      emptyHint={
+        orchestrator
+          ? 'Talk to the board. I can see and dispatch work to tickets.'
+          : isFurnaceChat
+            ? 'Talk to the Furnace Operator — plan a burn or troubleshoot a parked batch.'
+            : `Chat about ${id}.`
+      }
       contextCard={contextCard}
       quickReplies={quickReplies}
       linkifyTickets
       draft={draft}
-      onDraftChange={onDraftChange}
+      onDraftChange={(t) => onDraftChange(id, t)}
       selections={selections}
-      onSelectionsChange={onSelectionsChange}
+      onSelectionsChange={(s) => onSelectionsChange(id, s)}
       onSend={chat.send}
       queued={chat.queued}
       onEnqueue={chat.enqueue}
@@ -2103,7 +2235,7 @@ function ChatWindow({
         <ChatOrchestrationBlock group={runGroup} taskId={id} onOpenRun={openRun} onStopSession={stopOne} onStopAll={stopAll} />
       ) : undefined}
       artifactCard={task && (task.artifacts?.revisions?.length ?? 0) > 0 ? (
-        <ChatArtifactCard task={task} onOpen={onOpenArtifact} />
+        <ChatArtifactCard task={task} onOpen={() => onOpenArtifact?.(id)} />
       ) : undefined}
       actions={
         orchestrator ? (
@@ -2122,7 +2254,7 @@ function ChatWindow({
     <motion.div
       ref={windowRef}
       // FLUX-801: bring this window above its siblings when the user interacts with it.
-      onMouseDown={onRaise}
+      onMouseDown={() => onRaise?.(id)}
       {...motionProps}
       className="eh-surface eh-border fixed z-50 flex flex-col overflow-hidden rounded-2xl border shadow-2xl"
       style={{ bottom, left, width: outerW, height: size.h }}
@@ -2143,14 +2275,16 @@ function ChatWindow({
         <div className="flex min-w-0 items-center gap-1.5 text-[13px] font-semibold text-[var(--eh-text-primary)]">
           {orchestrator ? (
             <Sparkles className="h-3.5 w-3.5 flex-shrink-0 text-primary" />
+          ) : isFurnaceChat ? (
+            <Flame className="h-3.5 w-3.5 flex-shrink-0" style={{ color: FURNACE_ACCENT }} />
           ) : (
             <MessageSquare className="h-3.5 w-3.5 flex-shrink-0 text-[var(--eh-text-muted)]" />
           )}
           <span className="truncate">
-            {/* FLUX-1175: an in-persona board session (e.g. "Chat with Smelter") overrides the
-                default "Orchestrator" identity so this is visually distinguishable in the window
-                that's actually open and being read/typed into. */}
-            {orchestrator ? (session?.label && session.label !== 'Orchestrator' ? session.label : 'Orchestrator') : task?.title ?? id}
+            {/* FLUX-1209: the Furnace-chat window title is the persona's resolved label (e.g.
+                "Furnace Operator (Smelter)"), same identity contract the board used to special-case
+                for an in-persona session — now scoped to its own conversation. */}
+            {orchestrator ? 'Orchestrator' : isFurnaceChat ? session?.label ?? 'Furnace chat' : task?.title ?? id}
           </span>
         </div>
         <div className="flex flex-shrink-0 items-center gap-0.5">
@@ -2177,7 +2311,7 @@ function ChatWindow({
             <button
               type="button"
               onPointerDown={(e) => e.stopPropagation()}
-              onClick={() => { openTaskFullView(task); onMinimize(); }}
+              onClick={() => { openTaskFullView(task); onMinimize(id); }}
               title="Open in full view"
               className="rounded-md p-1 text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5"
             >
@@ -2189,7 +2323,7 @@ function ChatWindow({
             <button
               type="button"
               onPointerDown={(e) => e.stopPropagation()}
-              onClick={onToggleSideView}
+              onClick={() => onToggleSideView(id)}
               title={sideViewOpen ? 'Hide ticket panel' : 'Show ticket panel'}
               aria-pressed={sideViewOpen}
               className={`rounded-md p-1 transition-colors hover:bg-black/5 dark:hover:bg-white/5 ${
@@ -2202,17 +2336,17 @@ function ChatWindow({
           <button
             type="button"
             onPointerDown={(e) => e.stopPropagation()}
-            onClick={onMinimize}
+            onClick={() => onMinimize(id)}
             title="Minimize"
             className="rounded-md p-1 text-[var(--eh-text-muted)] transition-colors hover:bg-black/5 hover:text-[var(--eh-text-primary)] dark:hover:bg-white/5"
           >
             <Minus className="h-3.5 w-3.5" />
           </button>
-          {onClose && (
+          {canClose && onClose && (
             <button
               type="button"
               onPointerDown={(e) => e.stopPropagation()}
-              onClick={onClose}
+              onClick={() => onClose(id)}
               title="Close (move to recent chats)"
               className="rounded-md p-1 text-[var(--eh-text-muted)] transition-colors hover:bg-red-500/10 hover:text-red-500 dark:hover:bg-red-500/15"
             >
@@ -2272,4 +2406,4 @@ function ChatWindow({
       )}
     </motion.div>
   );
-}
+});

@@ -35,9 +35,18 @@ function defaultBoardIdentity(key: string): string {
   ].join('\n');
 }
 
-export function buildBoardPrompt(firstMessage: string, priorContext?: string, identity?: string): string {
+// FLUX-1209: `includeDigest` gates the FLUX-659 board-triage digest (ticket counts, needs-attention,
+// since-last-turn delta) — a board-orchestrator-only push mechanism. A Furnace-chat turn (any
+// non-board virtual conversation) doesn't need the whole-board digest prepended, so callers pass
+// `false` for it; defaults to `true` so every other/existing call site (board turns) is unaffected.
+export function buildBoardPrompt(firstMessage: string, priorContext?: string, identity?: string, includeDigest: boolean = true): string {
   const key = configCache.projects?.[0] || 'PROJECT';
-  const digest = buildBoardDigest();
+  const digest = includeDigest ? buildBoardDigest() : '';
+  // FLUX-1211: a personaId-only silent boot (no user-typed text) must never fabricate a fake user
+  // message — but the spawned CLI still needs a well-formed final line. This internal instruction
+  // is never recorded to the transcript (see startBoardSession), so it's invisible to the user.
+  const openingLine = firstMessage
+    || "The user just opened this chat and hasn't said anything yet. Offer a brief, low-key greeting if it feels natural, otherwise stay quietly ready.";
   return [
     identity ?? defaultBoardIdentity(key),
     '',
@@ -46,7 +55,7 @@ export function buildBoardPrompt(firstMessage: string, priorContext?: string, id
     // warm-resume path in sendBoardInput (preamble first, then digest, then the message).
     ...(priorContext ? [priorContext, ''] : []),
     ...(digest ? [digest, ''] : []),
-    firstMessage,
+    openingLine,
   ].join('\n');
 }
 
@@ -56,7 +65,7 @@ export function buildBoardPrompt(firstMessage: string, priorContext?: string, id
 function wireBoardProc(spec: BoardSpec, proc: ReturnType<typeof spawn>, session: CliSessionRecord, onExitStatus: () => void) {
   session.proc = proc as ChildProcessWithoutNullStreams;
   session.pid = proc.pid;
-  const commitPending = spec.attachStdout(proc, session, BOARD_CONVERSATION_ID);
+  const commitPending = spec.attachStdout(proc, session, session.taskId);
   proc.stderr!.on('data', (chunk) => appendSessionOutput(session, chunk, 'stderr', false));
   proc.on('error', (error) => {
     session.status = 'failed';
@@ -90,12 +99,12 @@ function wireBoardProc(spec: BoardSpec, proc: ReturnType<typeof spawn>, session:
         console.error(`[board] clean exit (code 0) but no resumeSessionId captured this turn — next turn will cold-start instead of resuming`);
       }
       onExitStatus();
-      // FLUX-810: a clean board turn === the orchestrator answered the user. This is the only
-      // self-noise-free hook (stopped/non-zero/crashed turns are handled above), so emit the
-      // "Orchestrator replied" notification-bar entry here and nowhere else.
-      generateOrchestratorReplyNotification();
+      // FLUX-810: a clean board turn === the orchestrator (or FLUX-1209: Furnace-chat persona)
+      // answered the user. This is the only self-noise-free hook (stopped/non-zero/crashed turns
+      // are handled above), so emit the "replied" notification-bar entry here and nowhere else.
+      generateOrchestratorReplyNotification(session.taskId, session.label);
     }
-    broadcastEvent('taskUpdated', { id: BOARD_CONVERSATION_ID });
+    broadcastEvent('taskUpdated', { id: session.taskId });
   });
 }
 
@@ -105,13 +114,18 @@ async function startBoardSession(spec: BoardSpec, session: CliSessionRecord, fir
   // FLUX-579: ensure the workspace-root shared server(s) exist before building the board MCP config
   // (Claude-only today — other frameworks load MCP from workspace .mcp.json, see BoardSpec.ensureMcp).
   if (spec.ensureMcp) await spec.ensureMcp(workspaceRoot);
+  // FLUX-1209: the board-only long-term-memory machinery (cold-resume re-prime off the durable
+  // `__board__.jsonl` transcript, the FLUX-659 triage digest) is scoped to the REAL board
+  // conversation — a Furnace-chat turn (any other virtual conversation) gets its own resumable
+  // transcript via this same generalized adapter, but not the whole-board digest/re-prime.
+  const isBoard = session.taskId === BOARD_CONVERSATION_ID;
   // FLUX-838: cold-resume re-prime. The CLI session store is in-memory only, so an engine
   // restart leaves an empty store and this start path runs with no `--resume`. Recover the
   // orchestrator's memory from the durable `__board__.jsonl` transcript: a bounded verbatim
   // tail of the prior dialogue, plus the working-tree situational update. Computed BEFORE this
   // turn's `user` event is appended (below) so the just-sent message can't leak into the
   // "prior" digest. A fresh / post-reset board (FLUX-659) yields null → no re-prime block.
-  const reprime = await buildBoardReprime();
+  const reprime = isBoard ? await buildBoardReprime() : null;
   let resumePreamble: string | null = null;
   if (reprime) {
     // sinceIso from the last prior transcript turn's ts — the in-memory lastOutputAt is gone
@@ -127,7 +141,7 @@ async function startBoardSession(spec: BoardSpec, session: CliSessionRecord, fir
   // for the transcript so the bubble re-renders the thumbnail on reload / cold resume.
   const attachments = opts?.attachments ?? [];
   const attachmentAbsPaths = resolveAttachmentAbsPaths(attachments);
-  const prompt = `${buildBoardPrompt(firstMessage, priorContext, opts?.personaPrompt)}${attachmentReadInstruction(attachmentAbsPaths)}`;
+  const prompt = `${buildBoardPrompt(firstMessage, priorContext, opts?.personaPrompt, isBoard)}${attachmentReadInstruction(attachmentAbsPaths)}`;
   const args = await spec.buildArgs({ session, prompt, workspaceRoot, executionRoot: workspaceRoot, isResume: false });
   session.status = 'running';
   session.args = args;
@@ -136,11 +150,15 @@ async function startBoardSession(spec: BoardSpec, session: CliSessionRecord, fir
   // bubble. The re-prime dialogue digest is NOT appended — it is recovered from the transcript,
   // and re-appending it would compound across successive restarts (criterion 6).
   if (resumePreamble) {
-    appendTranscriptEvent(BOARD_CONVERSATION_ID, { type: 'resume-preamble', text: resumePreamble, timestamp: session.startedAt });
+    appendTranscriptEvent(session.taskId, { type: 'resume-preamble', text: resumePreamble, timestamp: session.startedAt });
   }
   // First turn: record the user message in the transcript (mirrors the per-ticket chat /start).
-  appendTranscriptEvent(BOARD_CONVERSATION_ID, { type: 'user', text: firstMessage, attachments, timestamp: session.startedAt });
-  const proc = await spec.spawn(args, workspaceRoot);
+  // FLUX-1211: a personaId-only silent boot has no real user message — skip recording a fake
+  // `user` turn so the chat opens on a truly empty transcript.
+  if (firstMessage || attachments.length > 0) {
+    appendTranscriptEvent(session.taskId, { type: 'user', text: firstMessage, attachments, timestamp: session.startedAt });
+  }
+  const proc = await spec.spawn(args, workspaceRoot, session.taskId);
   // Persistent conversation: a finished turn stays RESUMABLE (waiting-input), never
   // terminal. If it ended 'completed', the next message would spawn a fresh session
   // with no memory of this one (it wouldn't know about a ticket it just created).
@@ -150,6 +168,9 @@ async function startBoardSession(spec: BoardSpec, session: CliSessionRecord, fir
 async function sendBoardInput(spec: BoardSpec, session: CliSessionRecord, message: string, workspaceRoot: string, opts?: SendInputOptions) {
   await checkBinaryInstalled(spec.binary);
   const inputAt = new Date().toISOString();
+  // FLUX-1209: see startBoardSession — the board-only digest/re-prime machinery below is scoped
+  // to the real board conversation, not a Furnace-chat (or any other virtual conversation) turn.
+  const isBoard = session.taskId === BOARD_CONVERSATION_ID;
   // FLUX-655: capture the "since you last spoke" basis BEFORE overwriting lastInputAt (see the
   // per-ticket path). Board scope has no branch, so the preamble degrades to ticket-movement only.
   const sinceIso = session.lastOutputAt ?? session.lastInputAt;
@@ -174,15 +195,15 @@ async function sendBoardInput(spec: BoardSpec, session: CliSessionRecord, messag
       sinceIso,
     });
     if (resumePreamble) {
-      appendTranscriptEvent(BOARD_CONVERSATION_ID, { type: 'resume-preamble', text: resumePreamble, timestamp: inputAt });
+      appendTranscriptEvent(session.taskId, { type: 'resume-preamble', text: resumePreamble, timestamp: inputAt });
     }
   }
-  appendTranscriptEvent(BOARD_CONVERSATION_ID, { type: 'user', text: message, attachments, timestamp: inputAt });
+  appendTranscriptEvent(session.taskId, { type: 'user', text: message, attachments, timestamp: inputAt });
   // Effective prompt to the CLI = the user's text + a Read-the-image instruction (FLUX-676).
   const safeMessage = `${message.replace(/\0/g, '')}${attachmentReadInstruction(attachmentAbsPaths)}`;
   // Prepend the fresh triage digest to the prompt sent to the CLI — NOT to the transcript above,
-  // which keeps the user's verbatim message (FLUX-659 push half).
-  const digest = buildBoardDigest();
+  // which keeps the user's verbatim message (FLUX-659 push half). Board-only (see isBoard above).
+  const digest = isBoard ? buildBoardDigest() : '';
   let promptForCli = digest ? `${digest}\n\n${safeMessage}` : safeMessage;
   // FLUX-655: prepend the situational update (computed above) — same contract as the per-ticket chat.
   if (resumePreamble) {
@@ -192,7 +213,7 @@ async function sendBoardInput(spec: BoardSpec, session: CliSessionRecord, messag
   if (spec.ensureMcp) await spec.ensureMcp(workspaceRoot);
   const args = await spec.buildArgs({ session, prompt: promptForCli, workspaceRoot, executionRoot: session.executionRoot ?? workspaceRoot, isResume: true });
   session.args = args;
-  const proc = await spec.spawn(args, session.executionRoot ?? workspaceRoot);
+  const proc = await spec.spawn(args, session.executionRoot ?? workspaceRoot, session.taskId);
   wireBoardProc(spec, proc, session, () => { session.status = 'waiting-input'; });
 }
 

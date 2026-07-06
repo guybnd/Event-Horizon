@@ -805,14 +805,14 @@ export function ticketIdFromWorktreePath(workspaceRoot: string, worktreePath: st
  */
 export async function reclaimWorktrees(
   workspaceRoot: string,
-  isReclaimable: (ticketId: string) => boolean,
+  isReclaimable: (ticketId: string) => boolean | Promise<boolean>,
   opts: { gitRunner?: GitRunner } = {},
 ): Promise<string[]> {
   const runner = opts.gitRunner ?? defaultGitRunner;
   const reclaimed: string[] = [];
   for (const wt of await listTaskWorktrees(workspaceRoot, opts)) {
     const id = ticketIdFromWorktreePath(workspaceRoot, wt.path);
-    if (!id || !isReclaimable(id)) continue;
+    if (!id || !(await isReclaimable(id))) continue;
     // Drop the shared node_modules junctions first so they don't read as dirty,
     // then only remove when the tree is genuinely clean — never lose real work.
     await unlinkWorktreeDependencies(wt.path).catch(() => {});
@@ -823,7 +823,7 @@ export async function reclaimWorktrees(
     // between worktree resolution and `registerSession`, or a joined sibling starting work.
     // Re-evaluate reclaimability immediately before removal so the sweep never yanks a slot
     // from work that started mid-iteration.
-    if (!isReclaimable(id)) continue;
+    if (!(await isReclaimable(id))) continue;
     try {
       await removeTaskWorktree(workspaceRoot, wt.path, opts);
       reclaimed.push(id);

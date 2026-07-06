@@ -6,7 +6,7 @@ import { scaffoldModuleDirs } from '../storage-sync.js';
 import { isOrphanMode, getFluxStoreDir } from '../workspace.js';
 import { CLI_CAPABILITIES } from '../agents/types.js';
 import { resolveDefaultFramework, getRuntimeFrameworks } from '../agents/index.js';
-import { BOARD_CONVERSATION_ID } from '../agents/board.js';
+import { BOARD_CONVERSATION_ID, FURNACE_CONVERSATION_ID } from '../agents/board.js';
 
 const router = express.Router();
 
@@ -16,8 +16,9 @@ router.get('/', (req, res) => {
   // FLUX-906: also expose the two values the portal otherwise hardcodes as Claude:
   //   - defaultFramework: the engine-resolved 'auto' framework (resolveDefaultFramework is the
   //     single source of truth) so the portal stops flooring 'auto' to 'claude' itself.
-  //   - boardConversationId: the orchestrator sentinel, so the portal's sync constant can be
-  //     cross-checked against the engine instead of independently re-declaring '__board__'.
+  //   - boardConversationId / furnaceConversationId: the orchestrator + Furnace-chat sentinels
+  //     (FLUX-1209), so the portal's sync constants can be cross-checked against the engine
+  //     instead of independently re-declaring '__board__' / '__furnace__'.
   // FLUX-907 (audit F — split semantics): also expose `runtimeFrameworks` — the frameworks EH can
   // actually LAUNCH (the adapter registry), which is narrower than the skill installer's 8-framework
   // list. The portal surfaces the gap by badging install-only frameworks "Skills only".
@@ -26,6 +27,7 @@ router.get('/', (req, res) => {
     cliCapabilities: CLI_CAPABILITIES,
     defaultFramework: resolveDefaultFramework(),
     boardConversationId: BOARD_CONVERSATION_ID,
+    furnaceConversationId: FURNACE_CONVERSATION_ID,
     runtimeFrameworks: getRuntimeFrameworks(),
   });
 });

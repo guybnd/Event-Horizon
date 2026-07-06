@@ -397,8 +397,12 @@ export function spawnCopilot(id: string, args: string[], cwdRoot: string) {
 // at all. The documented fix is --additional-mcp-config, injecting the server explicitly. Exported
 // so copilot-board.ts (the board spec) can reuse it — same capability, same mechanism, both spawn
 // paths need it.
-export function buildAdditionalMcpConfigArgs(): string[] {
-  return ['--additional-mcp-config', JSON.stringify({ mcpServers: { 'event-horizon': buildMcpServerEntry() } })];
+// FLUX-1213: `conversationId`, when passed, carries this spawn's bound identity as HTTP headers on
+// the injected entry (same shared-HTTP-mount problem/fix as claude-code.ts's
+// eventHorizonSpawnOverride) so this session's HITL prompts route to its own ticket instead of the
+// `__board__` catch-all.
+export function buildAdditionalMcpConfigArgs(conversationId?: string): string[] {
+  return ['--additional-mcp-config', JSON.stringify({ mcpServers: { 'event-horizon': buildMcpServerEntry(conversationId) } })];
 }
 
 export async function startCliSession(session: CliSessionRecord, task: CliTask, appendPrompt: string, effortOverrideRaw: string, workspaceRoot: string) {
@@ -443,7 +447,7 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
     '--output-format', 'json',
     ...(session.skipPermissions ? ['--yolo'] : ['--allow-all-tools']),
     // FLUX-984: explicit MCP config injection — workspace .mcp.json is never auto-loaded in -p mode.
-    ...buildAdditionalMcpConfigArgs(),
+    ...buildAdditionalMcpConfigArgs(id),
     // Multi-repo group: put every checked-out member repo in scope (no-op single-repo).
     ...buildMemberScopeArgs(),
     // Member worktree: add local .flux-group/ so the agent reads shared group docs (FLUX-422).
@@ -762,8 +766,8 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   const promptForCli = prependEditGateNote(session, tasksCache[id] as CliTask, 'copilot', safeMessage);
   // FLUX-984: explicit MCP config injection on the resume path too — the gap applies to every spawn.
   const resumeArgs = session.resumeSessionId
-    ? ['-p', promptForCli, '--resume', session.resumeSessionId, '--output-format', 'json', '--yolo', ...buildAdditionalMcpConfigArgs()]
-    : ['-p', promptForCli, '--output-format', 'json', '--yolo', ...buildAdditionalMcpConfigArgs()];
+    ? ['-p', promptForCli, '--resume', session.resumeSessionId, '--output-format', 'json', '--yolo', ...buildAdditionalMcpConfigArgs(id)]
+    : ['-p', promptForCli, '--output-format', 'json', '--yolo', ...buildAdditionalMcpConfigArgs(id)];
 
   log.info(`[${id}] Reply spawn, resume=${session.resumeSessionId || 'none'}`);
   const replyProc = spawnCopilot(id, resumeArgs, executionRoot);

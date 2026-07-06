@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getModuleMcpServers } from './modules.js';
 import { getEnginePort } from './packaged-mode.js';
+import { signConversation } from './session-binding.js';
 
 export type Framework = 'auto' | 'copilot' | 'antigravity' | 'gemini' | 'cursor' | 'cline' | 'windsurf' | 'claude' | 'generic';
 export type ResolvedFramework = Exclude<Framework, 'auto'>;
@@ -459,7 +460,7 @@ function mcpConfigPathFor(targetDir: string, framework: ResolvedFramework): stri
   }
 }
 
-export function buildMcpServerEntry() {
+export function buildMcpServerEntry(conversationId?: string) {
   // FLUX-645: the engine serves the MCP server in-process over loopback HTTP, so the entry is
   // location-independent — no relative path, no --workspace, no worktree path. Every session
   // (main checkout or `.eh-worktrees/*` worktree) points at this one URL and shares the running
@@ -472,10 +473,16 @@ export function buildMcpServerEntry() {
   // hand-added to .mcp.json) because this installer overwrites the event-horizon entry on every
   // engine start, so a manual edit would be clobbered. Honored in merge mode by Claude Code >=
   // 2.1.121; the strict-profile spawn path sets it separately in claude-code.ts.
+  //
+  // FLUX-1213: `conversationId`, when passed by a per-session spawn (not by this installer's own
+  // one-shot static-config call sites, which omit it), carries that session's bound identity as
+  // HTTP headers — the shared HTTP mount means every session's `event-horizon` client otherwise
+  // points at this exact same entry, so there is no other way to tell sessions apart engine-side.
   return {
     type: 'http',
     url: `http://127.0.0.1:${getEnginePort()}/mcp`,
     alwaysLoad: true,
+    ...(conversationId ? { headers: { 'x-eh-conversation-id': conversationId, 'x-eh-conversation-token': signConversation(conversationId) } } : {}),
   };
 }
 

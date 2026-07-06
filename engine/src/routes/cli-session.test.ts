@@ -261,4 +261,22 @@ describe('POST /:id/cli-session/start — off the request path (FLUX-1002)', () 
     await new Promise((r) => setTimeout(r, 50));
     expect(cliSessionsById.get(session.id)?.status).toBe('cancelled');
   });
+
+  it('phase:"grooming" skips ensureTicketIsolation regardless of requested isolation (FLUX-1214)', async () => {
+    // Grooming never writes code or opens a PR — it has no use for a branch/worktree. Request
+    // 'worktree' isolation anyway (as start_session/board-rebase dispatch always do) to prove the
+    // route itself refuses to isolate a grooming session rather than relying on callers to know.
+    const res = await fetch(`${baseUrl}/api/tasks/FLUX-1/cli-session/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ framework: TEST_FRAMEWORK, appendPrompt: 'hello', isolation: 'worktree', phase: 'grooming' }),
+    });
+
+    expect(res.status).toBe(201);
+    const { session } = await res.json();
+
+    await waitFor(() => cliSessionsById.get(session.id)?.status === 'running');
+    expect(ensureTicketIsolation).not.toHaveBeenCalled();
+    expect(tasksCache['FLUX-1'].branch).toBeUndefined();
+  });
 });

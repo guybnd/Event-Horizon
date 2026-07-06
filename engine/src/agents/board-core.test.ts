@@ -28,10 +28,17 @@ vi.mock('./shared.js', () => ({
 
 import { makeBoardAdapter, buildBoardPrompt } from './board-core.js';
 import { generateOrchestratorReplyNotification } from '../notifications.js';
+import { buildBoardReprime } from '../board-reprime.js';
+import { buildBoardDigest } from '../board-digest.js';
+import { appendTranscriptEvent } from '../transcript.js';
+import { BOARD_CONVERSATION_ID, FURNACE_CONVERSATION_ID } from './board.js';
 import type { BoardSpec } from './board.js';
 import type { CliSessionRecord } from './types.js';
 
 const mockNotify = vi.mocked(generateOrchestratorReplyNotification);
+const mockBuildBoardReprime = vi.mocked(buildBoardReprime);
+const mockBuildBoardDigest = vi.mocked(buildBoardDigest);
+const mockAppendTranscriptEvent = vi.mocked(appendTranscriptEvent);
 
 /** A bare EventEmitter stands in for the spawned CLI's ChildProcess (mirrors adapter-contract.test.ts's fakeProc). */
 function fakeProc(): ChildProcessWithoutNullStreams {
@@ -42,6 +49,8 @@ function fakeProc(): ChildProcessWithoutNullStreams {
 
 interface FakeSession {
   status: string;
+  taskId: string;
+  label: string;
   proc?: ChildProcessWithoutNullStreams;
   pid?: number;
   args: string[];
@@ -51,9 +60,13 @@ interface FakeSession {
   requestedStop: boolean;
 }
 
-function fakeSession(): CliSessionRecord {
+// FLUX-1209: taskId defaults to the real board conversation (today's only pre-existing behavior);
+// pass FURNACE_CONVERSATION_ID to exercise the non-board (Furnace-chat) path instead.
+function fakeSession(taskId: string = BOARD_CONVERSATION_ID, label: string = 'Orchestrator'): CliSessionRecord {
   const session: FakeSession = {
     status: 'pending',
+    taskId,
+    label,
     args: [],
     startedAt: new Date().toISOString(),
     resumeSessionId: undefined,
@@ -151,5 +164,92 @@ describe('buildBoardPrompt identity override (FLUX-1175)', () => {
     expect(prompt).toContain('You are the Furnace Operator ("Smelter").');
     expect(prompt).not.toContain('You are the Event Horizon board orchestrator');
     expect(prompt).toContain('hello there');
+  });
+});
+
+describe('FLUX-1211: buildBoardPrompt silent-boot fallback (personaId-only launch)', () => {
+  it('substitutes an internal silent-boot instruction when firstMessage is empty', () => {
+    const prompt = buildBoardPrompt('');
+    expect(prompt).toContain("hasn't said anything yet");
+  });
+
+  it('uses the literal firstMessage when non-empty (unaffected)', () => {
+    const prompt = buildBoardPrompt('hello there');
+    expect(prompt).toContain('hello there');
+    expect(prompt).not.toContain("hasn't said anything yet");
+  });
+});
+
+describe('FLUX-1209: Furnace-chat (non-board) conversations skip board-only digest/reprime', () => {
+  beforeEach(() => {
+    mockNotify.mockClear();
+    mockBuildBoardReprime.mockClear();
+    mockBuildBoardDigest.mockClear();
+  });
+
+  it('a real board session still re-primes from the durable transcript (unaffected by the generalization)', async () => {
+    const spec = fakeSpec({ capturesResumeId: true });
+    const adapter = makeBoardAdapter(spec);
+    const session = fakeSession(BOARD_CONVERSATION_ID);
+
+    await adapter.startBoardSession(session, 'hello', '/tmp/test-repo');
+
+    expect(mockBuildBoardReprime).toHaveBeenCalledTimes(1);
+  });
+
+  it('a Furnace-chat session does NOT re-prime from the board transcript or prepend the board digest', async () => {
+    const spec = fakeSpec({ capturesResumeId: true });
+    const adapter = makeBoardAdapter(spec);
+    const session = fakeSession(FURNACE_CONVERSATION_ID, 'Furnace Operator (Smelter)');
+
+    await adapter.startBoardSession(session, 'hello', '/tmp/test-repo');
+
+    expect(mockBuildBoardReprime).not.toHaveBeenCalled();
+    expect(mockBuildBoardDigest).not.toHaveBeenCalled();
+  });
+
+  it('a clean Furnace-chat turn notifies with the Furnace conversation id + persona label, never "the board orchestrator"', async () => {
+    const spec = fakeSpec({ capturesResumeId: true });
+    const adapter = makeBoardAdapter(spec);
+    const session = fakeSession(FURNACE_CONVERSATION_ID, 'Furnace Operator (Smelter)');
+
+    await adapter.startBoardSession(session, 'hello', '/tmp/test-repo');
+    (session.proc as unknown as EventEmitter).emit('exit', 0);
+
+    expect(session.status).toBe('waiting-input');
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+    expect(mockNotify).toHaveBeenCalledWith(FURNACE_CONVERSATION_ID, 'Furnace Operator (Smelter)');
+  });
+});
+
+describe('FLUX-1211: personaId-only silent boot skips the fake user transcript turn', () => {
+  beforeEach(() => {
+    mockAppendTranscriptEvent.mockClear();
+  });
+
+  it('does not append a user transcript event when firstMessage is empty and there are no attachments', async () => {
+    const spec = fakeSpec({ capturesResumeId: true });
+    const adapter = makeBoardAdapter(spec);
+    const session = fakeSession(FURNACE_CONVERSATION_ID, 'Furnace Operator (Smelter)');
+
+    await adapter.startBoardSession(session, '', '/tmp/test-repo');
+
+    expect(mockAppendTranscriptEvent).not.toHaveBeenCalledWith(
+      FURNACE_CONVERSATION_ID,
+      expect.objectContaining({ type: 'user' }),
+    );
+  });
+
+  it('still appends the user transcript event when firstMessage is non-empty (unaffected)', async () => {
+    const spec = fakeSpec({ capturesResumeId: true });
+    const adapter = makeBoardAdapter(spec);
+    const session = fakeSession(FURNACE_CONVERSATION_ID, 'Furnace Operator (Smelter)');
+
+    await adapter.startBoardSession(session, 'hello', '/tmp/test-repo');
+
+    expect(mockAppendTranscriptEvent).toHaveBeenCalledWith(
+      FURNACE_CONVERSATION_ID,
+      expect.objectContaining({ type: 'user', text: 'hello' }),
+    );
   });
 });

@@ -25,7 +25,8 @@ export const copilotBoardSpec: BoardSpec = {
       '--output-format', 'json',
       '--yolo',
       // FLUX-984: explicit MCP config injection — workspace .mcp.json is never auto-loaded in -p mode.
-      ...buildAdditionalMcpConfigArgs(),
+      // FLUX-1213: bind to BOARD_CONVERSATION_ID so the board's own HITL prompts route by binding.
+      ...buildAdditionalMcpConfigArgs(BOARD_CONVERSATION_ID),
     ];
     // FLUX-977: Copilot CLI rejects --effort outright when no explicit --model is passed in the
     // SAME invocation (its default "auto" model doesn't support it — confirmed against the live
@@ -39,7 +40,9 @@ export const copilotBoardSpec: BoardSpec = {
     }
     return args;
   },
-  spawn: (args, executionRoot) => spawnCopilot(BOARD_CONVERSATION_ID, args, executionRoot),
+  // FLUX-1209: pass through the conversation id board-core.ts resolved (board or Furnace chat)
+  // instead of the hardcoded board sentinel.
+  spawn: (args, executionRoot, conversationId) => spawnCopilot(conversationId, args, executionRoot),
   attachStdout: attachStdoutProcessing,
 };
 

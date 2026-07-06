@@ -39,6 +39,13 @@ interface TaskModalFullViewProps {
   subtasksPanel: ReactNode;
   detailsPanel: ReactNode;
   activityFilterTabs: ReactNode;
+  /** FLUX-1200: `c.modalTask` run through `useDeferredValue` — used for the heavy content-only
+   *  bits (the TipTap description editor's key/taskId) so switching tickets doesn't force them to
+   *  remount in the same commit as the click; see `isContentPending` for the transition gate. */
+  deferredModalTask: TaskModalController['modalTask'];
+  /** True for the one (or few) renders where `deferredModalTask` hasn't yet caught up to the live
+   *  `modalTask` — i.e. React is still painting the shell before committing the deferred content. */
+  isContentPending: boolean;
 }
 
 export function TaskModalFullView({
@@ -54,6 +61,8 @@ export function TaskModalFullView({
   subtasksPanel,
   detailsPanel,
   activityFilterTabs,
+  deferredModalTask,
+  isContentPending,
 }: TaskModalFullViewProps) {
   const {
     config,
@@ -193,7 +202,10 @@ export function TaskModalFullView({
         </div>
       </div>
 
-      {isTaskLoading && !modalTask?.body && (
+      {/* FLUX-1200: the skeleton now also covers the "reopen an already-loaded task" case
+          (`isContentPending`, from `useDeferredValue` in TaskModal) alongside the original
+          truly-new/fetching-task case (`isTaskLoading`). */}
+      {(isContentPending || (isTaskLoading && !modalTask?.body)) && (
         <div className="flex min-h-0 flex-1 flex-col gap-4 p-6 animate-pulse">
           <div className="h-4 w-1/3 rounded bg-gray-200 dark:bg-white/10" />
           <div className="h-4 w-2/3 rounded bg-gray-200 dark:bg-white/10" />
@@ -202,7 +214,7 @@ export function TaskModalFullView({
         </div>
       )}
 
-      <div className="grid min-h-0 flex-1 relative" style={{ gridTemplateColumns: `minmax(0,1fr) ${sidebarWidth}px`, display: isTaskLoading && !modalTask?.body ? 'none' : undefined }}>
+      <div className="grid min-h-0 flex-1 relative" style={{ gridTemplateColumns: `minmax(0,1fr) ${sidebarWidth}px`, display: isContentPending || (isTaskLoading && !modalTask?.body) ? 'none' : undefined }}>
         {isFullView && isPromptStatus && (
           <>
             <div
@@ -268,10 +280,10 @@ export function TaskModalFullView({
               </div>
               <div className="flex-1 px-6 pb-6 min-h-[200px]">
                 <TaskDescriptionSurface
-                  key={`${modalTask?.id || 'new-task'}-full`}
+                  key={`${deferredModalTask?.id || 'new-task'}-full`}
                   value={body}
                   onChange={setBody}
-                  taskId={modalTask?.id}
+                  taskId={deferredModalTask?.id}
                   mode="full"
                   emptyMessage="No description yet."
                 />

@@ -1,6 +1,6 @@
 import { log } from './log.js';
 import { findWorktreeForBranch, removeTaskWorktree, detachTaskWorktree, stashDirtyTree, unlinkWorktreeDependencies, reclaimWorktrees } from './task-worktree.js';
-import { getDefaultBranch, deleteTicketBranch, getPullRequestStatus } from './branch-manager.js';
+import { getDefaultBranch, deleteTicketBranch, getPullRequestStatus, getTicketBranchStatus } from './branch-manager.js';
 import { addNotification } from './notifications.js';
 import { stopAllSessionsForTask, getActiveSessionsForTask, isWithinReclaimGrace, RECLAIM_GRACE_MS } from './session-store.js';
 import { tasksCache, updateTaskWithHistory } from './task-store.js';
@@ -121,6 +121,29 @@ export function isWorktreeReclaimable(ticketId: string, opts: { honorReadyGrace?
 }
 
 /**
+ * FLUX-1214 backstop: on top of the ordinary {@link worktreeUnreclaimableReason} gate, ALSO reclaim
+ * a worktree whose ticket is refused solely for `'status'` (not Ready/terminal) when its branch
+ * carries zero commits ahead of its base. The `'status'` gate assumes a resting ticket's worktree
+ * holds real, uncommitted-to-base work that a reviewer/implementer will return to — true for a
+ * ticket mid-implementation, but not for one whose branch was created and then never used for a
+ * single commit (a phase-blind isolation bug, e.g. the grooming-phase branch this ticket fixes; or
+ * a manual `branch` MCP call on a ticket that never got worked). Such a worktree is safe to remove
+ * regardless of status: nothing is lost, and `resolveTaskExecutionRoot`/`createTaskWorktree`
+ * self-heal it from the branch if the ticket is later dispatched for real. Never widens past
+ * `'status'` — the live-session/recent-activity refusals above still apply unconditionally, so this
+ * can never yank a worktree out from under work in flight.
+ */
+export async function isWorktreeReclaimableForSweep(ticketId: string, opts: { honorReadyGrace?: boolean } = {}): Promise<boolean> {
+  const reason = worktreeUnreclaimableReason(ticketId, opts);
+  if (reason === null) return true;
+  if (reason !== 'status') return false;
+  const t = (tasksCache as Record<string, CachedTicket>)[ticketId];
+  if (!t?.branch) return false;
+  const branchStatus = await getTicketBranchStatus(t.branch).catch(() => null);
+  return !!branchStatus && branchStatus.exists && branchStatus.aheadCount === 0;
+}
+
+/**
  * FLUX-1112: always-on buffer (not gated to the post-restart window) between a ticket's last
  * recorded session activity and the moment its worktree becomes reclaimable by the PROACTIVE
  * paths (the periodic sweep + the eager reclaim-at-Ready trigger). Deliberately short — long
@@ -167,14 +190,16 @@ function hasLiveSessionOnBranch(branch: string | undefined, ownerId: string): bo
 
 /**
  * Proactive board-wide sweep (FLUX-1031): reclaim every task worktree whose owning
- * ticket is reclaimable (Ready or terminal) and idle (no live session, clean tree).
- * Runs on the engine's reconcile interval so a Ready ticket's slot is freed shortly
- * after its session ends — well before the pool can exhaust — without a per-adapter
- * exit hook. `reclaimWorktrees` never discards real work (it removes only genuinely
- * clean trees). Returns the reclaimed ticket ids. Best-effort; never throws.
+ * ticket is reclaimable (Ready or terminal) and idle (no live session, clean tree) —
+ * OR (FLUX-1214) whose branch never picked up a single commit, regardless of status
+ * (see {@link isWorktreeReclaimableForSweep}). Runs on the engine's reconcile interval
+ * so a Ready ticket's slot is freed shortly after its session ends — well before the
+ * pool can exhaust — without a per-adapter exit hook. `reclaimWorktrees` never
+ * discards real work (it removes only genuinely clean trees). Returns the reclaimed
+ * ticket ids. Best-effort; never throws.
  */
 export async function reclaimReadyWorktrees(workspaceRoot: string): Promise<string[]> {
-  return reclaimWorktrees(workspaceRoot, isWorktreeReclaimable).catch(() => [] as string[]);
+  return reclaimWorktrees(workspaceRoot, isWorktreeReclaimableForSweep).catch(() => [] as string[]);
 }
 
 /**

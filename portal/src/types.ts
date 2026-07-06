@@ -412,6 +412,9 @@ export interface Config {
   /** The orchestrator-chat sentinel (`BOARD_CONVERSATION_ID`). The portal keeps a sync constant
    *  in api.ts (needed at module-eval); this lets it be cross-checked against the engine. */
   boardConversationId?: string;
+  /** FLUX-1209: the Furnace Operator ("Smelter") chat sentinel (`FURNACE_CONVERSATION_ID`) — same
+   *  cross-check contract as `boardConversationId` above. */
+  furnaceConversationId?: string;
   /** FLUX-907 (split semantics): the frameworks EH can actually LAUNCH (the runtime adapter registry).
    *  Narrower than the skill installer's framework list — the UI badges install-only frameworks
    *  "Skills only". See `isRuntimeFramework()` in utils.ts. */

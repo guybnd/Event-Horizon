@@ -17,7 +17,7 @@ import {
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence, useMotionValue, useTransform, useReducedMotion } from 'framer-motion';
 import type { Notification } from '../api';
-import { markNotificationRead, markNotificationUnread, markAllNotificationsRead, dismissNotification, executeNotificationAction, stopTaskCliSession, BOARD_CONVERSATION_ID } from '../api';
+import { markNotificationRead, markNotificationUnread, markAllNotificationsRead, dismissNotification, executeNotificationAction, stopTaskCliSession, BOARD_CONVERSATION_ID, FURNACE_CONVERSATION_ID } from '../api';
 import { useAppSelector, useAppActions, useTaskById } from '../store/useAppSelector';
 import { useDockActions } from './DockProvider';
 import { relativeTime, normalizeStatus } from '../workflow';
@@ -117,7 +117,7 @@ const NotificationCard = memo(function NotificationCard({
   onUpdate: () => void;
 }) {
   const { openTaskFullView, openTaskModal } = useAppActions();
-  const { openTicket, openBoard } = useDockActions();
+  const { openTicket, openBoard, openChat } = useDockActions();
   const boardConfig = useAppSelector((s) => s.config);
   const reduce = useReducedMotion();
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -127,7 +127,7 @@ const NotificationCard = memo(function NotificationCard({
   // re-renders only when its own task ref changes — not on every mutation of the whole tasks array
   // (which fired several times a second on any live cliSession tick and defeated this card's memo).
   const task = useTaskById(
-    notification.ticketId && notification.ticketId !== BOARD_CONVERSATION_ID
+    notification.ticketId && notification.ticketId !== BOARD_CONVERSATION_ID && notification.ticketId !== FURNACE_CONVERSATION_ID
       ? notification.ticketId
       : undefined,
   );
@@ -164,12 +164,19 @@ const NotificationCard = memo(function NotificationCard({
   const handleOpen = useCallback(() => {
     if (draggedRef.current) return; // a swipe just ended — don't also open the ticket
     if (!notification.ticketId) return;
-    // FLUX-810: the orchestrator-reply notification has no task entry (the board isn't a ticket),
-    // so the `useTaskById` lookup above resolves to undefined. Special-case it to open the chat.
+    // FLUX-810/FLUX-1209: a reply notification from a virtual conversation (board orchestrator or
+    // Smelter's Furnace chat) has no task entry — the `useTaskById` lookup above resolves to
+    // undefined for both. Special-case them to open their own chat instead of falling through.
     if (notification.ticketId === BOARD_CONVERSATION_ID) {
       void markNotificationRead(notification.id).then(onUpdate);
       onClose();
       openBoard();
+      return;
+    }
+    if (notification.ticketId === FURNACE_CONVERSATION_ID) {
+      void markNotificationRead(notification.id).then(onUpdate);
+      onClose();
+      openChat(notification.ticketId);
       return;
     }
     if (!task) return;
@@ -180,7 +187,7 @@ const NotificationCard = memo(function NotificationCard({
     if (mode === 'full') openTaskFullView(task);
     else if (mode === 'popup') openTaskModal(task);
     else openTicket(task.id);
-  }, [notification, task, onClose, onUpdate, openTaskFullView, openTaskModal, openTicket, openBoard, boardConfig]);
+  }, [notification, task, onClose, onUpdate, openTaskFullView, openTaskModal, openTicket, openBoard, openChat, boardConfig]);
 
   const handleAction = useCallback(async (e: React.MouseEvent, actionId: string) => {
     e.stopPropagation();

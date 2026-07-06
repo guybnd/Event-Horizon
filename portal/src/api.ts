@@ -490,6 +490,10 @@ export async function fetchConfig(): Promise<Config> {
   if (import.meta.env.DEV && config.boardConversationId && config.boardConversationId !== BOARD_CONVERSATION_ID) {
     console.warn(`[config] boardConversationId drift: engine='${config.boardConversationId}' portal='${BOARD_CONVERSATION_ID}' — update portal/src/api.ts to match engine/src/agents/board.ts.`);
   }
+  // FLUX-1209: same drift check for the Furnace-chat sentinel.
+  if (import.meta.env.DEV && config.furnaceConversationId && config.furnaceConversationId !== FURNACE_CONVERSATION_ID) {
+    console.warn(`[config] furnaceConversationId drift: engine='${config.furnaceConversationId}' portal='${FURNACE_CONVERSATION_ID}' — update portal/src/api.ts to match engine/src/agents/board.ts.`);
+  }
   return config;
 }
 
@@ -1006,6 +1010,13 @@ export async function fetchTaskCliSessions(taskId: string): Promise<CliSessionSu
  *  engine/src/agents/board.ts (`BOARD_CONVERSATION_ID`) and is served on /api/config as
  *  `boardConversationId`; `fetchConfig()` cross-checks the two in dev so drift can't go unnoticed. */
 export const BOARD_CONVERSATION_ID = '__board__';
+
+/** FLUX-1209: reserved conversation id for the Furnace Operator ("Smelter") chat — its own
+ *  non-ticket-scoped conversation, distinct from the board orchestrator's. Same sync-constant
+ *  contract as {@link BOARD_CONVERSATION_ID}: mirrors engine/src/agents/board.ts
+ *  (`FURNACE_CONVERSATION_ID`), served on /api/config as `furnaceConversationId`, cross-checked
+ *  in dev by `fetchConfig()` above. */
+export const FURNACE_CONVERSATION_ID = '__furnace__';
 
 /** FLUX-674: an image attached to a user chat turn (paste / drop / file picker). */
 export interface ChatAttachment {

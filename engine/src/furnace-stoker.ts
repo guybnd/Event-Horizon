@@ -39,6 +39,7 @@ import {
   ensureFurnaceLoaded,
   freeSlots,
   setObservedWorktrees,
+  globalSlotsInUse,
   FURNACE_SLOT_CAP,
 } from './furnace-store.js';
 import {
@@ -431,6 +432,15 @@ function isBoardSuccessStatus(status: string | undefined): boolean {
   return status !== undefined && boardSuccessStatuses().includes(status.toLowerCase());
 }
 
+// FLUX-1210: narrower than `isBoardSuccessStatus` — only `Done`/`Released` count as actually merged.
+// Deliberately excludes `readyForMergeStatus` (default `Ready`): that status is exactly what `pr-open`
+// already represents (still open, awaiting merge), not a merge.
+function isBoardMergedStatus(status: string | undefined): boolean {
+  if (status === undefined) return false;
+  const s = status.toLowerCase();
+  return s === 'done' || s === 'released';
+}
+
 /**
  * FLUX-1066 pure core (M1): is a HUMAN driving this ticket? True when a genuinely LIVE session
  * (`pending`/`running` — NOT a stalled `waiting-input` stub) exists on the ticket whose id the Furnace is
@@ -554,6 +564,8 @@ export interface ReconcileChange {
   prUrl?: string;
   /** Drop the Furnace-raised `require-input` board flag as part of applying this change. */
   dropFlag?: boolean;
+  /** FLUX-1210: a `pr-open` ticket was detected as already merged — stamp `mergedAt`. */
+  markMerged?: boolean;
 }
 
 /**
@@ -565,12 +577,15 @@ export interface ReconcileChange {
  */
 export function decideReconcile(
   ticket: BatchTicket,
-  gt: { takenOver: boolean; boardSuccess: boolean; prUrl?: string },
+  gt: { takenOver: boolean; boardSuccess: boolean; boardMerged?: boolean; prUrl?: string },
 ): ReconcileChange | null {
   if (gt.boardSuccess && ticket.state !== 'pr-open' && ticket.state !== 'skipped') {
     const c: ReconcileChange = { ticketId: ticket.ticketId, reflectPrOpen: true, dropFlag: true };
     if (gt.prUrl !== undefined) c.prUrl = gt.prUrl;
     return c;
+  }
+  if (ticket.state === 'pr-open' && !ticket.mergedAt && gt.boardMerged) {
+    return { ticketId: ticket.ticketId, markMerged: true };
   }
   if (!isHumanOwned(ticket) && gt.takenOver) {
     return { ticketId: ticket.ticketId, owner: 'human', dropFlag: true };
@@ -591,6 +606,7 @@ export async function reconcileBatch(batchId: string): Promise<void> {
     const change = decideReconcile(ticket, {
       takenOver: debouncedTakeover(ticket.ticketId, detectHumanTakeover(ticket)),
       boardSuccess: isBoardSuccessStatus(task?.status),
+      boardMerged: isBoardMergedStatus(task?.status),
       ...(prUrl !== undefined ? { prUrl } : {}),
     });
     if (change) changes.push(change);
@@ -616,13 +632,15 @@ export async function reconcileBatch(batchId: string): Promise<void> {
         // FLUX-1090: settle it exactly like an EXPLICIT takeover (takeoverTicket) — minus stopping the
         // session, which here is the human's own.
         settleAsHumanOwned(t);
+      } else if (c.markMerged) {
+        t.mergedAt = nowIso();
       }
       // B1: both a reflected success AND an auto-detected takeover clear the board flag — a human-owned
       // ticket must never be left carrying a require-input flag it can't dismiss.
       if (c.dropFlag) flaggedForDrop.push(c.ticketId);
     }
     // A terminal batch's report lists tickets by state — regenerate it so a reflected ticket moves out
-    // of `parked`/`failed` and into `prsOpened`.
+    // of `parked`/`failed` and into `prsOpened`, or a merged one moves from `prsOpened` into `merged`.
     if (isBatchTerminal(b.status)) b.report = assembleBurnReport(b, nowIso());
   });
   for (const ticketId of flaggedForDrop) await clearFurnaceFlag(ticketId);
@@ -879,18 +897,31 @@ async function spawnOrCount(
 }
 
 /** Add or update a PR entry on the batch (dedup: sequential by branch, parallel by ticketId). */
-function upsertBatchPr(batch: FurnaceBatch, pr: { url?: string; branch: string; ticketId?: string; reviewState?: BatchPrReviewState }): void {
+export function upsertBatchPr(batch: FurnaceBatch, pr: { url?: string; branch: string; ticketId?: string; reviewState?: BatchPrReviewState }): void {
   if (!pr.url) return;
   const key = batch.kind === 'sequential' ? (p: BatchPr) => p.branch === pr.branch : (p: BatchPr) => p.ticketId === pr.ticketId;
   const existing = batch.prs.find(key);
   if (existing) {
     existing.url = pr.url;
     existing.branch = pr.branch;
-    if (pr.ticketId) existing.ticketId = pr.ticketId;
+    if (pr.ticketId) {
+      // FLUX-1223: accumulate — a sequential batch's PR entry is deduped by branch, so this same
+      // `existing` gets re-hit once per ticket stacked on the shared branch. Track every one of
+      // them (`ticketIds`), not just whichever ticket happened to land most recently (`ticketId`,
+      // kept for back-compat / the "which ticket to re-implement" pointer on changes-requested).
+      const priorIds = existing.ticketIds && existing.ticketIds.length > 0
+        ? existing.ticketIds
+        : existing.ticketId ? [existing.ticketId] : [];
+      existing.ticketIds = priorIds.includes(pr.ticketId) ? priorIds : [...priorIds, pr.ticketId];
+      existing.ticketId = pr.ticketId;
+    }
     if (pr.reviewState) existing.reviewState = pr.reviewState;
   } else {
     const entry: BatchPr = { url: pr.url, branch: pr.branch, reviewState: pr.reviewState ?? 'pending' };
-    if (pr.ticketId) entry.ticketId = pr.ticketId;
+    if (pr.ticketId) {
+      entry.ticketId = pr.ticketId;
+      entry.ticketIds = [pr.ticketId];
+    }
     batch.prs.push(entry);
   }
 }
@@ -1489,6 +1520,53 @@ export async function describeSlotHolders(workspaceRoot: string): Promise<Furnac
   return holders;
 }
 
+// FLUX-1217: edge-triggered latch for the slot-exhaustion health signal below — flips true the moment the
+// bad state is first observed and back to false on recovery, so a long-lived leak logs/notifies once per
+// incident instead of every 5s stoke tick.
+let slotExhaustionNotified = false;
+
+/** Test-only: reset the FLUX-1217 edge-triggered latch between cases. */
+export function __resetSlotHealthLatchForTests(): void {
+  slotExhaustionNotified = false;
+}
+
+/**
+ * Surface a health signal when the worktree-slot pool is maxed out while ZERO batches are actually
+ * burning (FLUX-1217). A batch only reserves slots while `status: 'burning'` (`furnaceReservedTicketIds`),
+ * so a healthy Furnace never shows this combination — it only arises from a leak (e.g. FLUX-1214's
+ * grooming-session worktrees) holding worktrees the Furnace itself isn't accounting for. Previously this
+ * took a manual `furnace_get` + `git worktree list` to notice; now it fires a `log.warn` plus a portal
+ * notification naming which tickets/worktrees are holding the slots (reusing `describeSlotHolders`'s
+ * naming, same as the FLUX-1157 `no_slots` refusal). Advisory only — never blocks or halts anything.
+ */
+export async function checkFurnaceSlotHealth(): Promise<void> {
+  const used = globalSlotsInUse();
+  const exhausted = getBurningBatches().length === 0 && used >= FURNACE_SLOT_CAP;
+  if (!exhausted) {
+    slotExhaustionNotified = false;
+    return;
+  }
+  if (slotExhaustionNotified) return;
+  slotExhaustionNotified = true;
+
+  let holders: FurnaceSlotHolder[] = [];
+  try {
+    holders = await describeSlotHolders(requireWorkspaceRoot());
+  } catch {
+    /* best-effort — still warn even if we can't name the holders */
+  }
+  const holderList = holders.length
+    ? holders.map((h) => `${h.ticketId} (${h.reason})`).join(', ')
+    : 'none observed — check `git worktree list` directly';
+  const message = `${used}/${FURNACE_SLOT_CAP} worktree slots in use but no batch is burning. Holding: ${holderList}`;
+  log.warn(`[furnace] slot pool exhausted with nothing burning — ${message}`);
+  try {
+    addNotification({ type: 'error', title: 'Furnace worktree slots exhausted — nothing is burning', message, actions: [] });
+  } catch (e: unknown) {
+    log.warn(`[furnace] slot-health notification failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 // ── Tick orchestration ────────────────────────────────────────────────────────
 
 const ticking = new Set<string>();
@@ -1571,6 +1649,9 @@ async function driveBurningBatches(): Promise<void> {
     if (isBatchTerminal(batch.status)) await reconcileBatch(batch.id);
   }
   await checkTriggers();
+  // FLUX-1217: run last, after batch state has settled for this cycle — checks the freshest "is anything
+  // actually burning" view rather than one that might flip within this same tick.
+  await checkFurnaceSlotHealth().catch(() => {});
 }
 
 // ── Trigger watcher ─────────────────────────────────────────────────────────────

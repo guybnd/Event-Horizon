@@ -41,6 +41,7 @@ import {
   mirrorReviewVerdictToPr,
   lastCommentMatchesVerdictMarker,
   findSessionOutcome,
+  upsertBatchPr,
 } from './furnace-stoker.js';
 
 // FLUX-1057/FLUX-1049: mock the real GitHub call so verdict-gating tests never shell out to `gh`.
@@ -404,6 +405,18 @@ describe('queue helpers + report', () => {
     expect(rep.processed).toBe(3);
     expect(rep.durationMs).toBe(30 * 60 * 1000);
   });
+  it('FLUX-1210: assembleBurnReport splits an already-merged pr-open ticket out of prsOpened', () => {
+    const b = mkBatch({
+      tickets: [
+        mkTicket({ ticketId: 'A', state: 'pr-open', prUrl: 'http://pr/1' }), // still awaiting merge
+        mkTicket({ ticketId: 'B', state: 'pr-open', prUrl: 'http://pr/2', mergedAt: '2026-07-02T00:10:00.000Z' }),
+      ],
+    });
+    const rep = assembleBurnReport(b, '2026-07-02T00:30:00.000Z');
+    expect(rep.prsOpened.map((l) => l.ticketId)).toEqual(['A']);
+    expect(rep.merged.map((l) => l.ticketId)).toEqual(['B']);
+    expect(rep.nextActions).toEqual(['Review 1 open PR(s) and merge the good ones.']);
+  });
 });
 
 // FLUX-1066 (M5): the state-transition cores behind the reconciling controller — B1 (flag drop on
@@ -458,6 +471,25 @@ describe('FLUX-1066 — decideReconcile (B1: takeover + board-success both drop 
   });
   it('nothing changed → null', () => {
     expect(decideReconcile(mkTicket({ state: 'parked' }), { takenOver: false, boardSuccess: false })).toBeNull();
+  });
+});
+
+describe('FLUX-1210 — decideReconcile detects a pr-open ticket merged outside the Furnace', () => {
+  it('flags markMerged once the board flips to Done/Released', () => {
+    expect(decideReconcile(mkTicket({ state: 'pr-open' }), { takenOver: false, boardSuccess: true, boardMerged: true }))
+      .toEqual({ ticketId: 'FLUX-1', markMerged: true });
+  });
+  it('a pr-open ticket still at Ready (board-success but not merged) is left alone', () => {
+    expect(decideReconcile(mkTicket({ state: 'pr-open' }), { takenOver: false, boardSuccess: true, boardMerged: false }))
+      .toBeNull();
+  });
+  it('does not re-flag a ticket already marked merged', () => {
+    expect(decideReconcile(mkTicket({ state: 'pr-open', mergedAt: '2026-07-02T00:00:00.000Z' }), { takenOver: false, boardSuccess: true, boardMerged: true }))
+      .toBeNull();
+  });
+  it('a non-pr-open ticket is unaffected by boardMerged (reflectPrOpen wins)', () => {
+    expect(decideReconcile(mkTicket({ state: 'parked' }), { takenOver: false, boardSuccess: true, boardMerged: true, prUrl: 'http://pr/1' }))
+      .toEqual({ ticketId: 'FLUX-1', reflectPrOpen: true, prUrl: 'http://pr/1', dropFlag: true });
   });
 });
 
@@ -636,5 +668,41 @@ describe('pickPrReview / mirrorReviewVerdictToPr (verdict-gating)', () => {
     await mirrorReviewVerdictToPr(mkBatch({ kind: 'parallel' }), { type: 'pr-open', prUrl: 'http://pr/1' }, t.ticketId, t, 'approved', 'http://pr/1');
     expect(postPrReview).toHaveBeenCalledTimes(1);
     expect(postPrReview).toHaveBeenCalledWith('http://pr/1', 'approved', expect.any(String), { commentOnly: false });
+  });
+});
+
+describe('FLUX-1223 — upsertBatchPr accumulates every ticket that lands on a sequential shared PR', () => {
+  it('a fresh PR entry seeds both ticketId and ticketIds', () => {
+    const b = mkBatch({ kind: 'sequential' });
+    upsertBatchPr(b, { url: 'http://pr/1', branch: 'flux/seq', ticketId: 'FLUX-1', reviewState: 'approved' });
+    expect(b.prs).toEqual([{ url: 'http://pr/1', branch: 'flux/seq', ticketId: 'FLUX-1', ticketIds: ['FLUX-1'], reviewState: 'approved' }]);
+  });
+
+  it('a second ticket on the SAME branch accumulates into ticketIds instead of overwriting it', () => {
+    const b = mkBatch({ kind: 'sequential' });
+    upsertBatchPr(b, { url: 'http://pr/1', branch: 'flux/seq', ticketId: 'FLUX-1', reviewState: 'approved' });
+    upsertBatchPr(b, { url: 'http://pr/1', branch: 'flux/seq', ticketId: 'FLUX-2', reviewState: 'approved' });
+    expect(b.prs).toHaveLength(1);
+    expect(b.prs[0]!.ticketIds).toEqual(['FLUX-1', 'FLUX-2']);
+    // ticketId still tracks the most-recent ticket to land — the "which one to re-implement" pointer.
+    expect(b.prs[0]!.ticketId).toBe('FLUX-2');
+  });
+
+  it('re-processing the same ticket again is idempotent (no duplicate entries in ticketIds)', () => {
+    const b = mkBatch({ kind: 'sequential' });
+    upsertBatchPr(b, { url: 'http://pr/1', branch: 'flux/seq', ticketId: 'FLUX-1', reviewState: 'approved' });
+    upsertBatchPr(b, { url: 'http://pr/1', branch: 'flux/seq', ticketId: 'FLUX-2', reviewState: 'approved' });
+    upsertBatchPr(b, { url: 'http://pr/1', branch: 'flux/seq', ticketId: 'FLUX-2', reviewState: 'changes_requested' });
+    expect(b.prs).toHaveLength(1);
+    expect(b.prs[0]!.ticketIds).toEqual(['FLUX-1', 'FLUX-2']);
+    expect(b.prs[0]!.reviewState).toBe('changes_requested');
+  });
+
+  it('a parallel batch keeps one PR per ticket (dedup by ticketId, not branch)', () => {
+    const b = mkBatch({ kind: 'parallel' });
+    upsertBatchPr(b, { url: 'http://pr/1', branch: 'flux/a', ticketId: 'FLUX-1', reviewState: 'approved' });
+    upsertBatchPr(b, { url: 'http://pr/2', branch: 'flux/b', ticketId: 'FLUX-2', reviewState: 'approved' });
+    expect(b.prs).toHaveLength(2);
+    expect(b.prs.map((p) => p.ticketIds)).toEqual([['FLUX-1'], ['FLUX-2']]);
   });
 });
