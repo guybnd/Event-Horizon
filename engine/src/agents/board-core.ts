@@ -17,9 +17,10 @@ import type { CliSessionRecord, SendInputOptions } from './types.js';
 import { checkBinaryInstalled, appendSessionOutput, flushSessionOutput, resolveAttachmentAbsPaths, attachmentReadInstruction } from './shared.js';
 import { BOARD_CONVERSATION_ID, type BoardAdapter, type BoardSpec } from './board.js';
 
-export function buildBoardPrompt(firstMessage: string, priorContext?: string): string {
-  const key = configCache.projects?.[0] || 'PROJECT';
-  const digest = buildBoardDigest();
+// FLUX-1175: the default identity block, extracted to a function of the project key so a
+// persona-primed board turn (e.g. the Smelter, launched from the Furnace drawer) can swap in
+// its own resolved prompt instead (see the `identity` param on buildBoardPrompt below).
+function defaultBoardIdentity(key: string): string {
   return [
     'You are the Event Horizon board orchestrator — a persistent chat for the whole board, not tied to any single ticket. You are powerful: you have the full "event-horizon" MCP toolset (list/get/create/update tickets, change_status, branches, comments, …) plus file reading, editing, bash, and subagents. Use whatever the task genuinely calls for.',
     '',
@@ -31,6 +32,14 @@ export function buildBoardPrompt(firstMessage: string, priorContext?: string): s
     'To ask the user a structured question, call the ask_user_question tool — it shows an interactive picker in this chat and returns their choice so you continue the same turn. Never assume when a quick question would resolve ambiguity; ask.',
     `When you reference a ticket in prose, always write its full id (e.g. \`${key}-123\`) — every single time, including repeat mentions, shorthand lists, and x/y comparisons. Never abbreviate to a bare number (a bare \`123\` cannot render as a chip). The full id renders as an interactive chip; on first mention spell out the title too — \`${key}-123 (short title)\` — to keep the message readable before the reader hovers.`,
     'You run at the workspace root, with the whole board in scope.',
+  ].join('\n');
+}
+
+export function buildBoardPrompt(firstMessage: string, priorContext?: string, identity?: string): string {
+  const key = configCache.projects?.[0] || 'PROJECT';
+  const digest = buildBoardDigest();
+  return [
+    identity ?? defaultBoardIdentity(key),
     '',
     // FLUX-838: cold-resume re-prime — recovered prior dialogue (+ working-tree preamble) after an
     // engine restart wiped the in-memory session. Ordered before the live digest, mirroring the
@@ -118,7 +127,7 @@ async function startBoardSession(spec: BoardSpec, session: CliSessionRecord, fir
   // for the transcript so the bubble re-renders the thumbnail on reload / cold resume.
   const attachments = opts?.attachments ?? [];
   const attachmentAbsPaths = resolveAttachmentAbsPaths(attachments);
-  const prompt = `${buildBoardPrompt(firstMessage, priorContext)}${attachmentReadInstruction(attachmentAbsPaths)}`;
+  const prompt = `${buildBoardPrompt(firstMessage, priorContext, opts?.personaPrompt)}${attachmentReadInstruction(attachmentAbsPaths)}`;
   const args = await spec.buildArgs({ session, prompt, workspaceRoot, executionRoot: workspaceRoot, isResume: false });
   session.status = 'running';
   session.args = args;

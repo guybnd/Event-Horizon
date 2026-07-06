@@ -17,7 +17,7 @@ import { buildGroupDocsScopeArg } from '../group-member-worktree.js';
 import { appendTranscriptLine } from '../transcript.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure } from './shared.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, prependEditGateNote } from './shared.js';
 
 const TOOL_ACTIVITY_MAP: Record<string, string> = {
   Bash: 'Running command',
@@ -523,12 +523,20 @@ export async function startCliSession(session: CliSessionRecord, task: GeminiTas
     }
   }
 
-  const taskPhase = groomingStatuses.includes(task.status) ? 'grooming'
+  // FLUX-1193: prefer the session's own launch phase — set by the caller (routes/cli-session.ts
+  // passes 'chat' for ticket chat, per useChatSession.ts) — over a status-derived guess, mirroring
+  // claude-code.ts's `phase: session.phase`. Without this, a chat session's task.status (e.g. 'Todo')
+  // always fell through to the 'implementation' branch below: buildInitialPrompt's `case 'chat':` —
+  // the ONLY branch that renders the FLUX-926/1123 edit-gate note, and the only one with the
+  // free-form "Conversational session" instructions — was unreachable for Copilot/Gemini chat.
+  const taskPhase = session.phase ?? (groomingStatuses.includes(task.status) ? 'grooming'
     : (task.status === 'In Progress' || task.status === 'Todo') ? 'implementation'
     : task.status === (configCache?.readyForMergeStatus || 'Ready') ? 'review'
-    : undefined;
+    : undefined);
 
-  const initialPrompt = buildInitialPrompt(task, appendPrompt, { phase: taskPhase, framework: 'gemini' });
+  // FLUX-1123: Gemini has no --disallowed-tools equivalent (see FILE_MUTATION_TOOLS's comment in
+  // claude-code.ts), so this can only be an advisory note in the prompt, not a real block.
+  const initialPrompt = buildInitialPrompt(task, appendPrompt, { phase: taskPhase, framework: 'gemini', editsGated: isChatEditGated(session, task) });
 
   const geminiArgs = [
     ...(selectedModel ? ['--model', selectedModel] : []),
@@ -841,10 +849,13 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   });
 
   const safeMessage = message.replace(/\0/g, '');
+  // FLUX-926 / FLUX-1123: same advisory "why is this blocked" note as the initial spawn,
+  // recomputed per resumed turn (Gemini has no real block — see the editsGated comment above).
+  const promptForCli = prependEditGateNote(session, tasksCache[id] as GeminiTask, 'gemini', safeMessage);
   const geminiScopeArgs = buildGeminiScopeArgs(workspaceRoot);
   const resumeArgs = session.resumeSessionId
-    ? ['-p', safeMessage, '--resume', session.resumeSessionId, '--output-format', 'stream-json', '--screen-reader', '--yolo', '--skip-trust', ...geminiScopeArgs]
-    : ['-p', safeMessage, '--output-format', 'stream-json', '--screen-reader', '--yolo', '--skip-trust', ...geminiScopeArgs];
+    ? ['-p', promptForCli, '--resume', session.resumeSessionId, '--output-format', 'stream-json', '--screen-reader', '--yolo', '--skip-trust', ...geminiScopeArgs]
+    : ['-p', promptForCli, '--output-format', 'stream-json', '--screen-reader', '--yolo', '--skip-trust', ...geminiScopeArgs];
 
   const replyProc = await spawnGemini(resumeArgs, executionRoot, id);
   session.proc = replyProc as ChildProcessWithoutNullStreams;

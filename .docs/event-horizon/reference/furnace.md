@@ -361,6 +361,41 @@ This replaces the earlier `max(reservations, observed)` (FLUX-1066 M3): the two 
 
 **The gauge is physical truth, not batch-state inference (FLUX-1157, replacing FLUX-1090).** FLUX-1090 tried to release a slot at batch finalize by *excluding* an observed worktree belonging to a ticket in a terminal (`done`/`parked`) batch from `globalSlotsInUse` — on the assumption that a finalized batch's worktree was reclaimed. Nothing guaranteed that: takeover semantics never delete the directory, a dirty tree (stray build artifacts) blocks reclaim, and a non-reclaimable ticket status leaves it on disk indefinitely. Observed in production: the gauge read `used: 0, free: 4` while `git worktree list` showed 4 live task worktrees (three with active sessions) — every batch that ignited into that "free" pool hard-failed at `createTaskWorktree`'s own independent cap within seconds. `globalSlotsInUse` now counts **every** observed worktree, full stop — no batch-state exemption. The real fix for FLUX-1090's problem is to actually **reclaim**, not discount: `igniteBatch`/`resumeBatch` run `reclaimReadyWorktrees` (the same Ready/terminal + no-live-session + clean-tree predicate the Ready-worktree sweep uses, `pr-cleanup.ts`) immediately before reconciling the pool, so a genuinely stale worktree really frees its slot before the count/claim happens. One that can't be reclaimed (dirty tree, live session, non-reclaimable status) correctly keeps holding it — which is the physical truth the clamp needs. When a claim still fails `no_slots`, the response/MCP error names the current holders and why reclaim skipped each one (`describeSlotHolders`) — a `live-session` / `recent-activity` / `status` / dirty-tree reason per ticket — so the drawer's no-slot popup and the MCP error text tell the user which ticket to finish/abandon/take over instead of leaving them to guess.
 
+## The Smelter persona (FLUX-1175)
+
+**Furnace Operator ("Smelter")** is a phase-agnostic **lead** persona (`id: 'smelter'`, `phases: []`,
+`engine/src/orchestration-personas.ts`) that owns the Furnace end-to-end: it plans a burn (surveys the
+backlog for groomed/independent/furnace-safe candidates, checks `get_board_state` for live human sessions
+before igniting — the slot pool doesn't account for those, see FLUX-1067 above — then builds/tunes a batch
+with `furnace_build`/`furnace_update`) and troubleshoots a stalled one (reads `furnace_get` + a parked
+ticket's `get_session_log`, classifies the failure, repairs the plan, then `furnace_ticket action:"retry"`
+or a crisp `ask_user_question`). It is the counterpart to the Epic Decomposer persona (FLUX-1176), which
+recommends a batch shape but never calls a `furnace_*` tool itself — building and running the batch is the
+Smelter's job.
+
+**Authority mode.** `config.furnaceSettings.smelterMode` (`'drafting'` default | `'operator'`) is composed
+into the Smelter's resolved prompt at launch (`resolvePersonaPrompt`'s `SMELTER_MODE_CONTRACTS`, keyed by
+this setting rather than by launch phase — the phase-keyed `PHASE_CONTRACTS` mechanism, FLUX-1170, doesn't
+apply to `role: 'lead'` personas):
+- **Drafting** (manual) — full authority over `draft` batches (`furnace_build`/`furnace_update`), but any
+  real-execution call (`furnace_batch` ignite/stop/resume/discard, `furnace_ticket retry`) requires an
+  `ask_user_question` confirmation first.
+- **Operator** (autonomous) — once asked to manage a burn, full lifecycle authority with no per-action
+  confirmation; still raises a question for a genuinely ambiguous or destructive call outside the normal
+  burn lifecycle.
+
+**Drawer entry point.** The portal's Furnace drawer (`FurnaceDrawer.tsx`) has a **Chat with Smelter** button
++ a drafting/operator toggle. There is no ticket-independent, non-`__board__` conversation surface in the
+portal, so the chat rides on the existing board-orchestrator conversation (`BOARD_CONVERSATION_ID`) rather
+than a new sentinel: the button calls `startTaskCliSessionEx(BOARD_CONVERSATION_ID, { personaId: 'smelter', phase: 'chat', ... })`,
+and the engine's `__board__` branch of `POST /:id/cli-session/start` (`routes/cli-session.ts`) resolves the
+persona server-side and passes it as `SendInputOptions.personaPrompt` to `startBoardSession` — which
+threads it into `buildBoardPrompt`'s `identity` override (`board-core.ts`) in place of the default
+board-orchestrator identity block for that turn's opening message. Since the board is a single persistent
+conversation, starting a Smelter chat supersedes whatever board conversation was previously idle there
+(the same behavior a fresh Orchestrator chat already has) — a persona's identity is established once, on
+the opening turn, exactly like a per-ticket persona launch.
+
 ## Portal view (S6)
 
 `portal/src/components/FurnaceScreen.tsx` (route `/furnace`, `Flame` nav item, purple/violet tint) is the live view. It owns its own run state — an initial `GET /api/furnace` plus the `subscribeToEvent('furnace-updated' | 'furnace-deleted')` bus (the single shared EventSource in `AppContext`), with a 4s poll as a fallback — so **no `appStore` change** was needed. It shows the ignited-or-latest run as sectioned lanes: **Needs you** (parked/failed) → **PRs waiting** (pr-open, with PR links + an approved badge) → **Burning** (implementing/reviewing/reimplementing, phase + attempt) → **Magazine** (queued, with reorder/remove) → **Skipped**. A finished run renders its burn report (S7) as the resting state. Controls: Ignite / Pause / Resume / Stop (contextual to run status), a burn-rate slider (1..cap, `PUT` config), and per-charge reorder (up/down) + remove (`PUT` magazine). A cold Furnace shows a **Build a magazine** action (`POST /api/furnace/build`). Design follows the rev-3 mockup: professional, **no emoji** — a clean `Flame` mark, square colour-dot section headers, the dedicated `--eh-furnace-accent` (purple/violet #7c3aed) / Geist / stone tokens, and per-state pill colours.

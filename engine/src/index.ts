@@ -44,6 +44,7 @@ import { requestAnswer, resolveAnswer, listPendingQuestions } from './ask-questi
 import { isSafeStreamId } from './transcript.js';
 import { verifyConversation } from './session-binding.js';
 import { proposeBoardRebase, resolveBoardRebase, listPendingBoardRebases } from './board-rebase.js';
+import { buildTriageFragment } from './board-triage.js';
 import { shutdownSharedServers } from './shared-mcp-server.js';
 import { flushOpenPrompts } from './hitl-prompts.js';
 import { broadcastEvent } from './events.js';
@@ -260,6 +261,15 @@ app.get('/api/board/state', requireWorkspace, (_req, res) => {
     statusCounts[st] = (statusCounts[st] || 0) + 1;
   }
   res.json({ activeSessions, statusCounts });
+});
+
+// FLUX-966: on-demand board-health signals for the "Board Health" quick action — computed ONLY
+// when this fires (the dead-PR check shells out to `gh pr view` per Ready+branched ticket), never
+// folded into the always-on buildBoardDigest(). Portal bakes the returned fragment into the canned
+// prompt it sends to the board orchestrator.
+app.get('/api/board/triage-signals', requireWorkspace, async (_req, res) => {
+  const fragment = await buildTriageFragment();
+  res.json({ fragment });
 });
 
 // FLUX-833 (Phase 2): the `claude --resume` pointer for the live session on a conversation, if

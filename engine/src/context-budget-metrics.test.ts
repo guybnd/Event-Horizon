@@ -30,11 +30,11 @@ describe('computeLaunchPromptMetrics', () => {
 });
 
 describe('computeSkillModuleMetrics', () => {
-  it('reports all five skill modules', async () => {
+  it('reports all six skill modules', async () => {
     const m = await computeSkillModuleMetrics();
-    expect(m.modules.length).toBe(5);
+    expect(m.modules.length).toBe(6);
     expect(m.modules.map((x) => x.name).sort()).toEqual(
-      ['grooming', 'implementation', 'mapping', 'orchestrator', 'release'].sort(),
+      ['grooming', 'implementation', 'mapping', 'orchestrator', 'release', 'review'].sort(),
     );
   });
 });

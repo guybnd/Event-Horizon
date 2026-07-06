@@ -102,11 +102,17 @@ export function CardSessionRow({ task, c }: { task: Task; c: TaskCardController 
 
   // S10 (epic FLUX-996): Retry re-fires the same one-click phase launch the card's primary action
   // button already uses (`tryLaunchPhaseDefault`) — no bespoke "resume a crashed spawn" endpoint,
-  // just the existing dispatch path a user would otherwise reach for manually.
+  // just the existing dispatch path a user would otherwise reach for manually. Mirrors
+  // useTicketActions' `launchDefault` fallback: if no phase-default persona resolves (e.g. it was
+  // unconfigured/removed since the original launch), fall back to the full launcher instead of
+  // silently no-oping.
   const retrying = c.ticketActions.busyKey === 'retry-operation';
   const handleRetry = (e: React.MouseEvent) => {
     e.stopPropagation();
-    void c.ticketActions.fire('retry-operation', async () => { await c.ticketActions.tryLaunchPhaseDefault(c.ticketActions.cardPhase); });
+    void c.ticketActions.fire('retry-operation', async () => {
+      const launched = await c.ticketActions.tryLaunchPhaseDefault(c.ticketActions.cardPhase);
+      if (!launched) c.ticketActions.openLauncher(c.ticketActions.cardPhase, c.ticketActions.singleDefaultId);
+    });
   };
 
   return (

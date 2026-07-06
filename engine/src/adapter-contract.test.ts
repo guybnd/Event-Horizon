@@ -1,10 +1,10 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import { execSync, execFileSync, type ChildProcessWithoutNullStreams } from 'child_process';
 import { EventEmitter } from 'events';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { cleanChildEnv } from './agents/shared.js';
+import { cleanChildEnv, chatEditGateNote } from './agents/shared.js';
 import { verifyConversation } from './session-binding.js';
 import { CLI_CAPABILITIES, type CliFramework, type CliCapabilities, type CliSessionRecord } from './agents/types.js';
 import { BOARD_CONVERSATION_ID } from './agents/board.js';
@@ -53,6 +53,43 @@ vi.mock('./notifications.js', () => ({
 vi.mock('./transcript.js', () => ({
   appendTranscriptLine: vi.fn(),
   appendTranscriptEvent: vi.fn(),
+}));
+
+// ─── Extra mocks for the FLUX-1193 wiring-regression block below — these are only exercised by a
+// real startCliSession/sendCliSessionInput run (the A.1 fixtures above only call
+// attachStdoutProcessing, never these collaborators). Each is a real filesystem/git/HTTP-touching
+// module in the non-test engine; stubbed here so a real adapter spawn stays hermetic. `child_process`
+// keeps execSync/execFileSync/exec/execFile REAL via importOriginal (the per-adapter binary
+// resolution above and copilot.ts/gemini.ts's own binary-path probing still exercise real, harmless
+// `where`/`npm` lookups) and only replaces `spawn` with a recording fake.
+const { mockSpawn } = vi.hoisted(() => {
+  return {
+    mockSpawn: vi.fn((_command: string, _args?: readonly string[], _options?: unknown) => {
+      const proc = new EventEmitter() as unknown as ChildProcessWithoutNullStreams;
+      Object.assign(proc, { stdout: new EventEmitter(), stderr: new EventEmitter(), pid: 4242, kill: () => true });
+      return proc;
+    }),
+  };
+});
+vi.mock('child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('child_process')>();
+  return { ...actual, spawn: mockSpawn };
+});
+vi.mock('./task-worktree.js', () => ({
+  resolveTaskExecutionRoot: vi.fn().mockResolvedValue('/tmp/test-repo'),
+  resolveResumeExecutionRoot: vi.fn().mockResolvedValue('/tmp/test-repo'),
+  assertIsolatedSpawnRoot: vi.fn(),
+}));
+vi.mock('./group.js', () => ({ buildMemberScopeArgs: vi.fn(() => []) }));
+vi.mock('./group-member-worktree.js', () => ({ buildGroupDocsScopeArg: vi.fn(() => []) }));
+vi.mock('./workflow-installer.js', () => ({
+  buildMcpServerEntry: vi.fn(() => ({ type: 'http', url: 'http://127.0.0.1:0/mcp' })),
+}));
+vi.mock('./parked-ticket.js', () => ({
+  captureTurnStartState: vi.fn(),
+  clearNeedsActionIfSet: vi.fn().mockResolvedValue(undefined),
+  flagIfParked: vi.fn().mockResolvedValue(undefined),
+  raiseNeedsAction: vi.fn(),
 }));
 
 /** A bare EventEmitter stands in for the spawned CLI's ChildProcess — `attachStdoutProcessing`
@@ -133,10 +170,12 @@ function feedLines(proc: ChildProcessWithoutNullStreams, ...events: unknown[]) {
 
 const FRAMEWORKS: CliFramework[] = ['claude', 'copilot', 'gemini'];
 
-// The seven optional per-framework behaviors added in FLUX-901 (audit B.1–B.7).
+// The seven optional per-framework behaviors added in FLUX-901 (audit B.1–B.7), plus
+// chatEditGateEnforced (FLUX-1123: whether the FLUX-926 chat file-edit gate is a real block vs an
+// advisory prompt note).
 const BEHAVIOR_FLAGS = [
   'persistentChat', 'selfPause', 'partialDeltas', 'permissionGating',
-  'nativeAskBlocked', 'spawnTimeMcpConfig', 'imageAttachments',
+  'nativeAskBlocked', 'spawnTimeMcpConfig', 'imageAttachments', 'chatEditGateEnforced',
 ] as const satisfies readonly (keyof CliCapabilities)[];
 
 // ─── A.6: cleanChildEnv sets the HITL-routing env for EVERY framework (FLUX-900 blocking fix) ───
@@ -189,7 +228,7 @@ describe('CLI_CAPABILITIES contract (FLUX-901, audit B.1)', () => {
     }
   });
 
-  it('five of the seven B.1–B.7 optional behaviors are Claude-only (verified against current master)', () => {
+  it('six of the eight B.1–B.7 (+chatEditGateEnforced) optional behaviors are Claude-only (verified against current master)', () => {
     // spawnTimeMcpConfig and selfPause are excluded here — each has a dedicated test below.
     // FLUX-984: Copilot injects MCP config too (different mechanism than Claude's --mcp-config).
     // FLUX-985: copilot/gemini now honor a Require-Input pause as waiting-input, so selfPause is
@@ -200,6 +239,12 @@ describe('CLI_CAPABILITIES contract (FLUX-901, audit B.1)', () => {
       expect(CLI_CAPABILITIES.copilot[flag], `copilot.${flag}`).toBe(false);
       expect(CLI_CAPABILITIES.gemini[flag], `gemini.${flag}`).toBe(false);
     }
+  });
+
+  it('chatEditGateEnforced: only Claude can actually block chat file-edits — neither CLI has a --disallowed-tools equivalent (FLUX-1123)', () => {
+    expect(CLI_CAPABILITIES.claude.chatEditGateEnforced).toBe(true);
+    expect(CLI_CAPABILITIES.copilot.chatEditGateEnforced).toBe(false);
+    expect(CLI_CAPABILITIES.gemini.chatEditGateEnforced).toBe(false);
   });
 
   it('selfPause: all three now keep a Require-Input pause resumable (FLUX-985)', () => {
@@ -412,4 +457,105 @@ describe('B.8 __board__ orchestrator contract (FLUX-904 — lifted into a BoardA
   it('getBoardAdapter() is a stable resolver the route layer can call per-request', () => {
     expect(getBoardAdapter()).toBe(getBoardAdapter());
   });
+});
+
+// ─── FLUX-1193: wiring-level regression — the FLUX-1123 chat edit-gate note reaches the REAL
+// spawn -p arg ───
+// FLUX-1123 added chatEditGateNote/prependEditGateNote and wired them into copilot.ts/gemini.ts's
+// startCliSession (via buildInitialPrompt's editsGated option) and sendCliSessionInput (via
+// prependEditGateNote). shared.test.ts and build-initial-prompt.test.ts already lock those HELPER
+// functions in isolation, but nothing spawned the actual adapters and asserted the note lands in
+// the real `-p` argument handed to the child process — a future refactor could silently drop the
+// one-line call site with nothing failing. This calls the real startCliSession/sendCliSessionInput
+// for copilot and gemini (mocks above stub out the git/filesystem/HTTP collaborators only) and reads
+// the `-p` value straight off the mocked `spawn()` call.
+describe('FLUX-1193: chat edit-gate note reaches the real spawn -p arg', () => {
+  // gemini's startCliSession/sendCliSessionInput pre-flight `checkBinaryInstalled('gemini')` for
+  // real; on a machine without the Gemini CLI (the CI norm — see the per-adapter spawn smoke tests
+  // above) that throws before the prompt is ever built. Spy it out for this block only — every OTHER
+  // shared.js helper (buildInitialPrompt, isChatEditGated, prependEditGateNote, chatEditGateNote,
+  // cleanChildEnv, attachStdoutProcessing) stays real; that real wiring is the entire point.
+  beforeAll(async () => {
+    const shared = await import('./agents/shared.js');
+    vi.spyOn(shared, 'checkBinaryInstalled').mockResolvedValue(undefined);
+  });
+  afterAll(() => {
+    vi.restoreAllMocks();
+  });
+
+  function fakeChatSession(taskId: string, framework: CliFramework): CliSessionRecord {
+    return {
+      id: 'sess-1',
+      taskId,
+      framework,
+      command: framework,
+      phase: 'chat',
+      skipPermissions: true,
+      label: framework === 'copilot' ? 'Copilot CLI' : 'Gemini CLI',
+      status: 'running',
+      sessionHistoryEntry: { sessionId: 'sess-1', progress: [] },
+      writeQueue: Promise.resolve(),
+      pendingAssistantText: '',
+      liveOutputBuffer: '',
+      outputBuffer: '',
+      cumulativeOutput: '',
+    } as unknown as CliSessionRecord;
+  }
+
+  /** Loads the two spawn-side entry points for a framework via a literal dynamic `import()` path
+   *  (not a template literal) — required to stay outside the adapter-boundary guard's
+   *  `adapter-deep-import` pattern, same technique the A.1 fixtures above already use. */
+  async function loadAdapter(framework: 'copilot' | 'gemini'): Promise<{
+    startCliSession: (session: CliSessionRecord, task: { id?: string; status?: string }, appendPrompt: string, effortOverrideRaw: string, workspaceRoot: string) => Promise<void>;
+    sendCliSessionInput: (session: CliSessionRecord, message: string, user: string, workspaceRoot: string) => Promise<void>;
+  }> {
+    return framework === 'copilot' ? import('./agents/copilot.js') : import('./agents/gemini.js');
+  }
+
+  /** Pulls the `-p` value out of a mocked spawn() call's args array, regardless of which
+   *  binary-resolution branch (node+entry / exe / cmd.exe shell fallback) fired. */
+  function promptArgFromLastSpawnCall(): string {
+    const call = mockSpawn.mock.calls[mockSpawn.mock.calls.length - 1];
+    expect(call, 'spawn() was never called').toBeDefined();
+    const args = call![1] as string[];
+    const idx = args.indexOf('-p');
+    expect(idx, `-p not found in spawn args: ${JSON.stringify(args)}`).toBeGreaterThanOrEqual(0);
+    return args[idx + 1]!;
+  }
+
+  for (const framework of ['copilot', 'gemini'] as const) {
+    it(`${framework}: initial spawn's -p arg carries the framework-appropriate gate note for a gated chat session`, async () => {
+      const { startCliSession } = await loadAdapter(framework);
+      const taskId = `FLUX-TEST-${framework}-initial`;
+      const task = { id: taskId, status: 'Todo' }; // chat + not In Progress → gated
+      const session = fakeChatSession(taskId, framework);
+
+      mockSpawn.mockClear();
+      await startCliSession(session, task, '', '', '/tmp/test-repo');
+      if (session.progressHeartbeat) clearInterval(session.progressHeartbeat);
+
+      expect(promptArgFromLastSpawnCall()).toContain(chatEditGateNote(framework));
+    });
+
+    it(`${framework}: a resumed turn's -p arg re-prepends the gate note (recomputed per turn, not just at spawn)`, async () => {
+      const { startCliSession, sendCliSessionInput } = await loadAdapter(framework);
+      const { tasksCache } = await import('./task-store.js');
+      const taskId = `FLUX-TEST-${framework}-resume`;
+      const task = { id: taskId, status: 'Todo' };
+      (tasksCache as Record<string, unknown>)[taskId] = task;
+      const session = fakeChatSession(taskId, framework);
+
+      mockSpawn.mockClear();
+      await startCliSession(session, task, '', '', '/tmp/test-repo');
+      if (session.progressHeartbeat) clearInterval(session.progressHeartbeat);
+
+      mockSpawn.mockClear();
+      await sendCliSessionInput(session, 'continue please', 'TestUser', '/tmp/test-repo');
+      if (session.progressHeartbeat) clearInterval(session.progressHeartbeat);
+
+      const prompt = promptArgFromLastSpawnCall();
+      expect(prompt).toContain(chatEditGateNote(framework));
+      expect(prompt).toContain('continue please');
+    });
+  }
 });

@@ -16,6 +16,7 @@ import { CardClusterPanel } from './task-card/CardClusterPanel';
 import { CardBranchRow } from './task-card/CardBranchRow';
 import { CardSessionRow } from './task-card/CardSessionRow';
 import { CardSubtaskProgress } from './task-card/CardSubtaskProgress';
+import { CardAcceptanceCriteria } from './task-card/CardAcceptanceCriteria';
 import { CardFooterRow } from './task-card/CardFooterRow';
 import { CardActionButtons } from './task-card/CardActionButtons';
 import { CardCommentPopover } from './task-card/CardCommentPopover';
@@ -254,6 +255,8 @@ export const TaskCardInner = memo(function TaskCardInner({
                 {/* The epic's subtask deck (the peeking card stack) renders BELOW this card at the
                     column level (FLUX-699): the epic card IS the deck's top card, not a container
                     for it. So nothing deck-related renders inside the card body here. */}
+
+                {!compact && <CardAcceptanceCriteria body={task.body} />}
 
                 {!compact && <CardFooterRow task={task} isOverlay={isOverlay} c={c} />}
                 {/* member cards in a deck don't carry their own Finish/Review (compact) — the

@@ -11,16 +11,16 @@ Scope: Interpret requirements, update frontmatter, and handle `.flux` metadata d
 
 # Event Horizon Agent — Grooming Skill
 
-Version: 2.9.0
+Version: 2.11.0
 
 ## When This Skill Applies
 
 Load this skill when a ticket's status is `Grooming` or `Require Input`.
 Refer to the orchestrator skill for the ticket model, APIs, and end-to-end checklist.
 
-## End-of-Turn Action Contract — CRITICAL (FLUX-651)
+## End-of-Turn Action Contract (FLUX-651/826)
 
-**When you finish grooming, you MUST end the turn on a board action — never finish the plan and just summarize it in chat.** Grooming complete → `change_status` to `Todo`. Implementation-critical choice unresolved → `change_status` to `Require Input` with the question + a proposed default. Leaving the ticket parked in `Grooming` with only a chat summary gets flagged **"Needs Action"** on the board and notifies the user. "It was only a discussion turn" is not an exception.
+Full contract lives in the orchestrator skill's "End-of-Turn Action Contract" section — read it there. For grooming specifically: complete → `change_status` to `Todo`; an implementation-critical choice unresolved → `change_status` to `Require Input` with the question + a proposed default. Never leave the ticket parked in `Grooming` with only a chat summary.
 
 ## Grooming Workflow
 
@@ -48,6 +48,8 @@ Borrowed from Builder.io's `agent-native` `/visual-plan` skill. Like the artifac
    - *Skip for:* the common case — most small tickets have no real ambiguity. Omit the line rather than force one.
 4. **Adversarial self-review before `Todo`.** Delegate one pass whose only job is to find what's weak, missing, or wrong in the plan you just wrote (not re-research the repo): unanchored steps, an implicit hard-to-reverse call, a menu of options where the plan should commit to one, an obvious missing decision. Fix clear-cut issues yourself; route genuine judgment calls to `Require Input`.
    - *Reserve for:* L/XL effort tickets, or anything touching architecture, data-model, migration, multi-file changes, or an irreversible decision. This is the most expensive item here and the one most likely to be over-applied — **skip outright for XS/S, UI-only, or single-decision tickets.**
+5. **Acceptance criteria, for tickets with a Ready/PR review flow (FLUX-1148).** Write a `## Acceptance criteria` section in the body as a GFM checkbox list (`- [ ] …`) — concrete, checkable statements a reviewer (or the portal) can verify without re-deriving intent from prose. This is a documented convention, not a new schema field or an engine gate: the portal renders an advisory "X/Y checked" progress indicator parsed from this section, and the review skill has the reviewer tick items off before recording a verdict — nothing blocks on it.
+   - *Skip for:* XS/S-effort tickets and tickets with no Ready/PR review flow (pure discussion, read-only, spikes).
 
 ## "Reground before starting" — tickets filed from point-in-time analysis (FLUX-1048)
 
@@ -55,7 +57,7 @@ Tickets born from a **point-in-time codebase analysis** — tech-debt sweeps, re
 
 1. **State the snapshot date** — "the findings below are a snapshot from YYYY-MM-DD" — so staleness is visible at a glance.
 2. **Re-derive the evidence** — re-verify cited file:line references via Serena/grep against current code; recorded line numbers are historical, never trust them as-is.
-3. **Check for partial fixes already landed** — scan sibling tickets and recently Done/Released tickets; another ticket may have absorbed part (or all) of the work.
+3. **Check for partial fixes already landed** — check `<releaseNotesPath>/INDEX.md` (default `.docs/release-notes/INDEX.md`) first, the agent-consumable index of every released ticket with a one-line completion gist (FLUX-1151); it only covers already-*released* work, so also scan sibling tickets and recently Done/Released tickets — another ticket may have absorbed part (or all) of the work.
 4. **Update the plan against current reality before coding** — rewrite the body (keep the TL;DR honest) to match what the code looks like now. If the finding no longer exists, re-scope or propose archiving — implementing a stale plan is worse than doing nothing.
 
 See epic **FLUX-1043** and its subtasks **FLUX-1044/1045/1046** for the reference format. When grooming an analysis-derived ticket, add this section if it's missing. The section binds the *implementer* too — the implementation skill's "Reground Before Coding" section requires executing it before any code change.
@@ -64,49 +66,12 @@ See epic **FLUX-1043** and its subtasks **FLUX-1044/1045/1046** for the referenc
 
 ## Rich Artifacts (`publish_artifact`) — the exception, not the norm
 
-`publish_artifact` spans **both ends of the lifecycle** — it is not grooming-exclusive. In grooming it publishes a plan-time **mockup / diagram / prototype** the user reasons *against* before code is written; at `Ready` the implementation skill uses the same tool to publish a **visual recap** of the diff (see the implementation skill's "Visual Recap Artifact" section). Same tool, same sandboxed viewer, same revision history — only the timing and content differ.
+Shared mechanics — lifecycle framing, sandbox rules, CDN policy, revisions, the annotation round-trip, the layout-audit gate, and richer artifact kinds (Mermaid/SVG/charts/prototypes) — live in the orchestrator skill's "Rich Artifacts" section; read it there before your first emit. This section covers only grooming's emit/skip judgment.
 
 For grooming: on tickets where the user has to *imagine* the result, publish a **self-contained HTML artifact** the user reasons *against* — a rendered mockup, an architecture/flow diagram, an interactive prototype, or acceptance criteria laid out visually. The user reacts to a concrete artifact and catches misunderstanding *before* code is written. Use the `publish_artifact` MCP tool; the artifact renders in the ticket's artifact panel.
 
-**Whether to emit is YOUR judgment per ticket — there is no tag gate.** Default OFF when unsure; artifacts must stay the exception so they don't become ceremony.
-
 - **Emit when** the ticket is about UI/UX, visual layout, an architecture/data-flow you can diagram, or a "shape of the thing" decision where a rendering surfaces misunderstanding cheaply.
 - **Skip when** it's a bug fix, an XS/S ticket, backend plumbing, or any change with no visual/structural "shape" to react to. A markdown plan is the right output for these.
-
-**How to emit:**
-- Pass a **complete, self-contained HTML document** as `html`: inline `<style>`/`<script>`. **Default to hand-written inline CSS** — an artifact is a single document, so a small `<style>` block is enough and renders instantly. Mermaid (`https://cdn.jsdelivr.net`) is loadable via `<script>` tag for diagrams. The Tailwind Play CDN (`https://cdn.tailwindcss.com`) is still allowed but is a **heavy last resort, not the default**: it's an in-browser compiler that recompiles on every DOM mutation and has measured 1-2s+ main-thread freezes per load — reach for it only when a utility framework meaningfully speeds up a complex prototype. Lean on the **`frontend-design`** skill for high-quality markup.
-- It renders in a **sandboxed, opaque-origin iframe**: it CANNOT reach the portal, cookies, or storage, and CANNOT make network requests (no fetch/XHR — `connect-src` is blocked). Everything it needs must be inlined or come from the allowed CDNs. Do not rely on external API calls or `localStorage`.
-- Do **not** inline the HTML into the ticket body (the body is injected into every session and has a 10K soft limit) — `publish_artifact` stores it in a sidecar.
-- Every call is a **new revision** (history is kept — never an overwrite). Add a `title` and, when revising, a `note` on what changed. The viewer defaults to the latest revision.
-- **Annotation round-trip (FLUX-874/875/892):** the user can annotate the rendered artifact two ways — **select text** (a floating composer pops up at the selection) or **right-click any element** (FLUX-892), which anchors to non-text controls — toggles, SVG chart bars, buttons — that have no selectable text. Either way they **collect several notes before sending them together**. They arrive as **one** chat message starting with `🎯 Artifact annotations`: text picks list the selected excerpt (`> …`), element picks show the element label (`⊙ \`button "Save"\``); both carry a CSS-path anchor (`_anchor:_`) plus the user's note. When you receive one, revise the artifact to address **every** listed region and call `publish_artifact` again (with a `note` on what changed) so the new revision streams back to the viewer. (The viewer also offers a full-screen mode for reviewing large artifacts.) Right-click annotates the artifact **as-is** — no handles or chrome are injected into your markup, so author the design however you like.
-
-### Richer artifact kinds (FLUX-875) — diagrams, mockups, charts, prototypes
-
-Because the artifact is a **real HTML page** rendered entirely by the sandboxed iframe, you are not limited to static markup — pick the form that makes the *shape of the thing* easiest to react to:
-
-- **Mermaid diagrams** (flowcharts, sequence, ERD, state) — best for architecture/data-flow tickets. Load Mermaid from jsDelivr and let it render a `<pre class="mermaid">` block:
-  ```html
-  <script type="module">
-    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
-    mermaid.initialize({ startOnLoad: true });
-  </script>
-  <pre class="mermaid">
-  flowchart LR
-    A[publish_artifact] --> B[(sidecar .flux/artifacts)]
-    B --> C[GET /api/tasks/:id/artifact] --> D[sandboxed iframe]
-  </pre>
-  ```
-- **SVG mockups** — hand-author inline `<svg>` (or inline-CSS-styled `<div>`s) for a UI wireframe the user can eyeball against their mental model.
-- **Charts / data shapes** — inline SVG or a chart lib from an allowed CDN (jsDelivr/unpkg). No network calls at runtime (`connect-src` is blocked), so inline the data.
-- **Clickable prototypes** — hand-written inline CSS plus a little inline `<script>` for tab/toggle interactions, so the user can click through a flow. Reach for the Tailwind Play CDN (`https://cdn.tailwindcss.com`) only for a complex, heavily-styled multi-state prototype where a utility framework earns its keep — it's a heavy last resort (see above), not the default.
-
-Everything still renders inside the same opaque-origin sandbox (no portal/cookie/storage access, no fetch/XHR) — keep it self-contained.
-
-### Layout-audit gate (FLUX-875) — keep artifacts visually clean
-
-On open (and on every new revision) the viewer runs an automatic **layout audit** inside the iframe and **masks the artifact until it passes**. It checks four conservative failure modes: **`overflow-x`** (page wider than the viewport), **`off-canvas`** (an element spilling past a viewport edge), **`clipped`** (`overflow:hidden`/`clip` cutting off real text), and **`overlap`** (two text blocks rendering on top of each other). When it fails, the user can send the warnings back to you — they arrive as a chat message starting with **`🧪 Layout audit failed`**, listing each `kind`, the element selector, and the measured problem.
-
-**When you receive a `🧪 Layout audit failed` message, treat it like an annotation:** fix the offending layout (constrain widths, wrap/scroll long content, fix positioning) and call `publish_artifact` again with a `note` on what you changed, so the corrected revision re-runs the audit. To avoid tripping the gate in the first place: give the document a sane root width, prefer responsive/flow layouts over fixed pixel widths wider than the frame, and don't absolutely-position text blocks over each other.
 
 ## Metadata Conventions
 

@@ -2,6 +2,34 @@
 
 Notable changes are summarized here; detailed per-version notes for the dev line live in [`.docs/release-notes/`](.docs/release-notes/).
 
+## [1.4.0] — the persona overhaul: server-composed prompts, new specialist agents, and structured handoffs
+
+The headline is **the persona system**: prompts composed server-side from a shared phase contract, four new specialist personas, and a consolidated roster — plus machine-readable completion handoffs and first-class acceptance criteria. Full notes: [`.docs/release-notes/v1.4.0.md`](.docs/release-notes/v1.4.0.md).
+
+### Personas — server-composed prompts + new specialists
+
+- **Server-side prompt composition** — persona prompts are built from a shared phase contract plus a per-persona lens instead of hand-maintained parallel prompt files (#359's drift fixes made structural in FLUX-1170), with a new dedicated review-phase skill module (FLUX-1171) and shared invariants hoisted into the orchestrator module (FLUX-1172). The drift itself — commit-before-Ready, sole-reviewer `reviewState`, diff base — was fixed first (#359).
+- **Four new specialists** — the Furnace Operator **"Smelter"**, a furnace-owning chat persona that curates, ignites, and shepherds batches (#373, #389); a **DRY / Reuse & Simplicity reviewer** (#366); the **Regrounder**, executing the FLUX-1048 reground as a delegable step (#368); and the **Epic Decomposer**, splitting L/XL tickets into Furnace-sized subtasks (#367).
+- **Roster consolidation** — Coordinator merged into Supervisor (#370); finalize personas folded into a single **Shipper** (Ticket Curator absorbed, Committer + PR Merger merged, #369); retired-id aliases can no longer shadow same-named custom personas (#386); stale roster comment fixed (#384).
+
+### Agent workflow — structured handoffs & first-class criteria
+
+- **Machine-readable completion handoffs** — Ready/finish now carries a structured payload: changed files, validation results, decisions, residual risk (#381).
+- **Acceptance criteria & Definition of Done** as first-class ticket fields with an advisory portal indicator (#385).
+- **Agent-consumable release index** — `flux:release` appends every released ticket (with a completion gist) to `.docs/release-notes/INDEX.md`, the new first stop for "was this already done?" reground checks (#387).
+- **Board-health triage** — a dynamic board-health prompt feeding `propose_board_rebase` (#388).
+
+### Perf follow-through (FLUX-1135 epic closed)
+
+- Heavy clicks profiled on a prod build and the top offender fixed (#375); FurnaceDrawer memoized so polls no longer re-render every batch/row (#378); event-loop-stall warnings confirmed gone after the yield fix (#376); board tee gap + per-turn git subprocess cost on resume (#365); `.eh-idle` ambient-animation pause locked in by a regression test (#377).
+
+### Furnace & engine hardening
+
+- Ready-transition guard no longer misattributes main-checkout dirty state to a ticket's isolated worktree (#371); concurrent forced `refreshWorktreePool()` clobber race fixed (#372); `isRegisteredWorktree` cache-invalidation race narrowed (#383); trigger editor no longer arms triggers on parked/done batches (#374); `info/exclude` writes guarded against concurrent-write races (#361); FurnaceReportModal cleanup (#357).
+- **Agent boundaries** — the "ticket chat can't edit files unless In Progress" gate now covers Copilot and Gemini, not just Claude (#360), with wiring-level regression tests (#380).
+- **Epics closed** — MCP token-footprint & agent-context optimization (FLUX-477) and Restore Stability (FLUX-996).
+- **Tests & polish** — `useFocusTrap` Escape gap for non-modal traps (#364) + ESC typing-guard polish with coverage (#363); CardCommentBadge gating tests (#362); task-store-watcher incremental-burst test deflaked (#382); S10 telemetry follow-ups (#379).
+
 ## [1.3.0] — the performance overhaul, Furnace hardening, and a sturdier sync core
 
 The headline is **performance**: a full instrumentation epic (FLUX-1128) that made the engine and portal measurable, then the fix wave it uncovered. Alongside it, a deep hardening pass over the Furnace's slot/worktree machinery and the sync layer. Full notes: [`.docs/release-notes/v1.3.0.md`](.docs/release-notes/v1.3.0.md).

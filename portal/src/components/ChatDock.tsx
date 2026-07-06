@@ -1,6 +1,6 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { Sparkles, MessageSquare, Minus, X, History, Square, RotateCcw, GitBranch, FolderGit2, GitPullRequest, ListChecks, Loader2, MessageCircleQuestion, PanelRight, PanelRightClose, Maximize2, Tag, Link2, Gauge, Save, ChevronDown, Check, CircleHelp, TriangleAlert, Circle, Play, Flame } from 'lucide-react';
+import { Sparkles, MessageSquare, Minus, X, History, Square, RotateCcw, GitBranch, FolderGit2, GitPullRequest, ListChecks, Loader2, MessageCircleQuestion, PanelRight, PanelRightClose, Maximize2, Tag, Link2, Gauge, Save, ChevronDown, Check, CircleHelp, TriangleAlert, Circle, Play, Flame, Activity } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
@@ -29,7 +29,7 @@ import { useEscapeKey } from '../hooks/useEscapeKey';
 import { fireDesktopNotification } from '../hooks/useDesktopNotifications';
 import { getStatusTint, getStatusColorClass } from '../statusStyles';
 import { getRequireInputStatus } from '../workflow';
-import { BOARD_CONVERSATION_ID, fetchTaskCliSession, fetchTaskTranscript, stopTaskCliSession, clearTaskTranscript, fetchBranchStatus, type BranchStatus } from '../api';
+import { BOARD_CONVERSATION_ID, fetchTaskCliSession, fetchTaskTranscript, stopTaskCliSession, clearTaskTranscript, fetchBranchStatus, fetchTriageSignals, type BranchStatus } from '../api';
 import { setTranscript } from '../transcriptCache';
 import type { CliSessionStatus, CliSessionSummary, Config, Task } from '../types';
 
@@ -135,7 +135,11 @@ function splitId(id: string): { prefix: string; short: string } {
 // FLUX-1035: the Furnace toggle rides in the dock strip as a small square icon pinned next to the
 // Orchestrator ("Board") tab — the Furnace is a board-level concern, so it lives beside the board chat
 // rather than as a nav pill up top. Open state is owned by App and passed through.
-export function ChatDock({ onToggleFurnace, furnaceOpen, furnaceBurning }: { onToggleFurnace?: () => void; furnaceOpen?: boolean; furnaceBurning?: boolean } = {}) {
+// FLUX-1141: memoized for the same reason as `Board` — this 2000+ line tree is a direct
+// AppContent child with only stable/primitive props, so it was re-rendering in full on every
+// unrelated AppContent toggle (terminal, furnace, the 5s furnace-status poll) despite its own
+// dock state being read through context/hooks rather than props.
+export const ChatDock = memo(function ChatDock({ onToggleFurnace, furnaceOpen, furnaceBurning }: { onToggleFurnace?: () => void; furnaceOpen?: boolean; furnaceBurning?: boolean } = {}) {
   const { subscribeToEvent } = useAppActions();
   const tasks = useAppSelector((s) => s.tasks);
   const config = useAppSelector((s) => s.config);
@@ -255,9 +259,18 @@ export function ChatDock({ onToggleFurnace, furnaceOpen, furnaceBurning }: { onT
       ? boardSession?.currentActivity ?? null
       : allTasks.find((t) => t.id === id)?.cliSession?.currentActivity ?? null;
 
-  // Human label for a chat: the orchestrator, or the ticket's title (fallback to its id).
+  // FLUX-1175: when the board conversation was launched in-persona (e.g. "Chat with
+  // Smelter" sets session.label to "Furnace Operator (Smelter)"), that label overrides
+  // the default "Orchestrator" identity everywhere the board chat is displayed — the
+  // docked window title, the pinned tab text, and its tooltip — so the user can tell
+  // the turn was answered in-persona instead of by the default orchestrator.
+  const boardIdentityLabel =
+    boardSession?.label && boardSession.label !== 'Orchestrator' ? boardSession.label : undefined;
+
+  // Human label for a chat: the orchestrator (or override persona), or the ticket's title
+  // (fallback to its id).
   const titleOf = (id: string): string =>
-    id === BOARD_CONVERSATION_ID ? 'Orchestrator' : allTasks.find((t) => t.id === id)?.title ?? id;
+    id === BOARD_CONVERSATION_ID ? boardIdentityLabel ?? 'Orchestrator' : allTasks.find((t) => t.id === id)?.title ?? id;
 
   // Most-recent agent-output timestamp for a chat — the unread signal (no transcript load).
   const lastOutputAtOf = (id: string): string | undefined =>
@@ -559,10 +572,13 @@ export function ChatDock({ onToggleFurnace, furnaceOpen, furnaceBurning }: { onT
           (titleWidth / compactId). The inner row uses py/-my so the absolute `!`/`x` aren't
           clipped under overflow-x-auto. */}
       <div className="eh-border eh-surface-overlay fixed bottom-3 left-1/2 z-40 flex max-w-[94vw] -translate-x-1/2 items-center gap-1.5 rounded-xl border px-2.5 py-1.5 shadow-xl">
-        {/* Orchestrator — pinned "home". Not retirable. */}
+        {/* Orchestrator — pinned "home". Not retirable. Label/identityLabel swap to the
+            active persona (e.g. "Furnace Operator (Smelter)") when the board session was
+            launched in-persona (FLUX-1175). */}
         <ChatTab
           id={BOARD_CONVERSATION_ID}
-          label="Board"
+          label={boardIdentityLabel ?? 'Board'}
+          identityLabel={boardIdentityLabel}
           orchestrator
           open={open.includes(BOARD_CONVERSATION_ID)}
           state={cardState(boardSession?.status, acked.includes(BOARD_CONVERSATION_ID))}
@@ -734,7 +750,7 @@ export function ChatDock({ onToggleFurnace, furnaceOpen, furnaceBurning }: { onT
       )}
     </>
   );
-}
+});
 
 /** Tiny, unobtrusive "thinking" indicator — three softly pulsing dots that show an agent is
  *  ticking away without stealing the tab's label. Inherits the tab's text color (`bg-current`)
@@ -772,6 +788,7 @@ function SortableChatTab(props: React.ComponentProps<typeof ChatTab>) {
 function ChatTab({
   id,
   label,
+  identityLabel,
   title,
   orchestrator,
   open,
@@ -792,6 +809,9 @@ function ChatTab({
   id: string;
   /** Orchestrator label ("Board"). */
   label?: string;
+  /** FLUX-1175: overrides the tooltip/aria-label's default "Orchestrator" identity when the
+   *  board session was launched in-persona (e.g. "Furnace Operator (Smelter)"). */
+  identityLabel?: string;
   /** Ticket title — shown after the id when there's room. */
   title?: string;
   orchestrator: boolean;
@@ -826,7 +846,7 @@ function ChatTab({
   const working = state === 'working';
   // FLUX-819: per-state glyph carries the state shape on the leading indicator (below).
   const StateGlyph = STATE_GLYPH[state];
-  const fullLabel = orchestrator ? 'Orchestrator' : title ? `${id} — ${title}` : id;
+  const fullLabel = orchestrator ? identityLabel ?? 'Orchestrator' : title ? `${id} — ${title}` : id;
 
   // Horizontal "chrome tab" — short, flat, label-bearing (vs the old square card).
   const base =
@@ -1575,6 +1595,61 @@ function TriageAction({ busy, onTriage }: { busy: boolean; onTriage: () => void 
   );
 }
 
+// Canned prompt fired by the "Board Health" quick action (FLUX-966). The live signals fragment
+// (computed engine-side just before send — see BoardHealthAction below) is prepended to this ask.
+const BOARD_HEALTH_ASK =
+  'Reason over the signals above. If the board needs tidying, call propose_board_rebase with a ' +
+  "batch of items (one per flagged ticket or group) referencing those same ticket ids/facts — " +
+  "don't invent claims beyond what's listed and don't mutate the board directly. If nothing above " +
+  'warrants action, just say the board looks healthy.';
+
+/** Fallback ask when the engine failed to compute signals (network/engine hiccup) — still asks
+ *  the orchestrator to look, but makes clear no live numbers were injected this turn. */
+const BOARD_HEALTH_FALLBACK_ASK =
+  'Board Health signal computation failed (engine error) — no live staleness numbers this turn. ' +
+  'Take a quick unguided look for stale Grooming/Require Input tickets, orphaned subtasks, ' +
+  'duplicate titles, and Ready tickets with a dead/missing PR, and call propose_board_rebase if ' +
+  'anything genuinely needs tidying. Say so if nothing stands out.';
+
+/**
+ * Board-chat-only quick action (FLUX-966): computes fresh staleness signals in the engine (stale
+ * Grooming/Require Input tickets, orphaned subtasks, duplicate titles, dead/missing PRs on Ready
+ * tickets) and bakes them into a canned prompt so the orchestrator reasons over concrete facts
+ * before calling propose_board_rebase — instead of eyeballing the whole board and guessing.
+ * Distinct from the FLUX-637 `TriageAction` above (which ranks the Todo column); this one feeds
+ * the board-rebase ritual. Disabled while computing OR while a turn is in flight (double-fire guard,
+ * same `busy` contract as TriageAction).
+ */
+function BoardHealthAction({ busy, onFire }: { busy: boolean; onFire: (prompt: string) => void }) {
+  const [computing, setComputing] = useState(false);
+
+  const onClick = async () => {
+    setComputing(true);
+    try {
+      const fragment = await fetchTriageSignals();
+      onFire(fragment ? `${fragment}\n\n${BOARD_HEALTH_ASK}` : BOARD_HEALTH_FALLBACK_ASK);
+    } finally {
+      setComputing(false);
+    }
+  };
+
+  const busyOrComputing = busy || computing;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <button
+        type="button"
+        onClick={() => void onClick()}
+        disabled={busyOrComputing}
+        title="Compute real staleness signals (stale tickets, orphaned subtasks, duplicate titles, dead PRs) and propose a board-rebase"
+        className="eh-border inline-flex items-center gap-1 rounded-md border bg-[var(--eh-input-bg)] px-2.5 py-1 text-[11px] font-semibold text-[var(--eh-text-primary)] transition-colors hover:bg-black/5 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/5"
+      >
+        {busyOrComputing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Activity className="h-3 w-3" />}
+        Board Health
+      </button>
+    </div>
+  );
+}
+
 function ChatWindow({
   id,
   orchestrator,
@@ -2032,7 +2107,10 @@ function ChatWindow({
       ) : undefined}
       actions={
         orchestrator ? (
-          <TriageAction busy={chat.busy || working} onTriage={() => void chat.send(TRIAGE_PROMPT)} />
+          <div className="flex flex-wrap items-center gap-1.5">
+            <TriageAction busy={chat.busy || working} onTriage={() => void chat.send(TRIAGE_PROMPT)} />
+            <BoardHealthAction busy={chat.busy || working} onFire={(prompt) => void chat.send(prompt)} />
+          </div>
         ) : task ? (
           <TicketActions task={task} variant="compact" />
         ) : undefined
@@ -2068,7 +2146,12 @@ function ChatWindow({
           ) : (
             <MessageSquare className="h-3.5 w-3.5 flex-shrink-0 text-[var(--eh-text-muted)]" />
           )}
-          <span className="truncate">{orchestrator ? 'Orchestrator' : task?.title ?? id}</span>
+          <span className="truncate">
+            {/* FLUX-1175: an in-persona board session (e.g. "Chat with Smelter") overrides the
+                default "Orchestrator" identity so this is visually distinguishable in the window
+                that's actually open and being read/typed into. */}
+            {orchestrator ? (session?.label && session.label !== 'Orchestrator' ? session.label : 'Orchestrator') : task?.title ?? id}
+          </span>
         </div>
         <div className="flex flex-shrink-0 items-center gap-0.5">
           {/* Orchestrator can't be closed (it's pinned) — instead it can be reset to a clean

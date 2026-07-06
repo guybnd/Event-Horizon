@@ -20,10 +20,12 @@ import {
   taskWorktreesBaseDir,
   worktreeChangeCount,
   worktreeChangeCounts,
+  worktreeUncommittedCount,
   worktreeIsDirty,
   depNodeModulesExcludePathspecs,
   listLocalBranches,
   stashDirtyTree,
+  writeWorktreeSerenaOverride,
 } from './task-worktree.js';
 
 // Real git worktree ops are slow on Windows under parallel suite load — the default 5000ms
@@ -142,6 +144,50 @@ describe('task-worktree', () => {
       // Real untracked work outside the dep subdirs is still detected.
       await fs.writeFile(path.join(wt, 'real-work.txt'), 'x\n', 'utf8');
       expect(await worktreeChangeCount(wt)).toBe(1);
+    });
+  });
+
+  describe('worktreeUncommittedCount (FLUX-1121 Ready-transition guard)', () => {
+    it('stays 0 when master drifts after the branch was cut, unlike the diff-vs-base metric', async () => {
+      const branch = 'flux/FLUX-4-drift';
+      const wt = await createTaskWorktree(repo, 'FLUX-4', branch);
+
+      // Advance master with a commit unrelated to this ticket — simulates a review-confirmation
+      // ticket whose branch has 0 commits of its own while master moves on afterward.
+      await fs.writeFile(path.join(repo, 'README.md'), '# drifted\n', 'utf8');
+      await execFileAsync('git', ['-C', repo, 'commit', '-am', 'drift master'], { windowsHide: true });
+
+      // The pre-existing diff-vs-base metric DOES pick up the drift (FLUX-1121 misattribution)...
+      expect(await worktreeChangeCount(wt)).toBe(1);
+      // ...but the worktree itself has nothing uncommitted.
+      expect(await worktreeUncommittedCount(wt)).toBe(0);
+    });
+
+    it('counts modified and untracked files', async () => {
+      const branch = 'flux/FLUX-5-uncommitted';
+      const wt = await createTaskWorktree(repo, 'FLUX-5', branch);
+      await fs.writeFile(path.join(wt, 'README.md'), '# changed\n', 'utf8');
+      await fs.writeFile(path.join(wt, 'untracked.txt'), 'x\n', 'utf8');
+      expect(await worktreeUncommittedCount(wt)).toBe(2);
+    });
+
+    it('returns 0 for a path that does not exist', async () => {
+      expect(await worktreeUncommittedCount(path.join(parent, 'nope'))).toBe(0);
+    });
+
+    it('treats node_modules junctions as clean, regardless of .gitignore', async () => {
+      for (const sub of ['engine', 'portal']) {
+        await fs.mkdir(path.join(repo, sub), { recursive: true });
+        await fs.writeFile(path.join(repo, sub, '.gitkeep'), '', 'utf8');
+      }
+      await execFileAsync('git', ['-C', repo, 'add', '.'], { windowsHide: true });
+      await execFileAsync('git', ['-C', repo, 'commit', '-m', 'workspaces'], { windowsHide: true });
+      for (const sub of ['.', 'engine', 'portal']) {
+        await fs.mkdir(path.join(repo, sub, 'node_modules'), { recursive: true });
+        await fs.writeFile(path.join(repo, sub, 'node_modules', 'm.txt'), 'x\n', 'utf8');
+      }
+      const wt = await createTaskWorktree(repo, 'FLUX-6', 'flux/FLUX-6');
+      expect(await worktreeUncommittedCount(wt)).toBe(0);
     });
   });
 
@@ -377,6 +423,24 @@ describe('task-worktree', () => {
         // Idempotent reuse re-runs writeWorktreeSerenaOverride on the same repo.
         await createTaskWorktree(userRepo, 'FLUX-1', 'flux/FLUX-1-demo');
         const excludeBody = await fs.readFile(path.join(userRepo, '.git', 'info', 'exclude'), 'utf8');
+        const matches = excludeBody.split('\n').filter((l) => l.trim() === '.serena/project.local.yml');
+        expect(matches).toHaveLength(1);
+      });
+
+      it('serializes concurrent writes to the same repo, appending the exclude pattern only once (FLUX-1162)', async () => {
+        // Two calls racing on the SAME repo's info/exclude — without the per-repo
+        // write lock, both could read the file before either appends, duplicating
+        // the line. Route both through the same fake gitRunner so they resolve to
+        // the identical `--git-common-dir`, independent of real worktree add timing.
+        const gitCommonDir = path.join(userRepo, '.git');
+        const gitRunner = async () => ({ stdout: gitCommonDir, stderr: '' });
+        const wtA = path.join(userParent, 'wtA');
+        const wtB = path.join(userParent, 'wtB');
+        await Promise.all([
+          writeWorktreeSerenaOverride(wtA, { gitRunner }),
+          writeWorktreeSerenaOverride(wtB, { gitRunner }),
+        ]);
+        const excludeBody = await fs.readFile(path.join(gitCommonDir, 'info', 'exclude'), 'utf8');
         const matches = excludeBody.split('\n').filter((l) => l.trim() === '.serena/project.local.yml');
         expect(matches).toHaveLength(1);
       });
@@ -668,6 +732,90 @@ describe('task-worktree', () => {
       await expect(
         isRegisteredWorktree(repo, path.join(parent, 'nope'), { gitRunner: flakyRunner }),
       ).resolves.toBe(false);
+    });
+  });
+
+  // FLUX-1182: `isRegisteredWorktree` runs a `git worktree list` subprocess on every resumed turn
+  // (resolveResumeExecutionRoot), not just the first — a short TTL cache lets a burst of turns on
+  // the same repo within the window share one query instead of re-shelling out per turn.
+  describe('isRegisteredWorktree read-cache (FLUX-1182)', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('serves the cached `git worktree list` within the TTL and re-queries once it elapses', async () => {
+      const wt = await createTaskWorktree(repo, 'FLUX-50', 'flux/FLUX-50');
+      let listCalls = 0;
+      const countingRunner = async (cwd: string, args: string[]) => {
+        if (args[0] === 'worktree' && args[1] === 'list') listCalls++;
+        const { stdout, stderr } = await execFileAsync('git', ['-C', cwd, ...args], { windowsHide: true });
+        return { stdout, stderr };
+      };
+
+      await expect(isRegisteredWorktree(repo, wt, { gitRunner: countingRunner })).resolves.toBe(true);
+      expect(listCalls).toBe(1);
+
+      await expect(isRegisteredWorktree(repo, wt, { gitRunner: countingRunner })).resolves.toBe(true);
+      expect(listCalls).toBe(1); // served from cache — no new subprocess
+
+      await vi.advanceTimersByTimeAsync(3_100);
+      await expect(isRegisteredWorktree(repo, wt, { gitRunner: countingRunner })).resolves.toBe(true);
+      expect(listCalls).toBe(2);
+    });
+
+    it('is never masked by a stale cache after create/remove in the same process', async () => {
+      const target = taskWorktreeDir(repo, 'FLUX-51');
+      // A miss caches "not (yet) registered"...
+      await expect(isRegisteredWorktree(repo, target)).resolves.toBe(false);
+      // ...creating it must be visible immediately, not after the rest of the TTL window.
+      await createTaskWorktree(repo, 'FLUX-51', 'flux/FLUX-51');
+      await expect(isRegisteredWorktree(repo, target)).resolves.toBe(true);
+      // ...and removing it must likewise be visible immediately.
+      await removeTaskWorktree(repo, target);
+      await expect(isRegisteredWorktree(repo, target)).resolves.toBe(false);
+    });
+
+    // FLUX-1195: the entry-invalidation above only clears the cache at the START of
+    // createTaskWorktree — a concurrent read whose `git worktree list` runs (and caches) DURING
+    // the mutation, before it completes, would otherwise cache a pre-mutation "not registered"
+    // snapshot for the rest of the TTL window. Reproduce that interleaving deterministically by
+    // pausing the `worktree add` subprocess and letting a concurrent read complete first.
+    it('is not masked by a read that caches a pre-mutation snapshot while create is in flight', async () => {
+      const id = 'FLUX-52';
+      const branch = `flux/${id}`;
+      const target = taskWorktreeDir(repo, id);
+
+      let releaseAdd: (() => void) | undefined;
+      const addGate = new Promise<void>((resolve) => { releaseAdd = resolve; });
+      let addGateReachedResolve: (() => void) | undefined;
+      const addGateReached = new Promise<void>((resolve) => { addGateReachedResolve = resolve; });
+
+      const gatedRunner = async (cwd: string, args: string[]) => {
+        if (args[0] === 'worktree' && args[1] === 'add') {
+          addGateReachedResolve?.();
+          await addGate;
+        }
+        const { stdout, stderr } = await execFileAsync('git', ['-C', cwd, ...args], { windowsHide: true });
+        return { stdout, stderr };
+      };
+
+      const createPromise = createTaskWorktree(repo, id, branch, { gitRunner: gatedRunner });
+
+      // Wait until create is paused at the mutating `worktree add`, then run a concurrent read —
+      // its `git worktree list` reflects the still-pre-mutation state and gets cached.
+      await addGateReached;
+      await expect(isRegisteredWorktree(repo, target)).resolves.toBe(false);
+
+      // Let the mutation proceed and complete.
+      releaseAdd!();
+      await createPromise;
+
+      // The stale "not registered" snapshot cached above must not be served post-creation.
+      await expect(isRegisteredWorktree(repo, target)).resolves.toBe(true);
     });
   });
 

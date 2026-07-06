@@ -22,7 +22,7 @@ import { ensureSharedServer, getSharedServerUrl, isSharedHttpPlatformProven } fr
 import { buildResumePreamble } from '../resume-preamble.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest, SendInputOptions } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, resolveAttachmentAbsPaths, attachmentReadInstruction, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, resolveClaudeExePath, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure } from './shared.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, checkBinaryInstalled, appendSessionOutput, appendErrorToSession, enqueueSessionWrite, flushSessionOutput, resolveAttachmentAbsPaths, attachmentReadInstruction, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, resolveClaudeExePath, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, prependEditGateNote } from './shared.js';
 import { BOARD_CONVERSATION_ID } from './board.js';
 
 /**
@@ -649,6 +649,13 @@ export const DISALLOW_NATIVE_ASK = ['--disallowed-tools', 'AskUserQuestion'];
 // implementation/grooming/review/finalize sessions and the board session are unaffected
 // (phase-scoped to 'chat'). --disallowed-tools is permission-mode-independent, so this covers
 // the default 'skip' chat path where permission_prompt never fires.
+//
+// FLUX-1123: this enforcement mechanism (`--disallowed-tools`) is Claude-Code-only — neither the
+// Copilot nor the Gemini CLI exposes an equivalent per-tool disallow flag (confirmed against both
+// live CLIs; see the FLUX-959 comments atop copilot-board.ts / gemini-board.ts). A workspace whose
+// default chat framework is Copilot or Gemini gets only the best-effort prompt note
+// (`chatEditGateNote` in shared.ts, wired into copilot.ts/gemini.ts) — a real block, not a request,
+// exists only here. See CLI_CAPABILITIES.chatEditGateEnforced.
 export const FILE_MUTATION_TOOLS = [
   'Write', 'Edit', 'MultiEdit', 'NotebookEdit',
   // Known MCP file editors (Serena). Best-effort — --disallowed-tools is name-based, so a new
@@ -658,12 +665,11 @@ export const FILE_MUTATION_TOOLS = [
   'mcp__serena__rename_symbol', 'mcp__serena__safe_delete_symbol',
 ];
 
-// Chat turns re-spawn the CLI each turn with the live task in scope, so this is recomputed per
-// turn: moving the ticket to In Progress re-enables editing on the very next turn.
-// Params are structural (only `phase`/`status` are read) so tests can pass minimal literals.
-export function isChatEditGated(session: { phase?: CliSessionRecord['phase'] | undefined }, task: { status?: string | undefined } | undefined): boolean {
-  return session.phase === 'chat' && task?.status !== 'In Progress';
-}
+// FLUX-1123: `isChatEditGated` now lives in shared.ts so copilot.ts/gemini.ts can share the same
+// gating decision (framework-agnostic — reads only session.phase/task.status). Re-exported here
+// since this is where Claude's own enforcement (disallowedToolsArgs below) and the existing test
+// import live.
+export { isChatEditGated };
 
 export function disallowedToolsArgs(session: { phase?: CliSessionRecord['phase'] | undefined }, task: { status?: string | undefined } | undefined): string[] {
   const tools = ['AskUserQuestion'];
@@ -782,6 +788,11 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
   });
 
   proc.on('error', async (error) => {
+    // Node can fire both 'error' and 'exit' for one failed spawn — guard raiseNeedsAction on
+    // whether THIS handler is the first to observe the spawn's outcome (mirrors the 'exit'
+    // handler below), so a healthy 'exit' that already ran first can't be overridden by a
+    // spurious later 'error' flagging a ticket that actually succeeded.
+    const isFirstOutcome = !telemetryEmitted;
     if (!telemetryEmitted) {
       telemetryEmitted = true;
       emitOperationEvent({
@@ -814,7 +825,7 @@ export async function startCliSession(session: CliSessionRecord, task: ClaudeTas
     // S10 (epic FLUX-996): a spawn that never got going is otherwise invisible on the board — no
     // session ever ran to trip the parked-turn backstop. Raise it directly via the same
     // needsAction + notification plumbing so it surfaces even when nobody is watching this ticket.
-    void raiseNeedsAction(id, `Failed to start agent: ${error.message}`);
+    if (isFirstOutcome) void raiseNeedsAction(id, `Failed to start agent: ${error.message}`);
 
     // FLUX-849: a spawn failure after the 'started' tee would otherwise leave the board chip
     // dangling — bracket it with a terminal 'failed' marker so the lifecycle is symmetric.
@@ -1109,6 +1120,11 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   try {
     executionRoot = await resolveResumeExecutionRoot(session, tasksCache[id], workspaceRoot);
   } catch (error) {
+    // FLUX-1182: bracket this with the same board narration the other resumed-turn failure
+    // paths get (reply spawn-error / reply-exit crash, below) — a board-dispatched session
+    // whose worktree was reclaimed otherwise surfaces via raiseNeedsAction + the ticket chat
+    // but leaves no 'failed' chip in the orchestrator thread.
+    teeDispatchActivityToBoard(session, id, 'failed', DISPATCH_LIFECYCLE_LABEL['failed']);
     return surfaceResumeFailure(session, id, error);
   }
 
@@ -1180,11 +1196,9 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   // takes a single `-p` and with --resume there is no separate system channel, so prepending is the
   // mechanism. The preamble is recorded as its OWN durable transcript event above (NOT folded into
   // the user's message — FLUX-716 item 3 orders it before the user event).
-  // FLUX-926: same "why is this blocked" note as the initial spawn, recomputed per resumed turn.
-  const editGateNote = isChatEditGated(session, task)
-    ? 'FLUX-926: this ticket is not In Progress, so file-mutation tools (Write/Edit/etc.) are disabled for this turn — the CLI will refuse them. Move the ticket to "In Progress" (or ask the user to) before making changes; discussion, planning, and read-only tools work as normal.'
-    : null;
-  const promptWithGateNote = editGateNote ? `${editGateNote}\n\n---\n\n${safeMessage}` : safeMessage;
+  // FLUX-926 / FLUX-1123: same "why is this blocked" note as the initial spawn, recomputed per
+  // resumed turn — shared across adapters via prependEditGateNote (framework-aware wording).
+  const promptWithGateNote = prependEditGateNote(session, task, 'claude', safeMessage);
   const promptForCli = resumePreamble ? `${resumePreamble}\n\n---\n\n${promptWithGateNote}` : promptWithGateNote;
 
   // FLUX-579: ensure the per-worktree shared server exists for this resumed turn's

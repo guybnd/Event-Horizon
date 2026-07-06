@@ -18,9 +18,10 @@ import { validateTicketFrontmatter, formatValidationErrors } from './schema.js';
 import { extractTicket } from './extract.js';
 import { mergeTickets } from './merge.js';
 import { buildActivityEntry, type AgentSessionEntry, type AgentSessionProgress } from './history.js';
+import { sanitizeCompletion, completionInputSchema } from './completion-payload.js';
 import { getCliWorkspace, getActiveFluxDir, getWorkspacesList, workspaceRoot } from './workspace.js';
-import { getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, checkGhAuth, captureDiff, resolveCommit, planFinishPr, getDefaultBranch, type DiffFileSummary } from './branch-manager.js';
-import { detachTaskWorktree, taskWorktreeDir, findWorktreeForBranch, worktreeChangeCount, reclaimWorktrees } from './task-worktree.js';
+import { getTicketBranchStatus, deleteTicketBranch, createPullRequest, mergePullRequest, checkGhAuth, captureDiff, resolveCommit, planFinishPr, type DiffFileSummary } from './branch-manager.js';
+import { detachTaskWorktree, taskWorktreeDir, findWorktreeForBranch, worktreeUncommittedCount, reclaimWorktrees } from './task-worktree.js';
 import { ensureTicketIsolation } from './ticket-isolation.js';
 import { cleanupMergedBranch, isWorktreeReclaimable } from './pr-cleanup.js';
 import { sharedNonDoneSiblings } from './pr-tickets.js';
@@ -602,7 +603,7 @@ export function evaluateWorktreeReadyRefusal(input: {
   ticketId: string;
   branch: string;
   readyStatus: string;
-  /** Uncommitted change count in the worktree vs base, used only to phrase the message. */
+  /** Genuinely uncommitted change count in the worktree (git status, not a diff-vs-base), used only to phrase the message. */
   changeCount?: number;
 }): { refuse: boolean; message?: string } {
   const { worktreePath, branchStatus, ticketId, branch, readyStatus, changeCount = 0 } = input;
@@ -1157,14 +1158,17 @@ export function buildMcpServer(): McpServer {
       comment: z.string().optional().describe('Required for Require Input/Ready transitions. Provide the question or completion summary.'),
       callerRole: z.string().optional().describe('Role of the calling session (e.g. "orchestrator"). Required to change status when scatter-gather sessions are active.'),
       reviewState: z.enum(['approved', 'changes-requested']).nullable().optional().describe('The EH review verdict to record on the card. Set "approved" when concluding a review to Ready, "changes-requested" when sending back to In Progress. Pass null to clear. Surfaces a review badge; distinct from the GitHub-synced reviewDecision.'),
+      completion: completionInputSchema,
     },
-    async ({ ticketId, newStatus, comment, callerRole, reviewState }) => {
+    async ({ ticketId, newStatus, comment, callerRole, reviewState, completion }) => {
       const task = tasksCache[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
       // FLUX-922 review fix: capture the prior verdict before the update so the review notification
       // only fires on an actual change (a re-affirming change_status with the same reviewState must
       // not re-mark the card unread).
       const priorReviewState = task.reviewState;
+      // FLUX-1147: best-effort, never blocks the transition below even on garbage input.
+      const sanitizedCompletion = sanitizeCompletion(completion);
 
       // Scatter-gather guard: if there are active step sessions on this task,
       // only an orchestrator (or explicit lead) can change status. Scope the check
@@ -1194,7 +1198,7 @@ export function buildMcpServer(): McpServer {
         }
 
         const entries: Record<string, unknown>[] = [
-          { type: 'comment', user: 'Agent', comment, date: new Date().toISOString() },
+          { type: 'comment', user: 'Agent', comment, date: new Date().toISOString(), ...(sanitizedCompletion !== undefined ? { completion: sanitizedCompletion } : {}) },
           { type: 'swimlane_change', swimlane: 'require-input', action: 'set', user: 'Agent', date: new Date().toISOString(), comment },
         ];
 
@@ -1222,7 +1226,9 @@ export function buildMcpServer(): McpServer {
 
       const entries: Record<string, unknown>[] = [];
       if (comment) {
-        entries.push({ type: 'comment', user: 'Agent', comment, date: new Date().toISOString() });
+        // FLUX-1147: attach the structured completion payload (if any) to the same comment entry —
+        // it only makes sense alongside the prose comment it's a machine-readable companion to.
+        entries.push({ type: 'comment', user: 'Agent', comment, date: new Date().toISOString(), ...(sanitizedCompletion !== undefined ? { completion: sanitizedCompletion } : {}) });
       }
 
       const extraFields: Record<string, unknown> = {};
@@ -1256,8 +1262,11 @@ export function buildMcpServer(): McpServer {
         // uncommitted until finish), so the refusal is gated on an actual worktree existing.
         const worktreePath = await findWorktreeForBranch(workspaceRoot!, task.branch).catch(() => null);
         if (worktreePath && branchStatus && branchStatus.exists && branchStatus.aheadCount === 0) {
-          const baseBranch = await getDefaultBranch().catch(() => 'master');
-          const changeCount = await worktreeChangeCount(worktreePath, baseBranch).catch(() => 0);
+          // FLUX-1121: count genuine uncommitted changes (git status), NOT a diff against the base
+          // branch — the latter also picks up base-branch drift for a 0-commit branch (a
+          // review-confirmation ticket whose fix shipped elsewhere), misattributing files master
+          // changed AFTER the branch was cut as "uncommitted work" in this worktree.
+          const changeCount = await worktreeUncommittedCount(worktreePath).catch(() => 0);
           const decision = evaluateWorktreeReadyRefusal({
             worktreePath,
             branchStatus,
@@ -1622,9 +1631,12 @@ export function buildMcpServer(): McpServer {
       implementationLink: z.string().describe('PR URL or commit hash'),
       completionComment: z.string().describe('Summary of what was implemented'),
       force: z.boolean().optional().describe('Override the shared-PR guard: merge even though the branch is shared by non-Done sibling tickets (their work merges + they advance to Done too).'),
+      completion: completionInputSchema,
     },
     { title: 'Finish ticket (merge + Done)', readOnlyHint: false, destructiveHint: true, openWorldHint: true },
-    async ({ ticketId, implementationLink, completionComment, force }) => {
+    async ({ ticketId, implementationLink, completionComment, force, completion }) => {
+      // FLUX-1147: best-effort, never blocks finish even on garbage input.
+      const sanitizedCompletion = sanitizeCompletion(completion);
       const task = tasksCache[ticketId];
       if (!task) return errorResult(`Ticket ${ticketId} not found`, 'not_found');
 
@@ -1724,7 +1736,10 @@ export function buildMcpServer(): McpServer {
         }
       }
 
-      const entries = [{ type: 'comment', user: 'Agent', comment: completionComment, date: new Date().toISOString() }];
+      // FLUX-1147: attach the structured completion payload (if any) to the same completion comment
+      // entry — covers the branchless-ticket case where Ready (and its own completion param) is
+      // skipped entirely.
+      const entries = [{ type: 'comment', user: 'Agent', comment: completionComment, date: new Date().toISOString(), ...(sanitizedCompletion !== undefined ? { completion: sanitizedCompletion } : {}) }];
       // Clear any swimlane (e.g. open-pr) as we move to Done — finish used to leave it set,
       // so merged tickets kept glowing as open PRs forever (FLUX-574).
       const finishExtraFields: FinishExtraFields = { implementationLink: finalLink, swimlane: null };

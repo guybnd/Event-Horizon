@@ -5,6 +5,13 @@ import type { AgentSessionEntry } from '../history.js';
 /** FLUX-674: optional per-turn extras for a chat reply (pasted image attachments). */
 export interface SendInputOptions {
   attachments?: ChatAttachment[];
+  /**
+   * FLUX-1175: a server-resolved persona prompt (via `resolvePersonaPrompt`) to use as this
+   * board turn's identity block instead of the default board-orchestrator identity. Read only on
+   * the opening turn (`startBoardSession`) — a persona's identity is established once, same as a
+   * per-ticket chat launch; later turns in the same conversation are plain user input.
+   */
+  personaPrompt?: string;
 }
 
 export type CliSessionStatus = 'pending' | 'running' | 'waiting-input' | 'completed' | 'failed' | 'cancelled';
@@ -41,16 +48,24 @@ export interface CliCapabilities {
   nativeAskBlocked: boolean;   // B.5: the CLI's native AskUserQuestion must be disabled (--disallowed-tools) — a `claude -p` limitation
   spawnTimeMcpConfig: boolean; // B.6: accepts a per-spawn MCP config file (--mcp-config) with phase/tag profile filtering
   imageAttachments: boolean;   // B.7: resolves pasted image attachments into the resumed prompt
+  // FLUX-1123: can this CLI actually ENFORCE the FLUX-926 chat file-edit gate (a real
+  // --disallowed-tools-equivalent block), as opposed to only receiving an advisory prompt note?
+  // Neither Copilot nor Gemini expose a per-tool disallow flag (confirmed against the live CLIs —
+  // see the copilot-board.ts / gemini-board.ts FLUX-959 comments), so for them this is false: the
+  // ticket-chat gate degrades to a best-effort instruction in the prompt (chatEditGateNote in
+  // shared.ts) rather than a real block. Distinct from `toolGating` (generic tool restriction
+  // capability, unused today) — this one specifically drives which wording buildInitialPrompt uses.
+  chatEditGateEnforced: boolean;
 }
 
 export const CLI_CAPABILITIES: Record<CliFramework, CliCapabilities> = {
-  claude: { resume: true, background: true, supervisor: true, scatter: true, toolGating: true, structuredOutput: true, effort: { supported: true, flag: '--effort' }, persistentChat: true, selfPause: true, partialDeltas: true, permissionGating: true, nativeAskBlocked: true, spawnTimeMcpConfig: true, imageAttachments: true },
-  gemini: { resume: true, background: true, supervisor: true, scatter: true, toolGating: true, structuredOutput: true, effort: { supported: false }, persistentChat: false, selfPause: true, partialDeltas: false, permissionGating: false, nativeAskBlocked: false, spawnTimeMcpConfig: false, imageAttachments: false },
+  claude: { resume: true, background: true, supervisor: true, scatter: true, toolGating: true, structuredOutput: true, effort: { supported: true, flag: '--effort' }, persistentChat: true, selfPause: true, partialDeltas: true, permissionGating: true, nativeAskBlocked: true, spawnTimeMcpConfig: true, imageAttachments: true, chatEditGateEnforced: true },
+  gemini: { resume: true, background: true, supervisor: true, scatter: true, toolGating: true, structuredOutput: true, effort: { supported: false }, persistentChat: false, selfPause: true, partialDeltas: false, permissionGating: false, nativeAskBlocked: false, spawnTimeMcpConfig: false, imageAttachments: false, chatEditGateEnforced: false },
   // FLUX-984: Copilot never auto-loads workspace .mcp.json in non-interactive (-p) mode — confirmed
   // live, no permission flag changes it. spawnTimeMcpConfig:true here means "copilot.ts explicitly
   // injects the event-horizon server via --additional-mcp-config", a different flag/JSON-shape than
   // Claude's --mcp-config but the same capability concept (B.6).
-  copilot: { resume: true, background: false, supervisor: false, scatter: true, toolGating: true, structuredOutput: false, effort: { supported: true, flag: '--effort' }, persistentChat: false, selfPause: true, partialDeltas: false, permissionGating: false, nativeAskBlocked: false, spawnTimeMcpConfig: true, imageAttachments: false },
+  copilot: { resume: true, background: false, supervisor: false, scatter: true, toolGating: true, structuredOutput: false, effort: { supported: true, flag: '--effort' }, persistentChat: false, selfPause: true, partialDeltas: false, permissionGating: false, nativeAskBlocked: false, spawnTimeMcpConfig: true, imageAttachments: false, chatEditGateEnforced: false },
 };
 
 // FLUX-905 (audit C.17): model-family name fragments per framework, for detecting whether a

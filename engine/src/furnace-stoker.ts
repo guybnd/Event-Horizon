@@ -1395,11 +1395,22 @@ let worktreePoolRefreshedAt = 0;
  * could hand back a read that started BEFORE the reclaim — stale. So a forced call always waits out any
  * in-flight read first, then issues its own — sequenced, not concurrent, so a slow in-flight read can't
  * clobber the forced one's fresher result by finishing later.
+ *
+ * FLUX-1192: two forced calls can both be waiting on the SAME prior in-flight read and resume around the
+ * same microtask tick, each about to start its own fresh read and overwrite `worktreePoolInFlight`.
+ * Re-check after the wait: if some other caller already installed a newer promise while we were waiting,
+ * piggyback on it instead of clobbering it with a redundant `git worktree list` — it still reflects state
+ * observed after our own reclaim, since it can only have started once the prior read (which we both
+ * awaited) resolved.
  */
 export async function refreshWorktreePool(opts: { force?: boolean } = {}): Promise<void> {
   if (worktreePoolInFlight && !opts.force) return worktreePoolInFlight;
   if (!opts.force && Date.now() - worktreePoolRefreshedAt < WORKTREE_POOL_TTL_MS) return;
-  if (opts.force && worktreePoolInFlight) await worktreePoolInFlight.catch(() => {});
+  if (opts.force && worktreePoolInFlight) {
+    const priorInFlight = worktreePoolInFlight;
+    await priorInFlight.catch(() => {});
+    if (worktreePoolInFlight && worktreePoolInFlight !== priorInFlight) return worktreePoolInFlight;
+  }
   worktreePoolInFlight = (async () => {
     try {
       const root = requireWorkspaceRoot();

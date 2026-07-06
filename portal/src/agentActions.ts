@@ -241,7 +241,7 @@ export function phaseCombiner(phase: LaunchPhase, mode?: OrchestrationMode, conf
     case 'grooming': return { personaId: 'planner', label: 'Planner' };
     case 'implementation': return { personaId: 'dev-lead', label: 'Dev Lead' };
     case 'review': return { personaId: 'orchestrator', label: 'Review Lead' };
-    default: return { personaId: 'coordinator', label: 'Coordinator' };
+    default: return { personaId: 'supervisor', label: 'Supervisor' };
   }
 }
 
@@ -369,6 +369,7 @@ export async function launchOrchestration(opts: {
         steps,
         skipPermissions,
         effortOverride,
+        phase,
       });
     } catch (err) {
       throw new Error(`Failed to register relay chain: ${err instanceof Error ? err.message : 'unknown'}`, { cause: err });
@@ -478,6 +479,7 @@ export async function launchOrchestration(opts: {
         groupId,
         role: lead.role,
         personaId: lead.personaId,
+        phase,
         expectedWorkers: participants.length,
         skipPermissions,
         groupType: def.pattern,

@@ -173,6 +173,53 @@ async function listWorktrees(runner: GitRunner, workspaceRoot: string): Promise<
   return parseWorktreeListPorcelain(stdout);
 }
 
+// ── Read-path registered-worktree cache (FLUX-1182) ─────────────────────────────
+//
+// `resolveResumeExecutionRoot` calls `isRegisteredWorktree` on EVERY resumed turn (not just the
+// first) — a deliberate FLUX-1120 correctness fix that replaced what used to be a bare in-process
+// `existsSync` check with a `git worktree list` subprocess. That's a new recurring cost on the
+// hottest possible path (every message sent to every resumed session). Mirror the
+// `reconcileBatchCached` TTL pattern (FLUX-1145 / d329715f — the near-identical "poll re-runs an
+// expensive ground-truth check every request" shape) so a burst of turns against the same repo
+// within the TTL window shares one `git worktree list` instead of re-shelling out per turn. Keyed
+// by workspaceRoot: one shared list serves every ticket's resume check against that repo. A query
+// FAILURE is never cached — `isRegisteredWorktree` falls back to `existsSync` on failure the same
+// as before, and caching that failure would mask it as a completed pass for the rest of the TTL
+// window (the FLUX-1145 review fix for the furnace reconcile gate, mirrored here for the same
+// reason). `createTaskWorktree`/`removeTaskWorktree`/`pruneTaskWorktrees` invalidate their
+// workspaceRoot's entry on entry, so a create/remove that lands in the same process is never
+// masked by a stale list for the rest of the TTL window. FLUX-1195: the entry invalidation alone
+// leaves a window between it and the mutating git command actually completing — a concurrent read
+// that lands in that window can re-cache a pre-mutation snapshot for the rest of the TTL. Only
+// `createTaskWorktree` needs a second, post-mutation invalidation to narrow that window (remove/
+// prune are already covered by `isRegisteredWorktree`'s own `existsSync` check, per FLUX-1195).
+const WORKTREE_LIST_READ_TTL_MS = 3_000;
+const worktreeListReadCache = new Map<string, { entries: WorktreeEntry[]; at: number }>();
+const worktreeListReadInFlight = new Map<string, Promise<WorktreeEntry[]>>();
+
+function invalidateWorktreeListCache(workspaceRoot: string): void {
+  worktreeListReadCache.delete(workspaceRoot);
+}
+
+async function listWorktreesCached(runner: GitRunner, workspaceRoot: string): Promise<WorktreeEntry[]> {
+  const cached = worktreeListReadCache.get(workspaceRoot);
+  if (cached && Date.now() - cached.at < WORKTREE_LIST_READ_TTL_MS) return cached.entries;
+  const inFlight = worktreeListReadInFlight.get(workspaceRoot);
+  if (inFlight) return inFlight;
+  const p = (async () => {
+    try {
+      const { stdout } = await runner(workspaceRoot, ['worktree', 'list', '--porcelain']);
+      const entries = parseWorktreeListPorcelain(stdout);
+      worktreeListReadCache.set(workspaceRoot, { entries, at: Date.now() });
+      return entries;
+    } finally {
+      worktreeListReadInFlight.delete(workspaceRoot);
+    }
+  })();
+  worktreeListReadInFlight.set(workspaceRoot, p);
+  return p;
+}
+
 async function localBranchExists(runner: GitRunner, workspaceRoot: string, branch: string): Promise<boolean> {
   try {
     await runner(workspaceRoot, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]);
@@ -208,6 +255,10 @@ export async function createTaskWorktree(
   const baseBranch = opts.baseBranch ?? 'master';
   const target = taskWorktreeDir(workspaceRoot, ticketId);
   const base = taskWorktreesBaseDir(workspaceRoot);
+  // FLUX-1182: this may add/repair a registered worktree below — drop the cached
+  // `isRegisteredWorktree` read so a resume check racing this call never sees a
+  // pre-mutation list for the rest of the TTL window.
+  invalidateWorktreeListCache(workspaceRoot);
 
   // Reconcile records of worktrees whose dirs were removed out of band first, so
   // neither the branch-exclusivity guard nor the concurrency cap trips on a
@@ -249,6 +300,9 @@ export async function createTaskWorktree(
     await runner(workspaceRoot, ['worktree', 'repair', target]).catch((err) =>
       console.error('[task-worktree] worktree repair on orphaned tree failed:', err),
     );
+    // FLUX-1195: repair just changed the registered set — invalidate again so a read racing
+    // this call isn't served a pre-repair snapshot for the rest of the TTL window.
+    invalidateWorktreeListCache(workspaceRoot);
     const repaired = (await listWorktrees(runner, workspaceRoot)).find((w) =>
       pathsEqual(w.path, target),
     );
@@ -314,6 +368,11 @@ export async function createTaskWorktree(
     ? ['worktree', 'add', target, branch]
     : ['worktree', 'add', '-b', branch, target, baseBranch];
   await runner(workspaceRoot, args);
+  // FLUX-1195: the entry invalidation above covers the whole function body's window, but a read
+  // that lands between it and this mutation actually completing could still cache a pre-mutation
+  // (missing-entry) snapshot for the rest of the TTL window. Invalidate again right after the
+  // mutation itself completes, narrowing the race to the mutation's own subprocess duration.
+  invalidateWorktreeListCache(workspaceRoot);
 
   // Make the worktree runnable by sharing the main tree's installed deps
   // (best-effort; no-op when the repo has no node_modules) — FLUX-518.
@@ -341,6 +400,9 @@ export async function removeTaskWorktree(
   opts: { gitRunner?: GitRunner } = {},
 ): Promise<void> {
   const runner = opts.gitRunner ?? defaultGitRunner;
+  // FLUX-1182: this removes a registered worktree below — drop the cached
+  // `isRegisteredWorktree` read (see createTaskWorktree for the same rationale).
+  invalidateWorktreeListCache(workspaceRoot);
   // FLUX-579: tear down any engine-managed shared MCP server(s) pinned to THIS
   // worktree before the tree is removed — their (module, worktree) key won't be
   // requested again and the server would otherwise linger pointing at a gone tree.
@@ -516,6 +578,9 @@ export async function pruneTaskWorktrees(
   opts: { gitRunner?: GitRunner } = {},
 ): Promise<void> {
   const runner = opts.gitRunner ?? defaultGitRunner;
+  // FLUX-1182: prune can deregister worktrees below — drop the cached
+  // `isRegisteredWorktree` read (see createTaskWorktree for the same rationale).
+  invalidateWorktreeListCache(workspaceRoot);
   await runner(workspaceRoot, ['worktree', 'prune']).catch(() => {});
 }
 
@@ -616,13 +681,13 @@ export async function isRegisteredWorktree(
   opts: { gitRunner?: GitRunner } = {},
 ): Promise<boolean> {
   const runner = opts.gitRunner ?? defaultGitRunner;
-  let stdout: string;
+  let entries: WorktreeEntry[];
   try {
-    ({ stdout } = await runner(workspaceRoot, ['worktree', 'list', '--porcelain']));
+    entries = await listWorktreesCached(runner, workspaceRoot);
   } catch {
     return existsSync(executionRoot);
   }
-  return parseWorktreeListPorcelain(stdout).some((w) => pathsEqual(w.path, executionRoot) && existsSync(w.path));
+  return entries.some((w) => pathsEqual(w.path, executionRoot) && existsSync(w.path));
 }
 
 /**
@@ -836,6 +901,29 @@ export async function worktreeChangeCount(
 }
 
 /**
+ * Count of genuinely UNCOMMITTED changes in `worktreePath` — working-tree modifications plus
+ * untracked files, from `git status --porcelain` against the worktree's own HEAD. Unlike
+ * {@link worktreeChangeCount} (a diff against a base branch), this can't be inflated by base-branch
+ * drift: a worktree whose branch has zero commits of its own (e.g. a review-confirmation ticket
+ * whose fix already shipped under a different PR) is byte-identical to the commit it was cut
+ * from, but `master` may have moved on since — a diff-vs-base count would then misreport every
+ * file master changed afterward as "uncommitted work" in THIS worktree (FLUX-1121). Excludes the
+ * shared node_modules junctions like `worktreeIsDirty`. Best-effort: returns 0 when the worktree
+ * is gone or git errors.
+ */
+export async function worktreeUncommittedCount(
+  worktreePath: string,
+  opts: { gitRunner?: GitRunner } = {},
+): Promise<number> {
+  const runner = opts.gitRunner ?? defaultGitRunner;
+  if (!existsSync(worktreePath)) return 0;
+  const { stdout } = await runner(worktreePath, ['status', '--porcelain', '--', '.', ...depNodeModulesExcludePathspecs()]).catch(
+    () => ({ stdout: '' }),
+  );
+  return stdout.split('\n').map((l) => l.trim()).filter(Boolean).length;
+}
+
+/**
  * Boolean dirty-check for a live worktree (FLUX-1125), excluding the shared node_modules
  * junctions via `depNodeModulesExcludePathspecs` — see that helper's comment for why this can't
  * unlink-then-check like `reclaimWorktrees` does. A failed git call reports dirty (fail-safe: the
@@ -919,6 +1007,28 @@ export async function writeWorktreeSerenaOverride(
   await excludeSerenaOverrideFromGitStatus(worktreePath, opts.gitRunner ?? defaultGitRunner);
 }
 
+// Per-repo write serialization (FLUX-1162), same shape as ticketWriteChains in task-store.ts.
+// Two createTaskWorktree calls racing on the SAME repo (e.g. two worktrees created back-to-back)
+// could otherwise both read info/exclude before either appends, each concluding the line is
+// missing and duplicating it. A per-excludePath promise chain serializes writes to the SAME
+// repo's info/exclude while writes for DIFFERENT repos stay parallel.
+const excludeWriteChains = new Map<string, Promise<unknown>>();
+
+function serializeExcludeWrite<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const prev = excludeWriteChains.get(key) ?? Promise.resolve();
+  // Chain onto the previous write whether it resolved or rejected, so one failed write
+  // doesn't wedge the queue for that repo.
+  const result = prev.then(run, run);
+  // Keep a non-rejecting tail as the chain head, and prune the map entry once this is the
+  // last write in flight so the map doesn't grow unbounded across many repos.
+  const tail = result.then(() => {}, () => {});
+  excludeWriteChains.set(key, tail);
+  void tail.then(() => {
+    if (excludeWriteChains.get(key) === tail) excludeWriteChains.delete(key);
+  });
+  return result;
+}
+
 /**
  * Append `.serena/project.local.yml` to this repo's local (never-committed)
  * git-exclude file so the override written above doesn't leave worktrees
@@ -940,23 +1050,27 @@ async function excludeSerenaOverrideFromGitStatus(
     const { stdout } = await gitRunner(worktreePath, ['rev-parse', '--git-common-dir']);
     const gitCommonDir = path.resolve(worktreePath, stdout.trim());
     const excludePath = path.join(gitCommonDir, 'info', 'exclude');
-    let existing = '';
-    try {
-      existing = await fs.readFile(excludePath, 'utf8');
-    } catch {
-      // info/exclude doesn't exist yet — created below.
-    }
-    const alreadyExcluded = existing
-      .split('\n')
-      .some((line) => line.trim() === SERENA_PROJECT_LOCAL_GITIGNORE_PATTERN);
-    if (alreadyExcluded) return;
-    await fs.mkdir(path.dirname(excludePath), { recursive: true });
-    const needsLeadingNewline = existing.length > 0 && !existing.endsWith('\n');
-    await fs.appendFile(
-      excludePath,
-      `${needsLeadingNewline ? '\n' : ''}${SERENA_PROJECT_LOCAL_GITIGNORE_PATTERN}\n`,
-      'utf8',
-    );
+    // Serialize the read-check-append critical section per excludePath (FLUX-1162) — the
+    // rev-parse above is safe to run concurrently, only the file read-modify-write races.
+    await serializeExcludeWrite(excludePath, async () => {
+      let existing = '';
+      try {
+        existing = await fs.readFile(excludePath, 'utf8');
+      } catch {
+        // info/exclude doesn't exist yet — created below.
+      }
+      const alreadyExcluded = existing
+        .split('\n')
+        .some((line) => line.trim() === SERENA_PROJECT_LOCAL_GITIGNORE_PATTERN);
+      if (alreadyExcluded) return;
+      await fs.mkdir(path.dirname(excludePath), { recursive: true });
+      const needsLeadingNewline = existing.length > 0 && !existing.endsWith('\n');
+      await fs.appendFile(
+        excludePath,
+        `${needsLeadingNewline ? '\n' : ''}${SERENA_PROJECT_LOCAL_GITIGNORE_PATTERN}\n`,
+        'utf8',
+      );
+    });
   } catch (err) {
     console.error(`[task-worktree] failed to exclude Serena override for ${worktreePath}:`, err);
   }

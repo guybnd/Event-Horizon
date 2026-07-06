@@ -722,6 +722,8 @@ export interface RegisterCombinerOptions {
   appendPrompt?: string;
   /** Resolve the combiner prompt server-side from a persona catalog id. */
   personaId?: string;
+  /** Launch phase — picks the shared phase contract composed onto the persona's lens. */
+  phase?: string;
   expectedWorkers: number;
   skipPermissions?: boolean;
   groupType?: string;
@@ -743,6 +745,7 @@ export async function registerDeferredCombiner(taskId: string, opts: RegisterCom
   };
   if (opts.appendPrompt) body.appendPrompt = opts.appendPrompt;
   if (opts.personaId) body.personaId = opts.personaId;
+  if (opts.phase) body.phase = opts.phase;
   if (opts.groupType) body.groupType = opts.groupType;
   if (opts.groupVariant) body.groupVariant = opts.groupVariant;
 
@@ -782,6 +785,8 @@ export interface RegisterRelayOptions {
   steps: RelayStepDef[];
   skipPermissions?: boolean;
   effortOverride?: string;
+  /** Launch phase shared by every step — picks each step's phase contract. */
+  phase?: string;
 }
 
 /**
@@ -799,6 +804,7 @@ export async function registerRelayChain(taskId: string, opts: RegisterRelayOpti
       steps: opts.steps,
       skipPermissions: opts.skipPermissions ?? true,
       effortOverride: opts.effortOverride ?? '',
+      ...(opts.phase ? { phase: opts.phase } : {}),
     }),
   });
   if (!res.ok) {
@@ -1196,6 +1202,28 @@ export async function resolveBoardRebase(
     return res.json();
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') return { ok: false, results: [], timedOut: true };
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * FLUX-966: fetch the on-demand "Board Health" signals fragment (stale Grooming/Require Input,
+ * orphaned subtasks, duplicate titles, dead PRs) for the portal to bake into the canned prompt it
+ * sends the board orchestrator. The dead-PR check shells out to `gh pr view` per branch (capped
+ * engine-side), so this can take a few seconds on a large board — 20s ceiling so the trigger
+ * button can't hang forever on a wedged engine.
+ */
+export async function fetchTriageSignals(): Promise<string | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20_000);
+  try {
+    const res = await fetch(`${API_URL}/board/triage-signals`, { signal: controller.signal });
+    if (!res.ok) return null;
+    const payload = await res.json();
+    return typeof payload.fragment === 'string' ? payload.fragment : null;
+  } catch {
     return null;
   } finally {
     clearTimeout(timer);

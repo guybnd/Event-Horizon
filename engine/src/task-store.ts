@@ -1496,6 +1496,10 @@ export async function initDir() {
     // between its awaits, so a large board can hold the event loop for whole seconds
     // straight through. Yield every RESCAN_YIELD_EVERY files so concurrent requests
     // (and the perf sampler) get a turn instead of queuing behind the entire rescan.
+    // FLUX-1190: confirmed on a live ~1,525-ticket board that this only bounds
+    // cumulative multi-file loop time — a single pathological loadTask() call (seen up
+    // to 2.25s) still blows past the stall threshold on its own. Root cause tracked
+    // separately in FLUX-1202.
     const RESCAN_YIELD_EVERY = 50;
     let loadedSinceYield = 0;
     for (const name of fluxFiles) {

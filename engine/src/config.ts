@@ -130,6 +130,11 @@ export let configCache: any = {
   furnaceSettings: {
     rateLimitRetryIntervalMs: 20 * 60 * 1000, // 20 min
     rateLimitMaxWaitMs: 5 * 60 * 60 * 1000,   // 5 h
+    // FLUX-1175: the Smelter persona's authority mode — 'drafting' (default, manual: every
+    // real burn-lifecycle action needs ask_user_question confirmation) vs 'operator' (autonomous:
+    // full ignite/stop/resume/retry authority once asked to manage a burn). See
+    // SMELTER_MODE_CONTRACTS in orchestration-personas.ts for the composed prompt text.
+    smelterMode: 'drafting',
   },
   agentProgress: {
     enabled: true,

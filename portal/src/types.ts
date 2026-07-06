@@ -30,6 +30,20 @@ export interface AgentSessionEntry {
   pattern?: ExecutionPattern;
 }
 
+/**
+ * FLUX-1147: structured completion handoff (changed files, validation commands run, decisions,
+ * residual risk, docs updated) attached to the `comment` history entry a `change_status` (Ready
+ * move) or `finish_ticket` call writes — a machine-readable companion to the required prose
+ * comment, never a replacement for ticket frontmatter. Mirrors `engine/src/completion-payload.ts`.
+ */
+export interface CompletionPayload {
+  changedFiles?: string[];
+  validation?: { command: string; passed: boolean }[];
+  decisions?: string[];
+  residualRisk?: string;
+  docsUpdated?: string[] | boolean;
+}
+
 export interface BasicHistoryEntry {
   type: 'status_change' | 'comment' | 'activity' | 'agent_message' | 'swimlane_change';
   from?: string;
@@ -45,6 +59,8 @@ export interface BasicHistoryEntry {
   summary?: string;
   /** Pinned entries are never collapsed in the agent digest. */
   pin?: boolean;
+  /** FLUX-1147: present only on some `comment` entries — see `CompletionPayload`. */
+  completion?: CompletionPayload;
 }
 
 export type HistoryEntry = BasicHistoryEntry | AgentSessionEntry;
@@ -415,6 +431,10 @@ export interface Config {
   furnaceSettings?: {
     rateLimitRetryIntervalMs: number;
     rateLimitMaxWaitMs: number;
+    /** FLUX-1175: the Smelter persona's authority mode — 'drafting' (manual, default: every
+     *  real burn-lifecycle action needs confirmation) vs 'operator' (autonomous full authority
+     *  once asked to manage a burn). */
+    smelterMode?: 'drafting' | 'operator';
   };
   agentProgress?: {
     enabled: boolean;

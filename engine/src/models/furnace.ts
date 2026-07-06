@@ -415,14 +415,27 @@ export function isBatchActive(status: BatchStatus): boolean {
  * FLUX-1142: reject a `batch`-type trigger that would point a batch at itself, or form a direct
  * A→B→A cycle (the candidate `ref` already triggers off this batch) — either would deadlock, since
  * neither batch's trigger could ever be satisfied. A `pr`-type trigger can't cycle (its `ref` is a
- * PR url/number, not a batch id), so it always passes. Returns an error message, or `null` if valid.
+ * PR url/number, not a batch id), so it always passes.
+ *
+ * FLUX-1181: also reject arming (a non-null) trigger on a batch that isn't currently `draft` —
+ * `checkTriggers` in the Stoker only evaluates `draft` batches, and `resume` takes a parked/done
+ * batch straight to `burning` without passing back through `draft`, so a trigger armed on a
+ * non-draft batch would be accepted but silently never fire. Clearing a trigger (`null`) is always
+ * allowed, including on a non-draft batch, so a stale/un-firable one can still be removed.
+ *
+ * Returns an error message, or `null` if valid.
  */
 export function validateBatchTrigger(
   batchId: string,
   trigger: BatchTrigger | null | undefined,
   allBatches: readonly FurnaceBatch[],
 ): string | null {
-  if (!trigger || trigger.type !== 'batch') return null;
+  if (!trigger) return null;
+  const self = allBatches.find((b) => b.id === batchId);
+  if (self && self.status !== 'draft') {
+    return 'A trigger can only be armed while the batch is a draft — it is never evaluated once ignited, parked, or done.';
+  }
+  if (trigger.type !== 'batch') return null;
   if (trigger.ref === batchId) return 'A batch cannot trigger off itself.';
   const referenced = allBatches.find((b) => b.id === trigger.ref);
   if (referenced?.trigger?.type === 'batch' && referenced.trigger.ref === batchId) {

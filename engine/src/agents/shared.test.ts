@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { checkBinaryInstalled, resolveClaudeExePath, isDefinitiveNotInstalled, surfaceResumeFailure } from './shared.js';
+import { checkBinaryInstalled, resolveClaudeExePath, isDefinitiveNotInstalled, surfaceResumeFailure, isChatEditGated, chatEditGateNote, prependEditGateNote } from './shared.js';
 import type { CliSessionRecord } from './types.js';
 
 // ─── Mocks for the surfaceResumeFailure tests below (FLUX-1120) ───────────────
@@ -190,5 +190,45 @@ describe('surfaceResumeFailure (FLUX-1120)', () => {
       'worktree reclaimed',
     );
     updateAgentSession.mockResolvedValue(undefined);
+  });
+});
+
+// FLUX-1123: isChatEditGated/chatEditGateNote/prependEditGateNote moved here from claude-code.ts
+// (isChatEditGated) or were added new (the other two) so copilot.ts/gemini.ts can share the same
+// gating decision and get an honest, framework-aware advisory note — neither CLI can actually
+// enforce the FLUX-926 block (no --disallowed-tools equivalent). isChatEditGated's own gating
+// behavior (chat + non-In-Progress) is still locked by claude-code-disallowed-tools.test.ts, which
+// imports it re-exported from claude-code.ts — not duplicated here.
+describe('chatEditGateNote / prependEditGateNote (FLUX-1123)', () => {
+  it('only Claude gets the "the CLI will refuse them" enforced wording', () => {
+    expect(chatEditGateNote('claude')).toContain('the CLI will refuse them');
+    expect(chatEditGateNote('copilot')).not.toContain('the CLI will refuse them');
+    expect(chatEditGateNote('gemini')).not.toContain('the CLI will refuse them');
+  });
+
+  it('Copilot/Gemini get an honest advisory note that does not overclaim a block', () => {
+    for (const framework of ['copilot', 'gemini'] as const) {
+      const note = chatEditGateNote(framework);
+      expect(note).toContain('no enforced file-edit block');
+      expect(note).toContain('FLUX-926');
+    }
+  });
+
+  it('prependEditGateNote only prepends when isChatEditGated is true, and leaves the message untouched otherwise', () => {
+    const gatedSession = { phase: 'chat' as const };
+    const ungatedTask = { status: 'In Progress' };
+    const gatedTask = { status: 'Todo' };
+
+    expect(prependEditGateNote(gatedSession, gatedTask, 'copilot', 'hello')).toBe(
+      `${chatEditGateNote('copilot')}\n\n---\n\nhello`,
+    );
+    expect(prependEditGateNote(gatedSession, ungatedTask, 'copilot', 'hello')).toBe('hello');
+    expect(prependEditGateNote({ phase: 'implementation' as const }, gatedTask, 'copilot', 'hello')).toBe('hello');
+  });
+
+  it('isChatEditGated re-export stays consistent with prependEditGateNote\'s own gating', () => {
+    const session = { phase: 'chat' as const };
+    expect(isChatEditGated(session, { status: 'Todo' })).toBe(true);
+    expect(isChatEditGated(session, { status: 'In Progress' })).toBe(false);
   });
 });

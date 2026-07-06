@@ -2,7 +2,7 @@ import { log } from './log.js';
 import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import matter from 'gray-matter';
 
 const __dir = (() => {
@@ -21,10 +21,59 @@ interface ReleaseConfig {
 }
 
 /** A "Done" ticket queued for release, paired with its parsed frontmatter and source path. */
-interface ReleaseTask {
+export interface ReleaseTask {
   id: string;
   parsed: matter.GrayMatterFile<string>;
   filePath: string;
+}
+
+const GIST_MAX_LENGTH = 120;
+
+/**
+ * Single-line, truncated gist derived from a ticket's most recent `type:'comment'` history
+ * entry — the shape `finish_ticket` writes for its completion comment (`mcp-server.ts`). Returns
+ * `undefined` when no comment entry exists (portal-closed ticket, `merge_tickets` fold, or a
+ * ticket that predates the completion-comment convention) so callers can fall back to the title.
+ */
+export function deriveGist(historyEntries: unknown[]): string | undefined {
+  for (let i = historyEntries.length - 1; i >= 0; i--) {
+    const entry = historyEntries[i];
+    if (!entry || typeof entry !== 'object') continue;
+    const { type, comment } = entry as Record<string, unknown>;
+    if (type !== 'comment' || typeof comment !== 'string') continue;
+    const singleLine = comment.replace(/\s+/g, ' ').trim();
+    if (!singleLine) continue;
+    return singleLine.length > GIST_MAX_LENGTH
+      ? `${singleLine.slice(0, GIST_MAX_LENGTH - 1).trimEnd()}…`
+      : singleLine;
+  }
+  return undefined;
+}
+
+/**
+ * Builds the append-only `## Release {version}` block for the agent-consumable Done-ticket
+ * index (FLUX-1151) — one `- **{id}**: {title}[ — {gist}]` line per released ticket, gist
+ * appended only when `deriveGist` finds one.
+ */
+export function buildDoneIndexBlock(version: string, tasks: ReleaseTask[]): string {
+  let block = `## Release ${version} — ${new Date().toISOString()}\n\n`;
+  for (const t of tasks) {
+    const history = Array.isArray(t.parsed.data.history) ? t.parsed.data.history : [];
+    const gist = deriveGist(history);
+    block += `- **${t.id}**: ${t.parsed.data.title}${gist ? ` — ${gist}` : ''}\n`;
+  }
+  return block + '\n';
+}
+
+/**
+ * Idempotency guard — a `## Release {version}` heading already present means this version was
+ * already indexed. Anchored (line-start + trailing whitespace/end-of-string) rather than a raw
+ * substring check so a shorter/rougher version tag (e.g. `v2` or `v1.0`) never false-positives
+ * against a previously indexed longer one (e.g. `v2.0.0` or `v1.0.1`) and silently drops a release.
+ */
+export function hasExistingVersionBlock(existingContent: string, version: string): boolean {
+  const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^## Release ${escaped}(?:\\s|$)`, 'm').test(existingContent);
 }
 
 /** Resolve release settings with per-field defaults (a raw config may only set one field). */
@@ -133,6 +182,23 @@ async function run() {
   await fs.writeFile(docFilePath, docFileContent, 'utf-8');
   log.info(`Updated release notes at: ${docRelativePath}.md`);
 
+  // Append to the canonical, agent-consumable Done-ticket index (FLUX-1151) — a separate
+  // concern from the per-version notes file above (never conflated with `generateDistinctFiles`),
+  // always appended, never read-modify-rewritten so re-releasing never clobbers prior entries.
+  const indexFilePath = path.join(DOCS_DIR, basePath, 'INDEX.md');
+  let existingIndexContent = '';
+  try {
+    existingIndexContent = await fs.readFile(indexFilePath, 'utf-8');
+  } catch {
+    // No index yet — this is the first release being indexed.
+  }
+  if (hasExistingVersionBlock(existingIndexContent, version)) {
+    log.warn(`INDEX.md already has a "Release ${version}" block — skipping duplicate append.`);
+  } else {
+    await fs.appendFile(indexFilePath, buildDoneIndexBlock(version, tasksToRelease), 'utf-8');
+    log.info(`Appended ${tasksToRelease.length} ticket(s) to ${basePath}/INDEX.md`);
+  }
+
   // Update tasks
   for (const t of tasksToRelease) {
     t.parsed.data.status = 'Released';
@@ -157,4 +223,15 @@ async function run() {
   log.info(`Successfully released ${tasksToRelease.length} tickets as ${version}.`);
 }
 
-run().catch(console.error);
+// Only auto-run when executed directly (`tsx src/release.ts ...`) — not when imported by tests.
+function isMainModule(): boolean {
+  try {
+    return import.meta.url === pathToFileURL(process.argv[1] ?? '').href;
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) {
+  run().catch(console.error);
+}

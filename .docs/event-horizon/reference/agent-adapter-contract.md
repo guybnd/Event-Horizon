@@ -74,15 +74,15 @@ There is a second capabilities table in [`types.ts`](../../../engine/src/agents/
 ```ts
 export const CLI_CAPABILITIES: Record<CliFramework, CliCapabilities> = {
   claude:  { resume: true, background: true,  supervisor: true,  scatter: true, toolGating: true, structuredOutput: true,  effort: { supported: true,  flag: '--effort' },
-             persistentChat: true,  selfPause: true,  partialDeltas: true,  permissionGating: true,  nativeAskBlocked: true,  spawnTimeMcpConfig: true,  imageAttachments: true  },
+             persistentChat: true,  selfPause: true,  partialDeltas: true,  permissionGating: true,  nativeAskBlocked: true,  spawnTimeMcpConfig: true,  imageAttachments: true,  chatEditGateEnforced: true  },
   gemini:  { resume: true, background: true,  supervisor: true,  scatter: true, toolGating: true, structuredOutput: true,  effort: { supported: false },
-             persistentChat: false, selfPause: true,  partialDeltas: false, permissionGating: false, nativeAskBlocked: false, spawnTimeMcpConfig: false, imageAttachments: false },
+             persistentChat: false, selfPause: true,  partialDeltas: false, permissionGating: false, nativeAskBlocked: false, spawnTimeMcpConfig: false, imageAttachments: false, chatEditGateEnforced: false },
   copilot: { resume: true, background: false, supervisor: false, scatter: true, toolGating: true, structuredOutput: false, effort: { supported: true,  flag: '--effort' },
-             persistentChat: false, selfPause: true,  partialDeltas: false, permissionGating: false, nativeAskBlocked: false, spawnTimeMcpConfig: true,  imageAttachments: false },
+             persistentChat: false, selfPause: true,  partialDeltas: false, permissionGating: false, nativeAskBlocked: false, spawnTimeMcpConfig: true,  imageAttachments: false, chatEditGateEnforced: false },
 };
 ```
 
-The `effort` and the seven `persistentChat … imageAttachments` flags are shipped to the portal via **`GET /api/config`** (as `cliCapabilities`) so the UI gates features off capability, not `framework === 'claude'` (FLUX-901; consumed in FLUX-906).
+The `effort` and the eight `persistentChat … chatEditGateEnforced` flags are shipped to the portal via **`GET /api/config`** (as `cliCapabilities`) so the UI gates features off capability, not `framework === 'claude'` (FLUX-901; consumed in FLUX-906).
 
 | Flag | Meaning |
 |------|---------|
@@ -100,6 +100,7 @@ The `effort` and the seven `persistentChat … imageAttachments` flags are shipp
 | `nativeAskBlocked` | The CLI's native `AskUserQuestion` must be disabled (`--disallowed-tools`) — a `claude -p` print-mode limitation. Claude-only. (FLUX-901, B.5) |
 | `spawnTimeMcpConfig` | Accepts a per-spawn MCP config file with phase/tag profile filtering. Claude (`--mcp-config`) and Copilot (`--additional-mcp-config`, a different flag/JSON shape — FLUX-984); gemini `false`. (FLUX-901, B.6; FLUX-984) |
 | `imageAttachments` | Resolves pasted image attachments into the resumed prompt. Claude-only. (FLUX-901, B.7) |
+| `chatEditGateEnforced` | The FLUX-926 ticket-chat file-edit gate (`disallowedToolsArgs`) is a REAL block, not just an advisory prompt note — neither Copilot nor Gemini exposes a `--disallowed-tools`-equivalent flag. Claude-only. Copilot/Gemini instead get `chatEditGateNote`'s best-effort instruction (`shared.ts`), wired into `buildInitialPrompt`'s `editsGated` option and `prependEditGateNote` on resume. (FLUX-1123) |
 
 When you add a new framework, add a row here too.
 

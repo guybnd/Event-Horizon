@@ -557,6 +557,17 @@ describe('validateBatchTrigger (FLUX-1142)', () => {
   it('allows referencing a batch id that does not (yet) exist — resolved-as-deleted is a display concern, not a validation one', () => {
     expect(validateBatchTrigger('A', { type: 'batch', ref: 'ghost' }, [mkBatch({ id: 'A' })])).toBeNull();
   });
+  it('FLUX-1181: rejects arming a trigger on a batch that is not draft (burning/parked/done) — the Stoker only evaluates draft batches', () => {
+    for (const status of ['burning', 'parked', 'done'] as const) {
+      const a = mkBatch({ id: 'A', status });
+      expect(validateBatchTrigger('A', { type: 'pr', ref: '#123' }, [a])).toMatch(/draft/);
+      expect(validateBatchTrigger('A', { type: 'batch', ref: 'B' }, [a, mkBatch({ id: 'B' })])).toMatch(/draft/);
+    }
+  });
+  it('FLUX-1181: still allows clearing (null) a trigger regardless of batch status', () => {
+    const a = mkBatch({ id: 'A', status: 'parked', trigger: { type: 'pr', ref: '#123' } });
+    expect(validateBatchTrigger('A', null, [a])).toBeNull();
+  });
 });
 
 // FLUX-1057 (folded in from the archived FLUX-1049): verdict-gating for mirroring a reviewer's verdict

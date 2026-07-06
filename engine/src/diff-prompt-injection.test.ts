@@ -164,21 +164,26 @@ describe('orchestration-personas — Step 4: reviewer prompts updated', () => {
     }
   });
 
-  it('review-phase personas reference the provided/scoped diff', async () => {
-    const { ORCHESTRATION_PERSONAS } = await import('./orchestration-personas.js');
+  it('review-phase personas reference the provided/scoped diff once composed for the review phase', async () => {
+    // FLUX-1170: the diff-scoping instruction moved out of each persona's own
+    // `.prompt` lens into the shared review-phase contract, composed in by
+    // resolvePersonaPrompt — so this now checks the composed prompt, not the
+    // raw lens text.
+    const { ORCHESTRATION_PERSONAS, resolvePersonaPrompt } = await import('./orchestration-personas.js');
     const reviewPersonas = ORCHESTRATION_PERSONAS.filter(p => p.phases.includes('review'));
 
     for (const persona of reviewPersonas) {
+      const composed = resolvePersonaPrompt(persona.id, undefined, 'review') ?? '';
       const referencesProvidedDiff =
-        /scoped diff/i.test(persona.prompt) ||
-        /diff provided/i.test(persona.prompt) ||
-        /provided diff/i.test(persona.prompt) ||
-        /provided above/i.test(persona.prompt) ||
-        /review the.*diff/i.test(persona.prompt);
+        /scoped diff/i.test(composed) ||
+        /diff provided/i.test(composed) ||
+        /provided diff/i.test(composed) ||
+        /provided above/i.test(composed) ||
+        /review the.*diff/i.test(composed);
 
       expect(
         referencesProvidedDiff,
-        `Persona "${persona.id}" does not reference the provided diff`
+        `Persona "${persona.id}" does not reference the provided diff once composed`
       ).toBe(true);
     }
   });

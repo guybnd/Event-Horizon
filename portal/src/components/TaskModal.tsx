@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { OrchestrationLauncher } from './OrchestrationLauncher';
 import { ReadyForMergePrompt } from './task-modal/ReadyForMergePrompt';
@@ -13,7 +14,10 @@ import { useTaskModalController } from '../hooks/useTaskModalController';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 import type { Task } from '../types';
 
-export function TaskModal() {
+// FLUX-1141: memoized — TaskModal takes no props at all, so this is a guaranteed-safe bail
+// whenever AppContent re-renders for reasons unrelated to the modal (terminal/furnace toggles,
+// the 5s furnace-status poll); its own isModalOpen/modalTask reads still re-render it normally.
+export const TaskModal = memo(function TaskModal() {
   const c = useTaskModalController();
 
   // FLUX-1022: ESC closes the modal via the same guarded path as a backdrop click (unsaved-changes
@@ -339,4 +343,4 @@ export function TaskModal() {
     />
     </>
   );
-}
+});

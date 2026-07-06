@@ -13,6 +13,8 @@ import { marked } from 'marked';
 import { Bold, Code, Eye, Heading1, Heading2, Italic, Link as LinkIcon, List, ListOrdered } from 'lucide-react';
 import { buildUnsupportedImageMessage, uploadTaskImageMarkdownLinks } from '../taskAssetUploads';
 import { normalizeTaskMarkdownBody, resolveTaskMarkdownHref } from '../taskMarkdownUtils';
+import { parseAcceptanceCriteriaProgress } from '../lib/acceptanceCriteria';
+import { EpicProgressBar } from './EpicProgressBar';
 
 type TaskDescriptionSurfaceMode = 'popup' | 'full' | 'backlog';
 
@@ -324,6 +326,10 @@ export function TaskDescriptionSurface({
     return () => document.removeEventListener('pointerdown', handlePointerDown);
   }, [isEditing]);
 
+  // FLUX-1148: advisory "X/Y criteria checked" indicator parsed from the ticket's own
+  // `## Acceptance criteria` body section — null (no badge) when there's no such section.
+  const acceptanceCriteria = parseAcceptanceCriteriaProgress(value);
+
   const overflowClass = mode === 'backlog' ? '' : 'overflow-hidden';
   const surfaceClassName = mode === 'full'
     ? `flex min-h-0 flex-1 flex-col ${overflowClass} rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-white/10 dark:bg-black/20`
@@ -580,9 +586,20 @@ export function TaskDescriptionSurface({
       ) : hidePreviewHeader ? null : (
         <div className="flex items-center justify-between gap-3 border-b border-gray-200 px-4 py-3 text-xs dark:border-white/10">
           <span className="font-bold uppercase tracking-wider text-gray-400">Rendered Markdown</span>
-          <span className={`rounded-full px-3 py-1 font-semibold ${hasPendingLocalDraft ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/10 dark:text-amber-200' : 'bg-gray-100 text-gray-500 dark:bg-white/10 dark:text-gray-300'}`}>
-            {hasPendingLocalDraft ? 'Unsaved draft' : 'Click description to edit'}
-          </span>
+          <div className="flex items-center gap-3">
+            {acceptanceCriteria && (
+              <span
+                className="flex items-center gap-1.5 font-semibold text-gray-500 dark:text-gray-400"
+                title="Acceptance criteria checked (advisory — not a gate)"
+              >
+                <span className="w-12"><EpicProgressBar done={acceptanceCriteria.done} total={acceptanceCriteria.total} fillClass="bg-sky-500 dark:bg-sky-400" /></span>
+                {acceptanceCriteria.done}/{acceptanceCriteria.total} criteria
+              </span>
+            )}
+            <span className={`rounded-full px-3 py-1 font-semibold ${hasPendingLocalDraft ? 'bg-amber-100 text-amber-700 dark:bg-amber-500/10 dark:text-amber-200' : 'bg-gray-100 text-gray-500 dark:bg-white/10 dark:text-gray-300'}`}>
+              {hasPendingLocalDraft ? 'Unsaved draft' : 'Click description to edit'}
+            </span>
+          </div>
         </div>
       )}
 

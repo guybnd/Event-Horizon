@@ -211,6 +211,7 @@ Personas are organized by phase. Built-ins are code-defined (viewable, forkable,
 | Grooming | Context Scout | Repo recon — maps the affected surface and prior art |
 | Grooming | Requirements Interrogator | Surfaces ambiguity, writes acceptance criteria |
 | Grooming | Planner | Combiner — synthesizes scout + interrogator into a plan |
+| Grooming / Implementation | Regrounder | Re-verifies stale point-in-time evidence (FLUX-1048) against current code before planning/coding |
 | Implementation | Test Engineer | TDD — writes failing tests first, no implementation |
 | Implementation | Implementer | Builds to satisfy the test conditions without weakening them |
 | Review | Senior Friendly Dev | Broad single-reviewer pass with severity tags |
@@ -220,13 +221,13 @@ Personas are organized by phase. Built-ins are code-defined (viewable, forkable,
 | Review | Architect Genius | System design, separation of concerns, scalability |
 | Review | Performance Expert | Complexity, hot paths, bundle size, re-renders |
 | Review | UX/UI Expert | Usability, accessibility, interaction design |
-| Finalize | Finalizer | End-to-end ticket finalize: docs check, commit, ticket tidy, merge PR |
+| Review | Reuse & Simplicity Reviewer | DRY — duplicated logic, reinvented helpers, dead code, oversized diffs |
+| Finalize | Finalizer | End-to-end ticket finalize: docs check, ticket tidy, ship, finish |
 | Finalize | Docs Auditor | Verifies .docs and README reflect the shipped changes; fixes drift |
-| Finalize | Committer | Stages the work and creates one clean, well-described commit |
-| Finalize | Ticket Curator | Tidies the ticket title and posts a clear resolution comment |
-| Finalize | PR Merger | Closes and merges the ticket PR when one exists |
+| Finalize | Shipper | Commits the work, pushes, and merges the PR when checks are green |
+| — (phase-agnostic) | Furnace Operator ("Smelter") | Plans/tunes Furnace batches and troubleshoots parked tickets, under a drafting (confirm-gated) or operator (autonomous) authority mode set in `config.furnaceSettings.smelterMode` — see the [Furnace reference](reference/furnace.md#the-smelter-persona-flux-1175) |
 
-The internal **Orchestrator** and **Supervisor** personas are not user-selectable; they are added automatically when the pattern requires a combiner (orchestrator) or lead (supervisor). The phase-specific combiner (`planner` for grooming, `orchestrator` for other phases) is attached when a multi-agent scatter run has 2+ workers.
+The internal **Orchestrator** and **Supervisor** personas are not user-selectable; they are added automatically when the pattern requires a combiner (orchestrator) or lead (supervisor). The phase-specific combiner (`planner` for grooming, `orchestrator` for other phases) is attached when a multi-agent scatter run has 2+ workers. The **Furnace Operator ("Smelter")** is a phase-agnostic `role: 'lead'` persona like these, but IS user-reachable — not via a phase launcher, since it isn't tied to a single ticket's lifecycle, but via the **Chat with Smelter** entry point in the portal's Furnace drawer.
 
 ### Conflict Prevention
 

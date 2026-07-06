@@ -17,7 +17,7 @@ import { appendTranscriptLine } from '../transcript.js';
 import { buildMcpServerEntry } from '../workflow-installer.js';
 import type { AgentAdapter, CliSessionRecord, ProviderManifest } from './types.js';
 import { CLI_CAPABILITIES } from './types.js';
-import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, appendSessionOutput, appendErrorToSession, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, type CliTask } from './shared.js';
+import { EFFORT_LEVELS, type EffortLevel, cleanChildEnv, appendSessionOutput, appendErrorToSession, flushSessionOutput, activityFor, attachStdoutProcessing as sharedAttachStdoutProcessing, buildInitialPrompt, terminalizeResumedExit, surfaceResumeFailure, isChatEditGated, prependEditGateNote, type CliTask } from './shared.js';
 
 const TOOL_ACTIVITY_MAP: Record<string, string> = {
   powershell: 'Running command',
@@ -422,12 +422,20 @@ export async function startCliSession(session: CliSessionRecord, task: CliTask, 
     ? (groomingStatuses.includes(task.status) ? copilotIntegration.groomingModel : copilotIntegration.implementationModel)
     : null;
 
-  const taskPhase = groomingStatuses.includes(task.status) ? 'grooming'
+  // FLUX-1193: prefer the session's own launch phase — set by the caller (routes/cli-session.ts
+  // passes 'chat' for ticket chat, per useChatSession.ts) — over a status-derived guess, mirroring
+  // claude-code.ts's `phase: session.phase`. Without this, a chat session's task.status (e.g. 'Todo')
+  // always fell through to the 'implementation' branch below: buildInitialPrompt's `case 'chat':` —
+  // the ONLY branch that renders the FLUX-926/1123 edit-gate note, and the only one with the
+  // free-form "Conversational session" instructions — was unreachable for Copilot/Gemini chat.
+  const taskPhase = session.phase ?? (groomingStatuses.includes(task.status) ? 'grooming'
     : (task.status === 'In Progress' || task.status === 'Todo') ? 'implementation'
     : task.status === (configCache?.readyForMergeStatus || 'Ready') ? 'review'
-    : undefined;
+    : undefined);
 
-  const initialPrompt = buildInitialPrompt(task, appendPrompt, { phase: taskPhase, framework: 'copilot' });
+  // FLUX-1123: Copilot has no --disallowed-tools equivalent (see FILE_MUTATION_TOOLS's comment in
+  // claude-code.ts), so this can only be an advisory note in the prompt, not a real block.
+  const initialPrompt = buildInitialPrompt(task, appendPrompt, { phase: taskPhase, framework: 'copilot', editsGated: isChatEditGated(session, task) });
 
   const copilotArgs = [
     ...(selectedModel ? ['--model', selectedModel] : []),
@@ -749,10 +757,13 @@ export async function sendCliSessionInput(session: CliSessionRecord, message: st
   });
 
   const safeMessage = message.replace(/\0/g, '');
+  // FLUX-926 / FLUX-1123: same advisory "why is this blocked" note as the initial spawn,
+  // recomputed per resumed turn (Copilot has no real block — see the editsGated comment above).
+  const promptForCli = prependEditGateNote(session, tasksCache[id] as CliTask, 'copilot', safeMessage);
   // FLUX-984: explicit MCP config injection on the resume path too — the gap applies to every spawn.
   const resumeArgs = session.resumeSessionId
-    ? ['-p', safeMessage, '--resume', session.resumeSessionId, '--output-format', 'json', '--yolo', ...buildAdditionalMcpConfigArgs()]
-    : ['-p', safeMessage, '--output-format', 'json', '--yolo', ...buildAdditionalMcpConfigArgs()];
+    ? ['-p', promptForCli, '--resume', session.resumeSessionId, '--output-format', 'json', '--yolo', ...buildAdditionalMcpConfigArgs()]
+    : ['-p', promptForCli, '--output-format', 'json', '--yolo', ...buildAdditionalMcpConfigArgs()];
 
   log.info(`[${id}] Reply spawn, resume=${session.resumeSessionId || 'none'}`);
   const replyProc = spawnCopilot(id, resumeArgs, executionRoot);

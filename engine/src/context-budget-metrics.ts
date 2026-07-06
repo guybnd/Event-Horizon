@@ -27,7 +27,7 @@ function pct(bytes: number, total: number): number {
   return total ? Math.round((bytes / total) * 1000) / 10 : 0;
 }
 
-const SKILL_MODULES = ['orchestrator', 'grooming', 'implementation', 'release', 'mapping'] as const;
+const SKILL_MODULES = ['orchestrator', 'grooming', 'implementation', 'review', 'release', 'mapping'] as const;
 
 function statusToPhase(status?: string): string | undefined {
   if (status === 'Grooming' || status === 'Require Input') return 'grooming';

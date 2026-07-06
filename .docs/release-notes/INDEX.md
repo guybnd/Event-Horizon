@@ -1,0 +1,72 @@
+## Release 1.4.0 — 2026-07-06T01:13:25.210Z
+
+- **FLUX-1113**: S10 follow-ups: test coverage + Retry fallback + telemetry edge case — Merged: S10 follow-ups — test coverage for 'failed' card state, Retry launcher fallback, telemetry-ordering guard.
+- **FLUX-1118**: useFocusTrap: Escape stops closing FloatingPanel if focus drifts outside its container (non-modal gap) — Merged: fix useFocusTrap Escape gap for non-modal traps.
+- **FLUX-1121**: Ready-transition guard misattributes main-checkout dirty state to ticket's isolated worktree — PR squash-merged for branch `flux/FLUX-1121-ready-transition-guard-misattributes-main-checkout-dirty-sta` — advanced to…
+- **FLUX-1123**: FLUX-926 file-edit gate is Claude-only; Copilot/Gemini ticket chat still edits files at any status — PR squash-merged for branch `flux/FLUX-1123-flux-926-file-edit-gate-is-claude-only-copilot-gemini-ticket` — advanced to…
+- **FLUX-1135**: Buttery-smooth portal: trace-driven perf fixes epic
+- **FLUX-1141**: Interaction latency: profile heavy clicks on a prod build, fix the top offender — Merged: interaction-latency fix (memoized wide-rerender subtrees) for the worst prod-build click offender.
+- **FLUX-1147**: Structured completion handoffs: machine-readable Ready/finish payload (changed files, validation, decisions, residual risk) — Merged: structured completion handoffs — optional completion payload on change_status/finish_ticket, persisted on the h…
+- **FLUX-1148**: Acceptance criteria & Definition of Done as first-class ticket fields — Merged: Acceptance Criteria / Definition of Done as a documented body-section convention + advisory portal progress bad…
+- **FLUX-1151**: Centralize release notes into an agent-consumable "what's been done" index — Merged: centralized release-notes INDEX.md (agent-consumable "what's been done" index), wired into reground checks.
+- **FLUX-1159**: FurnaceReportModal: drop dead default export + wire up FURNACE_ACCENT for visual consistency — Merged: FurnaceReportModal drop dead default export + wire up FURNACE_ACCENT.
+- **FLUX-1162**: Guard excludeSerenaOverrideFromGitStatus against concurrent-write races on info/exclude — Merged: guard excludeSerenaOverrideFromGitStatus against concurrent-write races on info/exclude.
+- **FLUX-1165**: Add test coverage for CardCommentBadge gating logic — Merged: added test coverage for CardCommentBadge gating logic.
+- **FLUX-1169**: Fix persona prompt drift: commit-before-Ready, sole-reviewer reviewState, diff base — PR squash-merged for branch `flux/furnace-77d58d3f-persona-overhaul-core` — advanced to Done.
+- **FLUX-1170**: Compose persona prompts server-side: shared phase contract + persona lens — PR squash-merged for branch `flux/furnace-77d58d3f-persona-overhaul-core` — advanced to Done.
+- **FLUX-1171**: Add review-phase skill module (event-horizon-review) — PR squash-merged for branch `flux/furnace-77d58d3f-persona-overhaul-core` — advanced to Done.
+- **FLUX-1172**: Dedup skill modules: hoist shared invariants into the orchestrator module — Merged shared batch PR #359: FLUX-1169 (persona prompt drift fixes), FLUX-1170 (server-side composition of shared phase…
+- **FLUX-1173**: New persona: DRY / Reuse & Simplicity reviewer — PR squash-merged for branch `flux/FLUX-1173-new-persona-dry-reuse-simplicity-reviewer` — advanced to Done.
+- **FLUX-1174**: New persona: Regrounder — executes the FLUX-1048 reground as a delegable step — Merged: new Regrounder persona executing the FLUX-1048 reground ritual as a delegable step.
+- **FLUX-1175**: New persona: Furnace Operator ("Smelter") — furnace-owning chat persona — Merged: new Furnace Operator ("Smelter") lead persona with drafting/operator mode setting and portal Furnace-drawer cha…
+- **FLUX-1176**: New persona: Epic Decomposer — split L/XL tickets into Furnace-sized subtasks — PR squash-merged for branch `flux/FLUX-1176-new-persona-epic-decomposer-split-l-xl-tickets-into-furnace-` — advanced to…
+- **FLUX-1177**: Merge Coordinator into Supervisor; retire the redundant generic lead — PR squash-merged for branch `flux/FLUX-1177-merge-coordinator-into-supervisor-retire-the-redundant-gener` — advanced to…
+- **FLUX-1178**: Consolidate finalize personas: absorb Ticket Curator, merge Committer + PR Merger into Shipper — PR squash-merged for branch `flux/FLUX-1178-consolidate-finalize-personas-absorb-ticket-curator-merge-co` — advanced to…
+- **FLUX-1180**: FLUX-1022 follow-up: ESC polish — typing-guard nuance + test coverage — Merged: FLUX-1022 follow-up ESC polish — typing-guard nuance + test coverage.
+- **FLUX-1181**: Furnace trigger editor allows arming a trigger on parked/done batches that can never fire — Merged: Furnace trigger editor now gates arming to draft-status batches only, matching what checkTriggers actually eval…
+- **FLUX-1182**: FLUX-1120 follow-up: board tee gap + per-turn git subprocess cost on resume — Merged: FLUX-1120 follow-up — board tee gap + per-turn git subprocess cost on resume.
+- **FLUX-1190**: Confirm [perf] event-loop-stall warnings are gone after FLUX-1188's yield fix lands — Merged: documented that FLUX-1188's yield fix doesn't fully eliminate event-loop stalls; follow-up FLUX-1202 tracks the…
+- **FLUX-1191**: Add regression test for `.eh-idle` toggle (20s idle timer pausing ambient CSS loops) — Merged: regression test for the .eh-idle 20s idle timer toggle.
+- **FLUX-1192**: Residual race: concurrent forced refreshWorktreePool() calls can clobber each other's in-flight reference — PR squash-merged for branch `flux/FLUX-1192-residual-race-concurrent-forced-refreshworktreepool-calls-ca` — advanced to…
+- **FLUX-1193**: Add wiring-level regression test for copilot/gemini chat edit-gate note — Merged: wiring-level regression test for copilot/gemini chat edit-gate note — caught and fixed a real bug (taskPhase de…
+- **FLUX-1194**: Deflake task-store-watcher.test.ts incremental-burst test (watch-event overcount on CI) — Merged: deflaked task-store-watcher incremental-burst test (loosened exact-count assertion to the real invariant).
+- **FLUX-1195**: Cache invalidation race: concurrent isRegisteredWorktree read can cache a pre-mutation git worktree list — PR squash-merged for branch `flux/FLUX-1195-cache-invalidation-race-concurrent-isregisteredworktree-read` — advanced to…
+- **FLUX-1196**: FurnaceDrawer re-renders all batches/rows on every poll — memoize cards + skip no-change updates — Merged: FurnaceDrawer fingerprint-skip + memoized cards, killing idle-poll render storms.
+- **FLUX-1197**: Fix stale "seven review personas" comment in orchestration-personas.ts — Merged: fixed stale "seven review personas" comment in orchestration-personas.ts.
+- **FLUX-1198**: getPersonaById: retired-id alias can permanently shadow a same-named custom persona — Merged: getPersonaById now checks for a direct match before falling back to a retired-id alias, closing the same-named-…
+- **FLUX-477**: Epic: MCP token-footprint & agent-context optimization — ## 🌅 Overnight output — 2026-06-30 → morning handoff Shipped **6 PRs**, all at **Ready** (built in isolated worktrees…
+- **FLUX-966**: Triage action: dynamic board-health prompt feeding propose_board_rebase — Merged: new "Board Health" quick action computing real staleness signals in-engine and feeding them into propose_board_…
+- **FLUX-996**: Restore Stability — eliminate hangs & timeouts on agent spawn and ticket actions
+- **PR-357**: PR #357: FLUX-1159: FurnaceReportModal — drop dead default export, wire up FURNACE_ACCENT
+- **PR-359**: PR #359: Fix persona prompt drift: commit-before-Ready, sole-reviewer reviewState, diff base
+- **PR-360**: PR #360: FLUX-926 file-edit gate is Claude-only; Copilot/Gemini ticket chat still edits files at any status
+- **PR-361**: PR #361: Guard excludeSerenaOverrideFromGitStatus against concurrent-write races on info/exclude
+- **PR-362**: PR #362: Add test coverage for CardCommentBadge gating logic
+- **PR-363**: PR #363: FLUX-1180: ESC polish — typing-guard sign-off + useEscapeKey test coverage
+- **PR-364**: PR #364: FLUX-1118: fix useFocusTrap Escape gap for non-modal traps
+- **PR-365**: PR #365: FLUX-1120 follow-up: board tee gap + per-turn git subprocess cost on resume
+- **PR-366**: PR #366: New persona: DRY / Reuse & Simplicity reviewer
+- **PR-367**: PR #367: New persona: Epic Decomposer — split L/XL tickets into Furnace-sized subtasks
+- **PR-368**: PR #368: New persona: Regrounder — executes the FLUX-1048 reground as a delegable step — Resolved the merge conflict against origin/master: two docs conflicts (`.docs/event-horizon/architecture/code-map.md` p…
+- **PR-369**: PR #369: Consolidate finalize personas: absorb Ticket Curator, merge Committer + PR Merger into Shipper
+- **PR-370**: PR #370: Merge Coordinator into Supervisor; retire the redundant generic lead
+- **PR-371**: PR #371: Ready-transition guard misattributes main-checkout dirty state to ticket's isolated worktree
+- **PR-372**: PR #372: Residual race: concurrent forced refreshWorktreePool() calls can clobber each other's in-flight reference
+- **PR-373**: PR #373: New persona: Furnace Operator ("Smelter") — furnace-owning chat persona
+- **PR-374**: PR #374: Furnace trigger editor allows arming a trigger on parked/done batches that can never fire
+- **PR-375**: PR #375: Interaction latency: profile heavy clicks on a prod build, fix the top offender
+- **PR-376**: PR #376: Confirm [perf] event-loop-stall warnings are gone after FLUX-1188's yield fix lands
+- **PR-377**: PR #377: Add regression test for `.eh-idle` toggle (20s idle timer pausing ambient CSS loops)
+- **PR-378**: PR #378: FurnaceDrawer re-renders all batches/rows on every poll — memoize cards + skip no-change updates
+- **PR-379**: PR #379: S10 follow-ups: test coverage + Retry fallback + telemetry edge case
+- **PR-380**: PR #380: FLUX-1193: wiring-level regression test for copilot/gemini chat edit-gate note
+- **PR-381**: PR #381: Structured completion handoffs: machine-readable Ready/finish payload (changed files, validation, decisions, residual risk)
+- **PR-382**: PR #382: FLUX-1194: Deflake task-store-watcher incremental-burst test
+- **PR-383**: PR #383: FLUX-1195: narrow createTaskWorktree cache-invalidation race window
+- **PR-384**: PR #384: Fix stale "seven review personas" comment in orchestration-personas.ts
+- **PR-385**: PR #385: Acceptance criteria & Definition of Done as first-class ticket fields
+- **PR-386**: PR #386: getPersonaById: retired-id alias can permanently shadow a same-named custom persona
+- **PR-387**: PR #387: Centralize release notes into an agent-consumable "what's been done" index
+- **PR-388**: PR #388: Triage action: dynamic board-health prompt feeding propose_board_rebase
+- **PR-389**: PR #389: New persona: Furnace Operator ("Smelter") — furnace-owning chat persona
+

@@ -12,7 +12,7 @@ Scope: Route the agent to the correct phase-specific skill based on ticket statu
 
 # Event Horizon Agent — Orchestrator
 
-Version: 2.7.0
+Version: 2.9.0
 
 ## Overview
 
@@ -24,6 +24,7 @@ Event Horizon is a local-first ticket board backed by markdown files. Tickets ar
 |---|---|
 | `Grooming`, `Require Input` | grooming skill |
 | `Todo`, `In Progress` | implementation skill |
+| `Ready` — review-phase / reviewer-of-record sessions | review skill |
 | Release orchestration | release skill |
 | Cross-project mapping (multi-repo group) | mapping skill |
 
@@ -153,10 +154,57 @@ If neither MCP tools nor the API are reachable, surface the problem to the user 
 
 Ticket changes that only exist in chat or agent memory are **lost**. The engine is the single source of truth.
 
+## End-of-Turn Action Contract — CRITICAL (FLUX-651/826)
+
+This is the authoritative text — phase skills (grooming, implementation) each carry only a one-line reminder plus their own status-transition mapping and link back here. Read this section once; it applies to every phase.
+
+- **End every working turn on a board action (FLUX-651).** When you finish grooming/implementing/reviewing a ticket — including in a chat/discussion session — you MUST end the turn by moving the ticket to its next status (or `Require Input`, or creating subtasks). Never finish the work and just summarize it in chat: "it was only a discussion turn" is not an exception. If you leave a ticket parked in a working status (`Grooming` / `In Progress`) without an action, the engine flags it **"Needs Action"** on the board and notifies the user.
+- **Raise decisions through a structured surface, regardless of status (FLUX-826).** Any question or decision for the user goes through `ask_user_question` or `Require Input` — never chat prose. This holds on **resting/terminal** tickets too (Done/Ready/Todo/Backlog/Released/Archived): a "should I file a ticket / commit / leave it?" call on a closed ticket typed only into chat has no picker, no notification, and no board flag, so it's lost the moment the user looks away. `Require Input` parks the *current* status (wrong for a Done ticket) — on a resting ticket use `ask_user_question` instead, whose timeout also leaves a persistent "Needs Action" flag as a safety net. A softer backstop also fires on resting/terminal tickets: ending a turn having posted a fresh comment but taken no board action and raised no structured prompt surfaces a needs-action nudge, so a decision buried in a comment on a closed ticket isn't lost. Do not rely on either backstop — route the decision yourself.
+
+## Rich Artifacts (`publish_artifact`) — shared mechanics
+
+`publish_artifact` spans **both ends of the lifecycle** — it is not grooming-exclusive. In grooming it publishes a plan-time **mockup / diagram / prototype** the user reasons *against* before code is written; at `Ready` the implementation skill uses the same tool to publish a **visual recap** of the diff. Same tool, same sandboxed viewer, same revision history — only the timing, content, and phase-specific emit/skip judgment differ (see the grooming and implementation skills for those).
+
+**Whether to emit is YOUR judgment per ticket — there is no tag gate.** Default OFF when unsure; artifacts must stay the exception, not ceremony.
+
+**How to emit — shared mechanics for both phases:**
+- Pass a **complete, self-contained HTML document** as `html`: inline `<style>`/`<script>`. **Default to hand-written inline CSS** — an artifact is a single document, so a small `<style>` block is enough and renders instantly. Mermaid (`https://cdn.jsdelivr.net`) is loadable via `<script>` tag for diagrams. The Tailwind Play CDN (`https://cdn.tailwindcss.com`) is still allowed but is a **heavy last resort, not the default**: it's an in-browser compiler that recompiles on every DOM mutation and has measured 1-2s+ main-thread freezes per load — reach for it only when a utility framework meaningfully speeds up a complex prototype. Lean on the **`frontend-design`** skill for high-quality markup.
+- It renders in a **sandboxed, opaque-origin iframe**: it CANNOT reach the portal, cookies, or storage, and CANNOT make network requests (no fetch/XHR — `connect-src` is blocked). Everything it needs must be inlined or come from the allowed CDNs. Do not rely on external API calls or `localStorage`.
+- Do **not** inline the HTML into the ticket body (the body is injected into every session and has a 10K soft limit) — `publish_artifact` stores it in a sidecar.
+- Every call is a **new revision** (history is kept — never an overwrite). Add a `title` and, when revising, a `note` on what changed. The viewer defaults to the latest revision.
+- **Annotation round-trip (FLUX-874/875/892):** the user can annotate the rendered artifact two ways — **select text** (a floating composer pops up at the selection) or **right-click any element** (FLUX-892), which anchors to non-text controls — toggles, SVG chart bars, buttons — that have no selectable text. Either way they **collect several notes before sending them together**. They arrive as **one** chat message starting with `🎯 Artifact annotations`: text picks list the selected excerpt (`> …`), element picks show the element label (`⊙ \`button "Save"\``); both carry a CSS-path anchor (`_anchor:_`) plus the user's note. When you receive one, revise the artifact to address **every** listed region and call `publish_artifact` again (with a `note` on what changed) so the new revision streams back to the viewer. (The viewer also offers a full-screen mode for reviewing large artifacts.) Right-click annotates the artifact **as-is** — no handles or chrome are injected into your markup, so author the design however you like.
+
+### Richer artifact kinds (FLUX-875) — diagrams, mockups, charts, prototypes
+
+Because the artifact is a **real HTML page** rendered entirely by the sandboxed iframe, you are not limited to static markup — pick the form that makes the *shape of the thing* easiest to react to:
+
+- **Mermaid diagrams** (flowcharts, sequence, ERD, state) — best for architecture/data-flow tickets. Load Mermaid from jsDelivr and let it render a `<pre class="mermaid">` block:
+  ```html
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ startOnLoad: true });
+  </script>
+  <pre class="mermaid">
+  flowchart LR
+    A[publish_artifact] --> B[(sidecar .flux/artifacts)]
+    B --> C[GET /api/tasks/:id/artifact] --> D[sandboxed iframe]
+  </pre>
+  ```
+- **SVG mockups** — hand-author inline `<svg>` (or inline-CSS-styled `<div>`s) for a UI wireframe the user can eyeball against their mental model.
+- **Charts / data shapes** — inline SVG or a chart lib from an allowed CDN (jsDelivr/unpkg). No network calls at runtime (`connect-src` is blocked), so inline the data.
+- **Clickable prototypes** — hand-written inline CSS plus a little inline `<script>` for tab/toggle interactions, so the user can click through a flow. Reach for the Tailwind Play CDN (`https://cdn.tailwindcss.com`) only for a complex, heavily-styled multi-state prototype where a utility framework earns its keep — it's a heavy last resort (see above), not the default.
+
+Everything still renders inside the same opaque-origin sandbox (no portal/cookie/storage access, no fetch/XHR) — keep it self-contained.
+
+### Layout-audit gate (FLUX-875) — keep artifacts visually clean
+
+On open (and on every new revision) the viewer runs an automatic **layout audit** inside the iframe and **masks the artifact until it passes**. It checks four conservative failure modes: **`overflow-x`** (page wider than the viewport), **`off-canvas`** (an element spilling past a viewport edge), **`clipped`** (`overflow:hidden`/`clip` cutting off real text), and **`overlap`** (two text blocks rendering on top of each other). When it fails, the user can send the warnings back to you — they arrive as a chat message starting with **`🧪 Layout audit failed`**, listing each `kind`, the element selector, and the measured problem.
+
+**When you receive a `🧪 Layout audit failed` message, treat it like an annotation:** fix the offending layout (constrain widths, wrap/scroll long content, fix positioning) and call `publish_artifact` again with a `note` on what you changed, so the corrected revision re-runs the audit. To avoid tripping the gate in the first place: give the document a sane root width, prefer responsive/flow layouts over fixed pixel widths wider than the frame, and don't absolutely-position text blocks over each other.
+
 ## Critical Rules
 
-- **End every working turn on a board action (FLUX-651).** When you finish grooming/implementing/reviewing a ticket — including in a chat/discussion session — you MUST end the turn by moving the ticket to its next status (or `Require Input`, or creating subtasks). Never finish the work and just summarize it in chat: the engine flags such a ticket "Needs Action" on the board and notifies the user. "It was only a discussion turn" is not an exception.
-- **Raise decisions through a structured surface, regardless of status (FLUX-826).** Any question or decision for the user goes through `ask_user_question` or `Require Input` — never chat prose. This holds on **resting/terminal** tickets too (Done/Ready/Todo/Backlog/Released/Archived): a "should I file a ticket / commit / leave it?" call on a closed ticket typed only into chat has no picker, no notification, and no board flag, so it's lost the moment the user looks away. `Require Input` parks the *current* status (wrong for a Done ticket) — on a resting ticket use `ask_user_question`, whose timeout now also leaves a persistent "Needs Action" flag as a safety net.
+- **End-of-Turn Action Contract (FLUX-651/826)** — see the dedicated section above; it applies to every phase and every session, chat/discussion turns included.
 - NEVER use Write, Edit, or Bash to modify files in `.flux/` or `.flux-store/`. These paths are engine-managed.
 - Treat ticket files as schema-sensitive. The engine validates and rejects malformed writes.
 - Do not delete ticket history; append only.

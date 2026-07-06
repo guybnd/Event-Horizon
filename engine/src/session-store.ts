@@ -369,6 +369,9 @@ export interface PendingRelaySpec {
   steps: RelayStep[];
   /** Index of the step currently running. */
   currentStep: number;
+  /** FLUX-1170: launch phase shared by every step — picks each step's persona
+   *  prompt contract at resolve time (steps 1+ resolve lazily in the barrier). */
+  phase?: LaunchPhase;
 }
 
 const pendingRelaysByGroup = new Map<string, PendingRelaySpec>();

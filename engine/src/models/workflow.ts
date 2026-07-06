@@ -113,12 +113,12 @@ export const BUILTIN_WORKFLOWS: WorkflowTemplate[] = [
   },
   {
     id: 'builtin-finalize-multi', name: 'Finalize · Pipeline', cliTarget: 'all',
-    phases: { finalize: { pattern: 'relay', steps: ['docs-auditor', 'committer', 'ticket-curator', 'pr-merger'] } },
+    phases: { finalize: { pattern: 'relay', steps: ['docs-auditor', 'shipper'] } },
     createdAt: BUILTIN_TS, updatedAt: BUILTIN_TS, builtIn: true,
   },
   {
     id: 'builtin-finalize-supervisor', name: 'Finalize · Supervisor', cliTarget: 'all',
-    phases: { finalize: { pattern: 'supervisor', lead: 'finalizer', assistants: ['docs-auditor', 'committer'] } },
+    phases: { finalize: { pattern: 'supervisor', lead: 'finalizer', assistants: ['docs-auditor', 'shipper'] } },
     createdAt: BUILTIN_TS, updatedAt: BUILTIN_TS, builtIn: true,
   },
 ];

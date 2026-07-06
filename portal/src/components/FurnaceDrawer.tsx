@@ -10,21 +10,21 @@
 // (create). Clicking a ticket ref opens its NORMAL dock chat (shared TicketRefChip → useDockActions),
 // not a bespoke inline surface (FLUX-1061).
 
-import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createElement, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Flame, Bolt, Zap, Layers, FlaskConical, Filter, Play, Square, Plus, Pencil, ExternalLink,
   Check, GitMerge, AlertTriangle, Clock, X, Trash2, Search, RotateCcw, Hand, Undo2, GripVertical,
-  FileText,
+  FileText, Bot,
 } from 'lucide-react';
 import { useDroppable, DndContext, closestCenter, type DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { useAppSelector, useConfig, useTaskById } from '../store/useAppSelector';
+import { useAppSelector, useAppActions, useConfig, useTaskById } from '../store/useAppSelector';
 import {
   fetchFurnaceBatches, fetchFurnaceSlots, createFurnaceBatch, updateFurnaceBatch,
   appendFurnaceTicket, removeFurnaceTicket, igniteFurnaceBatch, stopFurnaceBatch, deleteFurnaceBatch,
   mergeFurnaceBatch, retryFurnaceTicket, resumeFurnaceBatch, dismissFurnaceTicket,
-  takeoverFurnaceTicket, handBackFurnaceTicket,
+  takeoverFurnaceTicket, handBackFurnaceTicket, startTaskCliSessionEx, BOARD_CONVERSATION_ID,
 } from '../api';
 import type {
   FurnaceBatch, BatchTicket, BatchTicketState, BatchStatus, BatchKind, SlotInfo, BatchPr, FurnaceSlotHolder, BatchTrigger,
@@ -37,6 +37,7 @@ import { useDockActions } from './DockProvider';
 import { TicketRefChip } from './TicketRefChip';
 import { FurnaceReportModal } from './FurnaceReportModal';
 import { fmtDuration } from '../lib/furnaceFormat';
+import { mergeFurnaceBatches } from '../lib/mergeFurnaceBatches';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 
 const POLL_MS = 3000;
@@ -89,11 +90,53 @@ export function FurnaceDrawer({ onClose }: DrawerProps) {
   // New-batch drop zone (a board card dropped here creates a fresh batch — see Board.handleDragEnd).
   const { setNodeRef: setNewDropRef, isOver: newIsOver } = useDroppable({ id: FURNACE_NEW_DROP_ID });
 
+  // FLUX-1175: the Furnace Operator ("Smelter") chat entry point + its drafting/operator
+  // authority mode. The mode is a workspace-wide setting (config.furnaceSettings.smelterMode,
+  // default 'drafting') — the engine composes the matching authority contract into the
+  // Smelter's resolved prompt at launch (see resolvePersonaPrompt in orchestration-personas.ts).
+  const config = useConfig();
+  const { openBoard } = useDockActions();
+  const { saveConfig } = useAppActions();
+  const [startingSmelter, setStartingSmelter] = useState(false);
+  const smelterMode = config?.furnaceSettings?.smelterMode === 'operator' ? 'operator' : 'drafting';
+
+  const setSmelterMode = useCallback(async (mode: 'drafting' | 'operator') => {
+    if (!config || mode === smelterMode) return;
+    await saveConfig({
+      ...config,
+      furnaceSettings: {
+        rateLimitRetryIntervalMs: config.furnaceSettings?.rateLimitRetryIntervalMs ?? 20 * 60 * 1000,
+        rateLimitMaxWaitMs: config.furnaceSettings?.rateLimitMaxWaitMs ?? 5 * 60 * 60 * 1000,
+        smelterMode: mode,
+      },
+    });
+  }, [config, smelterMode, saveConfig]);
+
+  const chatWithSmelter = useCallback(async () => {
+    setStartingSmelter(true);
+    setError(null);
+    try {
+      await startTaskCliSessionEx(BOARD_CONVERSATION_ID, {
+        personaId: 'smelter',
+        phase: 'chat',
+        appendPrompt: "Hi — I'd like your help with the Furnace: what's the state of the backlog and what should we burn next?",
+      });
+      openBoard();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to start a Smelter chat');
+    } finally {
+      setStartingSmelter(false);
+    }
+  }, [openBoard]);
+
   const refresh = useCallback(async () => {
     try {
       const [b, s] = await Promise.all([fetchFurnaceBatches(), fetchFurnaceSlots()]);
-      setBatches(b);
-      setSlots(s);
+      // FLUX-1196: an idle poll returns byte-identical data every ~3s. Reusing the previous
+      // batch references (and bailing the slots update entirely when unchanged) means `setState`
+      // sees the SAME value it already holds and skips the re-render — no commit, no child churn.
+      setBatches((prev) => mergeFurnaceBatches(prev, b));
+      setSlots((prev) => (prev.used === s.used && prev.free === s.free && prev.max === s.max ? prev : s));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load the Furnace');
@@ -139,6 +182,36 @@ export function FurnaceDrawer({ onClose }: DrawerProps) {
         {onClose && (
           <button onClick={onClose} title="Close" aria-label="Close the Furnace" className="rounded p-0.5" style={{ color: 'var(--eh-text-secondary)' }}><X className="h-3.5 w-3.5" /></button>
         )}
+      </div>
+
+      {/* FLUX-1175: the Furnace Operator ("Smelter") — chat entry point + its authority mode.
+          Drafting (default): every real ignite/stop/resume/retry needs your confirmation in-chat.
+          Operator: full autonomous burn-lifecycle authority once you ask it to manage a burn. */}
+      <div className="flex items-center gap-2 px-3 py-1.5 border-b flex-shrink-0" style={{ borderColor: 'var(--eh-border)' }}>
+        <button
+          onClick={() => void chatWithSmelter()}
+          disabled={startingSmelter}
+          title="Talk to the Furnace Operator — plan a burn or troubleshoot a parked batch"
+          className="inline-flex items-center gap-1.5 rounded px-2 py-1 text-[11px] font-medium disabled:opacity-50"
+          style={{ background: FURNACE_ACCENT, color: '#fff' }}
+        >
+          <Bot className="h-3.5 w-3.5" /> {startingSmelter ? 'Starting…' : 'Chat with Smelter'}
+        </button>
+        <span className="flex-1" />
+        <span className="text-[10px]" style={{ color: 'var(--eh-text-secondary)' }}>Mode</span>
+        <div className="inline-flex rounded overflow-hidden" style={{ border: '1px solid var(--eh-border)' }}>
+          {(['drafting', 'operator'] as const).map((m) => (
+            <button
+              key={m}
+              onClick={() => void setSmelterMode(m)}
+              className="px-2 py-0.5 text-[10px] font-medium"
+              title={m === 'drafting' ? 'Manual — every real burn action needs your confirmation' : 'Autonomous — full burn-lifecycle authority once asked to manage a burn'}
+              style={{ background: smelterMode === m ? FURNACE_ACCENT : 'transparent', color: smelterMode === m ? '#fff' : 'var(--eh-text-secondary)' }}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
       </div>
 
       <SlotBar slots={slots} />
@@ -402,7 +475,26 @@ function SlotBar({ slots }: { slots: SlotInfo }) {
   );
 }
 
-function BatchCard({ batch, allBatches, slots, onChanged }: { batch: FurnaceBatch; allBatches: FurnaceBatch[]; slots: SlotInfo; onChanged: () => Promise<void> }) {
+/**
+ * FLUX-1196: `allBatches` is only used to resolve a trigger badge (label + the popover's candidate
+ * list) — it doesn't need referential equality, just the handful of fields those care about. This
+ * lets a sibling batch's poll update (which always produces a new top-level `batches` array) skip
+ * re-rendering every OTHER batch's card, since `allBatches` compares equal even though its array
+ * reference changed.
+ */
+function triggerRelevantBatchesEqual(a: FurnaceBatch[], b: FurnaceBatch[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (x.id !== y.id || x.title !== y.title || x.status !== y.status) return false;
+    if ((x.trigger?.type ?? '') !== (y.trigger?.type ?? '') || (x.trigger?.ref ?? '') !== (y.trigger?.ref ?? '')) return false;
+  }
+  return true;
+}
+
+const BatchCard = memo(function BatchCard({ batch, allBatches, slots, onChanged }: { batch: FurnaceBatch; allBatches: FurnaceBatch[]; slots: SlotInfo; onChanged: () => Promise<void> }) {
   const tasks = useAppSelector((s) => s.tasks);
   // FLUX-1061: open a furnace ticket in the shared dock chat (same surface the rest of the portal uses)
   // instead of a bespoke inline ChatView. Used by the Completed-summary re-impl action.
@@ -440,6 +532,12 @@ function BatchCard({ batch, allBatches, slots, onChanged }: { batch: FurnaceBatc
     setBusy(true);
     try { await fn(); await onChanged(); } finally { setBusy(false); }
   }, [onChanged]);
+
+  // FLUX-1196: a stable per-batch handler (vs. a fresh closure per ticket row on every render) so
+  // memoized `TicketRow`s don't lose their memoization over an `onRemove` prop that never actually changes.
+  const removeTicket = useCallback((ticketId: string) => {
+    void run(() => removeFurnaceTicket(batch.id, ticketId));
+  }, [batch.id, run]);
 
   const startRename = useCallback(() => {
     renameCancelled.current = false;
@@ -571,10 +669,11 @@ function BatchCard({ batch, allBatches, slots, onChanged }: { batch: FurnaceBatc
       {/* Kind + trigger row */}
       <div className="flex items-center gap-2 px-2 pb-1">
         <KindToggle kind={batch.kind} disabled={!isDraft || busy} onChange={(k) => void run(() => updateFurnaceBatch(batch.id, { kind: k }))} />
-        {/* FLUX-1142: editable while not burning (draft/parked/done — mirrors the engine's own lack of a
-            status guard on `trigger`); always shows the resolved badge so an armed trigger is legible
-            at a glance even mid-burn. */}
-        <TriggerControl batch={batch} allBatches={allBatches} disabled={isBurning} onChanged={onChanged} />
+        {/* FLUX-1181: only editable while `draft` — the Stoker's checkTriggers only evaluates draft
+            batches, and resume takes parked/done straight to burning, so a trigger armed on a
+            non-draft batch would be accepted by the editor but could never actually fire. Always
+            shows the resolved badge (even mid-burn) so an armed trigger stays legible at a glance. */}
+        <TriggerControl batch={batch} allBatches={allBatches} disabled={!isDraft} onChanged={onChanged} />
       </div>
 
       {/* Stats (burning) */}
@@ -592,7 +691,7 @@ function BatchCard({ batch, allBatches, slots, onChanged }: { batch: FurnaceBatc
         <DndContext collisionDetection={closestCenter} onDragEnd={onReorderTickets}>
           <SortableContext items={batch.tickets.map((t) => t.ticketId)} strategy={verticalListSortingStrategy}>
             {batch.tickets.map((t) => (
-              <TicketRow key={t.ticketId} ticket={t} batch={batch} onChanged={onChanged} onRemove={() => void run(() => removeFurnaceTicket(batch.id, t.ticketId))} />
+              <TicketRow key={t.ticketId} ticket={t} batch={batch} onChanged={onChanged} onRemove={removeTicket} />
             ))}
           </SortableContext>
         </DndContext>
@@ -683,9 +782,19 @@ function BatchCard({ batch, allBatches, slots, onChanged }: { batch: FurnaceBatc
       {viewingReport && batch.report && <FurnaceReportModal batch={batch} onClose={() => setViewingReport(false)} />}
     </div>
   );
-}
+}, (prev, next) =>
+  // FLUX-1196: `batch`/`slots.*`/`onChanged` gate everything a card renders; `allBatches` only feeds
+  // the trigger badge, so it's compared field-wise (see `triggerRelevantBatchesEqual`) rather than by
+  // reference — a sibling batch updating (which always produces a fresh top-level array) shouldn't
+  // re-render every other card.
+  prev.batch === next.batch &&
+  prev.onChanged === next.onChanged &&
+  prev.slots.used === next.slots.used &&
+  prev.slots.free === next.slots.free &&
+  prev.slots.max === next.slots.max &&
+  triggerRelevantBatchesEqual(prev.allBatches, next.allBatches));
 
-function TicketRow({ ticket, batch, onChanged, onRemove }: { ticket: BatchTicket; batch: FurnaceBatch; onChanged: () => Promise<void>; onRemove: () => void }) {
+const TicketRow = memo(function TicketRow({ ticket, batch, onChanged, onRemove }: { ticket: BatchTicket; batch: FurnaceBatch; onChanged: () => Promise<void>; onRemove: (ticketId: string) => void }) {
   const meta = STATE_META[ticket.state];
   const canRemove = !(batch.status === 'burning' && ticket.state !== 'queued');
   // FLUX-1082: only a still-queued ticket may be dragged to reorder — one that's started/finished
@@ -758,7 +867,7 @@ function TicketRow({ ticket, batch, onChanged, onRemove }: { ticket: BatchTicket
         )}
 
         {canRemove && (
-          <button onClick={onRemove} title="Remove from batch" aria-label={`Remove ${ticket.ticketId} from batch`} className="opacity-0 group-hover:opacity-100 flex-shrink-0">
+          <button onClick={() => onRemove(ticket.ticketId)} title="Remove from batch" aria-label={`Remove ${ticket.ticketId} from batch`} className="opacity-0 group-hover:opacity-100 flex-shrink-0">
             <X className="h-3 w-3" style={{ color: 'var(--eh-text-muted)' }} />
           </button>
         )}
@@ -766,7 +875,7 @@ function TicketRow({ ticket, batch, onChanged, onRemove }: { ticket: BatchTicket
       {err && <div className="pl-4 text-[10px]" style={{ color: '#f87171' }}>{err}</div>}
     </div>
   );
-}
+});
 
 /**
  * FLUX-1066: the row badge. Ownership beats state — a human-owned ticket reads "you're driving this". A

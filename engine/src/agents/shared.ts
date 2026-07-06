@@ -391,6 +391,42 @@ export interface CliTask {
   history?: CliTaskHistoryEntry[];
 }
 
+// FLUX-926 / FLUX-1123: is file mutation policy-disallowed for THIS turn? True only for a ticket
+// `chat` session (dispatched phase sessions are unaffected) whose ticket isn't `In Progress`.
+// Framework-agnostic — reads only session.phase / task.status — so every adapter (claude/copilot/
+// gemini) shares one source of truth instead of drifting. Structural param types (not a hard
+// CliSessionRecord/CliTask dependency) so tests can pass minimal literals.
+export function isChatEditGated(
+  session: { phase?: CliSessionRecord['phase'] | undefined },
+  task: { status?: string | undefined } | undefined,
+): boolean {
+  return session.phase === 'chat' && task?.status !== 'In Progress';
+}
+
+// FLUX-1123: only Claude Code can actually ENFORCE the FLUX-926 gate — `--disallowed-tools` has no
+// equivalent in the Copilot/Gemini CLIs (see CLI_CAPABILITIES.chatEditGateEnforced and the
+// copilot-board.ts / gemini-board.ts FLUX-959 comments). Copilot/Gemini chat still gets a note so a
+// well-behaved agent avoids the tools voluntarily, but the wording must not overclaim a block that
+// doesn't exist — hence the framework branch here instead of one shared string.
+export function chatEditGateNote(framework: CliFramework): string {
+  return CLI_CAPABILITIES[framework].chatEditGateEnforced
+    ? 'FLUX-926: this ticket is not In Progress, so file-mutation tools (Write/Edit/etc.) are disabled for this turn — the CLI will refuse them. Move the ticket to "In Progress" (or ask the user to) before making changes; discussion, planning, and read-only tools work as normal.'
+    : 'FLUX-926 / FLUX-1123: this ticket is not In Progress. Unlike Claude Code, this CLI has no enforced file-edit block — treat file-mutation tools (Write/Edit/etc.) as off-limits for this turn on your own judgment and do not use them. Move the ticket to "In Progress" (or ask the user to) before making changes; discussion, planning, and read-only tools work as normal.';
+}
+
+// FLUX-926 / FLUX-1123: prepend the edit-gate note to a RESUMED turn's prompt when gated, shared by
+// every adapter's sendCliSessionInput. (The initial-spawn path goes through buildInitialPrompt's
+// `editsGated` option instead, below — chat's opening turn there has no separate user message to
+// prepend onto.)
+export function prependEditGateNote(
+  session: { phase?: CliSessionRecord['phase'] | undefined },
+  task: { status?: string | undefined } | undefined,
+  framework: CliFramework,
+  message: string,
+): string {
+  return isChatEditGated(session, task) ? `${chatEditGateNote(framework)}\n\n---\n\n${message}` : message;
+}
+
 export function buildInitialPrompt(task: CliTask, appendPrompt: string, opts?: BuildInitialPromptOptions): string {
   const framework = opts?.framework ?? 'claude';
   const caps = CLI_CAPABILITIES[framework];
@@ -428,7 +464,7 @@ export function buildInitialPrompt(task: CliTask, appendPrompt: string, opts?: B
             `Leaving the ticket parked in a working status with only a chat summary is a defect: the board flags it "Needs Action" and the user is notified. If you genuinely cannot decide, that itself is a "Require Input" — raise it, don't sit on it.\n\n` +
             `To ask the user a structured question mid-turn, call the ask_user_question tool — it shows an interactive picker in this chat and returns their choice so you continue immediately. Never assume when a quick question would resolve ambiguity; ask.\n` +
             `This holds REGARDLESS of the ticket's status (FLUX-826): even on a Done/Ready/closed ticket, any decision ("file a ticket / commit / leave it?") goes through ask_user_question — never as chat prose. A decision typed only into chat on a resting ticket has no picker, no notification, and no board flag, so it is lost if the user isn't watching live. (If ask_user_question times out unanswered on a ticket, the engine now leaves a persistent "Needs Action" flag as a backstop — but route it structurally, don't rely on the backstop.)` +
-            (opts?.editsGated ? `\n\nFLUX-926: this ticket is not In Progress, so file-mutation tools (Write/Edit/etc.) are disabled for this turn — the CLI will refuse them. Move the ticket to "In Progress" (or ask the user to) before making changes; discussion, planning, and read-only tools work as normal.` : '') +
+            (opts?.editsGated ? `\n\n${chatEditGateNote(framework)}` : '') +
             orchestrationProposalsParagraph + `\n\n` +
             mcpNote;
         case 'grooming':

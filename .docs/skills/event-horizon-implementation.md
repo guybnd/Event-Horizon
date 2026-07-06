@@ -11,7 +11,7 @@ Scope: Write code, validate logic, format commits, and close tickets during the 
 
 # Event Horizon Agent — Implementation Skill
 
-Version: 2.10.0
+Version: 2.13.0
 
 ## When This Skill Applies
 
@@ -26,16 +26,9 @@ Refer to the orchestrator skill for the ticket model, APIs, and end-to-end check
 - Do **not** confuse this with the branchless flow below. **Branch/worktree ticket → commit, THEN `Ready`.** Branchless ticket → stay uncommitted until `finish`. These are opposite; never apply the branchless "don't commit yet" habit to a branch/worktree ticket.
 - One focused commit with a real message ("Add X", not "wip"). The engine pushes it for you when you move to `Ready`; `finish` then merges the resulting PR.
 
-## End-of-Turn Action Contract — CRITICAL (FLUX-651)
+## End-of-Turn Action Contract (FLUX-651/826)
 
-**When you finish working a ticket, you MUST end the turn on a board action — never finish the work and just summarize it in chat.** This holds in a chat/discussion session exactly as much as in a phase launch: "this is only a discussion turn" is **not** a license to sit on completed work.
-
-- Implementation complete and validated → `change_status` to `Ready` (with a completion summary). If blocked on a decision → `change_status` to `Require Input` with the question + a proposed default.
-- Cannot decide whether to proceed → that *is* a `Require Input`. Raise it; do not leave the decision only in your final chat message.
-
-**Any decision or question goes through a structured surface — `ask_user_question` or `Require Input` — regardless of ticket status, never prose (FLUX-826).** This includes a ticket that is already **Done / Ready / Todo / Backlog / Released / Archived**: if you're working a closed ticket (a PR follow-up, a backfill, a "should I commit this / file a ticket / leave it?" call) and need the user to decide, raise `ask_user_question`. A decision typed only into chat on a resting ticket has no board flag and no notification — it is silently lost the moment the user looks away. `Require Input` is status-coupled (it parks the *current* status, wrong for a Done ticket); on a resting ticket prefer `ask_user_question`, which surfaces a picker and — if it times out unanswered — leaves a persistent **"Needs Action"** flag on that ticket.
-
-If you leave the ticket parked in a working status (`Grooming` / `In Progress`) without an action, the engine flags it **"Needs Action"** on the board and notifies the user (the backstop exists precisely because narrating-and-stopping was a recurring defect). On a **resting/terminal** status, a softer backstop also fires: if you end a turn having posted a fresh comment but taken no board action and raised no structured prompt, the engine surfaces a needs-action nudge so a decision buried in a comment on a closed ticket isn't lost (FLUX-826). Do not rely on either backstop — route the decision yourself.
+Full contract lives in the orchestrator skill's "End-of-Turn Action Contract" section — read it there. For implementation specifically: complete and validated → `change_status` to `Ready` with a completion summary; blocked on a decision → `change_status` to `Require Input` with the question + a proposed default. "Cannot decide whether to proceed" is itself a `Require Input` — raise it, don't leave it only in your final chat message. This applies just as much on a ticket that's already **Done / Ready / Todo / Backlog / Released / Archived** (a PR follow-up, a backfill, a "should I commit this / file a ticket / leave it?" call) — raise it via `ask_user_question`, not chat prose.
 
 ## Implementation Workflow
 
@@ -51,13 +44,14 @@ If you leave the ticket parked in a working status (`Grooming` / `In Progress`) 
    - **Branch / worktree tickets (PR flow):** **commit your work BEFORE moving to `Ready`** — see "Commit-Before-Ready" above. For a worktree branch the engine **refuses** the `Ready` move with 0 commits ahead (status unchanged); commit, then retry. Moving to `Ready` then opens the PR for review.
    - **Branchless tickets (direct flow):** keep code files uncommitted at this stage; the commit happens at `finish`.
    - **Visual Recap (judgment call, FLUX-976):** for a UI/UX or structurally interesting change, consider publishing a visual recap of the diff *before* the `Ready` move so the reviewer scans "what changed" instead of only the raw PR diff — see "Visual Recap Artifact" below. Skip it for bug fixes, XS/S effort, and trivial diffs.
+   - **Structured completion payload (judgment call, FLUX-1147):** for a non-trivial change, also pass a `completion` object to `change_status` alongside the `comment` — `changedFiles` (repo-relative paths), `validation` (the commands you ran + whether each passed), `decisions` (non-obvious calls worth flagging), `residualRisk`, `docsUpdated` — so the reviewer/next agent/Furnace read fields instead of re-parsing your prose. It's persisted on the comment entry, not frontmatter, and is purely additive (never required). Skip it for the same bar as Visual Recap: bug fixes, XS/S effort, trivial diffs.
 10. **Before `Ready` or `Done`, update `.docs/` so the docs match the new behavior.** This is part of the ticket, not a follow-up. Check first:
     - `.docs/event-horizon/reference/*` — if you changed ticket schema, MCP tools, REST endpoints, realtime channels, or the agent-adapter contract, the matching reference page MUST be updated.
     - `.docs/event-horizon/architecture/code-map.md` — add an entry when a new module becomes the right "land here first" file for future agents.
     - `.docs/event-horizon/agent-integrations.md`, `workflow/*.md`, root `README.md`, and `.flux/skills/` templates when user-facing or agent-facing behavior changes.
     - If nothing needs updating, say so explicitly in the completion comment ("no docs needed because …") instead of skipping the check silently.
 11. On `finish <ticket>`:
-    - **Branchless tickets:** stage all relevant files (code + docs), create the commit, then use `finish_ticket` with `implementationLink` (commit hash) and `completionComment`. Status moves to Done atomically.
+    - **Branchless tickets:** stage all relevant files (code + docs), create the commit, then use `finish_ticket` with `implementationLink` (commit hash) and `completionComment`. Status moves to Done atomically. If you skipped the `completion` payload at `Ready` (or the ticket has no `Ready` step at all), `finish_ticket` accepts the same `completion` param — same judgment call as step 9.
     - **Branch / worktree tickets:** the implementation commit already exists (made before `Ready`) and a PR is open. `finish_ticket` merges the PR and advances to Done — the PR URL is the `implementationLink`. If you made further changes (e.g. docs) after `Ready`, commit + `git push origin <branch>` first so the PR updates, then `finish_ticket`.
     The completion comment should name the docs you updated, or state why none were needed.
 12. **Never end a session with a blocking decision only in your final chat message — on any status.** If you cannot safely finish (e.g. the branch bundles other tickets' work / an integration PR, or the merge is an irreversible one-way door you're unsure about), move the ticket to **Require Input** with the decision + options and stop — a question left only in your final message is invisible on the board and will be missed (FLUX-570). This applies just as much when the ticket is already **Done/Ready/closed**: route the decision through `ask_user_question` (the status-independent picker), not chat prose, so it's caught even if the user isn't watching the live chat (FLUX-826).
@@ -70,7 +64,7 @@ If you leave the ticket parked in a working status (`Grooming` / `In Progress`) 
 Tickets filed from a **point-in-time codebase analysis** (tech-debt sweeps, refactor epics, audit/churn findings) carry a `## ⚠️ Reground before starting` body section — the grooming skill's convention. That section is a **work instruction to you, the implementer**, not background prose: the plan was written against a snapshot of the code, and by pickup time the evidence has often drifted. Before the first substantive code change:
 
 1. **Treat every cited file:line as historical.** Re-derive the evidence via Serena/grep against current code — the section's snapshot date tells you how stale it may be. Never edit at a recorded line number without re-verifying it.
-2. **Check for partial fixes already landed.** Scan sibling tickets and recently Done/Released tickets — another ticket may have absorbed part (or all) of the work.
+2. **Check for partial fixes already landed.** Check `<releaseNotesPath>/INDEX.md` (default `.docs/release-notes/INDEX.md`) first — the agent-consumable index of every released ticket with a one-line completion gist (FLUX-1151), cheaper than scanning release-note files line by line. It only covers already-*released* work, so also scan sibling tickets and recently Done/Released tickets — another ticket may have absorbed part (or all) of the work.
 3. **Update the plan first, then code.** Rewrite the body against current reality via `update_ticket` (keep the TL;DR honest) and note what you re-verified in your plan comment (workflow step 4).
 4. **If the finding no longer exists, do not implement the stale plan.** Re-scope the ticket, or propose archiving — route that decision through `Require Input` (or `ask_user_question` on a resting ticket), per the End-of-Turn Action Contract.
 
@@ -78,16 +72,16 @@ Skipping the reground because "the plan still looks plausible" is exactly the fa
 
 ## Visual Recap Artifact (`publish_artifact`) — the exception, not the norm
 
-The grooming skill publishes a plan-time **"before"** artifact (a mockup/diagram the user reasons against before code is written). This is the **"after"** half: at `Ready`, publish a **visual recap** of the diff so the reviewer reviews a scannable rendering of *what changed* instead of only the raw PR diff. Same `publish_artifact` MCP tool, same sandboxed viewer, same revision history as grooming — inspired by Builder.io's agent-native `/visual-recap`.
+The grooming skill publishes a plan-time **"before"** artifact (a mockup/diagram the user reasons against before code is written). This is the **"after"** half: at `Ready`, publish a **visual recap** of the diff so the reviewer reviews a scannable rendering of *what changed* instead of only the raw PR diff — inspired by Builder.io's agent-native `/visual-recap`. Shared mechanics (sandbox rules, CDN policy, revisions, annotation round-trip, layout-audit gate, richer artifact kinds) live in the orchestrator skill's "Rich Artifacts" section — read it there before your first emit.
 
-**Whether to emit is YOUR judgment per ticket — there is no tag gate, and it is not required for every `Ready` move.** Keep it the exception, not ceremony. Default OFF when unsure.
+Not required for every `Ready` move — keep it the exception, not ceremony. Default OFF when unsure.
 
 - **Emit when** the change is UI/UX, touches a data model / API shape, or is otherwise structurally interesting — anything where a rendered "what changed" surface helps the reviewer more than the raw diff.
 - **Skip when** it's a bug fix, an XS/S-effort ticket, or a trivial diff with no shape worth visualizing. A plain completion comment is the right output for these.
 
 **How to emit** (do this *before* `change_status → Ready`, so the recap is present when the PR opens):
 1. Build the diff against base — `git diff <baselineCommit>...HEAD` (branch/worktree tickets) or `git diff` on the uncommitted working tree (branchless). Pull out the touched-file list and the key hunks (the ones a reviewer actually needs — not the full raw patch).
-2. Author a **complete, self-contained HTML document** as `html`: a touched-file tree, styled key diff hunks (not the entire patch), and a short plain-language summary of what changed and why. Lean on the **`frontend-design`** skill for the rendering. Same sandbox rules as grooming artifacts (inline everything — default to hand-written inline CSS; Mermaid via `cdn.jsdelivr.net` is loadable for diagrams, and the Tailwind Play CDN via `cdn.tailwindcss.com` is allowed but a heavy last resort, not the default — see the grooming skill's "Rich Artifacts" section for why; no network at runtime; the annotation / layout-audit round-trips apply identically here).
+2. Author a **complete, self-contained HTML document** as `html`: a touched-file tree, styled key diff hunks (not the entire patch), and a short plain-language summary of what changed and why. Lean on the **`frontend-design`** skill for the rendering.
 3. Call `publish_artifact` with a `title` and a `note` that both include the word **"recap"** — this is what tags the revision as an implementation recap (distinct from grooming revisions in history) and is what the portal reads to label the panel **"Visual Recap"** instead of "Artifact".
 4. Then proceed with the `Ready` move as normal.
 
@@ -100,9 +94,7 @@ The grooming skill publishes a plan-time **"before"** artifact (a mockup/diagram
 
 ## Reviewer Agent Handoff
 
-Reviewer agents are triggered manually by the user — not automatically when a ticket reaches `Ready`. When a reviewer sends a ticket back to `In Progress`, a structured comment explains what needs changing. Read that comment before making any changes. The review conversation lives on the ticket; the GitHub PR is the diff artifact.
-
-**A verdict isn't recorded until `change_status` says so (FLUX-1078).** When you are the reviewer of record — your focus instructions say you are the SOLE reviewer, so no orchestrator will synthesize other reviews and decide for you — posting a review comment is not the end of the job, no matter how clear it is. A comment starting with **APPROVED** or **CHANGES NEEDED** is a human-readable record, not a machine-readable one: the Furnace and the board only ever read the structured `reviewState` field. You MUST also call `change_status` with `reviewState: 'approved'` or `reviewState: 'changes-requested'` to match your verdict before ending your turn. Skipping that call strands the ticket — from the outside it looks like the review never happened, even though it did, and costs a human a round-trip to unblock it.
+When a reviewer sends a ticket back to `In Progress`, read that structured comment before making any changes — it explains what needs fixing. For the reviewer's side of this handoff (the reviewState contract, severity taxonomy, diff scoping, and the acceptance-criteria checklist convention from FLUX-1148), see the review skill.
 
 All persistence uses MCP tools — see the orchestrator skill's "Persisting Changes" section.
 

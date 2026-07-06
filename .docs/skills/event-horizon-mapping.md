@@ -1,6 +1,6 @@
 ---
 title: Event Horizon Mapping
-order: 5
+order: 6
 ---
 > ⚠️ DO NOT DELETE — Required for cross-project mapping in multi-repo groups.
 

@@ -2,10 +2,11 @@
 // breaker/stop state, next actions) — previously computed engine-side but never shown in the portal.
 
 import { useEffect, useRef } from 'react';
-import { X, AlertTriangle, ExternalLink } from 'lucide-react';
+import { Flame, X, AlertTriangle, ExternalLink } from 'lucide-react';
 import type { FurnaceBatch, FurnaceReportLine } from '../furnaceTypes';
 import { TicketRefChip } from './TicketRefChip';
 import { fmtDuration } from '../lib/furnaceFormat';
+import { FURNACE_ACCENT } from './FurnaceDrawer';
 
 interface Props {
   batch: FurnaceBatch;
@@ -39,10 +40,11 @@ export function FurnaceReportModal({ batch, onClose }: Props) {
       <div
         role="dialog" aria-modal="true" aria-labelledby="furnace-report-title"
         className="flex w-full max-w-lg flex-col rounded-xl text-xs"
-        style={{ background: 'var(--eh-surface)', border: '1px solid var(--eh-border)', maxHeight: '85vh', color: 'var(--eh-text-primary)' }}
+        style={{ background: 'var(--eh-surface)', border: `1px solid ${FURNACE_ACCENT}`, maxHeight: '85vh', color: 'var(--eh-text-primary)' }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2 border-b px-4 py-3 flex-shrink-0" style={{ borderColor: 'var(--eh-border)' }}>
+          <Flame className="h-4 w-4 flex-shrink-0" style={{ color: FURNACE_ACCENT }} />
           <span id="furnace-report-title" className="min-w-0 flex-1 truncate text-[13px] font-semibold">{batch.title} — burn report</span>
           <button ref={closeRef} onClick={onClose} title="Close" aria-label="Close report" className="flex-shrink-0 rounded p-0.5" style={{ color: 'var(--eh-text-secondary)' }}>
             <X className="h-4 w-4" />
@@ -111,5 +113,3 @@ function ReportSection({ title, lines }: { title: string; lines: FurnaceReportLi
     </div>
   );
 }
-
-export default FurnaceReportModal;

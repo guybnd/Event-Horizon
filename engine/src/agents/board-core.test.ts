@@ -26,7 +26,7 @@ vi.mock('./shared.js', () => ({
   attachmentReadInstruction: vi.fn(() => ''),
 }));
 
-import { makeBoardAdapter } from './board-core.js';
+import { makeBoardAdapter, buildBoardPrompt } from './board-core.js';
 import { generateOrchestratorReplyNotification } from '../notifications.js';
 import type { BoardSpec } from './board.js';
 import type { CliSessionRecord } from './types.js';
@@ -136,5 +136,20 @@ describe('wireBoardProc exit classification (FLUX-987 / B4)', () => {
 
     expect(session.status).toBe('cancelled');
     expect(mockNotify).not.toHaveBeenCalled();
+  });
+});
+
+describe('buildBoardPrompt identity override (FLUX-1175)', () => {
+  it('uses the default board-orchestrator identity when no override is given', () => {
+    const prompt = buildBoardPrompt('hello there');
+    expect(prompt).toContain('You are the Event Horizon board orchestrator');
+    expect(prompt).toContain('hello there');
+  });
+
+  it('substitutes a persona-resolved identity block when one is provided (e.g. the Smelter)', () => {
+    const prompt = buildBoardPrompt('hello there', undefined, 'You are the Furnace Operator ("Smelter").');
+    expect(prompt).toContain('You are the Furnace Operator ("Smelter").');
+    expect(prompt).not.toContain('You are the Event Horizon board orchestrator');
+    expect(prompt).toContain('hello there');
   });
 });

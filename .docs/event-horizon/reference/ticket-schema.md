@@ -131,6 +131,8 @@ Common requirements (validated for every entry):
 
 **Temporal supersession (`supersedes`, FLUX-811):** `comment` and `activity` entries may carry `supersedes: string[]` — ids of earlier entries this one makes obsolete (a decision reversed/replaced). `normalizeHistoryEntries` coerces it to a string array and drops any id that doesn't reference an existing entry, points at itself, or points forward (no dangling/forward links). In the agent digest, an entry superseded by a **later** entry collapses to a one-line marker `{ type, user?, date, supersededBy: "<superseder-id>", summary?, id, collapsed: true }` — **independent of the recent-window** (a dead decision collapses even when recent), still recoverable via `expand: ["<id>"]`. **Authority-before-recency guardrail:** an *agent*-authored supersession never collapses a `pin: true` or user-authored target — that target stays full with an advisory `supersededByAdvisory: "<superseder-id>"` annotation instead. Supersession is an annotation, never a delete — history stays append-only.
 
+**Structured completion handoff (`completion`, FLUX-1147):** a `comment` entry written by [`change_status`](mcp-tools.md#change_status) or [`finish_ticket`](mcp-tools.md#finish_ticket) may carry an optional `completion: { changedFiles?: string[], validation?: {command: string, passed: boolean}[], decisions?: string[], residualRisk?: string, docsUpdated?: string[] | boolean }` — a machine-readable companion to the entry's prose `comment`, for downstream readers (reviewer sessions, Furnace, the next implementer, the portal) to consume as fields instead of re-parsing free text. Point-in-time event data, so it lives on the history entry — **not** ticket frontmatter (unlike `reviewState`, which is current-state). Set via the `completion` param on either tool; best-effort validated (`sanitizeCompletion` in [`completion-payload.ts`](../../../engine/src/completion-payload.ts)) — malformed/oversized fields are silently dropped/truncated, never rejected, so a garbage payload can never block the write. The portal renders it as a structured summary (`CompletionSummary.tsx`) instead of raw JSON; an entry with no `completion` (or an explicitly empty `{}`) shows nothing extra.
+
 Any other `type` value is rejected by the validator as `unknown history entry type`.
 
 ### Append-only and normalization
@@ -154,6 +156,17 @@ See [Reference: MCP Tools](mcp-tools.md#change_status) for the canonical enforce
 - `subtasks` holds child ticket ids only. Object-form entries (`{id: 'FLUX-42'}`) are tolerated for back-compat but objects missing `id` are dropped.
 - Parent relationships are derived from these links; no field on the child stores its parent. Cards compute their parent badge by reverse-lookup on the cache.
 - `create_ticket` with `parentId` (MCP) and `POST /api/tasks/:parentId/subtasks` (REST) maintain both files atomically.
+
+## Body conventions
+
+The `body` field is free-form markdown — the schema does not parse it. Some structure is nonetheless a documented **convention** the agent skills and portal both understand, without being schema-enforced:
+
+- **Acceptance criteria (FLUX-1148).** A ticket may include a `## Acceptance criteria` section (a top-level, i.e. `##`, heading) as a GFM checkbox list (`- [ ] …` / `- [x] …`) — concrete, checkable statements a reviewer can verify against the diff. This is **advisory only**:
+  - **No schema field, no engine gate.** Unlike `reviewState` or the FLUX-730 commit-before-Ready check, nothing on the engine reads or enforces this section — it's markdown in `body`, same as any other heading.
+  - **Grooming** writes it (Plan Discipline item 5 in the grooming skill) for tickets with a Ready/PR review flow; skipped for XS/S-effort or no-Ready-flow tickets.
+  - **Review** (the review skill's "Acceptance Criteria Checklist" section) has the reviewer tick off satisfied items via `update_ticket` before recording a verdict — bookkeeping, not a blocking condition.
+  - **Portal** renders a read-only "X/Y criteria checked" progress indicator (on the board card and in the description surface header) parsed client-side (`portal/src/lib/acceptanceCriteria.ts`). Parsing rules: only the ticket's own **first** top-level `## Acceptance criteria` heading counts; counting stops at the next heading of the same or higher level (a deeper, e.g. `###`, heading doesn't end the section); only **top-level** (non-indented) checkbox items are counted, so nested sub-bullets don't inflate the total; a heading inside a blockquote (e.g. a subtask quoting its parent's criteria) never matches, since it isn't a real heading line. No section, or a section with zero checkbox items, renders no indicator — never a "0/0" badge.
+  - Existing tickets are **not** backfilled with this section — it's opt-in per ticket going forward.
 
 ## Atomic write guarantees
 

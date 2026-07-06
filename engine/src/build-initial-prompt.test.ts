@@ -87,6 +87,18 @@ describe('buildInitialPrompt — parity by default (FLUX-960)', () => {
     }
   });
 
+  it('FLUX-1123: the edit-gated note wording matches chatEditGateEnforced — only Claude claims a real block', () => {
+    for (const framework of FRAMEWORKS) {
+      const gated = buildInitialPrompt(mockTask, '', { phase: 'chat', framework, editsGated: true });
+      if (CLI_CAPABILITIES[framework].chatEditGateEnforced) {
+        expect(gated).toContain('the CLI will refuse them');
+      } else {
+        expect(gated).not.toContain('the CLI will refuse them');
+        expect(gated).toContain('no enforced file-edit block');
+      }
+    }
+  });
+
   it('defaults to claude when framework is omitted (backward compatibility for pre-FLUX-960 callers)', () => {
     const withDefault = buildInitialPrompt(mockTask, '', { phase: 'implementation' });
     const explicitClaude = buildInitialPrompt(mockTask, '', { phase: 'implementation', framework: DEFAULT_FRAMEWORK });

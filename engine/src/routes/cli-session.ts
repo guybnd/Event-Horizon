@@ -70,6 +70,11 @@ function errorMessage(err: unknown, fallback: string): string {
 
 const router = express.Router();
 
+// Launch phase / intent (portal tells engine why a session exists). Validated
+// against this set wherever a caller supplies a raw `phase` string so an
+// arbitrary value never lands on a session record or a persona-prompt lookup.
+const VALID_LAUNCH_PHASES: LaunchPhase[] = ['grooming', 'implementation', 'review', 'finalize', 'chat'];
+
 /**
  * Resolve the default permission mode for a session surface (FLUX-605). The per-chat
  * Perms picker overrides this (`requested`); when it's absent ("Default") the session
@@ -408,7 +413,7 @@ setRelayStepLauncher(async (spec: PendingRelaySpec, previousOutput: string, prev
   const step = spec.steps[spec.currentStep];
   if (!step) return;
 
-  const resolved = resolvePersonaPrompt(step.personaId, step.focusComment);
+  const resolved = resolvePersonaPrompt(step.personaId, step.focusComment, spec.phase);
   let prompt = resolved || '';
 
   // Prepend previous step's output so this step has context of what came before.
@@ -423,6 +428,7 @@ setRelayStepLauncher(async (spec: PendingRelaySpec, previousOutput: string, prev
     framework: spec.framework,
     appendPrompt: prompt,
     effortOverride: spec.effortOverride,
+    ...(spec.phase ? { phase: spec.phase } : {}),
     skipPermissions: spec.skipPermissions,
     role: step.role,
     pattern: 'relay',
@@ -523,6 +529,21 @@ router.post('/:id/cli-session/start', async (req, res) => {
     // FLUX-676: the opening turn may carry pasted images; allow an image-only turn (empty text).
     const chatAttachments = parseChatAttachments(req.body?.attachments);
     if (!firstMessage && chatAttachments.length === 0) return res.status(400).json({ error: 'appendPrompt (first message) is required for the orchestrator chat' });
+    // FLUX-1175: an optional personaId (e.g. the Smelter, launched from the Furnace drawer)
+    // swaps the board turn's identity block for that persona's resolved prompt — this is the
+    // ONLY non-ticket-scoped conversation, so a persona chat not bound to a real ticket rides
+    // on it rather than a whole new sentinel/adapter. Only meaningful on the opening turn: a
+    // persona's identity is established once, same as a per-ticket chat launch.
+    const boardPersonaId = typeof req.body?.personaId === 'string' ? req.body.personaId.trim() : '';
+    let boardPersonaPrompt: string | undefined;
+    let boardPersonaLabel: string | undefined;
+    if (boardPersonaId) {
+      const persona = getPersonaById(boardPersonaId);
+      if (!persona) return res.status(400).json({ error: `Unknown personaId: ${boardPersonaId}` });
+      const boardFocusComment = typeof req.body?.focusComment === 'string' ? req.body.focusComment.trim() : '';
+      boardPersonaPrompt = resolvePersonaPrompt(boardPersonaId, boardFocusComment, 'chat');
+      boardPersonaLabel = persona.label;
+    }
     const existingId = cliSessionIdByTaskId.get(BOARD_CONVERSATION_ID);
     const existing = existingId ? cliSessionsById.get(existingId) : undefined;
     // Block only while a turn is genuinely IN FLIGHT (a live proc is running). A session parked
@@ -554,7 +575,7 @@ router.post('/:id/cli-session/start', async (req, res) => {
       command: fw,
       args: [],
       startedAt: new Date().toISOString(),
-      label: 'Orchestrator',
+      label: boardPersonaLabel ?? 'Orchestrator',
       outputBuffer: '',
       liveOutputBuffer: '',
       pendingAssistantText: '',
@@ -580,7 +601,10 @@ router.post('/:id/cli-session/start', async (req, res) => {
       'board',
     );
     try {
-      await getBoardAdapter(fw).startBoardSession(boardSession, firstMessage, workspaceRoot!, { attachments: chatAttachments });
+      await getBoardAdapter(fw).startBoardSession(boardSession, firstMessage, workspaceRoot!, {
+        attachments: chatAttachments,
+        ...(boardPersonaPrompt ? { personaPrompt: boardPersonaPrompt } : {}),
+      });
       return res.status(201).json({ session: getCliSessionSummaryForTask(BOARD_CONVERSATION_ID) });
     } catch (error: unknown) {
       unregisterSession(BOARD_CONVERSATION_ID, boardSession.id);
@@ -604,27 +628,26 @@ router.post('/:id/cli-session/start', async (req, res) => {
   const permissionModeRaw: 'gated' | 'skip' | undefined =
     req.body?.permissionMode === 'gated' || req.body?.permissionMode === 'skip' ? req.body.permissionMode : undefined;
 
+  // Launch phase / intent (portal tells engine why this session exists).
+  // An unrecognized phase is ignored (buildInitialPrompt falls back to status-based logic).
+  const phaseRaw = typeof req.body?.phase === 'string' ? req.body.phase.trim() : '';
+  const phase: LaunchPhase | undefined = (VALID_LAUNCH_PHASES as string[]).includes(phaseRaw)
+    ? (phaseRaw as LaunchPhase)
+    : undefined;
+
   // Persona resolution: when a personaId is supplied the engine owns the prompt
   // text (it never ships to the client). A raw appendPrompt is still accepted
-  // for ad-hoc, non-persona launches.
+  // for ad-hoc, non-persona launches. FLUX-1170: the launch phase (above) picks
+  // the shared phase contract composed onto the persona's lens.
   const personaId = typeof req.body?.personaId === 'string' ? req.body.personaId.trim() : '';
   const focusComment = typeof req.body?.focusComment === 'string' ? req.body.focusComment.trim() : '';
   const launchedBy = typeof req.body?.user === 'string' && req.body.user.trim() ? req.body.user.trim() : 'User';
   let appendPrompt = typeof req.body?.appendPrompt === 'string' ? req.body.appendPrompt.trim() : '';
   if (personaId) {
-    const resolved = resolvePersonaPrompt(personaId, focusComment);
+    const resolved = resolvePersonaPrompt(personaId, focusComment, phase);
     if (!resolved) return res.status(400).json({ error: `Unknown personaId: ${personaId}` });
     appendPrompt = resolved;
   }
-
-  // Launch phase / intent (portal tells engine why this session exists).
-  // Validate against the known set so an arbitrary value never lands on the session record;
-  // an unrecognized phase is ignored (buildInitialPrompt falls back to status-based logic).
-  const VALID_PHASES: LaunchPhase[] = ['grooming', 'implementation', 'review', 'finalize', 'chat'];
-  const phaseRaw = typeof req.body?.phase === 'string' ? req.body.phase.trim() : '';
-  const phase: LaunchPhase | undefined = (VALID_PHASES as string[]).includes(phaseRaw)
-    ? (phaseRaw as LaunchPhase)
-    : undefined;
 
   // FLUX-845: server-side isolation policy. Agent-driven dispatch (start_session / board-rebase)
   // has no human to choose a branch, so it requests isolation here and the engine creates the
@@ -790,13 +813,18 @@ router.post('/:id/cli-session/register-combiner', (req, res) => {
   }
   const groupId = typeof req.body?.groupId === 'string' ? req.body.groupId.trim() : '';
   const role = typeof req.body?.role === 'string' ? req.body.role.trim() : '';
+  const phaseRaw = typeof req.body?.phase === 'string' ? req.body.phase.trim() : '';
+  const phase: LaunchPhase | undefined = (VALID_LAUNCH_PHASES as string[]).includes(phaseRaw)
+    ? (phaseRaw as LaunchPhase)
+    : undefined;
   // Persona resolution mirrors the start route: a personaId resolves the prompt
-  // server-side; a raw appendPrompt is the fallback for ad-hoc combiners.
+  // server-side (composed with the launch phase's contract); a raw appendPrompt
+  // is the fallback for ad-hoc combiners.
   const personaId = typeof req.body?.personaId === 'string' ? req.body.personaId.trim() : '';
   const focusComment = typeof req.body?.focusComment === 'string' ? req.body.focusComment.trim() : '';
   let appendPrompt = typeof req.body?.appendPrompt === 'string' ? req.body.appendPrompt.trim() : '';
   if (personaId) {
-    const resolved = resolvePersonaPrompt(personaId, focusComment);
+    const resolved = resolvePersonaPrompt(personaId, focusComment, phase);
     if (!resolved) return res.status(400).json({ error: `Unknown personaId: ${personaId}` });
     appendPrompt = resolved;
   }
@@ -863,6 +891,10 @@ router.post('/:id/cli-session/register-relay', (req, res) => {
 
   const effortOverride = typeof req.body?.effortOverride === 'string' ? req.body.effortOverride.trim() : '';
   const skipPermissions = req.body?.skipPermissions !== false;
+  const phaseRaw = typeof req.body?.phase === 'string' ? req.body.phase.trim() : '';
+  const phase: LaunchPhase | undefined = (VALID_LAUNCH_PHASES as string[]).includes(phaseRaw)
+    ? (phaseRaw as LaunchPhase)
+    : undefined;
 
   const spec: PendingRelaySpec = {
     taskId: id,
@@ -873,6 +905,7 @@ router.post('/:id/cli-session/register-relay', (req, res) => {
     groupType: 'relay',
     steps,
     currentStep: 0,
+    ...(phase ? { phase } : {}),
   };
   registerPendingRelay(spec);
   res.status(201).json({ registered: true, groupId, totalSteps: steps.length });
@@ -929,11 +962,17 @@ router.post('/:id/cli-session/delegate', async (req, res) => {
     return res.status(400).json({ error: 'personaId or task is required' });
   }
 
-  // Build the child's prompt: persona prompt (if any) + delegation task
+  // Build the child's prompt: persona prompt (if any) + delegation task.
+  // FLUX-482/1170: a delegate call has no portal-supplied launch phase, so the
+  // persona's own declared phase is the only signal — used both for prompt
+  // contract composition here and for MCP-server scoping at spawn below.
+  // Persona.phases are workflow Phases, a strict subset of LaunchPhase (which
+  // adds 'chat'), so the first one is already a valid LaunchPhase.
   let appendPrompt = '';
   const persona = personaId ? getPersonaById(personaId) : undefined;
+  const delegatePhase: LaunchPhase | undefined = persona?.phases?.[0];
   if (personaId) {
-    const resolved = resolvePersonaPrompt(personaId, focusComment);
+    const resolved = resolvePersonaPrompt(personaId, focusComment, delegatePhase);
     if (!resolved) return res.status(400).json({ error: `Unknown personaId: ${personaId}` });
     appendPrompt = resolved;
   }
@@ -994,12 +1033,6 @@ router.post('/:id/cli-session/delegate', async (req, res) => {
   const resolvedModel = framework === 'claude'
     ? (modelOverride || persona?.model || configDelegateModel || undefined)
     : undefined;
-
-  // FLUX-482: thread the persona's phase so the child's prompt/MCP-server scoping
-  // matches the delegated role (e.g. a grooming scout gets the grooming server set).
-  // Persona.phases are workflow Phases, a strict subset of LaunchPhase (which adds
-  // 'chat'), so the first one is already a valid LaunchPhase.
-  const delegatePhase: LaunchPhase | undefined = persona?.phases?.[0];
 
   let session: CliSessionRecord;
   try {

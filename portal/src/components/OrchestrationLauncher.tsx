@@ -285,6 +285,13 @@ export function OrchestrationLauncher({ open, ticket, framework, phase = 'review
   // because the launcher can be nested inside TaskModal (opened for review from within an open
   // ticket) — without sharing the stack, both TaskModal's Escape handler and this one would fire
   // on the same press and close both surfaces at once.
+  //
+  // FLUX-1180: default `ignoreWhenTyping: true` (unlike ReleaseModal/ContextMenu/TicketActions,
+  // which opt out) is intentional here, not an oversight — this is a deliberate, signed-off
+  // behavior change from the pre-FLUX-1022 raw listener, which closed the launcher unconditionally
+  // even while typing in the "Focus area" textarea below. That textarea is free-form prose with no
+  // competing local Escape handler of its own to protect, so letting ESC bubble up while typing
+  // risks silently discarding a half-written comment. Keep the default guard.
   useEscapeKey(() => onCloseRef.current(), { enabled: open });
 
   useEffect(() => {

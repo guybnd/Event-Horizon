@@ -100,7 +100,10 @@ describe('startWatchers() boot behavior (FLUX-1184)', () => {
     await waitFor(() => (snapshot().counters['store.watchEvents'] ?? 0) >= 3);
     await new Promise((r) => setTimeout(r, 300)); // let any coalesced duplicate fs events settle
 
-    expect(snapshot().counters['store.watchEvents']).toBe(3);
+    // Native fs watchers (esp. macOS/FSEvents) can emit duplicate/extra change events per write,
+    // so this only asserts the floor — the invariant under test is "incremental, not a full
+    // rescan" (below), not "exactly one watch event per write" (FLUX-1194).
+    expect(snapshot().counters['store.watchEvents']).toBeGreaterThanOrEqual(3);
     expect(snapshot().histograms['store.fullRescan']?.count ?? 0).toBe(fullRescanCountBefore);
     expect(tasksCache['FLUX-1']?.title).toBe('Ticket 1 updated');
     expect(tasksCache['FLUX-2']?.title).toBe('Ticket 2 updated');

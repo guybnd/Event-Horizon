@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { DndContext, DragOverlay, pointerWithin } from '@dnd-kit/core';
 import type { DragEndEvent, DragStartEvent } from '@dnd-kit/core';
 import { FurnaceDrawer } from './FurnaceDrawer';
@@ -53,7 +53,10 @@ This is a starter ticket. **Launch an agent on it** (Grooming or Implementation)
 
 _Created by the "Bootstrap with AI" action on the empty board. Delete this ticket once your board is populated._`;
 
-export function Board({ furnaceOpen, onCloseFurnace }: { furnaceOpen?: boolean; onCloseFurnace?: () => void } = {}) {
+// FLUX-1141: memoized so an unrelated AppContent re-render (terminal/furnace toggle, the 5s
+// furnace-status poll) doesn't re-invoke this whole ~700-line tree — furnaceOpen/onCloseFurnace
+// are its only props and stay stable across those toggles, so the memo boundary actually bails.
+export const Board = memo(function Board({ furnaceOpen, onCloseFurnace }: { furnaceOpen?: boolean; onCloseFurnace?: () => void } = {}) {
   const liveTasks = useAppSelector((s) => s.tasks);
   // FLUX-982: seed local `tasks` from the already-loaded store snapshot instead of `[]`. Board
   // fully unmounts/remounts on view switch (App.tsx `{view === 'board' && <Board />}`), and the
@@ -682,4 +685,4 @@ export function Board({ furnaceOpen, onCloseFurnace }: { furnaceOpen?: boolean; 
       )}
     </>
   );
-}
+});

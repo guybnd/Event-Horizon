@@ -88,4 +88,30 @@ describe('refreshWorktreePool dedupe (FLUX-1069)', () => {
     // The forced call issued its OWN read after the in-flight one finished, rather than just reusing it.
     expect(runGit).toHaveBeenCalledTimes(2);
   });
+
+  // FLUX-1192: two forced calls racing the SAME prior in-flight read both resume once it settles. Without
+  // a recheck, each unconditionally starts (and installs) its own fresh read, clobbering the other's
+  // in-flight reference and shelling out twice for what should be one shared fresh read.
+  it('two forced calls waiting on the same prior in-flight read share a single fresh shell-out', async () => {
+    let resolveFirst!: () => void;
+    const gate = new Promise<void>((resolve) => { resolveFirst = resolve; });
+    runGit.mockImplementationOnce(async () => {
+      await gate; // hang the first (non-forced) call open so both forced calls land while it's in flight
+      return { stdout: '', stderr: '' };
+    });
+
+    const nonForced = refreshWorktreePool(); // starts the hung read, sets worktreePoolInFlight
+    await Promise.resolve(); // let it actually start before the forced calls land
+    const forcedA = refreshWorktreePool({ force: true });
+    const forcedB = refreshWorktreePool({ force: true });
+
+    expect(runGit).toHaveBeenCalledTimes(1); // both forced calls are waiting on the hung read
+
+    resolveFirst();
+    await Promise.all([nonForced, forcedA, forcedB]);
+
+    // One forced call issues the fresh read after the hung one finishes; the other piggybacks on it
+    // instead of starting a redundant second shell-out.
+    expect(runGit).toHaveBeenCalledTimes(2);
+  });
 });

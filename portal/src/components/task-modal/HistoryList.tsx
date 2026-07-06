@@ -7,6 +7,7 @@ import type { Config, HistoryEntry, AgentSessionEntry, AgentSessionProgress } fr
 import { StatusBadge } from '../StatusBadge';
 import { getStatusColorClass } from '../../statusStyles';
 import { TaskMarkdown } from '../TaskMarkdown';
+import { CompletionSummary } from '../CompletionSummary';
 import { relativeTime } from '../../workflow';
 import { patternLabel, normalizeRoleLabel } from '../../orchestration';
 import { useLiveSession } from '../../store/useAppSelector';
@@ -404,6 +405,8 @@ export const HistoryList = memo(function HistoryList({
                 </div>
               )}
               {entry.comment && <TaskMarkdown body={entry.type === 'agent_message' ? unwrapAgentMessage(entry.comment) : entry.comment} taskId={taskId} compact imageMode={entry.type === 'comment' ? 'comment' : 'inline'} emptyMessage="" />}
+
+              {entry.type === 'comment' && <CompletionSummary completion={entry.completion} />}
 
               {entry.type === 'comment' && !entry.replyTo && taskId && !isRequireInput && (
                 <div className="mt-3 flex items-center gap-2">
